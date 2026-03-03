@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: Operators</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">02 - Operators</h1>
+
+<div class="test-group">
+  <h2>Arithmetic Operators</h2>
+  <div class="expected">Expected: All arithmetic operations produce correct results.</div>
+  <div class="test-area" id="arithmetic-results"></div>
+</div>
+
+<div class="test-group">
+  <h2>Comparison Operators</h2>
+  <div class="expected">Expected: All comparison operators return correct boolean values.</div>
+  <div class="test-area" id="comparison-results"></div>
+</div>
+
+<div class="test-group">
+  <h2>Logical, Assignment, and Other Operators</h2>
+  <div class="expected">Expected: Logical operators, assignment operators, ternary, and increment/decrement all work correctly.</div>
+  <div class="test-area" id="other-results"></div>
+</div>
+
+<script>
+function testTo(targetId, name, fn) {
+  var resultDiv = document.getElementById(targetId);
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// --- Arithmetic operators ---
+testTo('arithmetic-results', 'Addition: 3 + 4 === 7', function() {
+  return (3 + 4) === 7;
+});
+
+testTo('arithmetic-results', 'Subtraction: 10 - 3 === 7', function() {
+  return (10 - 3) === 7;
+});
+
+testTo('arithmetic-results', 'Multiplication: 6 * 7 === 42', function() {
+  return (6 * 7) === 42;
+});
+
+testTo('arithmetic-results', 'Division: 15 / 3 === 5', function() {
+  return (15 / 3) === 5;
+});
+
+testTo('arithmetic-results', 'Division: 7 / 2 === 3.5', function() {
+  return (7 / 2) === 3.5;
+});
+
+testTo('arithmetic-results', 'Modulo: 10 % 3 === 1', function() {
+  return (10 % 3) === 1;
+});
+
+testTo('arithmetic-results', 'Exponentiation: 2 ** 10 === 1024', function() {
+  return (2 ** 10) === 1024;
+});
+
+testTo('arithmetic-results', 'Negative modulo: -7 % 3 === -1', function() {
+  return (-7 % 3) === -1;
+});
+
+testTo('arithmetic-results', 'Unary minus: -(5) === -5', function() {
+  return -(5) === -5;
+});
+
+testTo('arithmetic-results', 'Unary plus: +"42" === 42', function() {
+  return (+"42") === 42;
+});
+
+// --- Comparison operators ---
+testTo('comparison-results', 'Loose equality: 5 == 5', function() {
+  return (5 == 5) === true;
+});
+
+testTo('comparison-results', 'Loose equality with coercion: "5" == 5', function() {
+  return ("5" == 5) === true;
+});
+
+testTo('comparison-results', 'Strict equality: 5 === 5', function() {
+  return (5 === 5) === true;
+});
+
+testTo('comparison-results', 'Strict equality type check: "5" === 5 is false', function() {
+  return ("5" === 5) === false;
+});
+
+testTo('comparison-results', 'Not equal: 5 != 3', function() {
+  return (5 != 3) === true;
+});
+
+testTo('comparison-results', 'Strict not equal: "5" !== 5', function() {
+  return ("5" !== 5) === true;
+});
+
+testTo('comparison-results', 'Less than: 3 < 5', function() {
+  return (3 < 5) === true;
+});
+
+testTo('comparison-results', 'Greater than: 5 > 3', function() {
+  return (5 > 3) === true;
+});
+
+testTo('comparison-results', 'Less than or equal: 5 <= 5', function() {
+  return (5 <= 5) === true;
+});
+
+testTo('comparison-results', 'Greater than or equal: 5 >= 3', function() {
+  return (5 >= 3) === true;
+});
+
+testTo('comparison-results', 'String comparison: "abc" < "abd"', function() {
+  return ("abc" < "abd") === true;
+});
+
+// --- Logical operators ---
+testTo('other-results', 'Logical AND: true && true', function() {
+  return (true && true) === true;
+});
+
+testTo('other-results', 'Logical AND: true && false', function() {
+  return (true && false) === false;
+});
+
+testTo('other-results', 'Logical OR: false || true', function() {
+  return (false || true) === true;
+});
+
+testTo('other-results', 'Logical OR: false || false', function() {
+  return (false || false) === false;
+});
+
+testTo('other-results', 'Logical NOT: !true === false', function() {
+  return (!true) === false;
+});
+
+testTo('other-results', 'Logical NOT: !false === true', function() {
+  return (!false) === true;
+});
+
+testTo('other-results', 'Short-circuit AND: 0 && "hello" === 0', function() {
+  return (0 && "hello") === 0;
+});
+
+testTo('other-results', 'Short-circuit OR: 0 || "hello" === "hello"', function() {
+  return (0 || "hello") === "hello";
+});
+
+// --- Assignment operators ---
+testTo('other-results', '+= operator: 5 += 3 === 8', function() {
+  var x = 5;
+  x += 3;
+  return x === 8;
+});
+
+testTo('other-results', '-= operator: 10 -= 4 === 6', function() {
+  var x = 10;
+  x -= 4;
+  return x === 6;
+});
+
+testTo('other-results', '*= operator: 3 *= 5 === 15', function() {
+  var x = 3;
+  x *= 5;
+  return x === 15;
+});
+
+testTo('other-results', '/= operator: 20 /= 4 === 5', function() {
+  var x = 20;
+  x /= 4;
+  return x === 5;
+});
+
+// --- String concatenation ---
+testTo('other-results', 'String concatenation: "hello" + " " + "world"', function() {
+  return ("hello" + " " + "world") === "hello world";
+});
+
+testTo('other-results', 'String + number: "count: " + 5', function() {
+  return ("count: " + 5) === "count: 5";
+});
+
+// --- Ternary operator ---
+testTo('other-results', 'Ternary: true ? "yes" : "no" === "yes"', function() {
+  return (true ? "yes" : "no") === "yes";
+});
+
+testTo('other-results', 'Ternary: false ? "yes" : "no" === "no"', function() {
+  return (false ? "yes" : "no") === "no";
+});
+
+testTo('other-results', 'Ternary with expression: (5 > 3) ? 1 : 0 === 1', function() {
+  return ((5 > 3) ? 1 : 0) === 1;
+});
+
+// --- Increment / Decrement ---
+testTo('other-results', 'Post-increment: x++ returns old value', function() {
+  var x = 5;
+  var y = x++;
+  return y === 5 && x === 6;
+});
+
+testTo('other-results', 'Pre-increment: ++x returns new value', function() {
+  var x = 5;
+  var y = ++x;
+  return y === 6 && x === 6;
+});
+
+testTo('other-results', 'Post-decrement: x-- returns old value', function() {
+  var x = 5;
+  var y = x--;
+  return y === 5 && x === 4;
+});
+
+testTo('other-results', 'Pre-decrement: --x returns new value', function() {
+  var x = 5;
+  var y = --x;
+  return y === 4 && x === 4;
+});
+</script>
+</body>
+</html>

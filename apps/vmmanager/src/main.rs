@@ -77,6 +77,49 @@ enum BootOrder {
     FloppyFirst,
 }
 
+/// BIOS firmware type for the VM.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BiosType {
+    /// Custom CoreVM BIOS (64 KB, loaded at 0xF0000).
+    CoreVm,
+    /// SeaBIOS open-source PC BIOS (256 KB, loaded at 0xC0000).
+    SeaBios,
+}
+
+/// GPU type for the VM.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GpuType {
+    /// SVGA framebuffer (VGA/Bochs VBE).
+    SvgaFb,
+}
+
+/// Network adapter mode.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NetMode {
+    /// Network Address Translation (guest behind NAT).
+    Nat,
+    /// Bridged — guest appears on the host network directly.
+    Bridge,
+}
+
+/// MAC address assignment.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MacMode {
+    /// Automatically generated MAC address.
+    Dynamic,
+    /// User-specified static MAC address.
+    Static,
+}
+
+/// RAM allocation strategy.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RamAlloc {
+    /// Allocate all guest RAM upfront at VM creation.
+    Preallocate,
+    /// Allocate guest RAM pages on first access (demand paging).
+    OnDemand,
+}
+
 /// Persistent configuration for a single VM.
 #[derive(Clone)]
 struct VmConfig {
@@ -86,12 +129,30 @@ struct VmConfig {
     name: String,
     /// Guest RAM size in megabytes.
     ram_mb: u32,
+    /// RAM allocation strategy.
+    ram_alloc: RamAlloc,
     /// Path to a raw disk image file on the host filesystem.
     disk_image: String,
     /// Path to an ISO image file for CD-ROM emulation.
     iso_image: String,
     /// Boot device ordering.
     boot_order: BootOrder,
+    /// BIOS firmware type.
+    bios_type: BiosType,
+    /// Whether JIT acceleration is enabled.
+    jit_enabled: bool,
+    /// GPU type.
+    gpu_type: GpuType,
+    /// Whether the network adapter is enabled.
+    net_enabled: bool,
+    /// Network adapter mode (NAT / Bridge).
+    net_mode: NetMode,
+    /// Host NIC name for bridged mode.
+    net_host_nic: String,
+    /// MAC address mode (dynamic / static).
+    mac_mode: MacMode,
+    /// Static MAC address (only used when mac_mode is Static).
+    mac_address: String,
 }
 
 impl VmConfig {
@@ -101,9 +162,18 @@ impl VmConfig {
             uuid: generate_uuid(),
             name: String::from(name),
             ram_mb: 64,
+            ram_alloc: RamAlloc::OnDemand,
             disk_image: String::new(),
             iso_image: String::new(),
             boot_order: BootOrder::DiskFirst,
+            bios_type: BiosType::CoreVm,
+            jit_enabled: false,
+            gpu_type: GpuType::SvgaFb,
+            net_enabled: false,
+            net_mode: NetMode::Nat,
+            net_host_nic: String::new(),
+            mac_mode: MacMode::Dynamic,
+            mac_address: String::new(),
         }
     }
 }
@@ -157,12 +227,24 @@ struct VmInfoLabels {
 /// Controls used in the settings dialog window.
 struct SettingsDialog {
     win: anyui::Window,
+    // ── General tab ──
     name_field: anyui::TextField,
     ram_slider: anyui::Slider,
     ram_value_label: anyui::Label,
+    ram_alloc_seg: anyui::SegmentedControl,
+    bios_seg: anyui::SegmentedControl,
+    jit_toggle: anyui::Toggle,
+    // ── Devices tab ──
+    gpu_seg: anyui::SegmentedControl,
+    net_toggle: anyui::Toggle,
+    net_mode_seg: anyui::SegmentedControl,
+    net_host_field: anyui::TextField,
+    mac_mode_seg: anyui::SegmentedControl,
+    mac_field: anyui::TextField,
+    // ── Boot tab ──
+    boot_seg: anyui::SegmentedControl,
     disk_field: anyui::TextField,
     iso_field: anyui::TextField,
-    boot_seg: anyui::SegmentedControl,
 }
 
 /// Controls used in the "Create Disk Image" dialog.
@@ -389,6 +471,47 @@ fn save_vm_config(config: &VmConfig) {
     };
     data.extend_from_slice(boot_str.as_bytes());
     data.push(b'\n');
+    data.extend_from_slice(b"bios=");
+    data.extend_from_slice(match config.bios_type {
+        BiosType::CoreVm => b"corevm" as &[u8],
+        BiosType::SeaBios => b"seabios",
+    });
+    data.push(b'\n');
+    data.extend_from_slice(b"jit=");
+    data.extend_from_slice(if config.jit_enabled { b"1" } else { b"0" });
+    data.push(b'\n');
+    data.extend_from_slice(b"ram_alloc=");
+    data.extend_from_slice(match config.ram_alloc {
+        RamAlloc::Preallocate => b"prealloc" as &[u8],
+        RamAlloc::OnDemand => b"ondemand",
+    });
+    data.push(b'\n');
+    data.extend_from_slice(b"gpu=");
+    data.extend_from_slice(match config.gpu_type {
+        GpuType::SvgaFb => b"svga" as &[u8],
+    });
+    data.push(b'\n');
+    data.extend_from_slice(b"net_enabled=");
+    data.extend_from_slice(if config.net_enabled { b"1" } else { b"0" });
+    data.push(b'\n');
+    data.extend_from_slice(b"net_mode=");
+    data.extend_from_slice(match config.net_mode {
+        NetMode::Nat => b"nat" as &[u8],
+        NetMode::Bridge => b"bridge",
+    });
+    data.push(b'\n');
+    data.extend_from_slice(b"net_host_nic=");
+    data.extend_from_slice(config.net_host_nic.as_bytes());
+    data.push(b'\n');
+    data.extend_from_slice(b"mac_mode=");
+    data.extend_from_slice(match config.mac_mode {
+        MacMode::Dynamic => b"dynamic" as &[u8],
+        MacMode::Static => b"static",
+    });
+    data.push(b'\n');
+    data.extend_from_slice(b"mac_address=");
+    data.extend_from_slice(config.mac_address.as_bytes());
+    data.push(b'\n');
 
     let fd = fs::open(path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
     if fd != u32::MAX {
@@ -468,6 +591,38 @@ fn load_vm_config(uuid: &str) -> Option<VmConfig> {
                 b"floppy" => BootOrder::FloppyFirst,
                 _ => BootOrder::DiskFirst,
             };
+        } else if let Some(val) = strip_prefix(line, b"bios=") {
+            config.bios_type = match val {
+                b"seabios" => BiosType::SeaBios,
+                _ => BiosType::CoreVm,
+            };
+        } else if let Some(val) = strip_prefix(line, b"jit=") {
+            config.jit_enabled = val == b"1";
+        } else if let Some(val) = strip_prefix(line, b"ram_alloc=") {
+            config.ram_alloc = match val {
+                b"prealloc" => RamAlloc::Preallocate,
+                _ => RamAlloc::OnDemand,
+            };
+        } else if let Some(val) = strip_prefix(line, b"gpu=") {
+            config.gpu_type = match val {
+                _ => GpuType::SvgaFb,
+            };
+        } else if let Some(val) = strip_prefix(line, b"net_enabled=") {
+            config.net_enabled = val == b"1";
+        } else if let Some(val) = strip_prefix(line, b"net_mode=") {
+            config.net_mode = match val {
+                b"bridge" => NetMode::Bridge,
+                _ => NetMode::Nat,
+            };
+        } else if let Some(val) = strip_prefix(line, b"net_host_nic=") {
+            config.net_host_nic = bytes_to_string(val);
+        } else if let Some(val) = strip_prefix(line, b"mac_mode=") {
+            config.mac_mode = match val {
+                b"static" => MacMode::Static,
+                _ => MacMode::Dynamic,
+            };
+        } else if let Some(val) = strip_prefix(line, b"mac_address=") {
+            config.mac_address = bytes_to_string(val);
         }
     }
 
@@ -1663,11 +1818,21 @@ fn close_create_disk_dialog() {
 
 // ── Settings dialog ────────────────────────────────────────────────────
 
+/// Helper: create a label at fixed position inside a parent view.
+fn settings_label(parent: &anyui::View, text: &str, x: i32, y: i32) {
+    let lbl = anyui::Label::new(text);
+    lbl.set_position(x, y);
+    lbl.set_size(100, 24);
+    lbl.set_text_color(0xFFE6E6E6);
+    parent.add(&lbl);
+}
+
 /// Open the settings dialog for the currently selected VM.
 ///
-/// Creates a new window with text fields, a slider, and a segmented
-/// control for editing the VM configuration. Save/Cancel buttons commit
-/// or discard changes.
+/// Creates a tabbed dialog with three tabs:
+/// - **General**: Name, RAM, RAM allocation, BIOS, JIT acceleration
+/// - **Devices**: GPU, Network adapter (mode, host NIC, MAC)
+/// - **Boot**: Boot order, Disk image, ISO image
 fn open_settings_dialog() {
     let a = app();
     if a.selected_vm >= a.vms.len() {
@@ -1681,126 +1846,230 @@ fn open_settings_dialog() {
 
     let config = a.vms[a.selected_vm].config.clone();
 
-    // Dialog is wider (480 px) to accommodate Browse / Create buttons.
-    let win = anyui::Window::new("VM Settings", -1, -1, 480, 380);
+    let win = anyui::Window::new("VM Settings", -1, -1, 500, 440);
 
-    // Content area.
+    // Outer content container.
     let content = anyui::View::new();
     content.set_dock(anyui::DOCK_FILL);
     content.set_color(0xFF1E1E1E);
 
-    // VM Name.
-    let name_lbl = anyui::Label::new("Name:");
-    name_lbl.set_position(16, 16);
-    name_lbl.set_size(80, 24);
-    name_lbl.set_text_color(0xFFE6E6E6);
-    content.add(&name_lbl);
+    // ── Tab selector ────────────────────────────────────────────────
+    let tab_seg = anyui::SegmentedControl::new("General|Devices|Boot");
+    tab_seg.set_position(16, 12);
+    tab_seg.set_size(468, 28);
+    content.add(&tab_seg);
 
+    // ════════════════════════════════════════════════════════════════
+    //  Tab 0: General
+    // ════════════════════════════════════════════════════════════════
+    let general_panel = anyui::View::new();
+    general_panel.set_position(0, 48);
+    general_panel.set_size(500, 340);
+    content.add(&general_panel);
+
+    // Name
+    settings_label(&general_panel, "Name:", 16, 8);
     let name_field = anyui::TextField::new();
-    name_field.set_position(100, 12);
+    name_field.set_position(120, 4);
     name_field.set_size(360, 28);
     name_field.set_text(&config.name);
-    content.add(&name_field);
+    general_panel.add(&name_field);
 
-    // RAM slider.
-    let ram_lbl = anyui::Label::new("RAM:");
-    ram_lbl.set_position(16, 56);
-    ram_lbl.set_size(80, 24);
-    ram_lbl.set_text_color(0xFFE6E6E6);
-    content.add(&ram_lbl);
-
-    // Slider value 0-100 maps to 16-512 MB.
+    // RAM slider
+    settings_label(&general_panel, "RAM:", 16, 48);
     let slider_val = ((config.ram_mb.saturating_sub(16)) * 100 / 496).min(100);
     let ram_slider = anyui::Slider::new(slider_val);
-    ram_slider.set_position(100, 56);
+    ram_slider.set_position(120, 48);
     ram_slider.set_size(280, 24);
-    content.add(&ram_slider);
+    general_panel.add(&ram_slider);
 
     let mut rbuf = [0u8; 16];
     let ram_text = fmt_label_val(&mut rbuf, "", config.ram_mb, " MB");
     let ram_value_label = anyui::Label::new(ram_text);
-    ram_value_label.set_position(390, 56);
+    ram_value_label.set_position(410, 48);
     ram_value_label.set_size(70, 24);
     ram_value_label.set_text_color(0xFFE6E6E6);
-    content.add(&ram_value_label);
+    general_panel.add(&ram_value_label);
 
-    // ── Disk image row ────────────────────────────────────────────────
-    // Layout (x=100 … x=460):  field(210) | Browse(60) | Create(68)
-    let disk_lbl = anyui::Label::new("Disk:");
-    disk_lbl.set_position(16, 100);
-    disk_lbl.set_size(80, 24);
-    disk_lbl.set_text_color(0xFFE6E6E6);
-    content.add(&disk_lbl);
+    // RAM allocation
+    settings_label(&general_panel, "RAM Alloc:", 16, 88);
+    let ram_alloc_seg = anyui::SegmentedControl::new("On-Demand|Pre-allocate");
+    ram_alloc_seg.set_position(120, 84);
+    ram_alloc_seg.set_size(240, 28);
+    ram_alloc_seg.set_state(match config.ram_alloc {
+        RamAlloc::OnDemand => 0,
+        RamAlloc::Preallocate => 1,
+    });
+    general_panel.add(&ram_alloc_seg);
 
-    let disk_field = anyui::TextField::new();
-    disk_field.set_position(100, 96);
-    disk_field.set_size(210, 28);
-    disk_field.set_text(&config.disk_image);
-    disk_field.set_placeholder("/path/to/disk.img");
-    content.add(&disk_field);
+    // BIOS type
+    settings_label(&general_panel, "BIOS:", 16, 128);
+    let bios_seg = anyui::SegmentedControl::new("CoreVM|SeaBIOS");
+    bios_seg.set_position(120, 124);
+    bios_seg.set_size(240, 28);
+    bios_seg.set_state(match config.bios_type {
+        BiosType::CoreVm => 0,
+        BiosType::SeaBios => 1,
+    });
+    general_panel.add(&bios_seg);
 
-    let disk_browse = anyui::Button::new("Browse…");
-    disk_browse.set_position(314, 96);
-    disk_browse.set_size(66, 28);
-    content.add(&disk_browse);
+    // JIT acceleration
+    settings_label(&general_panel, "Acceleration:", 16, 168);
+    let jit_toggle = anyui::Toggle::new(config.jit_enabled);
+    jit_toggle.set_position(120, 168);
+    jit_toggle.set_size(48, 24);
+    general_panel.add(&jit_toggle);
 
-    let disk_create = anyui::Button::new("New…");
-    disk_create.set_position(384, 96);
-    disk_create.set_size(68, 28);
-    content.add(&disk_create);
+    let jit_hint = anyui::Label::new("JIT (compile hot basic blocks to native code)");
+    jit_hint.set_position(176, 168);
+    jit_hint.set_size(300, 24);
+    jit_hint.set_text_color(0xFF888888);
+    jit_hint.set_font_size(11);
+    general_panel.add(&jit_hint);
 
-    // ── ISO image row ─────────────────────────────────────────────────
-    // Layout (x=100 … x=460):  field(210) | Browse(60)
-    let iso_lbl = anyui::Label::new("ISO:");
-    iso_lbl.set_position(16, 144);
-    iso_lbl.set_size(80, 24);
-    iso_lbl.set_text_color(0xFFE6E6E6);
-    content.add(&iso_lbl);
+    // ════════════════════════════════════════════════════════════════
+    //  Tab 1: Devices
+    // ════════════════════════════════════════════════════════════════
+    let devices_panel = anyui::View::new();
+    devices_panel.set_position(0, 48);
+    devices_panel.set_size(500, 340);
+    content.add(&devices_panel);
 
-    let iso_field = anyui::TextField::new();
-    iso_field.set_position(100, 140);
-    iso_field.set_size(210, 28);
-    iso_field.set_text(&config.iso_image);
-    iso_field.set_placeholder("/Users/Shared/vmmanager/iso/linux.iso");
-    content.add(&iso_field);
+    // GPU
+    settings_label(&devices_panel, "GPU:", 16, 8);
+    let gpu_seg = anyui::SegmentedControl::new("SVGA Framebuffer");
+    gpu_seg.set_position(120, 4);
+    gpu_seg.set_size(240, 28);
+    gpu_seg.set_state(0);
+    devices_panel.add(&gpu_seg);
 
-    let iso_browse = anyui::Button::new("Browse…");
-    iso_browse.set_position(314, 140);
-    iso_browse.set_size(66, 28);
-    content.add(&iso_browse);
+    // ── Network section ─────────────────────────────────────────────
+    let net_header = anyui::Label::new("Network Adapter");
+    net_header.set_position(16, 48);
+    net_header.set_size(200, 20);
+    net_header.set_text_color(0xFF8888CC);
+    net_header.set_font_size(12);
+    devices_panel.add(&net_header);
 
-    // Boot order.
-    let boot_lbl = anyui::Label::new("Boot:");
-    boot_lbl.set_position(16, 188);
-    boot_lbl.set_size(80, 24);
-    boot_lbl.set_text_color(0xFFE6E6E6);
-    content.add(&boot_lbl);
+    // Network enabled
+    settings_label(&devices_panel, "Enabled:", 16, 76);
+    let net_toggle = anyui::Toggle::new(config.net_enabled);
+    net_toggle.set_position(120, 76);
+    net_toggle.set_size(48, 24);
+    devices_panel.add(&net_toggle);
 
+    // Network mode
+    settings_label(&devices_panel, "Mode:", 16, 116);
+    let net_mode_seg = anyui::SegmentedControl::new("NAT|Bridge");
+    net_mode_seg.set_position(120, 112);
+    net_mode_seg.set_size(200, 28);
+    net_mode_seg.set_state(match config.net_mode {
+        NetMode::Nat => 0,
+        NetMode::Bridge => 1,
+    });
+    devices_panel.add(&net_mode_seg);
+
+    // Host NIC (for bridged mode)
+    settings_label(&devices_panel, "Host NIC:", 16, 156);
+    let net_host_field = anyui::TextField::new();
+    net_host_field.set_position(120, 152);
+    net_host_field.set_size(240, 28);
+    net_host_field.set_text(&config.net_host_nic);
+    net_host_field.set_placeholder("e.g. en0");
+    devices_panel.add(&net_host_field);
+
+    // MAC address mode
+    settings_label(&devices_panel, "MAC:", 16, 196);
+    let mac_mode_seg = anyui::SegmentedControl::new("Dynamic|Static");
+    mac_mode_seg.set_position(120, 192);
+    mac_mode_seg.set_size(200, 28);
+    mac_mode_seg.set_state(match config.mac_mode {
+        MacMode::Dynamic => 0,
+        MacMode::Static => 1,
+    });
+    devices_panel.add(&mac_mode_seg);
+
+    // MAC address (static)
+    settings_label(&devices_panel, "MAC Addr:", 16, 236);
+    let mac_field = anyui::TextField::new();
+    mac_field.set_position(120, 232);
+    mac_field.set_size(240, 28);
+    mac_field.set_text(&config.mac_address);
+    mac_field.set_placeholder("52:54:00:12:34:56");
+    devices_panel.add(&mac_field);
+
+    // ════════════════════════════════════════════════════════════════
+    //  Tab 2: Boot
+    // ════════════════════════════════════════════════════════════════
+    let boot_panel = anyui::View::new();
+    boot_panel.set_position(0, 48);
+    boot_panel.set_size(500, 340);
+    content.add(&boot_panel);
+
+    // Boot order
+    settings_label(&boot_panel, "Boot Order:", 16, 8);
     let boot_seg = anyui::SegmentedControl::new("Disk|CD|Floppy");
-    boot_seg.set_position(100, 184);
+    boot_seg.set_position(120, 4);
     boot_seg.set_size(360, 28);
-    let boot_idx = match config.boot_order {
+    boot_seg.set_state(match config.boot_order {
         BootOrder::DiskFirst => 0u32,
         BootOrder::CdFirst => 1,
         BootOrder::FloppyFirst => 2,
-    };
-    boot_seg.set_state(boot_idx);
-    content.add(&boot_seg);
+    });
+    boot_panel.add(&boot_seg);
 
-    // Buttons.
+    // Disk image
+    settings_label(&boot_panel, "Disk Image:", 16, 52);
+    let disk_field = anyui::TextField::new();
+    disk_field.set_position(120, 48);
+    disk_field.set_size(210, 28);
+    disk_field.set_text(&config.disk_image);
+    disk_field.set_placeholder("/path/to/disk.img");
+    boot_panel.add(&disk_field);
+
+    let disk_browse = anyui::Button::new("Browse...");
+    disk_browse.set_position(334, 48);
+    disk_browse.set_size(66, 28);
+    boot_panel.add(&disk_browse);
+
+    let disk_create = anyui::Button::new("New...");
+    disk_create.set_position(404, 48);
+    disk_create.set_size(68, 28);
+    boot_panel.add(&disk_create);
+
+    // ISO image
+    settings_label(&boot_panel, "ISO Image:", 16, 96);
+    let iso_field = anyui::TextField::new();
+    iso_field.set_position(120, 92);
+    iso_field.set_size(210, 28);
+    iso_field.set_text(&config.iso_image);
+    iso_field.set_placeholder("/path/to/boot.iso");
+    boot_panel.add(&iso_field);
+
+    let iso_browse = anyui::Button::new("Browse...");
+    iso_browse.set_position(334, 92);
+    iso_browse.set_size(66, 28);
+    boot_panel.add(&iso_browse);
+
+    // ── Connect tabs to panels (auto show/hide) ─────────────────────
+    tab_seg.connect_panels(&[&general_panel, &devices_panel, &boot_panel]);
+
+    // ── Save / Cancel buttons ───────────────────────────────────────
     let save_btn = anyui::Button::new("Save");
-    save_btn.set_position(280, 330);
+    save_btn.set_position(300, 398);
     save_btn.set_size(80, 30);
     content.add(&save_btn);
 
     let cancel_btn = anyui::Button::new("Cancel");
-    cancel_btn.set_position(370, 330);
+    cancel_btn.set_position(390, 398);
     cancel_btn.set_size(80, 30);
     content.add(&cancel_btn);
 
     win.add(&content);
 
-    // Wire up RAM slider value display.
+    // ── Wire up callbacks ───────────────────────────────────────────
+
+    // RAM slider value display.
     let ram_val_id = ram_value_label.id();
     ram_slider.on_value_changed(move |e| {
         let ram_mb = 16 + (e.value as u32) * 496 / 100;
@@ -1810,7 +2079,7 @@ fn open_settings_dialog() {
         anyui::Control::from_id(ram_val_id).set_text(s);
     });
 
-    // Browse for disk image: open existing file dialog.
+    // Browse for disk image.
     let disk_field_id = disk_field.id();
     disk_browse.on_click(move |_| {
         if let Some(path) = anyui::FileDialog::open_file() {
@@ -1818,12 +2087,12 @@ fn open_settings_dialog() {
         }
     });
 
-    // Create new disk image: open the create-disk dialog.
+    // Create new disk image.
     disk_create.on_click(move |_| {
         open_create_disk_dialog(disk_field_id);
     });
 
-    // Browse for ISO: open existing file dialog.
+    // Browse for ISO.
     let iso_field_id = iso_field.id();
     iso_browse.on_click(move |_| {
         if let Some(path) = anyui::FileDialog::open_file() {
@@ -1831,29 +2100,41 @@ fn open_settings_dialog() {
         }
     });
 
-    // Save button handler.
+    // Save button.
     save_btn.on_click(|_| {
         save_settings();
     });
 
-    // Cancel button handler.
+    // Cancel button.
     cancel_btn.on_click(|_| {
         close_settings_dialog();
     });
 
-    // Close window handler.
+    // Close window.
     win.on_close(|_| {
         close_settings_dialog();
     });
 
     a.settings = Some(SettingsDialog {
         win,
+        // General
         name_field,
         ram_slider,
         ram_value_label,
+        ram_alloc_seg,
+        bios_seg,
+        jit_toggle,
+        // Devices
+        gpu_seg,
+        net_toggle,
+        net_mode_seg,
+        net_host_field,
+        mac_mode_seg,
+        mac_field,
+        // Boot
+        boot_seg,
         disk_field,
         iso_field,
-        boot_seg,
     });
 }
 
@@ -1866,32 +2147,66 @@ fn save_settings() {
     }
 
     if let Some(ref dlg) = a.settings {
-        // Read name.
+        // ── General tab ──
         let mut name_buf = [0u8; 64];
         let name_len = dlg.name_field.get_text(&mut name_buf);
         let name = bytes_to_string(&name_buf[..name_len as usize]);
 
-        // Read RAM from slider position.
         let slider_val = dlg.ram_slider.get_state();
         let ram_mb = 16 + (slider_val as u32) * 496 / 100;
         let ram_mb = ((ram_mb + 8) / 16) * 16;
 
-        // Read disk path.
-        let mut disk_buf = [0u8; 256];
-        let disk_len = dlg.disk_field.get_text(&mut disk_buf);
-        let disk_image = bytes_to_string(&disk_buf[..disk_len as usize]);
+        let ram_alloc = match dlg.ram_alloc_seg.get_state() {
+            1 => RamAlloc::Preallocate,
+            _ => RamAlloc::OnDemand,
+        };
 
-        // Read ISO path.
-        let mut iso_buf = [0u8; 256];
-        let iso_len = dlg.iso_field.get_text(&mut iso_buf);
-        let iso_image = bytes_to_string(&iso_buf[..iso_len as usize]);
+        let bios_type = match dlg.bios_seg.get_state() {
+            1 => BiosType::SeaBios,
+            _ => BiosType::CoreVm,
+        };
 
-        // Read boot order.
+        let jit_enabled = dlg.jit_toggle.get_state() != 0;
+
+        // ── Devices tab ──
+        let gpu_type = match dlg.gpu_seg.get_state() {
+            _ => GpuType::SvgaFb,
+        };
+
+        let net_enabled = dlg.net_toggle.get_state() != 0;
+
+        let net_mode = match dlg.net_mode_seg.get_state() {
+            1 => NetMode::Bridge,
+            _ => NetMode::Nat,
+        };
+
+        let mut nic_buf = [0u8; 64];
+        let nic_len = dlg.net_host_field.get_text(&mut nic_buf);
+        let net_host_nic = bytes_to_string(&nic_buf[..nic_len as usize]);
+
+        let mac_mode = match dlg.mac_mode_seg.get_state() {
+            1 => MacMode::Static,
+            _ => MacMode::Dynamic,
+        };
+
+        let mut mac_buf = [0u8; 32];
+        let mac_len = dlg.mac_field.get_text(&mut mac_buf);
+        let mac_address = bytes_to_string(&mac_buf[..mac_len as usize]);
+
+        // ── Boot tab ──
         let boot_order = match dlg.boot_seg.get_state() {
             1 => BootOrder::CdFirst,
             2 => BootOrder::FloppyFirst,
             _ => BootOrder::DiskFirst,
         };
+
+        let mut disk_buf = [0u8; 256];
+        let disk_len = dlg.disk_field.get_text(&mut disk_buf);
+        let disk_image = bytes_to_string(&disk_buf[..disk_len as usize]);
+
+        let mut iso_buf = [0u8; 256];
+        let iso_len = dlg.iso_field.get_text(&mut iso_buf);
+        let iso_image = bytes_to_string(&iso_buf[..iso_len as usize]);
 
         // Apply to the selected VM config.
         let config = &mut a.vms[a.selected_vm].config;
@@ -1899,9 +2214,18 @@ fn save_settings() {
             config.name = name;
         }
         config.ram_mb = ram_mb.max(16).min(512);
+        config.ram_alloc = ram_alloc;
+        config.bios_type = bios_type;
+        config.jit_enabled = jit_enabled;
+        config.gpu_type = gpu_type;
+        config.net_enabled = net_enabled;
+        config.net_mode = net_mode;
+        config.net_host_nic = net_host_nic;
+        config.mac_mode = mac_mode;
+        config.mac_address = mac_address;
+        config.boot_order = boot_order;
         config.disk_image = disk_image;
         config.iso_image = iso_image;
-        config.boot_order = boot_order;
 
         // Persist and refresh UI.
         save_vm_config(config);

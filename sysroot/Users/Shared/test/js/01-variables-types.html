@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: Variables and Types</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">01 - Variables and Types</h1>
+
+<div class="test-group">
+  <h2>Variable Declaration and Type Tests</h2>
+  <div class="expected">Expected: All tests should show PASS, verifying variable declarations, primitive types, typeof, and type coercion.</div>
+  <div class="test-area" id="results"></div>
+</div>
+
+<script>
+function test(name, fn) {
+  var resultDiv = document.getElementById('results');
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// --- var declaration and assignment ---
+test('var declaration and assignment', function() {
+  var x = 42;
+  return x === 42;
+});
+
+test('var reassignment', function() {
+  var x = 10;
+  x = 20;
+  return x === 20;
+});
+
+test('var without initializer is undefined', function() {
+  var x;
+  return x === undefined;
+});
+
+// --- let and const ---
+test('let declaration and block scope', function() {
+  let a = 5;
+  if (true) {
+    let b = 10;
+    a = a + b;
+  }
+  return a === 15;
+});
+
+test('const declaration (cannot reassign)', function() {
+  const PI = 3.14159;
+  try {
+    PI = 3;
+    return false;
+  } catch(e) {
+    return PI === 3.14159;
+  }
+});
+
+// --- Number type ---
+test('Number: integer', function() {
+  var n = 42;
+  return typeof n === 'number' && n === 42;
+});
+
+test('Number: float', function() {
+  var n = 3.14;
+  return typeof n === 'number' && n > 3.13 && n < 3.15;
+});
+
+test('Number: NaN', function() {
+  var n = NaN;
+  return isNaN(n) && typeof n === 'number';
+});
+
+test('Number: NaN is not equal to itself', function() {
+  return NaN !== NaN;
+});
+
+test('Number: Infinity', function() {
+  var n = Infinity;
+  return n === Infinity && typeof n === 'number';
+});
+
+test('Number: negative Infinity', function() {
+  return -Infinity === -Infinity && 1 / 0 === Infinity;
+});
+
+// --- String type ---
+test('String: double quotes', function() {
+  var s = "hello";
+  return typeof s === 'string' && s === "hello";
+});
+
+test('String: single quotes', function() {
+  var s = 'world';
+  return typeof s === 'string' && s === 'world';
+});
+
+test('String: length property', function() {
+  return "hello".length === 5;
+});
+
+// --- Boolean type ---
+test('Boolean: true', function() {
+  var b = true;
+  return typeof b === 'boolean' && b === true;
+});
+
+test('Boolean: false', function() {
+  var b = false;
+  return typeof b === 'boolean' && b === false;
+});
+
+// --- null and undefined ---
+test('null value', function() {
+  var x = null;
+  return x === null;
+});
+
+test('typeof null is "object" (JS quirk)', function() {
+  return typeof null === 'object';
+});
+
+test('undefined value', function() {
+  var x = undefined;
+  return x === undefined;
+});
+
+test('typeof undefined is "undefined"', function() {
+  return typeof undefined === 'undefined';
+});
+
+// --- typeof operator ---
+test('typeof number', function() {
+  return typeof 42 === 'number';
+});
+
+test('typeof string', function() {
+  return typeof "hello" === 'string';
+});
+
+test('typeof boolean', function() {
+  return typeof true === 'boolean';
+});
+
+test('typeof function', function() {
+  return typeof function(){} === 'function';
+});
+
+test('typeof object', function() {
+  return typeof {} === 'object';
+});
+
+test('typeof array is "object"', function() {
+  return typeof [] === 'object';
+});
+
+// --- Type coercion ---
+test('Loose equality: "5" == 5', function() {
+  return "5" == 5;
+});
+
+test('Strict equality: "5" !== 5', function() {
+  return "5" !== 5;
+});
+
+test('String + Number concatenation: "5" + 3 === "53"', function() {
+  return ("5" + 3) === "53";
+});
+
+test('String - Number coercion: "5" - 3 === 2', function() {
+  return ("5" - 3) === 2;
+});
+
+test('Boolean to number: true + 1 === 2', function() {
+  return (true + 1) === 2;
+});
+
+test('null == undefined is true', function() {
+  return null == undefined;
+});
+
+test('null === undefined is false', function() {
+  return (null === undefined) === false;
+});
+
+// --- Template literals ---
+test('Template literal basic interpolation', function() {
+  var name = 'world';
+  var s = `hello ${name}`;
+  return s === 'hello world';
+});
+
+test('Template literal with expression', function() {
+  var a = 10;
+  var b = 20;
+  var s = `sum is ${a + b}`;
+  return s === 'sum is 30';
+});
+</script>
+</body>
+</html>

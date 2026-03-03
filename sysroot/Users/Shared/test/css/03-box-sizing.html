@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test 03: Box Sizing</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+    .measure-line {
+      width: 300px;
+      height: 2px;
+      background: #f39c12;
+      margin: 5px 0;
+    }
+    .label {
+      font-size: 12px;
+      color: #aaa;
+      margin: 2px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="nav"><a href="../index.html">Index</a></div>
+  <h1 class="page-title">CSS Test 03: Box Sizing (content-box vs border-box)</h1>
+
+  <!-- Test 1: Side-by-Side Comparison -->
+  <div class="test-group">
+    <h2>Test 1: content-box vs border-box (Same Declared Width)</h2>
+    <div class="expected">Expected: Both boxes declare width: 300px, padding: 20px, border: 5px solid. The CONTENT-BOX (top, red) total rendered width = 300 + 20+20 + 5+5 = 350px. The BORDER-BOX (bottom, blue) total rendered width = 300px (padding and border are included). The orange reference line is exactly 300px wide.</div>
+    <div class="test-area">
+      <p class="label">Reference line: 300px wide</p>
+      <div class="measure-line"></div>
+
+      <div style="box-sizing: content-box; width: 300px; padding: 20px; border: 5px solid #e74c3c; background: #c0392b; color: white; text-align: center; margin: 10px 0;">
+        content-box: width 300px<br>Total = 300 + 40 + 10 = 350px
+      </div>
+
+      <div class="measure-line"></div>
+
+      <div style="box-sizing: border-box; width: 300px; padding: 20px; border: 5px solid #3498db; background: #2980b9; color: white; text-align: center; margin: 10px 0;">
+        border-box: width 300px<br>Total = 300px (includes padding + border)
+      </div>
+
+      <div class="measure-line"></div>
+    </div>
+  </div>
+
+  <!-- Test 2: Same Visual Width -->
+  <div class="test-group">
+    <h2>Test 2: Making Both Boxes the Same Visual Width</h2>
+    <div class="expected">Expected: The content-box is set to width: 250px (so total = 250 + 40 + 10 = 300px). The border-box is set to width: 300px (total = 300px). Both should appear exactly the same width, aligned with the 300px reference line.</div>
+    <div class="test-area">
+      <p class="label">Reference line: 300px wide</p>
+      <div class="measure-line"></div>
+
+      <div style="box-sizing: content-box; width: 250px; padding: 20px; border: 5px solid #e74c3c; background: #c0392b; color: white; text-align: center; margin: 10px 0;">
+        content-box: width 250px (visual = 300px)
+      </div>
+
+      <div style="box-sizing: border-box; width: 300px; padding: 20px; border: 5px solid #3498db; background: #2980b9; color: white; text-align: center; margin: 10px 0;">
+        border-box: width 300px (visual = 300px)
+      </div>
+
+      <div class="measure-line"></div>
+    </div>
+  </div>
+
+  <!-- Test 3: Percentage Widths -->
+  <div class="test-group">
+    <h2>Test 3: Percentage Widths with Box Sizing</h2>
+    <div class="expected">Expected: Both boxes declare width: 50%. The content-box (red) at 50% width PLUS its padding and border will exceed 50% of the container. The border-box (blue) at 50% width includes padding and border, so it fits exactly within 50% of the container. The border-box should be visually narrower.</div>
+    <div class="test-area">
+      <div style="background: #1a1a2e; padding: 10px; border: 1px dashed #555;">
+        <div style="box-sizing: content-box; width: 50%; padding: 20px; border: 5px solid #e74c3c; background: #c0392b; color: white; text-align: center; margin: 10px 0; font-size: 13px;">
+          content-box: width 50% + padding 40px + border 10px (overflows 50%)
+        </div>
+
+        <div style="box-sizing: border-box; width: 50%; padding: 20px; border: 5px solid #3498db; background: #2980b9; color: white; text-align: center; margin: 10px 0; font-size: 13px;">
+          border-box: width 50% total (fits exactly)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 4: No Padding/Border (Identical) -->
+  <div class="test-group">
+    <h2>Test 4: No Padding or Border (Both Identical)</h2>
+    <div class="expected">Expected: When there is no padding or border, content-box and border-box behave identically. Both boxes should be exactly 300px wide.</div>
+    <div class="test-area">
+      <p class="label">Reference line: 300px wide</p>
+      <div class="measure-line"></div>
+
+      <div style="box-sizing: content-box; width: 300px; padding: 0; border: none; background: #e74c3c; color: white; text-align: center; margin: 5px 0; height: 40px; line-height: 40px;">
+        content-box: 300px (no padding/border)
+      </div>
+
+      <div style="box-sizing: border-box; width: 300px; padding: 0; border: none; background: #3498db; color: white; text-align: center; margin: 5px 0; height: 40px; line-height: 40px;">
+        border-box: 300px (no padding/border)
+      </div>
+
+      <div class="measure-line"></div>
+    </div>
+  </div>
+
+  <!-- Test 5: min-width and max-width -->
+  <div class="test-group">
+    <h2>Test 5: min-width and max-width with Box Sizing</h2>
+    <div class="expected">Expected: First box: width: 100px but min-width: 200px, so it renders at 200px. Second box: width: 500px but max-width: 300px, so it renders at 300px. Third box: border-box with width: 300px, min-width: 300px, padding: 20px -- the min-width should refer to the border-box width.</div>
+    <div class="test-area">
+      <p class="label">Reference line: 300px wide</p>
+      <div class="measure-line"></div>
+
+      <div style="box-sizing: border-box; width: 100px; min-width: 200px; padding: 10px; background: #e74c3c; color: white; text-align: center; margin: 5px 0;">
+        width: 100px, min-width: 200px (renders 200px)
+      </div>
+
+      <div style="box-sizing: border-box; width: 500px; max-width: 300px; padding: 10px; background: #3498db; color: white; text-align: center; margin: 5px 0;">
+        width: 500px, max-width: 300px (renders 300px)
+      </div>
+
+      <div style="box-sizing: border-box; width: 300px; min-width: 300px; padding: 20px; border: 3px solid #2ecc71; background: #27ae60; color: white; text-align: center; margin: 5px 0;">
+        border-box: w=300, min-w=300, pad=20, bdr=3
+      </div>
+
+      <div class="measure-line"></div>
+    </div>
+  </div>
+
+  <!-- Test 6: Height with Box Sizing -->
+  <div class="test-group">
+    <h2>Test 6: Height with Box Sizing</h2>
+    <div class="expected">Expected: Both boxes declare height: 100px, padding: 15px, border: 5px. The content-box (red) total height = 100 + 30 + 10 = 140px. The border-box (blue) total height = 100px. The border-box should be visibly shorter.</div>
+    <div class="test-area">
+      <div style="display: inline-block; vertical-align: top; margin-right: 20px;">
+        <p class="label">content-box height: 100px</p>
+        <div style="box-sizing: content-box; width: 200px; height: 100px; padding: 15px; border: 5px solid #e74c3c; background: #c0392b; color: white; text-align: center;">
+          Total height: 140px
+        </div>
+      </div>
+
+      <div style="display: inline-block; vertical-align: top;">
+        <p class="label">border-box height: 100px</p>
+        <div style="box-sizing: border-box; width: 200px; height: 100px; padding: 15px; border: 5px solid #3498db; background: #2980b9; color: white; text-align: center;">
+          Total height: 100px
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 7: Nested Containers -->
+  <div class="test-group">
+    <h2>Test 7: Nested Containers with border-box</h2>
+    <div class="expected">Expected: Outer box is 400px border-box with 20px padding and 2px border. Inner box is width: 100% border-box with 10px padding and 1px border. The inner box should fit exactly within the outer box's content area without overflowing.</div>
+    <div class="test-area">
+      <div style="box-sizing: border-box; width: 400px; padding: 20px; border: 2px solid #e74c3c; background: #2c3e50; margin: 5px 0;">
+        <p class="label" style="margin-top: 0;">Outer: 400px border-box, padding 20px</p>
+        <div style="box-sizing: border-box; width: 100%; padding: 10px; border: 1px solid #3498db; background: #34495e; color: white; text-align: center;">
+          Inner: width 100% border-box, padding 10px (fits perfectly)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 8: Large Padding in border-box -->
+  <div class="test-group">
+    <h2>Test 8: Large Padding Relative to Width (border-box)</h2>
+    <div class="expected">Expected: A border-box element with width: 200px and padding: 80px on each side. Total horizontal padding (160px) leaves only 40px for content. The box should still render at 200px wide total, with a very narrow content area.</div>
+    <div class="test-area">
+      <p class="label">Reference line: 200px wide</p>
+      <div style="width: 200px; height: 2px; background: #f39c12; margin: 5px 0;"></div>
+
+      <div style="box-sizing: border-box; width: 200px; padding: 80px; background: #8e44ad; color: white; text-align: center; margin: 5px 0; font-size: 11px;">
+        40px content
+      </div>
+
+      <div style="width: 200px; height: 2px; background: #f39c12; margin: 5px 0;"></div>
+    </div>
+  </div>
+
+</body>
+</html>

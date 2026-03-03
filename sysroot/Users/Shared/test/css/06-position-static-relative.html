@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test 06: Static and Relative Positioning</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+    .flow-box {
+      padding: 10px 15px;
+      margin: 5px;
+      color: white;
+      font-size: 13px;
+      border: 1px solid rgba(255,255,255,0.3);
+    }
+  </style>
+</head>
+<body>
+  <div class="nav"><a href="../index.html">Index</a></div>
+  <h1 class="page-title">CSS Test 06: Static and Relative Positioning</h1>
+
+  <!-- Test 1: position: static (Default) -->
+  <div class="test-group">
+    <h2>Test 1: position: static (Default Flow)</h2>
+    <div class="expected">Expected: Three block boxes stacked vertically in normal document flow. Each takes the full width and sits directly below the previous one. The top/left/right/bottom/z-index properties have NO effect on static elements. Box 2 has top: 50px set but it should NOT move.</div>
+    <div class="test-area">
+      <div class="flow-box" style="position: static; background: #e74c3c;">
+        Box 1: position: static (default)
+      </div>
+      <div class="flow-box" style="position: static; background: #3498db; top: 50px; left: 50px;">
+        Box 2: position: static + top: 50px, left: 50px (IGNORED, should NOT move)
+      </div>
+      <div class="flow-box" style="position: static; background: #2ecc71;">
+        Box 3: position: static (default)
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 2: position: relative with Offsets -->
+  <div class="test-group">
+    <h2>Test 2: position: relative with top/left Offsets</h2>
+    <div class="expected">Expected: Box 2 is relatively positioned with top: 20px and left: 30px. It should visually shift DOWN 20px and RIGHT 30px from its normal position. The original space it occupied in the flow is PRESERVED -- Box 3 stays in its normal position as if Box 2 had not moved.</div>
+    <div class="test-area">
+      <div class="flow-box" style="position: static; background: #e74c3c;">
+        Box 1: static (reference)
+      </div>
+      <div class="flow-box" style="position: relative; top: 20px; left: 30px; background: #3498db;">
+        Box 2: position: relative; top: 20px; left: 30px (shifted from original spot)
+      </div>
+      <div class="flow-box" style="position: static; background: #2ecc71;">
+        Box 3: static (position unchanged, gap remains where Box 2 was)
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 3: Negative Offsets -->
+  <div class="test-group">
+    <h2>Test 3: position: relative with Negative Offsets</h2>
+    <div class="expected">Expected: Box 2 has top: -15px and left: -10px. It shifts UP 15px and LEFT 10px from its normal position, overlapping Box 1 and extending beyond the container's left padding. The original space in the flow is still preserved.</div>
+    <div class="test-area" style="overflow: visible;">
+      <div class="flow-box" style="position: static; background: #e74c3c;">
+        Box 1: static (reference)
+      </div>
+      <div class="flow-box" style="position: relative; top: -15px; left: -10px; background: #3498db;">
+        Box 2: relative; top: -15px; left: -10px (shifts up and left, overlaps Box 1)
+      </div>
+      <div class="flow-box" style="position: static; background: #2ecc71;">
+        Box 3: static (gap preserved above)
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 4: Original Space Preserved -->
+  <div class="test-group">
+    <h2>Test 4: Relative Positioning Preserves Original Space</h2>
+    <div class="expected">Expected: Box B is moved far away (top: 60px, left: 100px) but its original space between Box A and Box C is preserved. There should be a visible empty gap between A and C where B normally would be. B appears visually displaced but the layout is unchanged.</div>
+    <div class="test-area">
+      <div class="flow-box" style="position: static; background: #e74c3c;">
+        Box A: static
+      </div>
+      <div class="flow-box" style="position: relative; top: 60px; left: 100px; background: #f39c12;">
+        Box B: relative; top: 60px; left: 100px (far from origin but space kept)
+      </div>
+      <div class="flow-box" style="position: static; background: #2ecc71;">
+        Box C: static (gap above is where B was in normal flow)
+      </div>
+      <div class="flow-box" style="position: static; background: #9b59b6;">
+        Box D: static
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 5: Relative + z-index -->
+  <div class="test-group">
+    <h2>Test 5: Relative Positioning with z-index (Layering)</h2>
+    <div class="expected">Expected: Three overlapping boxes using relative positioning. Box 1 (red) z-index: 1. Box 2 (blue) z-index: 3 (on top). Box 3 (green) z-index: 2 (between). Box 2 should be visually on top of all others. The z-index only works on positioned elements (not static).</div>
+    <div class="test-area">
+      <div class="flow-box" style="position: relative; z-index: 1; background: #e74c3c; width: 200px; height: 60px;">
+        Box 1: z-index: 1 (bottom)
+      </div>
+      <div class="flow-box" style="position: relative; z-index: 3; background: #3498db; width: 200px; height: 60px; top: -30px; left: 30px;">
+        Box 2: z-index: 3 (top)
+      </div>
+      <div class="flow-box" style="position: relative; z-index: 2; background: #2ecc71; width: 200px; height: 60px; top: -60px; left: 60px;">
+        Box 3: z-index: 2 (middle)
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 6: z-index on Static Elements (No Effect) -->
+  <div class="test-group">
+    <h2>Test 6: z-index on Static Elements (No Effect)</h2>
+    <div class="expected">Expected: Box 1 has position: static with z-index: 999 -- the z-index should be IGNORED because z-index only applies to positioned elements. Box 2 (relative, z-index: 1) should still overlap Box 1 when it shifts up, appearing on top despite the lower z-index number.</div>
+    <div class="test-area">
+      <div class="flow-box" style="position: static; z-index: 999; background: #e74c3c; width: 200px; height: 50px;">
+        Box 1: static, z-index: 999 (ignored!)
+      </div>
+      <div class="flow-box" style="position: relative; z-index: 1; background: #3498db; width: 200px; height: 50px; top: -25px; left: 20px;">
+        Box 2: relative, z-index: 1 (appears on top)
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 7: Relative Position with bottom/right -->
+  <div class="test-group">
+    <h2>Test 7: Using bottom and right Offsets</h2>
+    <div class="expected">Expected: "bottom: 20px" moves the element UP by 20px (opposite of top). "right: 30px" moves it LEFT by 30px (opposite of left). Box 2 should shift UP and LEFT from its normal position.</div>
+    <div class="test-area">
+      <div class="flow-box" style="position: static; background: #e74c3c;">
+        Box 1: static (reference)
+      </div>
+      <div class="flow-box" style="position: relative; bottom: 20px; right: 30px; background: #3498db;">
+        Box 2: relative; bottom: 20px; right: 30px (shifts up 20px and left 30px)
+      </div>
+      <div class="flow-box" style="position: static; background: #2ecc71;">
+        Box 3: static (normal flow position)
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 8: Inline Element with Relative Position -->
+  <div class="test-group">
+    <h2>Test 8: Relative Positioning on Inline Elements</h2>
+    <div class="expected">Expected: The highlighted word "shifted" should be visually displaced (down 5px, right 10px) from its normal inline position, but the surrounding text should not reflow -- the space for the word should remain in the text line.</div>
+    <div class="test-area">
+      <p style="font-size: 16px; line-height: 2;">
+        This is normal text with a
+        <span style="position: relative; top: 5px; left: 10px; background: #e74c3c; padding: 2px 6px;">shifted</span>
+        word in the middle. Notice the gap where the word was originally positioned, while the word itself appears displaced.
+      </p>
+    </div>
+  </div>
+
+  <!-- Test 9: Nested Relative Positioning -->
+  <div class="test-group">
+    <h2>Test 9: Nested Relative Positioning</h2>
+    <div class="expected">Expected: Outer box is relative with top: 20px, left: 20px. Inner box is relative with top: 10px, left: 10px. The inner box shifts relative to its own normal position (which is already inside the shifted outer box). Total visual offset of inner content from original flow: approximately 30px down and 30px right.</div>
+    <div class="test-area">
+      <div class="flow-box" style="position: static; background: #555; width: 300px;">
+        Reference: static box
+      </div>
+      <div class="flow-box" style="position: relative; top: 20px; left: 20px; background: #e74c3c; width: 300px;">
+        Outer: relative top:20 left:20
+        <div class="flow-box" style="position: relative; top: 10px; left: 10px; background: #3498db;">
+          Inner: relative top:10 left:10 (shifts relative to its own normal position)
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

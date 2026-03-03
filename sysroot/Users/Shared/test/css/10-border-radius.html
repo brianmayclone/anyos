@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test 10: Border Radius</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+    .radius-box {
+      display: inline-block;
+      color: white;
+      font-size: 11px;
+      text-align: center;
+      margin: 8px;
+      vertical-align: top;
+    }
+    .label-sm {
+      font-size: 11px;
+      color: #aaa;
+      text-align: center;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="nav"><a href="../index.html">Index</a></div>
+  <h1 class="page-title">CSS Test 10: Border Radius</h1>
+
+  <!-- Test 1: Uniform Border Radius -->
+  <div class="test-group">
+    <h2>Test 1: Uniform border-radius (All Corners Same)</h2>
+    <div class="expected">Expected: Four boxes with increasing border-radius values: 0px (sharp corners), 5px (slight rounding), 15px (noticeable rounding), 30px (very rounded). All four corners of each box should be equally rounded.</div>
+    <div class="test-area">
+      <div class="radius-box" style="width: 120px; height: 80px; line-height: 80px; background: #e74c3c; border-radius: 0px;">
+        0px
+      </div>
+      <div class="radius-box" style="width: 120px; height: 80px; line-height: 80px; background: #3498db; border-radius: 5px;">
+        5px
+      </div>
+      <div class="radius-box" style="width: 120px; height: 80px; line-height: 80px; background: #2ecc71; border-radius: 15px;">
+        15px
+      </div>
+      <div class="radius-box" style="width: 120px; height: 80px; line-height: 80px; background: #f39c12; border-radius: 30px;">
+        30px
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 2: Different Radius Per Corner (4 Values) -->
+  <div class="test-group">
+    <h2>Test 2: Different Radius Per Corner (4 Values)</h2>
+    <div class="expected">Expected: border-radius with 4 values applies to: top-left, top-right, bottom-right, bottom-left (clockwise from top-left). First box: 20px 0 0 0 (only top-left rounded). Second box: 0 20px 0 20px (top-right and bottom-left). Third box: 30px 10px 30px 10px (diagonal pair pattern). Fourth box: 5px 15px 25px 35px (all different).</div>
+    <div class="test-area">
+      <div class="radius-box" style="width: 120px; height: 80px; background: #e74c3c; border-radius: 20px 0 0 0;">
+        <div style="padding-top: 25px;">20px 0 0 0<br>(top-left only)</div>
+      </div>
+      <div class="radius-box" style="width: 120px; height: 80px; background: #3498db; border-radius: 0 20px 0 20px;">
+        <div style="padding-top: 25px;">0 20 0 20<br>(TR + BL)</div>
+      </div>
+      <div class="radius-box" style="width: 120px; height: 80px; background: #2ecc71; border-radius: 30px 10px 30px 10px;">
+        <div style="padding-top: 25px;">30 10 30 10<br>(diagonal)</div>
+      </div>
+      <div class="radius-box" style="width: 120px; height: 80px; background: #f39c12; border-radius: 5px 15px 25px 35px;">
+        <div style="padding-top: 25px;">5 15 25 35<br>(all different)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 3: Circle (50% on Square) -->
+  <div class="test-group">
+    <h2>Test 3: border-radius: 50% (Circle from Square)</h2>
+    <div class="expected">Expected: A perfect circle. When border-radius: 50% is applied to a square element (equal width and height), all corners are fully rounded, producing a circle. The three circles should be 60px, 100px, and 140px diameter respectively.</div>
+    <div class="test-area">
+      <div class="radius-box" style="width: 60px; height: 60px; line-height: 60px; background: #e74c3c; border-radius: 50%;">
+        60px
+      </div>
+      <div class="radius-box" style="width: 100px; height: 100px; line-height: 100px; background: #3498db; border-radius: 50%;">
+        100px
+      </div>
+      <div class="radius-box" style="width: 140px; height: 140px; line-height: 140px; background: #2ecc71; border-radius: 50%;">
+        140px
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 4: Pill Shape (50% on Rectangle) -->
+  <div class="test-group">
+    <h2>Test 4: Pill Shape (50% or Large Radius on Rectangle)</h2>
+    <div class="expected">Expected: When border-radius: 50% is applied to a rectangle (width != height), the result is an ellipse/pill shape. Alternatively, using a very large pixel value (e.g., 999px) on a rectangle produces a pill with fully rounded short sides. Both approaches should produce a smooth capsule/pill shape.</div>
+    <div class="test-area">
+      <div class="radius-box" style="width: 200px; height: 50px; line-height: 50px; background: #e74c3c; border-radius: 50%;">
+        50% on rect (ellipse)
+      </div>
+      <div class="radius-box" style="width: 200px; height: 50px; line-height: 50px; background: #3498db; border-radius: 999px;">
+        999px on rect (pill)
+      </div>
+      <div class="radius-box" style="width: 200px; height: 50px; line-height: 50px; background: #2ecc71; border-radius: 25px;">
+        25px (half height = pill)
+      </div>
+      <div class="radius-box" style="width: 300px; height: 40px; line-height: 40px; background: #9b59b6; border-radius: 20px;">
+        20px radius on 300x40 (pill)
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 5: Individual Corner Properties -->
+  <div class="test-group">
+    <h2>Test 5: Individual Corner Properties</h2>
+    <div class="expected">Expected: Each box has only ONE corner rounded using the individual property. border-top-left-radius (red), border-top-right-radius (blue), border-bottom-right-radius (green), border-bottom-left-radius (orange). Only the specified corner should be rounded; the other three should be sharp 90-degree angles.</div>
+    <div class="test-area">
+      <div class="radius-box" style="width: 120px; height: 80px; background: #e74c3c; border-top-left-radius: 25px;">
+        <div style="padding-top: 25px;">top-left<br>25px</div>
+      </div>
+      <div class="radius-box" style="width: 120px; height: 80px; background: #3498db; border-top-right-radius: 25px;">
+        <div style="padding-top: 25px;">top-right<br>25px</div>
+      </div>
+      <div class="radius-box" style="width: 120px; height: 80px; background: #2ecc71; border-bottom-right-radius: 25px;">
+        <div style="padding-top: 25px;">bottom-right<br>25px</div>
+      </div>
+      <div class="radius-box" style="width: 120px; height: 80px; background: #f39c12; border-bottom-left-radius: 25px;">
+        <div style="padding-top: 25px;">bottom-left<br>25px</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 6: Border Radius with Visible Borders -->
+  <div class="test-group">
+    <h2>Test 6: Border Radius with Borders</h2>
+    <div class="expected">Expected: Boxes with both border-radius and visible borders. The border line should follow the curved path of the radius. First: thin solid border with radius. Second: thick solid border with radius. Third: dashed border with radius. Fourth: different colors per side with radius.</div>
+    <div class="test-area">
+      <div class="radius-box" style="width: 130px; height: 80px; background: #2c3e50; border: 1px solid #e74c3c; border-radius: 15px;">
+        <div style="padding-top: 20px;">1px solid<br>radius: 15px</div>
+      </div>
+      <div class="radius-box" style="width: 130px; height: 80px; background: #2c3e50; border: 4px solid #3498db; border-radius: 15px;">
+        <div style="padding-top: 18px;">4px solid<br>radius: 15px</div>
+      </div>
+      <div class="radius-box" style="width: 130px; height: 80px; background: #2c3e50; border: 3px dashed #2ecc71; border-radius: 15px;">
+        <div style="padding-top: 18px;">3px dashed<br>radius: 15px</div>
+      </div>
+      <div class="radius-box" style="width: 130px; height: 80px; background: #2c3e50; border-top: 3px solid #e74c3c; border-right: 3px solid #3498db; border-bottom: 3px solid #2ecc71; border-left: 3px solid #f39c12; border-radius: 15px;">
+        <div style="padding-top: 18px;">multi-color<br>radius: 15px</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 7: Large Border Radius Values -->
+  <div class="test-group">
+    <h2>Test 7: Large Border Radius Values (Clamping)</h2>
+    <div class="expected">Expected: When the border-radius exceeds half the element's width or height, the browser clamps it. A 100x100 box with border-radius: 200px should look identical to border-radius: 50% (a circle). Both should render as perfect circles with no visual difference.</div>
+    <div class="test-area">
+      <div class="radius-box" style="width: 100px; height: 100px; line-height: 100px; background: #e74c3c; border-radius: 200px;">
+        r: 200px
+      </div>
+      <div class="radius-box" style="width: 100px; height: 100px; line-height: 100px; background: #3498db; border-radius: 50%;">
+        r: 50%
+      </div>
+      <div class="radius-box" style="width: 100px; height: 100px; line-height: 100px; background: #2ecc71; border-radius: 9999px;">
+        r: 9999px
+      </div>
+      <p class="label-sm" style="text-align: left; margin-left: 8px;">All three should look identical (perfect circles).</p>
+    </div>
+  </div>
+
+  <!-- Test 8: Border Radius on Different Shapes -->
+  <div class="test-group">
+    <h2>Test 8: Border Radius on Various Aspect Ratios</h2>
+    <div class="expected">Expected: Applying 50% border-radius to elements with different aspect ratios. Tall rectangle becomes a vertical ellipse. Wide rectangle becomes a horizontal ellipse. Square becomes a circle. Very wide becomes a thin ellipse.</div>
+    <div class="test-area">
+      <div class="radius-box" style="width: 60px; height: 120px; line-height: 120px; background: #e74c3c; border-radius: 50%;">tall</div>
+      <div class="radius-box" style="width: 120px; height: 120px; line-height: 120px; background: #3498db; border-radius: 50%;">square</div>
+      <div class="radius-box" style="width: 200px; height: 80px; line-height: 80px; background: #2ecc71; border-radius: 50%;">wide</div>
+      <div class="radius-box" style="width: 300px; height: 40px; line-height: 40px; background: #f39c12; border-radius: 50%;">very wide</div>
+    </div>
+  </div>
+
+  <!-- Test 9: Border Radius with Background Only (No Border) -->
+  <div class="test-group">
+    <h2>Test 9: Border Radius Without Border (Background Clipping)</h2>
+    <div class="expected">Expected: border-radius clips the background even when no border is set. The background color should be clipped to the rounded shape. First: rounded rectangle with no border. Second: circle with no border. Third: pill with no border. The edges should be smooth and curved.</div>
+    <div class="test-area">
+      <div class="radius-box" style="width: 150px; height: 80px; background: #e74c3c; border: none; border-radius: 20px;">
+        <div style="padding-top: 25px;">No border<br>radius: 20px</div>
+      </div>
+      <div class="radius-box" style="width: 100px; height: 100px; line-height: 100px; background: #3498db; border: none; border-radius: 50%;">
+        Circle
+      </div>
+      <div class="radius-box" style="width: 180px; height: 50px; line-height: 50px; background: #2ecc71; border: none; border-radius: 25px;">
+        Pill shape
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 10: Practical UI Examples -->
+  <div class="test-group">
+    <h2>Test 10: Practical UI Examples with Border Radius</h2>
+    <div class="expected">Expected: Real-world UI elements using border-radius. A rounded button, a circular avatar placeholder, a notification badge, and a rounded card. Each demonstrates a practical application of border-radius in UI design.</div>
+    <div class="test-area">
+      <div style="margin: 10px;">
+        <span class="label-sm">Button:</span>
+        <div class="radius-box" style="width: 120px; height: 36px; line-height: 36px; background: #3498db; border-radius: 6px; cursor: pointer;">
+          Click Me
+        </div>
+      </div>
+      <div style="margin: 10px;">
+        <span class="label-sm">Avatar:</span>
+        <div class="radius-box" style="width: 50px; height: 50px; line-height: 50px; background: #e74c3c; border-radius: 50%; font-size: 18px; font-weight: bold;">
+          AB
+        </div>
+      </div>
+      <div style="margin: 10px;">
+        <span class="label-sm">Badge:</span>
+        <div class="radius-box" style="width: 24px; height: 24px; line-height: 24px; background: #e74c3c; border-radius: 50%; font-size: 12px; font-weight: bold;">
+          3
+        </div>
+      </div>
+      <div style="margin: 10px;">
+        <span class="label-sm">Tag/Chip:</span>
+        <div class="radius-box" style="padding: 4px 14px; height: 28px; line-height: 28px; background: #2c3e50; border: 1px solid #3498db; border-radius: 14px;">
+          Technology
+        </div>
+      </div>
+      <div style="margin: 10px;">
+        <span class="label-sm">Card:</span>
+        <div style="display: inline-block; width: 200px; background: #2c3e50; border-radius: 12px; overflow: hidden; vertical-align: top;">
+          <div style="height: 60px; background: #3498db;"></div>
+          <div style="padding: 10px; font-size: 13px;">
+            <p style="margin: 0 0 5px 0; font-weight: bold;">Card Title</p>
+            <p style="margin: 0; color: #aaa; font-size: 11px;">Rounded corners with overflow: hidden clips child content.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

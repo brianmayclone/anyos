@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test 03: Text Formatting (Inline Elements)</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="../index.html">Back to Index</a>
+    <a href="02-paragraphs.html">Prev: Paragraphs</a>
+    <a href="04-lists.html">Next: Lists</a>
+  </div>
+
+  <h1 class="page-title">Test 03: Text Formatting (Inline Elements)</h1>
+
+  <!-- Test 1: Bold -->
+  <div class="test-group">
+    <h2>Test 3.1: Bold Text (strong and b)</h2>
+    <div class="expected">Expected: Both strong and b should render text in bold weight. They should be inline (not breaking the line). Semantically strong implies importance; b is purely visual.</div>
+    <div class="test-area">
+      <p>This is <strong>strong text</strong> in a sentence.</p>
+      <p>This is <b>bold text</b> in a sentence.</p>
+      <p>Normal, <strong>strong</strong>, normal, <b>bold</b>, normal.</p>
+    </div>
+  </div>
+
+  <!-- Test 2: Italic -->
+  <div class="test-group">
+    <h2>Test 3.2: Italic Text (em and i)</h2>
+    <div class="expected">Expected: Both em and i should render text in italic style. They should be inline. Semantically em implies emphasis; i is purely visual.</div>
+    <div class="test-area">
+      <p>This is <em>emphasized text</em> in a sentence.</p>
+      <p>This is <i>italic text</i> in a sentence.</p>
+      <p>Normal, <em>emphasized</em>, normal, <i>italic</i>, normal.</p>
+    </div>
+  </div>
+
+  <!-- Test 3: Underline and Strikethrough -->
+  <div class="test-group">
+    <h2>Test 3.3: Underline (u) and Strikethrough (s, del)</h2>
+    <div class="expected">Expected: u renders with an underline decoration. s and del render with a line through the middle of the text (strikethrough).</div>
+    <div class="test-area">
+      <p>This is <u>underlined text</u> in a sentence.</p>
+      <p>This is <s>strikethrough text</s> in a sentence.</p>
+      <p>This is <del>deleted text</del> in a sentence.</p>
+      <p><u>Underline</u> vs <s>strikethrough</s> vs <del>deleted</del>.</p>
+    </div>
+  </div>
+
+  <!-- Test 4: Code, kbd, samp, var -->
+  <div class="test-group">
+    <h2>Test 3.4: Code-Related Inline Elements</h2>
+    <div class="expected">Expected: code, kbd, and samp should render in a monospace font. var should render in italic. All should be inline.</div>
+    <div class="test-area">
+      <p>Inline code: <code>let x = 42;</code></p>
+      <p>Keyboard input: Press <kbd>Ctrl</kbd>+<kbd>C</kbd> to copy.</p>
+      <p>Sample output: <samp>Error: file not found</samp></p>
+      <p>Variable: The variable <var>x</var> is defined as <var>y</var> + 1.</p>
+    </div>
+  </div>
+
+  <!-- Test 5: mark, small -->
+  <div class="test-group">
+    <h2>Test 3.5: Highlight (mark) and Small Text</h2>
+    <div class="expected">Expected: mark should render with a yellow/highlighted background. small should render text at a smaller font size than surrounding text.</div>
+    <div class="test-area">
+      <p>This sentence has <mark>highlighted text</mark> in the middle.</p>
+      <p>This sentence has <small>smaller text</small> in the middle.</p>
+      <p>Normal text, <mark>marked</mark>, then <small>small</small>, then normal.</p>
+    </div>
+  </div>
+
+  <!-- Test 6: Subscript and Superscript -->
+  <div class="test-group">
+    <h2>Test 3.6: Subscript (sub) and Superscript (sup)</h2>
+    <div class="expected">Expected: sub should render text smaller and below the baseline. sup should render text smaller and above the baseline. Neither should significantly alter line height.</div>
+    <div class="test-area">
+      <p>Water formula: H<sub>2</sub>O</p>
+      <p>Footnote reference: According to the study<sup>1</sup>, results were significant<sup>2</sup>.</p>
+      <p>Mathematical: x<sup>2</sup> + y<sup>2</sup> = z<sup>2</sup></p>
+      <p>Chemical: C<sub>6</sub>H<sub>12</sub>O<sub>6</sub> (glucose)</p>
+      <p>Combined: A<sub>i</sub><sup>j</sup> tensor notation</p>
+    </div>
+  </div>
+
+  <!-- Test 7: abbr, cite, dfn, q -->
+  <div class="test-group">
+    <h2>Test 3.7: abbr, cite, dfn, q</h2>
+    <div class="expected">Expected: abbr may show a dotted underline (hover shows title). cite and dfn should render in italic. q should render with quotation marks automatically added by the browser.</div>
+    <div class="test-area">
+      <p>The <abbr title="World Wide Web">WWW</abbr> was invented by Tim Berners-Lee.</p>
+      <p>The book <cite>The Art of Computer Programming</cite> by Donald Knuth.</p>
+      <p>A <dfn>browser</dfn> is a program for viewing web pages.</p>
+      <p>She said <q>Hello, world!</q> and then left.</p>
+      <p>Nested quotes: <q>He told me <q>it works fine</q> but I disagree.</q></p>
+    </div>
+  </div>
+
+  <!-- Test 8: del and ins -->
+  <div class="test-group">
+    <h2>Test 3.8: Deleted (del) and Inserted (ins) Text</h2>
+    <div class="expected">Expected: del should render with a strikethrough line. ins should render with an underline. Together they can show editorial changes.</div>
+    <div class="test-area">
+      <p>The price is <del>$50.00</del> <ins>$39.99</ins>!</p>
+      <p>We will meet on <del>Tuesday</del> <ins>Wednesday</ins> at 3pm.</p>
+      <p><del>This entire sentence has been deleted.</del></p>
+      <p><ins>This entire sentence has been inserted.</ins></p>
+    </div>
+  </div>
+
+  <!-- Test 9: Nested combinations -->
+  <div class="test-group">
+    <h2>Test 3.9: Nested Inline Combinations</h2>
+    <div class="expected">Expected: Multiple inline styles should combine. Bold+italic should show both. Bold+underline+code should show bold monospace underlined text. All combinations should render correctly.</div>
+    <div class="test-area">
+      <p><strong><em>Bold and italic</em></strong></p>
+      <p><strong><u>Bold and underlined</u></strong></p>
+      <p><em><u>Italic and underlined</u></em></p>
+      <p><strong><em><u>Bold, italic, and underlined</u></em></strong></p>
+      <p><strong><code>Bold code</code></strong></p>
+      <p><em><code>Italic code</code></em></p>
+      <p><u><code>Underlined code</code></u></p>
+      <p><strong><em><code>Bold italic code</code></em></strong></p>
+      <p><mark><strong>Bold highlighted</strong></mark></p>
+      <p><del><em>Deleted italic text</em></del></p>
+    </div>
+  </div>
+
+  <!-- Test 10: All inline elements in one paragraph -->
+  <div class="test-group">
+    <h2>Test 3.10: All Inline Elements in One Paragraph</h2>
+    <div class="expected">Expected: Every inline element listed should render with its correct styling within a single paragraph. The text should flow continuously without breaking into separate lines.</div>
+    <div class="test-area">
+      <p>
+        Normal text,
+        <strong>strong</strong>,
+        <b>bold</b>,
+        <em>emphasized</em>,
+        <i>italic</i>,
+        <u>underlined</u>,
+        <s>strikethrough</s>,
+        <code>code</code>,
+        <mark>marked</mark>,
+        <small>small</small>,
+        <sub>sub</sub>script,
+        <sup>sup</sup>erscript,
+        <kbd>kbd</kbd>,
+        <samp>samp</samp>,
+        <var>var</var>,
+        <abbr title="abbreviation">abbr</abbr>,
+        <cite>cite</cite>,
+        <dfn>dfn</dfn>,
+        <q>quoted</q>,
+        <del>deleted</del>,
+        <ins>inserted</ins>,
+        and normal again.
+      </p>
+    </div>
+  </div>
+
+</body>
+</html>

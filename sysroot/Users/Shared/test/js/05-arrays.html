@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: Arrays</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">05 - Arrays</h1>
+
+<div class="test-group">
+  <h2>Array Creation and Basic Operations</h2>
+  <div class="expected">Expected: Array creation, length, push/pop/shift/unshift all work correctly.</div>
+  <div class="test-area" id="basic-results"></div>
+</div>
+
+<div class="test-group">
+  <h2>Array Search and Manipulation</h2>
+  <div class="expected">Expected: indexOf, splice, slice, concat, join, and includes all return correct values.</div>
+  <div class="test-area" id="search-results"></div>
+</div>
+
+<div class="test-group">
+  <h2>Array Higher-Order Methods</h2>
+  <div class="expected">Expected: map, filter, reduce, forEach, find, some, every, sort, reverse all work.</div>
+  <div class="test-area" id="ho-results"></div>
+</div>
+
+<script>
+function testTo(targetId, name, fn) {
+  var resultDiv = document.getElementById(targetId);
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// --- Array creation ---
+testTo('basic-results', 'Array literal: [1, 2, 3]', function() {
+  var arr = [1, 2, 3];
+  return arr[0] === 1 && arr[1] === 2 && arr[2] === 3;
+});
+
+testTo('basic-results', 'new Array(3) creates array with length 3', function() {
+  var arr = new Array(3);
+  return arr.length === 3;
+});
+
+testTo('basic-results', 'new Array(1,2,3) creates [1,2,3]', function() {
+  var arr = new Array(1, 2, 3);
+  return arr.length === 3 && arr[0] === 1 && arr[2] === 3;
+});
+
+testTo('basic-results', 'Empty array: [].length === 0', function() {
+  return [].length === 0;
+});
+
+// --- length ---
+testTo('basic-results', 'length property', function() {
+  return [10, 20, 30, 40, 50].length === 5;
+});
+
+// --- push, pop ---
+testTo('basic-results', 'push: adds to end, returns new length', function() {
+  var arr = [1, 2];
+  var len = arr.push(3);
+  return arr.length === 3 && arr[2] === 3 && len === 3;
+});
+
+testTo('basic-results', 'pop: removes from end, returns element', function() {
+  var arr = [1, 2, 3];
+  var val = arr.pop();
+  return val === 3 && arr.length === 2;
+});
+
+// --- shift, unshift ---
+testTo('basic-results', 'shift: removes from front, returns element', function() {
+  var arr = [10, 20, 30];
+  var val = arr.shift();
+  return val === 10 && arr.length === 2 && arr[0] === 20;
+});
+
+testTo('basic-results', 'unshift: adds to front, returns new length', function() {
+  var arr = [2, 3];
+  var len = arr.unshift(1);
+  return arr[0] === 1 && arr.length === 3 && len === 3;
+});
+
+// --- indexOf, lastIndexOf, includes ---
+testTo('search-results', 'indexOf: finds element', function() {
+  var arr = [10, 20, 30, 20, 40];
+  return arr.indexOf(20) === 1;
+});
+
+testTo('search-results', 'indexOf: returns -1 for missing', function() {
+  return [1, 2, 3].indexOf(99) === -1;
+});
+
+testTo('search-results', 'lastIndexOf: finds last occurrence', function() {
+  var arr = [10, 20, 30, 20, 40];
+  return arr.lastIndexOf(20) === 3;
+});
+
+testTo('search-results', 'includes: returns true if present', function() {
+  return [1, 2, 3].includes(2) === true;
+});
+
+testTo('search-results', 'includes: returns false if absent', function() {
+  return [1, 2, 3].includes(99) === false;
+});
+
+// --- splice, slice ---
+testTo('search-results', 'splice: remove elements', function() {
+  var arr = [1, 2, 3, 4, 5];
+  var removed = arr.splice(1, 2);
+  return removed.length === 2 && removed[0] === 2 && removed[1] === 3 && arr.length === 3;
+});
+
+testTo('search-results', 'splice: insert elements', function() {
+  var arr = [1, 4, 5];
+  arr.splice(1, 0, 2, 3);
+  return arr.length === 5 && arr[1] === 2 && arr[2] === 3 && arr[3] === 4;
+});
+
+testTo('search-results', 'slice: returns sub-array (non-destructive)', function() {
+  var arr = [1, 2, 3, 4, 5];
+  var sub = arr.slice(1, 4);
+  return sub.length === 3 && sub[0] === 2 && sub[2] === 4 && arr.length === 5;
+});
+
+testTo('search-results', 'slice: negative index from end', function() {
+  var arr = [1, 2, 3, 4, 5];
+  var sub = arr.slice(-2);
+  return sub.length === 2 && sub[0] === 4 && sub[1] === 5;
+});
+
+// --- concat, join ---
+testTo('search-results', 'concat: merges arrays (non-destructive)', function() {
+  var a = [1, 2];
+  var b = [3, 4];
+  var c = a.concat(b);
+  return c.length === 4 && c[2] === 3 && a.length === 2;
+});
+
+testTo('search-results', 'join: creates string with separator', function() {
+  return [1, 2, 3].join('-') === '1-2-3';
+});
+
+testTo('search-results', 'join: default separator is comma', function() {
+  return [1, 2, 3].join() === '1,2,3';
+});
+
+// --- map, filter, reduce ---
+testTo('ho-results', 'map: transform each element', function() {
+  var arr = [1, 2, 3, 4];
+  var doubled = arr.map(function(x) { return x * 2; });
+  return doubled[0] === 2 && doubled[1] === 4 && doubled[2] === 6 && doubled[3] === 8;
+});
+
+testTo('ho-results', 'filter: keep matching elements', function() {
+  var arr = [1, 2, 3, 4, 5, 6];
+  var evens = arr.filter(function(x) { return x % 2 === 0; });
+  return evens.length === 3 && evens[0] === 2 && evens[1] === 4 && evens[2] === 6;
+});
+
+testTo('ho-results', 'reduce: accumulate to single value', function() {
+  var arr = [1, 2, 3, 4, 5];
+  var sum = arr.reduce(function(acc, x) { return acc + x; }, 0);
+  return sum === 15;
+});
+
+testTo('ho-results', 'reduce: without initial value', function() {
+  var product = [2, 3, 4].reduce(function(acc, x) { return acc * x; });
+  return product === 24;
+});
+
+// --- forEach ---
+testTo('ho-results', 'forEach: calls function for each element', function() {
+  var sum = 0;
+  [1, 2, 3, 4].forEach(function(x) { sum += x; });
+  return sum === 10;
+});
+
+// --- find, findIndex ---
+testTo('ho-results', 'find: returns first matching element', function() {
+  var arr = [1, 3, 5, 8, 10];
+  var found = arr.find(function(x) { return x > 4; });
+  return found === 5;
+});
+
+testTo('ho-results', 'find: returns undefined if not found', function() {
+  var found = [1, 2, 3].find(function(x) { return x > 10; });
+  return found === undefined;
+});
+
+testTo('ho-results', 'findIndex: returns index of first match', function() {
+  var idx = [10, 20, 30, 40].findIndex(function(x) { return x > 25; });
+  return idx === 2;
+});
+
+// --- some, every ---
+testTo('ho-results', 'some: returns true if any element matches', function() {
+  return [1, 2, 3, 4].some(function(x) { return x > 3; }) === true;
+});
+
+testTo('ho-results', 'some: returns false if no element matches', function() {
+  return [1, 2, 3].some(function(x) { return x > 10; }) === false;
+});
+
+testTo('ho-results', 'every: returns true if all match', function() {
+  return [2, 4, 6, 8].every(function(x) { return x % 2 === 0; }) === true;
+});
+
+testTo('ho-results', 'every: returns false if any fails', function() {
+  return [2, 4, 5, 8].every(function(x) { return x % 2 === 0; }) === false;
+});
+
+// --- sort ---
+testTo('ho-results', 'sort: alphabetic (default)', function() {
+  var arr = ['banana', 'apple', 'cherry'];
+  arr.sort();
+  return arr[0] === 'apple' && arr[1] === 'banana' && arr[2] === 'cherry';
+});
+
+testTo('ho-results', 'sort: numeric with comparator', function() {
+  var arr = [10, 1, 21, 2];
+  arr.sort(function(a, b) { return a - b; });
+  return arr[0] === 1 && arr[1] === 2 && arr[2] === 10 && arr[3] === 21;
+});
+
+testTo('ho-results', 'sort: numeric descending', function() {
+  var arr = [3, 1, 4, 1, 5];
+  arr.sort(function(a, b) { return b - a; });
+  return arr[0] === 5 && arr[1] === 4 && arr[2] === 3;
+});
+
+// --- reverse ---
+testTo('ho-results', 'reverse: reverses array in place', function() {
+  var arr = [1, 2, 3, 4, 5];
+  arr.reverse();
+  return arr[0] === 5 && arr[4] === 1;
+});
+
+// --- Array.isArray ---
+testTo('ho-results', 'Array.isArray: true for arrays', function() {
+  return Array.isArray([]) === true && Array.isArray([1, 2]) === true;
+});
+
+testTo('ho-results', 'Array.isArray: false for non-arrays', function() {
+  return Array.isArray({}) === false && Array.isArray('hello') === false && Array.isArray(42) === false;
+});
+</script>
+</body>
+</html>

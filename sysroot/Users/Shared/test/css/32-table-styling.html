@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CSS Test 32: Table Styling</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .test-area table {
+    color: #e0e0e0;
+    font-size: 14px;
+    margin: 8px 0;
+  }
+  .test-area th, .test-area td {
+    border: 1px solid #555;
+    padding: 6px 10px;
+  }
+
+  /* Test 1: border-collapse: separate (default) */
+  .test-area.test-separate table {
+    border-collapse: separate;
+    border-spacing: 4px;
+    border: 2px solid #4ecdc4;
+  }
+  .test-area.test-separate th {
+    background: #1a3a3a;
+    color: #4ecdc4;
+  }
+  .test-area.test-separate td {
+    background: #16213e;
+  }
+
+  /* Test 2: border-collapse: collapse */
+  .test-area.test-collapse table {
+    border-collapse: collapse;
+    border: 2px solid #ff6b6b;
+  }
+  .test-area.test-collapse th {
+    background: #3a1a1a;
+    color: #ff6b6b;
+  }
+  .test-area.test-collapse td {
+    background: #1a1a2e;
+  }
+
+  /* Test 3: border-spacing */
+  .test-area.test-spacing table {
+    border-collapse: separate;
+    border-spacing: 10px;
+    border: 2px solid #e2b93d;
+  }
+  .test-area.test-spacing th, .test-area.test-spacing td {
+    background: #2a2a1a;
+    border: 1px solid #e2b93d;
+  }
+  .test-area.test-spacing th {
+    color: #e2b93d;
+  }
+
+  /* Test 4: Cell padding */
+  .test-area.test-cell-padding .pad-small th,
+  .test-area.test-cell-padding .pad-small td {
+    padding: 2px 4px;
+    border: 1px solid #555;
+  }
+  .test-area.test-cell-padding .pad-large th,
+  .test-area.test-cell-padding .pad-large td {
+    padding: 16px 24px;
+    border: 1px solid #555;
+  }
+
+  /* Test 5: th vs td styling */
+  .test-area.test-th-td table {
+    border-collapse: collapse;
+  }
+  .test-area.test-th-td th {
+    background: #2a1a3a;
+    color: #9b59b6;
+    font-weight: bold;
+    text-align: center;
+    padding: 10px;
+  }
+  .test-area.test-th-td td {
+    background: #16213e;
+    font-weight: normal;
+    text-align: left;
+    padding: 8px;
+  }
+
+  /* Test 6: Alternating row colors */
+  .test-area.test-zebra table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  .test-area.test-zebra th {
+    background: #1a3a3a;
+    color: #4ecdc4;
+    padding: 10px;
+    text-align: left;
+  }
+  .test-area.test-zebra tr:nth-child(odd) td {
+    background: #16213e;
+  }
+  .test-area.test-zebra tr:nth-child(even) td {
+    background: #1a2a3a;
+  }
+  .test-area.test-zebra td {
+    padding: 8px;
+  }
+
+  /* Test 7: Table width 100% */
+  .test-area.test-full-width table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .test-area.test-full-width th {
+    background: #3a1a2a;
+    color: #ff6b6b;
+    padding: 10px;
+    text-align: left;
+  }
+  .test-area.test-full-width td {
+    padding: 8px;
+  }
+
+  /* Test 8: table-layout: fixed vs auto */
+  .test-area.test-layout .layout-auto {
+    table-layout: auto;
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .test-area.test-layout .layout-fixed {
+    table-layout: fixed;
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .test-area.test-layout th {
+    background: #1a2a3a;
+    padding: 8px;
+  }
+  .test-area.test-layout td {
+    padding: 8px;
+  }
+
+  /* Test 9: Cell background colors */
+  .test-area.test-cell-colors table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  .test-area.test-cell-colors th {
+    background: #222;
+    padding: 10px;
+    color: #e0e0e0;
+  }
+  .test-area.test-cell-colors .status-ok {
+    background: #1a3a1a;
+    color: #6bff6b;
+  }
+  .test-area.test-cell-colors .status-warn {
+    background: #3a3a1a;
+    color: #e2b93d;
+  }
+  .test-area.test-cell-colors .status-error {
+    background: #3a1a1a;
+    color: #ff6b6b;
+  }
+  .test-area.test-cell-colors .status-info {
+    background: #1a2a3a;
+    color: #4ecdc4;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 32: Table Styling</h1>
+
+<!-- Test 1: border-collapse: separate -->
+<div class="test-group">
+  <h2>Test 1: border-collapse: separate (Default)</h2>
+  <div class="expected">Expected: Table cells should have VISIBLE GAPS between them (4px border-spacing). Each cell has its own independent border. The outer table border and cell borders do NOT merge. The gaps should show the test-area background through them.</div>
+  <div class="test-area test-separate">
+    <table>
+      <tr><th>Header A</th><th>Header B</th><th>Header C</th></tr>
+      <tr><td>Cell 1A</td><td>Cell 1B</td><td>Cell 1C</td></tr>
+      <tr><td>Cell 2A</td><td>Cell 2B</td><td>Cell 2C</td></tr>
+      <tr><td>Cell 3A</td><td>Cell 3B</td><td>Cell 3C</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- Test 2: border-collapse: collapse -->
+<div class="test-group">
+  <h2>Test 2: border-collapse: collapse</h2>
+  <div class="expected">Expected: Table cell borders should MERGE together. No gaps between cells. Adjacent cells share a single border line instead of having two separate lines. The overall table should look cleaner and more compact than the separate example above.</div>
+  <div class="test-area test-collapse">
+    <table>
+      <tr><th>Header A</th><th>Header B</th><th>Header C</th></tr>
+      <tr><td>Cell 1A</td><td>Cell 1B</td><td>Cell 1C</td></tr>
+      <tr><td>Cell 2A</td><td>Cell 2B</td><td>Cell 2C</td></tr>
+      <tr><td>Cell 3A</td><td>Cell 3B</td><td>Cell 3C</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- Test 3: border-spacing -->
+<div class="test-group">
+  <h2>Test 3: border-spacing: 10px (with separate borders)</h2>
+  <div class="expected">Expected: Large 10px gaps between all cells. The spacing should be noticeably wider than the 4px in Test 1. border-spacing only works with border-collapse: separate. Each cell appears as an individual "card" with space around it.</div>
+  <div class="test-area test-spacing">
+    <table>
+      <tr><th>Wide</th><th>Spacing</th><th>Between</th></tr>
+      <tr><td>Cell A</td><td>Cell B</td><td>Cell C</td></tr>
+      <tr><td>Cell D</td><td>Cell E</td><td>Cell F</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- Test 4: Cell padding -->
+<div class="test-group">
+  <h2>Test 4: Cell Padding Comparison</h2>
+  <div class="expected">Expected: Two tables side by side. The first table has MINIMAL padding (2px 4px) - text is close to cell borders. The second table has GENEROUS padding (16px 24px) - lots of space between text and cell borders. Both tables have collapsed borders.</div>
+  <div class="test-area test-cell-padding">
+    <strong style="font-size: 12px; color: #888;">Small padding (2px 4px):</strong>
+    <table class="pad-small" style="border-collapse: collapse;">
+      <tr><th>Header</th><th>Header</th></tr>
+      <tr><td>Tight</td><td>Padding</td></tr>
+      <tr><td>Very</td><td>Compact</td></tr>
+    </table>
+    <br>
+    <strong style="font-size: 12px; color: #888;">Large padding (16px 24px):</strong>
+    <table class="pad-large" style="border-collapse: collapse;">
+      <tr><th>Header</th><th>Header</th></tr>
+      <tr><td>Spacious</td><td>Padding</td></tr>
+      <tr><td>Very</td><td>Roomy</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- Test 5: th vs td styling -->
+<div class="test-group">
+  <h2>Test 5: th vs td Default Behavior and Styling</h2>
+  <div class="expected">Expected: Header cells (th) should be bold, centered text on a purple-tinted background. Data cells (td) should be normal weight, left-aligned text on a dark blue background. th elements are bold and centered by default; the CSS here makes the distinction even clearer with colors.</div>
+  <div class="test-area test-th-td">
+    <table>
+      <tr>
+        <th>Name (th: bold, centered, purple bg)</th>
+        <th>Role (th: bold, centered, purple bg)</th>
+        <th>Status (th: bold, centered, purple bg)</th>
+      </tr>
+      <tr>
+        <td>Alice (td: normal, left-aligned)</td>
+        <td>Developer (td: normal, left-aligned)</td>
+        <td>Active (td: normal, left-aligned)</td>
+      </tr>
+      <tr>
+        <td>Bob</td>
+        <td>Designer</td>
+        <td>Away</td>
+      </tr>
+      <tr>
+        <td>Charlie</td>
+        <td>Manager</td>
+        <td>Active</td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+<!-- Test 6: Alternating row colors (zebra stripes) -->
+<div class="test-group">
+  <h2>Test 6: Alternating Row Colors (Zebra Stripes)</h2>
+  <div class="expected">Expected: The header row has a teal-tinted background. Data rows alternate between two background colors using :nth-child(odd) and :nth-child(even). Odd rows should be one shade, even rows a slightly different shade. This improves readability of large tables.</div>
+  <div class="test-area test-zebra">
+    <table>
+      <tr><th>Name</th><th>Email</th><th>Department</th><th>Location</th></tr>
+      <tr><td>Alice</td><td>alice@example.com</td><td>Engineering</td><td>New York</td></tr>
+      <tr><td>Bob</td><td>bob@example.com</td><td>Design</td><td>London</td></tr>
+      <tr><td>Charlie</td><td>charlie@example.com</td><td>Marketing</td><td>Tokyo</td></tr>
+      <tr><td>Diana</td><td>diana@example.com</td><td>Engineering</td><td>Berlin</td></tr>
+      <tr><td>Eve</td><td>eve@example.com</td><td>Sales</td><td>Paris</td></tr>
+      <tr><td>Frank</td><td>frank@example.com</td><td>Engineering</td><td>Sydney</td></tr>
+      <tr><td>Grace</td><td>grace@example.com</td><td>Design</td><td>Toronto</td></tr>
+      <tr><td>Hank</td><td>hank@example.com</td><td>Marketing</td><td>Seoul</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- Test 7: Table width: 100% -->
+<div class="test-group">
+  <h2>Test 7: Table width: 100%</h2>
+  <div class="expected">Expected: The table should stretch to fill the FULL width of the container. Columns should distribute the extra space proportionally. Without width:100%, the table would only be as wide as needed for its content.</div>
+  <div class="test-area test-full-width">
+    <table>
+      <tr><th>ID</th><th>Name</th><th>Description</th><th>Status</th></tr>
+      <tr><td>1</td><td>Alpha</td><td>First test item</td><td>Pass</td></tr>
+      <tr><td>2</td><td>Beta</td><td>Second test item</td><td>Fail</td></tr>
+      <tr><td>3</td><td>Gamma</td><td>Third test item with longer description text</td><td>Pending</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- Test 8: table-layout: fixed vs auto -->
+<div class="test-group">
+  <h2>Test 8: table-layout: fixed vs auto</h2>
+  <div class="expected">Expected: First table uses table-layout: auto - columns auto-size based on content. The "Long Description" column should be wider. Second table uses table-layout: fixed - all columns are EQUAL width regardless of content (the long text may overflow or wrap). Column widths are determined by the table/column width, not content.</div>
+  <div class="test-area test-layout">
+    <strong style="font-size: 12px; color: #888;">table-layout: auto (columns sized by content):</strong>
+    <table class="layout-auto">
+      <tr><th>ID</th><th>Name</th><th>Long Description Column</th></tr>
+      <tr><td>1</td><td>A</td><td>This column has much more content and should be wider in auto layout mode because the browser calculates optimal widths.</td></tr>
+      <tr><td>2</td><td>B</td><td>Short</td></tr>
+    </table>
+    <br>
+    <strong style="font-size: 12px; color: #888;">table-layout: fixed (equal column widths):</strong>
+    <table class="layout-fixed">
+      <tr><th>ID</th><th>Name</th><th>Long Description Column</th></tr>
+      <tr><td>1</td><td>A</td><td>This column has the same content but in fixed layout all columns are equal width, so this text may wrap or overflow differently.</td></tr>
+      <tr><td>2</td><td>B</td><td>Short</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- Test 9: Cell background colors -->
+<div class="test-group">
+  <h2>Test 9: Individual Cell Background Colors</h2>
+  <div class="expected">Expected: A status dashboard table where individual cells have different background colors based on their class. "OK" cells are green-tinted. "Warning" cells are yellow-tinted. "Error" cells are red-tinted. "Info" cells are blue-tinted. This demonstrates per-cell styling.</div>
+  <div class="test-area test-cell-colors">
+    <table>
+      <tr><th>Service</th><th>CPU</th><th>Memory</th><th>Disk</th><th>Network</th></tr>
+      <tr>
+        <td>Web Server</td>
+        <td class="status-ok">12% OK</td>
+        <td class="status-warn">78% Warning</td>
+        <td class="status-ok">45% OK</td>
+        <td class="status-ok">Normal</td>
+      </tr>
+      <tr>
+        <td>Database</td>
+        <td class="status-warn">65% Warning</td>
+        <td class="status-error">95% Critical</td>
+        <td class="status-warn">82% Warning</td>
+        <td class="status-info">Throttled</td>
+      </tr>
+      <tr>
+        <td>Cache</td>
+        <td class="status-ok">8% OK</td>
+        <td class="status-ok">34% OK</td>
+        <td class="status-info">N/A</td>
+        <td class="status-ok">Normal</td>
+      </tr>
+      <tr>
+        <td>Worker</td>
+        <td class="status-error">99% Critical</td>
+        <td class="status-error">92% Critical</td>
+        <td class="status-ok">15% OK</td>
+        <td class="status-warn">High</td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+</body>
+</html>

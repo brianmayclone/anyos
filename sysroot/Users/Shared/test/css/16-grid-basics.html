@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CSS Test 16: CSS Grid Basics</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    font-weight: bold;
+    color: #1a1a2e;
+    border-radius: 4px;
+    padding: 15px;
+    text-align: center;
+    min-height: 60px;
+  }
+  .c1 { background: #ff6b6b; }
+  .c2 { background: #4ecdc4; }
+  .c3 { background: #ffd93d; }
+  .c4 { background: #6c5ce7; color: #e0e0e0; }
+  .c5 { background: #a8e6cf; }
+  .c6 { background: #ff8b94; }
+  .c7 { background: #dfe6e9; }
+  .c8 { background: #fdcb6e; }
+  .c9 { background: #74b9ff; }
+
+  .grid-container {
+    display: grid;
+    border: 2px dashed #555;
+    padding: 5px;
+    margin-top: 10px;
+  }
+
+  .label {
+    color: #ff8b94;
+    font-size: 13px;
+    margin-top: 10px;
+    font-weight: bold;
+  }
+
+  .code {
+    font-family: monospace;
+    color: #ffd93d;
+    background: #1a1a2e;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 16: CSS Grid Basics</h1>
+
+<!-- Test 1: display: grid -->
+<div class="test-group">
+  <h2>1. display: grid (default single column)</h2>
+  <p class="expected">Expected: Without grid-template-columns, items stack in a single column, each taking the full width. This is similar to block layout but with grid formatting context.</p>
+  <div class="test-area">
+    <div class="grid-container" style="display: grid;">
+      <div class="cell c1">1</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 2: Fixed pixel columns -->
+<div class="test-group">
+  <h2>2. grid-template-columns: fixed px values</h2>
+  <p class="expected">Expected: Three columns of fixed widths: 150px, 200px, 100px. Items fill left to right, row by row. Each row has the same column widths.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-template-columns: 150px 200px 100px</span></p>
+    <div class="grid-container" style="grid-template-columns: 150px 200px 100px;">
+      <div class="cell c1">1 (150px)</div>
+      <div class="cell c2">2 (200px)</div>
+      <div class="cell c3">3 (100px)</div>
+      <div class="cell c4">4 (150px)</div>
+      <div class="cell c5">5 (200px)</div>
+      <div class="cell c6">6 (100px)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 3: fr units -->
+<div class="test-group">
+  <h2>3. grid-template-columns: fr units (fractional)</h2>
+  <p class="expected">Expected: Three equal columns using 1fr each. Each column takes 1/3 of the available container width. All columns are the same size.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-template-columns: 1fr 1fr 1fr</span></p>
+    <div class="grid-container" style="grid-template-columns: 1fr 1fr 1fr;">
+      <div class="cell c1">1 (1fr)</div>
+      <div class="cell c2">2 (1fr)</div>
+      <div class="cell c3">3 (1fr)</div>
+      <div class="cell c4">4 (1fr)</div>
+      <div class="cell c5">5 (1fr)</div>
+      <div class="cell c6">6 (1fr)</div>
+    </div>
+
+    <p class="label"><span class="code">grid-template-columns: 1fr 2fr 1fr</span> (middle column is double width)</p>
+    <div class="grid-container" style="grid-template-columns: 1fr 2fr 1fr;">
+      <div class="cell c1">1 (1fr)</div>
+      <div class="cell c2">2 (2fr)</div>
+      <div class="cell c3">3 (1fr)</div>
+      <div class="cell c4">4 (1fr)</div>
+      <div class="cell c5">5 (2fr)</div>
+      <div class="cell c6">6 (1fr)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 4: Mixed px and fr -->
+<div class="test-group">
+  <h2>4. grid-template-columns: mixed (px + fr)</h2>
+  <p class="expected">Expected: First column is fixed at 200px, remaining two columns share the rest of the space equally (1fr each). The 200px column never changes size.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-template-columns: 200px 1fr 1fr</span></p>
+    <div class="grid-container" style="grid-template-columns: 200px 1fr 1fr;">
+      <div class="cell c1">1 (200px)</div>
+      <div class="cell c2">2 (1fr)</div>
+      <div class="cell c3">3 (1fr)</div>
+      <div class="cell c4">4 (200px)</div>
+      <div class="cell c5">5 (1fr)</div>
+      <div class="cell c6">6 (1fr)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 5: grid-template-rows -->
+<div class="test-group">
+  <h2>5. grid-template-rows: fixed and fr</h2>
+  <p class="expected">Expected: Three columns (1fr each) and explicit row heights: first row 80px, second row 120px, third row 60px. Each row has a distinct height.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-template-rows: 80px 120px 60px</span></p>
+    <div class="grid-container" style="grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 80px 120px 60px;">
+      <div class="cell c1">1 (80px row)</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4 (120px row)</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7 (60px row)</div>
+      <div class="cell c8">8</div>
+      <div class="cell c9">9</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: repeat() -->
+<div class="test-group">
+  <h2>6. grid-template-columns: repeat()</h2>
+  <p class="expected">Expected: repeat(3, 1fr) creates 3 equal columns. repeat(4, 100px) creates 4 columns of 100px each. repeat(2, 1fr 2fr) creates 4 columns in alternating 1fr 2fr pattern.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">repeat(3, 1fr)</span> -- 3 equal columns:</p>
+    <div class="grid-container" style="grid-template-columns: repeat(3, 1fr);">
+      <div class="cell c1">1</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+    </div>
+
+    <p class="label"><span class="code">repeat(4, 100px)</span> -- 4 columns at 100px:</p>
+    <div class="grid-container" style="grid-template-columns: repeat(4, 100px);">
+      <div class="cell c1">1</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7</div>
+      <div class="cell c8">8</div>
+    </div>
+
+    <p class="label"><span class="code">repeat(2, 1fr 2fr)</span> -- alternating pattern (4 columns: 1fr, 2fr, 1fr, 2fr):</p>
+    <div class="grid-container" style="grid-template-columns: repeat(2, 1fr 2fr);">
+      <div class="cell c1">1 (1fr)</div>
+      <div class="cell c2">2 (2fr)</div>
+      <div class="cell c3">3 (1fr)</div>
+      <div class="cell c4">4 (2fr)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 7: gap -->
+<div class="test-group">
+  <h2>7. Gap between grid items</h2>
+  <p class="expected">Expected: Uniform 15px gap between all grid cells (both horizontally and vertically). Gap only appears between items, not at the edges.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">gap: 15px</span></p>
+    <div class="grid-container" style="grid-template-columns: repeat(3, 1fr); gap: 15px;">
+      <div class="cell c1">1</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 8: row-gap and column-gap -->
+<div class="test-group">
+  <h2>8. row-gap and column-gap (different values)</h2>
+  <p class="expected">Expected: row-gap: 30px creates large vertical spacing between rows. column-gap: 5px creates small horizontal spacing between columns. The difference should be clearly visible.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">row-gap: 30px; column-gap: 5px</span></p>
+    <div class="grid-container" style="grid-template-columns: repeat(3, 1fr); row-gap: 30px; column-gap: 5px;">
+      <div class="cell c1">1</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7</div>
+      <div class="cell c8">8</div>
+      <div class="cell c9">9</div>
+    </div>
+
+    <p class="label"><span class="code">row-gap: 5px; column-gap: 30px</span> (reversed)</p>
+    <div class="grid-container" style="grid-template-columns: repeat(3, 1fr); row-gap: 5px; column-gap: 30px;">
+      <div class="cell c1">1</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7</div>
+      <div class="cell c8">8</div>
+      <div class="cell c9">9</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 9: grid-auto-rows -->
+<div class="test-group">
+  <h2>9. grid-auto-rows (implicit row sizing)</h2>
+  <p class="expected">Expected: Only 2 row heights are defined explicitly (100px, 60px), but there are 3 rows of items. The third row uses grid-auto-rows: 80px as its implicit height. Without grid-auto-rows, the implicit row would size to content.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-template-rows: 100px 60px; grid-auto-rows: 80px</span></p>
+    <div class="grid-container" style="grid-template-columns: repeat(3, 1fr); grid-template-rows: 100px 60px; grid-auto-rows: 80px; gap: 10px;">
+      <div class="cell c1">1 (100px row)</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4 (60px row)</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7 (auto: 80px)</div>
+      <div class="cell c8">8</div>
+      <div class="cell c9">9</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 10: minmax() -->
+<div class="test-group">
+  <h2>10. grid-auto-rows: minmax()</h2>
+  <p class="expected">Expected: Rows are at least 80px tall but can grow to fit content. Short content cells are 80px; cells with lots of text expand beyond 80px.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-auto-rows: minmax(80px, auto)</span></p>
+    <div class="grid-container" style="grid-template-columns: repeat(3, 1fr); grid-auto-rows: minmax(80px, auto); gap: 10px;">
+      <div class="cell c1">1 (short)</div>
+      <div class="cell c2">2 - This cell has more content to demonstrate how minmax works. The row should grow taller to accommodate this text.</div>
+      <div class="cell c3">3 (short)</div>
+      <div class="cell c4">4 (short)</div>
+      <div class="cell c5">5 (short)</div>
+      <div class="cell c6">6 (short)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 11: 4-column colored grid -->
+<div class="test-group">
+  <h2>11. Complete 4x3 colored grid</h2>
+  <p class="expected">Expected: A 4-column grid with 3 rows, each cell a different color. Demonstrates grid creating a table-like layout with equal columns and consistent row heights.</p>
+  <div class="test-area">
+    <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); gap: 8px;">
+      <div class="cell c1">A1</div>
+      <div class="cell c2">A2</div>
+      <div class="cell c3">A3</div>
+      <div class="cell c4">A4</div>
+      <div class="cell c5">B1</div>
+      <div class="cell c6">B2</div>
+      <div class="cell c7">B3</div>
+      <div class="cell c8">B4</div>
+      <div class="cell c9">C1</div>
+      <div class="cell c1">C2</div>
+      <div class="cell c2">C3</div>
+      <div class="cell c3">C4</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -40,8 +40,20 @@ const SHM_HEADER: usize = 64;
 /// 4 MiB covers up to 1024x768x32bpp.
 const SHM_SIZE: u32 = 4 * 1024 * 1024;
 
-/// Path to the CoreVM BIOS ROM image (custom BIOS, 64 KB).
-const BIOS_PATH: &str = "/Libraries/libcorevm/bios/bios.bin";
+/// Path to the CoreVM BIOS ROM image (custom BIOS, 64 KB, loaded at 0xF0000).
+const BIOS_PATH_COREVM: &str = "/Libraries/libcorevm/bios/bios.bin";
+
+/// Path to SeaBIOS ROM image (256 KB, loaded at 0xC0000).
+const BIOS_PATH_SEABIOS: &str = "/System/shared/corevm/bios/seabios.bin";
+
+/// Path to VGA BIOS ROM image (option ROM for SeaBIOS).
+const VGABIOS_PATH: &str = "/System/shared/corevm/bios/vgabios.bin";
+
+/// Default MAC address for the virtual E1000 NIC.
+const DEFAULT_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+
+/// E1000 MMIO base address (128 KB region).
+const E1000_MMIO_BASE: u64 = 0xD000_0000;
 
 /// Instructions to run per execution batch before checking IPC.
 /// Higher = more throughput, lower = more responsive to commands.
@@ -68,6 +80,10 @@ struct VmInstance {
     running: bool,
     /// VM name (for logging).
     name: String,
+    /// BIOS type from config ("corevm" or "seabios").
+    bios_type: String,
+    /// Whether JIT acceleration is enabled.
+    jit_enabled: bool,
 }
 
 /// Global daemon state.
@@ -214,8 +230,23 @@ const VMS_DIR: &str = "/System/shared/vmmanager/vms";
 struct VmConfigInfo {
     name: String,
     ram_mb: u32,
+    ram_prealloc: bool,
     disk_image: String,
     iso_image: String,
+    /// BIOS type: "corevm" (default) or "seabios".
+    bios_type: String,
+    /// Whether JIT acceleration is enabled.
+    jit_enabled: bool,
+    /// Whether network adapter is enabled.
+    net_enabled: bool,
+    /// Network mode: "nat" (default) or "bridge".
+    net_mode: String,
+    /// Host NIC name for bridged mode.
+    net_host_nic: String,
+    /// MAC address mode: "dynamic" (default) or "static".
+    mac_mode: String,
+    /// Static MAC address (e.g. "52:54:00:12:34:56").
+    mac_address: String,
 }
 
 /// Read the VM config file for the given UUID.
@@ -257,8 +288,16 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
     let text = core::str::from_utf8(&data).unwrap_or("");
     let mut name = String::new();
     let mut ram_mb: u32 = 64;
+    let mut ram_prealloc = false;
     let mut disk_image = String::new();
     let mut iso_image = String::new();
+    let mut bios_type = String::from("corevm");
+    let mut jit_enabled = false;
+    let mut net_enabled = false;
+    let mut net_mode = String::from("nat");
+    let mut net_host_nic = String::new();
+    let mut mac_mode = String::from("dynamic");
+    let mut mac_address = String::new();
 
     for line in text.split('\n') {
         let line = line.trim_end_matches('\r');
@@ -272,10 +311,26 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
             if ram_mb == 0 {
                 ram_mb = 64;
             }
+        } else if let Some(val) = line.strip_prefix("ram_alloc=") {
+            ram_prealloc = val == "prealloc";
         } else if let Some(val) = line.strip_prefix("disk=") {
             disk_image = String::from(val);
         } else if let Some(val) = line.strip_prefix("iso=") {
             iso_image = String::from(val);
+        } else if let Some(val) = line.strip_prefix("bios=") {
+            bios_type = String::from(val);
+        } else if let Some(val) = line.strip_prefix("jit=") {
+            jit_enabled = val == "1";
+        } else if let Some(val) = line.strip_prefix("net_enabled=") {
+            net_enabled = val == "1";
+        } else if let Some(val) = line.strip_prefix("net_mode=") {
+            net_mode = String::from(val);
+        } else if let Some(val) = line.strip_prefix("net_host_nic=") {
+            net_host_nic = String::from(val);
+        } else if let Some(val) = line.strip_prefix("mac_mode=") {
+            mac_mode = String::from(val);
+        } else if let Some(val) = line.strip_prefix("mac_address=") {
+            mac_address = String::from(val);
         }
     }
 
@@ -286,8 +341,16 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
     Some(VmConfigInfo {
         name,
         ram_mb,
+        ram_prealloc,
         disk_image,
         iso_image,
+        bios_type,
+        jit_enabled,
+        net_enabled,
+        net_mode,
+        net_host_nic,
+        mac_mode,
+        mac_address,
     })
 }
 
@@ -344,12 +407,29 @@ fn cmd_create(uuid: &str) {
         }
     }
 
+    // Set up E1000 network adapter if enabled.
+    if config.net_enabled {
+        handle.setup_pci_bus();
+        let mac = if config.mac_mode == "static" && config.mac_address.len() >= 17 {
+            parse_mac(&config.mac_address)
+        } else {
+            DEFAULT_MAC
+        };
+        handle.setup_e1000(E1000_MMIO_BASE, &mac);
+        anyos_std::println!(
+            "[vmd] E1000 NIC enabled (mode={}, mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
+            config.net_mode, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+        );
+    }
+
     let inst = VmInstance {
         handle,
         shm_id,
         shm_ptr,
         running: false,
         name: config.name.clone(),
+        bios_type: config.bios_type.clone(),
+        jit_enabled: config.jit_enabled,
     };
 
     d.vm = Some(inst);
@@ -385,6 +465,13 @@ fn cmd_create(uuid: &str) {
 }
 
 /// Handle `start` command — load BIOS and begin execution.
+///
+/// The BIOS type is determined from the VM config. VMD automatically
+/// maps each BIOS to the correct physical address:
+/// - **CoreVM**: 64 KB loaded at 0xF0000 (reset vector at 0xFFF0)
+/// - **SeaBIOS**: 256 KB loaded at 0xC0000 (covers 0xC0000–0xFFFFF,
+///   reset vector at 0xFFF0). VGA BIOS is provided via fw_cfg for
+///   SeaBIOS option ROM scanning.
 fn cmd_start() {
     let d = daemon();
     if let Some(ref mut inst) = d.vm {
@@ -392,16 +479,94 @@ fn cmd_start() {
             return;
         }
 
-        // Load CoreVM BIOS (custom BIOS, 64 KB at 0xF0000).
-        let bios_data = read_file(BIOS_PATH);
-        if !bios_data.is_empty() {
+        // Select and load BIOS based on configured type.
+        let is_seabios = inst.bios_type == "seabios";
+
+        if is_seabios {
+            // ── SeaBIOS: QEMU-compatible ROM mapping ────────────────
+            //
+            // Layout (matches real QEMU):
+            //   0x000C0000 – VGA BIOS option ROM (separate, ~39 KB)
+            //   0x000E0000 – Shadow copy of upper 128 KB of SeaBIOS
+            //   0xFFFC0000 – Full 256 KB SeaBIOS ROM (top of 4 GiB)
+            //
+            // The CPU resets to CS:IP = F000:FFF0 → physical 0xFFFF0,
+            // which falls in the shadow region at 0xE0000. SeaBIOS's
+            // reset vector code at that offset does a far jump to the
+            // main POST entry point, all below 1 MiB.
+            let bios_data = read_file(BIOS_PATH_SEABIOS);
+            if bios_data.is_empty() {
+                send_status("error 0 SeaBIOS not found");
+                anyos_std::println!("[vmd] ERROR: SeaBIOS not found at {}", BIOS_PATH_SEABIOS);
+                return;
+            }
+
+            // 1. Map full 256 KB ROM at the top of the 4 GiB address space.
+            inst.handle.load_rom(0xFFFC_0000, &bios_data);
+            anyos_std::println!(
+                "[vmd] SeaBIOS ROM mapped at 0xFFFC0000 ({} bytes)", bios_data.len()
+            );
+
+            // 2. Shadow copy: upper 128 KB of the ROM at 0xE0000-0xFFFFF.
+            //    The reset vector at 0xFFFF0 = 0xE0000 + 0x1FFF0 maps to
+            //    ROM offset 0x20000 + 0x1FFF0 = 0x3FFF0, which is the entry
+            //    point at the very end of the 256 KB BIOS image.
+            //    Uses load_binary (not load_rom) because SeaBIOS needs write
+            //    access to 0xE0000-0xFFFFF for ROM shadowing and its own
+            //    data structures (BDA, EBDA, IVT entries, etc.).
+            let bios_len = bios_data.len();
+            if bios_len >= 128 * 1024 {
+                let shadow_start = bios_len - 128 * 1024;
+                inst.handle.load_binary(0xE0000, &bios_data[shadow_start..]);
+                anyos_std::println!(
+                    "[vmd] SeaBIOS shadow at 0xE0000 (128 KB, writable)"
+                );
+            } else {
+                // Small BIOS — map entire image at the shadow region.
+                inst.handle.load_binary(0xE0000, &bios_data);
+                anyos_std::println!(
+                    "[vmd] SeaBIOS shadow at 0xE0000 ({} bytes, writable)", bios_len
+                );
+            }
+
+            inst.handle.set_rip(0xFFF0);
+
+            // 3. Map VGA BIOS as a separate option ROM at 0xC0000.
+            //    SeaBIOS scans for option ROMs starting at 0xC0000 by
+            //    looking for the 0x55AA signature.
+            //    Uses load_binary (not load_rom) because SeaBIOS writes to
+            //    the option ROM area during ROM shadowing (copies ROM into
+            //    shadow RAM, then the region becomes read/write).
+            let vgabios = read_file(VGABIOS_PATH);
+            if !vgabios.is_empty() {
+                inst.handle.load_binary(0xC0000, &vgabios);
+                anyos_std::println!(
+                    "[vmd] VGA BIOS at 0xC0000 ({} bytes, writable)", vgabios.len()
+                );
+                // Also provide via fw_cfg for SeaBIOS's fw_cfg ROM loader.
+                inst.handle.fw_cfg_add_file("vgaroms/vgabios.bin", &vgabios);
+            }
+        } else {
+            // ── CoreVM BIOS (64 KB at 0xF0000) ─────────────────────
+            let bios_data = read_file(BIOS_PATH_COREVM);
+            if bios_data.is_empty() {
+                send_status("error 0 BIOS not found");
+                anyos_std::println!(
+                    "[vmd] ERROR: CoreVM BIOS not found at {}", BIOS_PATH_COREVM
+                );
+                return;
+            }
             inst.handle.load_binary(0xF0000, &bios_data);
             inst.handle.set_rip(0xFFF0);
-            anyos_std::println!("[vmd] loaded CoreVM BIOS ({} bytes at 0xF0000)", bios_data.len());
-        } else {
-            send_status("error 0 BIOS not found");
-            anyos_std::println!("[vmd] ERROR: BIOS not found at {}", BIOS_PATH);
-            return;
+            anyos_std::println!(
+                "[vmd] loaded CoreVM BIOS ({} bytes at 0xF0000)", bios_data.len()
+            );
+        }
+
+        // Enable JIT acceleration if configured.
+        if inst.jit_enabled {
+            inst.handle.jit_enable(true);
+            anyos_std::println!("[vmd] JIT acceleration enabled");
         }
 
         // Log MMIO diagnostic info before starting execution.
@@ -625,6 +790,49 @@ fn parse_u32(s: &str) -> u32 {
         }
     }
     val
+}
+
+/// Parse a MAC address string ("XX:XX:XX:XX:XX:XX") into a 6-byte array.
+///
+/// Returns `DEFAULT_MAC` if the string cannot be parsed.
+fn parse_mac(s: &str) -> [u8; 6] {
+    let mut mac = DEFAULT_MAC;
+    let bytes = s.as_bytes();
+    let mut idx = 0;
+    let mut pos = 0;
+    while idx < 6 && pos < bytes.len() {
+        let hi = hex_digit(bytes[pos]);
+        if hi > 15 {
+            return DEFAULT_MAC;
+        }
+        pos += 1;
+        if pos >= bytes.len() {
+            return DEFAULT_MAC;
+        }
+        let lo = hex_digit(bytes[pos]);
+        if lo > 15 {
+            return DEFAULT_MAC;
+        }
+        mac[idx] = (hi << 4) | lo;
+        idx += 1;
+        pos += 1;
+        // Skip separator (: or -)
+        if pos < bytes.len() && (bytes[pos] == b':' || bytes[pos] == b'-') {
+            pos += 1;
+        }
+    }
+    mac
+}
+
+/// Convert a hex ASCII digit to its numeric value (0–15).
+/// Returns 0xFF for invalid digits.
+fn hex_digit(b: u8) -> u8 {
+    match b {
+        b'0'..=b'9' => b - b'0',
+        b'a'..=b'f' => b - b'a' + 10,
+        b'A'..=b'F' => b - b'A' + 10,
+        _ => 0xFF,
+    }
 }
 
 /// Parse a decimal i16 from a string (supports negative).

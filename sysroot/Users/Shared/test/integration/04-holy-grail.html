@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Integration Test 04: Holy Grail Layout</title>
+  <style>
+    /* === Reset & Base === */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #d4d4d8;
+      font-family: sans-serif;
+      font-size: 15px;
+      line-height: 1.6;
+      /* Full viewport height layout */
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    a { color: #4ecdc4; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* === Header === */
+    /* Full-width header with title and navigation */
+    .site-header {
+      background: #0f3460;
+      padding: 16px 24px;
+      border-bottom: 2px solid #1a4a8a;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .site-header h1 {
+      font-size: 22px;
+      color: #f0f0f5;
+    }
+    .site-header nav {
+      display: flex;
+      gap: 20px;
+    }
+    .site-header nav a {
+      color: #a0b4d0;
+      font-size: 14px;
+    }
+    .site-header nav a:hover { color: #4ecdc4; }
+
+    /* === Holy Grail 3-Column Layout via Flexbox === */
+    /* The middle section flexes to fill available vertical space.
+       Within it, 3 columns: left sidebar (200px), main (flex:1), right sidebar (200px).
+       All columns stretch to equal height (default align-items: stretch). */
+    .holy-grail {
+      display: flex;
+      flex: 1; /* Fills remaining space between header and footer */
+    }
+
+    /* === Left Sidebar === */
+    .sidebar-left {
+      width: 200px;
+      flex-shrink: 0;
+      background: #16213e;
+      padding: 20px 16px;
+      border-right: 1px solid #2a2a4a;
+    }
+    .sidebar-left h2 {
+      font-size: 16px;
+      color: #4ecdc4;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    .sidebar-left ul {
+      list-style: none;
+    }
+    .sidebar-left li {
+      margin-bottom: 4px;
+    }
+    .sidebar-left li a {
+      display: block;
+      padding: 6px 10px;
+      color: #a0a0b8;
+      font-size: 14px;
+      border-radius: 4px;
+    }
+    .sidebar-left li a:hover {
+      background: #1a2a4e;
+      color: #f0f0f5;
+      text-decoration: none;
+    }
+    .sidebar-left li a.active {
+      background: #0f3460;
+      color: #4ecdc4;
+    }
+
+    /* === Main Content (center column) === */
+    .main-content {
+      flex: 1;
+      padding: 24px;
+      min-width: 0;
+    }
+    .main-content h2 {
+      font-size: 24px;
+      color: #f0f0f5;
+      margin-bottom: 16px;
+    }
+    .main-content h3 {
+      font-size: 18px;
+      color: #e0e0f0;
+      margin-top: 24px;
+      margin-bottom: 8px;
+    }
+    .main-content p {
+      margin-bottom: 14px;
+      color: #c8c8d8;
+    }
+
+    /* Content cards within the main area */
+    .content-card {
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .content-card h3 {
+      margin-top: 0;
+      color: #4ecdc4;
+      font-size: 17px;
+      margin-bottom: 10px;
+    }
+    .content-card p {
+      font-size: 14px;
+      color: #a0a0b8;
+    }
+
+    /* Inline code */
+    code {
+      background: #0f3460;
+      color: #ffd93d;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 13px;
+    }
+
+    /* List in main content */
+    .main-content ul, .main-content ol {
+      margin: 10px 0 16px 24px;
+    }
+    .main-content li {
+      margin-bottom: 4px;
+      color: #c8c8d8;
+    }
+
+    /* === Right Sidebar === */
+    .sidebar-right {
+      width: 200px;
+      flex-shrink: 0;
+      background: #16213e;
+      padding: 20px 16px;
+      border-left: 1px solid #2a2a4a;
+    }
+    .sidebar-right h2 {
+      font-size: 16px;
+      color: #4ecdc4;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #2a2a4a;
+    }
+
+    /* Widget boxes in the right sidebar */
+    .widget {
+      background: #1a2a4e;
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 16px;
+    }
+    .widget h3 {
+      font-size: 13px;
+      color: #e0e0f0;
+      margin-bottom: 8px;
+    }
+    .widget p, .widget li {
+      font-size: 12px;
+      color: #8888a0;
+    }
+    .widget ul {
+      list-style: none;
+      padding: 0;
+    }
+    .widget li { margin-bottom: 4px; }
+    .widget li a { color: #4ecdc4; font-size: 12px; }
+
+    /* Tag cloud in sidebar */
+    .tag-cloud {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .tag-cloud span {
+      background: #0f3460;
+      color: #a0b4d0;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+    }
+
+    /* === Footer === */
+    /* Full-width footer at the bottom, should not float up if content is short */
+    .site-footer {
+      background: #0f3460;
+      border-top: 2px solid #1a4a8a;
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .site-footer .copyright {
+      color: #6868a0;
+      font-size: 13px;
+    }
+    .site-footer .footer-links {
+      display: flex;
+      gap: 16px;
+    }
+    .site-footer .footer-links a {
+      color: #a0b4d0;
+      font-size: 13px;
+    }
+
+    /* === Expected Rendering Section === */
+    .expected-rendering {
+      padding: 20px 24px;
+      background: #1a2a1a;
+      border: 1px solid #2a4a2a;
+      border-radius: 0;
+      color: #6bff6b;
+      font-size: 14px;
+    }
+    .expected-rendering h2 {
+      color: #6bff6b;
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+    .expected-rendering ul { margin-left: 20px; }
+    .expected-rendering li { margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+
+  <!-- Back navigation -->
+  <div style="padding:12px 24px;background:#0a0a1e;">
+    <div class="nav" style="margin-bottom:0"><a href="../index.html" style="color:#4ecdc4;text-decoration:none">&larr; Back to Test Index</a></div>
+  </div>
+
+  <!-- ============================================================
+       HEADER: Full-width bar with title and nav links
+       ============================================================ -->
+  <header class="site-header">
+    <h1>Holy Grail Layout</h1>
+    <nav>
+      <a href="#">Home</a>
+      <a href="#">About</a>
+      <a href="#">Services</a>
+      <a href="#">Portfolio</a>
+      <a href="#">Contact</a>
+    </nav>
+  </header>
+
+  <!-- ============================================================
+       3-COLUMN HOLY GRAIL LAYOUT
+       Flexbox row: left sidebar (200px), main (flex:1), right sidebar (200px).
+       The flex container has flex:1 on the body to fill the viewport.
+       All three columns should be the same height (flexbox default stretch).
+       ============================================================ -->
+  <div class="holy-grail">
+
+    <!-- Left Sidebar: Navigation -->
+    <aside class="sidebar-left">
+      <h2>Navigation</h2>
+      <ul>
+        <li><a href="#" class="active">Dashboard</a></li>
+        <li><a href="#">Getting Started</a></li>
+        <li><a href="#">Components</a></li>
+        <li><a href="#">Layout Patterns</a></li>
+        <li><a href="#">Typography</a></li>
+        <li><a href="#">Forms</a></li>
+        <li><a href="#">Tables</a></li>
+        <li><a href="#">Media</a></li>
+        <li><a href="#">Utilities</a></li>
+        <li><a href="#">Accessibility</a></li>
+      </ul>
+    </aside>
+
+    <!-- Main Content: Center column, wider than sidebars -->
+    <main class="main-content">
+      <h2>The Holy Grail Layout Pattern</h2>
+      <p>
+        The "Holy Grail" layout is a classic web design pattern featuring a header, footer,
+        and three columns in between. The center column contains the main content and is wider
+        than the two sidebars. This layout has historically been challenging to implement, but
+        flexbox makes it straightforward.
+      </p>
+
+      <div class="content-card">
+        <h3>How This Layout Works</h3>
+        <p>
+          The body uses <code>display: flex; flex-direction: column</code> with
+          <code>min-height: 100vh</code> to ensure the page fills the viewport.
+          The middle section (<code>.holy-grail</code>) uses <code>flex: 1</code> to
+          take remaining space and <code>display: flex</code> for horizontal columns.
+        </p>
+      </div>
+
+      <div class="content-card">
+        <h3>Column Sizing</h3>
+        <p>
+          The left and right sidebars have <code>width: 200px</code> and
+          <code>flex-shrink: 0</code> so they do not compress. The main content uses
+          <code>flex: 1</code> to fill all remaining horizontal space.
+        </p>
+      </div>
+
+      <h3>Key Characteristics</h3>
+      <ul>
+        <li>Header spans the full width of the page</li>
+        <li>Footer spans the full width and stays at the bottom</li>
+        <li>Three columns between header and footer</li>
+        <li>Center column is fluid (takes remaining width)</li>
+        <li>Side columns are fixed width (200px each)</li>
+        <li>All three columns have equal height (flexbox stretch)</li>
+        <li>Footer sticks to bottom even when content is short</li>
+      </ul>
+
+      <h3>Common Variations</h3>
+      <p>
+        The holy grail can also be implemented with CSS Grid using
+        <code>grid-template-columns: 200px 1fr 200px</code>. The flexbox approach
+        shown here is equally valid and has broader browser support. Some implementations
+        use <code>order</code> to allow the main content to come first in the HTML source
+        for SEO and accessibility benefits.
+      </p>
+
+      <div class="content-card">
+        <h3>Content Reflow Test</h3>
+        <p>
+          This card tests that content in the center column wraps correctly and does not
+          extend into or overlap with the sidebars. The center column has
+          <code>min-width: 0</code> to prevent flex items from overflowing their container
+          when content is wider than available space.
+        </p>
+        <p>
+          Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor
+          incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud
+          exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute
+          irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla
+          pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia
+          deserunt mollit anim id est laborum.
+        </p>
+      </div>
+    </main>
+
+    <!-- Right Sidebar: Widgets -->
+    <aside class="sidebar-right">
+      <h2>Widgets</h2>
+
+      <div class="widget">
+        <h3>Quick Stats</h3>
+        <p>Users: 1,247</p>
+        <p>Pages: 89</p>
+        <p>Posts: 342</p>
+      </div>
+
+      <div class="widget">
+        <h3>Recent Posts</h3>
+        <ul>
+          <li><a href="#">Flexbox Deep Dive</a></li>
+          <li><a href="#">CSS Grid Patterns</a></li>
+          <li><a href="#">Layout Comparison</a></li>
+          <li><a href="#">Browser Support</a></li>
+        </ul>
+      </div>
+
+      <div class="widget">
+        <h3>Tags</h3>
+        <div class="tag-cloud">
+          <span>CSS</span>
+          <span>Flexbox</span>
+          <span>Layout</span>
+          <span>Grid</span>
+          <span>Web</span>
+          <span>HTML</span>
+          <span>Design</span>
+        </div>
+      </div>
+
+      <div class="widget">
+        <h3>About</h3>
+        <p>This sidebar demonstrates the right column of the holy grail layout. It should share the same height as the left sidebar and main content.</p>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- ============================================================
+       FOOTER: Full-width, stays at bottom
+       ============================================================ -->
+  <footer class="site-footer">
+    <div class="copyright">&copy; 2026 Holy Grail Demo. All rights reserved.</div>
+    <div class="footer-links">
+      <a href="#">Privacy</a>
+      <a href="#">Terms</a>
+      <a href="#">Sitemap</a>
+    </div>
+  </footer>
+
+  <!-- ============================================================
+       EXPECTED RENDERING
+       ============================================================ -->
+  <div class="expected-rendering">
+    <h2>Expected Rendering</h2>
+    <ul>
+      <li><strong>Header:</strong> Full-width bar at the top spanning all three columns. Contains page title on the left and navigation links on the right. Dark blue background.</li>
+      <li><strong>3-Column layout:</strong> Between header and footer, three columns fill the page. Left sidebar (200px), main content (remaining space), right sidebar (200px). Implemented with flexbox.</li>
+      <li><strong>Equal-height columns:</strong> All three columns should extend to the same height, regardless of their individual content length. This is the default behavior of flex items (align-items: stretch).</li>
+      <li><strong>Left sidebar:</strong> Fixed 200px width, contains a vertical list of navigation links with one marked as active (highlighted background and teal text). Should not shrink below 200px.</li>
+      <li><strong>Main content:</strong> Center column that flexes to fill remaining width. Contains heading, paragraphs, content cards with dark backgrounds, lists, and code snippets. Text should wrap within the column without overflowing into sidebars.</li>
+      <li><strong>Right sidebar:</strong> Fixed 200px width with widget boxes (stats, recent posts, tag cloud, about text). Tags should wrap in a flex-wrap row.</li>
+      <li><strong>Footer:</strong> Full-width bar at the very bottom. If the content is shorter than the viewport, the footer should still be at the bottom of the viewport (not floating in the middle). Copyright on the left, links on the right.</li>
+      <li><strong>Column borders:</strong> Left sidebar has a right border, right sidebar has a left border, creating visual separation between all three columns.</li>
+      <li><strong>No overlap:</strong> The sidebars and main content should never overlap. Content in the main area should never extend under or over the sidebars.</li>
+    </ul>
+  </div>
+
+</body>
+</html>

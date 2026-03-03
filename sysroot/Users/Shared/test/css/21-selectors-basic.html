@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CSS Test 21: Basic Selectors</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  /* Test 1: Element selector */
+  .test-area.test-element p {
+    color: #ff6b6b;
+    font-weight: bold;
+  }
+
+  /* Test 2: Class selector */
+  .highlighted {
+    color: #4ecdc4;
+    background: #1a3a3a;
+    padding: 4px 8px;
+    border-radius: 3px;
+  }
+
+  /* Test 3: ID selector */
+  #unique-element {
+    color: #e2b93d;
+    font-size: 20px;
+    font-weight: bold;
+    border-left: 4px solid #e2b93d;
+    padding-left: 8px;
+  }
+
+  /* Test 4: Universal selector */
+  .test-area.test-universal * {
+    border: 1px dashed #9b59b6;
+    margin: 4px;
+    padding: 4px;
+  }
+
+  /* Test 5: Multiple selectors (grouping) */
+  .test-area.test-grouped h3,
+  .test-area.test-grouped h4,
+  .test-area.test-grouped h5 {
+    color: #ff6b6b;
+    margin: 4px 0;
+    font-style: italic;
+  }
+
+  /* Test 6: Chained class selectors */
+  .test-area.test-chained .box {
+    padding: 8px;
+    margin: 4px 0;
+    border-radius: 4px;
+    background: #1a2a3a;
+  }
+  .test-area.test-chained .box.special {
+    background: #3a1a2a;
+    color: #ff6b6b;
+    border: 2px solid #ff6b6b;
+  }
+  .test-area.test-chained .box.special.extra {
+    background: #3a3a1a;
+    color: #e2b93d;
+    border: 2px solid #e2b93d;
+    font-weight: bold;
+  }
+
+  /* Test 7: Element + class chained */
+  .test-area.test-elem-class p.intro {
+    color: #4ecdc4;
+    font-size: 18px;
+    font-weight: bold;
+  }
+  .test-area.test-elem-class span.intro {
+    color: #ff6b6b;
+    text-decoration: underline;
+  }
+
+  /* Test 8: Mixed selectors in same rule */
+  .test-area.test-mixed div.alert,
+  .test-area.test-mixed p.alert,
+  .test-area.test-mixed #special-alert {
+    background: #4a1a1a;
+    color: #ff6b6b;
+    padding: 6px 10px;
+    border-radius: 4px;
+    margin: 4px 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 21: Basic Selectors</h1>
+
+<!-- Test 1: Element Selector -->
+<div class="test-group">
+  <h2>Test 1: Element Selector</h2>
+  <div class="expected">Expected: All &lt;p&gt; elements inside the test area should be red (#ff6b6b) and bold. The &lt;span&gt; and &lt;div&gt; elements should remain default color.</div>
+  <div class="test-area test-element">
+    <p>This paragraph should be red and bold (element selector matches p)</p>
+    <span>This span should NOT be red (element selector targets p, not span)</span><br>
+    <p>This paragraph should also be red and bold</p>
+    <div>This div should NOT be red (element selector targets p, not div)</div>
+  </div>
+</div>
+
+<!-- Test 2: Class Selector -->
+<div class="test-group">
+  <h2>Test 2: Class Selector</h2>
+  <div class="expected">Expected: Only elements with class="highlighted" should have teal text (#4ecdc4) and a dark teal background. Elements without the class should remain default.</div>
+  <div class="test-area">
+    <p class="highlighted">This has class="highlighted" - should be teal with background</p>
+    <p>This has no class - should remain default color</p>
+    <span class="highlighted">This span is also highlighted</span><br>
+    <div>This div has no class - should remain default</div>
+    <div class="highlighted">This div is highlighted - should be teal</div>
+  </div>
+</div>
+
+<!-- Test 3: ID Selector -->
+<div class="test-group">
+  <h2>Test 3: ID Selector</h2>
+  <div class="expected">Expected: Only the element with id="unique-element" should be golden/yellow (#e2b93d), larger font, bold, with a left border. All other elements should remain default.</div>
+  <div class="test-area">
+    <p id="unique-element">This has id="unique-element" - should be golden, large, bold, with left border</p>
+    <p>This paragraph has no ID - should remain default</p>
+    <p id="other-element">This has a different ID - should remain default</p>
+    <p>Another paragraph without ID - should remain default</p>
+  </div>
+</div>
+
+<!-- Test 4: Universal Selector -->
+<div class="test-group">
+  <h2>Test 4: Universal Selector</h2>
+  <div class="expected">Expected: Every child element inside the test area should have a dashed purple border (#9b59b6), 4px margin, and 4px padding. This applies to ALL elements regardless of type.</div>
+  <div class="test-area test-universal">
+    <p>Paragraph - should have dashed purple border</p>
+    <span>Span - should have dashed purple border</span>
+    <div>Div - should have dashed purple border</div>
+    <strong>Strong - should have dashed purple border</strong>
+    <em>Em - should have dashed purple border</em>
+  </div>
+</div>
+
+<!-- Test 5: Multiple (Grouped) Selectors -->
+<div class="test-group">
+  <h2>Test 5: Multiple (Grouped) Selectors</h2>
+  <div class="expected">Expected: All h3, h4, and h5 elements should be red (#ff6b6b) and italic. The &lt;p&gt; and &lt;h6&gt; elements should remain default color and style.</div>
+  <div class="test-area test-grouped">
+    <h3>Heading 3 - should be red and italic</h3>
+    <h4>Heading 4 - should be red and italic</h4>
+    <h5>Heading 5 - should be red and italic</h5>
+    <p>Paragraph - should NOT be red or italic (not in selector group)</p>
+    <h6>Heading 6 - should NOT be red or italic (not in selector group)</h6>
+  </div>
+</div>
+
+<!-- Test 6: Chained Class Selectors -->
+<div class="test-group">
+  <h2>Test 6: Chained Class Selectors</h2>
+  <div class="expected">Expected: ".box" gets dark blue background. ".box.special" gets dark red background with red border and red text. ".box.special.extra" gets dark yellow background with yellow border, yellow text, and bold. Each level of chaining adds specificity.</div>
+  <div class="test-area test-chained">
+    <div class="box">class="box" - dark blue background, no border</div>
+    <div class="box special">class="box special" - dark red bg, red border, red text</div>
+    <div class="box special extra">class="box special extra" - dark yellow bg, yellow border, yellow bold text</div>
+    <div class="box">class="box" again - just dark blue background</div>
+    <div class="special">class="special" only (no "box") - should NOT get .box.special styling since .box is missing</div>
+  </div>
+</div>
+
+<!-- Test 7: Element + Class Chained -->
+<div class="test-group">
+  <h2>Test 7: Element + Class Chained Selector</h2>
+  <div class="expected">Expected: "p.intro" targets only &lt;p&gt; elements with class="intro" (teal, 18px, bold). "span.intro" targets only &lt;span&gt; elements with class="intro" (red, underlined). Elements that are .intro but wrong element type should not match.</div>
+  <div class="test-area test-elem-class">
+    <p class="intro">p.intro - should be teal, larger, bold</p>
+    <p>Plain p - should be default (no .intro class)</p>
+    <span class="intro">span.intro - should be red and underlined</span><br>
+    <span>Plain span - should be default</span><br>
+    <div class="intro">div.intro - should be DEFAULT (neither p.intro nor span.intro matches div)</div>
+  </div>
+</div>
+
+<!-- Test 8: Mixed Selector Types in Grouped Rule -->
+<div class="test-group">
+  <h2>Test 8: Mixed Selector Types in Grouped Rule</h2>
+  <div class="expected">Expected: "div.alert", "p.alert", and "#special-alert" all get the same styling: dark red background, red text, padded. Elements without .alert or the specific ID should remain default.</div>
+  <div class="test-area test-mixed">
+    <div class="alert">div.alert - should have red background and text</div>
+    <p class="alert">p.alert - should have red background and text</p>
+    <span id="special-alert">#special-alert - should have red background and text (matched by ID)</span><br><br>
+    <div>Plain div - should be default</div>
+    <p>Plain p - should be default</p>
+    <span class="alert">span.alert - should be DEFAULT (rule only targets div.alert and p.alert, not span.alert)</span>
+  </div>
+</div>
+
+</body>
+</html>

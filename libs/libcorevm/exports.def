@@ -19,6 +19,7 @@ EXPORTS
     corevm_request_stop
     corevm_get_instruction_count
     corevm_load_binary
+    corevm_load_rom
     corevm_read_phys_u8
     corevm_read_phys_u16
     corevm_read_phys_u32

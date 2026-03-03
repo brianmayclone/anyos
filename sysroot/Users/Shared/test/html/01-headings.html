@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test 01: Headings (h1-h6)</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="../index.html">Back to Index</a>
+    <a href="02-paragraphs.html">Next: Paragraphs</a>
+  </div>
+
+  <h1 class="page-title">Test 01: Headings (h1 through h6)</h1>
+
+  <!-- Test 1: All heading levels -->
+  <div class="test-group">
+    <h2>Test 1.1: All Heading Levels</h2>
+    <div class="expected">Expected: Six headings, progressively smaller from h1 (largest) to h6 (smallest). All should be bold and block-level (each on its own line).</div>
+    <div class="test-area">
+      <h1>Heading Level 1</h1>
+      <h2>Heading Level 2</h2>
+      <h3>Heading Level 3</h3>
+      <h4>Heading Level 4</h4>
+      <h5>Heading Level 5</h5>
+      <h6>Heading Level 6</h6>
+    </div>
+  </div>
+
+  <!-- Test 2: Headings with inline elements -->
+  <div class="test-group">
+    <h2>Test 1.2: Headings with Nested Inline Elements</h2>
+    <div class="expected">Expected: Each heading contains styled inline elements. Bold within heading should still look bold. Italic, links, and code should render inside the heading at the heading's size.</div>
+    <div class="test-area">
+      <h1>Heading with <em>italic</em> text</h1>
+      <h2>Heading with <strong>bold</strong> text</h2>
+      <h3>Heading with <a href="#">a link</a> inside</h3>
+      <h4>Heading with <code>inline code</code> inside</h4>
+      <h5>Heading with <span style="color: #ff6b6b;">colored span</span> inside</h5>
+      <h6>Heading with <u>underlined</u> and <s>strikethrough</s> text</h6>
+    </div>
+  </div>
+
+  <!-- Test 3: Adjacent headings -->
+  <div class="test-group">
+    <h2>Test 1.3: Adjacent Headings (No Extra Gaps)</h2>
+    <div class="expected">Expected: Headings immediately adjacent should not have excessive vertical spacing between them. Standard margin collapsing should occur.</div>
+    <div class="test-area">
+      <h1>H1 Immediately Followed By</h1>
+      <h2>H2 Immediately Followed By</h2>
+      <h3>H3 Immediately Followed By</h3>
+      <h4>H4 With No Extra Content Between</h4>
+    </div>
+  </div>
+
+  <!-- Test 4: Heading with long text -->
+  <div class="test-group">
+    <h2>Test 1.4: Long Heading Text (Wrapping)</h2>
+    <div class="expected">Expected: Long heading text should wrap to the next line within the container. Text should remain bold and at the correct heading size when wrapped.</div>
+    <div class="test-area">
+      <h1>This is a very long heading level one that should eventually wrap to the next line when the browser window is not wide enough to contain all of this text on a single line</h1>
+      <h3>This is a moderately long heading level three that tests whether heading text wraps correctly when the content exceeds the available width of the container element</h3>
+    </div>
+  </div>
+
+  <!-- Test 5: Headings with whitespace -->
+  <div class="test-group">
+    <h2>Test 1.5: Headings with Various Whitespace</h2>
+    <div class="expected">Expected: Extra whitespace within heading tags should be collapsed to a single space. Leading and trailing whitespace should be trimmed visually.</div>
+    <div class="test-area">
+      <h3>   Leading whitespace heading   </h3>
+      <h3>Multiple     spaces     between     words</h3>
+      <h3>Tabs	between	words</h3>
+      <h3>
+        Newlines
+        within
+        heading
+      </h3>
+    </div>
+  </div>
+
+  <!-- Test 6: Empty headings -->
+  <div class="test-group">
+    <h2>Test 1.6: Empty Headings</h2>
+    <div class="expected">Expected: Empty heading elements should still be block-level and take up vertical space (margin/padding), but display no visible text content.</div>
+    <div class="test-area">
+      <p>Text before empty headings:</p>
+      <h1></h1>
+      <h3></h3>
+      <h6></h6>
+      <p>Text after empty headings.</p>
+    </div>
+  </div>
+
+  <!-- Test 7: Headings with IDs (anchor targets) -->
+  <div class="test-group">
+    <h2>Test 1.7: Headings with ID Attributes</h2>
+    <div class="expected">Expected: Headings with id attributes should render identically to those without. The id should serve as an anchor target for fragment links.</div>
+    <div class="test-area">
+      <h2 id="section-a">Section A (id="section-a")</h2>
+      <p>Some content under Section A.</p>
+      <h2 id="section-b">Section B (id="section-b")</h2>
+      <p>Some content under Section B.</p>
+      <p><a href="#section-a">Jump to Section A</a></p>
+    </div>
+  </div>
+
+  <!-- Test 8: Heading containing only inline elements -->
+  <div class="test-group">
+    <h2>Test 1.8: Heading Containing Only Inline Elements</h2>
+    <div class="expected">Expected: Heading with only a span or em child should still render at heading size and weight. The inline element should inherit heading properties.</div>
+    <div class="test-area">
+      <h1><span>Entire heading in a span</span></h1>
+      <h2><em>Entire heading in em</em></h2>
+      <h3><strong>Entire heading in strong</strong></h3>
+      <h4><a href="#">Entire heading is a link</a></h4>
+    </div>
+  </div>
+
+  <!-- Test 9: Heading followed by paragraph -->
+  <div class="test-group">
+    <h2>Test 1.9: Heading + Paragraph Spacing</h2>
+    <div class="expected">Expected: A heading followed by a paragraph should have proper spacing. The heading should be visually distinct (larger, bold) from the paragraph text below.</div>
+    <div class="test-area">
+      <h1>Main Title</h1>
+      <p>This paragraph follows an h1 heading. There should be clear visual separation between the heading and the paragraph.</p>
+      <h2>Subtitle</h2>
+      <p>This paragraph follows an h2 heading. The spacing should be consistent.</p>
+      <h3>Sub-subtitle</h3>
+      <p>This paragraph follows an h3 heading.</p>
+    </div>
+  </div>
+
+  <!-- Test 10: Heading size comparison -->
+  <div class="test-group">
+    <h2>Test 1.10: Side-by-Side Size Reference</h2>
+    <div class="expected">Expected: The heading sizes should form a clear visual hierarchy. h1 is typically ~2em, h2 ~1.5em, h3 ~1.17em, h4 ~1em, h5 ~0.83em, h6 ~0.67em. Each should be bold by default.</div>
+    <div class="test-area">
+      <h1>h1 - The quick brown fox</h1>
+      <h2>h2 - The quick brown fox</h2>
+      <h3>h3 - The quick brown fox</h3>
+      <h4>h4 - The quick brown fox</h4>
+      <h5>h5 - The quick brown fox</h5>
+      <h6>h6 - The quick brown fox</h6>
+      <p>Normal paragraph - The quick brown fox (for size comparison)</p>
+    </div>
+  </div>
+
+</body>
+</html>

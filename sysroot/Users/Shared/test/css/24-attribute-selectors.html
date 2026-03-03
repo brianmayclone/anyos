@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CSS Test 24: Attribute Selectors</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .test-area div.attr-item {
+    padding: 6px 10px;
+    margin: 4px 0;
+    border-radius: 4px;
+    background: #1a2a3a;
+    border-left: 3px solid transparent;
+  }
+
+  /* Test 1: [attr] - has attribute */
+  .test-area.test-has-attr div[data-status] {
+    border-left-color: #ff6b6b;
+    color: #ff6b6b;
+  }
+
+  /* Test 2: [attr=value] - exact match */
+  .test-area.test-exact div[data-role="admin"] {
+    border-left-color: #ff6b6b;
+    color: #ff6b6b;
+    font-weight: bold;
+  }
+  .test-area.test-exact div[data-role="user"] {
+    border-left-color: #4ecdc4;
+    color: #4ecdc4;
+  }
+
+  /* Test 3: [attr~=value] - contains word (space-separated list) */
+  .test-area.test-contains-word div[data-tags~="important"] {
+    border-left-color: #e2b93d;
+    color: #e2b93d;
+    font-weight: bold;
+  }
+
+  /* Test 4: [attr^=value] - starts with */
+  .test-area.test-starts a[href^="https"] {
+    color: #4ecdc4;
+    font-weight: bold;
+  }
+  .test-area.test-starts a[href^="http:"] {
+    color: #ff6b6b;
+  }
+
+  /* Test 5: [attr$=value] - ends with */
+  .test-area.test-ends a[href$=".pdf"] {
+    color: #ff6b6b;
+    font-weight: bold;
+  }
+  .test-area.test-ends a[href$=".html"] {
+    color: #4ecdc4;
+  }
+  .test-area.test-ends a[href$=".jpg"] {
+    color: #e2b93d;
+  }
+
+  /* Test 6: [attr*=value] - contains substring */
+  .test-area.test-substring div[data-info*="error"] {
+    background: #3a1a1a;
+    color: #ff6b6b;
+    border-left-color: #ff6b6b;
+  }
+  .test-area.test-substring div[data-info*="success"] {
+    background: #1a3a1a;
+    color: #6bff6b;
+    border-left-color: #6bff6b;
+  }
+
+  /* Test 7: [attr|=value] - starts with value or value- */
+  .test-area.test-lang div[lang|="en"] {
+    border-left-color: #4ecdc4;
+    color: #4ecdc4;
+  }
+  .test-area.test-lang div[lang|="fr"] {
+    border-left-color: #ff6b6b;
+    color: #ff6b6b;
+  }
+  .test-area.test-lang div[lang|="de"] {
+    border-left-color: #e2b93d;
+    color: #e2b93d;
+  }
+
+  /* Test 8: Multiple attribute selectors combined */
+  .test-area.test-multi input[type="text"][required] {
+    border: 2px solid #ff6b6b;
+    background: #3a1a1a;
+    color: #e0e0e0;
+    padding: 6px;
+    border-radius: 4px;
+    margin: 4px 0;
+    display: block;
+    width: 300px;
+  }
+  .test-area.test-multi input[type="text"]:not([required]) {
+    border: 2px solid #4ecdc4;
+    background: #1a3a3a;
+    color: #e0e0e0;
+    padding: 6px;
+    border-radius: 4px;
+    margin: 4px 0;
+    display: block;
+    width: 300px;
+  }
+
+  /* Test 9: Case sensitivity */
+  .test-area.test-case div[data-value="Hello" i] {
+    border-left-color: #9b59b6;
+    color: #9b59b6;
+    font-weight: bold;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 24: Attribute Selectors</h1>
+
+<!-- Test 1: [attr] - has attribute -->
+<div class="test-group">
+  <h2>Test 1: [attr] - Has Attribute</h2>
+  <div class="expected">Expected: Any element with a data-status attribute (regardless of value) should have a red left border and red text. Elements without data-status should remain default.</div>
+  <div class="test-area test-has-attr">
+    <div class="attr-item" data-status="active">Has data-status="active" - should be RED</div>
+    <div class="attr-item">No data-status attribute - should be DEFAULT</div>
+    <div class="attr-item" data-status="inactive">Has data-status="inactive" - should be RED</div>
+    <div class="attr-item" data-status="">Has data-status="" (empty) - should STILL be RED (attribute exists)</div>
+    <div class="attr-item">No data-status attribute - should be DEFAULT</div>
+    <div class="attr-item" data-status="pending">Has data-status="pending" - should be RED</div>
+  </div>
+</div>
+
+<!-- Test 2: [attr=value] - exact match -->
+<div class="test-group">
+  <h2>Test 2: [attr=value] - Exact Match</h2>
+  <div class="expected">Expected: data-role="admin" should be red and bold with red left border. data-role="user" should be teal with teal left border. Other values or no attribute should be default.</div>
+  <div class="test-area test-exact">
+    <div class="attr-item" data-role="admin">data-role="admin" - should be RED and bold</div>
+    <div class="attr-item" data-role="user">data-role="user" - should be TEAL</div>
+    <div class="attr-item" data-role="moderator">data-role="moderator" - should be DEFAULT (no exact match)</div>
+    <div class="attr-item" data-role="admin user">data-role="admin user" - should be DEFAULT (exact match only, not "admin")</div>
+    <div class="attr-item">No data-role - should be DEFAULT</div>
+    <div class="attr-item" data-role="user">data-role="user" - should be TEAL</div>
+  </div>
+</div>
+
+<!-- Test 3: [attr~=value] - contains word -->
+<div class="test-group">
+  <h2>Test 3: [attr~=value] - Contains Word (Space-Separated)</h2>
+  <div class="expected">Expected: Elements whose data-tags attribute contains the word "important" (as a space-separated word) should be golden and bold. The word must be complete - "important" inside "unimportant" should NOT match.</div>
+  <div class="test-area test-contains-word">
+    <div class="attr-item" data-tags="important urgent">data-tags="important urgent" - should be GOLDEN (contains word "important")</div>
+    <div class="attr-item" data-tags="low priority">data-tags="low priority" - should be DEFAULT</div>
+    <div class="attr-item" data-tags="urgent important review">data-tags="urgent important review" - should be GOLDEN</div>
+    <div class="attr-item" data-tags="unimportant">data-tags="unimportant" - should be DEFAULT ("important" is substring, not whole word)</div>
+    <div class="attr-item" data-tags="important">data-tags="important" - should be GOLDEN (single word match)</div>
+    <div class="attr-item">No data-tags - should be DEFAULT</div>
+  </div>
+</div>
+
+<!-- Test 4: [attr^=value] - starts with -->
+<div class="test-group">
+  <h2>Test 4: [attr^=value] - Starts With</h2>
+  <div class="expected">Expected: Links starting with "https" should be teal and bold. Links starting with "http:" (not https) should be red. Other protocols or no href should be default.</div>
+  <div class="test-area test-starts">
+    <a href="https://example.com">https://example.com - should be TEAL and bold (starts with "https")</a><br>
+    <a href="https://secure.site.com">https://secure.site.com - should be TEAL and bold</a><br>
+    <a href="http://insecure.com">http://insecure.com - should be RED (starts with "http:")</a><br>
+    <a href="ftp://files.com">ftp://files.com - should be DEFAULT (starts with neither)</a><br>
+    <a href="https://another.com/page">https://another.com/page - should be TEAL and bold</a><br>
+    <a href="mailto:test@test.com">mailto:test@test.com - should be DEFAULT</a>
+  </div>
+</div>
+
+<!-- Test 5: [attr$=value] - ends with -->
+<div class="test-group">
+  <h2>Test 5: [attr$=value] - Ends With</h2>
+  <div class="expected">Expected: Links ending in ".pdf" should be red and bold. Links ending in ".html" should be teal. Links ending in ".jpg" should be golden. Other extensions should be default.</div>
+  <div class="test-area test-ends">
+    <a href="/docs/report.pdf">report.pdf - should be RED and bold (ends with .pdf)</a><br>
+    <a href="/pages/about.html">about.html - should be TEAL (ends with .html)</a><br>
+    <a href="/images/photo.jpg">photo.jpg - should be GOLDEN (ends with .jpg)</a><br>
+    <a href="/files/data.csv">data.csv - should be DEFAULT (no matching extension)</a><br>
+    <a href="/docs/manual.pdf">manual.pdf - should be RED and bold</a><br>
+    <a href="/images/logo.png">logo.png - should be DEFAULT (no matching extension)</a><br>
+    <a href="/index.html">index.html - should be TEAL</a>
+  </div>
+</div>
+
+<!-- Test 6: [attr*=value] - contains substring -->
+<div class="test-group">
+  <h2>Test 6: [attr*=value] - Contains Substring</h2>
+  <div class="expected">Expected: Elements whose data-info contains "error" anywhere should have red text and dark red background. Elements whose data-info contains "success" should have green text and dark green background. Others should be default.</div>
+  <div class="test-area test-substring">
+    <div class="attr-item" data-info="error-404">data-info="error-404" - should be RED (contains "error")</div>
+    <div class="attr-item" data-info="success-created">data-info="success-created" - should be GREEN (contains "success")</div>
+    <div class="attr-item" data-info="warning-low">data-info="warning-low" - should be DEFAULT</div>
+    <div class="attr-item" data-info="fatal-error-crash">data-info="fatal-error-crash" - should be RED (contains "error")</div>
+    <div class="attr-item" data-info="partial-success-rate">data-info="partial-success-rate" - should be GREEN (contains "success")</div>
+    <div class="attr-item" data-info="info-message">data-info="info-message" - should be DEFAULT</div>
+  </div>
+</div>
+
+<!-- Test 7: [attr|=value] - starts with value or value- -->
+<div class="test-group">
+  <h2>Test 7: [attr|=value] - Value or Value-Prefix (Hyphen-Separated)</h2>
+  <div class="expected">Expected: lang="en" or lang="en-*" (e.g. en-US, en-GB) should be teal. lang="fr" or lang="fr-*" should be red. lang="de" or lang="de-*" should be golden. This matches the value exactly OR the value followed by a hyphen.</div>
+  <div class="test-area test-lang">
+    <div class="attr-item" lang="en">lang="en" - should be TEAL</div>
+    <div class="attr-item" lang="en-US">lang="en-US" - should be TEAL (en followed by hyphen)</div>
+    <div class="attr-item" lang="en-GB">lang="en-GB" - should be TEAL</div>
+    <div class="attr-item" lang="fr">lang="fr" - should be RED</div>
+    <div class="attr-item" lang="fr-CA">lang="fr-CA" - should be RED</div>
+    <div class="attr-item" lang="de">lang="de" - should be GOLDEN</div>
+    <div class="attr-item" lang="de-AT">lang="de-AT" - should be GOLDEN</div>
+    <div class="attr-item" lang="es">lang="es" - should be DEFAULT (no matching rule)</div>
+    <div class="attr-item" lang="english">lang="english" - should be DEFAULT (does not match en|=)</div>
+  </div>
+</div>
+
+<!-- Test 8: Multiple attribute selectors combined -->
+<div class="test-group">
+  <h2>Test 8: Multiple Attribute Selectors Combined</h2>
+  <div class="expected">Expected: Text inputs with [required] should have a red border and dark red background. Text inputs WITHOUT [required] should have a teal border and dark teal background. Non-text inputs should be default.</div>
+  <div class="test-area test-multi">
+    <input type="text" required placeholder="Required text input - RED border">
+    <input type="text" placeholder="Optional text input - TEAL border">
+    <input type="text" required placeholder="Another required - RED border">
+    <input type="text" placeholder="Another optional - TEAL border">
+    <input type="password" placeholder="Password type - should be DEFAULT (not type=text)">
+  </div>
+</div>
+
+<!-- Test 9: Case sensitivity -->
+<div class="test-group">
+  <h2>Test 9: Case-Insensitive Attribute Selector [attr=value i]</h2>
+  <div class="expected">Expected: The [data-value="Hello" i] selector matches case-insensitively. Elements with data-value of "Hello", "hello", "HELLO", or "hElLo" should all be purple and bold. Note: The "i" flag for case-insensitive matching may not be supported in all browsers.</div>
+  <div class="test-area test-case">
+    <div class="attr-item" data-value="Hello">data-value="Hello" - should be PURPLE (exact match)</div>
+    <div class="attr-item" data-value="hello">data-value="hello" - should be PURPLE (case-insensitive "i" flag)</div>
+    <div class="attr-item" data-value="HELLO">data-value="HELLO" - should be PURPLE (case-insensitive)</div>
+    <div class="attr-item" data-value="hElLo">data-value="hElLo" - should be PURPLE (case-insensitive)</div>
+    <div class="attr-item" data-value="World">data-value="World" - should be DEFAULT (different word)</div>
+    <div class="attr-item" data-value="HelloWorld">data-value="HelloWorld" - should be DEFAULT (not exact match)</div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test 04: Text and Font Properties</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+    .sample-text {
+      margin: 8px 0;
+      padding: 5px 10px;
+      background: #1a2a4a;
+      border-left: 3px solid #555;
+    }
+    .label-inline {
+      display: inline-block;
+      width: 220px;
+      color: #aaa;
+      font-size: 13px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <div class="nav"><a href="../index.html">Index</a></div>
+  <h1 class="page-title">CSS Test 04: Text and Font Properties</h1>
+
+  <!-- Test 1: Font Size Units -->
+  <div class="test-group">
+    <h2>Test 1: font-size Units</h2>
+    <div class="expected">Expected: Each line shows text at progressively different sizes. 12px = small, 16px = default body size, 24px = large, 1.5em = 1.5x parent size, 2rem = 2x root size, 12pt = approximately 16px, 150% = 1.5x parent size.</div>
+    <div class="test-area">
+      <div class="sample-text" style="font-size: 12px;">font-size: 12px (small text)</div>
+      <div class="sample-text" style="font-size: 16px;">font-size: 16px (default body text)</div>
+      <div class="sample-text" style="font-size: 24px;">font-size: 24px (large text)</div>
+      <div class="sample-text" style="font-size: 32px;">font-size: 32px (extra large text)</div>
+      <div class="sample-text" style="font-size: 1.5em;">font-size: 1.5em (1.5x parent)</div>
+      <div class="sample-text" style="font-size: 2rem;">font-size: 2rem (2x root element)</div>
+      <div class="sample-text" style="font-size: 12pt;">font-size: 12pt (approx 16px)</div>
+      <div class="sample-text" style="font-size: 150%;">font-size: 150% (1.5x parent)</div>
+    </div>
+  </div>
+
+  <!-- Test 2: Font Weight -->
+  <div class="test-group">
+    <h2>Test 2: font-weight</h2>
+    <div class="expected">Expected: Text at different weights. "normal" = 400 weight. "bold" = 700 weight. Numeric values from 100 (thin) to 900 (black/heavy). Not all weights may be available depending on the font; unavailable weights should snap to the nearest available weight.</div>
+    <div class="test-area">
+      <div class="sample-text" style="font-weight: normal;">font-weight: normal (same as 400)</div>
+      <div class="sample-text" style="font-weight: bold;">font-weight: bold (same as 700)</div>
+      <div class="sample-text" style="font-weight: 100;">font-weight: 100 (thin)</div>
+      <div class="sample-text" style="font-weight: 200;">font-weight: 200 (extra light)</div>
+      <div class="sample-text" style="font-weight: 300;">font-weight: 300 (light)</div>
+      <div class="sample-text" style="font-weight: 400;">font-weight: 400 (normal)</div>
+      <div class="sample-text" style="font-weight: 500;">font-weight: 500 (medium)</div>
+      <div class="sample-text" style="font-weight: 600;">font-weight: 600 (semi-bold)</div>
+      <div class="sample-text" style="font-weight: 700;">font-weight: 700 (bold)</div>
+      <div class="sample-text" style="font-weight: 800;">font-weight: 800 (extra bold)</div>
+      <div class="sample-text" style="font-weight: 900;">font-weight: 900 (black/heavy)</div>
+    </div>
+  </div>
+
+  <!-- Test 3: Font Style -->
+  <div class="test-group">
+    <h2>Test 3: font-style</h2>
+    <div class="expected">Expected: "normal" = upright text. "italic" = slanted text (true italic glyphs). "oblique" = mechanically slanted text (if no oblique font, may look similar to italic).</div>
+    <div class="test-area">
+      <div class="sample-text" style="font-style: normal;">font-style: normal (upright)</div>
+      <div class="sample-text" style="font-style: italic;">font-style: italic (slanted, true italic)</div>
+      <div class="sample-text" style="font-style: oblique;">font-style: oblique (mechanically slanted)</div>
+    </div>
+  </div>
+
+  <!-- Test 4: Text Alignment -->
+  <div class="test-group">
+    <h2>Test 4: text-align</h2>
+    <div class="expected">Expected: Left = text aligned to left edge. Center = text centered. Right = text aligned to right edge. Justify = text stretched to fill the full width (visible with multi-line text, spaces between words are adjusted).</div>
+    <div class="test-area">
+      <div class="sample-text" style="text-align: left;">text-align: left -- This text is aligned to the left edge of the container.</div>
+      <div class="sample-text" style="text-align: center;">text-align: center -- This text is centered within its container.</div>
+      <div class="sample-text" style="text-align: right;">text-align: right -- This text is aligned to the right edge of the container.</div>
+      <div class="sample-text" style="text-align: justify; width: 400px;">
+        text-align: justify -- This paragraph has justified text alignment. The spaces between words are adjusted so that both the left and right edges of the text block are aligned. This effect is most visible on lines that are not the last line of a paragraph. Notice how the spacing varies between words to achieve the alignment.
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 5: Text Decoration -->
+  <div class="test-group">
+    <h2>Test 5: text-decoration</h2>
+    <div class="expected">Expected: "none" = no decoration (useful for removing link underlines). "underline" = line below text. "overline" = line above text. "line-through" = strikethrough line through the middle of text.</div>
+    <div class="test-area">
+      <div class="sample-text" style="text-decoration: none;">text-decoration: none (no decoration)</div>
+      <div class="sample-text" style="text-decoration: underline;">text-decoration: underline (line below)</div>
+      <div class="sample-text" style="text-decoration: overline;">text-decoration: overline (line above)</div>
+      <div class="sample-text" style="text-decoration: line-through;">text-decoration: line-through (strikethrough)</div>
+      <div class="sample-text" style="text-decoration: underline overline;">text-decoration: underline overline (both)</div>
+    </div>
+  </div>
+
+  <!-- Test 6: Text Transform -->
+  <div class="test-group">
+    <h2>Test 6: text-transform</h2>
+    <div class="expected">Expected: "uppercase" = all letters uppercase. "lowercase" = all letters lowercase. "capitalize" = first letter of each word uppercase. "none" = text as written in HTML source.</div>
+    <div class="test-area">
+      <div class="sample-text" style="text-transform: none;">text-transform: none -- This Text Stays As Written</div>
+      <div class="sample-text" style="text-transform: uppercase;">text-transform: uppercase -- this should all be uppercase</div>
+      <div class="sample-text" style="text-transform: lowercase;">text-transform: lowercase -- THIS SHOULD ALL BE LOWERCASE</div>
+      <div class="sample-text" style="text-transform: capitalize;">text-transform: capitalize -- each word starts with a capital letter</div>
+    </div>
+  </div>
+
+  <!-- Test 7: Text Indent -->
+  <div class="test-group">
+    <h2>Test 7: text-indent</h2>
+    <div class="expected">Expected: First paragraph has no indent (default). Second has 40px indent on the first line only. Third has 80px indent. The indent only applies to the first line of each block.</div>
+    <div class="test-area">
+      <div class="sample-text" style="text-indent: 0;">
+        text-indent: 0 -- This paragraph has no indentation. The first line starts at the normal position.
+      </div>
+      <div class="sample-text" style="text-indent: 40px;">
+        text-indent: 40px -- This paragraph's first line is indented 40 pixels. Subsequent lines wrap normally to the left edge. Only the first line is affected by text-indent.
+      </div>
+      <div class="sample-text" style="text-indent: 80px;">
+        text-indent: 80px -- This paragraph's first line is indented 80 pixels. This is a larger indent, commonly used in print-style typography.
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 8: Line Height -->
+  <div class="test-group">
+    <h2>Test 8: line-height</h2>
+    <div class="expected">Expected: Each block has different spacing between lines. "normal" = browser default (~1.2). "1" = tight (no extra space, lines may touch). "2" = double-spaced. "24px" = fixed 24px line height. "200%" = 2x font-size.</div>
+    <div class="test-area">
+      <div class="sample-text" style="line-height: normal;">
+        line-height: normal -- This text has the default line-height. Multiple lines of text should have standard spacing between baselines. This is typically about 1.2 times the font size.
+      </div>
+      <div class="sample-text" style="line-height: 1;">
+        line-height: 1 -- Tight spacing. Lines may overlap or touch. This text demonstrates a line-height equal to the font-size with no additional leading between lines.
+      </div>
+      <div class="sample-text" style="line-height: 2;">
+        line-height: 2 -- Double-spaced text. There is significant space between each line. This is useful for readability in certain contexts.
+      </div>
+      <div class="sample-text" style="line-height: 30px;">
+        line-height: 30px -- Fixed 30px line height regardless of font size. Each line occupies exactly 30 pixels of vertical space.
+      </div>
+      <div class="sample-text" style="line-height: 1.5em;">
+        line-height: 1.5em -- 1.5 times the font-size. This is a comfortable reading line-height used in many designs.
+      </div>
+      <div class="sample-text" style="line-height: 200%;">
+        line-height: 200% -- Double the font-size. Same visual effect as line-height: 2, specified as a percentage.
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 9: White Space -->
+  <div class="test-group">
+    <h2>Test 9: white-space</h2>
+    <div class="expected">Expected: "normal" = collapses whitespace, wraps text. "nowrap" = collapses whitespace, no wrapping (single line, may overflow). "pre" = preserves whitespace and newlines, no wrapping. "pre-wrap" = preserves whitespace and newlines, wraps. "pre-line" = collapses spaces but preserves newlines, wraps.</div>
+    <div class="test-area">
+      <p style="color: #aaa; font-size: 13px; margin: 0 0 5px 0;">Source text has extra   spaces   and
+newlines inside.</p>
+
+      <div class="sample-text" style="white-space: normal; width: 350px; overflow: hidden;">
+        white-space: normal --   Multiple   spaces   collapse   and
+newlines are treated as spaces. Text wraps normally at the container edge.
+      </div>
+      <div class="sample-text" style="white-space: nowrap; width: 350px; overflow: hidden;">
+        white-space: nowrap --   Multiple   spaces   collapse   and text does not wrap. This line will extend beyond the container if long enough.
+      </div>
+      <div class="sample-text" style="white-space: pre; width: 350px; overflow: auto;">
+        white-space: pre
+    Spaces   are   preserved.
+    Newlines are preserved.
+    No wrapping occurs.
+      </div>
+      <div class="sample-text" style="white-space: pre-wrap; width: 350px; overflow: hidden;">
+        white-space: pre-wrap
+    Spaces   are   preserved.
+    Newlines are preserved.
+    But text wraps at the container edge if the line is too long for the available space.
+      </div>
+      <div class="sample-text" style="white-space: pre-line; width: 350px; overflow: hidden;">
+        white-space: pre-line
+    Spaces   collapse   to   single.
+    But newlines ARE preserved.
+    Text wraps normally at the container edge.
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 10: Word Wrap / Overflow Wrap -->
+  <div class="test-group">
+    <h2>Test 10: word-wrap / overflow-wrap</h2>
+    <div class="expected">Expected: First box: a very long word overflows the container (default). Second box: overflow-wrap: break-word causes the long word to break and wrap within the container.</div>
+    <div class="test-area">
+      <div class="sample-text" style="width: 200px; border: 1px solid #555; overflow: hidden;">
+        Default: Supercalifragilisticexpialidociousandthensome overflows.
+      </div>
+      <div class="sample-text" style="width: 200px; border: 1px solid #555; overflow-wrap: break-word;">
+        overflow-wrap: break-word: Supercalifragilisticexpialidociousandthensome wraps.
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 11: Letter Spacing -->
+  <div class="test-group">
+    <h2>Test 11: letter-spacing</h2>
+    <div class="expected">Expected: "normal" = default letter spacing. Positive values increase spacing between each character. Negative values decrease spacing (letters closer together or overlapping).</div>
+    <div class="test-area">
+      <div class="sample-text" style="letter-spacing: normal;">letter-spacing: normal -- Default character spacing</div>
+      <div class="sample-text" style="letter-spacing: 2px;">letter-spacing: 2px -- Slightly expanded spacing</div>
+      <div class="sample-text" style="letter-spacing: 5px;">letter-spacing: 5px -- Wide spacing between characters</div>
+      <div class="sample-text" style="letter-spacing: 10px;">letter-spacing: 10px -- Very wide spacing</div>
+      <div class="sample-text" style="letter-spacing: -1px;">letter-spacing: -1px -- Slightly condensed spacing</div>
+    </div>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test 10: HTML Entities</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+    .test-area table { border-collapse: collapse; width: 100%; }
+    .test-area th, .test-area td { border: 1px solid #555; padding: 6px 10px; text-align: left; }
+    .test-area th { background: #1a1a3e; color: #4ecdc4; }
+    .test-area td { background: #0d1f3c; }
+    .entity-render { font-size: 20px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="../index.html">Back to Index</a>
+    <a href="09-semantic.html">Prev: Semantic</a>
+    <a href="11-preformatted.html">Next: Preformatted</a>
+  </div>
+
+  <h1 class="page-title">Test 10: HTML Entities</h1>
+
+  <!-- Test 1: Common entities -->
+  <div class="test-group">
+    <h2>Test 10.1: Common Entities</h2>
+    <div class="expected">Expected: Each named entity should render as its corresponding character. &amp;amp; should show &, &amp;lt; should show &lt;, &amp;gt; should show &gt;, etc.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Entity</th>
+            <th>Rendered</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>&amp;amp;</code></td>
+            <td class="entity-render">&amp;</td>
+            <td>Ampersand</td>
+          </tr>
+          <tr>
+            <td><code>&amp;lt;</code></td>
+            <td class="entity-render">&lt;</td>
+            <td>Less than</td>
+          </tr>
+          <tr>
+            <td><code>&amp;gt;</code></td>
+            <td class="entity-render">&gt;</td>
+            <td>Greater than</td>
+          </tr>
+          <tr>
+            <td><code>&amp;quot;</code></td>
+            <td class="entity-render">&quot;</td>
+            <td>Double quotation mark</td>
+          </tr>
+          <tr>
+            <td><code>&amp;apos;</code></td>
+            <td class="entity-render">&apos;</td>
+            <td>Apostrophe / single quote</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>Inline test: 5 &lt; 10 &amp;&amp; 10 &gt; 5 is &quot;true&quot;.</p>
+    </div>
+  </div>
+
+  <!-- Test 2: Whitespace entities -->
+  <div class="test-group">
+    <h2>Test 10.2: Whitespace Entities</h2>
+    <div class="expected">Expected: &amp;nbsp; should produce a non-breaking space (same width as regular space, but prevents line break). &amp;ensp; should be an en-space (~half em). &amp;emsp; should be an em-space (~full em width).</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Entity</th>
+            <th>Between Bars</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>&amp;nbsp;</code></td>
+            <td class="entity-render">|&nbsp;|</td>
+            <td>Non-breaking space</td>
+          </tr>
+          <tr>
+            <td><code>&amp;ensp;</code></td>
+            <td class="entity-render">|&ensp;|</td>
+            <td>En space (half em)</td>
+          </tr>
+          <tr>
+            <td><code>&amp;emsp;</code></td>
+            <td class="entity-render">|&emsp;|</td>
+            <td>Em space (full em)</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>Non-breaking&nbsp;space&nbsp;test:&nbsp;these&nbsp;words&nbsp;should&nbsp;not&nbsp;break&nbsp;across&nbsp;lines&nbsp;individually.</p>
+    </div>
+  </div>
+
+  <!-- Test 3: Typography entities -->
+  <div class="test-group">
+    <h2>Test 10.3: Typography Entities</h2>
+    <div class="expected">Expected: Dashes, quotes, and ellipsis should render as their correct typographic characters. En dash is shorter than em dash. Smart quotes should be curly, not straight.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Entity</th>
+            <th>Rendered</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>&amp;ndash;</code></td>
+            <td class="entity-render">&ndash;</td>
+            <td>En dash</td>
+          </tr>
+          <tr>
+            <td><code>&amp;mdash;</code></td>
+            <td class="entity-render">&mdash;</td>
+            <td>Em dash</td>
+          </tr>
+          <tr>
+            <td><code>&amp;lsquo;</code></td>
+            <td class="entity-render">&lsquo;</td>
+            <td>Left single quote</td>
+          </tr>
+          <tr>
+            <td><code>&amp;rsquo;</code></td>
+            <td class="entity-render">&rsquo;</td>
+            <td>Right single quote</td>
+          </tr>
+          <tr>
+            <td><code>&amp;ldquo;</code></td>
+            <td class="entity-render">&ldquo;</td>
+            <td>Left double quote</td>
+          </tr>
+          <tr>
+            <td><code>&amp;rdquo;</code></td>
+            <td class="entity-render">&rdquo;</td>
+            <td>Right double quote</td>
+          </tr>
+          <tr>
+            <td><code>&amp;hellip;</code></td>
+            <td class="entity-render">&hellip;</td>
+            <td>Horizontal ellipsis</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>Usage: Pages 10&ndash;20 contain the results&mdash;which are surprising.</p>
+      <p>She said, &ldquo;It&rsquo;s a beautiful day,&rdquo; and smiled.</p>
+      <p>Wait for it&hellip; here it comes!</p>
+    </div>
+  </div>
+
+  <!-- Test 4: Currency entities -->
+  <div class="test-group">
+    <h2>Test 10.4: Currency Entities</h2>
+    <div class="expected">Expected: Each currency symbol should render correctly. Euro, pound, yen, and cent signs should be clearly distinguishable.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Entity</th>
+            <th>Rendered</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>&amp;euro;</code></td>
+            <td class="entity-render">&euro;</td>
+            <td>Euro sign</td>
+          </tr>
+          <tr>
+            <td><code>&amp;pound;</code></td>
+            <td class="entity-render">&pound;</td>
+            <td>Pound sterling</td>
+          </tr>
+          <tr>
+            <td><code>&amp;yen;</code></td>
+            <td class="entity-render">&yen;</td>
+            <td>Yen / Yuan</td>
+          </tr>
+          <tr>
+            <td><code>&amp;cent;</code></td>
+            <td class="entity-render">&cent;</td>
+            <td>Cent sign</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>Prices: &euro;29.99, &pound;24.99, &yen;3,500, $9.99&cent;</p>
+    </div>
+  </div>
+
+  <!-- Test 5: Math entities -->
+  <div class="test-group">
+    <h2>Test 10.5: Mathematical Entities</h2>
+    <div class="expected">Expected: Each mathematical symbol should render as the correct glyph. Multiplication sign, division sign, plus-minus, infinity, etc.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Entity</th>
+            <th>Rendered</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>&amp;times;</code></td>
+            <td class="entity-render">&times;</td>
+            <td>Multiplication sign</td>
+          </tr>
+          <tr>
+            <td><code>&amp;divide;</code></td>
+            <td class="entity-render">&divide;</td>
+            <td>Division sign</td>
+          </tr>
+          <tr>
+            <td><code>&amp;minus;</code></td>
+            <td class="entity-render">&minus;</td>
+            <td>Minus sign</td>
+          </tr>
+          <tr>
+            <td><code>&amp;plusmn;</code></td>
+            <td class="entity-render">&plusmn;</td>
+            <td>Plus-minus sign</td>
+          </tr>
+          <tr>
+            <td><code>&amp;infin;</code></td>
+            <td class="entity-render">&infin;</td>
+            <td>Infinity</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>Formula: 3 &times; 4 = 12, 12 &divide; 3 = 4, temperature is 20&plusmn;2&deg;C</p>
+      <p>The limit as x approaches &infin; is undefined.</p>
+    </div>
+  </div>
+
+  <!-- Test 6: Symbol entities -->
+  <div class="test-group">
+    <h2>Test 10.6: Symbol Entities</h2>
+    <div class="expected">Expected: Each symbol should render as its designated character. Copyright, registered, trademark, degree, and bullet point signs.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Entity</th>
+            <th>Rendered</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>&amp;copy;</code></td>
+            <td class="entity-render">&copy;</td>
+            <td>Copyright</td>
+          </tr>
+          <tr>
+            <td><code>&amp;reg;</code></td>
+            <td class="entity-render">&reg;</td>
+            <td>Registered</td>
+          </tr>
+          <tr>
+            <td><code>&amp;trade;</code></td>
+            <td class="entity-render">&trade;</td>
+            <td>Trademark</td>
+          </tr>
+          <tr>
+            <td><code>&amp;deg;</code></td>
+            <td class="entity-render">&deg;</td>
+            <td>Degree sign</td>
+          </tr>
+          <tr>
+            <td><code>&amp;bull;</code></td>
+            <td class="entity-render">&bull;</td>
+            <td>Bullet point</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>&copy; 2025 anyOS Project &bull; All rights reserved &bull; anyOS&trade; is a registered&reg; trademark.</p>
+      <p>The water boils at 100&deg;C (212&deg;F).</p>
+    </div>
+  </div>
+
+  <!-- Test 7: Greek letter entities -->
+  <div class="test-group">
+    <h2>Test 10.7: Greek Letter Entities</h2>
+    <div class="expected">Expected: Each Greek letter should render as its correct glyph. Both lowercase (alpha, beta) and uppercase (Omega) variants should display correctly.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Entity</th>
+            <th>Rendered</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>&amp;alpha;</code></td>
+            <td class="entity-render">&alpha;</td>
+            <td>Alpha (lowercase)</td>
+          </tr>
+          <tr>
+            <td><code>&amp;beta;</code></td>
+            <td class="entity-render">&beta;</td>
+            <td>Beta (lowercase)</td>
+          </tr>
+          <tr>
+            <td><code>&amp;gamma;</code></td>
+            <td class="entity-render">&gamma;</td>
+            <td>Gamma (lowercase)</td>
+          </tr>
+          <tr>
+            <td><code>&amp;delta;</code></td>
+            <td class="entity-render">&delta;</td>
+            <td>Delta (lowercase)</td>
+          </tr>
+          <tr>
+            <td><code>&amp;pi;</code></td>
+            <td class="entity-render">&pi;</td>
+            <td>Pi (lowercase)</td>
+          </tr>
+          <tr>
+            <td><code>&amp;sigma;</code></td>
+            <td class="entity-render">&sigma;</td>
+            <td>Sigma (lowercase)</td>
+          </tr>
+          <tr>
+            <td><code>&amp;Omega;</code></td>
+            <td class="entity-render">&Omega;</td>
+            <td>Omega (uppercase)</td>
+          </tr>
+          <tr>
+            <td><code>&amp;Sigma;</code></td>
+            <td class="entity-render">&Sigma;</td>
+            <td>Sigma (uppercase)</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>Resistance is measured in &Omega; (ohms). The value of &pi; is approximately 3.14159.</p>
+      <p>Variables: &alpha; = 0.05, &beta; = 0.20, &gamma; = 1.0</p>
+    </div>
+  </div>
+
+  <!-- Test 8: Numeric entities -->
+  <div class="test-group">
+    <h2>Test 10.8: Numeric Entities (Decimal and Hex)</h2>
+    <div class="expected">Expected: Numeric entities (decimal &#NNN; and hex &#xHHHH;) should render the same character as their named equivalents. &#169; and &#x00A9; should both render as the copyright symbol.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Decimal</th>
+            <th>Hex</th>
+            <th>Rendered (decimal)</th>
+            <th>Rendered (hex)</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>&amp;#169;</code></td>
+            <td><code>&amp;#x00A9;</code></td>
+            <td class="entity-render">&#169;</td>
+            <td class="entity-render">&#x00A9;</td>
+            <td>Copyright (same as &amp;copy;)</td>
+          </tr>
+          <tr>
+            <td><code>&amp;#174;</code></td>
+            <td><code>&amp;#x00AE;</code></td>
+            <td class="entity-render">&#174;</td>
+            <td class="entity-render">&#x00AE;</td>
+            <td>Registered (same as &amp;reg;)</td>
+          </tr>
+          <tr>
+            <td><code>&amp;#8364;</code></td>
+            <td><code>&amp;#x20AC;</code></td>
+            <td class="entity-render">&#8364;</td>
+            <td class="entity-render">&#x20AC;</td>
+            <td>Euro sign (same as &amp;euro;)</td>
+          </tr>
+          <tr>
+            <td><code>&amp;#9829;</code></td>
+            <td><code>&amp;#x2665;</code></td>
+            <td class="entity-render">&#9829;</td>
+            <td class="entity-render">&#x2665;</td>
+            <td>Black heart suit</td>
+          </tr>
+          <tr>
+            <td><code>&amp;#9733;</code></td>
+            <td><code>&amp;#x2605;</code></td>
+            <td class="entity-render">&#9733;</td>
+            <td class="entity-render">&#x2605;</td>
+            <td>Black star</td>
+          </tr>
+          <tr>
+            <td><code>&amp;#10003;</code></td>
+            <td><code>&amp;#x2713;</code></td>
+            <td class="entity-render">&#10003;</td>
+            <td class="entity-render">&#x2713;</td>
+            <td>Check mark</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test 9: Arrow entities -->
+  <div class="test-group">
+    <h2>Test 10.9: Arrow Entities</h2>
+    <div class="expected">Expected: Each arrow entity should render as an arrow pointing in the specified direction (left, right, up, down, and double arrows).</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Entity</th>
+            <th>Rendered</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>&amp;larr;</code></td>
+            <td class="entity-render">&larr;</td>
+            <td>Left arrow</td>
+          </tr>
+          <tr>
+            <td><code>&amp;rarr;</code></td>
+            <td class="entity-render">&rarr;</td>
+            <td>Right arrow</td>
+          </tr>
+          <tr>
+            <td><code>&amp;uarr;</code></td>
+            <td class="entity-render">&uarr;</td>
+            <td>Up arrow</td>
+          </tr>
+          <tr>
+            <td><code>&amp;darr;</code></td>
+            <td class="entity-render">&darr;</td>
+            <td>Down arrow</td>
+          </tr>
+          <tr>
+            <td><code>&amp;harr;</code></td>
+            <td class="entity-render">&harr;</td>
+            <td>Left-right arrow</td>
+          </tr>
+          <tr>
+            <td><code>&amp;lArr;</code></td>
+            <td class="entity-render">&lArr;</td>
+            <td>Left double arrow</td>
+          </tr>
+          <tr>
+            <td><code>&amp;rArr;</code></td>
+            <td class="entity-render">&rArr;</td>
+            <td>Right double arrow</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>Navigation: &larr; Previous | Next &rarr;</p>
+      <p>Data flow: Input &rArr; Processing &rArr; Output</p>
+      <p>Scroll: &uarr; Up | &darr; Down | &harr; Bidirectional</p>
+    </div>
+  </div>
+
+  <!-- Test 10: Entities in context -->
+  <div class="test-group">
+    <h2>Test 10.10: Entities in Context (Practical Usage)</h2>
+    <div class="expected">Expected: All entities should render correctly when used in realistic text contexts. HTML source code shown as text (using entities), mathematical formulas, and legal text.</div>
+    <div class="test-area">
+      <p><strong>HTML as text:</strong> <code>&lt;div class=&quot;container&quot;&gt;&lt;p&gt;Hello &amp; welcome!&lt;/p&gt;&lt;/div&gt;</code></p>
+      <p><strong>Math formula:</strong> E = mc&sup2;, &pi;r&sup2;, &radic; = &#x221A;, &sum; = &#x2211;</p>
+      <p><strong>Legal text:</strong> &copy; 2025 anyOS Project&trade;. All rights reserved&reg;. Prices from &euro;9.99 / &pound;8.99 / &yen;1,200.</p>
+      <p><strong>Temperature:</strong> Water freezes at 0&deg;C (32&deg;F) and boils at 100&deg;C (212&deg;F).</p>
+      <p><strong>Comparison:</strong> 5 &lt; 10, 10 &gt; 5, 5 &le; 5, 10 &ge; 10, x &ne; y</p>
+    </div>
+  </div>
+
+</body>
+</html>

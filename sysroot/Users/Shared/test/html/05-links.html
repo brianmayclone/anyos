@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test 05: Links (Anchor Elements)</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+    /* Reset link color for test area to browser defaults */
+    .test-area a { color: #6699ff; }
+    .test-area a:visited { color: #9966cc; }
+    .test-area a:hover { color: #99ccff; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="../index.html">Back to Index</a>
+    <a href="04-lists.html">Prev: Lists</a>
+    <a href="06-images.html">Next: Images</a>
+  </div>
+
+  <h1 class="page-title">Test 05: Links (Anchor Elements)</h1>
+
+  <!-- Test 1: Simple text links -->
+  <div class="test-group">
+    <h2>Test 5.1: Simple Text Links</h2>
+    <div class="expected">Expected: Links should be displayed as colored text (typically blue) with an underline decoration. They should be inline elements that flow with surrounding text.</div>
+    <div class="test-area">
+      <p>Click <a href="01-headings.html">here to go to the headings test</a>.</p>
+      <p>Visit <a href="02-paragraphs.html">the paragraphs test page</a> for more tests.</p>
+      <p>A sentence with <a href="#">a link</a> in the middle of it.</p>
+    </div>
+  </div>
+
+  <!-- Test 2: Links with title attribute -->
+  <div class="test-group">
+    <h2>Test 5.2: Links with Title Attribute</h2>
+    <div class="expected">Expected: Links with title attributes should show a tooltip when hovered. The title text should appear in a small popup near the cursor. The link itself should look the same as any other link.</div>
+    <div class="test-area">
+      <p><a href="#" title="This is a tooltip for the first link">Hover over me for a tooltip</a></p>
+      <p><a href="#" title="Links can have descriptive titles that provide additional context">Link with a longer tooltip text</a></p>
+      <p>Text with an <a href="#" title="Inline tooltip">inline titled link</a> within a sentence.</p>
+    </div>
+  </div>
+
+  <!-- Test 3: Fragment/anchor links -->
+  <div class="test-group">
+    <h2>Test 5.3: Fragment Links (Anchor to #id)</h2>
+    <div class="expected">Expected: Clicking a fragment link (#id) should scroll the page to the element with the matching id attribute. The URL should update to include the fragment.</div>
+    <div class="test-area">
+      <p>Jump to sections on this page:</p>
+      <ul>
+        <li><a href="#anchor-target-1">Go to Target 1</a></li>
+        <li><a href="#anchor-target-2">Go to Target 2</a></li>
+        <li><a href="#anchor-target-3">Go to Target 3</a></li>
+      </ul>
+
+      <div style="height: 100px;"></div>
+      <h3 id="anchor-target-1">Target 1: You scrolled here!</h3>
+      <p>This is the content at anchor target 1.</p>
+
+      <div style="height: 100px;"></div>
+      <h3 id="anchor-target-2">Target 2: You scrolled here!</h3>
+      <p>This is the content at anchor target 2.</p>
+
+      <div style="height: 100px;"></div>
+      <h3 id="anchor-target-3">Target 3: You scrolled here!</h3>
+      <p>This is the content at anchor target 3.</p>
+    </div>
+  </div>
+
+  <!-- Test 4: Links wrapping inline elements -->
+  <div class="test-group">
+    <h2>Test 5.4: Links Wrapping Inline Elements</h2>
+    <div class="expected">Expected: Links can wrap around other inline elements like strong, em, code, etc. The entire wrapped content should be clickable and styled as a link.</div>
+    <div class="test-area">
+      <p><a href="#"><strong>Bold link text</strong></a></p>
+      <p><a href="#"><em>Italic link text</em></a></p>
+      <p><a href="#"><code>Code inside a link</code></a></p>
+      <p><a href="#">Link with <strong>bold</strong> and <em>italic</em> mixed</a></p>
+    </div>
+  </div>
+
+  <!-- Test 5: Link as block-level wrapper (HTML5) -->
+  <div class="test-group">
+    <h2>Test 5.5: Links Wrapping Block Content (HTML5)</h2>
+    <div class="expected">Expected: In HTML5, an anchor can wrap block-level elements. The entire block area should be clickable. The visual styling should apply to the contained block.</div>
+    <div class="test-area">
+      <a href="#" style="text-decoration: none; color: inherit;">
+        <div style="padding: 10px; border: 1px solid #4ecdc4; border-radius: 4px; margin: 5px 0;">
+          <h3 style="margin: 0 0 5px 0; color: #4ecdc4;">Clickable Card Title</h3>
+          <p style="margin: 0;">This entire card is wrapped in an anchor element and should be clickable.</p>
+        </div>
+      </a>
+    </div>
+  </div>
+
+  <!-- Test 6: Visited vs unvisited -->
+  <div class="test-group">
+    <h2>Test 5.6: Visited vs Unvisited Styling</h2>
+    <div class="expected">Expected: Unvisited links should appear in one color (typically blue #6699ff). Visited links should appear in a different color (typically purple #9966cc). This depends on browser history.</div>
+    <div class="test-area">
+      <p><a href="#never-visited-fragment-xyz123">This link is unlikely to be visited (unique fragment)</a></p>
+      <p><a href="#">This link (#) may appear as visited if you've clicked it</a></p>
+      <p>Note: Visited link styling depends on the browser's history. In Surf.app, both colors should be distinguishable.</p>
+    </div>
+  </div>
+
+  <!-- Test 7: Link states -->
+  <div class="test-group">
+    <h2>Test 5.7: Link State Styling (hover, active)</h2>
+    <div class="expected">Expected: Links should change appearance on hover (lighter color #99ccff). When clicking (active state), the link may show yet another style. The cursor should change to a pointer on hover.</div>
+    <div class="test-area">
+      <p><a href="#">Hover over this link to see color change</a></p>
+      <p><a href="#">Click and hold this link to see active state</a></p>
+      <p>Normal text, <a href="#">link in text</a>, more normal text.</p>
+    </div>
+  </div>
+
+  <!-- Test 8: Adjacent links -->
+  <div class="test-group">
+    <h2>Test 5.8: Adjacent and Multiple Links</h2>
+    <div class="expected">Expected: Multiple adjacent links should each be independently clickable. There should be visible separation between them (from whitespace). Each link's underline should not merge with neighbors.</div>
+    <div class="test-area">
+      <p><a href="#">Link 1</a> <a href="#">Link 2</a> <a href="#">Link 3</a></p>
+      <p><a href="#">First</a> | <a href="#">Second</a> | <a href="#">Third</a> | <a href="#">Fourth</a></p>
+      <p>Navigation: <a href="01-headings.html">Headings</a> / <a href="02-paragraphs.html">Paragraphs</a> / <a href="03-text-formatting.html">Formatting</a> / <a href="04-lists.html">Lists</a></p>
+    </div>
+  </div>
+
+  <!-- Test 9: Link with no href -->
+  <div class="test-group">
+    <h2>Test 5.9: Anchor Without href</h2>
+    <div class="expected">Expected: An anchor element without href should not be styled as a link (no color change, no underline). It acts as a plain span/placeholder. It should not be clickable.</div>
+    <div class="test-area">
+      <p>This has <a>an anchor with no href</a> in it.</p>
+      <p>Compare: <a>no href</a> vs <a href="#">with href</a>.</p>
+    </div>
+  </div>
+
+  <!-- Test 10: Links with long text -->
+  <div class="test-group">
+    <h2>Test 5.10: Links with Long Text and Wrapping</h2>
+    <div class="expected">Expected: A link with very long text should wrap to the next line. The underline and color should follow the text across multiple lines. The entire multi-line text should be clickable.</div>
+    <div class="test-area">
+      <p><a href="#">This is a very long link text that should wrap to multiple lines when the container is not wide enough to hold it all on a single line, and the underline and link color should persist across all wrapped lines</a></p>
+    </div>
+  </div>
+
+</body>
+</html>

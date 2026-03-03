@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test 11: Preformatted Text and Code Blocks</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="../index.html">Back to Index</a>
+    <a href="10-entities.html">Prev: Entities</a>
+    <a href="12-nesting.html">Next: Nesting</a>
+  </div>
+
+  <h1 class="page-title">Test 11: Preformatted Text and Code Blocks</h1>
+
+  <!-- Test 1: Basic pre element -->
+  <div class="test-group">
+    <h2>Test 11.1: Basic pre Element</h2>
+    <div class="expected">Expected: The pre element should preserve all whitespace exactly as written in the source: spaces, tabs, and newlines. It should render in a monospace font. No whitespace collapsing.</div>
+    <div class="test-area">
+<pre>This text is preformatted.
+  It preserves    multiple   spaces.
+    And indentation.
+      And deeper indentation.
+        Even deeper.
+
+Empty lines above and below are preserved too.
+
+Line1
+Line2
+Line3</pre>
+    </div>
+  </div>
+
+  <!-- Test 2: code inside pre (code block) -->
+  <div class="test-group">
+    <h2>Test 11.2: Code Block (code inside pre)</h2>
+    <div class="expected">Expected: A code block (pre + code) should render in monospace with preserved whitespace. This is the standard pattern for displaying source code on web pages.</div>
+    <div class="test-area">
+<pre><code>fn main() {
+    let message = "Hello, anyOS!";
+    println!("{}", message);
+
+    for i in 0..10 {
+        if i % 2 == 0 {
+            println!("{} is even", i);
+        }
+    }
+}</code></pre>
+    </div>
+  </div>
+
+  <!-- Test 3: Inline code vs code block -->
+  <div class="test-group">
+    <h2>Test 11.3: Inline Code vs Code Block</h2>
+    <div class="expected">Expected: Inline code (code without pre) should appear monospace within the paragraph text. The code block (pre+code) should be a separate block with preserved whitespace. Clear visual distinction between the two.</div>
+    <div class="test-area">
+      <p>Use the <code>println!()</code> macro to print output. The <code>fn main()</code> function is the entry point.</p>
+      <p>Here is a full code block:</p>
+<pre><code>use std::io;
+
+fn main() {
+    let mut input = String::new();
+    io::stdin().read_line(&amp;mut input).unwrap();
+    println!("You typed: {}", input.trim());
+}</code></pre>
+      <p>After the code block, the variable <code>input</code> holds user input.</p>
+    </div>
+  </div>
+
+  <!-- Test 4: Blockquote -->
+  <div class="test-group">
+    <h2>Test 11.4: Blockquote</h2>
+    <div class="expected">Expected: Blockquote should render as an indented block, typically with a left margin or border. The text inside should be visually offset from surrounding paragraphs to indicate it is a quotation.</div>
+    <div class="test-area">
+      <p>As the documentation states:</p>
+      <blockquote>
+        <p>The anyOS project is a bare-metal operating system written in Rust and NASM assembly. It features a macOS-inspired dark UI with a custom window compositor running in user space.</p>
+      </blockquote>
+      <p>This is clearly an ambitious project.</p>
+
+      <blockquote>
+        <p>To be, or not to be, that is the question.</p>
+      </blockquote>
+    </div>
+  </div>
+
+  <!-- Test 5: Nested blockquotes -->
+  <div class="test-group">
+    <h2>Test 11.5: Nested Blockquotes</h2>
+    <div class="expected">Expected: Each level of nested blockquote should add additional indentation or visual nesting. Three levels of nesting should be clearly distinguishable.</div>
+    <div class="test-area">
+      <blockquote>
+        <p>Level 1: The outermost quote.</p>
+        <blockquote>
+          <p>Level 2: A reply to the original quote.</p>
+          <blockquote>
+            <p>Level 3: A reply to the reply. This is three levels deep.</p>
+          </blockquote>
+          <p>Back to level 2.</p>
+        </blockquote>
+        <p>Back to level 1.</p>
+      </blockquote>
+    </div>
+  </div>
+
+  <!-- Test 6: Pre with long lines (overflow) -->
+  <div class="test-group">
+    <h2>Test 11.6: Pre with Long Lines (Horizontal Overflow)</h2>
+    <div class="expected">Expected: Pre elements with very long lines should NOT wrap (whitespace is preserved literally). The content should overflow horizontally, potentially showing a scrollbar or extending beyond the container.</div>
+    <div class="test-area" style="overflow-x: auto;">
+<pre>This is a very long line that should not wrap in a pre element because preformatted text preserves whitespace exactly as written including the fact that lines do not wrap at the container boundary but instead extend horizontally which may cause overflow scrolling in the container.
+Short line.
+Another very long line: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+Normal line again.</pre>
+    </div>
+  </div>
+
+  <!-- Test 7: Pre with special characters -->
+  <div class="test-group">
+    <h2>Test 11.7: Pre with HTML Entities and Special Characters</h2>
+    <div class="expected">Expected: HTML entities inside pre should still be decoded (e.g., &amp;lt; becomes &lt;). Raw angle brackets cannot be used directly without entities. The whitespace preservation still applies.</div>
+    <div class="test-area">
+<pre>&lt;html&gt;
+  &lt;head&gt;
+    &lt;title&gt;Test Page&lt;/title&gt;
+  &lt;/head&gt;
+  &lt;body&gt;
+    &lt;h1&gt;Hello, World!&lt;/h1&gt;
+    &lt;p&gt;A paragraph with &amp;amp; entities.&lt;/p&gt;
+  &lt;/body&gt;
+&lt;/html&gt;</pre>
+    </div>
+  </div>
+
+  <!-- Test 8: ASCII art in pre -->
+  <div class="test-group">
+    <h2>Test 11.8: ASCII Art in Pre</h2>
+    <div class="expected">Expected: ASCII art should render correctly with monospace font and preserved spacing. All characters should align in a grid pattern. The art should look correct and not be distorted.</div>
+    <div class="test-area">
+<pre>    _____
+   /     \
+  /  O  O \
+ |    __   |
+ |   /  \  |
+  \  \__/  /
+   \_____/
+
++--------+--------+--------+
+| Cell 1 | Cell 2 | Cell 3 |
++--------+--------+--------+
+| A      | B      | C      |
+| D      | E      | F      |
++--------+--------+--------+
+
+    *
+   ***
+  *****
+ *******
+*********
+   |||
+   |||</pre>
+    </div>
+  </div>
+
+  <!-- Test 9: Blockquote with mixed content -->
+  <div class="test-group">
+    <h2>Test 11.9: Blockquote with Mixed Content</h2>
+    <div class="expected">Expected: Blockquote can contain headings, paragraphs, lists, and code. All these elements should render correctly within the indented blockquote context.</div>
+    <div class="test-area">
+      <blockquote>
+        <h3>Important Notice</h3>
+        <p>This blockquote contains multiple types of content:</p>
+        <ul>
+          <li>A list item</li>
+          <li>Another list item</li>
+        </ul>
+        <p>And even a code snippet:</p>
+        <pre><code>let x = 42;</code></pre>
+        <p><strong>Bold text</strong> and <em>italic text</em> within the blockquote.</p>
+      </blockquote>
+    </div>
+  </div>
+
+  <!-- Test 10: Pre with tabs -->
+  <div class="test-group">
+    <h2>Test 11.10: Pre with Tab Characters</h2>
+    <div class="expected">Expected: Tab characters within pre should be rendered as tab stops (typically 8 spaces wide, but may vary). Tabs should create aligned columns of text.</div>
+    <div class="test-area">
+<pre>Column1		Column2		Column3
+Data A		Data B		Data C
+Short		Medium text	Longer text here
+1		2		3
+
+Tab-indented:
+	One tab
+		Two tabs
+			Three tabs</pre>
+    </div>
+  </div>
+
+  <!-- Test 11: Blockquote with cite -->
+  <div class="test-group">
+    <h2>Test 11.11: Blockquote with Attribution</h2>
+    <div class="expected">Expected: A blockquote can include attribution using footer, cite, or other elements. The quote text should be indented, with the source/attribution clearly associated.</div>
+    <div class="test-area">
+      <blockquote>
+        <p>The only way to do great work is to love what you do.</p>
+        <footer>&mdash; <cite>Steve Jobs</cite></footer>
+      </blockquote>
+
+      <blockquote>
+        <p>Programs must be written for people to read, and only incidentally for machines to execute.</p>
+        <footer>&mdash; <cite>Harold Abelson</cite>, Structure and Interpretation of Computer Programs</footer>
+      </blockquote>
+    </div>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Integration Test 09: JavaScript Interactivity</title>
+  <style>
+    /* === Reset & Base === */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #d4d4d8;
+      font-family: sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+    a { color: #4ecdc4; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* === Page Container === */
+    .page {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .page-title {
+      font-size: 28px;
+      color: #f0f0f5;
+      margin-bottom: 8px;
+    }
+    .page-description {
+      font-size: 14px;
+      color: #8888a0;
+      margin-bottom: 32px;
+    }
+
+    /* === Widget Section === */
+    .widget-section {
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      margin-bottom: 24px;
+      overflow: hidden;
+    }
+    .widget-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid #2a2a4a;
+      background: #0f1a2e;
+    }
+    .widget-header h2 {
+      font-size: 18px;
+      color: #4ecdc4;
+      margin-bottom: 2px;
+    }
+    .widget-header p {
+      font-size: 13px;
+      color: #6868a0;
+    }
+    .widget-body {
+      padding: 20px;
+    }
+
+    /* === Shared Button Styles === */
+    .btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: none;
+      font-size: 14px;
+      cursor: pointer;
+      font-family: sans-serif;
+      font-weight: bold;
+    }
+    .btn-primary { background: #4ecdc4; color: #0a0a1e; }
+    .btn-primary:hover { background: #3dbdb5; }
+    .btn-danger { background: #ff6b6b; color: #fff; }
+    .btn-danger:hover { background: #e05555; }
+    .btn-secondary { background: #2a2a4a; color: #d4d4d8; border: 1px solid #3a3a5a; }
+    .btn-secondary:hover { background: #3a3a5a; }
+    .btn-sm { padding: 4px 12px; font-size: 12px; }
+
+    /* ============================================================
+       WIDGET 1: Counter
+       Increment/decrement buttons with a displayed number
+       ============================================================ */
+    .counter-display {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      justify-content: center;
+    }
+    .counter-value {
+      font-size: 64px;
+      font-weight: bold;
+      color: #f0f0f5;
+      min-width: 120px;
+      text-align: center;
+    }
+    .counter-btn {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      border: 2px solid #3a3a5a;
+      background: #0f1a2e;
+      color: #f0f0f5;
+      font-size: 24px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: sans-serif;
+    }
+    .counter-btn:hover { border-color: #4ecdc4; color: #4ecdc4; }
+    .counter-controls {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    /* ============================================================
+       WIDGET 2: To-Do List
+       Input + add button, list of items with toggle/delete
+       ============================================================ */
+    .todo-input-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .todo-input {
+      flex: 1;
+      padding: 10px 12px;
+      border: 1px solid #3a3a5a;
+      border-radius: 6px;
+      background: #0f1a2e;
+      color: #f0f0f5;
+      font-size: 14px;
+      font-family: sans-serif;
+    }
+    .todo-input:focus { outline: none; border-color: #4ecdc4; }
+    .todo-input::placeholder { color: #4a4a6a; }
+
+    .todo-list {
+      list-style: none;
+    }
+    .todo-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border-bottom: 1px solid #1a2a4a;
+    }
+    .todo-item:last-child { border-bottom: none; }
+    .todo-checkbox {
+      width: 20px;
+      height: 20px;
+      border: 2px solid #3a3a5a;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      font-size: 14px;
+      color: transparent;
+      background: #0f1a2e;
+    }
+    .todo-checkbox.checked {
+      background: #4ecdc4;
+      border-color: #4ecdc4;
+      color: #0a0a1e;
+    }
+    .todo-text {
+      flex: 1;
+      font-size: 14px;
+      color: #c8c8d8;
+    }
+    .todo-text.completed {
+      text-decoration: line-through;
+      color: #6868a0;
+    }
+    .todo-delete {
+      background: none;
+      border: none;
+      color: #6868a0;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 2px 6px;
+      font-family: sans-serif;
+    }
+    .todo-delete:hover { color: #ff6b6b; }
+    .todo-stats {
+      font-size: 13px;
+      color: #6868a0;
+      margin-top: 12px;
+      padding-top: 8px;
+      border-top: 1px solid #2a2a4a;
+    }
+    .todo-empty {
+      text-align: center;
+      color: #4a4a6a;
+      padding: 20px;
+      font-size: 14px;
+    }
+
+    /* ============================================================
+       WIDGET 3: Simple Calculator
+       4 number buttons, operations, display
+       ============================================================ */
+    .calc-display {
+      background: #0a0a1e;
+      border: 1px solid #2a2a4a;
+      border-radius: 6px;
+      padding: 16px;
+      text-align: right;
+      font-size: 32px;
+      font-family: monospace;
+      color: #f0f0f5;
+      margin-bottom: 12px;
+      min-height: 60px;
+      overflow: hidden;
+    }
+    .calc-sub-display {
+      font-size: 14px;
+      color: #6868a0;
+      min-height: 18px;
+    }
+    .calc-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+    .calc-btn {
+      padding: 14px;
+      border-radius: 8px;
+      border: none;
+      font-size: 18px;
+      cursor: pointer;
+      font-family: sans-serif;
+      font-weight: bold;
+      text-align: center;
+    }
+    .calc-btn.num {
+      background: #2a2a4a;
+      color: #f0f0f5;
+    }
+    .calc-btn.num:hover { background: #3a3a5a; }
+    .calc-btn.op {
+      background: #0f3460;
+      color: #4ecdc4;
+    }
+    .calc-btn.op:hover { background: #1a4a8a; }
+    .calc-btn.eq {
+      background: #4ecdc4;
+      color: #0a0a1e;
+    }
+    .calc-btn.eq:hover { background: #3dbdb5; }
+    .calc-btn.clear {
+      background: #3a1a1a;
+      color: #ff6b6b;
+    }
+    .calc-btn.clear:hover { background: #4a2a2a; }
+    .calc-btn.wide { grid-column: span 2; }
+
+    /* ============================================================
+       WIDGET 4: Theme Switcher
+       Buttons that change page background/text colors
+       ============================================================ */
+    .theme-buttons {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .theme-btn {
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: 2px solid #3a3a5a;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: bold;
+      font-family: sans-serif;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .theme-btn:hover { border-color: #4ecdc4; }
+    .theme-btn.active { border-color: #4ecdc4; }
+    .theme-swatch {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+    .theme-preview {
+      margin-top: 16px;
+      padding: 16px;
+      border-radius: 8px;
+      border: 1px solid #2a2a4a;
+      font-size: 14px;
+    }
+
+    /* ============================================================
+       WIDGET 5: Accordion
+       Click headers to expand/collapse content sections
+       ============================================================ */
+    .accordion-item {
+      border: 1px solid #2a2a4a;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      overflow: hidden;
+    }
+    .accordion-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      background: #0f1a2e;
+      cursor: pointer;
+      color: #f0f0f5;
+      font-size: 15px;
+      font-weight: bold;
+      border: none;
+      width: 100%;
+      text-align: left;
+      font-family: sans-serif;
+    }
+    .accordion-header:hover { background: #0f2a4e; }
+    .accordion-arrow {
+      font-size: 12px;
+      color: #6868a0;
+      transition: transform 0.1s;
+    }
+    .accordion-item.open .accordion-arrow {
+      transform: rotate(90deg);
+    }
+    .accordion-content {
+      display: none;
+      padding: 16px;
+      font-size: 14px;
+      color: #a0a0b8;
+      border-top: 1px solid #2a2a4a;
+    }
+    .accordion-item.open .accordion-content {
+      display: block;
+    }
+
+    /* === Expected Rendering Section === */
+    .expected-rendering {
+      max-width: 900px;
+      margin: 40px auto;
+      padding: 20px 24px;
+      background: #1a2a1a;
+      border: 1px solid #2a4a2a;
+      border-radius: 8px;
+      color: #6bff6b;
+      font-size: 14px;
+    }
+    .expected-rendering h2 {
+      color: #6bff6b;
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+    .expected-rendering ul { margin-left: 20px; }
+    .expected-rendering li { margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+
+  <!-- Back navigation -->
+  <div style="padding:12px 24px;background:#0a0a1e;">
+    <div class="nav" style="margin-bottom:0"><a href="../index.html" style="color:#4ecdc4;text-decoration:none">&larr; Back to Test Index</a></div>
+  </div>
+
+  <div class="page">
+    <h1 class="page-title">JavaScript Interactivity</h1>
+    <p class="page-description">Five interactive widgets testing DOM manipulation, event handling, and dynamic state updates.</p>
+
+    <!-- ============================================================
+         WIDGET 1: Counter
+         ============================================================ -->
+    <div class="widget-section">
+      <div class="widget-header">
+        <h2>1. Counter</h2>
+        <p>Increment and decrement a number with buttons. Reset to zero.</p>
+      </div>
+      <div class="widget-body">
+        <div class="counter-display">
+          <button class="counter-btn" id="counter-dec">-</button>
+          <div class="counter-value" id="counter-value">0</div>
+          <button class="counter-btn" id="counter-inc">+</button>
+        </div>
+        <div class="counter-controls">
+          <button class="btn btn-secondary btn-sm" id="counter-reset">Reset</button>
+          <button class="btn btn-secondary btn-sm" id="counter-random">Random (1-100)</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         WIDGET 2: To-Do List
+         ============================================================ -->
+    <div class="widget-section">
+      <div class="widget-header">
+        <h2>2. To-Do List</h2>
+        <p>Add items, toggle completion (strikethrough), and delete items.</p>
+      </div>
+      <div class="widget-body">
+        <div class="todo-input-row">
+          <input type="text" class="todo-input" id="todo-input" placeholder="What needs to be done?">
+          <button class="btn btn-primary" id="todo-add">Add</button>
+        </div>
+        <ul class="todo-list" id="todo-list">
+          <!-- Items added dynamically by JS -->
+        </ul>
+        <div class="todo-empty" id="todo-empty">No tasks yet. Add one above!</div>
+        <div class="todo-stats" id="todo-stats" style="display:none;">
+          <span id="todo-count">0</span> items, <span id="todo-done-count">0</span> completed
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         WIDGET 3: Calculator
+         ============================================================ -->
+    <div class="widget-section">
+      <div class="widget-header">
+        <h2>3. Simple Calculator</h2>
+        <p>Basic arithmetic: numbers 0-9, add, subtract, multiply, divide, equals, and clear.</p>
+      </div>
+      <div class="widget-body">
+        <div style="max-width:320px;">
+          <div class="calc-display">
+            <div class="calc-sub-display" id="calc-sub"></div>
+            <div id="calc-display">0</div>
+          </div>
+          <div class="calc-grid">
+            <button class="calc-btn clear" data-action="clear">C</button>
+            <button class="calc-btn op" data-action="sign">+/-</button>
+            <button class="calc-btn op" data-action="percent">%</button>
+            <button class="calc-btn op" data-action="op" data-op="/">/</button>
+
+            <button class="calc-btn num" data-action="num" data-num="7">7</button>
+            <button class="calc-btn num" data-action="num" data-num="8">8</button>
+            <button class="calc-btn num" data-action="num" data-num="9">9</button>
+            <button class="calc-btn op" data-action="op" data-op="*">x</button>
+
+            <button class="calc-btn num" data-action="num" data-num="4">4</button>
+            <button class="calc-btn num" data-action="num" data-num="5">5</button>
+            <button class="calc-btn num" data-action="num" data-num="6">6</button>
+            <button class="calc-btn op" data-action="op" data-op="-">-</button>
+
+            <button class="calc-btn num" data-action="num" data-num="1">1</button>
+            <button class="calc-btn num" data-action="num" data-num="2">2</button>
+            <button class="calc-btn num" data-action="num" data-num="3">3</button>
+            <button class="calc-btn op" data-action="op" data-op="+">+</button>
+
+            <button class="calc-btn num wide" data-action="num" data-num="0">0</button>
+            <button class="calc-btn num" data-action="decimal">.</button>
+            <button class="calc-btn eq" data-action="equals">=</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         WIDGET 4: Color Theme Switcher
+         ============================================================ -->
+    <div class="widget-section">
+      <div class="widget-header">
+        <h2>4. Color Theme Switcher</h2>
+        <p>Click a theme button to change the preview area colors via JavaScript.</p>
+      </div>
+      <div class="widget-body">
+        <div class="theme-buttons" id="theme-buttons">
+          <button class="theme-btn active" data-bg="#1a1a2e" data-fg="#d4d4d8" data-accent="#4ecdc4">
+            <span class="theme-swatch" style="background:#1a1a2e;"></span> Default Dark
+          </button>
+          <button class="theme-btn" data-bg="#0d1117" data-fg="#c9d1d9" data-accent="#58a6ff">
+            <span class="theme-swatch" style="background:#0d1117;"></span> GitHub Dark
+          </button>
+          <button class="theme-btn" data-bg="#282a36" data-fg="#f8f8f2" data-accent="#ff79c6">
+            <span class="theme-swatch" style="background:#282a36;"></span> Dracula
+          </button>
+          <button class="theme-btn" data-bg="#fdf6e3" data-fg="#657b83" data-accent="#268bd2">
+            <span class="theme-swatch" style="background:#fdf6e3;"></span> Solarized Light
+          </button>
+          <button class="theme-btn" data-bg="#1e1e2e" data-fg="#cdd6f4" data-accent="#f5c2e7">
+            <span class="theme-swatch" style="background:#1e1e2e;"></span> Catppuccin
+          </button>
+        </div>
+        <div class="theme-preview" id="theme-preview" style="background:#1a1a2e;color:#d4d4d8;">
+          <h3 style="margin-bottom:8px;">Preview Area</h3>
+          <p>This text and background color will change when you click a theme button above. The accent color (<span id="theme-accent-text" style="color:#4ecdc4;">shown here</span>) also updates.</p>
+          <p style="margin-top:8px;">Current theme: <strong id="theme-name">Default Dark</strong></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         WIDGET 5: Accordion
+         ============================================================ -->
+    <div class="widget-section">
+      <div class="widget-header">
+        <h2>5. Accordion</h2>
+        <p>Click section headers to expand or collapse content. Only one section open at a time.</p>
+      </div>
+      <div class="widget-body">
+        <div id="accordion">
+          <div class="accordion-item open">
+            <button class="accordion-header">
+              <span>What is Surf.app?</span>
+              <span class="accordion-arrow">&#9654;</span>
+            </button>
+            <div class="accordion-content">
+              <p>Surf.app is a custom web browser built for anyOS. It includes an HTML parser, CSS layout engine, and JavaScript runtime, all implemented from scratch to run on a bare-metal operating system.</p>
+            </div>
+          </div>
+          <div class="accordion-item">
+            <button class="accordion-header">
+              <span>What HTML features are supported?</span>
+              <span class="accordion-arrow">&#9654;</span>
+            </button>
+            <div class="accordion-content">
+              <p>Surf.app supports HTML5 elements including headings, paragraphs, lists, tables, forms, links, images (via data URIs), and semantic elements. The parser handles both well-formed and some malformed markup.</p>
+            </div>
+          </div>
+          <div class="accordion-item">
+            <button class="accordion-header">
+              <span>What CSS layout modes are available?</span>
+              <span class="accordion-arrow">&#9654;</span>
+            </button>
+            <div class="accordion-content">
+              <p>The CSS engine supports block layout, inline layout, flexbox, and CSS Grid. Properties like margin, padding, border, background colors, font sizes, and positioning (static, relative, absolute) are implemented.</p>
+            </div>
+          </div>
+          <div class="accordion-item">
+            <button class="accordion-header">
+              <span>Does JavaScript work?</span>
+              <span class="accordion-arrow">&#9654;</span>
+            </button>
+            <div class="accordion-content">
+              <p>Yes, a JavaScript engine is integrated with DOM bindings. You can use document.getElementById, addEventListener, createElement, and modify element styles and content dynamically. This page itself uses JavaScript for all its interactive widgets.</p>
+            </div>
+          </div>
+          <div class="accordion-item">
+            <button class="accordion-header">
+              <span>How can I test my pages?</span>
+              <span class="accordion-arrow">&#9654;</span>
+            </button>
+            <div class="accordion-content">
+              <p>Place your HTML files in the sysroot test directory and open them in Surf.app. The test suite includes individual HTML, CSS, and JS tests as well as integration tests like this one that combine all three technologies.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       JAVASCRIPT
+       ============================================================ -->
+  <script>
+    /* ================================================================
+       WIDGET 1: Counter
+       Tracks a numeric value. Buttons increment, decrement, reset,
+       or set to a random value. The display updates on each click.
+       ================================================================ */
+    (function() {
+      var count = 0;
+      var display = document.getElementById('counter-value');
+
+      function updateDisplay() {
+        display.textContent = count;
+      }
+
+      document.getElementById('counter-inc').addEventListener('click', function() {
+        count++;
+        updateDisplay();
+      });
+      document.getElementById('counter-dec').addEventListener('click', function() {
+        count--;
+        updateDisplay();
+      });
+      document.getElementById('counter-reset').addEventListener('click', function() {
+        count = 0;
+        updateDisplay();
+      });
+      document.getElementById('counter-random').addEventListener('click', function() {
+        count = Math.floor(Math.random() * 100) + 1;
+        updateDisplay();
+      });
+    })();
+
+    /* ================================================================
+       WIDGET 2: To-Do List
+       Maintains an array of to-do items. Each item has text and a
+       completed boolean. Renders the list to the DOM on each change.
+       ================================================================ */
+    (function() {
+      var todos = [];
+      var nextId = 1;
+      var listEl = document.getElementById('todo-list');
+      var inputEl = document.getElementById('todo-input');
+      var emptyEl = document.getElementById('todo-empty');
+      var statsEl = document.getElementById('todo-stats');
+      var countEl = document.getElementById('todo-count');
+      var doneEl = document.getElementById('todo-done-count');
+
+      function renderTodos() {
+        // Clear the list
+        listEl.innerHTML = '';
+
+        if (todos.length === 0) {
+          emptyEl.style.display = 'block';
+          statsEl.style.display = 'none';
+          return;
+        }
+
+        emptyEl.style.display = 'none';
+        statsEl.style.display = 'block';
+
+        var doneCount = 0;
+        for (var i = 0; i < todos.length; i++) {
+          var todo = todos[i];
+          if (todo.completed) doneCount++;
+
+          var li = document.createElement('li');
+          li.className = 'todo-item';
+
+          var cb = document.createElement('div');
+          cb.className = 'todo-checkbox' + (todo.completed ? ' checked' : '');
+          cb.textContent = todo.completed ? 'X' : '';
+          cb.setAttribute('data-id', todo.id);
+          cb.addEventListener('click', function() {
+            var id = parseInt(this.getAttribute('data-id'));
+            for (var j = 0; j < todos.length; j++) {
+              if (todos[j].id === id) {
+                todos[j].completed = !todos[j].completed;
+                break;
+              }
+            }
+            renderTodos();
+          });
+
+          var txt = document.createElement('span');
+          txt.className = 'todo-text' + (todo.completed ? ' completed' : '');
+          txt.textContent = todo.text;
+
+          var del = document.createElement('button');
+          del.className = 'todo-delete';
+          del.textContent = 'X';
+          del.setAttribute('data-id', todo.id);
+          del.addEventListener('click', function() {
+            var id = parseInt(this.getAttribute('data-id'));
+            var newTodos = [];
+            for (var j = 0; j < todos.length; j++) {
+              if (todos[j].id !== id) newTodos.push(todos[j]);
+            }
+            todos = newTodos;
+            renderTodos();
+          });
+
+          li.appendChild(cb);
+          li.appendChild(txt);
+          li.appendChild(del);
+          listEl.appendChild(li);
+        }
+
+        countEl.textContent = todos.length;
+        doneEl.textContent = doneCount;
+      }
+
+      function addTodo() {
+        var text = inputEl.value.trim();
+        if (!text) return;
+        todos.push({ id: nextId++, text: text, completed: false });
+        inputEl.value = '';
+        renderTodos();
+      }
+
+      document.getElementById('todo-add').addEventListener('click', addTodo);
+      inputEl.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.keyCode === 13) {
+          addTodo();
+        }
+      });
+
+      // Seed with a couple of items for initial display
+      todos.push({ id: nextId++, text: 'Test HTML rendering in Surf.app', completed: true });
+      todos.push({ id: nextId++, text: 'Verify CSS flexbox layout', completed: false });
+      todos.push({ id: nextId++, text: 'Check JavaScript event handling', completed: false });
+      renderTodos();
+    })();
+
+    /* ================================================================
+       WIDGET 3: Calculator
+       Simple calculator with state machine: current value, stored
+       value, pending operation, and display updates.
+       ================================================================ */
+    (function() {
+      var displayEl = document.getElementById('calc-display');
+      var subDisplayEl = document.getElementById('calc-sub');
+      var current = '0';
+      var stored = null;
+      var pendingOp = null;
+      var resetOnNext = false;
+
+      function updateDisplay() {
+        displayEl.textContent = current;
+        if (stored !== null && pendingOp) {
+          subDisplayEl.textContent = stored + ' ' + pendingOp;
+        } else {
+          subDisplayEl.textContent = '';
+        }
+      }
+
+      function calculate(a, b, op) {
+        a = parseFloat(a);
+        b = parseFloat(b);
+        if (op === '+') return a + b;
+        if (op === '-') return a - b;
+        if (op === '*') return a * b;
+        if (op === '/') return b !== 0 ? a / b : 'Error';
+        return b;
+      }
+
+      var buttons = document.querySelectorAll('.calc-btn');
+      for (var i = 0; i < buttons.length; i++) {
+        buttons[i].addEventListener('click', function() {
+          var action = this.getAttribute('data-action');
+
+          if (action === 'num') {
+            var num = this.getAttribute('data-num');
+            if (resetOnNext) {
+              current = num;
+              resetOnNext = false;
+            } else {
+              current = (current === '0') ? num : current + num;
+            }
+          } else if (action === 'decimal') {
+            if (resetOnNext) { current = '0'; resetOnNext = false; }
+            if (current.indexOf('.') === -1) current += '.';
+          } else if (action === 'op') {
+            if (stored !== null && pendingOp && !resetOnNext) {
+              var result = calculate(stored, current, pendingOp);
+              current = String(result);
+            }
+            stored = current;
+            pendingOp = this.getAttribute('data-op');
+            resetOnNext = true;
+          } else if (action === 'equals') {
+            if (stored !== null && pendingOp) {
+              var result = calculate(stored, current, pendingOp);
+              current = String(result);
+              stored = null;
+              pendingOp = null;
+              resetOnNext = true;
+            }
+          } else if (action === 'clear') {
+            current = '0';
+            stored = null;
+            pendingOp = null;
+            resetOnNext = false;
+          } else if (action === 'sign') {
+            if (current !== '0') {
+              if (current.charAt(0) === '-') {
+                current = current.substring(1);
+              } else {
+                current = '-' + current;
+              }
+            }
+          } else if (action === 'percent') {
+            current = String(parseFloat(current) / 100);
+          }
+
+          updateDisplay();
+        });
+      }
+    })();
+
+    /* ================================================================
+       WIDGET 4: Theme Switcher
+       Changes the preview area background, text, and accent color
+       based on which theme button is clicked.
+       ================================================================ */
+    (function() {
+      var previewEl = document.getElementById('theme-preview');
+      var accentTextEl = document.getElementById('theme-accent-text');
+      var nameEl = document.getElementById('theme-name');
+      var buttons = document.querySelectorAll('#theme-buttons .theme-btn');
+
+      for (var i = 0; i < buttons.length; i++) {
+        buttons[i].addEventListener('click', function() {
+          // Remove active from all buttons
+          for (var j = 0; j < buttons.length; j++) {
+            buttons[j].className = 'theme-btn';
+          }
+          this.className = 'theme-btn active';
+
+          var bg = this.getAttribute('data-bg');
+          var fg = this.getAttribute('data-fg');
+          var accent = this.getAttribute('data-accent');
+
+          previewEl.style.background = bg;
+          previewEl.style.color = fg;
+          accentTextEl.style.color = accent;
+          nameEl.textContent = this.textContent.trim();
+        });
+      }
+    })();
+
+    /* ================================================================
+       WIDGET 5: Accordion
+       Clicking a header toggles its panel open/closed.
+       Only one panel open at a time (single-open mode).
+       ================================================================ */
+    (function() {
+      var items = document.querySelectorAll('#accordion .accordion-item');
+      var headers = document.querySelectorAll('#accordion .accordion-header');
+
+      for (var i = 0; i < headers.length; i++) {
+        headers[i].addEventListener('click', function() {
+          var parentItem = this.parentElement;
+          var isOpen = parentItem.className.indexOf('open') !== -1;
+
+          // Close all items
+          for (var j = 0; j < items.length; j++) {
+            items[j].className = 'accordion-item';
+          }
+
+          // Toggle clicked item
+          if (!isOpen) {
+            parentItem.className = 'accordion-item open';
+          }
+        });
+      }
+    })();
+  </script>
+
+  <!-- ============================================================
+       EXPECTED RENDERING
+       ============================================================ -->
+  <div class="expected-rendering">
+    <h2>Expected Rendering</h2>
+    <ul>
+      <li><strong>Counter:</strong> Large number (initially "0") centered between circular minus and plus buttons. Below: "Reset" and "Random" small buttons. Clicking + increments, - decrements, Reset sets to 0, Random picks 1-100. The number updates immediately on each click.</li>
+      <li><strong>To-Do List:</strong> Text input with "Add" button at the top. Below, a list of pre-seeded items. Each item has a checkbox (square div), text, and delete button (X). Clicking the checkbox toggles strikethrough on the text and fills the checkbox teal. Clicking X removes the item. Stats line shows total items and completed count. Typing in the input and pressing Enter or clicking Add creates a new item.</li>
+      <li><strong>Calculator:</strong> A display area showing "0" with a 4x5 grid of buttons below. Number buttons (0-9) in dark gray, operator buttons (+,-,x,/) in dark blue with teal text, equals button in teal, and C (clear) in dark red. The "0" button spans 2 columns. A sub-display above the main number shows the pending operation (e.g., "5 +"). Clicking numbers builds the display value; clicking an operator stores the first operand; clicking = computes and shows the result.</li>
+      <li><strong>Theme Switcher:</strong> Row of theme buttons with color swatches (small circles). Clicking a button updates the preview area below: background color, text color, and accent color change to match the selected theme. The active button has a teal border. Five themes available: Default Dark, GitHub Dark, Dracula, Solarized Light, Catppuccin.</li>
+      <li><strong>Accordion:</strong> Five collapsible sections. Each has a clickable header with an arrow indicator. The first section ("What is Surf.app?") starts open. Clicking a closed header opens it and closes any previously open section. The arrow rotates when open. Content appears below the header with a top border separator.</li>
+      <li><strong>Overall:</strong> All five widgets are contained in separate bordered section boxes stacked vertically. Each responds to click events with immediate visual feedback. No page reloads occur -- all interactions are handled by JavaScript DOM manipulation.</li>
+    </ul>
+  </div>
+
+</body>
+</html>

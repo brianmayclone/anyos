@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test 09: Centering with Margin Auto</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+    .center-box {
+      color: white;
+      font-size: 13px;
+      text-align: center;
+      padding: 10px;
+    }
+    .container-demo {
+      background: #2c3e50;
+      border: 1px dashed #7f8c8d;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="nav"><a href="../index.html">Index</a></div>
+  <h1 class="page-title">CSS Test 09: Centering with Margin Auto</h1>
+
+  <!-- Test 1: margin: 0 auto (Horizontal Centering) -->
+  <div class="test-group">
+    <h2>Test 1: margin: 0 auto (Horizontal Centering)</h2>
+    <div class="expected">Expected: A 200px-wide red box centered horizontally within the container. The left and right margins are automatically equal, placing the box in the middle. The element must have a defined width for margin: auto to center it.</div>
+    <div class="test-area">
+      <div class="container-demo">
+        <div class="center-box" style="width: 200px; margin: 0 auto; background: #e74c3c;">
+          width: 200px<br>margin: 0 auto
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 2: Different Fixed Widths Centered -->
+  <div class="test-group">
+    <h2>Test 2: Various Widths Centered with margin: auto</h2>
+    <div class="expected">Expected: Three boxes of different widths (100px, 250px, 400px) all centered within the same container. Each should be horizontally centered regardless of its width.</div>
+    <div class="test-area">
+      <div class="container-demo">
+        <div class="center-box" style="width: 100px; margin: 5px auto; background: #e74c3c;">100px</div>
+        <div class="center-box" style="width: 250px; margin: 5px auto; background: #3498db;">250px</div>
+        <div class="center-box" style="width: 400px; margin: 5px auto; background: #2ecc71;">400px</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 3: margin-left: auto (Push Right) -->
+  <div class="test-group">
+    <h2>Test 3: margin-left: auto (Push Right)</h2>
+    <div class="expected">Expected: The box has margin-left: auto, which pushes it to the right edge of the container. The box should be right-aligned. This is because auto expands to fill all available space on the left.</div>
+    <div class="test-area">
+      <div class="container-demo">
+        <div class="center-box" style="width: 200px; margin-left: auto; margin-right: 0; background: #e74c3c;">
+          margin-left: auto<br>(pushed right)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 4: margin-right: auto (Push Left) -->
+  <div class="test-group">
+    <h2>Test 4: margin-right: auto (Push Left)</h2>
+    <div class="expected">Expected: The box has margin-right: auto, which pushes it to the left edge of the container. The box should be left-aligned (this is essentially the default behavior for block elements, but explicitly set).</div>
+    <div class="test-area">
+      <div class="container-demo">
+        <div class="center-box" style="width: 200px; margin-left: 0; margin-right: auto; background: #3498db;">
+          margin-right: auto<br>(pushed left)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 5: Without Width (auto margins have no centering effect) -->
+  <div class="test-group">
+    <h2>Test 5: margin: auto Without Explicit Width</h2>
+    <div class="expected">Expected: A block element without an explicit width takes 100% of its parent. With margin: 0 auto but no width, the element fills the full width -- auto margins compute to 0 because there is no leftover space. The box should be full-width, NOT centered to a smaller size.</div>
+    <div class="test-area">
+      <div class="container-demo">
+        <div class="center-box" style="margin: 0 auto; background: #f39c12;">
+          No explicit width + margin: 0 auto (full width, auto = 0)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 6: Centering a Fixed-Width Element -->
+  <div class="test-group">
+    <h2>Test 6: Centering a Fixed-Width Card</h2>
+    <div class="expected">Expected: A card-like element (300px wide, with padding and border) centered in the container. The card should be horizontally centered. This is a real-world use case: centering a content card in a page layout.</div>
+    <div class="test-area">
+      <div class="container-demo" style="background: #1a1a2e;">
+        <div style="width: 300px; margin: 20px auto; background: #2c3e50; border: 1px solid #555; border-radius: 8px; padding: 20px; text-align: center;">
+          <p style="color: #4ecdc4; font-size: 16px; margin-top: 0;">Centered Card</p>
+          <p style="color: #aaa; font-size: 13px;">This 300px card is centered using margin: 20px auto. It has padding, a border, and rounded corners.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 7: margin: auto on Inline Elements (No Effect) -->
+  <div class="test-group">
+    <h2>Test 7: margin: auto on Inline Elements (No Effect)</h2>
+    <div class="expected">Expected: margin: auto has no horizontal centering effect on inline elements. The inline span should flow normally with the text, not be centered. For centering inline content, use text-align: center on the parent instead.</div>
+    <div class="test-area">
+      <div class="container-demo">
+        <p style="margin: 0 0 10px 0;">Inline element with margin: auto:</p>
+        <span style="margin: 0 auto; background: #e74c3c; color: white; padding: 5px 10px;">
+          inline span with margin: 0 auto (no centering effect)
+        </span>
+        <p style="margin: 10px 0;">Compared to parent with text-align: center:</p>
+        <div style="text-align: center;">
+          <span style="background: #3498db; color: white; padding: 5px 10px;">
+            inline span centered via text-align: center on parent
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 8: Vertical Centering Limitation -->
+  <div class="test-group">
+    <h2>Test 8: margin: auto Vertical (Block Context Limitation)</h2>
+    <div class="expected">Expected: margin: auto auto (all sides auto) on a block element does NOT vertically center it in normal flow. The box should be horizontally centered but remain at the top of the container. Vertical auto margins compute to 0 in block formatting context.</div>
+    <div class="test-area">
+      <div class="container-demo" style="height: 150px;">
+        <div class="center-box" style="width: 250px; margin: auto; background: #9b59b6;">
+          margin: auto (all sides)<br>Centered horizontally but NOT vertically
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 9: Multiple Centered Elements Stacking -->
+  <div class="test-group">
+    <h2>Test 9: Multiple Centered Elements Stacking</h2>
+    <div class="expected">Expected: Three centered boxes of different widths stacked vertically. All should be horizontally centered and aligned on the same center axis. The visual effect should be a centered column with a "pyramid" or "staircase" appearance.</div>
+    <div class="test-area">
+      <div class="container-demo" style="background: #1a1a2e;">
+        <div class="center-box" style="width: 100px; margin: 5px auto; background: #e74c3c;">100px</div>
+        <div class="center-box" style="width: 200px; margin: 5px auto; background: #3498db;">200px</div>
+        <div class="center-box" style="width: 300px; margin: 5px auto; background: #2ecc71;">300px</div>
+        <div class="center-box" style="width: 400px; margin: 5px auto; background: #f39c12;">400px</div>
+        <div class="center-box" style="width: 300px; margin: 5px auto; background: #2ecc71;">300px</div>
+        <div class="center-box" style="width: 200px; margin: 5px auto; background: #3498db;">200px</div>
+        <div class="center-box" style="width: 100px; margin: 5px auto; background: #e74c3c;">100px</div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

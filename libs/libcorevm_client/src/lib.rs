@@ -183,6 +183,10 @@ struct CoreVmLib {
     /// `data_ptr` / `data_len` define the source buffer.
     /// Returns 1 on success, 0 on failure.
     load_binary: extern "C" fn(u64, u64, *const u8, u32) -> u32,
+    /// Map a read-only ROM at a guest physical address.
+    /// Reads from the ROM range return ROM data; writes are silently ignored.
+    /// Returns 0 on success, -1 on failure.
+    load_rom: extern "C" fn(u64, u64, *const u8, u32) -> i32,
     /// Read a byte from guest physical memory.
     read_phys_u8: extern "C" fn(u64, u64) -> u8,
     /// Read a 16-bit value from guest physical memory (little-endian).
@@ -274,6 +278,17 @@ struct CoreVmLib {
     /// Returns the number of bytes actually written.
     debug_take_output: extern "C" fn(u64, *mut u8, u32) -> u32,
 
+    // ── JIT / Decode Cache ────────────────────────────────────────
+    /// Enable or disable the JIT engine (1=enable, 0=disable).
+    jit_enable: extern "C" fn(u64, u32),
+    /// Flush the decode cache and JIT code cache.
+    jit_flush_cache: extern "C" fn(u64),
+    /// Query decode cache statistics (cached_blocks, hits, misses).
+    jit_cache_stats: extern "C" fn(u64, *mut u32, *mut u64, *mut u64),
+    /// Query JIT engine statistics (blocks_compiled, native_count,
+    /// fallback_count, code_buffer_used).
+    jit_stats: extern "C" fn(u64, *mut u64, *mut u64, *mut u64, *mut u32),
+
     // ── Diagnostics ─────────────────────────────────────────────
     /// MMIO diagnostic: region count, bounds, RAM content at 0xB8000.
     mmio_diag: extern "C" fn(u64, *mut u32, *mut u64, *mut u64, *mut u32),
@@ -348,6 +363,7 @@ pub fn init() -> bool {
             get_instruction_count: resolve(&handle, "corevm_get_instruction_count"),
             // Memory
             load_binary: resolve(&handle, "corevm_load_binary"),
+            load_rom: resolve(&handle, "corevm_load_rom"),
             read_phys_u8: resolve(&handle, "corevm_read_phys_u8"),
             read_phys_u16: resolve(&handle, "corevm_read_phys_u16"),
             read_phys_u32: resolve(&handle, "corevm_read_phys_u32"),
@@ -387,6 +403,11 @@ pub fn init() -> bool {
             fw_cfg_add_file: resolve(&handle, "corevm_fw_cfg_add_file"),
             // Debug port
             debug_take_output: resolve(&handle, "corevm_debug_take_output"),
+            // JIT / Decode Cache
+            jit_enable: resolve(&handle, "corevm_jit_enable"),
+            jit_flush_cache: resolve(&handle, "corevm_jit_flush_cache"),
+            jit_cache_stats: resolve(&handle, "corevm_jit_cache_stats"),
+            jit_stats: resolve(&handle, "corevm_jit_stats"),
             // Diagnostics
             mmio_diag: resolve(&handle, "corevm_mmio_diag"),
             // Error reporting
@@ -576,6 +597,20 @@ impl VmHandle {
     /// `true` on success, `false` if the address range is out of bounds.
     pub fn load_binary(&self, addr: u64, data: &[u8]) -> bool {
         (lib().load_binary)(self.handle, addr, data.as_ptr(), data.len() as u32) != 0
+    }
+
+    /// Map a read-only ROM at a guest physical address.
+    ///
+    /// Creates a ROM overlay: reads from `[addr, addr + data.len())`
+    /// return ROM content; writes are silently ignored. Use this to place
+    /// firmware ROMs at high addresses (e.g., SeaBIOS at 0xFFFC0000)
+    /// without allocating a full 4 GiB RAM buffer.
+    ///
+    /// # Returns
+    ///
+    /// `true` on success, `false` on invalid arguments.
+    pub fn load_rom(&self, addr: u64, data: &[u8]) -> bool {
+        (lib().load_rom)(self.handle, addr, data.as_ptr(), data.len() as u32) == 0
     }
 
     /// Read a byte from guest physical memory.
@@ -912,6 +947,59 @@ impl VmHandle {
     /// Clear the pending IDE IRQ.
     pub fn ide_clear_irq(&self) {
         (lib().ide_clear_irq)(self.handle);
+    }
+
+    // ── JIT / Decode Cache ────────────────────────────────────────
+
+    /// Enable or disable the JIT engine.
+    ///
+    /// When enabled, the VM compiles hot basic blocks to native x86-64 code
+    /// for dramatically faster execution. When disabled (default), all
+    /// instructions are interpreted.
+    pub fn jit_enable(&self, enable: bool) {
+        (lib().jit_enable)(self.handle, if enable { 1 } else { 0 });
+    }
+
+    /// Flush the decode cache and JIT code cache.
+    ///
+    /// Forces all basic blocks to be re-decoded and recompiled. Useful after
+    /// loading new code into guest memory.
+    pub fn jit_flush_cache(&self) {
+        (lib().jit_flush_cache)(self.handle);
+    }
+
+    /// Query decode cache statistics.
+    ///
+    /// Returns `(cached_blocks, hits, misses)`.
+    pub fn jit_cache_stats(&self) -> (u32, u64, u64) {
+        let mut blocks: u32 = 0;
+        let mut hits: u64 = 0;
+        let mut misses: u64 = 0;
+        (lib().jit_cache_stats)(
+            self.handle,
+            &mut blocks as *mut u32,
+            &mut hits as *mut u64,
+            &mut misses as *mut u64,
+        );
+        (blocks, hits, misses)
+    }
+
+    /// Query JIT engine statistics.
+    ///
+    /// Returns `(blocks_compiled, native_count, fallback_count, code_buffer_used)`.
+    pub fn jit_stats(&self) -> (u64, u64, u64, u32) {
+        let mut blocks: u64 = 0;
+        let mut native: u64 = 0;
+        let mut fallback: u64 = 0;
+        let mut buf_used: u32 = 0;
+        (lib().jit_stats)(
+            self.handle,
+            &mut blocks as *mut u64,
+            &mut native as *mut u64,
+            &mut fallback as *mut u64,
+            &mut buf_used as *mut u32,
+        );
+        (blocks, native, fallback, buf_used)
     }
 
     // ── Error reporting ─────────────────────────────────────────

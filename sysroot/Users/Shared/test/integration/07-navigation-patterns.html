@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Integration Test 07: Navigation Patterns</title>
+  <style>
+    /* === Reset & Base === */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #d4d4d8;
+      font-family: sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+    a { color: #4ecdc4; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* === Page Container === */
+    .page {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .page-title {
+      font-size: 28px;
+      color: #f0f0f5;
+      margin-bottom: 8px;
+    }
+    .page-description {
+      font-size: 14px;
+      color: #8888a0;
+      margin-bottom: 32px;
+    }
+
+    /* === Section wrapper for each nav pattern === */
+    .pattern-section {
+      margin-bottom: 40px;
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .pattern-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid #2a2a4a;
+      background: #0f1a2e;
+    }
+    .pattern-header h2 {
+      font-size: 18px;
+      color: #4ecdc4;
+      margin-bottom: 4px;
+    }
+    .pattern-header p {
+      font-size: 13px;
+      color: #6868a0;
+    }
+    .pattern-demo {
+      padding: 20px;
+    }
+
+    /* ============================================================
+       PATTERN 1: Horizontal Navigation Bar
+       Flexbox with logo on left, links on right, space-between
+       ============================================================ */
+    .horiz-nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #0f3460;
+      padding: 0 20px;
+      height: 52px;
+      border-radius: 6px;
+    }
+    .horiz-nav .brand {
+      font-size: 18px;
+      font-weight: bold;
+      color: #f0f0f5;
+    }
+    .horiz-nav .brand span { color: #4ecdc4; }
+    .horiz-nav .links {
+      display: flex;
+      gap: 0;
+    }
+    .horiz-nav .links a {
+      padding: 14px 16px;
+      color: #a0b4d0;
+      font-size: 14px;
+      border-bottom: 2px solid transparent;
+    }
+    .horiz-nav .links a:hover {
+      color: #f0f0f5;
+      text-decoration: none;
+      background: rgba(255,255,255,0.05);
+    }
+    .horiz-nav .links a.active {
+      color: #4ecdc4;
+      border-bottom-color: #4ecdc4;
+    }
+
+    /* ============================================================
+       PATTERN 2: Breadcrumb Navigation
+       Horizontal trail: Home > Category > Subcategory > Page
+       ============================================================ */
+    .breadcrumb {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 10px 16px;
+      background: #0f1a2e;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .breadcrumb li {
+      list-style: none;
+      display: flex;
+      align-items: center;
+    }
+    .breadcrumb li + li::before {
+      content: ">";
+      color: #4a4a6a;
+      margin: 0 10px;
+      font-size: 12px;
+    }
+    .breadcrumb a {
+      color: #a0a0b8;
+    }
+    .breadcrumb a:hover { color: #4ecdc4; }
+    .breadcrumb .current {
+      color: #f0f0f5;
+      font-weight: bold;
+    }
+
+    /* ============================================================
+       PATTERN 3: Tab Navigation
+       Horizontal tabs with active tab highlighted
+       ============================================================ */
+    .tabs {
+      display: flex;
+      border-bottom: 2px solid #2a2a4a;
+    }
+    .tab {
+      padding: 12px 24px;
+      color: #8888a0;
+      font-size: 14px;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      cursor: pointer;
+      background: none;
+      border-top: none;
+      border-left: none;
+      border-right: none;
+      font-family: sans-serif;
+    }
+    .tab:hover {
+      color: #c8c8d8;
+      background: rgba(255,255,255,0.03);
+    }
+    .tab.active {
+      color: #4ecdc4;
+      border-bottom-color: #4ecdc4;
+      font-weight: bold;
+    }
+    .tab-content {
+      padding: 16px 0;
+      font-size: 14px;
+      color: #a0a0b8;
+    }
+    .tab-panel {
+      display: none;
+    }
+    .tab-panel.active {
+      display: block;
+    }
+
+    /* ============================================================
+       PATTERN 4: Pagination
+       Horizontal row: prev, page numbers, next
+       ============================================================ */
+    .pagination {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .page-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
+      border: 1px solid #3a3a5a;
+      background: #0f1a2e;
+      color: #a0a0b8;
+      font-size: 14px;
+      cursor: pointer;
+      font-family: sans-serif;
+    }
+    .page-btn:hover {
+      border-color: #4ecdc4;
+      color: #4ecdc4;
+    }
+    .page-btn.active {
+      background: #4ecdc4;
+      color: #0a0a1e;
+      border-color: #4ecdc4;
+      font-weight: bold;
+    }
+    .page-btn.disabled {
+      color: #3a3a5a;
+      cursor: not-allowed;
+      border-color: #2a2a4a;
+    }
+    .page-btn.nav-arrow {
+      width: auto;
+      padding: 0 12px;
+      font-size: 13px;
+    }
+    .page-ellipsis {
+      width: 36px;
+      text-align: center;
+      color: #6868a0;
+      font-size: 14px;
+    }
+
+    /* ============================================================
+       PATTERN 5: Sidebar Navigation with Nested Items
+       Tree-like vertical nav with expandable sections
+       ============================================================ */
+    .sidebar-nav-demo {
+      display: flex;
+      gap: 24px;
+    }
+    .sidebar-nav {
+      width: 240px;
+      flex-shrink: 0;
+      background: #0f1a2e;
+      border-radius: 6px;
+      padding: 12px 0;
+    }
+    .sidebar-nav .nav-section-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #6868a0;
+      padding: 8px 16px 4px;
+    }
+    .sidebar-nav .nav-item {
+      display: block;
+      padding: 8px 16px;
+      color: #a0a0b8;
+      font-size: 14px;
+    }
+    .sidebar-nav .nav-item:hover {
+      background: rgba(255,255,255,0.05);
+      color: #f0f0f5;
+      text-decoration: none;
+    }
+    .sidebar-nav .nav-item.active {
+      color: #4ecdc4;
+      background: rgba(78,205,196,0.1);
+      border-left: 3px solid #4ecdc4;
+      padding-left: 13px;
+    }
+    /* Nested items are indented */
+    .sidebar-nav .nav-item.nested-1 { padding-left: 32px; }
+    .sidebar-nav .nav-item.nested-1.active { padding-left: 29px; }
+    .sidebar-nav .nav-item.nested-2 { padding-left: 48px; }
+    .sidebar-nav .nav-item.nested-2.active { padding-left: 45px; }
+    .sidebar-nav .nav-divider {
+      height: 1px;
+      background: #2a2a4a;
+      margin: 8px 16px;
+    }
+
+    .sidebar-content-area {
+      flex: 1;
+      font-size: 14px;
+      color: #8888a0;
+      padding: 12px;
+      background: #0f1a2e;
+      border-radius: 6px;
+    }
+    .sidebar-content-area h3 {
+      color: #f0f0f5;
+      font-size: 16px;
+      margin-bottom: 8px;
+    }
+
+    /* ============================================================
+       PATTERN 6: Vertical Pill Navigation
+       Pill-shaped buttons stacked vertically
+       ============================================================ */
+    .pill-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      width: 200px;
+    }
+    .pill-nav a {
+      display: block;
+      padding: 8px 16px;
+      border-radius: 20px;
+      color: #a0a0b8;
+      font-size: 14px;
+    }
+    .pill-nav a:hover {
+      background: rgba(255,255,255,0.05);
+      color: #f0f0f5;
+      text-decoration: none;
+    }
+    .pill-nav a.active {
+      background: #4ecdc4;
+      color: #0a0a1e;
+      font-weight: bold;
+    }
+
+    /* ============================================================
+       PATTERN 7: Bottom Tab Bar (Mobile-style)
+       Fixed-position bar with icon + label columns
+       ============================================================ */
+    .bottom-tab-bar {
+      display: flex;
+      background: #0f1a2e;
+      border-radius: 6px;
+      border: 1px solid #2a2a4a;
+    }
+    .bottom-tab-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 10px 0;
+      color: #6868a0;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .bottom-tab-item:hover {
+      color: #a0a0b8;
+    }
+    .bottom-tab-item.active {
+      color: #4ecdc4;
+    }
+    .bottom-tab-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      background: #2a2a4a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .bottom-tab-item.active .bottom-tab-icon {
+      background: #0f3460;
+      color: #4ecdc4;
+    }
+
+    /* === Expected Rendering Section === */
+    .expected-rendering {
+      max-width: 1000px;
+      margin: 40px auto;
+      padding: 20px 24px;
+      background: #1a2a1a;
+      border: 1px solid #2a4a2a;
+      border-radius: 8px;
+      color: #6bff6b;
+      font-size: 14px;
+    }
+    .expected-rendering h2 {
+      color: #6bff6b;
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+    .expected-rendering ul { margin-left: 20px; }
+    .expected-rendering li { margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+
+  <!-- Back navigation -->
+  <div style="padding:12px 24px;background:#0a0a1e;">
+    <div class="nav" style="margin-bottom:0"><a href="../index.html" style="color:#4ecdc4;text-decoration:none">&larr; Back to Test Index</a></div>
+  </div>
+
+  <div class="page">
+    <h1 class="page-title">Navigation Patterns</h1>
+    <p class="page-description">A showcase of common navigation UI patterns, each implemented with HTML and CSS.</p>
+
+    <!-- ============================================================
+         PATTERN 1: Horizontal Navigation Bar
+         ============================================================ -->
+    <div class="pattern-section">
+      <div class="pattern-header">
+        <h2>1. Horizontal Navigation Bar</h2>
+        <p>Flexbox layout with brand on the left and links on the right. Active link has a bottom border accent.</p>
+      </div>
+      <div class="pattern-demo">
+        <nav class="horiz-nav">
+          <div class="brand">Dev<span>Hub</span></div>
+          <div class="links">
+            <a href="#" class="active">Home</a>
+            <a href="#">Projects</a>
+            <a href="#">Docs</a>
+            <a href="#">Blog</a>
+            <a href="#">Support</a>
+          </div>
+        </nav>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         PATTERN 2: Breadcrumb Trail
+         ============================================================ -->
+    <div class="pattern-section">
+      <div class="pattern-header">
+        <h2>2. Breadcrumb Navigation</h2>
+        <p>Hierarchical path showing the user's location. Separator characters between items. Last item is the current page (non-link, bold).</p>
+      </div>
+      <div class="pattern-demo">
+        <ol class="breadcrumb">
+          <li><a href="#">Home</a></li>
+          <li><a href="#">Documentation</a></li>
+          <li><a href="#">Components</a></li>
+          <li><a href="#">Navigation</a></li>
+          <li><span class="current">Breadcrumbs</span></li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         PATTERN 3: Tab Navigation
+         ============================================================ -->
+    <div class="pattern-section">
+      <div class="pattern-header">
+        <h2>3. Tab Navigation</h2>
+        <p>Horizontal tabs with underline-style active indicator. Content switches based on active tab (via JS).</p>
+      </div>
+      <div class="pattern-demo">
+        <div class="tabs" id="tab-bar">
+          <button class="tab active" data-tab="tab-overview">Overview</button>
+          <button class="tab" data-tab="tab-features">Features</button>
+          <button class="tab" data-tab="tab-pricing">Pricing</button>
+          <button class="tab" data-tab="tab-reviews">Reviews</button>
+          <button class="tab" data-tab="tab-faq">FAQ</button>
+        </div>
+        <div class="tab-content">
+          <div class="tab-panel active" id="tab-overview">
+            <p>This is the <strong>Overview</strong> tab content. It provides a general description of the product, its purpose, and its key value propositions. Tab navigation allows users to switch between different views without leaving the page.</p>
+          </div>
+          <div class="tab-panel" id="tab-features">
+            <p>This is the <strong>Features</strong> tab content. It lists the main features and capabilities of the product in detail.</p>
+          </div>
+          <div class="tab-panel" id="tab-pricing">
+            <p>This is the <strong>Pricing</strong> tab content. It displays different pricing tiers and what is included in each plan.</p>
+          </div>
+          <div class="tab-panel" id="tab-reviews">
+            <p>This is the <strong>Reviews</strong> tab content. User testimonials and ratings would be displayed here.</p>
+          </div>
+          <div class="tab-panel" id="tab-faq">
+            <p>This is the <strong>FAQ</strong> tab content. Frequently asked questions and their answers are collected here.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         PATTERN 4: Pagination
+         ============================================================ -->
+    <div class="pattern-section">
+      <div class="pattern-header">
+        <h2>4. Pagination</h2>
+        <p>Page navigation with previous/next arrows, page numbers, active state, and ellipsis for large page counts.</p>
+      </div>
+      <div class="pattern-demo">
+        <!-- Basic pagination -->
+        <p style="font-size:13px;color:#6868a0;margin-bottom:12px;">Simple pagination:</p>
+        <div class="pagination" style="margin-bottom:20px;">
+          <button class="page-btn nav-arrow disabled">&laquo; Prev</button>
+          <button class="page-btn active">1</button>
+          <button class="page-btn">2</button>
+          <button class="page-btn">3</button>
+          <button class="page-btn">4</button>
+          <button class="page-btn">5</button>
+          <button class="page-btn nav-arrow">Next &raquo;</button>
+        </div>
+
+        <!-- Extended pagination with ellipsis -->
+        <p style="font-size:13px;color:#6868a0;margin-bottom:12px;">Extended pagination with ellipsis:</p>
+        <div class="pagination">
+          <button class="page-btn nav-arrow">&laquo; Prev</button>
+          <button class="page-btn">1</button>
+          <button class="page-btn">2</button>
+          <button class="page-btn">3</button>
+          <button class="page-btn active">4</button>
+          <button class="page-btn">5</button>
+          <span class="page-ellipsis">...</span>
+          <button class="page-btn">24</button>
+          <button class="page-btn">25</button>
+          <button class="page-btn nav-arrow">Next &raquo;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         PATTERN 5: Sidebar Navigation with Nested Items
+         ============================================================ -->
+    <div class="pattern-section">
+      <div class="pattern-header">
+        <h2>5. Sidebar Navigation (Nested / Tree-like)</h2>
+        <p>Vertical sidebar with section headers, nested items at different indent levels, and a content area alongside.</p>
+      </div>
+      <div class="pattern-demo">
+        <div class="sidebar-nav-demo">
+          <nav class="sidebar-nav">
+            <div class="nav-section-title">Getting Started</div>
+            <a href="#" class="nav-item">Introduction</a>
+            <a href="#" class="nav-item">Installation</a>
+            <a href="#" class="nav-item">Quick Start</a>
+            <div class="nav-divider"></div>
+            <div class="nav-section-title">Components</div>
+            <a href="#" class="nav-item active">Buttons</a>
+            <a href="#" class="nav-item nested-1">Primary Button</a>
+            <a href="#" class="nav-item nested-1">Secondary Button</a>
+            <a href="#" class="nav-item nested-1">Icon Button</a>
+            <a href="#" class="nav-item">Forms</a>
+            <a href="#" class="nav-item nested-1">Text Input</a>
+            <a href="#" class="nav-item nested-1">Select</a>
+            <a href="#" class="nav-item nested-1">Checkbox</a>
+            <a href="#" class="nav-item nested-2">Indeterminate</a>
+            <a href="#" class="nav-item">Navigation</a>
+            <div class="nav-divider"></div>
+            <div class="nav-section-title">Advanced</div>
+            <a href="#" class="nav-item">Theming</a>
+            <a href="#" class="nav-item">Accessibility</a>
+          </nav>
+          <div class="sidebar-content-area">
+            <h3>Buttons</h3>
+            <p>This content area represents the page content that corresponds to the selected sidebar item. The sidebar navigation on the left provides a tree-like structure with section headers, items, and nested sub-items at varying indentation levels.</p>
+            <p style="margin-top:8px;">Notice how "Buttons" is the active item (highlighted with teal) and its children (Primary, Secondary, Icon) are nested below it with additional indentation. The "Indeterminate" item under Checkbox is nested two levels deep.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         PATTERN 6: Vertical Pill Navigation
+         ============================================================ -->
+    <div class="pattern-section">
+      <div class="pattern-header">
+        <h2>6. Vertical Pill Navigation</h2>
+        <p>Pill-shaped buttons stacked vertically. Active item has a filled background.</p>
+      </div>
+      <div class="pattern-demo">
+        <div class="pill-nav">
+          <a href="#">Profile</a>
+          <a href="#" class="active">Account Settings</a>
+          <a href="#">Notifications</a>
+          <a href="#">Security</a>
+          <a href="#">Billing</a>
+          <a href="#">API Keys</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         PATTERN 7: Bottom Tab Bar (Mobile-style)
+         ============================================================ -->
+    <div class="pattern-section">
+      <div class="pattern-header">
+        <h2>7. Bottom Tab Bar (Mobile-style)</h2>
+        <p>Horizontal bar with equal-width items, each containing an icon placeholder and a label. Typically positioned at the bottom of mobile screens.</p>
+      </div>
+      <div class="pattern-demo">
+        <div class="bottom-tab-bar">
+          <div class="bottom-tab-item active">
+            <div class="bottom-tab-icon">H</div>
+            <span>Home</span>
+          </div>
+          <div class="bottom-tab-item">
+            <div class="bottom-tab-icon">S</div>
+            <span>Search</span>
+          </div>
+          <div class="bottom-tab-item">
+            <div class="bottom-tab-icon">+</div>
+            <span>Create</span>
+          </div>
+          <div class="bottom-tab-item">
+            <div class="bottom-tab-icon">N</div>
+            <span>Notifications</span>
+          </div>
+          <div class="bottom-tab-item">
+            <div class="bottom-tab-icon">P</div>
+            <span>Profile</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       JAVASCRIPT: Tab switching
+       ============================================================ -->
+  <script>
+    /**
+     * Simple tab navigation handler.
+     * Clicking a tab button shows its corresponding panel and hides others.
+     */
+    (function() {
+      var tabBar = document.getElementById('tab-bar');
+      if (!tabBar) return;
+      var tabs = tabBar.querySelectorAll('.tab');
+      for (var i = 0; i < tabs.length; i++) {
+        tabs[i].addEventListener('click', function() {
+          // Deactivate all tabs and panels
+          var allTabs = tabBar.querySelectorAll('.tab');
+          for (var j = 0; j < allTabs.length; j++) {
+            allTabs[j].className = 'tab';
+          }
+          var panels = document.querySelectorAll('.tab-panel');
+          for (var k = 0; k < panels.length; k++) {
+            panels[k].className = 'tab-panel';
+          }
+          // Activate clicked tab and its panel
+          this.className = 'tab active';
+          var targetId = this.getAttribute('data-tab');
+          var target = document.getElementById(targetId);
+          if (target) {
+            target.className = 'tab-panel active';
+          }
+        });
+      }
+    })();
+  </script>
+
+  <!-- ============================================================
+       EXPECTED RENDERING
+       ============================================================ -->
+  <div class="expected-rendering">
+    <h2>Expected Rendering</h2>
+    <ul>
+      <li><strong>Pattern 1 (Horizontal Nav):</strong> A dark blue bar with "DevHub" brand on the left and five links on the right. The "Home" link should have a teal bottom border (active indicator). Links should be horizontally spaced within the bar. Hovering changes link color.</li>
+      <li><strong>Pattern 2 (Breadcrumb):</strong> A horizontal trail: Home > Documentation > Components > Navigation > Breadcrumbs. Each level separated by a ">" character. All items except the last are links (muted color). The last item ("Breadcrumbs") is bold white text, not a link.</li>
+      <li><strong>Pattern 3 (Tabs):</strong> Five horizontal tabs in a row with a bottom border line. The "Overview" tab is active (teal text + teal bottom border). Below the tabs, a content panel shows text for the active tab. Clicking a different tab (via JS) should switch the visible panel and move the active indicator.</li>
+      <li><strong>Pattern 4 (Pagination):</strong> Two pagination examples. The simple one shows "Prev" (disabled/grayed), pages 1-5 (1 is active/filled teal), and "Next". The extended one shows pages 1-5, an ellipsis "...", pages 24-25, with page 4 active. All page buttons are equal-sized squares except Prev/Next which are wider.</li>
+      <li><strong>Pattern 5 (Sidebar Nav):</strong> Two-column layout: a 240px sidebar on the left with a content area on the right. The sidebar has section headers ("Getting Started", "Components", "Advanced") with links below. "Buttons" is the active item. Sub-items are indented (Primary, Secondary, Icon are indented once; "Indeterminate" under Checkbox is indented twice). Horizontal dividers separate sections.</li>
+      <li><strong>Pattern 6 (Pill Nav):</strong> Vertical stack of pill-shaped links, 200px wide. "Account Settings" is active (filled teal pill). Others are transparent with text color.</li>
+      <li><strong>Pattern 7 (Bottom Tab Bar):</strong> Five equal-width items in a horizontal bar, each with a small square icon placeholder and a text label below. "Home" is active (teal icon and text). This simulates a mobile bottom navigation.</li>
+      <li><strong>Overall:</strong> Each navigation pattern is contained in its own bordered section box with a header describing what it is. All patterns should be clearly separated and render independently without interfering with each other.</li>
+    </ul>
+  </div>
+
+</body>
+</html>

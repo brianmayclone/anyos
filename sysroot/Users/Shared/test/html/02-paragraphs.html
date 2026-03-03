@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test 02: Paragraphs, Line Breaks, Horizontal Rules</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="../index.html">Back to Index</a>
+    <a href="01-headings.html">Prev: Headings</a>
+    <a href="03-text-formatting.html">Next: Text Formatting</a>
+  </div>
+
+  <h1 class="page-title">Test 02: Paragraphs, Line Breaks, Horizontal Rules</h1>
+
+  <!-- Test 1: Basic paragraphs -->
+  <div class="test-group">
+    <h2>Test 2.1: Basic Paragraphs</h2>
+    <div class="expected">Expected: Two separate paragraphs with visible vertical spacing (margin) between them. Each should be a block-level element.</div>
+    <div class="test-area">
+      <p>This is the first paragraph. It contains some text that describes the basic behavior of paragraph elements in HTML.</p>
+      <p>This is the second paragraph. There should be clear vertical spacing between this paragraph and the one above.</p>
+    </div>
+  </div>
+
+  <!-- Test 2: Multiple consecutive paragraphs -->
+  <div class="test-group">
+    <h2>Test 2.2: Multiple Consecutive Paragraphs</h2>
+    <div class="expected">Expected: Four paragraphs, each with consistent spacing between them. Margins between adjacent paragraphs should collapse.</div>
+    <div class="test-area">
+      <p>Paragraph one.</p>
+      <p>Paragraph two.</p>
+      <p>Paragraph three.</p>
+      <p>Paragraph four.</p>
+    </div>
+  </div>
+
+  <!-- Test 3: Line breaks (br) -->
+  <div class="test-group">
+    <h2>Test 2.3: Line Breaks (br)</h2>
+    <div class="expected">Expected: All lines should be within the SAME paragraph (no extra vertical spacing). Each br should cause a line break but NOT create a new paragraph block.</div>
+    <div class="test-area">
+      <p>Line one<br>Line two<br>Line three<br>Line four</p>
+    </div>
+  </div>
+
+  <!-- Test 4: br vs p comparison -->
+  <div class="test-group">
+    <h2>Test 2.4: br vs p Spacing Comparison</h2>
+    <div class="expected">Expected: The br-separated lines should be closer together than the p-separated paragraphs. Paragraphs have margins; br just causes a newline.</div>
+    <div class="test-area">
+      <p><strong>Using br elements:</strong></p>
+      <p>Apple<br>Banana<br>Cherry<br>Date</p>
+      <p><strong>Using p elements:</strong></p>
+      <p>Apple</p>
+      <p>Banana</p>
+      <p>Cherry</p>
+      <p>Date</p>
+    </div>
+  </div>
+
+  <!-- Test 5: Horizontal rules -->
+  <div class="test-group">
+    <h2>Test 2.5: Horizontal Rules (hr)</h2>
+    <div class="expected">Expected: Visible horizontal lines spanning the width of the container. Each hr should have some vertical margin above and below.</div>
+    <div class="test-area">
+      <p>Content above the first horizontal rule.</p>
+      <hr>
+      <p>Content between the two horizontal rules.</p>
+      <hr>
+      <p>Content below the second horizontal rule.</p>
+    </div>
+  </div>
+
+  <!-- Test 6: Multiple consecutive hrs -->
+  <div class="test-group">
+    <h2>Test 2.6: Multiple Consecutive Horizontal Rules</h2>
+    <div class="expected">Expected: Three separate horizontal lines with spacing between each. They should not merge into a single thick line.</div>
+    <div class="test-area">
+      <hr>
+      <hr>
+      <hr>
+    </div>
+  </div>
+
+  <!-- Test 7: Empty paragraphs -->
+  <div class="test-group">
+    <h2>Test 2.7: Empty Paragraphs</h2>
+    <div class="expected">Expected: Empty paragraphs may collapse to zero height (no visible content), but their margins might still create some vertical space. Text before and after should still be visible.</div>
+    <div class="test-area">
+      <p>Text before empty paragraphs.</p>
+      <p></p>
+      <p></p>
+      <p></p>
+      <p>Text after empty paragraphs.</p>
+    </div>
+  </div>
+
+  <!-- Test 8: Long text wrapping -->
+  <div class="test-group">
+    <h2>Test 2.8: Long Text Wrapping</h2>
+    <div class="expected">Expected: Long paragraph text should wrap at the container boundary. Words should not be cut mid-word (unless extremely long). The text should flow naturally.</div>
+    <div class="test-area">
+      <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</p>
+      <p>This is the next paragraph after the long one. Spacing should be the same as between short paragraphs.</p>
+    </div>
+  </div>
+
+  <!-- Test 9: Paragraph with inline elements -->
+  <div class="test-group">
+    <h2>Test 2.9: Paragraphs Containing Inline Elements</h2>
+    <div class="expected">Expected: Inline elements inside paragraphs should not break the paragraph flow. Bold, italic, links, and code should appear inline within the text.</div>
+    <div class="test-area">
+      <p>This paragraph has <strong>bold text</strong>, <em>italic text</em>, a <a href="#">link</a>, and <code>inline code</code> all within the same paragraph flow.</p>
+      <p>This paragraph has a <br>line break in the middle, plus <u>underlined text</u> and <mark>highlighted text</mark>.</p>
+    </div>
+  </div>
+
+  <!-- Test 10: Very long unbreakable word -->
+  <div class="test-group">
+    <h2>Test 2.10: Unbreakable Long Word (Overflow Test)</h2>
+    <div class="expected">Expected: A single extremely long word with no spaces should either overflow the container (showing a scrollbar), break at the container edge, or be handled according to the browser's default overflow behavior.</div>
+    <div class="test-area">
+      <p>Supercalifragilisticexpialidociousantidisestablishmentarianismandpneumonoultramicroscopicsilicovolcanoconiosisareverylongwords</p>
+      <p>Normal paragraph after the long word paragraph.</p>
+    </div>
+  </div>
+
+  <!-- Test 11: Whitespace handling in paragraphs -->
+  <div class="test-group">
+    <h2>Test 2.11: Whitespace Handling</h2>
+    <div class="expected">Expected: Multiple spaces, tabs, and newlines within a paragraph should collapse to a single space. Only br should cause visible line breaks.</div>
+    <div class="test-area">
+      <p>This    has    multiple    spaces    between    words.</p>
+      <p>This	has	tabs	between	words.</p>
+      <p>This
+has
+newlines
+between
+words.</p>
+    </div>
+  </div>
+
+  <!-- Test 12: Self-closing br and hr -->
+  <div class="test-group">
+    <h2>Test 2.12: Self-Closing Syntax Variations</h2>
+    <div class="expected">Expected: Both br and br/ and hr and hr/ should behave identically. The self-closing slash is optional in HTML5.</div>
+    <div class="test-area">
+      <p>Line with br<br>Next line with br/<br/>Last line.</p>
+      <hr>
+      <p>After hr.</p>
+      <hr/>
+      <p>After hr/.</p>
+    </div>
+  </div>
+
+</body>
+</html>

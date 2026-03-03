@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CSS Test 20: Overflow Handling</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .overflow-box {
+    border: 2px solid #555;
+    padding: 10px;
+    margin-top: 10px;
+    background: #1a2a4e;
+    border-radius: 4px;
+  }
+
+  .inner-content {
+    background: linear-gradient(180deg, #ff6b6b33, #4ecdc433);
+    padding: 10px;
+    border-radius: 4px;
+    color: #e0e0e0;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  .label {
+    color: #ff8b94;
+    font-size: 13px;
+    margin-top: 10px;
+    font-weight: bold;
+  }
+
+  .code {
+    font-family: monospace;
+    color: #ffd93d;
+    background: #1a1a2e;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+
+  .colored-block {
+    display: inline-block;
+    width: 80px;
+    height: 80px;
+    border-radius: 4px;
+    margin: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    color: #1a1a2e;
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 20: Overflow Handling</h1>
+
+<!-- Test 1: overflow: visible -->
+<div class="test-group">
+  <h2>1. overflow: visible (default)</h2>
+  <p class="expected">Expected: Content spills outside the container's boundaries and is fully visible. The container has a fixed height of 100px, but the content inside is taller. Overflowing content renders outside the box without clipping.</p>
+  <div class="test-area">
+    <div class="overflow-box" style="height: 100px; overflow: visible; margin-bottom: 120px;">
+      <div class="inner-content">
+        <p>Line 1: This container is only 100px tall.</p>
+        <p>Line 2: But the content is much taller.</p>
+        <p>Line 3: With overflow: visible (default), the content spills out.</p>
+        <p>Line 4: It extends below the container boundary.</p>
+        <p>Line 5: This text is outside the box but still visible.</p>
+        <p>Line 6: No clipping or scrollbars are applied.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 2: overflow: hidden -->
+<div class="test-group">
+  <h2>2. overflow: hidden</h2>
+  <p class="expected">Expected: Content that exceeds the 100px container height is clipped and invisible. No scrollbars appear. Only the first few lines of text should be visible.</p>
+  <div class="test-area">
+    <div class="overflow-box" style="height: 100px; overflow: hidden;">
+      <div class="inner-content">
+        <p>Line 1: This container is only 100px tall.</p>
+        <p>Line 2: With overflow: hidden, excess content is clipped.</p>
+        <p>Line 3: You should NOT see this line.</p>
+        <p>Line 4: This is hidden beyond the container boundary.</p>
+        <p>Line 5: Completely invisible -- no scrollbars either.</p>
+        <p>Line 6: This content exists in the DOM but is not rendered.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 3: overflow: scroll -->
+<div class="test-group">
+  <h2>3. overflow: scroll (always show scrollbars)</h2>
+  <p class="expected">Expected: Scrollbars are ALWAYS shown, even if the content fits. The container is 120px tall with overflowing content. Both horizontal and vertical scrollbars should appear (even if horizontal is not needed).</p>
+  <div class="test-area">
+    <div class="overflow-box" style="height: 120px; overflow: scroll;">
+      <div class="inner-content">
+        <p>Line 1: overflow: scroll always shows scrollbars.</p>
+        <p>Line 2: You can scroll down to see more content.</p>
+        <p>Line 3: The scrollbar is always visible.</p>
+        <p>Line 4: Even if content doesn't overflow,</p>
+        <p>Line 5: scrollbars still appear (possibly grayed out).</p>
+        <p>Line 6: This differs from overflow: auto.</p>
+        <p>Line 7: Scroll down to see this line.</p>
+        <p>Line 8: And this line too.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 4: overflow: auto -->
+<div class="test-group">
+  <h2>4. overflow: auto (scrollbars only when needed)</h2>
+  <p class="expected">Expected: Scrollbars appear only when content overflows. First box has overflowing content (scrollbar visible). Second box has content that fits (no scrollbar).</p>
+  <div class="test-area">
+    <p class="label">Overflowing content (scrollbar appears):</p>
+    <div class="overflow-box" style="height: 100px; overflow: auto;">
+      <div class="inner-content">
+        <p>Line 1: overflow: auto adds scrollbar only when needed.</p>
+        <p>Line 2: This content overflows the 100px container.</p>
+        <p>Line 3: So a scrollbar appears.</p>
+        <p>Line 4: Scroll to see more content.</p>
+        <p>Line 5: Still more content here.</p>
+        <p>Line 6: And even more.</p>
+      </div>
+    </div>
+
+    <p class="label">Non-overflowing content (no scrollbar):</p>
+    <div class="overflow-box" style="height: 100px; overflow: auto;">
+      <div class="inner-content">
+        <p>This content fits. No scrollbar should appear.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 5: overflow-x and overflow-y separately -->
+<div class="test-group">
+  <h2>5. overflow-x and overflow-y (separate axes)</h2>
+  <p class="expected">Expected: overflow-x: hidden clips horizontal overflow. overflow-y: scroll allows vertical scrolling. The wide content is clipped horizontally but you can scroll vertically.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">overflow-x: hidden; overflow-y: scroll</span></p>
+    <div class="overflow-box" style="width: 300px; height: 120px; overflow-x: hidden; overflow-y: scroll;">
+      <div class="inner-content" style="width: 500px;">
+        <p>This content is 500px wide but the container is 300px wide.</p>
+        <p>overflow-x: hidden clips the horizontal overflow.</p>
+        <p>overflow-y: scroll allows vertical scrolling.</p>
+        <p>Line 4: You can scroll vertically to see this.</p>
+        <p>Line 5: But the right side is clipped horizontally.------CLIPPED-----</p>
+        <p>Line 6: More vertical content here.</p>
+      </div>
+    </div>
+
+    <p class="label"><span class="code">overflow-x: scroll; overflow-y: hidden</span></p>
+    <div class="overflow-box" style="width: 300px; height: 120px; overflow-x: scroll; overflow-y: hidden;">
+      <div class="inner-content" style="width: 600px;">
+        <p>This content is 600px wide. Scroll horizontally to see more &rarr;&rarr;&rarr; This text continues far to the right. Keep scrolling to see the end of this very long line of text that demonstrates horizontal scrolling.</p>
+        <p>Line 2 is also wide &rarr;&rarr;&rarr; More content extending to the right side beyond the container boundary.</p>
+        <p>Line 3 (hidden by overflow-y: hidden if too tall)</p>
+        <p>Line 4 (this should be clipped vertically)</p>
+        <p>Line 5 (not visible)</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: Horizontal overflow with long text -->
+<div class="test-group">
+  <h2>6. Horizontal overflow: long text without wrapping</h2>
+  <p class="expected">Expected: White-space: nowrap prevents line breaks. The text extends beyond the container's right edge. Different overflow values show how this is handled.</p>
+  <div class="test-area">
+    <p class="label">overflow: visible (text spills out):</p>
+    <div class="overflow-box" style="width: 400px; overflow: visible;">
+      <p class="inner-content" style="white-space: nowrap;">This is a very long line of text that does not wrap because white-space is set to nowrap. It extends far beyond the container boundary and should be visible outside the box.</p>
+    </div>
+
+    <p class="label" style="margin-top: 30px;">overflow: hidden (text clipped):</p>
+    <div class="overflow-box" style="width: 400px; overflow: hidden;">
+      <p class="inner-content" style="white-space: nowrap;">This is a very long line of text that does not wrap because white-space is set to nowrap. It extends far beyond the container boundary but is CLIPPED and not visible.</p>
+    </div>
+
+    <p class="label">overflow: scroll (horizontal scrollbar):</p>
+    <div class="overflow-box" style="width: 400px; overflow: scroll;">
+      <p class="inner-content" style="white-space: nowrap;">This is a very long line of text that does not wrap because white-space is set to nowrap. Scroll right to see the rest of this text. It goes on and on and on to demonstrate scrolling behavior.</p>
+    </div>
+
+    <p class="label">overflow: auto (scrollbar only if needed):</p>
+    <div class="overflow-box" style="width: 400px; overflow: auto;">
+      <p class="inner-content" style="white-space: nowrap;">This is a very long line of text that does not wrap because white-space is set to nowrap. Since it overflows, a horizontal scrollbar should appear automatically.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Test 7: Vertical overflow with tall content -->
+<div class="test-group">
+  <h2>7. Vertical overflow: tall content in short container</h2>
+  <p class="expected">Expected: A 150px tall container with a 400px tall colored block inside. Different overflow values demonstrate clipping, scrolling, and visibility.</p>
+  <div class="test-area">
+    <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+      <div>
+        <p class="label">visible:</p>
+        <div class="overflow-box" style="width: 150px; height: 150px; overflow: visible; margin-bottom: 280px;">
+          <div style="width: 120px; height: 400px; background: linear-gradient(180deg, #ff6b6b, #4ecdc4, #ffd93d, #6c5ce7); border-radius: 4px; display: flex; align-items: flex-start; justify-content: center; padding-top: 10px; font-weight: bold; color: white;">400px tall</div>
+        </div>
+      </div>
+      <div>
+        <p class="label">hidden:</p>
+        <div class="overflow-box" style="width: 150px; height: 150px; overflow: hidden;">
+          <div style="width: 120px; height: 400px; background: linear-gradient(180deg, #ff6b6b, #4ecdc4, #ffd93d, #6c5ce7); border-radius: 4px; display: flex; align-items: flex-start; justify-content: center; padding-top: 10px; font-weight: bold; color: white;">400px tall</div>
+        </div>
+      </div>
+      <div>
+        <p class="label">scroll:</p>
+        <div class="overflow-box" style="width: 150px; height: 150px; overflow: scroll;">
+          <div style="width: 120px; height: 400px; background: linear-gradient(180deg, #ff6b6b, #4ecdc4, #ffd93d, #6c5ce7); border-radius: 4px; display: flex; align-items: flex-start; justify-content: center; padding-top: 10px; font-weight: bold; color: white;">400px tall</div>
+        </div>
+      </div>
+      <div>
+        <p class="label">auto:</p>
+        <div class="overflow-box" style="width: 150px; height: 150px; overflow: auto;">
+          <div style="width: 120px; height: 400px; background: linear-gradient(180deg, #ff6b6b, #4ecdc4, #ffd93d, #6c5ce7); border-radius: 4px; display: flex; align-items: flex-start; justify-content: center; padding-top: 10px; font-weight: bold; color: white;">400px tall</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 8: Nested overflow containers -->
+<div class="test-group">
+  <h2>8. Nested overflow containers</h2>
+  <p class="expected">Expected: An outer container with overflow: hidden contains an inner container with overflow: scroll. The inner container can be scrolled independently. Content that overflows the outer container is clipped. Each container handles its own overflow independently.</p>
+  <div class="test-area">
+    <div class="overflow-box" style="width: 400px; height: 200px; overflow: hidden; border-color: #ff6b6b;">
+      <p style="color: #ff6b6b; font-size: 12px; margin: 0 0 5px 0;">Outer: overflow: hidden (200px tall, red border)</p>
+      <div class="overflow-box" style="width: 350px; height: 300px; overflow: scroll; border-color: #4ecdc4;">
+        <p style="color: #4ecdc4; font-size: 12px; margin: 0 0 5px 0;">Inner: overflow: scroll (300px tall, teal border)</p>
+        <div class="inner-content">
+          <p>Line 1: This is inside the inner scrollable container.</p>
+          <p>Line 2: The inner container is 300px tall with scroll.</p>
+          <p>Line 3: But the outer container clips at 200px.</p>
+          <p>Line 4: So you can scroll the inner container,</p>
+          <p>Line 5: but the bottom part of the inner container</p>
+          <p>Line 6: is clipped by the outer container's hidden overflow.</p>
+          <p>Line 7: This nesting creates complex overflow behavior.</p>
+          <p>Line 8: Each container manages its own overflow independently.</p>
+          <p>Line 9: More content to demonstrate scrolling.</p>
+          <p>Line 10: Keep scrolling within the inner container.</p>
+          <p>Line 11: The scrollbar should be visible within the inner box.</p>
+          <p>Line 12: End of content.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 9: Overflow with fixed-size boxes -->
+<div class="test-group">
+  <h2>9. Overflow with fixed-size boxes (both axes)</h2>
+  <p class="expected">Expected: A 200x200 container with many 80x80 boxes inside. They overflow in both directions. overflow: auto should provide both horizontal and vertical scrollbars.</p>
+  <div class="test-area">
+    <p class="label">overflow: auto (200x200 container, content overflows both ways):</p>
+    <div class="overflow-box" style="width: 200px; height: 200px; overflow: auto;">
+      <div style="width: 400px;">
+        <div style="display: flex; flex-wrap: wrap; width: 400px;">
+          <div class="colored-block" style="background: #ff6b6b;">1</div>
+          <div class="colored-block" style="background: #4ecdc4;">2</div>
+          <div class="colored-block" style="background: #ffd93d;">3</div>
+          <div class="colored-block" style="background: #6c5ce7; color: #e0e0e0;">4</div>
+          <div class="colored-block" style="background: #a8e6cf;">5</div>
+          <div class="colored-block" style="background: #ff8b94;">6</div>
+          <div class="colored-block" style="background: #dfe6e9;">7</div>
+          <div class="colored-block" style="background: #fdcb6e;">8</div>
+          <div class="colored-block" style="background: #74b9ff;">9</div>
+          <div class="colored-block" style="background: #ff6b6b;">10</div>
+          <div class="colored-block" style="background: #4ecdc4;">11</div>
+          <div class="colored-block" style="background: #ffd93d;">12</div>
+          <div class="colored-block" style="background: #6c5ce7; color: #e0e0e0;">13</div>
+          <div class="colored-block" style="background: #a8e6cf;">14</div>
+          <div class="colored-block" style="background: #ff8b94;">15</div>
+          <div class="colored-block" style="background: #dfe6e9;">16</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 10: text-overflow: ellipsis -->
+<div class="test-group">
+  <h2>10. text-overflow: ellipsis (with overflow: hidden)</h2>
+  <p class="expected">Expected: Long text is clipped with an ellipsis (...) at the end instead of just being cut off. Requires overflow: hidden, white-space: nowrap, and text-overflow: ellipsis together.</p>
+  <div class="test-area">
+    <p class="label">Without text-overflow (just clipped):</p>
+    <div class="overflow-box" style="width: 300px; overflow: hidden; white-space: nowrap;">
+      <span class="inner-content">This is a very long line of text that will be clipped without any ellipsis indicator at the end</span>
+    </div>
+
+    <p class="label">With text-overflow: ellipsis:</p>
+    <div class="overflow-box" style="width: 300px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">
+      <span class="inner-content">This is a very long line of text that should end with an ellipsis to indicate more content exists</span>
+    </div>
+
+    <p class="label">Multiple lines with ellipsis (each truncated):</p>
+    <div style="width: 300px;">
+      <div class="overflow-box" style="overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-bottom: 5px;">
+        <span style="color: #ff6b6b;">File: /Users/cmoeller/Development/github/anyos/sysroot/Users/Shared/very/long/path/to/file.txt</span>
+      </div>
+      <div class="overflow-box" style="overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-bottom: 5px;">
+        <span style="color: #4ecdc4;">Error: The operation could not be completed because the server returned an unexpected response code</span>
+      </div>
+      <div class="overflow-box" style="overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">
+        <span style="color: #ffd93d;">Warning: This component has been deprecated and will be removed in the next major version release</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 11: Overflow with border-radius -->
+<div class="test-group">
+  <h2>11. overflow: hidden with border-radius (clipping to rounded corners)</h2>
+  <p class="expected">Expected: Content is clipped to the rounded border shape. The inner content is larger but gets clipped at the rounded corners of the container, creating a "window" effect.</p>
+  <div class="test-area">
+    <p class="label">Rounded container with overflow: hidden:</p>
+    <div style="width: 250px; height: 250px; border-radius: 50%; overflow: hidden; border: 3px solid #4ecdc4; margin: 20px auto;">
+      <div style="width: 100%; height: 100%; background: linear-gradient(135deg, #ff6b6b, #4ecdc4, #ffd93d, #6c5ce7); display: flex; align-items: center; justify-content: center;">
+        <span style="font-size: 18px; font-weight: bold; color: white; text-shadow: 1px 1px 3px rgba(0,0,0,0.5);">Clipped to circle</span>
+      </div>
+    </div>
+
+    <p class="label">Rounded rectangle with overflow: hidden:</p>
+    <div style="width: 300px; height: 150px; border-radius: 30px; overflow: hidden; border: 3px solid #ff6b6b; margin: 20px auto;">
+      <div style="width: 400px; height: 200px; background: linear-gradient(45deg, #ff6b6b 25%, #4ecdc4 25%, #4ecdc4 50%, #ffd93d 50%, #ffd93d 75%, #6c5ce7 75%); background-size: 40px 40px; display: flex; align-items: center; justify-content: center;">
+        <span style="font-size: 16px; font-weight: bold; color: white; text-shadow: 1px 1px 3px rgba(0,0,0,0.7); background: rgba(0,0,0,0.4); padding: 5px 15px; border-radius: 4px;">Clipped to rounded rect</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

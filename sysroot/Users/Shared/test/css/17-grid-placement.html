@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CSS Test 17: Grid Item Placement</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: bold;
+    color: #1a1a2e;
+    border-radius: 4px;
+    padding: 10px;
+    text-align: center;
+    min-height: 60px;
+  }
+  .c1 { background: #ff6b6b; }
+  .c2 { background: #4ecdc4; }
+  .c3 { background: #ffd93d; }
+  .c4 { background: #6c5ce7; color: #e0e0e0; }
+  .c5 { background: #a8e6cf; }
+  .c6 { background: #ff8b94; }
+  .c7 { background: #dfe6e9; }
+  .c8 { background: #fdcb6e; }
+  .c9 { background: #74b9ff; }
+
+  .grid-container {
+    display: grid;
+    border: 2px dashed #555;
+    padding: 5px;
+    margin-top: 10px;
+  }
+
+  .label {
+    color: #ff8b94;
+    font-size: 13px;
+    margin-top: 10px;
+    font-weight: bold;
+  }
+
+  .code {
+    font-family: monospace;
+    color: #ffd93d;
+    background: #1a1a2e;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 17: Grid Item Placement</h1>
+
+<!-- Test 1: grid-column: span 2 -->
+<div class="test-group">
+  <h2>1. grid-column: span 2 (item spans two columns)</h2>
+  <p class="expected">Expected: Item 1 spans across two columns in a 4-column grid. Items 2, 3 fill the rest of row 1. Item 4 starts a new row. The spanning item is twice the width of a normal item.</p>
+  <div class="test-area">
+    <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); gap: 8px;">
+      <div class="cell c1" style="grid-column: span 2;">1 (span 2 cols)</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 2: grid-row: span 2 -->
+<div class="test-group">
+  <h2>2. grid-row: span 2 (item spans two rows)</h2>
+  <p class="expected">Expected: Item 1 spans two rows in the first column. It is twice the height of other items. Items 2, 3, 4 fill columns 2-4 of rows 1-2. Item 5 starts in column 2 of row 2.</p>
+  <div class="test-area">
+    <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); grid-auto-rows: 80px; gap: 8px;">
+      <div class="cell c1" style="grid-row: span 2;">1 (span 2 rows)</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 3: Spanning both rows and columns -->
+<div class="test-group">
+  <h2>3. Spanning both rows and columns</h2>
+  <p class="expected">Expected: Item 1 is a large block spanning 2 columns and 2 rows (2x2 area). Other items flow around it. Item 1 should be roughly 4x the area of a single cell.</p>
+  <div class="test-area">
+    <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); grid-auto-rows: 80px; gap: 8px;">
+      <div class="cell c1" style="grid-column: span 2; grid-row: span 2;">1 (2x2)</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7</div>
+      <div class="cell c8">8</div>
+      <div class="cell c9">9</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 4: grid-column-start / grid-column-end -->
+<div class="test-group">
+  <h2>4. grid-column-start / grid-column-end</h2>
+  <p class="expected">Expected: Item 1 starts at column line 1 and ends at column line 3 (spanning columns 1-2). Item 2 starts at column line 3, ends at line 5 (spanning columns 3-4). Item 3 is a single column in the second row.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-column-start: 1; grid-column-end: 3</span> (columns 1-2)</p>
+    <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); grid-auto-rows: 80px; gap: 8px;">
+      <div class="cell c1" style="grid-column-start: 1; grid-column-end: 3;">1 (col 1-2)</div>
+      <div class="cell c2" style="grid-column-start: 3; grid-column-end: 5;">2 (col 3-4)</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 5: grid-row-start / grid-row-end -->
+<div class="test-group">
+  <h2>5. grid-row-start / grid-row-end</h2>
+  <p class="expected">Expected: Item 1 starts at row line 1 and ends at row line 4 (spanning 3 rows tall). It occupies the first column for all 3 rows while other items fill the remaining columns.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-row-start: 1; grid-row-end: 4</span> (3 rows tall)</p>
+    <div class="grid-container" style="grid-template-columns: repeat(3, 1fr); grid-auto-rows: 60px; gap: 8px;">
+      <div class="cell c1" style="grid-row-start: 1; grid-row-end: 4;">1<br>(3 rows)</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: grid-area shorthand -->
+<div class="test-group">
+  <h2>6. grid-area shorthand</h2>
+  <p class="expected">Expected: grid-area: row-start / col-start / row-end / col-end. Item 1 placed at row 1-3, col 1-3 (a 2x2 block in the top-left). Item 2 at row 1-2, col 3-5 (top-right block). Item 3 fills below.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-area: row-start / col-start / row-end / col-end</span></p>
+    <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(3, 80px); gap: 8px;">
+      <div class="cell c1" style="grid-area: 1 / 1 / 3 / 3;">1<br>area: 1/1/3/3<br>(rows 1-2, cols 1-2)</div>
+      <div class="cell c2" style="grid-area: 1 / 3 / 2 / 5;">2<br>area: 1/3/2/5<br>(row 1, cols 3-4)</div>
+      <div class="cell c3" style="grid-area: 2 / 3 / 3 / 4;">3<br>area: 2/3/3/4</div>
+      <div class="cell c4" style="grid-area: 2 / 4 / 3 / 5;">4<br>area: 2/4/3/5</div>
+      <div class="cell c5" style="grid-area: 3 / 1 / 4 / 5;">5 -- full-width footer (area: 3/1/4/5)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 7: Explicit placement into specific cells -->
+<div class="test-group">
+  <h2>7. Explicit placement into specific cells</h2>
+  <p class="expected">Expected: Items placed in non-sequential positions. Item A in column 3 row 1, item B in column 1 row 2, item C in column 4 row 3. Empty cells should be visible as gaps in the grid.</p>
+  <div class="test-area">
+    <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(3, 80px); gap: 8px;">
+      <div class="cell c1" style="grid-column: 3; grid-row: 1;">A<br>(col3, row1)</div>
+      <div class="cell c2" style="grid-column: 1; grid-row: 2;">B<br>(col1, row2)</div>
+      <div class="cell c3" style="grid-column: 4; grid-row: 3;">C<br>(col4, row3)</div>
+      <div class="cell c4" style="grid-column: 2; grid-row: 2;">D<br>(col2, row2)</div>
+      <div class="cell c5" style="grid-column: 1; grid-row: 1;">E<br>(col1, row1)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 8: Negative line numbers -->
+<div class="test-group">
+  <h2>8. Negative line numbers</h2>
+  <p class="expected">Expected: Negative numbers count from the end. -1 is the last line. grid-column: 1 / -1 spans the entire row. grid-column: -3 / -1 spans the last two columns.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-column: 1 / -1</span> (spans all 4 columns)</p>
+    <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); grid-auto-rows: 60px; gap: 8px;">
+      <div class="cell c1" style="grid-column: 1 / -1;">1 (full width: 1 / -1)</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4" style="grid-column: -3 / -1;">4 (last 2 cols: -3 / -1)</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6" style="grid-column: 1 / -1;">6 (full width: 1 / -1)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 9: Overlapping grid items -->
+<div class="test-group">
+  <h2>9. Overlapping items (z-index in grid)</h2>
+  <p class="expected">Expected: Two items occupy the same grid area. The item with higher z-index appears on top. The red item (z-index: 1) should overlap and be visible above the teal item (z-index: 0), with partial transparency showing the overlap.</p>
+  <div class="test-area">
+    <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(3, 80px); gap: 8px;">
+      <div class="cell c2" style="grid-area: 1 / 1 / 3 / 3; opacity: 0.8; z-index: 0;">Teal (z:0)<br>rows 1-2, cols 1-2</div>
+      <div class="cell c1" style="grid-area: 2 / 2 / 4 / 4; opacity: 0.8; z-index: 1;">Red (z:1)<br>rows 2-3, cols 2-3</div>
+      <div class="cell c3" style="grid-column: 4; grid-row: 1;">A</div>
+      <div class="cell c4" style="grid-column: 4; grid-row: 2;">B</div>
+      <div class="cell c5" style="grid-column: 4; grid-row: 3;">C</div>
+      <div class="cell c6" style="grid-column: 1; grid-row: 3;">D</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 10: Dashboard layout example -->
+<div class="test-group">
+  <h2>10. Practical example: Dashboard layout</h2>
+  <p class="expected">Expected: A dashboard layout with a header spanning 3 columns, a tall sidebar on the left (2 rows), a main content area (2 columns), a small widget, and a footer spanning all columns.</p>
+  <div class="test-area">
+    <div class="grid-container" style="grid-template-columns: 200px 1fr 1fr; grid-template-rows: 60px 1fr 1fr 50px; gap: 10px; height: 400px;">
+      <div class="cell c1" style="grid-column: 1 / -1;">Header (full width)</div>
+      <div class="cell c4" style="grid-row: 2 / 4;">Sidebar<br>(2 rows tall)</div>
+      <div class="cell c2" style="grid-column: 2 / 4;">Main Content Area<br>(2 columns wide)</div>
+      <div class="cell c3">Widget A</div>
+      <div class="cell c5">Widget B</div>
+      <div class="cell c6" style="grid-column: 1 / -1;">Footer (full width)</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

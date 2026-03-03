@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CSS Test 18: Grid Auto Flow</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: bold;
+    color: #1a1a2e;
+    border-radius: 4px;
+    padding: 10px;
+    text-align: center;
+    min-height: 60px;
+  }
+  .c1 { background: #ff6b6b; }
+  .c2 { background: #4ecdc4; }
+  .c3 { background: #ffd93d; }
+  .c4 { background: #6c5ce7; color: #e0e0e0; }
+  .c5 { background: #a8e6cf; }
+  .c6 { background: #ff8b94; }
+  .c7 { background: #dfe6e9; }
+  .c8 { background: #fdcb6e; }
+  .c9 { background: #74b9ff; }
+
+  .grid-container {
+    display: grid;
+    border: 2px dashed #555;
+    padding: 5px;
+    margin-top: 10px;
+  }
+
+  .label {
+    color: #ff8b94;
+    font-size: 13px;
+    margin-top: 10px;
+    font-weight: bold;
+  }
+
+  .code {
+    font-family: monospace;
+    color: #ffd93d;
+    background: #1a1a2e;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 18: Grid Auto Flow</h1>
+
+<!-- Test 1: grid-auto-flow: row (default) -->
+<div class="test-group">
+  <h2>1. grid-auto-flow: row (default)</h2>
+  <p class="expected">Expected: Items fill row by row, left to right. When a row is full (3 columns), items flow to the next row. This is the default behavior: 1,2,3 in row 1; 4,5,6 in row 2; etc.</p>
+  <div class="test-area">
+    <div class="grid-container" style="grid-template-columns: repeat(3, 1fr); grid-auto-rows: 80px; gap: 8px; grid-auto-flow: row;">
+      <div class="cell c1">1</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7</div>
+      <div class="cell c8">8</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 2: grid-auto-flow: column -->
+<div class="test-group">
+  <h2>2. grid-auto-flow: column (fill columns first)</h2>
+  <p class="expected">Expected: Items fill column by column, top to bottom. When a column is full (3 rows), items flow to the next column. So: column 1 has 1,2,3; column 2 has 4,5,6; column 3 has 7,8.</p>
+  <div class="test-area">
+    <div class="grid-container" style="grid-template-rows: repeat(3, 80px); grid-auto-columns: 1fr; gap: 8px; grid-auto-flow: column;">
+      <div class="cell c1">1</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7</div>
+      <div class="cell c8">8</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 3: grid-auto-flow: row with spanning items (gaps appear) -->
+<div class="test-group">
+  <h2>3. grid-auto-flow: row with spanning items (gaps appear)</h2>
+  <p class="expected">Expected: Item 2 spans 2 columns. Without "dense", items flow in order and leave gaps. If item 2 doesn't fit in the remaining space of row 1, it goes to row 2, leaving an empty cell in row 1.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-auto-flow: row</span> (sparse -- leaves gaps)</p>
+    <div class="grid-container" style="grid-template-columns: repeat(3, 1fr); grid-auto-rows: 80px; gap: 8px; grid-auto-flow: row;">
+      <div class="cell c1">1</div>
+      <div class="cell c2" style="grid-column: span 2;">2 (span 2)</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4" style="grid-column: span 2;">4 (span 2)</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7" style="grid-column: span 2;">7 (span 2)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 4: grid-auto-flow: dense -->
+<div class="test-group">
+  <h2>4. grid-auto-flow: dense (fill gaps)</h2>
+  <p class="expected">Expected: Same items as test 3, but with "dense" mode. The algorithm backtracks to fill gaps. Smaller items (that fit in 1 column) are moved earlier to fill empty cells left by spanning items. Visual order may differ from source order.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-auto-flow: dense</span> (fills gaps, may reorder)</p>
+    <div class="grid-container" style="grid-template-columns: repeat(3, 1fr); grid-auto-rows: 80px; gap: 8px; grid-auto-flow: dense;">
+      <div class="cell c1">1</div>
+      <div class="cell c2" style="grid-column: span 2;">2 (span 2)</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4" style="grid-column: span 2;">4 (span 2)</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7" style="grid-column: span 2;">7 (span 2)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 5: Dense vs sparse side-by-side -->
+<div class="test-group">
+  <h2>5. Dense vs sparse: side-by-side comparison</h2>
+  <p class="expected">Expected: Both grids have the same items. Sparse (left) has visible gaps where spanning items didn't fit. Dense (right) fills those gaps with later items, creating a tighter layout but potentially different visual order.</p>
+  <div class="test-area">
+    <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+      <div style="flex: 1; min-width: 300px;">
+        <p class="label">Sparse (grid-auto-flow: row):</p>
+        <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); grid-auto-rows: 60px; gap: 6px; grid-auto-flow: row;">
+          <div class="cell c1">1</div>
+          <div class="cell c2" style="grid-column: span 3;">2 (span 3)</div>
+          <div class="cell c3">3</div>
+          <div class="cell c4">4</div>
+          <div class="cell c5" style="grid-column: span 2;">5 (span 2)</div>
+          <div class="cell c6">6</div>
+          <div class="cell c7" style="grid-column: span 3;">7 (span 3)</div>
+          <div class="cell c8">8</div>
+          <div class="cell c9">9</div>
+        </div>
+      </div>
+      <div style="flex: 1; min-width: 300px;">
+        <p class="label">Dense (grid-auto-flow: dense):</p>
+        <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); grid-auto-rows: 60px; gap: 6px; grid-auto-flow: dense;">
+          <div class="cell c1">1</div>
+          <div class="cell c2" style="grid-column: span 3;">2 (span 3)</div>
+          <div class="cell c3">3</div>
+          <div class="cell c4">4</div>
+          <div class="cell c5" style="grid-column: span 2;">5 (span 2)</div>
+          <div class="cell c6">6</div>
+          <div class="cell c7" style="grid-column: span 3;">7 (span 3)</div>
+          <div class="cell c8">8</div>
+          <div class="cell c9">9</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: Auto-placement with some explicit items -->
+<div class="test-group">
+  <h2>6. Auto-placement with some explicit items</h2>
+  <p class="expected">Expected: Items A and B are explicitly placed. Remaining items (1-6) are auto-placed around them, filling available cells in row order. Explicit items "reserve" their cells, and auto-placed items skip those cells.</p>
+  <div class="test-area">
+    <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); grid-auto-rows: 80px; gap: 8px;">
+      <div class="cell c4" style="grid-column: 2; grid-row: 1;">A<br>(explicit: c2,r1)</div>
+      <div class="cell c4" style="grid-column: 3; grid-row: 2;">B<br>(explicit: c3,r2)</div>
+      <div class="cell c1">1 (auto)</div>
+      <div class="cell c2">2 (auto)</div>
+      <div class="cell c3">3 (auto)</div>
+      <div class="cell c5">4 (auto)</div>
+      <div class="cell c6">5 (auto)</div>
+      <div class="cell c7">6 (auto)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 7: grid-auto-flow: column with explicit rows -->
+<div class="test-group">
+  <h2>7. grid-auto-flow: column with explicit rows</h2>
+  <p class="expected">Expected: 3 explicit rows defined. Items fill top-to-bottom in each column, then move to the next column. New columns are created automatically. Items 1,2,3 in col 1; 4,5,6 in col 2; 7,8 in col 3.</p>
+  <div class="test-area">
+    <div class="grid-container" style="grid-template-rows: repeat(3, 80px); grid-auto-columns: 150px; gap: 8px; grid-auto-flow: column;">
+      <div class="cell c1">1</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7</div>
+      <div class="cell c8">8</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 8: Implicit grid tracks -->
+<div class="test-group">
+  <h2>8. Implicit grid tracks</h2>
+  <p class="expected">Expected: Grid defines 2 columns and 2 rows. There are 9 items, so extra rows are created implicitly. Explicit rows (1-2) are 100px tall. Implicit rows (row 3+) use grid-auto-rows: 60px and have a different (shorter) height.</p>
+  <div class="test-area">
+    <p class="label">2 explicit rows (100px) + implicit rows (60px via <span class="code">grid-auto-rows</span>):</p>
+    <div class="grid-container" style="grid-template-columns: repeat(3, 1fr); grid-template-rows: 100px 100px; grid-auto-rows: 60px; gap: 8px;">
+      <div class="cell c1">1 (100px)</div>
+      <div class="cell c2">2 (100px)</div>
+      <div class="cell c3">3 (100px)</div>
+      <div class="cell c4">4 (100px)</div>
+      <div class="cell c5">5 (100px)</div>
+      <div class="cell c6">6 (100px)</div>
+      <div class="cell c7">7 (60px auto)</div>
+      <div class="cell c8">8 (60px auto)</div>
+      <div class="cell c9">9 (60px auto)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 9: Implicit column tracks -->
+<div class="test-group">
+  <h2>9. Implicit column tracks (with column flow)</h2>
+  <p class="expected">Expected: 2 explicit columns (200px each) defined. With column flow and more items than fit, implicit columns are created. Implicit columns use grid-auto-columns: 100px (narrower than explicit ones).</p>
+  <div class="test-area">
+    <p class="label">2 explicit columns (200px) + implicit columns (100px):</p>
+    <div class="grid-container" style="grid-template-rows: repeat(3, 70px); grid-template-columns: 200px 200px; grid-auto-columns: 100px; gap: 8px; grid-auto-flow: column;">
+      <div class="cell c1">1 (200px)</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4">4 (200px)</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7 (100px auto)</div>
+      <div class="cell c8">8</div>
+      <div class="cell c9">9</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 10: Dense packing with row-spanning items -->
+<div class="test-group">
+  <h2>10. Dense packing with row-spanning items</h2>
+  <p class="expected">Expected: Some items span multiple rows. Dense packing fills vertical gaps with smaller items. Without dense, gaps would appear where spanning items displace normal flow.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">grid-auto-flow: dense</span> with row spans:</p>
+    <div class="grid-container" style="grid-template-columns: repeat(4, 1fr); grid-auto-rows: 60px; gap: 8px; grid-auto-flow: dense;">
+      <div class="cell c1" style="grid-row: span 2;">1<br>(2 rows)</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3" style="grid-row: span 3;">3<br>(3 rows)</div>
+      <div class="cell c4">4</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6" style="grid-row: span 2;">6<br>(2 rows)</div>
+      <div class="cell c7">7</div>
+      <div class="cell c8">8</div>
+      <div class="cell c9">9</div>
+      <div class="cell c1">10</div>
+      <div class="cell c2">11</div>
+      <div class="cell c3">12</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 11: grid-auto-flow: column dense -->
+<div class="test-group">
+  <h2>11. grid-auto-flow: column dense</h2>
+  <p class="expected">Expected: Items flow into columns (top to bottom, then next column). Dense packing fills column gaps. Some items span multiple columns, and smaller items backfill empty cells.</p>
+  <div class="test-area">
+    <div class="grid-container" style="grid-template-rows: repeat(3, 70px); grid-auto-columns: 1fr; gap: 8px; grid-auto-flow: column dense;">
+      <div class="cell c1" style="grid-column: span 2;">1 (span 2 cols)</div>
+      <div class="cell c2">2</div>
+      <div class="cell c3">3</div>
+      <div class="cell c4" style="grid-column: span 2;">4 (span 2 cols)</div>
+      <div class="cell c5">5</div>
+      <div class="cell c6">6</div>
+      <div class="cell c7">7</div>
+      <div class="cell c8">8</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

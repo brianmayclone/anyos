@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Integration Test 03: Marketing Landing Page</title>
+  <style>
+    /* === Reset & Base === */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #d4d4d8;
+      font-family: sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+    }
+    a { color: #4ecdc4; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* === Site Nav === */
+    .site-nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 40px;
+      background: #0a0a1e;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    .site-nav .brand {
+      font-size: 22px;
+      font-weight: bold;
+      color: #f0f0f5;
+    }
+    .site-nav .brand span { color: #4ecdc4; }
+    .site-nav .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+    }
+    .site-nav .nav-links a { color: #a0a0b8; font-size: 14px; }
+    .site-nav .nav-links a:hover { color: #f0f0f5; }
+    .nav-cta {
+      background: #4ecdc4;
+      color: #0a0a1e;
+      padding: 8px 20px;
+      border-radius: 6px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    .nav-cta:hover { text-decoration: none; background: #3dbdb5; }
+
+    /* === Hero Section === */
+    /* Full-width gradient section with large centered heading and CTA */
+    .hero {
+      background: linear-gradient(135deg, #0f3460 0%, #533483 50%, #1a1a2e 100%);
+      padding: 80px 40px;
+      text-align: center;
+    }
+    .hero h1 {
+      font-size: 48px;
+      color: #f0f0f5;
+      margin-bottom: 16px;
+      line-height: 1.2;
+    }
+    .hero .subtitle {
+      font-size: 20px;
+      color: #b0b0c8;
+      margin-bottom: 32px;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .hero .cta-group {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+    }
+    .btn-large {
+      display: inline-block;
+      padding: 14px 32px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: bold;
+      border: none;
+      cursor: pointer;
+    }
+    .btn-large.primary {
+      background: #4ecdc4;
+      color: #0a0a1e;
+    }
+    .btn-large.secondary {
+      background: transparent;
+      color: #f0f0f5;
+      border: 2px solid #f0f0f5;
+    }
+
+    /* === Section Shared Styles === */
+    .section {
+      padding: 60px 40px;
+    }
+    .section-header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+    .section-header h2 {
+      font-size: 32px;
+      color: #f0f0f5;
+      margin-bottom: 12px;
+    }
+    .section-header p {
+      font-size: 16px;
+      color: #8888a0;
+      max-width: 500px;
+      margin: 0 auto;
+    }
+
+    /* === Features Section === */
+    /* 3 columns with icon placeholder, title, and description */
+    .features {
+      background: #16213e;
+    }
+    .features-grid {
+      display: flex;
+      gap: 32px;
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+    .feature-card {
+      flex: 1;
+      text-align: center;
+      padding: 24px;
+    }
+    .feature-icon {
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 16px;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 28px;
+      font-weight: bold;
+    }
+    .feature-icon.blue { background: #0f3460; color: #4ecdc4; }
+    .feature-icon.purple { background: #3a1a5e; color: #9b59b6; }
+    .feature-icon.red { background: #3a1a1a; color: #ff6b6b; }
+    .feature-card h3 {
+      font-size: 20px;
+      color: #f0f0f5;
+      margin-bottom: 8px;
+    }
+    .feature-card p {
+      font-size: 14px;
+      color: #8888a0;
+      line-height: 1.6;
+    }
+
+    /* === Testimonial Section === */
+    /* Centered quote with italic text and author */
+    .testimonials {
+      background: #1a1a2e;
+    }
+    .testimonial-card {
+      max-width: 700px;
+      margin: 0 auto;
+      text-align: center;
+      padding: 32px;
+      background: #16213e;
+      border-radius: 12px;
+      border: 1px solid #2a2a4a;
+    }
+    .testimonial-quote {
+      font-size: 20px;
+      font-style: italic;
+      color: #c8c8d8;
+      line-height: 1.7;
+      margin-bottom: 20px;
+    }
+    .testimonial-quote::before { content: "\201C"; font-size: 40px; color: #4ecdc4; line-height: 0; vertical-align: -12px; margin-right: 4px; }
+    .testimonial-quote::after { content: "\201D"; font-size: 40px; color: #4ecdc4; line-height: 0; vertical-align: -12px; margin-left: 4px; }
+    .testimonial-author {
+      font-size: 14px;
+      color: #4ecdc4;
+      font-weight: bold;
+    }
+    .testimonial-role {
+      font-size: 13px;
+      color: #6868a0;
+    }
+
+    /* === Pricing Section === */
+    /* 3 columns, middle one highlighted as "Popular" */
+    .pricing {
+      background: #0f1a2e;
+    }
+    .pricing-grid {
+      display: flex;
+      gap: 24px;
+      max-width: 950px;
+      margin: 0 auto;
+      align-items: flex-start;
+    }
+    .pricing-card {
+      flex: 1;
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 12px;
+      padding: 32px 24px;
+      text-align: center;
+    }
+    .pricing-card.popular {
+      border: 2px solid #4ecdc4;
+      position: relative;
+      transform: scale(1.05);
+    }
+    .pricing-card.popular .popular-badge {
+      position: absolute;
+      top: -12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #4ecdc4;
+      color: #0a0a1e;
+      padding: 4px 16px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .pricing-card .plan-name {
+      font-size: 18px;
+      color: #a0a0b8;
+      margin-bottom: 8px;
+    }
+    .pricing-card .plan-price {
+      font-size: 48px;
+      font-weight: bold;
+      color: #f0f0f5;
+      margin-bottom: 4px;
+    }
+    .pricing-card .plan-price .currency {
+      font-size: 24px;
+      vertical-align: super;
+    }
+    .pricing-card .plan-period {
+      font-size: 14px;
+      color: #6868a0;
+      margin-bottom: 24px;
+    }
+    .pricing-features {
+      list-style: none;
+      padding: 0;
+      margin-bottom: 24px;
+      text-align: left;
+    }
+    .pricing-features li {
+      padding: 8px 0;
+      border-bottom: 1px solid #2a2a4a;
+      font-size: 14px;
+      color: #c8c8d8;
+    }
+    .pricing-features li:last-child { border-bottom: none; }
+    .pricing-features li::before {
+      content: "\2713 ";
+      color: #4ecdc4;
+      font-weight: bold;
+      margin-right: 8px;
+    }
+    .pricing-features li.disabled {
+      color: #4a4a6a;
+    }
+    .pricing-features li.disabled::before {
+      content: "\2717 ";
+      color: #4a4a6a;
+    }
+    .pricing-btn {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      border-radius: 8px;
+      border: none;
+      font-size: 15px;
+      font-weight: bold;
+      cursor: pointer;
+      font-family: sans-serif;
+    }
+    .pricing-btn.outline {
+      background: transparent;
+      color: #4ecdc4;
+      border: 2px solid #4ecdc4;
+    }
+    .pricing-btn.filled {
+      background: #4ecdc4;
+      color: #0a0a1e;
+    }
+
+    /* === Stats / Social Proof === */
+    .social-proof {
+      background: #16213e;
+    }
+    .stats-row {
+      display: flex;
+      justify-content: center;
+      gap: 60px;
+      text-align: center;
+    }
+    .stat-item .stat-number {
+      font-size: 40px;
+      font-weight: bold;
+      color: #4ecdc4;
+    }
+    .stat-item .stat-label {
+      font-size: 14px;
+      color: #8888a0;
+      margin-top: 4px;
+    }
+
+    /* === Footer === */
+    .footer {
+      background: #0a0a1e;
+      padding: 40px;
+      border-top: 1px solid #2a2a4a;
+    }
+    .footer-grid {
+      display: flex;
+      gap: 40px;
+      max-width: 1000px;
+      margin: 0 auto 24px;
+    }
+    .footer-col {
+      flex: 1;
+    }
+    .footer-col h4 {
+      font-size: 14px;
+      color: #f0f0f5;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .footer-col a {
+      display: block;
+      font-size: 13px;
+      color: #6868a0;
+      margin-bottom: 8px;
+    }
+    .footer-col a:hover { color: #4ecdc4; }
+    .footer-bottom {
+      text-align: center;
+      color: #4a4a6a;
+      font-size: 13px;
+      padding-top: 24px;
+      border-top: 1px solid #2a2a4a;
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+
+    /* === Expected Rendering Section === */
+    .expected-rendering {
+      max-width: 1000px;
+      margin: 40px auto;
+      padding: 20px 24px;
+      background: #1a2a1a;
+      border: 1px solid #2a4a2a;
+      border-radius: 8px;
+      color: #6bff6b;
+      font-size: 14px;
+    }
+    .expected-rendering h2 {
+      color: #6bff6b;
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+    .expected-rendering ul { margin-left: 20px; }
+    .expected-rendering li { margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+
+  <!-- Back navigation -->
+  <div style="padding:12px 40px;background:#0a0a1e;">
+    <div class="nav" style="margin-bottom:0"><a href="../index.html" style="color:#4ecdc4;text-decoration:none">&larr; Back to Test Index</a></div>
+  </div>
+
+  <!-- ============================================================
+       NAVIGATION
+       Flexbox nav with brand + links + CTA button
+       ============================================================ -->
+  <nav class="site-nav">
+    <div class="brand">Cloud<span>Flow</span></div>
+    <div class="nav-links">
+      <a href="#">Features</a>
+      <a href="#">Pricing</a>
+      <a href="#">Docs</a>
+      <a href="#">Blog</a>
+      <a href="#" class="nav-cta">Get Started Free</a>
+    </div>
+  </nav>
+
+  <!-- ============================================================
+       HERO SECTION
+       Full-width gradient background, centered large heading,
+       subtitle, and two CTA buttons side by side
+       ============================================================ -->
+  <section class="hero">
+    <h1>Ship Faster with<br>Modern Cloud Infrastructure</h1>
+    <p class="subtitle">
+      Deploy, scale, and manage your applications with zero configuration.
+      Trusted by over 10,000 development teams worldwide.
+    </p>
+    <div class="cta-group">
+      <button class="btn-large primary">Start Free Trial</button>
+      <button class="btn-large secondary">Watch Demo</button>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       FEATURES SECTION
+       3-column flex layout with icon, title, description per feature
+       ============================================================ -->
+  <section class="section features">
+    <div class="section-header">
+      <h2>Why CloudFlow?</h2>
+      <p>Everything you need to build, deploy, and scale modern applications.</p>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon blue">Z</div>
+        <h3>Zero-Config Deploys</h3>
+        <p>Push your code and we handle the rest. Automatic builds, previews for every pull request, and instant rollbacks if something goes wrong.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon purple">S</div>
+        <h3>Auto Scaling</h3>
+        <p>Scale from zero to millions of requests seamlessly. Pay only for what you use with our serverless infrastructure that adapts in real-time.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon red">G</div>
+        <h3>Global Edge Network</h3>
+        <p>Your application served from 200+ edge locations worldwide. Sub-50ms latency for 95% of the world's internet users.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SOCIAL PROOF / STATS
+       Horizontal row of big numbers with labels
+       ============================================================ -->
+  <section class="section social-proof">
+    <div class="stats-row">
+      <div class="stat-item">
+        <div class="stat-number">10K+</div>
+        <div class="stat-label">Teams</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number">99.99%</div>
+        <div class="stat-label">Uptime</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number">200+</div>
+        <div class="stat-label">Edge Locations</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number">50M</div>
+        <div class="stat-label">Deploys / Month</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       TESTIMONIAL SECTION
+       Centered card with italic quote and attribution
+       ============================================================ -->
+  <section class="section testimonials">
+    <div class="section-header">
+      <h2>Loved by Developers</h2>
+      <p>Hear from teams that have transformed their workflow.</p>
+    </div>
+    <div class="testimonial-card">
+      <p class="testimonial-quote">
+        CloudFlow reduced our deployment time from 45 minutes to under 30 seconds. Our team can now ship features multiple times a day with complete confidence.
+      </p>
+      <div class="testimonial-author">Sarah Lin</div>
+      <div class="testimonial-role">CTO at TechStartup Inc.</div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       PRICING SECTION
+       3 pricing cards, middle one highlighted with "Popular" badge.
+       Each has plan name, price, feature list, and CTA button.
+       ============================================================ -->
+  <section class="section pricing">
+    <div class="section-header">
+      <h2>Simple, Transparent Pricing</h2>
+      <p>No hidden fees. Scale as you grow.</p>
+    </div>
+    <div class="pricing-grid">
+      <!-- Starter -->
+      <div class="pricing-card">
+        <div class="plan-name">Starter</div>
+        <div class="plan-price"><span class="currency">$</span>0</div>
+        <div class="plan-period">per month</div>
+        <ul class="pricing-features">
+          <li>3 Projects</li>
+          <li>1 GB Storage</li>
+          <li>100 GB Bandwidth</li>
+          <li>Community Support</li>
+          <li class="disabled">Custom Domains</li>
+          <li class="disabled">Team Collaboration</li>
+        </ul>
+        <button class="pricing-btn outline">Get Started</button>
+      </div>
+
+      <!-- Pro (Popular) -->
+      <div class="pricing-card popular">
+        <div class="popular-badge">Most Popular</div>
+        <div class="plan-name">Pro</div>
+        <div class="plan-price"><span class="currency">$</span>29</div>
+        <div class="plan-period">per month</div>
+        <ul class="pricing-features">
+          <li>Unlimited Projects</li>
+          <li>50 GB Storage</li>
+          <li>1 TB Bandwidth</li>
+          <li>Priority Support</li>
+          <li>Custom Domains</li>
+          <li>Team Collaboration</li>
+        </ul>
+        <button class="pricing-btn filled">Start Free Trial</button>
+      </div>
+
+      <!-- Enterprise -->
+      <div class="pricing-card">
+        <div class="plan-name">Enterprise</div>
+        <div class="plan-price"><span class="currency">$</span>99</div>
+        <div class="plan-period">per month</div>
+        <ul class="pricing-features">
+          <li>Unlimited Everything</li>
+          <li>500 GB Storage</li>
+          <li>Unlimited Bandwidth</li>
+          <li>Dedicated Support</li>
+          <li>Custom Domains</li>
+          <li>SSO &amp; SAML</li>
+        </ul>
+        <button class="pricing-btn outline">Contact Sales</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       FOOTER
+       Multiple columns of links + bottom copyright
+       ============================================================ -->
+  <footer class="footer">
+    <div class="footer-grid">
+      <div class="footer-col">
+        <h4>Product</h4>
+        <a href="#">Features</a>
+        <a href="#">Pricing</a>
+        <a href="#">Changelog</a>
+        <a href="#">Roadmap</a>
+      </div>
+      <div class="footer-col">
+        <h4>Resources</h4>
+        <a href="#">Documentation</a>
+        <a href="#">API Reference</a>
+        <a href="#">Guides</a>
+        <a href="#">Status</a>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <a href="#">About</a>
+        <a href="#">Blog</a>
+        <a href="#">Careers</a>
+        <a href="#">Press</a>
+      </div>
+      <div class="footer-col">
+        <h4>Legal</h4>
+        <a href="#">Privacy Policy</a>
+        <a href="#">Terms of Service</a>
+        <a href="#">Cookie Policy</a>
+        <a href="#">GDPR</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      &copy; 2026 CloudFlow, Inc. All rights reserved.
+    </div>
+  </footer>
+
+  <!-- ============================================================
+       EXPECTED RENDERING
+       ============================================================ -->
+  <div class="expected-rendering">
+    <h2>Expected Rendering</h2>
+    <ul>
+      <li><strong>Navigation:</strong> Horizontal bar with "CloudFlow" brand (the "Flow" part in teal) on the left, links and a teal CTA button on the right. All vertically centered.</li>
+      <li><strong>Hero section:</strong> Full-width section with a gradient background (dark blue to purple). Large centered heading (48px), lighter subtitle paragraph below, and two buttons side by side (one filled teal, one outlined white). Generous padding (80px vertical).</li>
+      <li><strong>Features:</strong> Three equal-width columns in a flex row on a darker background. Each column has a colored icon square, bold title, and description paragraph. Columns should not overlap.</li>
+      <li><strong>Stats row:</strong> Four statistics in a horizontal flex row, centered, with large teal numbers and small gray labels below each.</li>
+      <li><strong>Testimonial:</strong> Centered card with rounded corners and border. Italic quote text with decorative open/close quote marks. Author name in teal, role in gray below.</li>
+      <li><strong>Pricing table:</strong> Three pricing cards in a flex row. The middle "Pro" card is slightly scaled up (1.05x) with a teal border and a "Most Popular" badge positioned above the card (negative top offset). Each card shows plan name, large price, feature list with checkmarks (disabled features show X marks and dimmed text), and a CTA button.</li>
+      <li><strong>Footer:</strong> Four columns of links (Product, Resources, Company, Legal) with uppercase headers. Below the columns, a centered copyright line separated by a top border.</li>
+      <li><strong>Overall:</strong> Visually appealing marketing page with distinct sections, proper spacing between all elements, and a cohesive dark theme with teal accents.</li>
+    </ul>
+  </div>
+
+</body>
+</html>

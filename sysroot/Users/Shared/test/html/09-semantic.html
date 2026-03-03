@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test 09: HTML5 Semantic Elements</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+    /* Make semantic elements visible with borders for testing */
+    .test-area header, .test-area footer, .test-area nav,
+    .test-area main, .test-area article, .test-area aside,
+    .test-area section, .test-area figure, .test-area address {
+      border: 1px dashed #555;
+      padding: 10px;
+      margin: 8px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="../index.html">Back to Index</a>
+    <a href="08-forms.html">Prev: Forms</a>
+    <a href="10-entities.html">Next: Entities</a>
+  </div>
+
+  <h1 class="page-title">Test 09: HTML5 Semantic Elements</h1>
+
+  <!-- Test 1: header element -->
+  <div class="test-group">
+    <h2>Test 9.1: header Element</h2>
+    <div class="expected">Expected: The header element should render as a block-level element, similar to a div. It represents introductory content or a group of navigational aids. Dashed border added for visibility.</div>
+    <div class="test-area">
+      <header>
+        <h3>Page Header</h3>
+        <p>This is a header element containing a heading and navigation-like content.</p>
+      </header>
+    </div>
+  </div>
+
+  <!-- Test 2: footer element -->
+  <div class="test-group">
+    <h2>Test 9.2: footer Element</h2>
+    <div class="expected">Expected: The footer element should render as a block-level element. It represents footer information for its nearest sectioning content. Dashed border added for visibility.</div>
+    <div class="test-area">
+      <footer>
+        <p>Copyright 2025 anyOS Project. All rights reserved.</p>
+        <p>Contact: <a href="#">admin@example.com</a></p>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Test 3: nav element -->
+  <div class="test-group">
+    <h2>Test 9.3: nav Element</h2>
+    <div class="expected">Expected: The nav element should render as a block-level element. It represents a section with navigation links. Content inside should flow normally.</div>
+    <div class="test-area">
+      <nav>
+        <ul>
+          <li><a href="#">Home</a></li>
+          <li><a href="#">About</a></li>
+          <li><a href="#">Services</a></li>
+          <li><a href="#">Contact</a></li>
+        </ul>
+      </nav>
+    </div>
+  </div>
+
+  <!-- Test 4: main element -->
+  <div class="test-group">
+    <h2>Test 9.4: main Element</h2>
+    <div class="expected">Expected: The main element should render as a block-level element. It represents the dominant content of the body. Only one main element should exist per page (this is a test exception).</div>
+    <div class="test-area">
+      <main>
+        <h3>Main Content Area</h3>
+        <p>This is the primary content of the page. The main element wraps the central topic of the document.</p>
+      </main>
+    </div>
+  </div>
+
+  <!-- Test 5: article and section -->
+  <div class="test-group">
+    <h2>Test 9.5: article and section Elements</h2>
+    <div class="expected">Expected: Both article and section should render as block-level elements. Article represents self-contained content. Section represents a thematic group. Both should stack vertically.</div>
+    <div class="test-area">
+      <article>
+        <h3>Article: Browser Rendering Engines</h3>
+        <section>
+          <h4>Section 1: History</h4>
+          <p>Web browsers have evolved significantly since the first browser was created in 1990.</p>
+        </section>
+        <section>
+          <h4>Section 2: Modern Engines</h4>
+          <p>Today's major rendering engines include Blink, Gecko, and WebKit.</p>
+        </section>
+      </article>
+      <article>
+        <h3>Article: Second Story</h3>
+        <p>This is a separate, self-contained article element following the first one.</p>
+      </article>
+    </div>
+  </div>
+
+  <!-- Test 6: aside element -->
+  <div class="test-group">
+    <h2>Test 9.6: aside Element</h2>
+    <div class="expected">Expected: The aside element should render as a block-level element. It represents content tangentially related to the surrounding content (like a sidebar callout). Dashed border for visibility.</div>
+    <div class="test-area">
+      <p>The main paragraph discusses important topics about HTML5 semantic elements.</p>
+      <aside>
+        <h4>Did You Know?</h4>
+        <p>HTML5 introduced over 30 new elements to improve document structure and semantics.</p>
+      </aside>
+      <p>Continuing with the main content after the aside.</p>
+    </div>
+  </div>
+
+  <!-- Test 7: figure and figcaption -->
+  <div class="test-group">
+    <h2>Test 9.7: figure and figcaption</h2>
+    <div class="expected">Expected: Figure should render as a block-level element with some default margin/indentation. Figcaption should appear as a caption (typically below the figure content). The figure groups an illustration with its caption.</div>
+    <div class="test-area">
+      <figure>
+        <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVQIW2P8z8DwHwMDAwMAGOgC/Q9HGOAAAAAASUVORK5CYII=" width="100" height="100" alt="Red square placeholder">
+        <figcaption>Figure 1: A red square test image (2x2 pixels, scaled to 100x100).</figcaption>
+      </figure>
+      <figure>
+        <pre>function hello() {
+  return "world";
+}</pre>
+        <figcaption>Figure 2: A code snippet displayed within a figure element.</figcaption>
+      </figure>
+    </div>
+  </div>
+
+  <!-- Test 8: details and summary -->
+  <div class="test-group">
+    <h2>Test 9.8: details and summary (Expandable)</h2>
+    <div class="expected">Expected: The details element creates an expandable/collapsible section. The summary is the visible clickable label. Clicking should toggle the content visibility. A disclosure triangle should appear.</div>
+    <div class="test-area">
+      <details>
+        <summary>Click to expand: Basic Details</summary>
+        <p>This content is hidden by default and revealed when the user clicks the summary.</p>
+        <p>It can contain any HTML content including paragraphs, lists, and other elements.</p>
+      </details>
+
+      <details open>
+        <summary>Already Open Details (open attribute)</summary>
+        <p>This details element has the "open" attribute, so its content is visible by default.</p>
+        <ul>
+          <li>Item one</li>
+          <li>Item two</li>
+          <li>Item three</li>
+        </ul>
+      </details>
+
+      <details>
+        <summary>Nested Details</summary>
+        <p>Outer content.</p>
+        <details>
+          <summary>Inner details</summary>
+          <p>Inner content that is nested within the outer details element.</p>
+        </details>
+      </details>
+    </div>
+  </div>
+
+  <!-- Test 9: address and time -->
+  <div class="test-group">
+    <h2>Test 9.9: address, time, progress, meter</h2>
+    <div class="expected">Expected: address should render in italic by default as a block element. time is inline and may not have visual styling. progress shows a progress bar. meter shows a gauge/meter bar.</div>
+    <div class="test-area">
+      <p><strong>address element:</strong></p>
+      <address>
+        John Doe<br>
+        123 Main Street<br>
+        Anytown, USA 12345<br>
+        <a href="mailto:john@example.com">john@example.com</a>
+      </address>
+
+      <p><strong>time element:</strong></p>
+      <p>The meeting is at <time datetime="2025-03-15T14:30:00">2:30 PM on March 15, 2025</time>.</p>
+      <p>Published on <time datetime="2025-01-01">January 1, 2025</time>.</p>
+
+      <p><strong>progress element:</strong></p>
+      <p>Upload: <progress value="70" max="100">70%</progress> 70%</p>
+      <p>Indeterminate: <progress>Loading...</progress></p>
+
+      <p><strong>meter element:</strong></p>
+      <p>Disk usage: <meter value="0.7" min="0" max="1" low="0.3" high="0.8" optimum="0.5">70%</meter> 70%</p>
+      <p>Low value: <meter value="0.2" min="0" max="1" low="0.3" high="0.8" optimum="0.5">20%</meter> 20%</p>
+      <p>High value: <meter value="0.95" min="0" max="1" low="0.3" high="0.8" optimum="0.5">95%</meter> 95%</p>
+    </div>
+  </div>
+
+  <!-- Test 10: Full page layout with semantic elements -->
+  <div class="test-group">
+    <h2>Test 9.10: Combined Semantic Layout</h2>
+    <div class="expected">Expected: All semantic elements used together to form a page structure. Each element should render as a block-level container. The visual hierarchy should be clear with dashed borders showing each element's boundaries.</div>
+    <div class="test-area">
+      <header>
+        <h3>Site Title</h3>
+        <nav>
+          <a href="#">Home</a> |
+          <a href="#">About</a> |
+          <a href="#">Blog</a>
+        </nav>
+      </header>
+
+      <main>
+        <article>
+          <header>
+            <h4>Article Title</h4>
+            <p>Published <time datetime="2025-06-15">June 15, 2025</time></p>
+          </header>
+          <section>
+            <p>This is the first section of the article with some introductory content.</p>
+          </section>
+          <section>
+            <p>This is the second section with more detailed information.</p>
+          </section>
+          <footer>
+            <p>Tags: HTML, semantic, test</p>
+          </footer>
+        </article>
+
+        <aside>
+          <h4>Related Links</h4>
+          <ul>
+            <li><a href="#">Link 1</a></li>
+            <li><a href="#">Link 2</a></li>
+          </ul>
+        </aside>
+      </main>
+
+      <footer>
+        <address>
+          Contact: <a href="#">webmaster@example.com</a>
+        </address>
+        <p><small>Copyright 2025</small></p>
+      </footer>
+    </div>
+  </div>
+
+</body>
+</html>

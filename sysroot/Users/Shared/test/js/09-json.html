@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: JSON</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">09 - JSON</h1>
+
+<div class="test-group">
+  <h2>JSON Stringify and Parse</h2>
+  <div class="expected">Expected: JSON.stringify produces correct JSON strings, JSON.parse reconstructs objects, round-trips preserve data, and special values are handled correctly.</div>
+  <div class="test-area" id="results"></div>
+</div>
+
+<script>
+function test(name, fn) {
+  var resultDiv = document.getElementById('results');
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// --- JSON.stringify ---
+test('JSON.stringify: simple object', function() {
+  var obj = { name: 'Alice', age: 30 };
+  var json = JSON.stringify(obj);
+  // Parse back to verify rather than string-matching key order
+  var parsed = JSON.parse(json);
+  return parsed.name === 'Alice' && parsed.age === 30;
+});
+
+test('JSON.stringify: number', function() {
+  return JSON.stringify(42) === '42';
+});
+
+test('JSON.stringify: string', function() {
+  return JSON.stringify('hello') === '"hello"';
+});
+
+test('JSON.stringify: boolean', function() {
+  return JSON.stringify(true) === 'true' && JSON.stringify(false) === 'false';
+});
+
+test('JSON.stringify: null', function() {
+  return JSON.stringify(null) === 'null';
+});
+
+test('JSON.stringify: array', function() {
+  var json = JSON.stringify([1, 2, 3]);
+  return json === '[1,2,3]';
+});
+
+test('JSON.stringify: nested array', function() {
+  var json = JSON.stringify([[1, 2], [3, 4]]);
+  return json === '[[1,2],[3,4]]';
+});
+
+test('JSON.stringify: nested object', function() {
+  var obj = { a: { b: { c: 1 } } };
+  var json = JSON.stringify(obj);
+  var parsed = JSON.parse(json);
+  return parsed.a.b.c === 1;
+});
+
+test('JSON.stringify: mixed object with arrays', function() {
+  var obj = { name: 'test', items: [1, 'two', true] };
+  var json = JSON.stringify(obj);
+  var parsed = JSON.parse(json);
+  return parsed.name === 'test' && parsed.items.length === 3 && parsed.items[1] === 'two';
+});
+
+// --- JSON.stringify special values ---
+test('JSON.stringify: undefined properties are omitted', function() {
+  var obj = { a: 1, b: undefined, c: 3 };
+  var json = JSON.stringify(obj);
+  var parsed = JSON.parse(json);
+  return parsed.a === 1 && parsed.c === 3 && !('b' in parsed);
+});
+
+test('JSON.stringify: function properties are omitted', function() {
+  var obj = { a: 1, fn: function() {} };
+  var json = JSON.stringify(obj);
+  var parsed = JSON.parse(json);
+  return parsed.a === 1 && !('fn' in parsed);
+});
+
+test('JSON.stringify: undefined in array becomes null', function() {
+  var json = JSON.stringify([1, undefined, 3]);
+  return json === '[1,null,3]';
+});
+
+// --- JSON.parse ---
+test('JSON.parse: simple object', function() {
+  var obj = JSON.parse('{"name":"Bob","age":25}');
+  return obj.name === 'Bob' && obj.age === 25;
+});
+
+test('JSON.parse: array', function() {
+  var arr = JSON.parse('[10,20,30]');
+  return arr.length === 3 && arr[0] === 10 && arr[2] === 30;
+});
+
+test('JSON.parse: nested structure', function() {
+  var data = JSON.parse('{"users":[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]}');
+  return data.users.length === 2 && data.users[0].name === 'Alice' && data.users[1].id === 2;
+});
+
+test('JSON.parse: boolean and null', function() {
+  var obj = JSON.parse('{"active":true,"deleted":false,"extra":null}');
+  return obj.active === true && obj.deleted === false && obj.extra === null;
+});
+
+test('JSON.parse: string value with escapes', function() {
+  var obj = JSON.parse('{"msg":"hello\\nworld"}');
+  return obj.msg === 'hello\nworld';
+});
+
+// --- Round-trip ---
+test('Round-trip: parse(stringify(obj)) preserves data', function() {
+  var original = {
+    name: 'Test',
+    count: 42,
+    active: true,
+    tags: ['a', 'b', 'c'],
+    nested: { x: 1, y: 2 }
+  };
+  var roundTripped = JSON.parse(JSON.stringify(original));
+  return roundTripped.name === 'Test' &&
+         roundTripped.count === 42 &&
+         roundTripped.active === true &&
+         roundTripped.tags.length === 3 &&
+         roundTripped.tags[1] === 'b' &&
+         roundTripped.nested.x === 1;
+});
+
+test('Round-trip: array of objects', function() {
+  var original = [
+    { id: 1, value: 'one' },
+    { id: 2, value: 'two' }
+  ];
+  var result = JSON.parse(JSON.stringify(original));
+  return result.length === 2 && result[0].value === 'one' && result[1].id === 2;
+});
+
+test('Round-trip: empty structures', function() {
+  var emptyObj = JSON.parse(JSON.stringify({}));
+  var emptyArr = JSON.parse(JSON.stringify([]));
+  return Object.keys(emptyObj).length === 0 && emptyArr.length === 0;
+});
+
+// --- Error handling ---
+test('JSON.parse: invalid JSON throws error', function() {
+  try {
+    JSON.parse('{invalid json}');
+    return false;
+  } catch(e) {
+    return true;
+  }
+});
+
+test('JSON.parse: empty string throws error', function() {
+  try {
+    JSON.parse('');
+    return false;
+  } catch(e) {
+    return true;
+  }
+});
+
+test('JSON.parse: trailing comma throws error', function() {
+  try {
+    JSON.parse('{"a":1,}');
+    return false;
+  } catch(e) {
+    return true;
+  }
+});
+
+test('JSON.parse: single quotes are invalid JSON', function() {
+  try {
+    JSON.parse("{'a':1}");
+    return false;
+  } catch(e) {
+    return true;
+  }
+});
+
+// --- JSON.stringify with indent ---
+test('JSON.stringify with indent (pretty print)', function() {
+  var obj = { a: 1 };
+  var json = JSON.stringify(obj, null, 2);
+  return json.indexOf('\n') >= 0 && json.indexOf('  ') >= 0;
+});
+</script>
+</body>
+</html>
