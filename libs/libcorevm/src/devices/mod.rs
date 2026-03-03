@@ -13,6 +13,9 @@
 //! - [`svga`] — Simple VGA/SVGA framebuffer
 //! - [`e1000`] — Intel E1000 network card
 //! - [`bus`] — PCI configuration space and system bus
+//! - [`ioapic`] — I/O APIC interrupt routing
+//! - [`lapic`] — Local APIC per-CPU interrupt controller
+//! - [`acpi`] — ACPI Power Management timer and control registers
 
 pub mod pic;
 pub mod pit;
@@ -26,3 +29,5 @@ pub mod fw_cfg;
 pub mod ide;
 pub mod debug_port;
 pub mod ioapic;
+pub mod lapic;
+pub mod acpi;

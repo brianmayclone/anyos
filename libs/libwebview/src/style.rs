@@ -88,6 +88,10 @@ pub enum GridTrackSize {
     Percent(i32),
     /// `auto` — shrink/grow to fit content.
     Auto,
+    /// `repeat(auto-fill, minmax(min_px, 1fr))` — resolved at layout time.
+    AutoFill { min_px: i32 },
+    /// `repeat(auto-fit, minmax(min_px, 1fr))` — resolved at layout time.
+    AutoFit { min_px: i32 },
 }
 
 /// Resolved line address for `grid-column-start/end` etc.
@@ -2231,12 +2235,26 @@ fn parse_track_list(s: &str) -> Vec<GridTrackSize> {
     let mut tracks = Vec::new();
     let s = s.trim();
 
-    // Handle repeat(count, size) — only uniform repeats supported.
+    // Handle repeat(count, size) — supports numeric counts and auto-fill/auto-fit.
     if s.starts_with("repeat(") {
         let inner = s.trim_start_matches("repeat(").trim_end_matches(')');
         let mut parts = inner.splitn(2, ',');
         let count_str = parts.next().unwrap_or("1").trim();
         let size_str  = parts.next().unwrap_or("auto").trim();
+
+        // Handle auto-fill / auto-fit keywords.
+        if count_str == "auto-fill" || count_str == "auto-fit" {
+            let min_px = parse_minmax_min(size_str);
+            let track = if count_str == "auto-fill" {
+                GridTrackSize::AutoFill { min_px }
+            } else {
+                GridTrackSize::AutoFit { min_px }
+            };
+            tracks.push(track);
+            return tracks;
+        }
+
+        // Numeric repeat count.
         let count: usize = count_str.parse().unwrap_or(1).max(1);
         let track = parse_single_track(size_str);
         for _ in 0..count {
@@ -2252,10 +2270,43 @@ fn parse_track_list(s: &str) -> Vec<GridTrackSize> {
     tracks
 }
 
-/// Parse a single track size token (`"100px"`, `"1fr"`, `"50%"`, `"auto"`).
+/// Extract the minimum pixel value from `minmax(300px, 1fr)` or similar.
+/// Falls back to 0 if the syntax is not recognized.
+fn parse_minmax_min(s: &str) -> i32 {
+    let s = s.trim();
+    if s.starts_with("minmax(") {
+        let inner = s.trim_start_matches("minmax(").trim_end_matches(')');
+        if let Some((min_str, _max_str)) = inner.split_once(',') {
+            let min_str = min_str.trim();
+            if let Some(px_val) = min_str.strip_suffix("px") {
+                return px_val.trim().parse::<f32>().unwrap_or(0.0) as i32;
+            }
+            if let Some(pct_val) = min_str.strip_suffix('%') {
+                // Store percentage as negative to distinguish from px.
+                return -(pct_val.trim().parse::<f32>().unwrap_or(0.0) as i32);
+            }
+        }
+    }
+    // Not minmax(), try as a plain track size.
+    match parse_single_track(s) {
+        GridTrackSize::Px(px) => px,
+        _ => 0,
+    }
+}
+
+/// Parse a single track size token (`"100px"`, `"1fr"`, `"50%"`, `"auto"`,
+/// `"minmax(200px, 1fr)"`).
 pub(crate) fn parse_single_track(token: &str) -> GridTrackSize {
     let token = token.trim();
     if token == "auto" || token.is_empty() {
+        return GridTrackSize::Auto;
+    }
+    // Handle minmax(min, max) — use the max track size for sizing.
+    if token.starts_with("minmax(") {
+        let inner = token.trim_start_matches("minmax(").trim_end_matches(')');
+        if let Some((_min_str, max_str)) = inner.split_once(',') {
+            return parse_single_track(max_str.trim());
+        }
         return GridTrackSize::Auto;
     }
     if let Some(fr_val) = token.strip_suffix("fr") {

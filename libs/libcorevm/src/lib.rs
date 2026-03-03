@@ -937,6 +937,17 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     let ioapic = Box::into_raw(Box::new(devices::ioapic::IoApic::new()));
     vm.engine.memory.add_mmio(0xFEC00000, 0x1000, Box::new(MmioProxy { ptr: ioapic }));
 
+    // Local APIC at standard MMIO address (0xFEE00000, 4 KB).
+    // SeaBIOS probes LAPIC Version (0xFEE00030) to detect APIC support.
+    // Without this, SeaBIOS reports "No apic" and may skip APIC-dependent init.
+    let lapic = Box::into_raw(Box::new(devices::lapic::Lapic::new()));
+    vm.engine.memory.add_mmio(0xFEE00000, 0x1000, Box::new(MmioProxy { ptr: lapic }));
+
+    // ACPI PM — Power Management timer and control registers.
+    // ICH9 PMBASE = 0xB000; PM Timer at 0xB008 used by SeaBIOS for all delays.
+    let acpi_pm = Box::into_raw(Box::new(devices::acpi::AcpiPm::new()));
+    vm.engine.io.register(0xB000, 0x40, Box::new(IoProxy { ptr: acpi_pm }));
+
     // fw_cfg — QEMU firmware configuration interface.
     // SeaBIOS uses this to discover platform config and VGA BIOS files.
     let fw_cfg = Box::into_raw(Box::new(

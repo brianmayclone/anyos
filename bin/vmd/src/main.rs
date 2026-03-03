@@ -483,17 +483,25 @@ fn cmd_start() {
         let is_seabios = inst.bios_type == "seabios";
 
         if is_seabios {
-            // ── SeaBIOS: QEMU-compatible ROM mapping ────────────────
+            // ── SeaBIOS ROM mapping ──────────────────────────────────
             //
-            // Layout (matches real QEMU):
-            //   0x000C0000 – VGA BIOS option ROM (separate, ~39 KB)
-            //   0x000E0000 – Shadow copy of upper 128 KB of SeaBIOS
-            //   0xFFFC0000 – Full 256 KB SeaBIOS ROM (top of 4 GiB)
+            // SeaBIOS is a 256 KB binary with internal relative jumps
+            // spanning the full image. The entire image must be loaded
+            // contiguously into writable RAM at 0xC0000-0xFFFFF so that:
+            //   - The reset vector at 0xFFFF0 contains the correct entry
+            //     point (bios_data[0x3FFF0] for a 256 KB image).
+            //   - Relative calls/jumps between the upper and lower halves
+            //     of the image resolve to correct addresses.
+            //   - SeaBIOS can write to its own data structures in-place.
             //
-            // The CPU resets to CS:IP = F000:FFF0 → physical 0xFFFF0,
-            // which falls in the shadow region at 0xE0000. SeaBIOS's
-            // reset vector code at that offset does a far jump to the
-            // main POST entry point, all below 1 MiB.
+            // Additionally, a read-only ROM overlay at 0xFFFC0000 (top of
+            // 4 GiB) provides access when SeaBIOS switches to 32-bit
+            // protected mode and uses its linked addresses.
+            //
+            // The VGA BIOS is NOT loaded into RAM at 0xC0000 (that would
+            // overwrite SeaBIOS code). Instead it is provided exclusively
+            // via fw_cfg — SeaBIOS loads option ROMs from fw_cfg during
+            // POST and places them at 0xC0000 itself.
             let bios_data = read_file(BIOS_PATH_SEABIOS);
             if bios_data.is_empty() {
                 send_status("error 0 SeaBIOS not found");
@@ -501,50 +509,31 @@ fn cmd_start() {
                 return;
             }
 
-            // 1. Map full 256 KB ROM at the top of the 4 GiB address space.
-            inst.handle.load_rom(0xFFFC_0000, &bios_data);
+            // 1. Full 256 KB into writable RAM at 0xC0000-0xFFFFF.
+            //    Reset vector at physical 0xFFFF0 = bios_data[size - 16].
+            inst.handle.load_binary(0xC0000, &bios_data);
             anyos_std::println!(
-                "[vmd] SeaBIOS ROM mapped at 0xFFFC0000 ({} bytes)", bios_data.len()
+                "[vmd] SeaBIOS loaded at 0xC0000 ({} bytes, writable)", bios_data.len()
             );
 
-            // 2. Shadow copy: upper 128 KB of the ROM at 0xE0000-0xFFFFF.
-            //    The reset vector at 0xFFFF0 = 0xE0000 + 0x1FFF0 maps to
-            //    ROM offset 0x20000 + 0x1FFF0 = 0x3FFF0, which is the entry
-            //    point at the very end of the 256 KB BIOS image.
-            //    Uses load_binary (not load_rom) because SeaBIOS needs write
-            //    access to 0xE0000-0xFFFFF for ROM shadowing and its own
-            //    data structures (BDA, EBDA, IVT entries, etc.).
-            let bios_len = bios_data.len();
-            if bios_len >= 128 * 1024 {
-                let shadow_start = bios_len - 128 * 1024;
-                inst.handle.load_binary(0xE0000, &bios_data[shadow_start..]);
-                anyos_std::println!(
-                    "[vmd] SeaBIOS shadow at 0xE0000 (128 KB, writable)"
-                );
-            } else {
-                // Small BIOS — map entire image at the shadow region.
-                inst.handle.load_binary(0xE0000, &bios_data);
-                anyos_std::println!(
-                    "[vmd] SeaBIOS shadow at 0xE0000 ({} bytes, writable)", bios_len
-                );
-            }
+            // 2. Read-only ROM overlay at top of 4 GiB for 32-bit mode.
+            inst.handle.load_rom(0xFFFC_0000, &bios_data);
+            anyos_std::println!(
+                "[vmd] SeaBIOS ROM overlay at 0xFFFC0000 ({} bytes)", bios_data.len()
+            );
 
             inst.handle.set_rip(0xFFF0);
 
-            // 3. Map VGA BIOS as a separate option ROM at 0xC0000.
-            //    SeaBIOS scans for option ROMs starting at 0xC0000 by
-            //    looking for the 0x55AA signature.
-            //    Uses load_binary (not load_rom) because SeaBIOS writes to
-            //    the option ROM area during ROM shadowing (copies ROM into
-            //    shadow RAM, then the region becomes read/write).
+            // 3. Provide VGA BIOS via fw_cfg only (not in RAM).
+            //    SeaBIOS's option ROM scanner loads it from fw_cfg and
+            //    places it at 0xC0000 during POST (overwriting the first
+            //    part of the BIOS image, which is no longer needed by then).
             let vgabios = read_file(VGABIOS_PATH);
             if !vgabios.is_empty() {
-                inst.handle.load_binary(0xC0000, &vgabios);
-                anyos_std::println!(
-                    "[vmd] VGA BIOS at 0xC0000 ({} bytes, writable)", vgabios.len()
-                );
-                // Also provide via fw_cfg for SeaBIOS's fw_cfg ROM loader.
                 inst.handle.fw_cfg_add_file("vgaroms/vgabios.bin", &vgabios);
+                anyos_std::println!(
+                    "[vmd] VGA BIOS via fw_cfg ({} bytes)", vgabios.len()
+                );
             }
         } else {
             // ── CoreVM BIOS (64 KB at 0xF0000) ─────────────────────

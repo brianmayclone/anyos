@@ -51,7 +51,25 @@ pub fn layout_grid(
     let justify_items = parent_style.justify_items;
 
     // ── 1. Resolve column track sizes ──────────────────────────────────────
-    let col_templates = &parent_style.grid_template_columns;
+    // Expand auto-fill / auto-fit into concrete 1fr tracks based on the
+    // available container width and the minimum item width.
+    let resolved_templates: Vec<GridTrackSize>;
+    let col_templates: &[GridTrackSize] = {
+        let src = &parent_style.grid_template_columns;
+        if src.len() == 1 {
+            match src[0] {
+                GridTrackSize::AutoFill { min_px } | GridTrackSize::AutoFit { min_px } => {
+                    let min_px = min_px.max(1);
+                    let num_cols = ((available_width + col_gap) / (min_px + col_gap)).max(1) as usize;
+                    resolved_templates = vec![GridTrackSize::Fr(100); num_cols];
+                    &resolved_templates
+                }
+                _ => src.as_slice(),
+            }
+        } else {
+            src.as_slice()
+        }
+    };
     let auto_col = &parent_style.grid_auto_columns;
 
     // ── 2. Collect visible, non-absolutely-positioned children ────────────
@@ -393,7 +411,9 @@ fn resolve_col_widths(
                 fixed_total += px;
             }
             GridTrackSize::Fr(f) => { widths.push(0); fr_total += f; }
-            GridTrackSize::Auto => { widths.push(0); } // sized in second pass
+            GridTrackSize::Auto
+            | GridTrackSize::AutoFill { .. }
+            | GridTrackSize::AutoFit { .. } => { widths.push(0); }
         }
     }
 

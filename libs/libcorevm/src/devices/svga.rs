@@ -95,6 +95,9 @@ pub struct Svga {
     pub mmio_write_count: u64,
     /// Number of MMIO writes to the text buffer region (offset >= 0x18000).
     pub mmio_text_write_count: u64,
+    /// Simulated vertical retrace toggle. Flips on each read of port 0x3DA
+    /// so that guest retrace-wait loops (polling bit 3) always terminate.
+    retrace_toggle: bool,
     /// Current horizontal resolution in pixels.
     pub width: u32,
     /// Current vertical resolution in pixels.
@@ -160,6 +163,7 @@ impl Svga {
             misc_output: 0,
             mmio_write_count: 0,
             mmio_text_write_count: 0,
+            retrace_toggle: false,
             width,
             height,
             bpp: 32,
@@ -315,10 +319,12 @@ impl IoHandler for Svga {
                 // Input Status Register 1.
                 // Reading this register resets the attribute controller flip-flop.
                 self.attr_flip_flop = false;
-                // Return vertical retrace bit (bit 3) toggling — many guests
-                // poll this to synchronize with VBLANK.
-                // Always report "not in retrace" for simplicity.
-                0x00
+                // Toggle vertical retrace (bit 3) and display enable (bit 0)
+                // on every read. Guest firmware (VGA BIOS) polls these bits in
+                // tight loops — both "wait for retrace to start" (while !(status&8))
+                // and "wait for retrace to end" (while (status&8)) must terminate.
+                self.retrace_toggle = !self.retrace_toggle;
+                if self.retrace_toggle { 0x09 } else { 0x00 }
             }
             _ => 0xFF,
         };

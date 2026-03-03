@@ -347,8 +347,9 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             let ecx_val = (1 << 0) | (1 << 19) | (1 << 20) | (1 << 23);
             // EDX feature flags:
             // FPU(0), VME(1), DE(2), PSE(3), TSC(4), MSR(5), PAE(6),
-            // CX8(8), PGE(13), MCA(14), CMOV(15), PAT(16), PSE-36(17),
-            // CLFLUSH(19), MMX(23), FXSR(24), SSE(25), SSE2(26)
+            // MCE(7), CX8(8), APIC(9), PGE(13), MCA(14), CMOV(15),
+            // PAT(16), PSE-36(17), CLFLUSH(19), MMX(23), FXSR(24),
+            // SSE(25), SSE2(26)
             let edx_val: u32 = (1 << 0)
                 | (1 << 1)
                 | (1 << 2)
@@ -356,7 +357,9 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
                 | (1 << 4)
                 | (1 << 5)
                 | (1 << 6)
+                | (1 << 7)
                 | (1 << 8)
+                | (1 << 9)
                 | (1 << 13)
                 | (1 << 14)
                 | (1 << 15)

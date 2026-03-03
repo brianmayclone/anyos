@@ -120,28 +120,65 @@ impl IoApic {
     }
 }
 
-impl MmioHandler for IoApic {
-    /// Read from IO-APIC MMIO registers.
-    fn read(&mut self, offset: u64, _size: u8) -> Result<u64> {
-        let val = match offset {
-            // IOREGSEL at offset 0x00.
+impl IoApic {
+    /// Read the raw 32-bit value of an MMIO register by its base offset.
+    fn read_mmio_register(&self, reg_base: u64) -> u32 {
+        match reg_base {
             0x00 => self.reg_select,
-            // IOWIN at offset 0x10 — read the selected register.
             0x10 => self.read_reg(self.reg_select),
             _ => 0,
+        }
+    }
+
+    /// Write a 32-bit value to an MMIO register by its base offset.
+    fn write_mmio_register(&mut self, reg_base: u64, v: u32) {
+        match reg_base {
+            0x00 => self.reg_select = v,
+            0x10 => self.write_reg(self.reg_select, v),
+            _ => {}
+        }
+    }
+}
+
+impl MmioHandler for IoApic {
+    /// Read from IO-APIC MMIO registers.
+    ///
+    /// IOREGSEL (offset 0x00) and IOWIN (offset 0x10) are both 32-bit
+    /// registers. Sub-dword accesses extract the correct byte(s).
+    fn read(&mut self, offset: u64, size: u8) -> Result<u64> {
+        // IOREGSEL is at 0x00-0x03, IOWIN at 0x10-0x13.
+        // Determine which register and the byte offset within it.
+        let (reg_base, byte_off) = match offset {
+            0x00..=0x03 => (0x00u64, (offset & 0x3) as u32),
+            0x10..=0x13 => (0x10u64, (offset & 0x3) as u32),
+            _ => return Ok(0),
         };
-        Ok(val as u64)
+        let reg_val = self.read_mmio_register(reg_base);
+        let shifted = (reg_val >> (byte_off * 8)) as u64;
+        let bits = (size as u32).min(4) * 8;
+        let mask = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+        Ok(shifted & mask)
     }
 
     /// Write to IO-APIC MMIO registers.
-    fn write(&mut self, offset: u64, _size: u8, val: u64) -> Result<()> {
-        match offset {
-            // IOREGSEL at offset 0x00 — select a register.
-            0x00 => self.reg_select = val as u32,
-            // IOWIN at offset 0x10 — write to the selected register.
-            0x10 => self.write_reg(self.reg_select, val as u32),
-            _ => {}
-        }
+    ///
+    /// Sub-dword writes perform a read-modify-write to merge partial bytes.
+    fn write(&mut self, offset: u64, size: u8, val: u64) -> Result<()> {
+        let (reg_base, byte_off) = match offset {
+            0x00..=0x03 => (0x00u64, (offset & 0x3) as u32),
+            0x10..=0x13 => (0x10u64, (offset & 0x3) as u32),
+            _ => return Ok(()),
+        };
+        let v = if byte_off == 0 && size >= 4 {
+            val as u32
+        } else {
+            let old = self.read_mmio_register(reg_base);
+            let shift = byte_off * 8;
+            let bits = (size as u32).min(4) * 8;
+            let mask = if bits >= 32 { u32::MAX } else { (1u32 << bits) - 1 };
+            (old & !(mask << shift)) | (((val as u32) & mask) << shift)
+        };
+        self.write_mmio_register(reg_base, v);
         Ok(())
     }
 }

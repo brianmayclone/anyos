@@ -331,16 +331,18 @@ impl WebView {
         // handles smooth scrolling natively.  We only need to create tile
         // canvases for rows entering the pre-render zone (incrementally, max
         // 2 per tick to avoid blocking the event loop).
+        //
+        // NOTE: We intentionally do NOT set `changed = true` when pending tiles
+        // remain.  Pending tiles are lazily created on future scroll events via
+        // ensure_anim_timer().  Setting changed=true here caused a feedback
+        // loop: pending → changed → IDLE_TICKS reset → timer never stops → 60Hz
+        // rendering that froze the browser on any scrollable page.
         if self.layout_root.is_some() {
             let scroll_y = self.scroll_view.get_state() as i32;
             let delta = (scroll_y - self.last_render_scroll_y).abs();
-            // Check every 64px of scroll movement for new tiles needed.
-            if delta > 64 {
-                let pending = self.render_viewport(scroll_y);
+            if delta > 32 {
+                let _pending = self.render_viewport(scroll_y);
                 self.last_render_scroll_y = scroll_y;
-                if pending {
-                    changed = true;
-                }
             }
         }
 

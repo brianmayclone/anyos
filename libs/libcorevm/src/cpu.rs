@@ -195,6 +195,10 @@ impl Cpu {
     /// Performs bounds checking against the GDTR limit and translates
     /// the GDT base address through paging if enabled.
     ///
+    /// In long mode, system descriptors (TSS, LDT) are 16 bytes. The
+    /// upper 8 bytes contain bits [63:32] of the base address. This
+    /// method detects system descriptors and reads the full 16 bytes.
+    ///
     /// # Errors
     ///
     /// Returns `VmError::GeneralProtection` if the selector index exceeds
@@ -218,7 +222,30 @@ impl Cpu {
             memory,
         )?;
         let raw = memory.read_u64(phys)?;
-        Ok(SegmentDescriptor::from_raw(selector, raw))
+        let mut desc = SegmentDescriptor::from_raw(selector, raw);
+
+        // Long-mode system descriptors (TSS, LDT) are 16 bytes wide.
+        // Access byte bit 4 (S flag) = 0 indicates a system descriptor.
+        let is_system = (desc.access & 0x10) == 0;
+        if matches!(self.mode, Mode::LongMode) && is_system && desc.present {
+            if index + 15 > self.regs.gdtr.limit as u64 {
+                return Err(VmError::GeneralProtection(selector as u32 & 0xFFFC));
+            }
+            let addr_hi = self.regs.gdtr.base.wrapping_add(index + 8);
+            let phys_hi = mmu.translate_linear(
+                addr_hi,
+                self.regs.cr3,
+                AccessType::Read,
+                self.regs.cpl,
+                memory,
+            )?;
+            let raw_hi = memory.read_u64(phys_hi)?;
+            // Bits [31:0] of the upper qword hold base[63:32].
+            let base_upper = raw_hi & 0xFFFF_FFFF;
+            desc.base |= base_upper << 32;
+        }
+
+        Ok(desc)
     }
 
     /// Load a segment register by reading its descriptor from the GDT.
