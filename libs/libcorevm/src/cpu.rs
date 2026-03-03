@@ -6,6 +6,7 @@
 //! hardware exceptions.
 
 use crate::decoder::{CpuMode, Decoder};
+use crate::registers::GprIndex;
 use crate::error::{Result, VmError};
 use crate::fpu_state::FpuState;
 use crate::interrupts::InterruptController;
@@ -396,59 +397,50 @@ impl Cpu {
             self.last_exec_cs = self.regs.seg[SegReg::Cs as usize].selector;
             self.last_fetch_addr = phys_addr;
 
-            // ── PCI debug: filtered instruction trace after CF8 #11 ──
-            // Arms after CF8 write #12, logs up to 2000 non-noisy instructions.
-            // Skips known inner loops (serial output, strlen, memset, printf)
-            // to capture the actual PCI scan control flow.
+            // ── Instruction trace: arms when bios_print is first reached ──
+            // Logs 200 instructions with full register state to find the loop.
             {
                 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
                 static ITRACE_ARMED: AtomicBool = AtomicBool::new(false);
                 static ITRACE_LEFT: AtomicU32 = AtomicU32::new(0);
-                static ITRACE_ELAPSED: AtomicU32 = AtomicU32::new(0);
 
-                let cf8_n = crate::io::CF8_DISPATCH_COUNT.load(Ordering::Relaxed);
-                if cf8_n >= 12 && !ITRACE_ARMED.load(Ordering::Relaxed) {
+                let rip = self.regs.rip;
+                let cs_sel = self.regs.seg[SegReg::Cs as usize].selector;
+                // Arm when we first hit bios_print (cs lodsb at offset 0x1872 in BIOS segment)
+                if rip == 0x1872 && cs_sel == 0xF000 && !ITRACE_ARMED.load(Ordering::Relaxed) {
                     ITRACE_ARMED.store(true, Ordering::Relaxed);
-                    ITRACE_LEFT.store(2000, Ordering::Relaxed);
+                    ITRACE_LEFT.store(200, Ordering::Relaxed);
                     libsyscall::serial_print(format_args!(
-                        "[itrace] === ARMED after CF8 #{} at insn={} rip=0x{:X} ===\n",
-                        cf8_n, self.instruction_count, self.regs.rip
+                        "[itrace] === ARMED at bios_print, insn={} ===\n",
+                        self.instruction_count
                     ));
                 }
                 let left = ITRACE_LEFT.load(Ordering::Relaxed);
                 if left > 0 {
-                    let elapsed = ITRACE_ELAPSED.fetch_add(1, Ordering::Relaxed);
-                    let rip = self.regs.rip;
-                    // Skip noisy inner loops to save trace budget:
-                    let skip = (rip >= 0xEBD7C && rip <= 0xEBD8B)  // serial byte OUT+RET
-                        || (rip >= 0xEA400 && rip <= 0xEA40A)       // strlen
-                        || (rip >= 0xEB726 && rip <= 0xEB72A)       // memset
-                        || (rip >= 0xEC908 && rip <= 0xEC92B)       // printf char loop
-                        || (rip >= 0xEA416 && rip <= 0xEA42C)       // memcmp
-                        || (rip >= 0xEC6E7 && rip <= 0xEC6FB)       // vprintf dispatch
-                        || (rip >= 0xEC91E && rip <= 0xEC925)       // putc path
-                        || (rip >= 0xEA29B && rip <= 0xEA2A0);      // char output
-                    if !skip {
-                        ITRACE_LEFT.store(left - 1, Ordering::Relaxed);
-                        use crate::memory::MemoryBus;
-                        let b0 = memory.read_u8(phys_addr).unwrap_or(0xFF);
-                        let b1 = memory.read_u8(phys_addr + 1).unwrap_or(0xFF);
-                        let b2 = memory.read_u8(phys_addr + 2).unwrap_or(0xFF);
-                        let b3 = memory.read_u8(phys_addr + 3).unwrap_or(0xFF);
-                        let b4 = memory.read_u8(phys_addr + 4).unwrap_or(0xFF);
-                        let b5 = memory.read_u8(phys_addr + 5).unwrap_or(0xFF);
-                        let _cs_s = self.regs.seg[SegReg::Cs as usize].selector;
-                        let _cs_b = self.regs.seg[SegReg::Cs as usize].base;
-                        libsyscall::serial_print(format_args!(
-                            "[itrace] #{} rip=0x{:X} phys=0x{:X} cs=0x{:04X} cs.b=0x{:X} m={:?} [{:02X} {:02X} {:02X} {:02X} {:02X} {:02X}]\n",
-                            elapsed, rip, phys_addr, _cs_s, _cs_b, self.mode,
-                            b0, b1, b2, b3, b4, b5
-                        ));
-                    }
+                    ITRACE_LEFT.store(left - 1, Ordering::Relaxed);
+                    use crate::memory::MemoryBus;
+                    let b0 = memory.read_u8(phys_addr).unwrap_or(0xFF);
+                    let b1 = memory.read_u8(phys_addr + 1).unwrap_or(0xFF);
+                    let b2 = memory.read_u8(phys_addr + 2).unwrap_or(0xFF);
+                    let b3 = memory.read_u8(phys_addr + 3).unwrap_or(0xFF);
+                    let ax = self.regs.read_gpr16(GprIndex::Rax as u8);
+                    let bx = self.regs.read_gpr16(GprIndex::Rbx as u8);
+                    let cx = self.regs.read_gpr16(GprIndex::Rcx as u8);
+                    let dx = self.regs.read_gpr16(GprIndex::Rdx as u8);
+                    let si = self.regs.read_gpr16(GprIndex::Rsi as u8);
+                    let di = self.regs.read_gpr16(GprIndex::Rdi as u8);
+                    let sp = self.regs.read_gpr16(GprIndex::Rsp as u8);
+                    let ds = self.regs.seg[SegReg::Ds as usize].selector;
+                    let es = self.regs.seg[SegReg::Es as usize].selector;
+                    let fl = (self.regs.rflags & 0xFFFF) as u16;
+                    libsyscall::serial_print(format_args!(
+                        "[itrace] rip={:04X} [{:02X}{:02X}{:02X}{:02X}] AX={:04X} BX={:04X} CX={:04X} DX={:04X} SI={:04X} DI={:04X} SP={:04X} DS={:04X} ES={:04X} FL={:04X}\n",
+                        rip, b0, b1, b2, b3, ax, bx, cx, dx, si, di, sp, ds, es, fl
+                    ));
                     if left == 1 {
                         libsyscall::serial_print(format_args!(
-                            "[itrace] === DONE after {} elapsed insns, insn_count={} ===\n",
-                            elapsed, self.instruction_count
+                            "[itrace] === DONE, insn_count={} ===\n",
+                            self.instruction_count
                         ));
                     }
                 }

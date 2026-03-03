@@ -713,6 +713,7 @@ impl<'m> DecodeCursor<'m> {
                 let reg = self.extend_b(op & 0x07);
                 let imm = self.fetch_u8()? as u64;
                 self.inst.immediate = imm;
+                self.inst.operand_size = OperandSize::Byte;
                 self.set_operand(0, self.gpr_operand(reg, OperandSize::Byte));
                 self.set_operand(1, Operand::Immediate(imm));
                 self.inst.operand_count = 2;
