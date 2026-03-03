@@ -19,6 +19,8 @@ int13h_handler:
     je .extended_write
     cmp ah, 0x48
     je .get_ext_params
+    cmp ah, 0x4B
+    je .get_cd_emul_status
     ; Unsupported function.
     mov ah, 0x01                ; Invalid function
     stc
@@ -180,10 +182,18 @@ int13h_handler:
 ; AH=41h: Check INT 13h extensions.
 ;   BX = 0x55AA, DL = drive.
 ;   Returns: BX = 0xAA55, AH = version, CX = API bitmap.
+;
+;   Supported drives: 0x80 (HDD) and 0xE0 (virtual CD-ROM, El Torito).
 ; ---------------------------------------------------------------------------
 .check_extensions:
+    ; Accept 0x80 (HDD) and 0xE0 (virtual CD) only.
     cmp dl, 0x80
-    jb .chk_ext_fail
+    je .chk_ext_ok
+    cmp dl, 0xE0
+    je .chk_ext_ok
+    jmp .chk_ext_fail
+
+.chk_ext_ok:
     cmp bx, 0x55AA
     jne .chk_ext_fail
 
@@ -209,6 +219,10 @@ int13h_handler:
 ;     Word 4: buffer offset
 ;     Word 6: buffer segment
 ;     Qword 8: starting LBA
+;
+;   For DL=0xE0 (virtual CD-ROM): the DAP LBA and sector count are in
+;   ISO 2048-byte CD-sector units.  We translate to 512-byte ATA sectors
+;   by multiplying both by 4 before calling ide_read_sectors.
 ; ---------------------------------------------------------------------------
 .extended_read:
     push eax
@@ -220,23 +234,39 @@ int13h_handler:
     push ds
     push si
 
-    ; Only drive 0x80.
-    cmp dl, 0x80
-    jne .ext_read_fail
-
     cmp byte [ide_master_present], 0
     je .ext_read_fail
 
-    ; Read DAP fields.
-    movzx ecx, word [si + 2]   ; Sector count
+    cmp dl, 0x80
+    je .ext_read_hdd
+    cmp dl, 0xE0
+    je .ext_read_cd
+    jmp .ext_read_fail
+
+.ext_read_hdd:
+    ; Standard 512-byte sector read.
+    movzx ecx, word [si + 2]   ; Sector count (512-byte sectors)
     mov di, [si + 4]            ; Buffer offset
     mov ax, [si + 6]            ; Buffer segment
     mov es, ax
-    mov eax, [si + 8]           ; LBA low 32 bits (enough for LBA28)
+    mov eax, [si + 8]           ; LBA (512-byte sector units)
+    call ide_read_sectors
+    jc .ext_read_fail_pop
+    jmp .ext_read_ok
 
+.ext_read_cd:
+    ; CD-ROM 2048-byte sector read: translate ISO sector → ATA sector (×4).
+    movzx ecx, word [si + 2]   ; ISO sector count
+    shl ecx, 2                  ; × 4 → 512-byte ATA sector count
+    mov di, [si + 4]            ; Buffer offset
+    mov ax, [si + 6]            ; Buffer segment
+    mov es, ax
+    mov eax, [si + 8]           ; ISO LBA (2048-byte sector units)
+    shl eax, 2                  ; × 4 → ATA LBA
     call ide_read_sectors
     jc .ext_read_fail_pop
 
+.ext_read_ok:
     pop si
     pop ds
     pop es
@@ -323,11 +353,16 @@ int13h_handler:
 ;   DL = drive, DS:SI = result buffer.
 ; ---------------------------------------------------------------------------
 .get_ext_params:
-    cmp dl, 0x80
-    jne .gep_fail
     cmp byte [ide_master_present], 0
     je .gep_fail
 
+    cmp dl, 0x80
+    je .gep_hdd
+    cmp dl, 0xE0
+    je .gep_cd
+    jmp .gep_fail
+
+.gep_hdd:
     ; Buffer size (minimum 26 bytes).
     mov word [si + 0], 26       ; Size of result
     mov word [si + 2], 0x0002   ; Flags: CHS valid
@@ -340,7 +375,7 @@ int13h_handler:
     movzx eax, word [ide_master_spt]
     mov [si + 12], eax          ; Sectors per track
 
-    ; Total sectors (64-bit).
+    ; Total sectors (64-bit, in 512-byte units).
     mov eax, [ide_master_lba28]
     mov [si + 16], eax
     mov dword [si + 20], 0      ; High dword
@@ -352,7 +387,86 @@ int13h_handler:
     clc
     iret
 
+.gep_cd:
+    ; Virtual CD-ROM: report 2048-byte sectors.
+    ; Total capacity in 2048-byte sectors = total_ata_sectors / 4.
+    mov word [si + 0], 26       ; Size of result
+    mov word [si + 2], 0x0000   ; Flags: no CHS (CD-ROM)
+    mov dword [si + 4],  0      ; Cylinders (N/A)
+    mov dword [si + 8],  0      ; Heads (N/A)
+    mov dword [si + 12], 0      ; Sectors per track (N/A)
+
+    ; Total ISO sectors = ATA sectors / 4.
+    mov eax, [ide_master_lba28]
+    shr eax, 2
+    mov [si + 16], eax
+    mov dword [si + 20], 0      ; High dword
+
+    ; Bytes per sector: 2048.
+    mov word [si + 24], 2048
+
+    xor ah, ah
+    clc
+    iret
+
 .gep_fail:
+    mov ah, 0x01
+    stc
+    iret
+
+; ---------------------------------------------------------------------------
+; AH=4Bh: Get/Terminate Disk Emulation Status (El Torito).
+;   AL = 0x00 → Terminate disk emulation (we treat as status query too)
+;   AL = 0x01 → Return Emulation Status
+;   DL = drive number
+;
+; Fills the 20-byte El Torito Specification Packet at DS:SI:
+;   +0   (byte)  packet size = 0x13
+;   +1   (byte)  boot media type
+;   +2   (byte)  drive number of the emulated drive
+;   +3   (byte)  controller index (0)
+;   +4   (dword) image start (Load RBA in CD-sector units)
+;   +8   (word)  device specification (0)
+;   +10  (word)  user buffer segment (0)
+;   +12  (word)  load segment
+;   +14  (word)  sector count (512-byte virtual sectors)
+;   +16  (word)  CHS of emulated drive (0 for no-emulation)
+;   +18  (byte)  reserved (0)
+; ---------------------------------------------------------------------------
+.get_cd_emul_status:
+    ; Only respond for drive 0xE0 (virtual CD) or if El Torito was booted.
+    cmp byte [el_torito_present], 0
+    je .gcds_fail
+
+    ; Fill the 19-byte specification packet at DS:SI.
+    mov byte [si + 0],  0x13        ; Packet size
+    mov al, [el_torito_emul]
+    mov [si + 1], al                ; Boot media type
+    mov al, [el_torito_drive]
+    mov [si + 2], al                ; Drive number
+    mov byte [si + 3],  0x00        ; Controller index
+
+    ; Load RBA (image start, CD-sector units).
+    mov eax, [el_torito_rba]
+    mov [si + 4], eax
+
+    mov word [si + 8],  0x0000      ; Device specification
+    mov word [si + 10], 0x0000      ; User buffer segment
+
+    mov ax, [el_torito_load_seg]
+    mov [si + 12], ax               ; Load segment
+
+    mov ax, [el_torito_count]
+    mov [si + 14], ax               ; Sector count
+
+    mov word [si + 16], 0x0000      ; CHS (unused for no-emulation)
+    mov byte [si + 18], 0x00        ; Reserved
+
+    xor ah, ah
+    clc
+    iret
+
+.gcds_fail:
     mov ah, 0x01
     stc
     iret
