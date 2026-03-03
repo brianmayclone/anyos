@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Surf.app Browser Test Suite</title>
+  <style>
+    body {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-family: sans-serif;
+      margin: 0;
+      padding: 20px;
+    }
+
+    h1.main-title {
+      color: #ff6b6b;
+      font-size: 32px;
+      margin-bottom: 5px;
+    }
+
+    .subtitle {
+      color: #888;
+      font-size: 14px;
+      margin-bottom: 30px;
+    }
+
+    .stats {
+      display: flex;
+      gap: 20px;
+      margin-bottom: 30px;
+      flex-wrap: wrap;
+    }
+
+    .stat-box {
+      background: #16213e;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 15px 20px;
+      text-align: center;
+      min-width: 120px;
+    }
+
+    .stat-number {
+      font-size: 28px;
+      font-weight: bold;
+      color: #4ecdc4;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #888;
+      margin-top: 5px;
+    }
+
+    .section {
+      margin: 25px 0;
+      background: #16213e;
+      border: 1px solid #333;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .section-header {
+      display: flex;
+      padding: 15px 20px;
+      cursor: default;
+      align-items: center;
+    }
+
+    .section-icon {
+      font-size: 20px;
+      margin-right: 12px;
+      width: 30px;
+      text-align: center;
+    }
+
+    .section-title {
+      font-size: 20px;
+      font-weight: bold;
+      color: #ff6b6b;
+      flex: 1;
+    }
+
+    .section-count {
+      font-size: 14px;
+      color: #888;
+      background: #0f3460;
+      padding: 3px 10px;
+      border-radius: 12px;
+    }
+
+    .section-desc {
+      padding: 0 20px 10px 62px;
+      color: #888;
+      font-size: 13px;
+    }
+
+    .test-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 10px;
+      padding: 10px 20px 20px 20px;
+    }
+
+    .test-link {
+      display: block;
+      padding: 12px 15px;
+      background: #0f3460;
+      border: 1px solid #333;
+      border-radius: 6px;
+      text-decoration: none;
+      color: #e0e0e0;
+      transition: border-color 0.2s;
+    }
+
+    .test-link:hover {
+      border-color: #4ecdc4;
+    }
+
+    .test-num {
+      color: #4ecdc4;
+      font-weight: bold;
+      font-size: 13px;
+    }
+
+    .test-name {
+      color: #e0e0e0;
+      font-size: 15px;
+      margin-top: 3px;
+    }
+
+    .test-desc {
+      color: #777;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .tag {
+      display: inline-block;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin-top: 5px;
+    }
+
+    .tag-visual { background: #2d1f5e; color: #a78bfa; }
+    .tag-auto { background: #1f3a2e; color: #6bff6b; }
+    .tag-interactive { background: #3a2e1f; color: #ffd93d; }
+
+    .divider {
+      height: 1px;
+      background: #333;
+      margin: 10px 20px;
+    }
+
+    .footer {
+      text-align: center;
+      color: #555;
+      font-size: 12px;
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid #333;
+    }
+  </style>
+</head>
+<body>
+
+<h1 class="main-title">Surf.app Browser Test Suite</h1>
+<p class="subtitle">Comprehensive HTML, CSS, and JavaScript rendering tests for the anyOS browser engine</p>
+
+<div class="stats">
+  <div class="stat-box">
+    <div class="stat-number">73</div>
+    <div class="stat-label">Test Files</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-number">12</div>
+    <div class="stat-label">HTML Tests</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-number">34</div>
+    <div class="stat-label">CSS Tests</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-number">17</div>
+    <div class="stat-label">JS Tests</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-number">10</div>
+    <div class="stat-label">Integration</div>
+  </div>
+</div>
+
+<!-- ==================== HTML TESTS ==================== -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-icon">&lt;/&gt;</div>
+    <div class="section-title">HTML Tests</div>
+    <div class="section-count">12 tests</div>
+  </div>
+  <div class="section-desc">Core HTML element rendering: headings, paragraphs, lists, tables, forms, entities, and semantic structure.</div>
+  <div class="divider"></div>
+  <div class="test-grid">
+    <a class="test-link" href="html/01-headings.html">
+      <div class="test-num">HTML-01</div>
+      <div class="test-name">Headings (h1-h6)</div>
+      <div class="test-desc">Heading levels, nested inline elements, adjacent headings</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="html/02-paragraphs.html">
+      <div class="test-num">HTML-02</div>
+      <div class="test-name">Paragraphs, BR, HR</div>
+      <div class="test-desc">Paragraph spacing, line breaks, horizontal rules</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="html/03-text-formatting.html">
+      <div class="test-num">HTML-03</div>
+      <div class="test-name">Text Formatting</div>
+      <div class="test-desc">Bold, italic, underline, code, mark, sub/sup, nested combinations</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="html/04-lists.html">
+      <div class="test-num">HTML-04</div>
+      <div class="test-name">Lists</div>
+      <div class="test-desc">UL, OL, DL, nested lists, list-style-type variants</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="html/05-links.html">
+      <div class="test-num">HTML-05</div>
+      <div class="test-name">Links</div>
+      <div class="test-desc">Text links, anchors, styled links, wrapping behavior</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="html/06-images.html">
+      <div class="test-num">HTML-06</div>
+      <div class="test-name">Images</div>
+      <div class="test-desc">Width/height, alt text, data URIs, broken images</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="html/07-tables.html">
+      <div class="test-num">HTML-07</div>
+      <div class="test-name">Tables</div>
+      <div class="test-desc">thead/tbody, colspan/rowspan, nested tables, captions</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="html/08-forms.html">
+      <div class="test-num">HTML-08</div>
+      <div class="test-name">Forms</div>
+      <div class="test-desc">Input types, textarea, select, checkbox, radio, fieldset</div>
+      <span class="tag tag-interactive">Interactive</span>
+    </a>
+    <a class="test-link" href="html/09-semantic.html">
+      <div class="test-num">HTML-09</div>
+      <div class="test-name">Semantic Elements</div>
+      <div class="test-desc">header, footer, nav, article, section, details/summary</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="html/10-entities.html">
+      <div class="test-num">HTML-10</div>
+      <div class="test-name">HTML Entities</div>
+      <div class="test-desc">Named, numeric, currency, math, Greek, arrow entities</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="html/11-preformatted.html">
+      <div class="test-num">HTML-11</div>
+      <div class="test-name">Pre and Code Blocks</div>
+      <div class="test-desc">Whitespace preservation, blockquotes, code blocks</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="html/12-nesting.html">
+      <div class="test-num">HTML-12</div>
+      <div class="test-name">Complex Nesting</div>
+      <div class="test-desc">Deep nesting, mixed content, invalid nesting recovery</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+  </div>
+</div>
+
+<!-- ==================== CSS BASIC TESTS ==================== -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-icon">{}</div>
+    <div class="section-title">CSS Basics</div>
+    <div class="section-count">10 tests</div>
+  </div>
+  <div class="section-desc">Box model, colors, text styling, display modes, positioning fundamentals.</div>
+  <div class="divider"></div>
+  <div class="test-grid">
+    <a class="test-link" href="css/01-colors.html">
+      <div class="test-num">CSS-01</div>
+      <div class="test-name">Colors</div>
+      <div class="test-desc">Named, hex, rgb, rgba, hsl, hsla color formats</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/02-box-model.html">
+      <div class="test-num">CSS-02</div>
+      <div class="test-name">Box Model</div>
+      <div class="test-desc">Margin, padding, border, width, height</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/03-box-sizing.html">
+      <div class="test-num">CSS-03</div>
+      <div class="test-name">Box Sizing</div>
+      <div class="test-desc">content-box vs border-box comparison</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/04-text-font.html">
+      <div class="test-num">CSS-04</div>
+      <div class="test-name">Text and Fonts</div>
+      <div class="test-desc">Font size, weight, style, text-align, decoration, transform</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/05-display.html">
+      <div class="test-num">CSS-05</div>
+      <div class="test-name">Display Property</div>
+      <div class="test-desc">block, inline, inline-block, none</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/06-position-static-relative.html">
+      <div class="test-num">CSS-06</div>
+      <div class="test-name">Position: static/relative</div>
+      <div class="test-desc">Default flow, relative offsets, z-index</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/07-position-absolute-fixed.html">
+      <div class="test-num">CSS-07</div>
+      <div class="test-name">Position: absolute/fixed</div>
+      <div class="test-desc">Out-of-flow positioning, containing blocks, stacking</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/08-width-height.html">
+      <div class="test-num">CSS-08</div>
+      <div class="test-name">Width and Height</div>
+      <div class="test-desc">px, %, auto, min/max constraints</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/09-margin-auto.html">
+      <div class="test-num">CSS-09</div>
+      <div class="test-name">Margin Auto Centering</div>
+      <div class="test-desc">Horizontal centering, push patterns</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/10-border-radius.html">
+      <div class="test-num">CSS-10</div>
+      <div class="test-name">Border Radius</div>
+      <div class="test-desc">Rounded corners, circles, pill shapes</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+  </div>
+</div>
+
+<!-- ==================== CSS LAYOUT TESTS ==================== -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-icon">[]</div>
+    <div class="section-title">CSS Layout</div>
+    <div class="section-count">10 tests</div>
+  </div>
+  <div class="section-desc">Flexbox, CSS Grid, float/clear, and overflow layout systems.</div>
+  <div class="divider"></div>
+  <div class="test-grid">
+    <a class="test-link" href="css/11-flexbox-basics.html">
+      <div class="test-num">CSS-11</div>
+      <div class="test-name">Flexbox Basics</div>
+      <div class="test-desc">flex-direction, flex-wrap, flex-flow</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/12-flexbox-justify.html">
+      <div class="test-num">CSS-12</div>
+      <div class="test-name">Flexbox justify-content</div>
+      <div class="test-desc">flex-start, center, space-between, space-around, space-evenly</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/13-flexbox-align.html">
+      <div class="test-num">CSS-13</div>
+      <div class="test-name">Flexbox align-items</div>
+      <div class="test-desc">stretch, flex-start, center, flex-end, align-self</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/14-flexbox-grow-shrink.html">
+      <div class="test-num">CSS-14</div>
+      <div class="test-name">Flexbox grow/shrink/basis</div>
+      <div class="test-desc">Space distribution, flex shorthand</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/15-flexbox-gap-order.html">
+      <div class="test-num">CSS-15</div>
+      <div class="test-name">Flexbox gap and order</div>
+      <div class="test-desc">Gap spacing, item reordering</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/16-grid-basics.html">
+      <div class="test-num">CSS-16</div>
+      <div class="test-name">Grid Basics</div>
+      <div class="test-desc">template-columns/rows, fr units, repeat(), gap</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/17-grid-placement.html">
+      <div class="test-num">CSS-17</div>
+      <div class="test-name">Grid Item Placement</div>
+      <div class="test-desc">Column/row spanning, grid-area, explicit placement</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/18-grid-auto-flow.html">
+      <div class="test-num">CSS-18</div>
+      <div class="test-name">Grid Auto Flow</div>
+      <div class="test-desc">row/column/dense auto-placement</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/19-float-clear.html">
+      <div class="test-num">CSS-19</div>
+      <div class="test-name">Float and Clear</div>
+      <div class="test-desc">Float left/right, clearfix, text wrapping</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/20-overflow.html">
+      <div class="test-num">CSS-20</div>
+      <div class="test-name">Overflow</div>
+      <div class="test-desc">visible, hidden, scroll, auto, overflow-x/y</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+  </div>
+</div>
+
+<!-- ==================== CSS ADVANCED TESTS ==================== -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-icon">*{}</div>
+    <div class="section-title">CSS Advanced</div>
+    <div class="section-count">14 tests</div>
+  </div>
+  <div class="section-desc">Selectors, specificity, inheritance, custom properties, calc(), media queries, and more.</div>
+  <div class="divider"></div>
+  <div class="test-grid">
+    <a class="test-link" href="css/21-selectors-basic.html">
+      <div class="test-num">CSS-21</div>
+      <div class="test-name">Basic Selectors</div>
+      <div class="test-desc">Element, class, ID, universal, grouped selectors</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/22-selectors-combinators.html">
+      <div class="test-num">CSS-22</div>
+      <div class="test-name">Selector Combinators</div>
+      <div class="test-desc">Descendant, child, adjacent/general sibling</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/23-pseudo-classes.html">
+      <div class="test-num">CSS-23</div>
+      <div class="test-name">Pseudo-Classes</div>
+      <div class="test-desc">:first-child, :nth-child, :hover, :focus, :not, :empty</div>
+      <span class="tag tag-interactive">Interactive</span>
+    </a>
+    <a class="test-link" href="css/24-attribute-selectors.html">
+      <div class="test-num">CSS-24</div>
+      <div class="test-name">Attribute Selectors</div>
+      <div class="test-desc">[attr], [attr=val], [attr^=], [attr$=], [attr*=]</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/25-specificity.html">
+      <div class="test-num">CSS-25</div>
+      <div class="test-name">Specificity and Cascade</div>
+      <div class="test-desc">Specificity rules, !important, source order</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/26-inheritance.html">
+      <div class="test-num">CSS-26</div>
+      <div class="test-name">Inheritance</div>
+      <div class="test-desc">Inherited vs non-inherited, inherit/initial keywords</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/27-custom-properties.html">
+      <div class="test-num">CSS-27</div>
+      <div class="test-name">CSS Custom Properties</div>
+      <div class="test-desc">var(), fallbacks, scope override, theming</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/28-calc.html">
+      <div class="test-num">CSS-28</div>
+      <div class="test-name">calc() Expressions</div>
+      <div class="test-desc">Mixed units, arithmetic, responsive calculations</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/29-shorthand.html">
+      <div class="test-num">CSS-29</div>
+      <div class="test-name">Shorthand Properties</div>
+      <div class="test-desc">Margin, padding, border, flex, font shorthands</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/30-opacity-visibility.html">
+      <div class="test-num">CSS-30</div>
+      <div class="test-name">Opacity and Visibility</div>
+      <div class="test-desc">opacity levels, visibility:hidden vs display:none</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/31-list-style.html">
+      <div class="test-num">CSS-31</div>
+      <div class="test-name">List Styling</div>
+      <div class="test-desc">disc, circle, square, decimal, alpha, roman, none</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/32-table-styling.html">
+      <div class="test-num">CSS-32</div>
+      <div class="test-name">Table CSS</div>
+      <div class="test-desc">border-collapse, spacing, zebra striping, layout modes</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/33-media-queries.html">
+      <div class="test-num">CSS-33</div>
+      <div class="test-name">Media Queries</div>
+      <div class="test-desc">min/max-width, breakpoints, prefers-color-scheme</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="css/34-min-max-sizing.html">
+      <div class="test-num">CSS-34</div>
+      <div class="test-name">Min/Max Sizing</div>
+      <div class="test-desc">min-width, max-width, min-height, max-height</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+  </div>
+</div>
+
+<!-- ==================== JAVASCRIPT TESTS ==================== -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-icon">JS</div>
+    <div class="section-title">JavaScript Tests</div>
+    <div class="section-count">17 tests</div>
+  </div>
+  <div class="section-desc">Language features, DOM manipulation, events, timers, promises, storage. Tests auto-report PASS/FAIL.</div>
+  <div class="divider"></div>
+  <div class="test-grid">
+    <a class="test-link" href="js/01-variables-types.html">
+      <div class="test-num">JS-01</div>
+      <div class="test-name">Variables and Types</div>
+      <div class="test-desc">var/let/const, numbers, strings, booleans, typeof, coercion</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/02-operators.html">
+      <div class="test-num">JS-02</div>
+      <div class="test-name">Operators</div>
+      <div class="test-desc">Arithmetic, comparison, logical, assignment, ternary</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/03-functions.html">
+      <div class="test-num">JS-03</div>
+      <div class="test-name">Functions</div>
+      <div class="test-desc">Declaration, expression, arrow, closures, recursion, IIFE</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/04-control-flow.html">
+      <div class="test-num">JS-04</div>
+      <div class="test-name">Control Flow</div>
+      <div class="test-desc">if/else, for, while, switch, break, continue</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/05-arrays.html">
+      <div class="test-num">JS-05</div>
+      <div class="test-name">Arrays</div>
+      <div class="test-desc">push/pop, map/filter/reduce, sort, find, splice</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/06-objects.html">
+      <div class="test-num">JS-06</div>
+      <div class="test-name">Objects</div>
+      <div class="test-desc">Literals, keys/values, assign, prototypes, JSON round-trip</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/07-strings.html">
+      <div class="test-num">JS-07</div>
+      <div class="test-name">Strings</div>
+      <div class="test-desc">charAt, indexOf, slice, split, replace, trim, repeat</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/08-math.html">
+      <div class="test-num">JS-08</div>
+      <div class="test-name">Math Object</div>
+      <div class="test-desc">floor/ceil/round, pow/sqrt, min/max, random, trig</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/09-json.html">
+      <div class="test-num">JS-09</div>
+      <div class="test-name">JSON</div>
+      <div class="test-desc">stringify, parse, round-trip, error handling</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/10-dom-query.html">
+      <div class="test-num">JS-10</div>
+      <div class="test-name">DOM Querying</div>
+      <div class="test-desc">getElementById, querySelector, getElementsByClassName</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/11-dom-manipulation.html">
+      <div class="test-num">JS-11</div>
+      <div class="test-name">DOM Manipulation</div>
+      <div class="test-desc">createElement, appendChild, textContent, innerHTML</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/12-dom-style.html">
+      <div class="test-num">JS-12</div>
+      <div class="test-name">DOM Style and classList</div>
+      <div class="test-desc">style properties, classList add/remove/toggle/contains</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/13-events.html">
+      <div class="test-num">JS-13</div>
+      <div class="test-name">Events</div>
+      <div class="test-desc">onclick, addEventListener, dynamic elements, counter</div>
+      <span class="tag tag-interactive">Interactive</span>
+    </a>
+    <a class="test-link" href="js/14-timers.html">
+      <div class="test-num">JS-14</div>
+      <div class="test-name">Timers</div>
+      <div class="test-desc">setTimeout, setInterval, clearTimeout, clearInterval</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/15-promises.html">
+      <div class="test-num">JS-15</div>
+      <div class="test-name">Promises</div>
+      <div class="test-desc">resolve, reject, then/catch/finally, Promise.all/race</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+    <a class="test-link" href="js/16-storage.html">
+      <div class="test-num">JS-16</div>
+      <div class="test-name">Web Storage</div>
+      <div class="test-desc">localStorage, sessionStorage, setItem/getItem/clear</div>
+      <span class="tag tag-interactive">Interactive</span>
+    </a>
+    <a class="test-link" href="js/17-error-handling.html">
+      <div class="test-num">JS-17</div>
+      <div class="test-name">Error Handling</div>
+      <div class="test-desc">try/catch/finally, throw, TypeError, ReferenceError</div>
+      <span class="tag tag-auto">Auto-test</span>
+    </a>
+  </div>
+</div>
+
+<!-- ==================== INTEGRATION TESTS ==================== -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-icon">WWW</div>
+    <div class="section-title">Integration Tests</div>
+    <div class="section-count">10 tests</div>
+  </div>
+  <div class="section-desc">Real-world page layouts combining HTML, CSS, and JavaScript. Simulates actual websites.</div>
+  <div class="divider"></div>
+  <div class="test-grid">
+    <a class="test-link" href="integration/01-blog.html">
+      <div class="test-num">INT-01</div>
+      <div class="test-name">Blog Article</div>
+      <div class="test-desc">Navbar, 2-column layout, article content, sidebar, footer</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="integration/02-dashboard.html">
+      <div class="test-num">INT-02</div>
+      <div class="test-name">Admin Dashboard</div>
+      <div class="test-desc">Sidebar nav, stat cards, data table, grid layout</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="integration/03-landing-page.html">
+      <div class="test-num">INT-03</div>
+      <div class="test-name">Landing Page</div>
+      <div class="test-desc">Hero section, features grid, pricing cards, footer</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="integration/04-holy-grail.html">
+      <div class="test-num">INT-04</div>
+      <div class="test-name">Holy Grail Layout</div>
+      <div class="test-desc">Header, 3-column flexbox, sticky footer</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="integration/05-card-grid.html">
+      <div class="test-num">INT-05</div>
+      <div class="test-name">E-Commerce Cards</div>
+      <div class="test-desc">Product card grid, filters, ratings, prices</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="integration/06-form-page.html">
+      <div class="test-num">INT-06</div>
+      <div class="test-name">Registration Form</div>
+      <div class="test-desc">Multi-fieldset form, validation, password strength</div>
+      <span class="tag tag-interactive">Interactive</span>
+    </a>
+    <a class="test-link" href="integration/07-navigation-patterns.html">
+      <div class="test-num">INT-07</div>
+      <div class="test-name">Navigation Patterns</div>
+      <div class="test-desc">Navbar, breadcrumbs, tabs, pagination, sidebar</div>
+      <span class="tag tag-interactive">Interactive</span>
+    </a>
+    <a class="test-link" href="integration/08-typography.html">
+      <div class="test-num">INT-08</div>
+      <div class="test-name">Typography Showcase</div>
+      <div class="test-desc">Headings, body text, code blocks, quotes, lists</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+    <a class="test-link" href="integration/09-interactive-js.html">
+      <div class="test-num">INT-09</div>
+      <div class="test-name">Interactive JS Apps</div>
+      <div class="test-desc">Counter, to-do list, calculator, theme switcher, accordion</div>
+      <span class="tag tag-interactive">Interactive</span>
+    </a>
+    <a class="test-link" href="integration/10-stress-test.html">
+      <div class="test-num">INT-10</div>
+      <div class="test-name">Stress Test</div>
+      <div class="test-desc">Deep nesting, long text, large tables, 500+ elements</div>
+      <span class="tag tag-visual">Visual</span>
+    </a>
+  </div>
+</div>
+
+<div class="footer">
+  Surf.app Browser Test Suite -- anyOS -- 73 test files covering HTML5, CSS3, and JavaScript
+</div>
+
+</body>
+</html>
