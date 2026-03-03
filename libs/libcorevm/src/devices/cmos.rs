@@ -67,12 +67,14 @@ impl Cmos {
         data[0x15] = 0x80; // low byte
         data[0x16] = 0x02; // high byte
 
-        // Extended memory above 1 MB (in KB), capped at 64 MB - 1 MB = 63 MB.
-        // Both register pairs (0x17-0x18 and 0x30-0x31) hold the same value.
+        // Extended memory from 1 MB to 16 MB (in KB).
+        // Registers 0x17/0x18 and 0x30/0x31 represent only the 1MB-16MB range,
+        // capped at 15360 KB (= 15 MB = 16 MB - 1 MB). Memory above 16 MB is
+        // reported separately in registers 0x34/0x35.
         let extended_kb = if ram_size_bytes > 1024 * 1024 {
             let ext = (ram_size_bytes - 1024 * 1024) / 1024;
-            // Cap at 0xFFFF (65535 KB = ~64 MB) for the 16-bit field.
-            if ext > 0xFFFF { 0xFFFF } else { ext as u16 }
+            // Cap at 15360 KB (the 1MB-16MB range).
+            if ext > 15360 { 15360u16 } else { ext as u16 }
         } else {
             0
         };
