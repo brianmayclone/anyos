@@ -29,7 +29,8 @@ impl GitPanel {
         panel.set_color(tc.sidebar_bg);
 
         // Header
-        let header = ui::Label::new("SOURCE CONTROL");
+        let t = anyos_std::i18n::t;
+        let header = ui::Label::new(t("SOURCE CONTROL"));
         header.set_dock(ui::DOCK_TOP);
         header.set_size(200, 20);
         header.set_font_size(11);
@@ -51,7 +52,7 @@ impl GitPanel {
         commit_field.set_dock(ui::DOCK_TOP);
         commit_field.set_size(200, 28);
         commit_field.set_margin(4, 2, 4, 2);
-        commit_field.set_placeholder("Commit message...");
+        commit_field.set_placeholder(t("Commit message..."));
         panel.add(&commit_field);
 
         // Button row
@@ -61,24 +62,24 @@ impl GitPanel {
         btn_bar.set_color(tc.sidebar_bg);
         panel.add(&btn_bar);
 
-        let btn_commit = ui::Button::new("Commit");
+        let btn_commit = ui::Button::new(t("Commit"));
         btn_commit.set_size(55, 24);
         btn_commit.set_color(tc.accent);
         btn_bar.add(&btn_commit);
 
-        let btn_stage_all = ui::Button::new("Stage All");
+        let btn_stage_all = ui::Button::new(t("Stage All"));
         btn_stage_all.set_size(60, 24);
         btn_bar.add(&btn_stage_all);
 
-        let btn_push = ui::Button::new("Push");
+        let btn_push = ui::Button::new(t("Push"));
         btn_push.set_size(40, 24);
         btn_bar.add(&btn_push);
 
-        let btn_pull = ui::Button::new("Pull");
+        let btn_pull = ui::Button::new(t("Pull"));
         btn_pull.set_size(40, 24);
         btn_bar.add(&btn_pull);
 
-        let btn_refresh = ui::Button::new("Refresh");
+        let btn_refresh = ui::Button::new(t("Refresh"));
         btn_refresh.set_size(55, 24);
         btn_bar.add(&btn_refresh);
 
@@ -106,12 +107,13 @@ impl GitPanel {
     /// Update the panel from a GitState snapshot.
     pub fn update(&mut self, state: &GitState) {
         let tc = ui::theme::colors();
+        let t = anyos_std::i18n::t;
 
         // Branch name
         if state.branch.is_empty() {
-            self.branch_label.set_text("No branch");
+            self.branch_label.set_text(t("No branch"));
         } else {
-            let text = format!("Branch: {}", state.branch);
+            let text = format!("{}: {}", t("Branch"), state.branch);
             self.branch_label.set_text(&text);
         }
 
@@ -124,7 +126,7 @@ impl GitPanel {
 
         // Staged changes section
         if !staged.is_empty() {
-            let label = format!("Staged Changes ({})", staged.len());
+            let label = format!("{} ({})", t("Staged Changes"), staged.len());
             let root = self.tree.add_root(&label);
             self.tree.set_node_style(root, STYLE_BOLD);
             self.tree.set_node_text_color(root, tc.text);
@@ -142,7 +144,7 @@ impl GitPanel {
 
         // Changes (unstaged) section
         if !unstaged.is_empty() {
-            let label = format!("Changes ({})", unstaged.len());
+            let label = format!("{} ({})", t("Changes"), unstaged.len());
             let root = self.tree.add_root(&label);
             self.tree.set_node_style(root, STYLE_BOLD);
             self.tree.set_node_text_color(root, tc.text);
@@ -159,7 +161,7 @@ impl GitPanel {
         }
 
         if staged.is_empty() && unstaged.is_empty() && state.is_repo {
-            let node = self.tree.add_root("No changes detected");
+            let node = self.tree.add_root(t("No changes detected"));
             self.tree.set_node_text_color(node, tc.text_secondary);
             self.file_paths.push(String::new());
         }
@@ -176,10 +178,11 @@ impl GitPanel {
     /// Show a "git not installed" message.
     pub fn show_not_installed(&mut self) {
         let tc = ui::theme::colors();
-        self.branch_label.set_text("git not found");
+        let t = anyos_std::i18n::t;
+        self.branch_label.set_text(t("git not found"));
         self.tree.clear();
         self.file_paths.clear();
-        let node = self.tree.add_root("Install git to enable source control");
+        let node = self.tree.add_root(t("Install git to enable source control"));
         self.tree.set_node_text_color(node, tc.text_secondary);
         self.file_paths.push(String::new());
     }
@@ -187,10 +190,11 @@ impl GitPanel {
     /// Show a "no repo" message.
     pub fn show_no_repo(&mut self) {
         let tc = ui::theme::colors();
-        self.branch_label.set_text("No repository");
+        let t = anyos_std::i18n::t;
+        self.branch_label.set_text(t("No repository"));
         self.tree.clear();
         self.file_paths.clear();
-        let node = self.tree.add_root("Open a folder with a git repository");
+        let node = self.tree.add_root(t("Open a folder with a git repository"));
         self.tree.set_node_text_color(node, tc.text_secondary);
         self.file_paths.push(String::new());
     }

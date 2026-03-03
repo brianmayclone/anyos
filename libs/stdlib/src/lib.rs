@@ -17,6 +17,7 @@ pub mod env;
 pub mod error;
 pub mod fs;
 pub mod heap;
+pub mod i18n;
 pub mod icons;
 pub mod io;
 pub mod ipc;

@@ -98,6 +98,17 @@ struct LibrenderExportsPartial {
     // offset 64: Renderer primitives
     _fill_rounded_rect: usize,
     fill_rounded_rect_aa: extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, i32, u32),
+    _fill_circle: usize,
+    _fill_circle_aa: usize,
+    _draw_line: usize,
+    _draw_rect: usize,
+    _draw_circle: usize,
+    _draw_circle_aa: usize,
+    _draw_rounded_rect_aa: usize,
+    _fill_gradient_h: usize,
+    _fill_gradient_v: usize,
+    _blend_color: usize,
+    fill_rounded_rect_aa_clipped: extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, i32, u32, i32, i32, i32, i32),
 }
 
 #[inline(always)]
@@ -234,16 +245,22 @@ pub fn fill_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32, color: u32) {
     (librender().fill_rect)(s.pixels, s.width, s.height, x0, y0, (x1 - x0) as u32, (y1 - y0) as u32, color);
 }
 
-/// Fill a rounded rectangle with antialiasing via librender.
-/// Skipped entirely if fully outside the clip rect.
+/// Fill a rounded rectangle with antialiasing, clipped to the surface's clip rect.
+///
+/// Delegates to librender's `fill_rounded_rect_aa_clipped` which is identical to
+/// `fill_rounded_rect_aa` but respects a caller-supplied clip rect.
 pub fn fill_rounded_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, color: u32) {
-    // Skip if fully outside clip rect
-    if x + w as i32 <= s.clip_x || y + h as i32 <= s.clip_y
+    if w == 0 || h == 0
+        || x + w as i32 <= s.clip_x || y + h as i32 <= s.clip_y
         || x >= s.clip_x + s.clip_w as i32 || y >= s.clip_y + s.clip_h as i32
     {
         return;
     }
-    (librender().fill_rounded_rect_aa)(s.pixels, s.width, s.height, x, y, w, h, r as i32, color);
+    (librender().fill_rounded_rect_aa_clipped)(
+        s.pixels, s.width, s.height,
+        x, y, w, h, r as i32, color,
+        s.clip_x, s.clip_y, s.clip_w as i32, s.clip_h as i32,
+    );
 }
 
 /// Draw a 1px border rectangle.

@@ -131,6 +131,12 @@ pub fn tcp_recv(socket_id: u32, buf: &mut [u8]) -> u32 {
     syscall3(SYS_TCP_RECV, socket_id as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
 }
 
+/// Check how many bytes are available to read without blocking.
+/// Returns: >0 = bytes available, 0 = no data yet, u32::MAX-1 = EOF, u32::MAX = error.
+pub fn tcp_recv_available(socket_id: u32) -> u32 {
+    syscall1(SYS_TCP_RECV_AVAILABLE, socket_id as u64)
+}
+
 /// Close a TCP connection. Returns 0.
 pub fn tcp_close(socket_id: u32) -> u32 {
     syscall1(SYS_TCP_CLOSE, socket_id as u64)
@@ -140,17 +146,6 @@ pub fn tcp_close(socket_id: u32) -> u32 {
 /// 0=Closed, 1=SynSent, 2=Established, etc. u32::MAX=not found.
 pub fn tcp_status(socket_id: u32) -> u32 {
     syscall1(SYS_TCP_STATUS, socket_id as u64)
-}
-
-/// Check bytes available to read on a TCP socket without blocking.
-///
-/// Returns:
-/// - `> 0`: number of bytes ready to read
-/// - `0`: no data available yet (connection still open)
-/// - `u32::MAX - 1` (0xFFFFFFFE): EOF (remote closed / FIN received)
-/// - `u32::MAX` (0xFFFFFFFF): error (connection reset or invalid socket)
-pub fn tcp_recv_available(socket_id: u32) -> u32 {
-    syscall1(SYS_TCP_RECV_AVAILABLE, socket_id as u64)
 }
 
 /// Listen on a TCP port. Returns listener socket_id or u32::MAX.
@@ -164,6 +159,20 @@ pub fn tcp_listen(port: u16, backlog: u16) -> u32 {
 pub fn tcp_accept(listener_id: u32) -> (u32, [u8; 4], u16) {
     let mut result = [0u8; 12];
     let rc = syscall2(SYS_TCP_ACCEPT, listener_id as u64, result.as_mut_ptr() as u64);
+    if rc == u32::MAX {
+        return (u32::MAX, [0; 4], 0);
+    }
+    let sock_id = u32::from_le_bytes([result[0], result[1], result[2], result[3]]);
+    let ip = [result[4], result[5], result[6], result[7]];
+    let port = u16::from_le_bytes([result[8], result[9]]);
+    (sock_id, ip, port)
+}
+
+/// Non-blocking accept. Returns immediately: (socket_id, remote_ip, remote_port)
+/// if a connection is pending, or (u32::MAX, [0;4], 0) if none is ready yet.
+pub fn tcp_accept_nowait(listener_id: u32) -> (u32, [u8; 4], u16) {
+    let mut result = [0u8; 12];
+    let rc = syscall2(SYS_TCP_ACCEPT_NOWAIT, listener_id as u64, result.as_mut_ptr() as u64);
     if rc == u32::MAX {
         return (u32::MAX, [0; 4], 0);
     }

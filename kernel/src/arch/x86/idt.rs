@@ -6,10 +6,19 @@
 use crate::serial_println;
 use core::arch::asm;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Total IDT entries (covers the full x86 interrupt vector range).
 const IDT_ENTRIES: usize = 256;
+
+/// Per-CPU re-entrancy guard for the fault handler.
+/// Prevents recursive SIGSEGV crash loops when SCHEDULER data is corrupted:
+/// try_exit_current accesses corrupted per_cpu Vec ptr → #PF → handler calls
+/// try_exit_current again → same #PF → infinite recursion with decreasing RSP.
+static FAULT_HANDLER_ACTIVE: [AtomicBool; crate::arch::x86::smp::MAX_CPUS] = {
+    const INIT: AtomicBool = AtomicBool::new(false);
+    [INIT; crate::arch::x86::smp::MAX_CPUS]
+};
 
 /// Write a single byte to COM1 (0x3F8) blocking until UART is ready.
 /// Completely lock-free — safe to call from any context.
@@ -308,7 +317,32 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
     if tid == 0 {
         return false; // Can't kill idle context
     }
+    // Re-entrancy guard: if this CPU is already inside the fault handler
+    // (e.g., try_exit_current faulted on corrupted SCHEDULER data), skip
+    // the try_exit_current retry loop and go straight to manual recovery.
+    let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
+    if cpu_id < crate::arch::x86::smp::MAX_CPUS {
+        if FAULT_HANDLER_ACTIVE[cpu_id].swap(true, Ordering::Relaxed) {
+            // Already active — re-entrant fault detected!
+            crate::serial_println!(
+                "!!! RE-ENTRANT FAULT on CPU{} TID={} signal={} RIP={:#018x} — skipping to manual recovery",
+                cpu_id, tid, signal, frame.rip
+            );
+            // Log CR2 for page faults to help diagnose the corruption
+            if frame.int_no == 14 {
+                let cr2: u64;
+                unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2); }
+                crate::serial_println!("  CR2={:#018x} (faulting address)", cr2);
+            }
+            FAULT_HANDLER_ACTIVE[cpu_id].store(false, Ordering::Relaxed);
+            crate::task::scheduler::fault_kill_and_idle(signal);
+            return true; // never reached, but satisfies return type
+        }
+    }
     if crate::task::scheduler::debug_is_current_user() {
+        // Flush the async TX buffer and switch to blocking output so the crash
+        // report is not interleaved with buffered bytes from other contexts.
+        crate::drivers::serial::flush_blocking();
         crate::serial_println!("--- Thread Crash Report ---");
         crate::serial_println!("  TID:    {}", tid);
         crate::serial_println!("  Signal: {} ({})", signal, signal_name(signal));
@@ -379,7 +413,12 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         // manual recovery instead of spinning forever (which caused deadlocks).
         for _ in 0..1_000 {
             if crate::task::scheduler::try_exit_current(signal) {
-                unreachable!(); // try_exit_current calls schedule() and never returns
+                // Clear re-entrancy guard (never reached — try_exit_current
+                // calls schedule() and never returns, but clear for safety)
+                if cpu_id < crate::arch::x86::smp::MAX_CPUS {
+                    FAULT_HANDLER_ACTIVE[cpu_id].store(false, Ordering::Relaxed);
+                }
+                unreachable!();
             }
             core::hint::spin_loop();
         }
@@ -387,7 +426,14 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         // enter idle loop. Does NOT call schedule()/context_switch, avoiding
         // the deadlock where schedule_inner's try_lock loop spins forever.
         crate::serial_println!("  try_exit_current failed 1000x — falling back to manual recovery");
+        if cpu_id < crate::arch::x86::smp::MAX_CPUS {
+            FAULT_HANDLER_ACTIVE[cpu_id].store(false, Ordering::Relaxed);
+        }
         crate::task::scheduler::fault_kill_and_idle(signal);
+    }
+    // Clear re-entrancy guard on the normal return path
+    if cpu_id < crate::arch::x86::smp::MAX_CPUS {
+        FAULT_HANDLER_ACTIVE[cpu_id].store(false, Ordering::Relaxed);
     }
     false
 }

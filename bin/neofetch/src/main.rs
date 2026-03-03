@@ -102,6 +102,8 @@ fn get_env<'a>(key: &str, buf: &'a mut [u8]) -> &'a [u8] {
 }
 
 fn main() {
+    anyos_std::i18n::init();
+    let t = anyos_std::i18n::t;
     // ── Gather system info ──────────────────────────
 
     // User
@@ -201,7 +203,7 @@ fn main() {
     // OS
     {
         let l = &mut lines[lc];
-        l.push(BOLD_CYAN); l.push(b"OS"); l.push(RESET);
+        l.push(BOLD_CYAN); l.push(t("OS").as_bytes()); l.push(RESET);
         l.push(b": .anyOS ");
         l.push(env!("ANYOS_VERSION").as_bytes());
         l.push(b" x86_64");
@@ -211,7 +213,7 @@ fn main() {
     // Host
     {
         let l = &mut lines[lc];
-        l.push(BOLD_CYAN); l.push(b"Host"); l.push(RESET);
+        l.push(BOLD_CYAN); l.push(t("Host").as_bytes()); l.push(RESET);
         l.push(b": anyOS Virtual Machine");
         lc += 1;
     }
@@ -219,7 +221,7 @@ fn main() {
     // Kernel
     {
         let l = &mut lines[lc];
-        l.push(BOLD_CYAN); l.push(b"Kernel"); l.push(RESET);
+        l.push(BOLD_CYAN); l.push(t("Kernel").as_bytes()); l.push(RESET);
         l.push(b": anyOS x86_64");
         lc += 1;
     }
@@ -227,34 +229,37 @@ fn main() {
     // Uptime
     {
         let l = &mut lines[lc];
-        l.push(BOLD_CYAN); l.push(b"Uptime"); l.push(RESET);
+        l.push(BOLD_CYAN); l.push(t("Uptime").as_bytes()); l.push(RESET);
         l.push(b": ");
         if days > 0 {
             l.push_u32(days);
-            if days == 1 { l.push(b" day, "); } else { l.push(b" days, "); }
+            if days == 1 { l.push(b" "); l.push(t("day").as_bytes()); l.push(b", "); }
+            else { l.push(b" "); l.push(t("days").as_bytes()); l.push(b", "); }
         }
         if hours > 0 || days > 0 {
             l.push_u32(hours);
-            if hours == 1 { l.push(b" hour, "); } else { l.push(b" hours, "); }
+            if hours == 1 { l.push(b" "); l.push(t("hour").as_bytes()); l.push(b", "); }
+            else { l.push(b" "); l.push(t("hours").as_bytes()); l.push(b", "); }
         }
         l.push_u32(mins);
-        if mins == 1 { l.push(b" min"); } else { l.push(b" mins"); }
+        if mins == 1 { l.push(b" "); l.push(t("min").as_bytes()); }
+        else { l.push(b" "); l.push(t("mins").as_bytes()); }
         lc += 1;
     }
 
     // Shell
     {
         let l = &mut lines[lc];
-        l.push(BOLD_CYAN); l.push(b"Shell"); l.push(RESET);
+        l.push(BOLD_CYAN); l.push(t("Shell").as_bytes()); l.push(RESET);
         l.push(b": ");
-        if shell.is_empty() { l.push(b"unknown"); } else { l.push(shell); }
+        if shell.is_empty() { l.push(t("unknown").as_bytes()); } else { l.push(shell); }
         lc += 1;
     }
 
     // Resolution
     if res_w > 0 && res_h > 0 {
         let l = &mut lines[lc];
-        l.push(BOLD_CYAN); l.push(b"Resolution"); l.push(RESET);
+        l.push(BOLD_CYAN); l.push(t("Resolution").as_bytes()); l.push(RESET);
         l.push(b": ");
         l.push_u32(res_w);
         l.push(b"x");
@@ -265,7 +270,7 @@ fn main() {
     // WM
     {
         let l = &mut lines[lc];
-        l.push(BOLD_CYAN); l.push(b"WM"); l.push(RESET);
+        l.push(BOLD_CYAN); l.push(t("WM").as_bytes()); l.push(RESET);
         l.push(b": anyOS Compositor");
         lc += 1;
     }
@@ -273,7 +278,7 @@ fn main() {
     // Terminal
     if !term.is_empty() {
         let l = &mut lines[lc];
-        l.push(BOLD_CYAN); l.push(b"Terminal"); l.push(RESET);
+        l.push(BOLD_CYAN); l.push(t("Terminal").as_bytes()); l.push(RESET);
         l.push(b": ");
         l.push(term);
         lc += 1;
@@ -282,19 +287,19 @@ fn main() {
     // CPU
     {
         let l = &mut lines[lc];
-        l.push(BOLD_CYAN); l.push(b"CPU"); l.push(RESET);
+        l.push(BOLD_CYAN); l.push(t("CPU").as_bytes()); l.push(RESET);
         l.push(b": ");
         l.push_u32(cpus);
         l.push(b" x x86_64 (");
         l.push_u32(threads);
-        l.push(b" threads)");
+        l.push(b" "); l.push(t("threads").as_bytes()); l.push(b")");
         lc += 1;
     }
 
     // GPU
     {
         let l = &mut lines[lc];
-        l.push(BOLD_CYAN); l.push(b"GPU"); l.push(RESET);
+        l.push(BOLD_CYAN); l.push(t("GPU").as_bytes()); l.push(RESET);
         l.push(b": ");
         l.push(gpu.as_bytes());
         lc += 1;
@@ -303,7 +308,7 @@ fn main() {
     // Memory
     {
         let l = &mut lines[lc];
-        l.push(BOLD_CYAN); l.push(b"Memory"); l.push(RESET);
+        l.push(BOLD_CYAN); l.push(t("Memory").as_bytes()); l.push(RESET);
         l.push(b": ");
         l.push_u32(used_mb);
         l.push(b" MiB / ");
@@ -317,7 +322,7 @@ fn main() {
     // Local IP
     if has_net && (ip[0] != 0 || ip[1] != 0 || ip[2] != 0 || ip[3] != 0) {
         let l = &mut lines[lc];
-        l.push(BOLD_CYAN); l.push(b"Local IP"); l.push(RESET);
+        l.push(BOLD_CYAN); l.push(t("Local IP").as_bytes()); l.push(RESET);
         l.push(b": ");
         l.push_u32(ip[0] as u32); l.push(b".");
         l.push_u32(ip[1] as u32); l.push(b".");

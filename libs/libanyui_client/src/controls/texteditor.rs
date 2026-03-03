@@ -1,4 +1,4 @@
-use crate::{Control, Widget, lib, KIND_TEXT_EDITOR};
+use crate::{Control, Widget, lib, KIND_TEXT_EDITOR, KeyEvent, get_key_info, EVENT_KEY};
 use crate::events;
 
 leaf_control!(TextEditor, KIND_TEXT_EDITOR);
@@ -140,6 +140,15 @@ impl TextEditor {
     /// Scroll the view so the given line is visible (centered if possible).
     pub fn ensure_line_visible(&self, line: u32) {
         (lib().texteditor_ensure_line_visible)(self.ctrl.id, line);
+    }
+
+    /// Register a typed key-down handler.
+    pub fn on_key_down(&self, mut f: impl FnMut(&KeyEvent) + 'static) {
+        let (thunk, ud) = events::register(move |_id, _| {
+            let ke = get_key_info();
+            f(&ke);
+        });
+        (lib().on_event_fn)(self.ctrl.id, EVENT_KEY, thunk, ud);
     }
 
     /// Register a callback for when the text changes.

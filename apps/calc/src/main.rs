@@ -2,6 +2,7 @@
 #![no_main]
 
 use anyos_std::ui::window;
+use anyos_std::i18n;
 use anyos_std::String;
 
 anyos_std::entry!(main);
@@ -428,18 +429,20 @@ fn handle_key(calc: &mut Calc, key: u32) {
 
 // ---- Main ----
 fn main() {
+    i18n::init();
+
     let win = window::create_ex(
-        "Calculator", 200, 100, WIN_W, WIN_H,
+        i18n::t("Calculator"), 200, 100, WIN_W, WIN_H,
         window::WIN_FLAG_NOT_RESIZABLE,
     );
     if win == u32::MAX { return; }
 
     // Menu
     let mut mb = window::MenuBarBuilder::new()
-        .menu("Calculator")
-            .item(100, "About Calculator", 0)
+        .menu(i18n::t("Calculator"))
+            .item(100, i18n::t("About Calculator"), 0)
             .separator()
-            .item(101, "Quit Calculator", 0)
+            .item(101, i18n::t("Quit Calculator"), 0)
         .end_menu();
     window::set_menu(win, mb.build());
 

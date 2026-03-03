@@ -5,7 +5,7 @@ use anyos_std::fs;
 use anyos_std::process;
 use anyos_std::sys;
 use anyos_std::ui::window;
-use anyos_std::Vec;
+use anyos_std::{Vec, i18n};
 use libanyui_client as anyui;
 use anyui::Widget;
 
@@ -540,8 +540,9 @@ fn update_ui() {
 
 fn main() {
     if !anyui::init() { return; }
+    i18n::init();
 
-    let win = anyui::Window::new("Diagnostics", -1, -1, WIN_W, WIN_H);
+    let win = anyui::Window::new(i18n::t("Diagnostics"), -1, -1, WIN_W, WIN_H);
 
     // Toolbar (DOCK_TOP)
     let toolbar = anyui::Toolbar::new();
@@ -550,14 +551,14 @@ fn main() {
     toolbar.set_color(0xFF252526);
     toolbar.set_padding(4, 4, 4, 4);
 
-    let title_lbl = toolbar.add_label("System Diagnostics");
+    let title_lbl = toolbar.add_label(i18n::t("System Diagnostics"));
     title_lbl.set_text_color(0xFF00C8FF);
     title_lbl.set_size(200, 28);
 
-    let btn_stress = toolbar.add_button("Stress Test");
+    let btn_stress = toolbar.add_button(i18n::t("Stress Test"));
     btn_stress.set_size(90, 28);
 
-    let btn_start = toolbar.add_button("Start");
+    let btn_start = toolbar.add_button(i18n::t("Start"));
     btn_start.set_size(80, 28);
 
     win.add(&toolbar);
@@ -567,13 +568,13 @@ fn main() {
     content.set_dock(anyui::DOCK_FILL);
     content.set_color(0xFF1E1E1E);
 
-    let lbl_line1 = anyui::Label::new("Press Start to run benchmarks,");
+    let lbl_line1 = anyui::Label::new(i18n::t("Press Start to run benchmarks,"));
     lbl_line1.set_position(10, 10);
     lbl_line1.set_size(460, 20);
     lbl_line1.set_text_color(0xFFE6E6E6);
     content.add(&lbl_line1);
 
-    let lbl_line2 = anyui::Label::new("or Stress Test for a continuous loop.");
+    let lbl_line2 = anyui::Label::new(i18n::t("or Stress Test for a continuous loop."));
     lbl_line2.set_position(10, 30);
     lbl_line2.set_size(460, 20);
     lbl_line2.set_text_color(0xFFE6E6E6);
@@ -584,13 +585,13 @@ fn main() {
     progress.set_size(0, 0);
     content.add(&progress);
 
-    let lbl_stat1 = anyui::Label::new("Stress Test runs syscalls in a loop");
+    let lbl_stat1 = anyui::Label::new(i18n::t("Stress Test runs syscalls in a loop"));
     lbl_stat1.set_position(10, 70);
     lbl_stat1.set_size(460, 20);
     lbl_stat1.set_text_color(0xFF999999);
     content.add(&lbl_stat1);
 
-    let lbl_stat2 = anyui::Label::new("until you press Stop.");
+    let lbl_stat2 = anyui::Label::new(i18n::t("until you press Stop."));
     lbl_stat2.set_position(10, 94);
     lbl_stat2.set_size(460, 20);
     lbl_stat2.set_text_color(0xFF999999);
@@ -611,9 +612,9 @@ fn main() {
     let grid = anyui::DataGrid::new(0, 0);
     grid.set_position(10, 10);
     grid.set_columns(&[
-        anyui::ColumnDef::new("Test").width(200),
-        anyui::ColumnDef::new("Time").width(100).align(anyui::ALIGN_RIGHT),
-        anyui::ColumnDef::new("Iters").width(80).align(anyui::ALIGN_RIGHT).numeric(),
+        anyui::ColumnDef::new(i18n::t("Test")).width(200),
+        anyui::ColumnDef::new(i18n::t("Time")).width(100).align(anyui::ALIGN_RIGHT),
+        anyui::ColumnDef::new(i18n::t("Iters")).width(80).align(anyui::ALIGN_RIGHT).numeric(),
     ]);
     content.add(&grid);
 

@@ -10,6 +10,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use anyos_std::fs;
+use anyos_std::i18n;
 use anyos_std::ipc;
 use anyos_std::process;
 use anyos_std::ui::window;
@@ -51,14 +52,14 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     panel.set_color(layout::bg());
 
     // ── Page header ─────────────────────────────────────────────────────
-    layout::build_page_header(&panel, "Display", "Theme, monitor, resolution and wallpaper");
+    layout::build_page_header(&panel, i18n::t("Display"), i18n::t("Theme, monitor, resolution and wallpaper"));
 
     // ── Display Info card ───────────────────────────────────────────────
     let info_card = layout::build_auto_card(&panel);
 
     // GPU Driver
     let gpu = window::gpu_name();
-    layout::build_info_row(&info_card, "GPU Driver", &gpu, true);
+    layout::build_info_row(&info_card, i18n::t("GPU Driver"), &gpu, true);
 
     layout::build_separator(&info_card);
 
@@ -67,8 +68,8 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let accel_2d = window::gpu_has_accel();
     layout::build_info_row_colored(
         &info_card,
-        "2D Acceleration",
-        if accel_2d { "Available" } else { "Not available" },
+        i18n::t("2D Acceleration"),
+        if accel_2d { i18n::t("Available") } else { i18n::t("Not available") },
         if accel_2d { tc.success } else { tc.destructive },
         false,
     );
@@ -79,8 +80,8 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let accel_3d = window::gpu_has_3d();
     layout::build_info_row_colored(
         &info_card,
-        "3D Acceleration",
-        if accel_3d { "Available" } else { "Not available" },
+        i18n::t("3D Acceleration"),
+        if accel_3d { i18n::t("Available") } else { i18n::t("Not available") },
         if accel_3d { tc.success } else { tc.destructive },
         false,
     );
@@ -90,7 +91,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     // Current Resolution
     let (sw, sh) = window::screen_size();
     let res_str = format!("{} x {}", sw, sh);
-    layout::build_info_row(&info_card, "Current Resolution", &res_str, false);
+    layout::build_info_row(&info_card, i18n::t("Current Resolution"), &res_str, false);
 
     // ── Theme Appearance card ─────────────────────────────────────────────
     build_theme_card(&panel);
@@ -106,7 +107,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     if !resolutions.is_empty() {
         let res_card = layout::build_auto_card(&panel);
 
-        let row = layout::build_setting_row(&res_card, "Resolution", true);
+        let row = layout::build_setting_row(&res_card, i18n::t("Resolution"), true);
 
         // Build pipe-separated items string
         let mut items = String::new();
@@ -146,7 +147,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     hdr_row.set_dock(ui::DOCK_TOP);
     hdr_row.set_size(552, 36);
     hdr_row.set_margin(24, 8, 24, 0);
-    let hdr_lbl = ui::Label::new("Wallpaper");
+    let hdr_lbl = ui::Label::new(i18n::t("Wallpaper"));
     hdr_lbl.set_position(0, 8);
     hdr_lbl.set_size(200, 20);
     hdr_lbl.set_text_color(layout::text());
@@ -158,7 +159,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let names = scan_wallpaper_names();
 
     if names.is_empty() {
-        let empty = ui::Label::new("No wallpapers found in /media/wallpapers/");
+        let empty = ui::Label::new(i18n::t("No wallpapers found in /media/wallpapers/"));
         empty.set_dock(ui::DOCK_TOP);
         empty.set_size(552, 30);
         empty.set_font_size(12);
@@ -172,7 +173,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         progress_row.set_size(552, 28);
         progress_row.set_margin(24, 4, 24, 4);
 
-        let progress_label = ui::Label::new("Loading wallpapers...");
+        let progress_label = ui::Label::new(i18n::t("Loading wallpapers..."));
         progress_label.set_position(0, 4);
         progress_label.set_size(160, 18);
         progress_label.set_font_size(11);
@@ -307,9 +308,10 @@ fn build_theme_card(panel: &ui::View) {
     let card = layout::build_auto_card(panel);
 
     // ── Theme mode DropDown (Dark / Light) ──────────────────────────
-    let theme_row = layout::build_setting_row(&card, "Theme", true);
+    let theme_row = layout::build_setting_row(&card, i18n::t("Theme"), true);
 
-    let theme_dd = ui::DropDown::new("Dark|Light");
+    let theme_items = format!("{}|{}", i18n::t("Dark"), i18n::t("Light"));
+    let theme_dd = ui::DropDown::new(&theme_items);
     theme_dd.set_position(200, 8);
     theme_dd.set_size(280, 28);
     theme_dd.set_selected_index(ui::get_theme()); // 0=dark, 1=light
@@ -328,7 +330,7 @@ fn build_theme_card(panel: &ui::View) {
         return;
     }
 
-    let style_row = layout::build_setting_row(&card, "Accent", false);
+    let style_row = layout::build_setting_row(&card, i18n::t("Accent"), false);
 
     // Read current style preference to highlight the active swatch
     let current_style = read_current_style_name();
@@ -397,9 +399,10 @@ fn build_theme_card(panel: &ui::View) {
 fn build_font_smoothing_card(panel: &ui::View) {
     let card = layout::build_auto_card(panel);
 
-    let row = layout::build_setting_row(&card, "Font Smoothing", false);
+    let row = layout::build_setting_row(&card, i18n::t("Font Smoothing"), false);
 
-    let dd = ui::DropDown::new("None|Greyscale|Subpixel (LCD)");
+    let smoothing_items = format!("{}|{}|{}", i18n::t("None"), i18n::t("Greyscale"), i18n::t("Subpixel (LCD)"));
+    let dd = ui::DropDown::new(&smoothing_items);
     dd.set_position(200, 8);
     dd.set_size(280, 28);
     dd.set_selected_index(ui::theme::get_font_smoothing());

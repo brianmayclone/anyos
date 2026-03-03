@@ -62,7 +62,31 @@ impl Control for IconButton {
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = &self.text_base.base;
-        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
+
+        // Calculate actual button size: if auto_size is set, measure content and fit
+        let (button_w, button_h) = if b.auto_size {
+            let has_icon = !self.icon_pixels.is_empty() || b.state > 0;
+            let has_text = !self.text_base.text.is_empty();
+
+            if has_icon && has_text {
+                let iw = if !self.icon_pixels.is_empty() { self.icon_w as i32 } else { 16 };
+                let font_size = self.text_base.text_style.font_size;
+                let (tw, _) = crate::draw::text_size_at(&self.text_base.text, font_size);
+                let needed_w = Self::H_PAD + iw + Self::ICON_TEXT_GAP + tw as i32 + Self::H_PAD;
+                let needed_h = if !self.icon_pixels.is_empty() {
+                    (self.icon_h as i32 + 8).max(b.h as i32)
+                } else {
+                    (16 + 8).max(b.h as i32)
+                };
+                (needed_w as u32, needed_h as u32)
+            } else {
+                (b.w, b.h)
+            }
+        } else {
+            (b.w, b.h)
+        };
+
+        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, button_w, button_h);
         let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
         let icon_id = b.state;

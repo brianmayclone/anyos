@@ -210,6 +210,7 @@ pub enum ControlKind {
     TreeView = 40,
     RadioGroup = 41,
     DropDown = 42,
+    AutoCompleteTextField = 43,
 }
 
 impl ControlKind {
@@ -258,6 +259,7 @@ impl ControlKind {
             40 => Self::TreeView,
             41 => Self::RadioGroup,
             42 => Self::DropDown,
+            43 => Self::AutoCompleteTextField,
             _ => Self::View,
         }
     }
@@ -283,6 +285,7 @@ impl ControlKind {
             Self::Canvas => (200, 200),
             Self::Expander => (200, 32),
             Self::DropDown => (200, 32),
+            Self::AutoCompleteTextField => (200, 28),
             Self::Toolbar => (0, 36),
             Self::NavigationBar => (0, 44),
             Self::TabBar => (0, 32),

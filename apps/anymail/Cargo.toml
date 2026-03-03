@@ -1,0 +1,17 @@
+[package]
+name = "anymail"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../libs/stdlib" }
+libanyui_client = { path = "../../libs/libanyui_client" }
+libwebview = { path = "../../libs/libwebview" }
+libimage_client = { path = "../../libs/libimage_client" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"

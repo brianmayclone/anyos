@@ -85,6 +85,7 @@ pub const KIND_TEXT_EDITOR: u32 = 39;
 pub const KIND_TREE_VIEW: u32 = 40;
 pub const KIND_RADIO_GROUP: u32 = 41;
 pub const KIND_DROP_DOWN: u32 = 42;
+pub const KIND_AUTO_COMPLETE_TEXT_FIELD: u32 = 43;
 
 // ── DockStyle constants ─────────────────────────────────────────────
 
@@ -208,6 +209,8 @@ struct AnyuiLib {
     textfield_set_password: extern "C" fn(u32, u32),
     textfield_set_placeholder: extern "C" fn(u32, *const u8, u32),
     textfield_select_all: extern "C" fn(u32),
+    // AutoCompleteTextField
+    autocomplete_set_suggestions: extern "C" fn(u32, *const u8, u32),
     // Marshal (cross-thread)
     marshal_set_text: extern "C" fn(u32, *const u8, u32),
     marshal_set_color: extern "C" fn(u32, u32),
@@ -449,6 +452,8 @@ pub fn init() -> bool {
             textfield_set_password: resolve(&handle, "anyui_textfield_set_password"),
             textfield_set_placeholder: resolve(&handle, "anyui_textfield_set_placeholder"),
             textfield_select_all: resolve(&handle, "anyui_textfield_select_all"),
+            // AutoCompleteTextField
+            autocomplete_set_suggestions: resolve(&handle, "anyui_autocomplete_set_suggestions"),
             // Marshal (cross-thread)
             marshal_set_text: resolve(&handle, "anyui_marshal_set_text"),
             marshal_set_color: resolve(&handle, "anyui_marshal_set_color"),
@@ -831,6 +836,17 @@ impl Control {
 
     pub fn on_key_down_raw(&self, cb: Callback, userdata: u64) {
         self.on_event_raw(EVENT_KEY, cb, userdata);
+    }
+
+    /// Register a typed key-down handler on this control.
+    /// The closure receives a `KeyEvent` with keycode, char_code, and modifiers.
+    /// Fires when this control consumes a key event (e.g. TextEditor handles Ctrl+C).
+    pub fn on_key_down(&self, mut f: impl FnMut(&KeyEvent) + 'static) {
+        let (thunk, ud) = events::register(move |_id, _| {
+            let ke = get_key_info();
+            f(&ke);
+        });
+        (lib().on_event_fn)(self.id, EVENT_KEY, thunk, ud);
     }
 
     pub fn on_mouse_down_raw(&self, cb: Callback, userdata: u64) {

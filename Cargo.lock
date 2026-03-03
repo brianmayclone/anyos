@@ -60,6 +60,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "anymail"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libanyui_client",
+ "libimage_client",
+ "libwebview",
+]
+
+[[package]]
 name = "anyos_kernel"
 version = "0.1.0"
 
@@ -76,6 +86,14 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "anyzilla"
+version = "1.0.0"
+dependencies = [
+ "anyos_std",
  "libanyui_client",
 ]
 
@@ -126,6 +144,15 @@ name = "base64"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+]
+
+[[package]]
+name = "button_demo"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
 ]
 
 [[package]]
@@ -398,6 +425,22 @@ dependencies = [
 
 [[package]]
 name = "ftp"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "ftp-settings"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
+name = "ftpd"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
@@ -871,6 +914,10 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
 ]
+
+[[package]]
+name = "scp"
+version = "0.1.0"
 
 [[package]]
 name = "screenshot"

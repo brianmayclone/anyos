@@ -9,6 +9,10 @@ impl Button {
         Self { ctrl: Control { id } }
     }
 
+    pub fn auto_size(&self) {
+        (lib().set_auto_size)(self.ctrl.id, 1);
+    }
+
     pub fn on_click(&self, mut f: impl FnMut(&ClickEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| f(&ClickEvent { id }));
         (lib().on_click_fn)(self.ctrl.id, thunk, ud);

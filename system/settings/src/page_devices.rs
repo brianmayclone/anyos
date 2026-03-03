@@ -7,6 +7,7 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use anyos_std::i18n;
 use anyos_std::sys;
 use libanyui_client as ui;
 use ui::Widget;
@@ -77,12 +78,12 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     panel.set_auto_size(true);
     panel.set_color(layout::bg());
 
-    layout::build_page_header(&panel, "Devices", "Connected hardware and drivers");
+    layout::build_page_header(&panel, i18n::t("Devices"), i18n::t("Connected hardware and drivers"));
 
     let devices = enumerate_devices();
 
     if devices.is_empty() {
-        let empty = ui::Label::new("No devices detected");
+        let empty = ui::Label::new(i18n::t("No devices detected"));
         empty.set_dock(ui::DOCK_TOP);
         empty.set_size(552, 30);
         empty.set_font_size(13);
@@ -92,8 +93,8 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     } else {
         // Summary card
         let summary = layout::build_auto_card(&panel);
-        let count_str = format!("{} devices", devices.len());
-        layout::build_info_row(&summary, "Total", &count_str, true);
+        let count_str = format!("{} {}", devices.len(), i18n::t("devices"));
+        layout::build_info_row(&summary, i18n::t("Total"), &count_str, true);
 
         // Group by type
         for &gt in GROUP_ORDER {
@@ -101,7 +102,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             if group.is_empty() {
                 continue;
             }
-            build_device_group(&panel, type_name(gt), &group, type_icon(gt));
+            build_device_group(&panel, i18n::t(type_name(gt)), &group, type_icon(gt));
         }
     }
 
@@ -161,7 +162,7 @@ fn build_device_group(panel: &ui::View, group_name: &str, devices: &[&DeviceInfo
         row.add(&drv_lbl);
 
         // Type badge on the right
-        let type_lbl = ui::Label::new(type_name(dev.dev_type));
+        let type_lbl = ui::Label::new(i18n::t(type_name(dev.dev_type)));
         type_lbl.set_position(400, 12);
         type_lbl.set_size(120, 20);
         type_lbl.set_text_color(layout::text_dim());
@@ -214,7 +215,7 @@ fn enumerate_devices() -> Vec<DeviceInfo> {
         let drv_end = entry[32..56].iter().position(|&b| b == 0).unwrap_or(24);
         let driver = match core::str::from_utf8(&entry[32..32 + drv_end]) {
             Ok(s) => String::from(s),
-            Err(_) => String::from("unknown"),
+            Err(_) => String::from(i18n::t("unknown")),
         };
 
         let dev_type = entry[56];

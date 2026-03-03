@@ -49,6 +49,7 @@ pub mod text_editor;
 pub mod tree_view;
 pub mod radio_group;
 pub mod dropdown;
+pub mod autocomplete_textfield;
 
 /// Factory: create a concrete control based on `kind`.
 ///
@@ -96,6 +97,9 @@ pub fn create_control(
 
         // DropDown (text-based, pipe-separated items)
         ControlKind::DropDown => Box::new(dropdown::DropDown::new(TextControlBase::new(base).with_text(text))),
+
+        // AutoCompleteTextField (text-based, editable with suggestions popup)
+        ControlKind::AutoCompleteTextField => Box::new(autocomplete_textfield::AutoCompleteTextField::new(TextControlBase::new(base).with_text(text))),
 
         // Text controls — wrap ControlBase in TextControlBase with text
         ControlKind::Label => Box::new(label::Label::new(TextControlBase::new(base).with_text(text))),

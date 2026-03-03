@@ -260,6 +260,96 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    /// Like `fill_rounded_rect_aa` but clips all drawing to `clip`.
+    pub fn fill_rounded_rect_aa_clipped(&mut self, rect: Rect, radius: i32, color: Color, clip: Rect) {
+        // Intersect the surface bounds with the clip rect to get actual clip bounds.
+        let cx0 = clip.x.max(0);
+        let cy0 = clip.y.max(0);
+        let cx1 = clip.right().min(self.surface.width as i32);
+        let cy1 = clip.bottom().min(self.surface.height as i32);
+        if cx0 >= cx1 || cy0 >= cy1 { return; }
+
+        let r = radius.min(rect.width as i32 / 2).min(rect.height as i32 / 2);
+        if r <= 0 {
+            self.surface.fill_rect(Rect::clipped(rect, cx0, cy0, cx1, cy1), color);
+            return;
+        }
+        let ru = r as u32;
+
+        if rect.height > ru * 2 {
+            self.surface.fill_rect(Rect::clipped(
+                Rect::new(rect.x, rect.y + r, rect.width, rect.height - ru * 2),
+                cx0, cy0, cx1, cy1,
+            ), color);
+        }
+        if rect.width > ru * 2 {
+            self.surface.fill_rect(Rect::clipped(
+                Rect::new(rect.x + r, rect.y, rect.width - ru * 2, ru),
+                cx0, cy0, cx1, cy1,
+            ), color);
+            self.surface.fill_rect(Rect::clipped(
+                Rect::new(rect.x + r, rect.bottom() - r, rect.width - ru * 2, ru),
+                cx0, cy0, cx1, cy1,
+            ), color);
+        }
+
+        let r2x4 = (2 * r) * (2 * r);
+        let transition = 3 * r;
+        for dy in 0..r {
+            let yt = rect.y + dy;
+            let yb = rect.bottom() - 1 - dy;
+            let cy = 2 * dy + 1 - 2 * r;
+            let cy2 = cy * cy;
+
+            let mut fill_start = r;
+            for dx in 0..r {
+                let cx = 2 * dx + 1 - 2 * r;
+                let dist_sq = cx * cx + cy2;
+                if dist_sq <= r2x4 - transition { fill_start = dx; break; }
+            }
+
+            let fill_width = (r - fill_start) as u32;
+            if fill_width > 0 {
+                if yt >= cy0 && yt < cy1 {
+                    self.surface.fill_rect(Rect::clipped(
+                        Rect::new(rect.x + fill_start, yt, fill_width, 1), cx0, cy0, cx1, cy1), color);
+                    self.surface.fill_rect(Rect::clipped(
+                        Rect::new(rect.right() - r, yt, fill_width, 1), cx0, cy0, cx1, cy1), color);
+                }
+                if yb >= cy0 && yb < cy1 {
+                    self.surface.fill_rect(Rect::clipped(
+                        Rect::new(rect.x + fill_start, yb, fill_width, 1), cx0, cy0, cx1, cy1), color);
+                    self.surface.fill_rect(Rect::clipped(
+                        Rect::new(rect.right() - r, yb, fill_width, 1), cx0, cy0, cx1, cy1), color);
+                }
+            }
+
+            for dx in 0..fill_start {
+                let cx = 2 * dx + 1 - 2 * r;
+                let dist_sq = cx * cx + cy2;
+                if dist_sq >= r2x4 + transition { continue; }
+                let alpha = if dist_sq <= r2x4 - transition {
+                    255i32
+                } else {
+                    255 * (r2x4 + transition - dist_sq) / (2 * transition)
+                };
+                if alpha <= 0 { continue; }
+                let a = (alpha.min(255) as u32 * color.a as u32 / 255) as u8;
+                let aa_color = Color::with_alpha(a, color.r, color.g, color.b);
+                let xt = rect.x + dx;
+                let xr = rect.right() - 1 - dx;
+                if xt >= cx0 && xt < cx1 {
+                    if yt >= cy0 && yt < cy1 { self.surface.put_pixel(xt, yt, aa_color); }
+                    if yb >= cy0 && yb < cy1 { self.surface.put_pixel(xt, yb, aa_color); }
+                }
+                if xr >= cx0 && xr < cx1 {
+                    if yt >= cy0 && yt < cy1 { self.surface.put_pixel(xr, yt, aa_color); }
+                    if yb >= cy0 && yb < cy1 { self.surface.put_pixel(xr, yb, aa_color); }
+                }
+            }
+        }
+    }
+
     pub fn fill_circle_aa(&mut self, cx: i32, cy: i32, radius: i32, color: Color) {
         if radius <= 0 {
             return;

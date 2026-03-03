@@ -71,6 +71,20 @@ impl Rect {
         )
     }
 
+    /// Clip this rect to the given bounds [cx0,cx1) × [cy0,cy1).
+    /// Returns an empty rect (width=0) if there is no overlap.
+    pub fn clipped(r: Rect, cx0: i32, cy0: i32, cx1: i32, cy1: i32) -> Rect {
+        let x0 = r.x.max(cx0);
+        let y0 = r.y.max(cy0);
+        let x1 = r.right().min(cx1);
+        let y1 = r.bottom().min(cy1);
+        if x0 >= x1 || y0 >= y1 {
+            Rect::new(x0, y0, 0, 0)
+        } else {
+            Rect::new(x0, y0, (x1 - x0) as u32, (y1 - y0) as u32)
+        }
+    }
+
     pub fn subtract(&self, other: &Rect) -> ([Rect; 4], usize) {
         let mut result = [Rect::new(0, 0, 0, 0); 4];
         let mut count = 0;

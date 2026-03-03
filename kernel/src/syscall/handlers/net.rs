@@ -264,6 +264,25 @@ pub fn sys_tcp_accept(listener_id: u32, result_ptr: u32) -> u32 {
     0
 }
 
+/// sys_tcp_accept_nowait - Non-blocking accept: returns immediately.
+/// arg1=listener_id, arg2=result_ptr (12 bytes, same as sys_tcp_accept)
+/// Returns 0 if a connection was accepted, u32::MAX if none pending.
+pub fn sys_tcp_accept_nowait(listener_id: u32, result_ptr: u32) -> u32 {
+    if result_ptr == 0 { return u32::MAX; }
+    // Use a 0-tick timeout so the accept loop returns immediately if nothing is ready.
+    let (sock_id, remote_ip, remote_port) = crate::net::tcp::accept(listener_id, 0);
+    if sock_id == u32::MAX {
+        return u32::MAX;
+    }
+    let result = unsafe { core::slice::from_raw_parts_mut(result_ptr as *mut u8, 12) };
+    result[0..4].copy_from_slice(&sock_id.to_le_bytes());
+    result[4..8].copy_from_slice(remote_ip.as_bytes());
+    result[8..10].copy_from_slice(&remote_port.to_le_bytes());
+    result[10] = 0;
+    result[11] = 0;
+    0
+}
+
 /// sys_tcp_list - List all TCP connections.
 /// arg1=buf_ptr, arg2=max_entries. Each entry is 16 bytes:
 ///   [local_ip:4, local_port:u16, remote_ip:4, remote_port:u16, state:u8, owner_tid_lo:u8, recv_buf_hi:u16]

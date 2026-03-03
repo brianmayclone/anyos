@@ -496,6 +496,8 @@ set(SSH_CLIENT_DIR "${CMAKE_SOURCE_DIR}/bin/ssh")
 set(SSH_CLIENT_ELF "${SSH_CLIENT_DIR}/ssh.elf")
 set(SSHD_DIR "${CMAKE_SOURCE_DIR}/bin/sshd")
 set(SSHD_ELF "${SSHD_DIR}/sshd.elf")
+set(SCP_DIR "${CMAKE_SOURCE_DIR}/bin/scp")
+set(SCP_ELF "${SCP_DIR}/scp.elf")
 
 # Build libssh.a
 if(WIN32)
@@ -587,6 +589,38 @@ add_custom_command(
   COMMENT "Installing SSH server to /System/bin/sshd"
 )
 
+# Build SCP client (scp.elf)
+add_custom_command(
+  OUTPUT ${SCP_ELF}
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC}
+    -m32 -O2 -ffreestanding -nostdlib -nostdinc -fno-builtin -fno-stack-protector -std=c99 -w
+    -I${SSH_DIR}/include -I${BEARSSL_DIR}/inc -I${LIBC_DIR}/include
+    -c ${SCP_DIR}/src/main.c -o ${SCP_DIR}/main.o
+  COMMAND ${CROSS_ENV} ${I686_ELF_GCC}
+    -nostdlib -static -m32
+    -T ${LIBC_DIR}/link.ld
+    -o ${SCP_ELF}
+    ${LIBC_CRT0}
+    ${SCP_DIR}/main.o
+    -Wl,--start-group
+    ${SSH_LIB}
+    ${BEARSSL_A}
+    ${LIBC_A}
+    -lgcc
+    -Wl,--end-group
+  DEPENDS ${SSH_LIB} ${BEARSSL_A} ${LIBC_A} ${LIBC_CRT0} ${LIBC_DIR}/link.ld
+    ${SCP_DIR}/src/main.c
+  COMMENT "Building SCP client for anyOS"
+)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/scp
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/bin
+  COMMAND ${CMAKE_COMMAND} -E copy ${SCP_ELF} ${SYSROOT_DIR}/System/bin/scp
+  DEPENDS ${SCP_ELF}
+  COMMENT "Installing SCP client to /System/bin/scp"
+)
+
 # Copy test source files to /Libraries/system/tests/ on disk
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/Libraries/system/tests/.stamp
@@ -621,6 +655,7 @@ set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/System/bin/sh
   ${SYSROOT_DIR}/System/bin/ssh
   ${SYSROOT_DIR}/System/bin/sshd
+  ${SYSROOT_DIR}/System/bin/scp
 )
 
 if(HAS_CLASSICUBE)

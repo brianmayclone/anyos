@@ -156,6 +156,15 @@ pub fn map_keysym(keysym: u32, mods: &ModifierState) -> Option<KeyMapping> {
         0xFFAE => (0x63, b'.' as u32), // KP_Decimal
         0xFFAF => (0x54, b'/' as u32), // KP_Divide
 
+        // Modifier keys — inject as key events so the compositor/apps can
+        // track modifier state independently (char_val=0 = modifier-only).
+        0xFFE1 => (0x2A, 0), // Left Shift  → PS/2 scancode 0x2A
+        0xFFE2 => (0x36, 0), // Right Shift → PS/2 scancode 0x36
+        0xFFE3 => (0x1D, 0), // Left Ctrl   → PS/2 scancode 0x1D
+        0xFFE4 => (0x1D, 0), // Right Ctrl  → PS/2 scancode 0x1D
+        0xFFE9 => (0x38, 0), // Left Alt    → PS/2 scancode 0x38
+        0xFFEA => (0x38, 0), // Right Alt   → PS/2 scancode 0x38
+
         _ => return None,
     };
 

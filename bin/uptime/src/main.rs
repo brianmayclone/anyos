@@ -4,6 +4,8 @@
 anyos_std::entry!(main);
 
 fn main() {
+    anyos_std::i18n::init();
+    let t = anyos_std::i18n::t;
     let ticks = anyos_std::sys::uptime();
     let hz = anyos_std::sys::tick_hz();
     let secs = if hz > 0 { ticks / hz } else { 0 };
@@ -12,10 +14,10 @@ fn main() {
     let s = secs % 60;
 
     if hours > 0 {
-        anyos_std::println!("up {}h {}m {}s", hours, mins, s);
+        anyos_std::println!("{} {}h {}m {}s", t("up"), hours, mins, s);
     } else if mins > 0 {
-        anyos_std::println!("up {}m {}s", mins, s);
+        anyos_std::println!("{} {}m {}s", t("up"), mins, s);
     } else {
-        anyos_std::println!("up {}s", s);
+        anyos_std::println!("{} {}s", t("up"), s);
     }
 }

@@ -8,6 +8,7 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
+use anyos_std::i18n;
 use libanyui_client as anyui;
 use anyui::IconType;
 
@@ -42,6 +43,7 @@ fn main() {
         anyos_std::println!("notepad: failed to load libanyui.so");
         return;
     }
+    i18n::init();
 
     // ── Parse command-line args ──
     let mut args_buf = [0u8; 256];
@@ -72,22 +74,22 @@ fn main() {
     let btn_new = toolbar.add_icon_button("");
     btn_new.set_size(34, 34);
     btn_new.set_system_icon("file-plus", IconType::Outline, tc.text, 24);
-    btn_new.set_tooltip("New");
+    btn_new.set_tooltip(i18n::t("New"));
 
     let btn_open = toolbar.add_icon_button("");
     btn_open.set_size(34, 34);
     btn_open.set_system_icon("folder-open", IconType::Outline, tc.text, 24);
-    btn_open.set_tooltip("Open");
+    btn_open.set_tooltip(i18n::t("Open"));
 
     let btn_save = toolbar.add_icon_button("");
     btn_save.set_size(34, 34);
     btn_save.set_system_icon("device-floppy", IconType::Outline, tc.text, 24);
-    btn_save.set_tooltip("Save");
+    btn_save.set_tooltip(i18n::t("Save"));
 
     let btn_save_as = toolbar.add_icon_button("");
     btn_save_as.set_size(34, 34);
     btn_save_as.set_system_icon("file-export", IconType::Outline, tc.text, 24);
-    btn_save_as.set_tooltip("Save As");
+    btn_save_as.set_tooltip(i18n::t("Save As"));
 
     // Separator
     let sep = toolbar.add_icon_button("");
@@ -97,17 +99,17 @@ fn main() {
     let btn_cut = toolbar.add_icon_button("");
     btn_cut.set_size(34, 34);
     btn_cut.set_system_icon("cut", IconType::Outline, tc.text, 24);
-    btn_cut.set_tooltip("Cut (Ctrl+X)");
+    btn_cut.set_tooltip(i18n::t("Cut (Ctrl+X)"));
 
     let btn_copy = toolbar.add_icon_button("");
     btn_copy.set_size(34, 34);
     btn_copy.set_system_icon("copy", IconType::Outline, tc.text, 24);
-    btn_copy.set_tooltip("Copy (Ctrl+C)");
+    btn_copy.set_tooltip(i18n::t("Copy (Ctrl+C)"));
 
     let btn_paste = toolbar.add_icon_button("");
     btn_paste.set_size(34, 34);
     btn_paste.set_system_icon("clipboard", IconType::Outline, tc.text, 24);
-    btn_paste.set_tooltip("Paste (Ctrl+V)");
+    btn_paste.set_tooltip(i18n::t("Paste (Ctrl+V)"));
 
     win.add(&toolbar);
 
@@ -123,7 +125,7 @@ fn main() {
     status_file.set_text_color(0xFFFFFFFF);
     status_panel.add(&status_file);
 
-    let status_cursor = anyui::Label::new("Ln 1, Col 1");
+    let status_cursor = anyui::Label::new(&format!("{} 1, {} 1", i18n::t("Ln"), i18n::t("Col")));
     status_cursor.set_position(350, 3);
     status_cursor.set_font_size(11);
     status_cursor.set_text_color(0xFFFFFFFF);
@@ -174,7 +176,7 @@ fn main() {
         s.file_path = String::new();
         s.modified = false;
         update_title(s);
-        s.status_file.set_text("Untitled");
+        s.status_file.set_text(i18n::t("Untitled"));
     });
 
     // ── Open ──
@@ -255,7 +257,7 @@ fn main() {
                     s.file_path = String::new();
                     s.modified = false;
                     update_title(s);
-                    s.status_file.set_text("Untitled");
+                    s.status_file.set_text(i18n::t("Untitled"));
                 }
                 _ => {}
             }
@@ -275,7 +277,7 @@ fn main() {
     anyui::set_timer(500, || {
         let s = app();
         let (row, col) = s.editor.cursor();
-        let text = format!("Ln {}, Col {}", row + 1, col + 1);
+        let text = format!("{} {}, {} {}", i18n::t("Ln"), row + 1, i18n::t("Col"), col + 1);
         s.status_cursor.set_text(&text);
     });
 
@@ -331,7 +333,7 @@ fn update_title(s: &AppState) {
 
 fn make_title(path: &str, modified: bool) -> String {
     let name = if path.is_empty() {
-        "Untitled"
+        i18n::t("Untitled")
     } else {
         basename(path)
     };
@@ -340,13 +342,14 @@ fn make_title(path: &str, modified: bool) -> String {
         t.push_str("* ");
     }
     t.push_str(name);
-    t.push_str(" - Notepad");
+    t.push_str(" - ");
+    t.push_str(i18n::t("Notepad"));
     t
 }
 
 fn display_filename(path: &str) -> String {
     if path.is_empty() {
-        String::from("Untitled")
+        String::from(i18n::t("Untitled"))
     } else {
         String::from(basename(path))
     }

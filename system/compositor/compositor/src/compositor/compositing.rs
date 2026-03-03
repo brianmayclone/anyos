@@ -147,6 +147,8 @@ impl Compositor {
             return;
         }
 
+        // Composite exposed regions (old position not covered by new) and the
+        // new position into the back buffer.
         let exposed = super::layer::subtract_rects(&old_b, &new_b);
 
         for rect in &exposed {
@@ -156,10 +158,25 @@ impl Compositor {
         }
         self.composite_rect(&new_b);
 
+        // Also process any OTHER damage rects (e.g. cursor, dock, content updates)
+        // that are not covered by old_b/new_b. Without this, content changes from
+        // other layers during a drag frame would be silently dropped.
+        let damage_len = self.compositing_damage.len();
+        for i in 0..damage_len {
+            let r = self.compositing_damage[i];
+            if r.is_empty() { continue; }
+            // Skip rects already covered by old_b or new_b
+            if old_b.fully_contains(&r) || new_b.fully_contains(&r) { continue; }
+            self.composite_rect(&r);
+        }
+
         if let Some(outline) = self.resize_outline {
             self.draw_outline_to_bb(&outline);
         }
 
+        // GPU RECT_COPY: fast VRAM blit from old position to new.
+        // This is a latency optimization — the CPU flush below guarantees
+        // correctness regardless of whether the GPU copy succeeds.
         self.gpu_cmds.push([
             GPU_RECT_COPY,
             old_b.x as u32,
@@ -173,6 +190,7 @@ impl Compositor {
         self.gpu_cmds.push([GPU_SYNC, 0, 0, 0, 0, 0, 0, 0, 0]);
         self.flush_gpu();
 
+        // Flush exposed regions from back buffer → VRAM (clears old window position).
         for rect in &exposed {
             if !rect.is_empty() {
                 self.flush_region(rect, 0);
@@ -187,47 +205,12 @@ impl Compositor {
             }
         }
 
-        // Check if any layer above the moved window overlapped the OLD position.
-        // RECT_COPY copies raw VRAM from old_b→new_b, which includes alpha-blended
-        // pixels from layers above (e.g. a semi-transparent Dock). These artifacts
-        // appear at wrong positions in new_b. If detected, flush entire new_b from
-        // back_buffer (which has the correct composited result from step above).
-        let mut need_full_flush = old_b.width != new_b.width || old_b.height != new_b.height;
-
-        if let Some(moved_idx) = self.layer_index(hint.layer_id) {
-            if !need_full_flush {
-                for li in (moved_idx + 1)..self.layers.len() {
-                    if !self.layers[li].visible { continue; }
-                    let above_bounds = self.layers[li].damage_bounds();
-                    if old_b.intersect(&above_bounds).is_some()
-                        || new_b.intersect(&above_bounds).is_some()
-                    {
-                        need_full_flush = true;
-                        break;
-                    }
-                }
-            }
-
-            if !need_full_flush {
-                // No above layers overlap — only fix non-opaque corners
-                if !self.layers[moved_idx].opaque {
-                    const CORNER_R: u32 = 8;
-                    let top_strip = Rect::new(new_b.x, new_b.y, new_b.width, CORNER_R);
-                    self.flush_region(&top_strip, 0);
-                    self.gpu_cmds.push([GPU_UPDATE, top_strip.x as u32, top_strip.y as u32,
-                        top_strip.width, top_strip.height, 0, 0, 0, 0]);
-                    let bot_strip = Rect::new(new_b.x, new_b.bottom() - CORNER_R as i32, new_b.width, CORNER_R);
-                    self.flush_region(&bot_strip, 0);
-                    self.gpu_cmds.push([GPU_UPDATE, bot_strip.x as u32, bot_strip.y as u32,
-                        bot_strip.width, bot_strip.height, 0, 0, 0, 0]);
-                }
-            }
-        }
-
-        if need_full_flush {
-            // Flush entire new_b from back_buffer to overwrite RECT_COPY artifacts
-            self.flush_region(&new_b, 0);
-        }
+        // Always flush new_b from back buffer to guarantee correctness.
+        // The back buffer has the correctly composited result; this overwrites
+        // the GPU RECT_COPY output with verified pixels, preventing artifacts
+        // from RECT_COPY edge cases (above-layer overlap, non-opaque corners,
+        // clipped boundaries, or GPU emulation quirks).
+        self.flush_region(&new_b, 0);
 
         self.gpu_cmds.push([
             GPU_UPDATE,
@@ -237,6 +220,17 @@ impl Compositor {
             new_b.height,
             0, 0, 0, 0,
         ]);
+
+        // Flush any extra damage rects not covered by old_b/new_b
+        for i in 0..damage_len {
+            let r = self.compositing_damage[i];
+            if r.is_empty() { continue; }
+            if old_b.fully_contains(&r) || new_b.fully_contains(&r) { continue; }
+            self.flush_region(&r, 0);
+            self.gpu_cmds.push([
+                GPU_UPDATE, r.x as u32, r.y as u32, r.width, r.height, 0, 0, 0, 0,
+            ]);
+        }
 
         self.compositing_damage.clear();
         self.flush_gpu();

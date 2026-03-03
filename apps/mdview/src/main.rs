@@ -3,6 +3,7 @@
 
 use anyos_std::String;
 use anyos_std::Vec;
+use anyos_std::i18n;
 use libanyui_client as anyui;
 
 anyos_std::entry!(main);
@@ -1116,8 +1117,8 @@ fn close_tab(index: usize) {
     if s.files.is_empty() {
         s.active = 0;
         s.tab_bar.set_visible(false);
-        s.path_label.set_text("No file open");
-        s.status_label.set_text("Ready");
+        s.path_label.set_text(i18n::t("No file open"));
+        s.status_label.set_text(i18n::t("Ready"));
         return;
     }
 
@@ -1231,6 +1232,30 @@ fn toggle_source() {
             editor.set_text(&s.files[idx].content);
             editor.set_show_line_numbers(true);
             editor.set_editor_font(FONT_MONO, 13);
+            editor.on_key_down(|ke| {
+                if ke.ctrl() {
+                    match ke.char_code {
+                        0x63 | 0x43 => { app().status_label.set_text("Copied selection"); }
+                        0x78 | 0x58 => {
+                            app().status_label.set_text("Cut selection");
+                            let s = app();
+                            if !s.files.is_empty() {
+                                s.files[s.active].modified = true;
+                            }
+                            update_tab_labels();
+                        }
+                        0x76 | 0x56 => {
+                            app().status_label.set_text("Pasted");
+                            let s = app();
+                            if !s.files.is_empty() {
+                                s.files[s.active].modified = true;
+                            }
+                            update_tab_labels();
+                        }
+                        _ => {}
+                    }
+                }
+            });
             s.scroll.add(&editor);
             s.files[idx].source_editor = Some(editor);
         } else {
@@ -1297,13 +1322,13 @@ fn clipboard_copy() {
     if file.showing_source {
         if let Some(ref editor) = file.source_editor {
             if editor.copy() {
-                s.status_label.set_text("Copied selection");
+                s.status_label.set_text(i18n::t("Copied selection"));
             }
         }
     } else {
         // Rendered view: copy entire markdown content
         anyui::clipboard_set(&file.content);
-        s.status_label.set_text("Copied markdown content");
+        s.status_label.set_text(i18n::t("Copied markdown content"));
     }
 }
 
@@ -1317,7 +1342,7 @@ fn clipboard_cut() {
             if editor.cut() {
                 file.modified = true;
                 update_tab_labels();
-                s.status_label.set_text("Cut selection");
+                s.status_label.set_text(i18n::t("Cut selection"));
             }
         }
     }
@@ -1334,7 +1359,7 @@ fn clipboard_paste() {
             if n > 0 {
                 file.modified = true;
                 update_tab_labels();
-                s.status_label.set_text("Pasted from clipboard");
+                s.status_label.set_text(i18n::t("Pasted from clipboard"));
             }
         }
     }
@@ -1352,15 +1377,15 @@ fn select_all() {
     } else {
         // Rendered view: copy all content to clipboard as convenience
         anyui::clipboard_set(&file.content);
-        s.status_label.set_text("All content copied to clipboard");
+        s.status_label.set_text(i18n::t("All content copied to clipboard"));
     }
 }
 
 fn update_status() {
     let s = app();
     if s.files.is_empty() {
-        s.path_label.set_text("No file open");
-        s.status_label.set_text("Ready");
+        s.path_label.set_text(i18n::t("No file open"));
+        s.status_label.set_text(i18n::t("Ready"));
         return;
     }
 
@@ -1368,7 +1393,7 @@ fn update_status() {
     let name = basename(&file.path);
     s.path_label.set_text(&file.path);
 
-    let status = anyos_std::format!("{} | {} file(s) open", name, s.files.len());
+    let status = anyos_std::format!("{} | {} {}", name, s.files.len(), i18n::t("file(s) open"));
     s.status_label.set_text(&status);
 }
 
@@ -1379,13 +1404,14 @@ fn main() {
         anyos_std::println!("mdview: failed to load libanyui.so");
         return;
     }
+    i18n::init();
 
     // Parse command line argument
     let mut args_buf = [0u8; 256];
     let arg_path = anyos_std::process::args(&mut args_buf).trim();
 
     // Create window
-    let win = anyui::Window::new("Markdown Viewer", -1, -1, 900, 600);
+    let win = anyui::Window::new(i18n::t("Markdown Viewer"), -1, -1, 900, 600);
 
     // ── Toolbar ──
     let toolbar = anyui::Toolbar::new();
@@ -1394,25 +1420,25 @@ fn main() {
     toolbar.set_color(COLOR_TOOLBAR);
     toolbar.set_padding(4, 4, 4, 4);
 
-    let btn_open = toolbar.add_icon_button("Open");
+    let btn_open = toolbar.add_icon_button(i18n::t("Open"));
     btn_open.set_size(60, 28);
     btn_open.set_icon(anyui::ICON_FOLDER_OPEN);
 
-    let btn_source = toolbar.add_icon_button("Source");
+    let btn_source = toolbar.add_icon_button(i18n::t("Source"));
     btn_source.set_size(70, 28);
     btn_source.set_icon(anyui::ICON_FILES);
 
-    let btn_save = toolbar.add_icon_button("Save");
+    let btn_save = toolbar.add_icon_button(i18n::t("Save"));
     btn_save.set_size(60, 28);
     btn_save.set_icon(anyui::ICON_SAVE);
 
-    let btn_save_as = toolbar.add_icon_button("Save As");
+    let btn_save_as = toolbar.add_icon_button(i18n::t("Save As"));
     btn_save_as.set_size(70, 28);
     btn_save_as.set_icon(anyui::ICON_SAVE_ALL);
 
     toolbar.add_separator();
 
-    let path_label = toolbar.add_label("No file open");
+    let path_label = toolbar.add_label(i18n::t("No file open"));
     path_label.set_text_color(TEXT_STATUS);
 
     win.add(&toolbar);
@@ -1431,7 +1457,7 @@ fn main() {
     status_bar.set_size(900, 24);
     status_bar.set_color(COLOR_STATUS);
 
-    let status_label = anyui::Label::new("Ready");
+    let status_label = anyui::Label::new(i18n::t("Ready"));
     status_label.set_position(8, 4);
     status_label.set_text_color(TEXT_STATUS);
     status_label.set_font_size(12);

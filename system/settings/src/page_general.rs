@@ -5,7 +5,7 @@
 
 use alloc::format;
 use alloc::string::String;
-use anyos_std::{env, kbd, process, sys};
+use anyos_std::{env, fs, i18n, kbd, process, sys};
 use libanyui_client as ui;
 use ui::Widget;
 
@@ -20,13 +20,14 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     panel.set_auto_size(true);
     panel.set_color(layout::bg());
 
-    layout::build_page_header(&panel, "General", "System preferences and identity");
+    layout::build_page_header(&panel, i18n::t("General"), i18n::t("System preferences and identity"));
 
     build_computer_info(&panel);
     build_hostname_card(&panel);
     build_user_card(&panel);
     build_preferences_card(&panel);
     build_keyboard_card(&panel);
+    build_language_card(&panel);
 
     parent.add(&panel);
     panel.id()
@@ -36,11 +37,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 
 fn build_computer_info(panel: &ui::View) {
     let card = layout::build_auto_card(panel);
-    layout::build_info_row(&card, "OS", "anyOS 1.0", true);
+    layout::build_info_row(&card, i18n::t("OS"), "anyOS 1.0", true);
     layout::build_separator(&card);
-    layout::build_info_row(&card, "Kernel", "x86_64-anyos", false);
+    layout::build_info_row(&card, i18n::t("Kernel"), "x86_64-anyos", false);
     layout::build_separator(&card);
-    layout::build_info_row(&card, "Architecture", "x86_64", false);
+    layout::build_info_row(&card, i18n::t("Architecture"), "x86_64", false);
 }
 
 // ── Hostname card ───────────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ fn build_hostname_card(panel: &ui::View) {
         "anyOS Computer"
     };
 
-    let row = layout::build_setting_row(&card, "Hostname", true);
+    let row = layout::build_setting_row(&card, i18n::t("Hostname"), true);
 
     let val_lbl = ui::Label::new(hostname);
     val_lbl.set_position(200, 12);
@@ -67,7 +68,7 @@ fn build_hostname_card(panel: &ui::View) {
     row.add(&val_lbl);
 
     let val_id = val_lbl.id();
-    let btn = ui::Button::new("Rename...");
+    let btn = ui::Button::new(i18n::t("Rename..."));
     btn.set_position(420, 8);
     btn.set_size(90, 28);
     btn.on_click(move |_| {
@@ -77,7 +78,7 @@ fn build_hostname_card(panel: &ui::View) {
 }
 
 fn open_rename_dialog(hostname_label_id: u32) {
-    let win = ui::Window::new("Rename Computer", -1, -1, 360, 180);
+    let win = ui::Window::new(i18n::t("Rename Computer"), -1, -1, 360, 180);
     let win_id = win.id();
 
     let root = ui::View::new();
@@ -85,7 +86,7 @@ fn open_rename_dialog(hostname_label_id: u32) {
     root.set_color(layout::bg());
 
     // Instruction
-    let instr = ui::Label::new("Enter a new name for this computer:");
+    let instr = ui::Label::new(i18n::t("Enter a new name for this computer:"));
     instr.set_dock(ui::DOCK_TOP);
     instr.set_size(320, 24);
     instr.set_font_size(13);
@@ -98,7 +99,7 @@ fn open_rename_dialog(hostname_label_id: u32) {
     tf.set_dock(ui::DOCK_TOP);
     tf.set_size(320, 28);
     tf.set_margin(20, 8, 20, 0);
-    tf.set_placeholder("Hostname");
+    tf.set_placeholder(i18n::t("Hostname"));
     // Pre-fill with current hostname
     let mut cur = [0u8; 64];
     let clen = sys::get_hostname(&mut cur);
@@ -119,7 +120,7 @@ fn open_rename_dialog(hostname_label_id: u32) {
     let lbl_id = hostname_label_id;
     let wid = win_id;
 
-    let ok_btn = ui::Button::new("Rename");
+    let ok_btn = ui::Button::new(i18n::t("Rename"));
     ok_btn.set_position(0, 0);
     ok_btn.set_size(100, 32);
     ok_btn.on_click(move |_| {
@@ -140,7 +141,7 @@ fn open_rename_dialog(hostname_label_id: u32) {
     btn_row.add(&ok_btn);
 
     let wid2 = win_id;
-    let cancel_btn = ui::Button::new("Cancel");
+    let cancel_btn = ui::Button::new(i18n::t("Cancel"));
     cancel_btn.set_position(110, 0);
     cancel_btn.set_size(100, 32);
     cancel_btn.on_click(move |_| {
@@ -173,12 +174,12 @@ fn build_user_card(panel: &ui::View) {
     } else {
         "root"
     };
-    layout::build_info_row(&card, "Username", username, true);
+    layout::build_info_row(&card, i18n::t("Username"), username, true);
     layout::build_separator(&card);
 
     // UID
     let uid_str = format!("{}", uid);
-    layout::build_info_row(&card, "UID", &uid_str, false);
+    layout::build_info_row(&card, i18n::t("UID"), &uid_str, false);
     layout::build_separator(&card);
 
     // Home directory
@@ -189,7 +190,7 @@ fn build_user_card(panel: &ui::View) {
     } else {
         "/tmp"
     };
-    layout::build_info_row(&card, "Home", home, false);
+    layout::build_info_row(&card, i18n::t("Home"), home, false);
 }
 
 // ── Preferences card ────────────────────────────────────────────────────────
@@ -198,13 +199,25 @@ fn build_preferences_card(panel: &ui::View) {
     let card = layout::build_auto_card(panel);
 
     // Dark Mode toggle
-    let dark_row = layout::build_setting_row(&card, "Dark Mode", true);
+    let dark_row = layout::build_setting_row(&card, i18n::t("Dark Mode"), true);
     let dark_on = ui::get_theme() == 0;
     let dark_toggle = layout::add_toggle_to_row(&dark_row, dark_on);
     dark_toggle.on_checked_changed(|e| {
         ui::set_theme(!e.checked);
         crate::invalidate_all_pages();
     });
+
+    layout::build_separator(&card);
+
+    // Sound toggle (UI only)
+    let sound_row = layout::build_setting_row(&card, i18n::t("Sound"), false);
+    layout::add_toggle_to_row(&sound_row, true);
+
+    layout::build_separator(&card);
+
+    // Notifications toggle (UI only)
+    let notif_row = layout::build_setting_row(&card, i18n::t("Notifications"), false);
+    layout::add_toggle_to_row(&notif_row, true);
 }
 
 // ── Keyboard layout card ────────────────────────────────────────────────────
@@ -222,7 +235,7 @@ fn build_keyboard_card(panel: &ui::View) {
     let current_id = kbd::get_layout();
 
     if count == 0 {
-        layout::build_info_row(&card, "Keyboard", "No layouts available", true);
+        layout::build_info_row(&card, i18n::t("Keyboard"), i18n::t("No layouts available"), true);
         return;
     }
 
@@ -243,7 +256,7 @@ fn build_keyboard_card(panel: &ui::View) {
 
     // Current layout info row
     let current_label = kbd::label_str(&layout_buf[selected_idx as usize].label);
-    layout::build_info_row(&card, "Keyboard", current_label, true);
+    layout::build_info_row(&card, i18n::t("Keyboard"), current_label, true);
     layout::build_separator(&card);
 
     // DropDown for layout selection
@@ -252,7 +265,7 @@ fn build_keyboard_card(panel: &ui::View) {
     row.set_size(552, 44);
     row.set_margin(24, 0, 24, 8);
 
-    let lbl = ui::Label::new("Layout");
+    let lbl = ui::Label::new(i18n::t("Layout"));
     lbl.set_position(0, 12);
     lbl.set_size(120, 20);
     lbl.set_text_color(layout::text());
@@ -279,4 +292,71 @@ fn build_keyboard_card(panel: &ui::View) {
 
     row.add(&dd);
     card.add(&row);
+}
+
+// ── Language card ──────────────────────────────────────────────────────────
+
+const LANG_CONF_PATH: &str = "/System/settings/language.conf";
+const LANG_CODES: [&str; 5] = ["en", "de", "fr", "it", "gsw"];
+const LANG_NAMES: &str = "English|Deutsch|Français|Italiano|Schwizerdütsch";
+
+fn build_language_card(panel: &ui::View) {
+    let card = layout::build_auto_card(panel);
+
+    // Determine currently active language
+    let current = i18n::lang();
+    let mut selected_idx: u32 = 0;
+    for (i, code) in LANG_CODES.iter().enumerate() {
+        if *code == current {
+            selected_idx = i as u32;
+            break;
+        }
+    }
+
+    layout::build_info_row(&card, i18n::t("Language"), LANG_CODES[selected_idx as usize], true);
+    layout::build_separator(&card);
+
+    // DropDown for language selection
+    let row = ui::View::new();
+    row.set_dock(ui::DOCK_TOP);
+    row.set_size(552, 44);
+    row.set_margin(24, 0, 24, 0);
+
+    let lbl = ui::Label::new(i18n::t("Language"));
+    lbl.set_position(0, 12);
+    lbl.set_size(120, 20);
+    lbl.set_text_color(layout::text());
+    lbl.set_font_size(13);
+    row.add(&lbl);
+
+    let dd = ui::DropDown::new(LANG_NAMES);
+    dd.set_position(130, 8);
+    dd.set_size(240, 28);
+    dd.set_selected_index(selected_idx);
+
+    // Hint label (hidden initially, shown after language switch)
+    let hint = ui::Label::new(i18n::t("Restart other apps to apply language change"));
+    hint.set_dock(ui::DOCK_TOP);
+    hint.set_size(552, 24);
+    hint.set_margin(24, 4, 24, 8);
+    hint.set_font_size(11);
+    hint.set_text_color(layout::accent());
+    hint.set_visible(false);
+
+    dd.on_selection_changed(move |e| {
+        let idx = e.index as usize;
+        if idx < LANG_CODES.len() {
+            let code = LANG_CODES[idx];
+            // Save to config file
+            let _ = fs::write_bytes(LANG_CONF_PATH, code.as_bytes());
+            // Set environment variable for current session
+            env::set("LANG", code);
+            // Immediately refresh the Settings app UI with the new language
+            crate::refresh_after_language_change();
+        }
+    });
+
+    row.add(&dd);
+    card.add(&row);
+    card.add(&hint);
 }

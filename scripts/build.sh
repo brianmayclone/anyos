@@ -95,23 +95,47 @@ fi
 CURRENT_VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
 IFS='.' read -r V_MAJOR V_MINOR V_PATCH <<< "$CURRENT_VERSION"
 
-case "$VER_MODE" in
-    patch)
-        V_PATCH=$((V_PATCH + 1))
-        ;;
-    minor)
-        V_MINOR=$((V_MINOR + 1))
-        V_PATCH=0
-        ;;
-    major)
-        V_MAJOR=$((V_MAJOR + 1))
-        V_MINOR=0
-        V_PATCH=0
-        ;;
-esac
+if [ "$VER_MODE" = "none" ]; then
+    # --nover: keep current version
+    export ANYOS_VERSION="${CURRENT_VERSION}"
+else
+    # Auto-detect: only increment if there are uncommitted git changes or
+    # if explicitly requesting a minor/major bump.
+    # For "patch" mode, skip the increment when there are no staged/unstaged changes.
+    HAS_CHANGES=0
+    if [ "$VER_MODE" = "patch" ]; then
+        if git -C "$PROJECT_DIR" diff --quiet HEAD 2>/dev/null && \
+           git -C "$PROJECT_DIR" diff --cached --quiet 2>/dev/null; then
+            HAS_CHANGES=0
+        else
+            HAS_CHANGES=1
+        fi
+    else
+        # minor/major always bump
+        HAS_CHANGES=1
+    fi
 
-export ANYOS_VERSION="${V_MAJOR}.${V_MINOR}.${V_PATCH}"
-echo "${ANYOS_VERSION}" > "$VERSION_FILE"
+    if [ "$HAS_CHANGES" -eq 1 ]; then
+        case "$VER_MODE" in
+            patch)
+                V_PATCH=$((V_PATCH + 1))
+                ;;
+            minor)
+                V_MINOR=$((V_MINOR + 1))
+                V_PATCH=0
+                ;;
+            major)
+                V_MAJOR=$((V_MAJOR + 1))
+                V_MINOR=0
+                V_PATCH=0
+                ;;
+        esac
+        export ANYOS_VERSION="${V_MAJOR}.${V_MINOR}.${V_PATCH}"
+        echo "${ANYOS_VERSION}" > "$VERSION_FILE"
+    else
+        export ANYOS_VERSION="${CURRENT_VERSION}"
+    fi
+fi
 echo "Version: ${ANYOS_VERSION}"
 
 # CMake flags

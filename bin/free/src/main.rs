@@ -4,10 +4,12 @@
 anyos_std::entry!(main);
 
 fn main() {
+    anyos_std::i18n::init();
+    let t = anyos_std::i18n::t;
     // Memory info (cmd=0): [total_frames:u32, free_frames:u32, heap_used:u32, heap_total:u32]
     let mut mem_buf = [0u8; 16];
     if anyos_std::sys::sysinfo(0, &mut mem_buf) != 0 {
-        anyos_std::println!("Failed to get memory info.");
+        anyos_std::println!("{}", t("Failed to get memory info."));
         return;
     }
 
@@ -20,9 +22,9 @@ fn main() {
     let free_kb = free * 4;
     let used_kb = total_kb - free_kb;
 
-    anyos_std::println!("              total        used        free");
-    anyos_std::println!("Mem:     {:>8} KiB {:>8} KiB {:>8} KiB", total_kb, used_kb, free_kb);
-    anyos_std::println!("Heap:    {:>8} KiB {:>8} KiB {:>8} KiB",
+    anyos_std::println!("         {:>12} {:>11} {:>11}", t("total"), t("used"), t("free"));
+    anyos_std::println!("{:<9}{:>8} KiB {:>8} KiB {:>8} KiB", t("Mem:"), total_kb, used_kb, free_kb);
+    anyos_std::println!("{:<9}{:>8} KiB {:>8} KiB {:>8} KiB", t("Heap:"),
         heap_total / 1024,
         heap_used / 1024,
         (heap_total - heap_used) / 1024,

@@ -3,7 +3,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{process, fs, users};
+use anyos_std::{i18n, process, fs, users};
 use libanyui_client as ui;
 use ui::Widget;
 
@@ -26,6 +26,7 @@ fn main() -> u32 {
     if !ui::init() {
         return 0;
     }
+    i18n::init();
 
     let (sw, sh) = ui::screen_size();
     let wx = ((sw as i32 - DIALOG_W as i32) / 2).max(0);
@@ -37,7 +38,7 @@ fn main() -> u32 {
         | ui::WIN_FLAG_NO_CLOSE
         | ui::WIN_FLAG_NO_MINIMIZE
         | ui::WIN_FLAG_NO_MAXIMIZE;
-    let win = ui::Window::new_with_flags("Login", wx, wy, DIALOG_W, DIALOG_H, flags);
+    let win = ui::Window::new_with_flags(i18n::t("Login"), wx, wy, DIALOG_W, DIALOG_H, flags);
 
     win.set_color(0xFFF0F0F0);
 
@@ -52,7 +53,7 @@ fn main() -> u32 {
     }
 
     // ── Welcome label ──
-    let welcome = ui::Label::new("Welcome to .anyOS");
+    let welcome = ui::Label::new(i18n::t("Welcome to .anyOS"));
     welcome.set_font_size(20);
     welcome.set_position(PAD, y_cursor);
     welcome.set_size(FIELD_W, 30);
@@ -61,21 +62,21 @@ fn main() -> u32 {
     y_cursor += 46;
 
     // ── Username ──
-    let user_lbl = ui::Label::new("Username");
+    let user_lbl = ui::Label::new(i18n::t("Username"));
     user_lbl.set_font_size(11);
     user_lbl.set_position(PAD, y_cursor);
     win.add(&user_lbl);
     y_cursor += 16;
 
     let user_field = ui::TextField::new();
-    user_field.set_placeholder("Enter username");
+    user_field.set_placeholder(i18n::t("Enter username"));
     user_field.set_position(PAD, y_cursor);
     user_field.set_size(FIELD_W, FIELD_H);
     win.add(&user_field);
     y_cursor += FIELD_H as i32 + 12;
 
     // ── Password ──
-    let pass_lbl = ui::Label::new("Password");
+    let pass_lbl = ui::Label::new(i18n::t("Password"));
     pass_lbl.set_font_size(11);
     pass_lbl.set_position(PAD, y_cursor);
     win.add(&pass_lbl);
@@ -83,14 +84,14 @@ fn main() -> u32 {
 
     let pass_field = ui::TextField::new();
     pass_field.set_password_mode(true);
-    pass_field.set_placeholder("Enter password");
+    pass_field.set_placeholder(i18n::t("Enter password"));
     pass_field.set_position(PAD, y_cursor);
     pass_field.set_size(FIELD_W, FIELD_H);
     win.add(&pass_field);
     y_cursor += FIELD_H as i32 + 16;
 
     // ── Login button ──
-    let login_btn = ui::Button::new("Log In");
+    let login_btn = ui::Button::new(i18n::t("Log In"));
     login_btn.set_position(PAD, y_cursor);
     login_btn.set_size(BTN_W, BTN_H);
     login_btn.set_state(0); // disabled initially (username empty)
@@ -226,8 +227,8 @@ fn attempt_login(uf_id: u32, pf_id: u32) -> bool {
     } else {
         ui::MessageBox::show(
             ui::MessageBoxType::Alert,
-            "Invalid username or password.\nPlease try again.",
-            Some("OK"),
+            i18n::t("Invalid username or password.\nPlease try again."),
+            Some(i18n::t("OK")),
         );
         false
     }

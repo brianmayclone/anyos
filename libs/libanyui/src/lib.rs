@@ -136,6 +136,9 @@ pub(crate) struct PopupInfo {
     /// If this popup was opened by a DropDown, its control ID.
     /// When the popup item is selected, the DropDown's state is updated.
     pub owner_dropdown: Option<ControlId>,
+    /// If this popup was opened by an AutoCompleteTextField, its control ID.
+    /// When the popup item is selected, the TextField's text is updated.
+    pub owner_autocomplete: Option<ControlId>,
 }
 
 // ── Global state (per-process, lives in .data/.bss of the .so) ───────
@@ -195,6 +198,11 @@ pub(crate) struct AnyuiState {
     /// Modifier flags from the most recent KEY_DOWN event.
     pub last_modifiers: u32,
 
+    // ── Tracked modifier state (safety net for modifier loss) ──────
+    /// Modifier bits tracked independently from KEY_DOWN/KEY_UP keycode
+    /// observations.  Merged (OR'd) with each event's own `modifiers`
+    /// field before dispatching to controls.
+    pub tracked_modifiers: u32,
     /// Current cursor shape sent to compositor (0=Arrow, 1=ResizeEW, 2=ResizeNS).
     /// Tracked to avoid redundant CMD_SET_CURSOR messages.
     pub current_cursor: u32,
@@ -290,6 +298,7 @@ pub extern "C" fn anyui_init() -> u32 {
             last_keycode: 0,
             last_char_code: 0,
             last_modifiers: 0,
+            tracked_modifiers: 0,
             current_cursor: 0,
             on_window_opened: None,
             on_window_closed: None,
@@ -819,6 +828,15 @@ fn as_textfield(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::textfield:
     }
 }
 
+fn as_autocomplete_textfield(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::autocomplete_textfield::AutoCompleteTextField> {
+    if ctrl.kind() == ControlKind::AutoCompleteTextField {
+        let raw: *mut dyn Control = &mut **ctrl;
+        Some(unsafe { &mut *(raw as *mut controls::autocomplete_textfield::AutoCompleteTextField) })
+    } else {
+        None
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn anyui_textfield_set_prefix(id: ControlId, icon_code: u32) {
     let st = state();
@@ -886,6 +904,23 @@ pub extern "C" fn anyui_textfield_select_all(id: ControlId) {
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tf) = as_textfield(ctrl) {
             tf.select_all();
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_autocomplete_set_suggestions(id: ControlId, text: *const u8, len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(actf) = as_autocomplete_textfield(ctrl) {
+            let new_text = if !text.is_null() && len > 0 {
+                unsafe { core::slice::from_raw_parts(text, len as usize) }
+            } else {
+                &[]
+            };
+            actf.suggestions.clear();
+            actf.suggestions.extend_from_slice(new_text);
+            actf.text_base.base.mark_dirty();
         }
     }
 }

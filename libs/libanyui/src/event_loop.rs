@@ -640,6 +640,7 @@ pub fn run_once() -> u32 {
                                                         margin,  // logical — used for hit-testing and render offset
                                                         dirty: true,
                                                         owner_dropdown: None,
+                                                        owner_autocomplete: None,
                                                     });
                                                 }
                                             }
@@ -741,6 +742,7 @@ pub fn run_once() -> u32 {
                                                             margin,  // logical — used for hit-testing and render offset
                                                             dirty: true,
                                                             owner_dropdown: Some(target_id),
+                                                            owner_autocomplete: None,
                                                         });
                                                     }
                                                 }
@@ -811,7 +813,27 @@ pub fn run_once() -> u32 {
                     // arg1=scancode, arg2=char_code, arg3=modifiers
                     let keycode = ev[2];
                     let char_code = ev[3];
-                    let modifiers = ev[4];
+                    let raw_modifiers = ev[4];
+
+                    // Track modifier keys from their scancodes (safety net
+                    // in case the event's modifier field is wrong/stale).
+                    // PS/2: Left Ctrl = 0x1D, Right Ctrl = 0x1D (E0-prefixed
+                    //   → different scancode after encode_scancode only for
+                    //   nav keys; Ctrl passes through as 0x1D).
+                    // VNC/HID: 'z' = 0x1D collision — but char_code will be
+                    //   non-zero for letters, so we only set tracked_ctrl
+                    //   when char_code == 0 (modifier-only key event).
+                    if char_code == 0 {
+                        if keycode == 0x1D { // Left/Right Ctrl scancode
+                            st.tracked_modifiers |= control::MOD_CTRL;
+                        }
+                        if keycode == 0x2A || keycode == 0x36 { // Shift scancodes
+                            st.tracked_modifiers |= control::MOD_SHIFT;
+                        }
+                    }
+
+                    // Merge tracked modifiers with event-reported modifiers
+                    let modifiers = raw_modifiers | st.tracked_modifiers;
 
                     // Store last key event info for queryable API
                     st.last_keycode = keycode;
@@ -848,6 +870,20 @@ pub fn run_once() -> u32 {
                         } else {
                             // Bubble unhandled key events to the window
                             fire_event_callback(&st.controls, win_id, control::EVENT_KEY, &mut pending_cbs);
+                        }
+                    }
+                }
+
+                compositor::EVT_KEY_UP => {
+                    // Track modifier key releases to clear tracked_modifiers.
+                    let keycode = ev[2];
+                    let char_code = ev[3];
+                    if char_code == 0 {
+                        if keycode == 0x1D {
+                            st.tracked_modifiers &= !control::MOD_CTRL;
+                        }
+                        if keycode == 0x2A || keycode == 0x36 {
+                            st.tracked_modifiers &= !control::MOD_SHIFT;
                         }
                     }
                 }
@@ -1505,8 +1541,14 @@ fn render_tree(
     }
 
     // ScrollView: render scrollbar AFTER children so it isn't painted over.
+    // Clip to the ScrollView's own physical bounds so the scrollbar never
+    // bleeds outside the container (e.g. over DOCK_BOTTOM siblings).
     if controls[idx].kind() == ControlKind::ScrollView {
-        controls[idx].render(surface, parent_abs_x, parent_abs_y);
+        let (cx, cy) = controls[idx].position();
+        let (cw, ch) = controls[idx].size();
+        let p = crate::draw::scale_bounds(parent_abs_x, parent_abs_y, cx, cy, cw, ch);
+        let sv_surface = surface.with_clip(p.x, p.y, p.w, p.h);
+        controls[idx].render(&sv_surface, parent_abs_x, parent_abs_y);
     }
 }
 
