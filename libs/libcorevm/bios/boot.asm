@@ -70,6 +70,30 @@ bios_print_dec16:
     ret
 
 ; ---------------------------------------------------------------------------
+; bios_print_hex16 — Print a 16-bit hex value (4 hex digits).
+;   Input: AX = value.
+; ---------------------------------------------------------------------------
+bios_print_hex16:
+    push ax
+    mov al, ah          ; High byte first
+    call bios_print_hex8
+    pop ax
+    call bios_print_hex8  ; Low byte (AL from original AX)
+    ret
+
+; ---------------------------------------------------------------------------
+; bios_print_hex32 — Print a 32-bit hex value (8 hex digits).
+;   Input: EAX = value.
+; ---------------------------------------------------------------------------
+bios_print_hex32:
+    push eax
+    shr eax, 16
+    call bios_print_hex16   ; High 16 bits
+    pop eax
+    call bios_print_hex16   ; Low 16 bits (AX = lower 16 of original EAX)
+    ret
+
+; ---------------------------------------------------------------------------
 ; bios_print_hex8 — Print an 8-bit hex value.
 ;   Input: AL = value.
 ; ---------------------------------------------------------------------------

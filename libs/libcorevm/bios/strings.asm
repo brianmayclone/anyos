@@ -15,3 +15,9 @@ str_booting_hd:     db 'Booting from hard disk...', 13, 10, 0
 str_booting_cd:     db 'Booting from CD-ROM...', 13, 10, 0
 str_no_boot:        db 'No bootable device found!', 13, 10, 0
 str_crlf:           db 13, 10, 0
+str_et_rba:         db 'ET rba=', 0
+str_et_cnt:         db ' cnt=', 0
+str_et_seg:         db ' seg=', 0
+str_et_emul:        db ' emul=', 0
+str_et_load:        db 13, 10, 'Loading boot image...', 13, 10, 0
+str_et_loaded:      db 'Boot image loaded. Jumping.', 13, 10, 0

@@ -1251,6 +1251,18 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 /// Trampoline: runs as a kernel thread, then transitions to user mode.
 /// At this point, context_switch.asm has already loaded our CR3 (user PD).
 extern "C" fn user_thread_trampoline() {
+    // DIAG: write 'D' to PL011 UART immediately (before any Rust runtime)
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!(
+            "ldr {tmp}, =0xFFFF0000C9000000",
+            "mov {ch:w}, #68",
+            "strb {ch:w}, [{tmp}]",
+            tmp = out(reg) _,
+            ch = out(reg) _,
+            options(nostack),
+        );
+    }
     // New threads are first context-switched in from a timer IRQ handler,
     // which runs with PSTATE.I=1 (interrupts masked). Re-enable interrupts
     // so timer ticks continue firing while this thread runs.

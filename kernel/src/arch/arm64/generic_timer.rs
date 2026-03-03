@@ -41,13 +41,18 @@ pub fn init() {
 /// Timer IRQ handler — reprogram timer and increment tick count.
 pub fn irq_handler() {
     // Increment tick counter
-    TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+    let tick = TICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
     // Reprogram timer for next tick
     let freq = TIMER_FREQ.load(Ordering::Relaxed) as u64;
     let tval = freq / TICK_HZ as u64;
     unsafe {
         core::arch::asm!("msr cntp_tval_el0, {}", in(reg) tval, options(nostack));
+    }
+
+    // Diagnostic: confirm timer ticks are firing (first few + every second)
+    if tick == 1 || tick == 10 || tick == 100 || tick % 1000 == 0 {
+        crate::serial_println!("  [TIMER] tick={}", tick);
     }
 }
 

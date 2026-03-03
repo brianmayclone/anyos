@@ -68,6 +68,10 @@ context_switch:
     cbnz    x11, .save_checksum
     str     x9, [x0, #304]      /* store checksum */
 
+    /* DIAG: write 'A' to PL011 UART (save phase done) */
+    ldr     x9, =0xFFFF0000C9000000
+    mov     x10, #65             /* 'A' */
+    strb    w10, [x9]
 
     /* ---- Restore new context ---- */
 
@@ -82,6 +86,11 @@ context_switch:
     dsb     ish
     isb
 .skip_ttbr:
+
+    /* DIAG: write 'B' to PL011 UART (TTBR0 switch done) */
+    ldr     x9, =0xFFFF0000C9000000
+    mov     x10, #66             /* 'B' */
+    strb    w10, [x9]
 
     /* Restore TPIDR_EL0 */
     ldr     x9, [x1, #280]
@@ -98,6 +107,11 @@ context_switch:
     ldp     x25, x26, [x1, #(25 * 8)]
     ldp     x27, x28, [x1, #(27 * 8)]
     ldp     x29, x30, [x1, #(29 * 8)]
+
+    /* DIAG: write 'C' to PL011 UART (about to ret) */
+    ldr     x9, =0xFFFF0000C9000000
+    mov     x10, #67             /* 'C' */
+    strb    w10, [x9]
 
     /* Return to saved PC (which is in x30/LR for cooperative switch) */
     ret

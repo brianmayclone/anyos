@@ -234,35 +234,48 @@ int13h_handler:
     push ds
     push si
 
+    ; All BIOS variables live in segment 0 (written by POST with DS=0).
+    ; The boot image may call us with DS set to its own segment, so we
+    ; save caller's DS in BX (already pushed; used as scratch here) and
+    ; zero DS before touching any BIOS variable.
+    ; DAP fields ([si+N]) are read via ES after loading caller's DS there.
+    mov bx, ds
+    xor ax, ax
+    mov ds, ax
+
     cmp byte [ide_master_present], 0
-    je .ext_read_fail
+    je .ext_read_fail_pop          ; FIX: was .ext_read_fail — stack already pushed
 
     cmp dl, 0x80
     je .ext_read_hdd
     cmp dl, 0xE0
     je .ext_read_cd
-    jmp .ext_read_fail
+    jmp .ext_read_fail_pop         ; FIX: was .ext_read_fail — stack already pushed
 
 .ext_read_hdd:
-    ; Standard 512-byte sector read.
-    movzx ecx, word [si + 2]   ; Sector count (512-byte sectors)
-    mov di, [si + 4]            ; Buffer offset
-    mov ax, [si + 6]            ; Buffer segment
-    mov es, ax
-    mov eax, [si + 8]           ; LBA (512-byte sector units)
+    ; Read DAP fields via caller's DS (saved in BX), using ES as proxy segment.
+    push bx
+    pop es                          ; ES = caller's DS
+    movzx ecx, word [es:si + 2]    ; Sector count (512-byte sectors)
+    mov di, [es:si + 4]            ; Buffer offset
+    mov bx, [es:si + 6]            ; Buffer segment
+    mov eax, [es:si + 8]           ; LBA (512-byte sector units)
+    mov es, bx                      ; ES = buffer segment
     call ide_read_sectors
     jc .ext_read_fail_pop
     jmp .ext_read_ok
 
 .ext_read_cd:
-    ; CD-ROM 2048-byte sector read: translate ISO sector → ATA sector (×4).
-    movzx ecx, word [si + 2]   ; ISO sector count
-    shl ecx, 2                  ; × 4 → 512-byte ATA sector count
-    mov di, [si + 4]            ; Buffer offset
-    mov ax, [si + 6]            ; Buffer segment
-    mov es, ax
-    mov eax, [si + 8]           ; ISO LBA (2048-byte sector units)
-    shl eax, 2                  ; × 4 → ATA LBA
+    ; CD-ROM: DAP LBA and count are in 2048-byte ISO sector units → ×4 for ATA.
+    push bx
+    pop es                          ; ES = caller's DS
+    movzx ecx, word [es:si + 2]    ; ISO sector count
+    shl ecx, 2                      ; × 4 → 512-byte ATA sector count
+    mov di, [es:si + 4]            ; Buffer offset
+    mov bx, [es:si + 6]            ; Buffer segment
+    mov eax, [es:si + 8]           ; ISO LBA (2048-byte sector units)
+    shl eax, 2                      ; × 4 → ATA LBA
+    mov es, bx                      ; ES = buffer segment
     call ide_read_sectors
     jc .ext_read_fail_pop
 
@@ -434,38 +447,47 @@ int13h_handler:
 ;   +18  (byte)  reserved (0)
 ; ---------------------------------------------------------------------------
 .get_cd_emul_status:
-    ; Only respond for drive 0xE0 (virtual CD) or if El Torito was booted.
+    ; Save caller's ES, then use ES to hold caller's DS for output-buffer
+    ; access (ES:SI replaces DS:SI), while we zero DS for BIOS variable reads.
+    push es
+    push ds
+    pop es              ; ES = caller's DS
+    xor ax, ax
+    mov ds, ax          ; DS = 0  — el_torito_* variables are in segment 0
+
     cmp byte [el_torito_present], 0
-    je .gcds_fail
+    je .gcds_fail_pop
 
-    ; Fill the 19-byte specification packet at DS:SI.
-    mov byte [si + 0],  0x13        ; Packet size
+    ; Fill the 19-byte specification packet at ES:SI (caller's DS:SI).
+    mov byte [es:si + 0],  0x13    ; Packet size
     mov al, [el_torito_emul]
-    mov [si + 1], al                ; Boot media type
+    mov [es:si + 1], al            ; Boot media type
     mov al, [el_torito_drive]
-    mov [si + 2], al                ; Drive number
-    mov byte [si + 3],  0x00        ; Controller index
+    mov [es:si + 2], al            ; Drive number
+    mov byte [es:si + 3],  0x00    ; Controller index
 
-    ; Load RBA (image start, CD-sector units).
     mov eax, [el_torito_rba]
-    mov [si + 4], eax
+    mov [es:si + 4], eax           ; Load RBA (CD-sector units)
 
-    mov word [si + 8],  0x0000      ; Device specification
-    mov word [si + 10], 0x0000      ; User buffer segment
+    mov word [es:si + 8],  0x0000  ; Device specification
+    mov word [es:si + 10], 0x0000  ; User buffer segment
 
     mov ax, [el_torito_load_seg]
-    mov [si + 12], ax               ; Load segment
+    mov [es:si + 12], ax           ; Load segment
 
     mov ax, [el_torito_count]
-    mov [si + 14], ax               ; Sector count
+    mov [es:si + 14], ax           ; Sector count
 
-    mov word [si + 16], 0x0000      ; CHS (unused for no-emulation)
-    mov byte [si + 18], 0x00        ; Reserved
+    mov word [es:si + 16], 0x0000  ; CHS (unused for no-emulation)
+    mov byte [es:si + 18], 0x00    ; Reserved
 
     xor ah, ah
     clc
+    pop es
     iret
 
+.gcds_fail_pop:
+    pop es
 .gcds_fail:
     mov ah, 0x01
     stc

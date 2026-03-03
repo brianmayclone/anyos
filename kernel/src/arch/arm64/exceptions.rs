@@ -51,9 +51,16 @@ pub fn register_irq(irq: u32, handler: fn()) {
 ///
 /// Acknowledges the interrupt via GIC, dispatches to the registered handler,
 /// then sends EOI.
+/// Counter for diagnostic: only print first IRQ to avoid flooding serial.
+static IRQ_DIAG_COUNT: AtomicU64 = AtomicU64::new(0);
+
 #[no_mangle]
 pub extern "C" fn arm64_irq_handler() {
     let intid = super::gic::acknowledge();
+    let count = IRQ_DIAG_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count < 3 {
+        crate::serial_println!("  [IRQ] intid={} count={}", intid, count);
+    }
     if intid < 1020 { // Not spurious
         // EOI FIRST: the handler may context-switch (schedule_tick), which would
         // never return here. Without early EOI the interrupt stays active and
@@ -62,7 +69,11 @@ pub extern "C" fn arm64_irq_handler() {
         let handler = unsafe { IRQ_HANDLERS[intid as usize] };
         if let Some(h) = handler {
             h();
+        } else if count < 3 {
+            crate::serial_println!("  [IRQ] no handler for intid={}", intid);
         }
+    } else if count < 3 {
+        crate::serial_println!("  [IRQ] spurious intid={}", intid);
     }
 }
 

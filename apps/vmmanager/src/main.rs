@@ -165,6 +165,17 @@ struct SettingsDialog {
     boot_seg: anyui::SegmentedControl,
 }
 
+/// Controls used in the "Create Disk Image" dialog.
+struct CreateDiskDialog {
+    win: anyui::Window,
+    /// Text field displaying/editing the destination path.
+    path_field: anyui::TextField,
+    /// Text field for the disk size in MB.
+    size_field: anyui::TextField,
+    /// ID of the `disk_field` in the settings dialog to update after creation.
+    disk_field_id: u32,
+}
+
 /// A named folder in the sidebar tree containing VM UUIDs.
 struct FolderEntry {
     /// Display name of the folder.
@@ -231,6 +242,15 @@ struct AppState {
 
     // Settings dialog (created on demand)
     settings: Option<SettingsDialog>,
+
+    // Create Disk dialog (created on demand)
+    create_disk_dlg: Option<CreateDiskDialog>,
+
+    // Toolbar action button IDs (for enable/disable updates).
+    btn_start_id: u32,
+    btn_stop_id: u32,
+    btn_settings_id: u32,
+    btn_delete_id: u32,
 }
 
 static mut APP: Option<AppState> = None;
@@ -708,6 +728,22 @@ fn bytes_to_string(b: &[u8]) -> String {
 /// Builds folder nodes from `layout.folders`, then adds root-level VMs.
 /// Populates `node_map` so the selection handler can map node indices
 /// back to folders or VMs.
+/// Enable or disable toolbar action buttons based on the current selection state.
+///
+/// Start is enabled only when a stopped VM is selected.  Stop is enabled only
+/// when the selected VM is running.  Settings and Delete require any VM to be
+/// selected.
+fn update_toolbar_buttons() {
+    let a = app();
+    let has_vm = a.selected_vm < a.vms.len();
+    let is_running = has_vm && a.vms[a.selected_vm].state == VmState::Running;
+
+    anyui::Control::from_id(a.btn_start_id).set_enabled(has_vm && !is_running);
+    anyui::Control::from_id(a.btn_stop_id).set_enabled(has_vm && is_running);
+    anyui::Control::from_id(a.btn_settings_id).set_enabled(has_vm);
+    anyui::Control::from_id(a.btn_delete_id).set_enabled(has_vm);
+}
+
 fn rebuild_sidebar() {
     let a = app();
 
@@ -755,6 +791,8 @@ fn rebuild_sidebar() {
     for &vi in &root_vm_indices {
         add_vm_node(a, root, vi);
     }
+
+    update_toolbar_buttons();
 }
 
 /// Add a VM node to the tree under `parent` and record it in `node_map`.
@@ -968,6 +1006,7 @@ fn start_selected_vm() {
     rebuild_sidebar();
     update_info_labels();
     update_status_bar();
+    update_toolbar_buttons();
 }
 
 /// Parse a "created <vm_id> <shm_id>" response and map SHM.
@@ -1030,6 +1069,7 @@ fn stop_selected_vm() {
     rebuild_sidebar();
     update_info_labels();
     update_status_bar();
+    update_toolbar_buttons();
 }
 
 /// Clean up IPC resources for a VM entry.
@@ -1451,6 +1491,176 @@ fn keycode_to_scancode(keycode: u32) -> u8 {
     }
 }
 
+// ── Create Disk Image dialog ────────────────────────────────────────────
+
+/// Open the "Create Disk Image" dialog.
+///
+/// `disk_field_id` is the ID of the `disk_field` TextField in the settings
+/// dialog; after a successful disk creation the field is updated with the new
+/// image path.
+fn open_create_disk_dialog(disk_field_id: u32) {
+    let a = app();
+
+    // Close any existing create-disk dialog first.
+    if a.create_disk_dlg.is_some() {
+        close_create_disk_dialog();
+    }
+
+    let win = anyui::Window::new("Create Disk Image", -1, -1, 420, 210);
+
+    let content = anyui::View::new();
+    content.set_dock(anyui::DOCK_FILL);
+    content.set_color(0xFF1E1E1E);
+
+    // Path row.
+    let path_lbl = anyui::Label::new("Path:");
+    path_lbl.set_position(16, 18);
+    path_lbl.set_size(70, 24);
+    path_lbl.set_text_color(0xFFE6E6E6);
+    content.add(&path_lbl);
+
+    let path_field = anyui::TextField::new();
+    path_field.set_position(90, 14);
+    path_field.set_size(226, 28);
+    path_field.set_placeholder("/Users/Shared/vmmanager/disk.img");
+    content.add(&path_field);
+
+    let path_browse = anyui::Button::new("Browse…");
+    path_browse.set_position(320, 14);
+    path_browse.set_size(80, 28);
+    content.add(&path_browse);
+
+    // Size row.
+    let size_lbl = anyui::Label::new("Size:");
+    size_lbl.set_position(16, 60);
+    size_lbl.set_size(70, 24);
+    size_lbl.set_text_color(0xFFE6E6E6);
+    content.add(&size_lbl);
+
+    let size_field = anyui::TextField::new();
+    size_field.set_position(90, 56);
+    size_field.set_size(100, 28);
+    size_field.set_text("512");
+    content.add(&size_field);
+
+    let unit_lbl = anyui::Label::new("MB (sparse, not pre-allocated)");
+    unit_lbl.set_position(196, 60);
+    unit_lbl.set_size(210, 24);
+    unit_lbl.set_text_color(0xFF888888);
+    unit_lbl.set_font_size(11);
+    content.add(&unit_lbl);
+
+    // Buttons.
+    let create_btn = anyui::Button::new("Create");
+    create_btn.set_position(218, 162);
+    create_btn.set_size(80, 30);
+    content.add(&create_btn);
+
+    let cancel_btn = anyui::Button::new("Cancel");
+    cancel_btn.set_position(308, 162);
+    cancel_btn.set_size(80, 30);
+    content.add(&cancel_btn);
+
+    win.add(&content);
+
+    // Wire up Browse: open save-file dialog and fill path field.
+    let path_field_id = path_field.id();
+    path_browse.on_click(move |_| {
+        if let Some(path) = anyui::FileDialog::save_file("disk.img") {
+            anyui::Control::from_id(path_field_id).set_text(&path);
+        }
+    });
+
+    // Wire up Create button.
+    create_btn.on_click(|_| {
+        do_create_disk();
+    });
+
+    // Wire up Cancel and window close.
+    cancel_btn.on_click(|_| {
+        close_create_disk_dialog();
+    });
+    win.on_close(|_| {
+        close_create_disk_dialog();
+    });
+
+    a.create_disk_dlg = Some(CreateDiskDialog {
+        win,
+        path_field,
+        size_field,
+        disk_field_id,
+    });
+}
+
+/// Create the sparse disk image from the values entered in the create-disk
+/// dialog and update the settings dialog's disk field.
+///
+/// The image is created as a sparse (not pre-allocated) flat file: a valid
+/// 512-byte MBR sector is written at the start, then the file is extended to
+/// the requested size by seeking to the last byte and writing a single zero.
+/// On filesystems that support sparse files the intermediate region will not
+/// consume physical disk space.
+fn do_create_disk() {
+    let a = app();
+    let dlg = match a.create_disk_dlg.as_ref() {
+        Some(d) => d,
+        None => return,
+    };
+
+    // Read destination path.
+    let mut path_buf = [0u8; 257];
+    let path_len = dlg.path_field.get_text(&mut path_buf);
+    if path_len == 0 {
+        return;
+    }
+    let path = bytes_to_string(&path_buf[..path_len as usize]);
+
+    // Read size (MB), clamp to 1–2047 MB so the i32 seek doesn't overflow.
+    let mut size_buf = [0u8; 16];
+    let size_len = dlg.size_field.get_text(&mut size_buf);
+    let size_mb = parse_u32(&size_buf[..size_len as usize])
+        .unwrap_or(512)
+        .max(1)
+        .min(2047);
+
+    let disk_field_id = dlg.disk_field_id;
+
+    // Create the file (truncate if it already exists).
+    let fd = fs::open(&path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd == u32::MAX {
+        return;
+    }
+
+    // Write a minimal MBR header (zeros + 0x55AA boot signature).
+    let mut header = [0u8; 512];
+    header[510] = 0x55;
+    header[511] = 0xAA;
+    fs::write(fd, &header);
+
+    // Extend to full size by seeking to the last byte and writing a zero.
+    // SEEK_CUR skips past the 512 bytes already written.
+    let seek_bytes = (size_mb as i32) * 1024 * 1024 - 512 - 1;
+    if seek_bytes > 0 {
+        fs::lseek(fd, seek_bytes, fs::SEEK_CUR);
+    }
+    fs::write(fd, &[0u8]);
+
+    fs::close(fd);
+
+    // Update the disk_field in the settings dialog.
+    anyui::Control::from_id(disk_field_id).set_text(&path);
+
+    close_create_disk_dialog();
+}
+
+/// Close and destroy the create-disk dialog.
+fn close_create_disk_dialog() {
+    let a = app();
+    if let Some(dlg) = a.create_disk_dlg.take() {
+        dlg.win.destroy();
+    }
+}
+
 // ── Settings dialog ────────────────────────────────────────────────────
 
 /// Open the settings dialog for the currently selected VM.
@@ -1471,7 +1681,8 @@ fn open_settings_dialog() {
 
     let config = a.vms[a.selected_vm].config.clone();
 
-    let win = anyui::Window::new("VM Settings", -1, -1, 420, 380);
+    // Dialog is wider (480 px) to accommodate Browse / Create buttons.
+    let win = anyui::Window::new("VM Settings", -1, -1, 480, 380);
 
     // Content area.
     let content = anyui::View::new();
@@ -1487,7 +1698,7 @@ fn open_settings_dialog() {
 
     let name_field = anyui::TextField::new();
     name_field.set_position(100, 12);
-    name_field.set_size(300, 28);
+    name_field.set_size(360, 28);
     name_field.set_text(&config.name);
     content.add(&name_field);
 
@@ -1502,18 +1713,19 @@ fn open_settings_dialog() {
     let slider_val = ((config.ram_mb.saturating_sub(16)) * 100 / 496).min(100);
     let ram_slider = anyui::Slider::new(slider_val);
     ram_slider.set_position(100, 56);
-    ram_slider.set_size(220, 24);
+    ram_slider.set_size(280, 24);
     content.add(&ram_slider);
 
     let mut rbuf = [0u8; 16];
     let ram_text = fmt_label_val(&mut rbuf, "", config.ram_mb, " MB");
     let ram_value_label = anyui::Label::new(ram_text);
-    ram_value_label.set_position(330, 56);
+    ram_value_label.set_position(390, 56);
     ram_value_label.set_size(70, 24);
     ram_value_label.set_text_color(0xFFE6E6E6);
     content.add(&ram_value_label);
 
-    // Disk image path.
+    // ── Disk image row ────────────────────────────────────────────────
+    // Layout (x=100 … x=460):  field(210) | Browse(60) | Create(68)
     let disk_lbl = anyui::Label::new("Disk:");
     disk_lbl.set_position(16, 100);
     disk_lbl.set_size(80, 24);
@@ -1522,12 +1734,23 @@ fn open_settings_dialog() {
 
     let disk_field = anyui::TextField::new();
     disk_field.set_position(100, 96);
-    disk_field.set_size(300, 28);
+    disk_field.set_size(210, 28);
     disk_field.set_text(&config.disk_image);
     disk_field.set_placeholder("/path/to/disk.img");
     content.add(&disk_field);
 
-    // ISO image path.
+    let disk_browse = anyui::Button::new("Browse…");
+    disk_browse.set_position(314, 96);
+    disk_browse.set_size(66, 28);
+    content.add(&disk_browse);
+
+    let disk_create = anyui::Button::new("New…");
+    disk_create.set_position(384, 96);
+    disk_create.set_size(68, 28);
+    content.add(&disk_create);
+
+    // ── ISO image row ─────────────────────────────────────────────────
+    // Layout (x=100 … x=460):  field(210) | Browse(60)
     let iso_lbl = anyui::Label::new("ISO:");
     iso_lbl.set_position(16, 144);
     iso_lbl.set_size(80, 24);
@@ -1536,10 +1759,15 @@ fn open_settings_dialog() {
 
     let iso_field = anyui::TextField::new();
     iso_field.set_position(100, 140);
-    iso_field.set_size(300, 28);
+    iso_field.set_size(210, 28);
     iso_field.set_text(&config.iso_image);
-    iso_field.set_placeholder("/path/to/image.iso");
+    iso_field.set_placeholder("/Users/Shared/vmmanager/iso/linux.iso");
     content.add(&iso_field);
+
+    let iso_browse = anyui::Button::new("Browse…");
+    iso_browse.set_position(314, 140);
+    iso_browse.set_size(66, 28);
+    content.add(&iso_browse);
 
     // Boot order.
     let boot_lbl = anyui::Label::new("Boot:");
@@ -1550,7 +1778,7 @@ fn open_settings_dialog() {
 
     let boot_seg = anyui::SegmentedControl::new("Disk|CD|Floppy");
     boot_seg.set_position(100, 184);
-    boot_seg.set_size(300, 28);
+    boot_seg.set_size(360, 28);
     let boot_idx = match config.boot_order {
         BootOrder::DiskFirst => 0u32,
         BootOrder::CdFirst => 1,
@@ -1561,12 +1789,12 @@ fn open_settings_dialog() {
 
     // Buttons.
     let save_btn = anyui::Button::new("Save");
-    save_btn.set_position(220, 330);
+    save_btn.set_position(280, 330);
     save_btn.set_size(80, 30);
     content.add(&save_btn);
 
     let cancel_btn = anyui::Button::new("Cancel");
-    cancel_btn.set_position(310, 330);
+    cancel_btn.set_position(370, 330);
     cancel_btn.set_size(80, 30);
     content.add(&cancel_btn);
 
@@ -1580,6 +1808,27 @@ fn open_settings_dialog() {
         let mut buf = [0u8; 16];
         let s = fmt_label_val(&mut buf, "", ram_mb, " MB");
         anyui::Control::from_id(ram_val_id).set_text(s);
+    });
+
+    // Browse for disk image: open existing file dialog.
+    let disk_field_id = disk_field.id();
+    disk_browse.on_click(move |_| {
+        if let Some(path) = anyui::FileDialog::open_file() {
+            anyui::Control::from_id(disk_field_id).set_text(&path);
+        }
+    });
+
+    // Create new disk image: open the create-disk dialog.
+    disk_create.on_click(move |_| {
+        open_create_disk_dialog(disk_field_id);
+    });
+
+    // Browse for ISO: open existing file dialog.
+    let iso_field_id = iso_field.id();
+    iso_browse.on_click(move |_| {
+        if let Some(path) = anyui::FileDialog::open_file() {
+            anyui::Control::from_id(iso_field_id).set_text(&path);
+        }
     });
 
     // Save button handler.
@@ -1991,6 +2240,11 @@ fn main() {
             selected_vm: 0,
             layout,
             settings: None,
+            create_disk_dlg: None,
+            btn_start_id: btn_start.id(),
+            btn_stop_id: btn_stop.id(),
+            btn_settings_id: btn_settings.id(),
+            btn_delete_id: btn_delete.id(),
         });
     }
 
@@ -2013,6 +2267,7 @@ fn main() {
                 if vm_idx < a.vms.len() && a.selected_vm != vm_idx {
                     a.selected_vm = vm_idx;
                     update_info_labels();
+                    update_toolbar_buttons();
 
                     if a.vms[vm_idx].state != VmState::Running {
                         a.canvas.clear(0xFF0A0A14);
