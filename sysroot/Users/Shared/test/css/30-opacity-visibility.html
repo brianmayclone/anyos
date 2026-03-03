@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CSS Test 30: Opacity and Visibility</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .vis-box {
+    padding: 12px;
+    margin: 6px 0;
+    border-radius: 4px;
+    font-size: 14px;
+    display: inline-block;
+    width: 180px;
+    text-align: center;
+    vertical-align: top;
+  }
+
+  /* Test 1: Opacity values */
+  .test-area.test-opacity .op-100 {
+    opacity: 1;
+    background: #ff6b6b;
+  }
+  .test-area.test-opacity .op-75 {
+    opacity: 0.75;
+    background: #ff6b6b;
+  }
+  .test-area.test-opacity .op-50 {
+    opacity: 0.5;
+    background: #ff6b6b;
+  }
+  .test-area.test-opacity .op-25 {
+    opacity: 0.25;
+    background: #ff6b6b;
+  }
+  .test-area.test-opacity .op-0 {
+    opacity: 0;
+    background: #ff6b6b;
+  }
+
+  /* Test 2: Opacity 0 still in layout */
+  .test-area.test-opacity-layout .layout-item {
+    display: inline-block;
+    width: 100px;
+    height: 50px;
+    margin: 4px;
+    border-radius: 4px;
+    text-align: center;
+    line-height: 50px;
+    font-size: 12px;
+  }
+
+  /* Test 3: visibility */
+  .test-area.test-visibility .vis-visible {
+    visibility: visible;
+    background: #4ecdc4;
+    padding: 10px;
+    margin: 4px;
+    display: inline-block;
+    border-radius: 4px;
+  }
+  .test-area.test-visibility .vis-hidden {
+    visibility: hidden;
+    background: #4ecdc4;
+    padding: 10px;
+    margin: 4px;
+    display: inline-block;
+    border-radius: 4px;
+  }
+
+  /* Test 4: display none vs visibility hidden */
+  .test-area.test-display-vs-vis .item-row {
+    margin: 6px 0;
+    padding: 6px;
+    background: #1a2a3a;
+    border-radius: 4px;
+  }
+  .test-area.test-display-vs-vis .d-none {
+    display: none;
+  }
+  .test-area.test-display-vs-vis .v-hidden {
+    visibility: hidden;
+  }
+
+  /* Test 5: Opacity on parent */
+  .test-area.test-parent-opacity .parent-op {
+    padding: 15px;
+    border-radius: 6px;
+    margin: 8px 0;
+  }
+  .test-area.test-parent-opacity .parent-full {
+    opacity: 1;
+    background: #3a1a2a;
+  }
+  .test-area.test-parent-opacity .parent-half {
+    opacity: 0.5;
+    background: #3a1a2a;
+  }
+  .test-area.test-parent-opacity .parent-quarter {
+    opacity: 0.25;
+    background: #3a1a2a;
+  }
+  .test-area.test-parent-opacity .child-element {
+    background: #ff6b6b;
+    padding: 8px;
+    border-radius: 4px;
+    color: white;
+    font-weight: bold;
+  }
+
+  /* Test 6: Opacity with colored backgrounds */
+  .test-area.test-opacity-colors .color-row {
+    margin: 6px 0;
+  }
+  .test-area.test-opacity-colors .color-swatch {
+    display: inline-block;
+    width: 80px;
+    height: 50px;
+    margin: 2px;
+    border-radius: 4px;
+    text-align: center;
+    line-height: 50px;
+    font-size: 11px;
+    color: white;
+    font-weight: bold;
+  }
+
+  /* Test 7: Opacity stacking */
+  .test-area.test-opacity-stack .stack-container {
+    position: relative;
+    height: 120px;
+    margin: 6px 0;
+  }
+  .test-area.test-opacity-stack .stack-layer {
+    position: absolute;
+    width: 200px;
+    height: 80px;
+    border-radius: 6px;
+    padding: 8px;
+    font-size: 12px;
+  }
+
+  /* Test 8: Visibility inherit on child */
+  .test-area.test-vis-inherit .parent-hidden {
+    visibility: hidden;
+    background: #3a1a2a;
+    padding: 15px;
+    border: 2px solid #ff6b6b;
+    border-radius: 6px;
+    margin: 6px 0;
+  }
+  .test-area.test-vis-inherit .child-visible {
+    visibility: visible;
+    background: #1a3a1a;
+    padding: 8px;
+    border: 1px solid #4ecdc4;
+    border-radius: 4px;
+    color: #4ecdc4;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 30: Opacity and Visibility</h1>
+
+<!-- Test 1: Opacity values -->
+<div class="test-group">
+  <h2>Test 1: Opacity Values (1.0, 0.75, 0.5, 0.25, 0)</h2>
+  <div class="expected">Expected: Five red boxes with decreasing opacity. opacity:1 = fully opaque red. opacity:0.75 = slightly see-through. opacity:0.5 = half transparent (background shows through). opacity:0.25 = mostly transparent. opacity:0 = completely invisible (but space is preserved).</div>
+  <div class="test-area test-opacity">
+    <div class="vis-box op-100">opacity: 1.0</div>
+    <div class="vis-box op-75">opacity: 0.75</div>
+    <div class="vis-box op-50">opacity: 0.5</div>
+    <div class="vis-box op-25">opacity: 0.25</div>
+    <div class="vis-box op-0">opacity: 0 (invisible)</div>
+  </div>
+</div>
+
+<!-- Test 2: Opacity 0 still occupies layout space -->
+<div class="test-group">
+  <h2>Test 2: Opacity 0 - Invisible but Still in Layout</h2>
+  <div class="expected">Expected: Three boxes in a row. The middle box has opacity:0 and should be INVISIBLE, but it should still OCCUPY SPACE in the layout. Box 1 and Box 3 should NOT be adjacent - there should be a gap where Box 2 is.</div>
+  <div class="test-area test-opacity-layout">
+    <div class="layout-item" style="background: #ff6b6b;">Box 1</div>
+    <div class="layout-item" style="background: #4ecdc4; opacity: 0;">Box 2 (opacity:0)</div>
+    <div class="layout-item" style="background: #e2b93d;">Box 3</div>
+    <div style="margin-top: 8px; font-size: 13px; color: #888;">Box 2 is invisible (opacity:0) but still takes up space between Box 1 and Box 3.</div>
+  </div>
+</div>
+
+<!-- Test 3: visibility -->
+<div class="test-group">
+  <h2>Test 3: visibility: visible vs hidden</h2>
+  <div class="expected">Expected: Two boxes with visibility:visible should be fully visible teal boxes. Two boxes with visibility:hidden should be completely invisible BUT their space should be preserved in the layout (gaps where they would be).</div>
+  <div class="test-area test-visibility">
+    <div class="vis-visible">Visible</div>
+    <div class="vis-hidden">Hidden (invisible, space kept)</div>
+    <div class="vis-visible">Visible</div>
+    <div class="vis-hidden">Hidden (invisible, space kept)</div>
+    <div style="margin-top: 8px; font-size: 13px; color: #888;">The hidden boxes are invisible but their space is preserved (like opacity:0).</div>
+  </div>
+</div>
+
+<!-- Test 4: display:none vs visibility:hidden -->
+<div class="test-group">
+  <h2>Test 4: display:none vs visibility:hidden Comparison</h2>
+  <div class="expected">Expected: In the first group, Item B has display:none - it is completely removed from layout. Items A and C should be adjacent with no gap. In the second group, Item E has visibility:hidden - it is invisible but its space is preserved. Items D and F should have a visible gap between them.</div>
+  <div class="test-area test-display-vs-vis">
+    <strong style="color: #ff6b6b;">display: none (removed from layout):</strong>
+    <div class="item-row">Item A - visible</div>
+    <div class="item-row d-none">Item B - display:none (should NOT appear at all, no gap)</div>
+    <div class="item-row">Item C - visible (should be right after A, no gap)</div>
+
+    <br>
+    <strong style="color: #4ecdc4;">visibility: hidden (invisible but space preserved):</strong>
+    <div class="item-row">Item D - visible</div>
+    <div class="item-row v-hidden">Item E - visibility:hidden (invisible but space remains)</div>
+    <div class="item-row">Item F - visible (should have a gap above where E is)</div>
+  </div>
+</div>
+
+<!-- Test 5: Opacity on parent affects children -->
+<div class="test-group">
+  <h2>Test 5: Opacity on Parent Affecting Children</h2>
+  <div class="expected">Expected: When opacity is set on a parent, ALL children are also affected. The child cannot be MORE opaque than the parent. Parent at opacity:1 = child fully visible. Parent at opacity:0.5 = both parent and child are half-transparent. Parent at opacity:0.25 = both are very faint.</div>
+  <div class="test-area test-parent-opacity">
+    <div class="parent-op parent-full">
+      <div>Parent opacity: 1.0</div>
+      <div class="child-element">Child (fully visible because parent is opacity:1)</div>
+    </div>
+    <div class="parent-op parent-half">
+      <div>Parent opacity: 0.5</div>
+      <div class="child-element">Child (ALSO half-transparent because parent is opacity:0.5)</div>
+    </div>
+    <div class="parent-op parent-quarter">
+      <div>Parent opacity: 0.25</div>
+      <div class="child-element">Child (ALSO very faint because parent is opacity:0.25)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: Opacity with different colored backgrounds -->
+<div class="test-group">
+  <h2>Test 6: Opacity with Colored Backgrounds</h2>
+  <div class="expected">Expected: Three rows of color swatches. Each row shows the same color at opacity 1.0, 0.7, 0.4, and 0.1. The dark background should increasingly show through as opacity decreases, making each color appear to fade toward the background color.</div>
+  <div class="test-area test-opacity-colors">
+    <div class="color-row">
+      <strong style="font-size: 12px;">Red:</strong>
+      <div class="color-swatch" style="background: #ff6b6b; opacity: 1;">1.0</div>
+      <div class="color-swatch" style="background: #ff6b6b; opacity: 0.7;">0.7</div>
+      <div class="color-swatch" style="background: #ff6b6b; opacity: 0.4;">0.4</div>
+      <div class="color-swatch" style="background: #ff6b6b; opacity: 0.1;">0.1</div>
+    </div>
+    <div class="color-row">
+      <strong style="font-size: 12px;">Teal:</strong>
+      <div class="color-swatch" style="background: #4ecdc4; opacity: 1;">1.0</div>
+      <div class="color-swatch" style="background: #4ecdc4; opacity: 0.7;">0.7</div>
+      <div class="color-swatch" style="background: #4ecdc4; opacity: 0.4;">0.4</div>
+      <div class="color-swatch" style="background: #4ecdc4; opacity: 0.1;">0.1</div>
+    </div>
+    <div class="color-row">
+      <strong style="font-size: 12px;">Golden:</strong>
+      <div class="color-swatch" style="background: #e2b93d; opacity: 1;">1.0</div>
+      <div class="color-swatch" style="background: #e2b93d; opacity: 0.7;">0.7</div>
+      <div class="color-swatch" style="background: #e2b93d; opacity: 0.4;">0.4</div>
+      <div class="color-swatch" style="background: #e2b93d; opacity: 0.1;">0.1</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 7: Overlapping elements with opacity -->
+<div class="test-group">
+  <h2>Test 7: Overlapping Elements with Opacity</h2>
+  <div class="expected">Expected: Three overlapping positioned boxes. The bottom box is red at opacity 0.8. The middle box is teal at opacity 0.6, overlapping the red. The top box is golden at opacity 0.4. Where boxes overlap, the background color and underlying boxes should blend through the semi-transparent layers.</div>
+  <div class="test-area test-opacity-stack">
+    <div class="stack-container">
+      <div class="stack-layer" style="background: #ff6b6b; opacity: 0.8; left: 0; top: 0;">Red layer (opacity: 0.8)</div>
+      <div class="stack-layer" style="background: #4ecdc4; opacity: 0.6; left: 80px; top: 20px;">Teal layer (opacity: 0.6)</div>
+      <div class="stack-layer" style="background: #e2b93d; opacity: 0.4; left: 160px; top: 40px;">Golden layer (opacity: 0.4)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 8: visibility: hidden parent, visible child -->
+<div class="test-group">
+  <h2>Test 8: visibility:hidden Parent with visibility:visible Child</h2>
+  <div class="expected">Expected: The parent has visibility:hidden (invisible, but space preserved). The child inside it has visibility:visible, which OVERRIDES the parent's hidden state for that child only. The parent's border (red) should NOT be visible, but the child (green box with teal text) SHOULD be visible. This is different from opacity - a child CAN override visibility:hidden.</div>
+  <div class="test-area test-vis-inherit">
+    <div>Before the hidden parent (visible)</div>
+    <div class="parent-hidden">
+      Parent text (should be INVISIBLE - visibility:hidden)
+      <div class="child-visible">Child with visibility:visible - SHOULD be visible even though parent is hidden!</div>
+      More parent text (also invisible)
+    </div>
+    <div>After the hidden parent (visible). Note the gap above where the hidden parent occupies space.</div>
+  </div>
+</div>
+
+</body>
+</html>

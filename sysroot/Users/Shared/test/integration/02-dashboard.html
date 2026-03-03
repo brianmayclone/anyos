@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Integration Test 02: Admin Dashboard</title>
+  <style>
+    /* === Reset & Base === */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #d4d4d8;
+      font-family: sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    a { color: #4ecdc4; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* === Top Navigation Bar === */
+    /* Full-width bar with logo and links using flexbox */
+    .top-nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #0f3460;
+      padding: 0 20px;
+      height: 48px;
+      border-bottom: 1px solid #1a4a8a;
+    }
+    .top-nav .logo {
+      font-size: 18px;
+      font-weight: bold;
+      color: #f0f0f5;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .top-nav .logo .logo-icon {
+      width: 28px;
+      height: 28px;
+      background: #4ecdc4;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0f3460;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    .top-nav .nav-right {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+    .top-nav .nav-right a {
+      color: #a0b4d0;
+      font-size: 13px;
+    }
+    .top-nav .nav-right a:hover { color: #f0f0f5; }
+    .top-nav .user-badge {
+      background: #533483;
+      color: #f0f0f5;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: bold;
+    }
+
+    /* === Overall Page Layout: CSS Grid === */
+    /* sidebar (220px) + main content (1fr) */
+    .dashboard-layout {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      min-height: calc(100vh - 48px);
+    }
+
+    /* === Sidebar Navigation === */
+    /* Vertical list of links, fixed 220px width via grid */
+    .sidebar {
+      background: #16213e;
+      border-right: 1px solid #2a2a4a;
+      padding: 16px 0;
+    }
+    .sidebar-section {
+      margin-bottom: 24px;
+    }
+    .sidebar-section-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #6868a0;
+      padding: 0 16px;
+      margin-bottom: 8px;
+    }
+    .sidebar-link {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
+      color: #a0a0b8;
+      font-size: 13px;
+      border-left: 3px solid transparent;
+    }
+    .sidebar-link:hover {
+      background: #1a2a4e;
+      color: #f0f0f5;
+      text-decoration: none;
+    }
+    .sidebar-link.active {
+      background: #1a2a4e;
+      color: #4ecdc4;
+      border-left-color: #4ecdc4;
+    }
+    .sidebar-link .icon {
+      width: 18px;
+      height: 18px;
+      background: #2a2a4a;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      color: #8888a0;
+    }
+    .sidebar-link.active .icon {
+      background: #0f3460;
+      color: #4ecdc4;
+    }
+
+    /* === Main Content Area === */
+    .main-content {
+      padding: 24px;
+      overflow-y: auto;
+    }
+    .main-content .page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+    .main-content .page-header h1 {
+      font-size: 24px;
+      color: #f0f0f5;
+    }
+    .main-content .page-header .header-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: none;
+      font-size: 13px;
+      cursor: pointer;
+      font-family: sans-serif;
+    }
+    .btn-primary {
+      background: #4ecdc4;
+      color: #0a0a1e;
+      font-weight: bold;
+    }
+    .btn-secondary {
+      background: #2a2a4a;
+      color: #d4d4d8;
+      border: 1px solid #3a3a5a;
+    }
+
+    /* === Stat Cards Grid === */
+    /* 4 cards in a row using CSS Grid, each card has a number + label */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .stat-card .stat-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #8888a0;
+      margin-bottom: 8px;
+    }
+    .stat-card .stat-value {
+      font-size: 32px;
+      font-weight: bold;
+      color: #f0f0f5;
+      margin-bottom: 4px;
+    }
+    .stat-card .stat-change {
+      font-size: 12px;
+    }
+    .stat-change.positive { color: #6bff6b; }
+    .stat-change.negative { color: #ff6b6b; }
+
+    /* Color accents for individual stat cards */
+    .stat-card.accent-blue { border-top: 3px solid #4ecdc4; }
+    .stat-card.accent-red { border-top: 3px solid #ff6b6b; }
+    .stat-card.accent-yellow { border-top: 3px solid #ffd93d; }
+    .stat-card.accent-purple { border-top: 3px solid #9b59b6; }
+
+    /* === Two-Column Layout for Table and Chart === */
+    .content-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .content-grid.full-width {
+      grid-template-columns: 1fr;
+    }
+
+    /* === Data Table === */
+    .panel {
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 16px;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    .panel-header h2 {
+      font-size: 16px;
+      color: #f0f0f5;
+    }
+    .panel-body {
+      padding: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th {
+      text-align: left;
+      padding: 10px 16px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #8888a0;
+      background: #0f1a2e;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    td {
+      padding: 10px 16px;
+      font-size: 13px;
+      color: #c8c8d8;
+      border-bottom: 1px solid #1a2a4a;
+    }
+    /* Alternating row colors */
+    tr:nth-child(even) td {
+      background: #12203a;
+    }
+    tr:nth-child(odd) td {
+      background: #16213e;
+    }
+    tr:hover td {
+      background: #1a2a4e;
+    }
+
+    /* Status badges in table */
+    .status-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: bold;
+    }
+    .status-active { background: #1a3a1a; color: #6bff6b; }
+    .status-pending { background: #3a3a1a; color: #ffd93d; }
+    .status-inactive { background: #3a1a1a; color: #ff6b6b; }
+
+    /* === Chart Placeholder === */
+    .chart-placeholder {
+      height: 240px;
+      background: linear-gradient(180deg, #0f3460 0%, #16213e 100%);
+      display: flex;
+      align-items: flex-end;
+      padding: 16px;
+      gap: 8px;
+    }
+    .chart-bar {
+      flex: 1;
+      background: #4ecdc4;
+      border-radius: 4px 4px 0 0;
+      min-height: 20px;
+      position: relative;
+    }
+    .chart-bar:nth-child(even) { background: #533483; }
+    .chart-bar-label {
+      position: absolute;
+      bottom: -20px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 10px;
+      color: #8888a0;
+      white-space: nowrap;
+    }
+
+    /* === Activity Feed === */
+    .activity-list {
+      list-style: none;
+      padding: 0;
+    }
+    .activity-item {
+      display: flex;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid #1a2a4a;
+    }
+    .activity-item:last-child { border-bottom: none; }
+    .activity-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-top: 6px;
+      flex-shrink: 0;
+    }
+    .activity-dot.green { background: #6bff6b; }
+    .activity-dot.blue { background: #4ecdc4; }
+    .activity-dot.yellow { background: #ffd93d; }
+    .activity-dot.red { background: #ff6b6b; }
+    .activity-text { font-size: 13px; color: #c8c8d8; }
+    .activity-time { font-size: 11px; color: #6868a0; margin-top: 2px; }
+
+    /* === Expected Rendering Section === */
+    .expected-rendering {
+      margin: 40px 24px;
+      padding: 20px;
+      background: #1a2a1a;
+      border: 1px solid #2a4a2a;
+      border-radius: 8px;
+      color: #6bff6b;
+      font-size: 14px;
+    }
+    .expected-rendering h2 {
+      color: #6bff6b;
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+    .expected-rendering ul { margin-left: 20px; }
+    .expected-rendering li { margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+
+  <!-- Back navigation -->
+  <div style="padding:8px 20px;background:#0a0a1e;">
+    <div class="nav" style="margin-bottom:0"><a href="../index.html" style="color:#4ecdc4;text-decoration:none">&larr; Back to Test Index</a></div>
+  </div>
+
+  <!-- ============================================================
+       TOP NAVBAR
+       Horizontal flex bar: logo left, links + user avatar right.
+       ============================================================ -->
+  <header class="top-nav">
+    <div class="logo">
+      <div class="logo-icon">A</div>
+      AdminPanel
+    </div>
+    <div class="nav-right">
+      <a href="#">Dashboard</a>
+      <a href="#">Users</a>
+      <a href="#">Settings</a>
+      <a href="#">Help</a>
+      <div class="user-badge">CM</div>
+    </div>
+  </header>
+
+  <!-- ============================================================
+       DASHBOARD LAYOUT: CSS Grid with sidebar (220px) + main (1fr)
+       ============================================================ -->
+  <div class="dashboard-layout">
+
+    <!-- === Sidebar === -->
+    <!-- Vertical navigation list with section headers and active state -->
+    <aside class="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Main</div>
+        <a href="#" class="sidebar-link active">
+          <span class="icon">D</span> Dashboard
+        </a>
+        <a href="#" class="sidebar-link">
+          <span class="icon">A</span> Analytics
+        </a>
+        <a href="#" class="sidebar-link">
+          <span class="icon">R</span> Reports
+        </a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Management</div>
+        <a href="#" class="sidebar-link">
+          <span class="icon">U</span> Users
+        </a>
+        <a href="#" class="sidebar-link">
+          <span class="icon">P</span> Products
+        </a>
+        <a href="#" class="sidebar-link">
+          <span class="icon">O</span> Orders
+        </a>
+        <a href="#" class="sidebar-link">
+          <span class="icon">I</span> Inventory
+        </a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">System</div>
+        <a href="#" class="sidebar-link">
+          <span class="icon">S</span> Settings
+        </a>
+        <a href="#" class="sidebar-link">
+          <span class="icon">L</span> Logs
+        </a>
+        <a href="#" class="sidebar-link">
+          <span class="icon">H</span> Help
+        </a>
+      </div>
+    </aside>
+
+    <!-- === Main Content === -->
+    <main class="main-content">
+      <div class="page-header">
+        <h1>Dashboard</h1>
+        <div class="header-actions">
+          <button class="btn btn-secondary">Export</button>
+          <button class="btn btn-primary">+ New Report</button>
+        </div>
+      </div>
+
+      <!-- ============================================================
+           STAT CARDS: 4 cards in a CSS Grid row
+           Each card has a label, large number, and change indicator
+           ============================================================ -->
+      <div class="stats-grid">
+        <div class="stat-card accent-blue">
+          <div class="stat-label">Total Users</div>
+          <div class="stat-value">12,847</div>
+          <div class="stat-change positive">+12.5% from last month</div>
+        </div>
+        <div class="stat-card accent-red">
+          <div class="stat-label">Active Sessions</div>
+          <div class="stat-value">1,024</div>
+          <div class="stat-change positive">+3.2% from last hour</div>
+        </div>
+        <div class="stat-card accent-yellow">
+          <div class="stat-label">Revenue</div>
+          <div class="stat-value">$48,290</div>
+          <div class="stat-change negative">-2.4% from last month</div>
+        </div>
+        <div class="stat-card accent-purple">
+          <div class="stat-label">Conversion Rate</div>
+          <div class="stat-value">3.24%</div>
+          <div class="stat-change positive">+0.8% from last week</div>
+        </div>
+      </div>
+
+      <!-- ============================================================
+           TWO-COLUMN: Chart + Activity Feed
+           ============================================================ -->
+      <div class="content-grid">
+        <!-- Bar Chart Placeholder -->
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Monthly Revenue</h2>
+            <a href="#" style="font-size:12px;">View All</a>
+          </div>
+          <div class="panel-body">
+            <div class="chart-placeholder">
+              <div class="chart-bar" style="height:60%;"><span class="chart-bar-label">Jan</span></div>
+              <div class="chart-bar" style="height:75%;"><span class="chart-bar-label">Feb</span></div>
+              <div class="chart-bar" style="height:45%;"><span class="chart-bar-label">Mar</span></div>
+              <div class="chart-bar" style="height:80%;"><span class="chart-bar-label">Apr</span></div>
+              <div class="chart-bar" style="height:65%;"><span class="chart-bar-label">May</span></div>
+              <div class="chart-bar" style="height:90%;"><span class="chart-bar-label">Jun</span></div>
+              <div class="chart-bar" style="height:70%;"><span class="chart-bar-label">Jul</span></div>
+              <div class="chart-bar" style="height:85%;"><span class="chart-bar-label">Aug</span></div>
+              <div class="chart-bar" style="height:55%;"><span class="chart-bar-label">Sep</span></div>
+              <div class="chart-bar" style="height:95%;"><span class="chart-bar-label">Oct</span></div>
+              <div class="chart-bar" style="height:72%;"><span class="chart-bar-label">Nov</span></div>
+              <div class="chart-bar" style="height:88%;"><span class="chart-bar-label">Dec</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Activity Feed -->
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Recent Activity</h2>
+            <a href="#" style="font-size:12px;">View All</a>
+          </div>
+          <div class="panel-body">
+            <ul class="activity-list">
+              <li class="activity-item">
+                <div class="activity-dot green"></div>
+                <div>
+                  <div class="activity-text"><strong>Alice Chen</strong> completed order #4892</div>
+                  <div class="activity-time">2 minutes ago</div>
+                </div>
+              </li>
+              <li class="activity-item">
+                <div class="activity-dot blue"></div>
+                <div>
+                  <div class="activity-text"><strong>Bob Smith</strong> registered a new account</div>
+                  <div class="activity-time">15 minutes ago</div>
+                </div>
+              </li>
+              <li class="activity-item">
+                <div class="activity-dot yellow"></div>
+                <div>
+                  <div class="activity-text">System backup completed successfully</div>
+                  <div class="activity-time">1 hour ago</div>
+                </div>
+              </li>
+              <li class="activity-item">
+                <div class="activity-dot red"></div>
+                <div>
+                  <div class="activity-text">Failed login attempt from 192.168.1.42</div>
+                  <div class="activity-time">2 hours ago</div>
+                </div>
+              </li>
+              <li class="activity-item">
+                <div class="activity-dot green"></div>
+                <div>
+                  <div class="activity-text"><strong>Clara Davis</strong> updated product pricing</div>
+                  <div class="activity-time">3 hours ago</div>
+                </div>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================================
+           DATA TABLE: Full-width with alternating row colors
+           Headers with uppercase labels, sortable appearance
+           ============================================================ -->
+      <div class="content-grid full-width">
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Recent Users</h2>
+            <a href="#" style="font-size:12px;">Manage Users</a>
+          </div>
+          <div class="panel-body">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Role</th>
+                  <th>Status</th>
+                  <th>Last Active</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>#1001</td>
+                  <td>Alice Chen</td>
+                  <td>alice@example.com</td>
+                  <td>Admin</td>
+                  <td><span class="status-badge status-active">Active</span></td>
+                  <td>2 min ago</td>
+                </tr>
+                <tr>
+                  <td>#1002</td>
+                  <td>Bob Smith</td>
+                  <td>bob@example.com</td>
+                  <td>Editor</td>
+                  <td><span class="status-badge status-active">Active</span></td>
+                  <td>15 min ago</td>
+                </tr>
+                <tr>
+                  <td>#1003</td>
+                  <td>Clara Davis</td>
+                  <td>clara@example.com</td>
+                  <td>Viewer</td>
+                  <td><span class="status-badge status-pending">Pending</span></td>
+                  <td>1 hour ago</td>
+                </tr>
+                <tr>
+                  <td>#1004</td>
+                  <td>David Lee</td>
+                  <td>david@example.com</td>
+                  <td>Editor</td>
+                  <td><span class="status-badge status-active">Active</span></td>
+                  <td>3 hours ago</td>
+                </tr>
+                <tr>
+                  <td>#1005</td>
+                  <td>Emma Wilson</td>
+                  <td>emma@example.com</td>
+                  <td>Admin</td>
+                  <td><span class="status-badge status-inactive">Inactive</span></td>
+                  <td>2 days ago</td>
+                </tr>
+                <tr>
+                  <td>#1006</td>
+                  <td>Frank Torres</td>
+                  <td>frank@example.com</td>
+                  <td>Viewer</td>
+                  <td><span class="status-badge status-active">Active</span></td>
+                  <td>5 min ago</td>
+                </tr>
+                <tr>
+                  <td>#1007</td>
+                  <td>Grace Kim</td>
+                  <td>grace@example.com</td>
+                  <td>Editor</td>
+                  <td><span class="status-badge status-pending">Pending</span></td>
+                  <td>1 day ago</td>
+                </tr>
+                <tr>
+                  <td>#1008</td>
+                  <td>Henry Patel</td>
+                  <td>henry@example.com</td>
+                  <td>Viewer</td>
+                  <td><span class="status-badge status-active">Active</span></td>
+                  <td>30 min ago</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ============================================================
+       EXPECTED RENDERING
+       ============================================================ -->
+  <div class="expected-rendering">
+    <h2>Expected Rendering</h2>
+    <ul>
+      <li><strong>Top navigation:</strong> Full-width dark blue bar with logo (teal square + "AdminPanel") on the left and links + circular user avatar on the right. Height ~48px, all items vertically centered.</li>
+      <li><strong>Overall layout:</strong> CSS Grid with two columns -- sidebar at 220px fixed width on the left, main content filling the rest. The sidebar should extend to at least the viewport height.</li>
+      <li><strong>Sidebar:</strong> Vertical navigation with section headers ("Main", "Management", "System") in uppercase small text. Links have left-border accent. The "Dashboard" link should show as active (teal color, left border highlight).</li>
+      <li><strong>Stat cards:</strong> Four cards in a single row (CSS Grid 4 columns). Each card has a colored top border accent, uppercase label, large bold number, and small change indicator (green for positive, red for negative).</li>
+      <li><strong>Chart + Activity:</strong> Two panels side by side in a grid. The chart panel shows vertical bars of varying height with month labels below. The activity panel shows a list of items with colored dots and timestamps.</li>
+      <li><strong>Data table:</strong> Full-width table with uppercase column headers on a slightly darker background. Rows alternate between two shades. Status column shows colored badge pills. Table should span the full content width.</li>
+      <li><strong>Alternating row colors:</strong> Even rows have a slightly different background than odd rows. Hover state changes the row background.</li>
+      <li><strong>Professional appearance:</strong> The overall dashboard should look like a real admin interface with consistent spacing, subtle borders, and a cohesive dark color palette.</li>
+    </ul>
+  </div>
+
+</body>
+</html>

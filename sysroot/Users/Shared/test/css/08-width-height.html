@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test 08: Width and Height Properties</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+    .size-box {
+      color: white;
+      font-size: 12px;
+      text-align: center;
+      margin: 5px 0;
+      padding: 5px;
+    }
+    .measure-line {
+      height: 2px;
+      background: #f39c12;
+      margin: 3px 0;
+    }
+    .label-sm {
+      font-size: 11px;
+      color: #aaa;
+      margin: 2px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="nav"><a href="../index.html">Index</a></div>
+  <h1 class="page-title">CSS Test 08: Width and Height Properties</h1>
+
+  <!-- Test 1: Width in Pixels -->
+  <div class="test-group">
+    <h2>Test 1: width in Pixels</h2>
+    <div class="expected">Expected: Three boxes with explicit pixel widths: 100px, 200px, and 400px. Each box should be exactly the specified width. The orange reference lines show 100px, 200px, and 400px for comparison.</div>
+    <div class="test-area">
+      <p class="label-sm">100px reference:</p>
+      <div class="measure-line" style="width: 100px;"></div>
+      <div class="size-box" style="width: 100px; background: #e74c3c;">100px</div>
+
+      <p class="label-sm">200px reference:</p>
+      <div class="measure-line" style="width: 200px;"></div>
+      <div class="size-box" style="width: 200px; background: #3498db;">200px</div>
+
+      <p class="label-sm">400px reference:</p>
+      <div class="measure-line" style="width: 400px;"></div>
+      <div class="size-box" style="width: 400px; background: #2ecc71;">400px</div>
+    </div>
+  </div>
+
+  <!-- Test 2: Height in Pixels -->
+  <div class="test-group">
+    <h2>Test 2: height in Pixels</h2>
+    <div class="expected">Expected: Three boxes side by side with different heights: 40px, 80px, and 120px. All have the same width. The tallest box (120px) should be visibly taller than the others.</div>
+    <div class="test-area">
+      <div class="size-box" style="display: inline-block; width: 120px; height: 40px; background: #e74c3c; line-height: 40px; vertical-align: top;">h: 40px</div>
+      <div class="size-box" style="display: inline-block; width: 120px; height: 80px; background: #3498db; line-height: 80px; vertical-align: top;">h: 80px</div>
+      <div class="size-box" style="display: inline-block; width: 120px; height: 120px; background: #2ecc71; line-height: 120px; vertical-align: top;">h: 120px</div>
+    </div>
+  </div>
+
+  <!-- Test 3: Percentage Width -->
+  <div class="test-group">
+    <h2>Test 3: width in Percent</h2>
+    <div class="expected">Expected: Three boxes: 25%, 50%, and 100% of the container width. 25% should be one quarter, 50% should be half, and 100% should fill the entire width of the test area container.</div>
+    <div class="test-area">
+      <div class="size-box" style="width: 25%; background: #e74c3c;">width: 25%</div>
+      <div class="size-box" style="width: 50%; background: #3498db;">width: 50%</div>
+      <div class="size-box" style="width: 100%; background: #2ecc71;">width: 100%</div>
+    </div>
+  </div>
+
+  <!-- Test 4: Width/Height Auto -->
+  <div class="test-group">
+    <h2>Test 4: width: auto and height: auto</h2>
+    <div class="expected">Expected: width: auto on a block element takes the full available width (same as default). height: auto sizes to fit the content. The first box should stretch full width; the second should be only as tall as needed to contain its text.</div>
+    <div class="test-area">
+      <div class="size-box" style="width: auto; background: #e74c3c;">
+        width: auto (fills available width for block elements)
+      </div>
+      <div class="size-box" style="height: auto; width: 300px; background: #3498db;">
+        height: auto (grows to fit content). This text determines the height.
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 5: min-width and max-width -->
+  <div class="test-group">
+    <h2>Test 5: min-width and max-width</h2>
+    <div class="expected">Expected: First box: width: 50px, min-width: 150px -- renders at 150px (min wins). Second box: width: 600px, max-width: 300px -- renders at 300px (max wins). Third box: width: 200px, min-width: 100px, max-width: 400px -- renders at 200px (within range). Reference line is 300px.</div>
+    <div class="test-area">
+      <p class="label-sm">Reference: 300px</p>
+      <div class="measure-line" style="width: 300px;"></div>
+
+      <div class="size-box" style="width: 50px; min-width: 150px; background: #e74c3c;">
+        w:50 min-w:150 (renders 150px)
+      </div>
+      <div class="size-box" style="width: 600px; max-width: 300px; background: #3498db;">
+        w:600 max-w:300 (renders 300px)
+      </div>
+      <div class="size-box" style="width: 200px; min-width: 100px; max-width: 400px; background: #2ecc71;">
+        w:200 min:100 max:400 (renders 200px)
+      </div>
+
+      <div class="measure-line" style="width: 300px;"></div>
+    </div>
+  </div>
+
+  <!-- Test 6: min-height and max-height -->
+  <div class="test-group">
+    <h2>Test 6: min-height and max-height</h2>
+    <div class="expected">Expected: First box: little content but min-height: 80px, so it renders at 80px tall even with minimal text. Second box: lots of content but max-height: 60px, so content overflows (overflow: hidden clips it, overflow: auto adds scrollbar). Third box: height: auto with min-height: 50px and adequate content.</div>
+    <div class="test-area">
+      <div style="display: inline-block; width: 180px; vertical-align: top; margin-right: 10px;">
+        <p class="label-sm">min-height: 80px (little content)</p>
+        <div class="size-box" style="min-height: 80px; background: #e74c3c; width: 180px;">Short text</div>
+      </div>
+      <div style="display: inline-block; width: 180px; vertical-align: top; margin-right: 10px;">
+        <p class="label-sm">max-height: 60px + overflow: hidden</p>
+        <div class="size-box" style="max-height: 60px; overflow: hidden; background: #3498db; width: 180px; text-align: left;">
+          This box has max-height: 60px. The content is longer than 60px so it gets clipped by overflow: hidden. You should not see all of this text.
+        </div>
+      </div>
+      <div style="display: inline-block; width: 180px; vertical-align: top;">
+        <p class="label-sm">max-height: 60px + overflow: auto</p>
+        <div class="size-box" style="max-height: 60px; overflow: auto; background: #2ecc71; width: 180px; text-align: left;">
+          This box has max-height: 60px with overflow: auto. A scrollbar should appear if the content exceeds the max height. Scroll down to see more text.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 7: Percentage Width in Nested Containers -->
+  <div class="test-group">
+    <h2>Test 7: Percentage Width in Nested Containers</h2>
+    <div class="expected">Expected: Outer container is 400px. Inner container is 50% (200px). Innermost box is 50% of its parent (100px). Percentage widths are relative to the parent element's content width, so nesting reduces the effective size.</div>
+    <div class="test-area">
+      <div style="width: 400px; background: #2c3e50; padding: 10px; border: 1px dashed #7f8c8d;">
+        <p class="label-sm" style="margin-top: 0;">Outer: 400px</p>
+        <div style="width: 50%; background: #34495e; padding: 10px; border: 1px dashed #95a5a6;">
+          <p class="label-sm" style="margin-top: 0;">Middle: 50% (200px)</p>
+          <div class="size-box" style="width: 50%; background: #e74c3c;">
+            Inner: 50% (100px)
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 8: 100% Width Behavior -->
+  <div class="test-group">
+    <h2>Test 8: 100% Width Behavior</h2>
+    <div class="expected">Expected: A box with width: 100% fills the content area of its parent. With padding or border on the child (using content-box), it may overflow. The first child (no padding) fits perfectly. The second child (with padding, content-box) overflows. The third child (border-box) fits.</div>
+    <div class="test-area">
+      <div style="width: 300px; background: #2c3e50; padding: 10px; border: 2px solid #7f8c8d;">
+        <p class="label-sm" style="margin-top: 0;">Parent: 300px, padding: 10px</p>
+
+        <div class="size-box" style="width: 100%; background: #e74c3c; box-sizing: content-box; padding: 0;">
+          100% width, no padding (fits)
+        </div>
+
+        <div class="size-box" style="width: 100%; background: #3498db; box-sizing: content-box; padding: 10px; margin-top: 5px;">
+          100% width + padding:10px content-box (overflows)
+        </div>
+
+        <div class="size-box" style="width: 100%; background: #2ecc71; box-sizing: border-box; padding: 10px; margin-top: 5px;">
+          100% width + padding:10px border-box (fits)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 9: height: 100% Requires Parent Height -->
+  <div class="test-group">
+    <h2>Test 9: height: 100% (Requires Parent Height)</h2>
+    <div class="expected">Expected: First case: parent has explicit height: 150px, child height: 100% fills it. Second case: parent has NO explicit height, child height: 100% has no effect (collapses to content height). The child needs an ancestor with a defined height for percentage height to work.</div>
+    <div class="test-area">
+      <div style="display: inline-block; vertical-align: top; margin-right: 20px;">
+        <p class="label-sm">Parent: height: 150px</p>
+        <div style="height: 150px; width: 180px; background: #2c3e50; border: 1px dashed #7f8c8d;">
+          <div class="size-box" style="height: 100%; background: #e74c3c;">
+            height: 100% (fills parent)
+          </div>
+        </div>
+      </div>
+      <div style="display: inline-block; vertical-align: top;">
+        <p class="label-sm">Parent: NO explicit height</p>
+        <div style="width: 180px; background: #2c3e50; border: 1px dashed #7f8c8d;">
+          <div class="size-box" style="height: 100%; background: #3498db;">
+            height: 100% (no parent height, collapses)
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

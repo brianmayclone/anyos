@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: Functions</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">03 - Functions</h1>
+
+<div class="test-group">
+  <h2>Function Declaration, Expression, and Features</h2>
+  <div class="expected">Expected: All tests should PASS, covering declarations, expressions, arrows, closures, recursion, and IIFE.</div>
+  <div class="test-area" id="results"></div>
+</div>
+
+<script>
+function test(name, fn) {
+  var resultDiv = document.getElementById('results');
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// --- Function declaration ---
+function add(a, b) {
+  return a + b;
+}
+
+test('Function declaration: add(3, 4) === 7', function() {
+  return add(3, 4) === 7;
+});
+
+test('Function declaration: callable before definition (hoisting)', function() {
+  return hoisted() === 'hoisted';
+});
+
+function hoisted() {
+  return 'hoisted';
+}
+
+// --- Function expression ---
+test('Function expression: var multiply = function(a,b) { ... }', function() {
+  var multiply = function(a, b) { return a * b; };
+  return multiply(6, 7) === 42;
+});
+
+test('Named function expression', function() {
+  var factorial = function fact(n) {
+    return n <= 1 ? 1 : n * fact(n - 1);
+  };
+  return factorial(5) === 120;
+});
+
+// --- Arrow functions ---
+test('Arrow function: basic', function() {
+  var square = (x) => x * x;
+  return square(5) === 25;
+});
+
+test('Arrow function: no parens for single param', function() {
+  var double = x => x * 2;
+  return double(7) === 14;
+});
+
+test('Arrow function: with block body', function() {
+  var greet = (name) => {
+    var msg = 'Hello, ' + name;
+    return msg;
+  };
+  return greet('World') === 'Hello, World';
+});
+
+test('Arrow function: no params', function() {
+  var getFortyTwo = () => 42;
+  return getFortyTwo() === 42;
+});
+
+// --- Parameters and arguments ---
+test('Parameters: multiple parameters', function() {
+  function sum3(a, b, c) { return a + b + c; }
+  return sum3(1, 2, 3) === 6;
+});
+
+test('Parameters: missing args become undefined', function() {
+  function check(a, b) { return b; }
+  return check(1) === undefined;
+});
+
+test('Parameters: extra args ignored', function() {
+  function first(a) { return a; }
+  return first(10, 20, 30) === 10;
+});
+
+// --- Return values ---
+test('Return value: explicit return', function() {
+  function getPI() { return 3.14; }
+  return getPI() === 3.14;
+});
+
+test('Return value: no return gives undefined', function() {
+  function noReturn() { var x = 5; }
+  return noReturn() === undefined;
+});
+
+test('Return value: early return', function() {
+  function earlyReturn(x) {
+    if (x > 0) return 'positive';
+    return 'non-positive';
+  }
+  return earlyReturn(5) === 'positive' && earlyReturn(-1) === 'non-positive';
+});
+
+// --- Default parameters ---
+test('Default parameters', function() {
+  function greet(name, greeting) {
+    if (greeting === undefined) greeting = 'Hello';
+    return greeting + ', ' + name;
+  }
+  return greet('World') === 'Hello, World' && greet('World', 'Hi') === 'Hi, World';
+});
+
+test('Default parameters (ES6 syntax)', function() {
+  function power(base, exp = 2) {
+    return base ** exp;
+  }
+  return power(3) === 9 && power(2, 10) === 1024;
+});
+
+// --- Closures ---
+test('Closure: inner function accesses outer variable', function() {
+  function outer() {
+    var count = 0;
+    function increment() {
+      count++;
+      return count;
+    }
+    return increment;
+  }
+  var inc = outer();
+  return inc() === 1 && inc() === 2 && inc() === 3;
+});
+
+test('Closure: counter factory', function() {
+  function makeCounter(start) {
+    var value = start;
+    return {
+      get: function() { return value; },
+      inc: function() { value++; },
+      dec: function() { value--; }
+    };
+  }
+  var c = makeCounter(10);
+  c.inc();
+  c.inc();
+  c.dec();
+  return c.get() === 11;
+});
+
+test('Closure: each closure has own scope', function() {
+  function makeAdder(x) {
+    return function(y) { return x + y; };
+  }
+  var add5 = makeAdder(5);
+  var add10 = makeAdder(10);
+  return add5(3) === 8 && add10(3) === 13;
+});
+
+// --- Recursion ---
+test('Recursion: factorial', function() {
+  function factorial(n) {
+    if (n <= 1) return 1;
+    return n * factorial(n - 1);
+  }
+  return factorial(0) === 1 && factorial(1) === 1 && factorial(5) === 120 && factorial(10) === 3628800;
+});
+
+test('Recursion: fibonacci', function() {
+  function fib(n) {
+    if (n <= 0) return 0;
+    if (n === 1) return 1;
+    return fib(n - 1) + fib(n - 2);
+  }
+  return fib(0) === 0 && fib(1) === 1 && fib(6) === 8 && fib(10) === 55;
+});
+
+// --- IIFE ---
+test('IIFE: immediately invoked function expression', function() {
+  var result = (function() {
+    return 42;
+  })();
+  return result === 42;
+});
+
+test('IIFE: with arguments', function() {
+  var result = (function(a, b) {
+    return a + b;
+  })(10, 20);
+  return result === 30;
+});
+
+test('IIFE: creates private scope', function() {
+  var module = (function() {
+    var secret = 'hidden';
+    return {
+      getSecret: function() { return secret; }
+    };
+  })();
+  return module.getSecret() === 'hidden' && typeof secret === 'undefined';
+});
+
+// --- Functions as first-class values ---
+test('Function passed as argument (callback)', function() {
+  function apply(fn, value) {
+    return fn(value);
+  }
+  function triple(x) { return x * 3; }
+  return apply(triple, 5) === 15;
+});
+
+test('Function returned from function', function() {
+  function multiplier(factor) {
+    return function(x) { return x * factor; };
+  }
+  var times3 = multiplier(3);
+  var times5 = multiplier(5);
+  return times3(4) === 12 && times5(4) === 20;
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: Strings</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">07 - String Methods</h1>
+
+<div class="test-group">
+  <h2>String Properties and Methods</h2>
+  <div class="expected">Expected: All string methods (charAt, indexOf, slice, split, replace, trim, etc.) produce correct results.</div>
+  <div class="test-area" id="results"></div>
+</div>
+
+<script>
+function test(name, fn) {
+  var resultDiv = document.getElementById('results');
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// --- length ---
+test('length property', function() {
+  return 'hello'.length === 5 && ''.length === 0 && 'a b c'.length === 5;
+});
+
+// --- charAt, charCodeAt ---
+test('charAt: returns character at index', function() {
+  return 'hello'.charAt(0) === 'h' && 'hello'.charAt(4) === 'o';
+});
+
+test('charAt: out of range returns empty string', function() {
+  return 'hello'.charAt(99) === '';
+});
+
+test('charCodeAt: returns character code', function() {
+  return 'A'.charCodeAt(0) === 65 && 'a'.charCodeAt(0) === 97 && '0'.charCodeAt(0) === 48;
+});
+
+// --- indexOf, lastIndexOf ---
+test('indexOf: finds first occurrence', function() {
+  return 'hello world'.indexOf('world') === 6;
+});
+
+test('indexOf: returns -1 if not found', function() {
+  return 'hello'.indexOf('xyz') === -1;
+});
+
+test('indexOf: single character', function() {
+  return 'abcabc'.indexOf('b') === 1;
+});
+
+test('lastIndexOf: finds last occurrence', function() {
+  return 'abcabc'.lastIndexOf('b') === 4;
+});
+
+// --- includes, startsWith, endsWith ---
+test('includes: returns true if substring found', function() {
+  return 'hello world'.includes('world') === true;
+});
+
+test('includes: returns false if not found', function() {
+  return 'hello'.includes('xyz') === false;
+});
+
+test('startsWith: true for matching prefix', function() {
+  return 'hello world'.startsWith('hello') === true;
+});
+
+test('startsWith: false for non-matching', function() {
+  return 'hello'.startsWith('world') === false;
+});
+
+test('endsWith: true for matching suffix', function() {
+  return 'hello world'.endsWith('world') === true;
+});
+
+test('endsWith: false for non-matching', function() {
+  return 'hello'.endsWith('xyz') === false;
+});
+
+// --- substring, substr, slice ---
+test('substring: extract range', function() {
+  return 'hello world'.substring(6, 11) === 'world';
+});
+
+test('substring: swaps args if start > end', function() {
+  return 'hello'.substring(3, 1) === 'el';
+});
+
+test('substr: start + length', function() {
+  return 'hello world'.substr(6, 5) === 'world';
+});
+
+test('slice: extract range', function() {
+  return 'hello world'.slice(0, 5) === 'hello';
+});
+
+test('slice: negative index from end', function() {
+  return 'hello world'.slice(-5) === 'world';
+});
+
+test('slice: negative start and end', function() {
+  return 'hello world'.slice(-5, -1) === 'worl';
+});
+
+// --- toUpperCase, toLowerCase ---
+test('toUpperCase', function() {
+  return 'hello'.toUpperCase() === 'HELLO';
+});
+
+test('toLowerCase', function() {
+  return 'HELLO'.toLowerCase() === 'hello';
+});
+
+test('Mixed case conversion', function() {
+  return 'Hello World'.toUpperCase() === 'HELLO WORLD' && 'Hello World'.toLowerCase() === 'hello world';
+});
+
+// --- trim ---
+test('trim: removes whitespace from both ends', function() {
+  return '  hello  '.trim() === 'hello';
+});
+
+test('trim: tabs and newlines', function() {
+  return '\t\nhello\n\t'.trim() === 'hello';
+});
+
+test('trim: no change if no whitespace', function() {
+  return 'hello'.trim() === 'hello';
+});
+
+// --- split ---
+test('split: by character', function() {
+  var parts = 'a,b,c'.split(',');
+  return parts.length === 3 && parts[0] === 'a' && parts[1] === 'b' && parts[2] === 'c';
+});
+
+test('split: by space', function() {
+  var words = 'hello world foo'.split(' ');
+  return words.length === 3 && words[0] === 'hello' && words[2] === 'foo';
+});
+
+test('split: empty separator splits characters', function() {
+  var chars = 'abc'.split('');
+  return chars.length === 3 && chars[0] === 'a' && chars[1] === 'b' && chars[2] === 'c';
+});
+
+test('split: with limit', function() {
+  var parts = 'a,b,c,d'.split(',', 2);
+  return parts.length === 2 && parts[0] === 'a' && parts[1] === 'b';
+});
+
+// --- replace ---
+test('replace: first occurrence', function() {
+  return 'hello world'.replace('world', 'JS') === 'hello JS';
+});
+
+test('replace: only replaces first match', function() {
+  return 'aaa'.replace('a', 'b') === 'baa';
+});
+
+// --- repeat ---
+test('repeat: repeats string', function() {
+  return 'ha'.repeat(3) === 'hahaha';
+});
+
+test('repeat: zero times', function() {
+  return 'hello'.repeat(0) === '';
+});
+
+// --- padStart, padEnd ---
+test('padStart: pads from start', function() {
+  return '5'.padStart(3, '0') === '005';
+});
+
+test('padStart: no padding if already long enough', function() {
+  return 'hello'.padStart(3, '0') === 'hello';
+});
+
+test('padEnd: pads from end', function() {
+  return '5'.padEnd(3, '0') === '500';
+});
+
+// --- String concatenation vs template literals ---
+test('String concatenation: + operator', function() {
+  var a = 'Hello';
+  var b = 'World';
+  return (a + ', ' + b + '!') === 'Hello, World!';
+});
+
+test('Template literal interpolation', function() {
+  var name = 'World';
+  var greeting = `Hello, ${name}!`;
+  return greeting === 'Hello, World!';
+});
+
+// --- String comparison ---
+test('String comparison: equality', function() {
+  return 'abc' === 'abc' && 'abc' !== 'def';
+});
+
+test('String comparison: lexicographic order', function() {
+  return 'apple' < 'banana' && 'zebra' > 'apple' && 'abc' < 'abd';
+});
+
+test('String comparison: case matters', function() {
+  return 'A' < 'a' && 'Z' < 'a';
+});
+
+// --- String.fromCharCode ---
+test('String.fromCharCode', function() {
+  return String.fromCharCode(65) === 'A' && String.fromCharCode(97) === 'a';
+});
+</script>
+</body>
+</html>

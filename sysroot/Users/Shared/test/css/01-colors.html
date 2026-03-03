@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test 01: Color Formats</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+    .color-box {
+      display: inline-block;
+      width: 80px;
+      height: 40px;
+      margin: 5px;
+      border: 1px solid #555;
+      vertical-align: middle;
+    }
+    .color-label {
+      display: inline-block;
+      width: 200px;
+      vertical-align: middle;
+      font-size: 14px;
+    }
+    .color-row {
+      margin: 5px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="nav"><a href="../index.html">Index</a></div>
+  <h1 class="page-title">CSS Test 01: Color Formats</h1>
+
+  <!-- Test 1: Named Colors -->
+  <div class="test-group">
+    <h2>Test 1: Named Colors</h2>
+    <div class="expected">Expected: Each box should show the corresponding named color. Red, blue, green, white, black, orange, purple, yellow, cyan, magenta, gray, pink.</div>
+    <div class="test-area">
+      <div class="color-row">
+        <span class="color-label">red</span>
+        <div class="color-box" style="background-color: red;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">blue</span>
+        <div class="color-box" style="background-color: blue;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">green</span>
+        <div class="color-box" style="background-color: green;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">white</span>
+        <div class="color-box" style="background-color: white;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">black</span>
+        <div class="color-box" style="background-color: black;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">orange</span>
+        <div class="color-box" style="background-color: orange;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">purple</span>
+        <div class="color-box" style="background-color: purple;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">yellow</span>
+        <div class="color-box" style="background-color: yellow;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">cyan</span>
+        <div class="color-box" style="background-color: cyan;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">magenta</span>
+        <div class="color-box" style="background-color: magenta;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">gray</span>
+        <div class="color-box" style="background-color: gray;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">pink</span>
+        <div class="color-box" style="background-color: pink;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 2: Hex 3-Digit Colors -->
+  <div class="test-group">
+    <h2>Test 2: Hex 3-Digit Shorthand (#RGB)</h2>
+    <div class="expected">Expected: #F00 = bright red, #0F0 = bright green, #00F = bright blue, #FF0 = yellow, #0FF = cyan, #F0F = magenta, #FFF = white, #000 = black. 3-digit hex expands each digit (e.g., #F00 = #FF0000).</div>
+    <div class="test-area">
+      <div class="color-row">
+        <span class="color-label">#F00 (red)</span>
+        <div class="color-box" style="background-color: #F00;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">#0F0 (green)</span>
+        <div class="color-box" style="background-color: #0F0;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">#00F (blue)</span>
+        <div class="color-box" style="background-color: #00F;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">#FF0 (yellow)</span>
+        <div class="color-box" style="background-color: #FF0;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">#0FF (cyan)</span>
+        <div class="color-box" style="background-color: #0FF;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">#F0F (magenta)</span>
+        <div class="color-box" style="background-color: #F0F;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">#FFF (white)</span>
+        <div class="color-box" style="background-color: #FFF;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">#000 (black)</span>
+        <div class="color-box" style="background-color: #000;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 3: Hex 6-Digit Colors -->
+  <div class="test-group">
+    <h2>Test 3: Hex 6-Digit (#RRGGBB)</h2>
+    <div class="expected">Expected: Standard 6-digit hex colors. #FF0000 = red, #00FF00 = green, #0000FF = blue, #FF8C00 = dark orange, #8A2BE2 = blue violet, #808080 = gray.</div>
+    <div class="test-area">
+      <div class="color-row">
+        <span class="color-label">#FF0000 (red)</span>
+        <div class="color-box" style="background-color: #FF0000;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">#00FF00 (green)</span>
+        <div class="color-box" style="background-color: #00FF00;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">#0000FF (blue)</span>
+        <div class="color-box" style="background-color: #0000FF;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">#FF8C00 (dark orange)</span>
+        <div class="color-box" style="background-color: #FF8C00;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">#8A2BE2 (blue violet)</span>
+        <div class="color-box" style="background-color: #8A2BE2;"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">#808080 (gray)</span>
+        <div class="color-box" style="background-color: #808080;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 4: rgb() Functional Notation -->
+  <div class="test-group">
+    <h2>Test 4: rgb() Functional Notation</h2>
+    <div class="expected">Expected: rgb(255,0,0) = red, rgb(0,128,0) = dark green (same as named "green"), rgb(0,0,255) = blue, rgb(255,165,0) = orange, rgb(128,0,128) = purple, rgb(255,255,255) = white, rgb(0,0,0) = black.</div>
+    <div class="test-area">
+      <div class="color-row">
+        <span class="color-label">rgb(255,0,0)</span>
+        <div class="color-box" style="background-color: rgb(255,0,0);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgb(0,128,0)</span>
+        <div class="color-box" style="background-color: rgb(0,128,0);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgb(0,0,255)</span>
+        <div class="color-box" style="background-color: rgb(0,0,255);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgb(255,165,0)</span>
+        <div class="color-box" style="background-color: rgb(255,165,0);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgb(128,0,128)</span>
+        <div class="color-box" style="background-color: rgb(128,0,128);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgb(255,255,255)</span>
+        <div class="color-box" style="background-color: rgb(255,255,255);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgb(0,0,0)</span>
+        <div class="color-box" style="background-color: rgb(0,0,0);"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 5: rgba() with Alpha -->
+  <div class="test-group">
+    <h2>Test 5: rgba() with Alpha Transparency</h2>
+    <div class="expected">Expected: rgba colors with varying transparency over the dark background. Alpha 1.0 = fully opaque, 0.5 = half transparent, 0.3 = mostly transparent, 0.0 = invisible. The background should show through transparent colors.</div>
+    <div class="test-area">
+      <div class="color-row">
+        <span class="color-label">rgba(255,0,0,1.0) full</span>
+        <div class="color-box" style="background-color: rgba(255,0,0,1.0);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgba(255,0,0,0.7)</span>
+        <div class="color-box" style="background-color: rgba(255,0,0,0.7);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgba(255,0,0,0.5)</span>
+        <div class="color-box" style="background-color: rgba(255,0,0,0.5);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgba(255,0,0,0.3)</span>
+        <div class="color-box" style="background-color: rgba(255,0,0,0.3);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgba(255,0,0,0.1)</span>
+        <div class="color-box" style="background-color: rgba(255,0,0,0.1);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgba(0,0,255,0.5)</span>
+        <div class="color-box" style="background-color: rgba(0,0,255,0.5);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgba(0,0,255,0.3)</span>
+        <div class="color-box" style="background-color: rgba(0,0,255,0.3);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">rgba(0,255,0,0.5)</span>
+        <div class="color-box" style="background-color: rgba(0,255,0,0.5);"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 6: hsl() Functional Notation -->
+  <div class="test-group">
+    <h2>Test 6: hsl() Functional Notation</h2>
+    <div class="expected">Expected: hsl(0,100%,50%) = pure red, hsl(120,100%,50%) = pure green, hsl(240,100%,50%) = pure blue, hsl(60,100%,50%) = yellow, hsl(180,100%,50%) = cyan, hsl(300,100%,50%) = magenta, hsl(0,0%,50%) = gray, hsl(0,100%,25%) = dark red.</div>
+    <div class="test-area">
+      <div class="color-row">
+        <span class="color-label">hsl(0,100%,50%) red</span>
+        <div class="color-box" style="background-color: hsl(0,100%,50%);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">hsl(120,100%,50%) green</span>
+        <div class="color-box" style="background-color: hsl(120,100%,50%);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">hsl(240,100%,50%) blue</span>
+        <div class="color-box" style="background-color: hsl(240,100%,50%);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">hsl(60,100%,50%) yellow</span>
+        <div class="color-box" style="background-color: hsl(60,100%,50%);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">hsl(180,100%,50%) cyan</span>
+        <div class="color-box" style="background-color: hsl(180,100%,50%);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">hsl(300,100%,50%) magenta</span>
+        <div class="color-box" style="background-color: hsl(300,100%,50%);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">hsl(0,0%,50%) gray</span>
+        <div class="color-box" style="background-color: hsl(0,0%,50%);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">hsl(0,100%,25%) dark red</span>
+        <div class="color-box" style="background-color: hsl(0,100%,25%);"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 7: hsla() with Alpha -->
+  <div class="test-group">
+    <h2>Test 7: hsla() with Alpha Transparency</h2>
+    <div class="expected">Expected: hsla colors with varying alpha over the dark background. Same hue/saturation/lightness but decreasing opacity. The background should bleed through at lower alpha values.</div>
+    <div class="test-area">
+      <div class="color-row">
+        <span class="color-label">hsla(0,100%,50%,1.0) full red</span>
+        <div class="color-box" style="background-color: hsla(0,100%,50%,1.0);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">hsla(0,100%,50%,0.7)</span>
+        <div class="color-box" style="background-color: hsla(0,100%,50%,0.7);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">hsla(0,100%,50%,0.5)</span>
+        <div class="color-box" style="background-color: hsla(0,100%,50%,0.5);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">hsla(0,100%,50%,0.3)</span>
+        <div class="color-box" style="background-color: hsla(0,100%,50%,0.3);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">hsla(120,100%,50%,0.5)</span>
+        <div class="color-box" style="background-color: hsla(120,100%,50%,0.5);"></div>
+      </div>
+      <div class="color-row">
+        <span class="color-label">hsla(240,100%,50%,0.5)</span>
+        <div class="color-box" style="background-color: hsla(240,100%,50%,0.5);"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 8: Color on Text -->
+  <div class="test-group">
+    <h2>Test 8: Color Applied to Text</h2>
+    <div class="expected">Expected: Each line of text should appear in the specified color. Verify that the "color" property works with all format types on text content.</div>
+    <div class="test-area">
+      <p style="color: red;">This text is "red" (named color)</p>
+      <p style="color: #FF6600;">This text is #FF6600 (orange hex)</p>
+      <p style="color: #0CF;">This text is #0CF (3-digit cyan hex)</p>
+      <p style="color: rgb(0,200,100);">This text is rgb(0,200,100) (green-teal)</p>
+      <p style="color: rgba(255,255,0,0.6);">This text is rgba(255,255,0,0.6) (semi-transparent yellow)</p>
+      <p style="color: hsl(270,100%,70%);">This text is hsl(270,100%,70%) (light purple)</p>
+      <p style="color: hsla(30,100%,50%,0.8);">This text is hsla(30,100%,50%,0.8) (semi-transparent orange)</p>
+    </div>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test 04: Lists (ul, ol, dl)</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="../index.html">Back to Index</a>
+    <a href="03-text-formatting.html">Prev: Text Formatting</a>
+    <a href="05-links.html">Next: Links</a>
+  </div>
+
+  <h1 class="page-title">Test 04: Lists (ul, ol, dl)</h1>
+
+  <!-- Test 1: Basic unordered list -->
+  <div class="test-group">
+    <h2>Test 4.1: Basic Unordered List</h2>
+    <div class="expected">Expected: A bulleted list with disc (filled circle) markers by default. Each item indented from the left. Items should be block-level within the list.</div>
+    <div class="test-area">
+      <ul>
+        <li>Apple</li>
+        <li>Banana</li>
+        <li>Cherry</li>
+        <li>Date</li>
+        <li>Elderberry</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Test 2: Basic ordered list -->
+  <div class="test-group">
+    <h2>Test 4.2: Basic Ordered List</h2>
+    <div class="expected">Expected: A numbered list starting from 1. Numbers should auto-increment (1, 2, 3, ...). Items should be indented and block-level.</div>
+    <div class="test-area">
+      <ol>
+        <li>First item</li>
+        <li>Second item</li>
+        <li>Third item</li>
+        <li>Fourth item</li>
+        <li>Fifth item</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- Test 3: Nested lists -->
+  <div class="test-group">
+    <h2>Test 4.3: Nested Lists</h2>
+    <div class="expected">Expected: Nested lists should be further indented. Nested ul markers typically change: disc -> circle -> square. Nested ol continues numbering independently.</div>
+    <div class="test-area">
+      <ul>
+        <li>Fruits
+          <ul>
+            <li>Citrus
+              <ul>
+                <li>Orange</li>
+                <li>Lemon</li>
+                <li>Grapefruit</li>
+              </ul>
+            </li>
+            <li>Berries
+              <ul>
+                <li>Strawberry</li>
+                <li>Blueberry</li>
+              </ul>
+            </li>
+          </ul>
+        </li>
+        <li>Vegetables
+          <ul>
+            <li>Root vegetables
+              <ul>
+                <li>Carrot</li>
+                <li>Potato</li>
+              </ul>
+            </li>
+            <li>Leafy greens</li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Test 4: Mixed nested lists (ol inside ul, ul inside ol) -->
+  <div class="test-group">
+    <h2>Test 4.4: Mixed Nested Lists</h2>
+    <div class="expected">Expected: ol inside ul should show numbered sub-items under bulleted parents. ul inside ol should show bulleted sub-items under numbered parents. Nesting should work for any combination.</div>
+    <div class="test-area">
+      <ul>
+        <li>Unordered parent item 1
+          <ol>
+            <li>Ordered child 1</li>
+            <li>Ordered child 2</li>
+            <li>Ordered child 3</li>
+          </ol>
+        </li>
+        <li>Unordered parent item 2</li>
+      </ul>
+      <ol>
+        <li>Ordered parent item 1
+          <ul>
+            <li>Unordered child A</li>
+            <li>Unordered child B</li>
+            <li>Unordered child C</li>
+          </ul>
+        </li>
+        <li>Ordered parent item 2</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- Test 5: Definition list -->
+  <div class="test-group">
+    <h2>Test 4.5: Definition List (dl, dt, dd)</h2>
+    <div class="expected">Expected: dt (term) should be displayed in a normal/bold style. dd (definition) should be indented below its term. Multiple dd for one dt should each be indented.</div>
+    <div class="test-area">
+      <dl>
+        <dt>HTML</dt>
+        <dd>HyperText Markup Language - the standard language for creating web pages.</dd>
+        <dt>CSS</dt>
+        <dd>Cascading Style Sheets - used for styling HTML elements.</dd>
+        <dt>JavaScript</dt>
+        <dd>A programming language for the web.</dd>
+        <dd>Can be used both client-side and server-side.</dd>
+        <dt>API</dt>
+        <dd>Application Programming Interface.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <!-- Test 6: List items with multiple paragraphs -->
+  <div class="test-group">
+    <h2>Test 4.6: List Items with Multiple Paragraphs</h2>
+    <div class="expected">Expected: Each li can contain multiple p elements. The paragraphs should be spaced within the list item, and the bullet/number should align with the first paragraph.</div>
+    <div class="test-area">
+      <ul>
+        <li>
+          <p>First paragraph of item one.</p>
+          <p>Second paragraph of item one, continuing the same list item.</p>
+        </li>
+        <li>
+          <p>First paragraph of item two.</p>
+          <p>Second paragraph of item two.</p>
+          <p>Third paragraph of item two.</p>
+        </li>
+        <li>
+          <p>Single paragraph item three.</p>
+        </li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Test 7: List-style-type variations -->
+  <div class="test-group">
+    <h2>Test 4.7: List Style Types</h2>
+    <div class="expected">Expected: Each list should display a different marker type as specified. disc=filled circle, circle=hollow circle, square=filled square, decimal=1.2.3., lower-alpha=a.b.c., upper-alpha=A.B.C., lower-roman=i.ii.iii., upper-roman=I.II.III.</div>
+    <div class="test-area">
+      <p><strong>disc:</strong></p>
+      <ul style="list-style-type: disc;">
+        <li>Disc item 1</li>
+        <li>Disc item 2</li>
+      </ul>
+
+      <p><strong>circle:</strong></p>
+      <ul style="list-style-type: circle;">
+        <li>Circle item 1</li>
+        <li>Circle item 2</li>
+      </ul>
+
+      <p><strong>square:</strong></p>
+      <ul style="list-style-type: square;">
+        <li>Square item 1</li>
+        <li>Square item 2</li>
+      </ul>
+
+      <p><strong>decimal:</strong></p>
+      <ol style="list-style-type: decimal;">
+        <li>Decimal item 1</li>
+        <li>Decimal item 2</li>
+      </ol>
+
+      <p><strong>lower-alpha:</strong></p>
+      <ol style="list-style-type: lower-alpha;">
+        <li>Lower alpha item 1</li>
+        <li>Lower alpha item 2</li>
+      </ol>
+
+      <p><strong>upper-alpha:</strong></p>
+      <ol style="list-style-type: upper-alpha;">
+        <li>Upper alpha item 1</li>
+        <li>Upper alpha item 2</li>
+      </ol>
+
+      <p><strong>lower-roman:</strong></p>
+      <ol style="list-style-type: lower-roman;">
+        <li>Lower roman item 1</li>
+        <li>Lower roman item 2</li>
+        <li>Lower roman item 3</li>
+        <li>Lower roman item 4</li>
+      </ol>
+
+      <p><strong>upper-roman:</strong></p>
+      <ol style="list-style-type: upper-roman;">
+        <li>Upper roman item 1</li>
+        <li>Upper roman item 2</li>
+        <li>Upper roman item 3</li>
+        <li>Upper roman item 4</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- Test 8: Ordered list with start attribute -->
+  <div class="test-group">
+    <h2>Test 4.8: Ordered List Start and Reversed</h2>
+    <div class="expected">Expected: The first list should start numbering at 5 (5, 6, 7). The second list should count in reverse (3, 2, 1). The third should use the value attribute for specific numbers.</div>
+    <div class="test-area">
+      <p><strong>start="5":</strong></p>
+      <ol start="5">
+        <li>Item (should be 5)</li>
+        <li>Item (should be 6)</li>
+        <li>Item (should be 7)</li>
+      </ol>
+
+      <p><strong>reversed:</strong></p>
+      <ol reversed>
+        <li>Item (should be 3)</li>
+        <li>Item (should be 2)</li>
+        <li>Item (should be 1)</li>
+      </ol>
+
+      <p><strong>value attribute:</strong></p>
+      <ol>
+        <li value="10">Item (should be 10)</li>
+        <li>Item (should be 11)</li>
+        <li value="20">Item (should be 20)</li>
+        <li>Item (should be 21)</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- Test 9: Lists with inline formatting -->
+  <div class="test-group">
+    <h2>Test 4.9: Lists with Inline Formatting</h2>
+    <div class="expected">Expected: List items should support inline formatting elements like bold, italic, links, and code within the list item text.</div>
+    <div class="test-area">
+      <ul>
+        <li><strong>Bold item</strong> with normal continuation</li>
+        <li><em>Italic item</em> with normal continuation</li>
+        <li>Item with <a href="#">a link</a> inside</li>
+        <li>Item with <code>inline code</code> inside</li>
+        <li><del>Deleted item</del> <ins>replaced by this</ins></li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Test 10: Empty list and single-item list -->
+  <div class="test-group">
+    <h2>Test 4.10: Edge Cases</h2>
+    <div class="expected">Expected: An empty ul/ol should not display any markers or take significant space. A single-item list should display one bullet/number. An li with no text should show a marker but no text.</div>
+    <div class="test-area">
+      <p><strong>Empty unordered list:</strong></p>
+      <ul></ul>
+      <p><strong>Single-item list:</strong></p>
+      <ul>
+        <li>Only item</li>
+      </ul>
+      <p><strong>List with empty items:</strong></p>
+      <ul>
+        <li></li>
+        <li>Non-empty item</li>
+        <li></li>
+      </ul>
+    </div>
+  </div>
+
+</body>
+</html>

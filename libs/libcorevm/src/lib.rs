@@ -164,6 +164,16 @@ impl VmEngine {
         self.io.register(base, count, handler);
     }
 
+    /// Map a read-only ROM at a guest physical address.
+    ///
+    /// Reads to `[base, base + data.len())` return ROM data; writes are
+    /// silently ignored. Used for BIOS ROMs at high physical addresses
+    /// (e.g., SeaBIOS at 0xFFFC0000) without allocating a full 4 GiB
+    /// flat RAM buffer.
+    pub fn load_rom(&mut self, base: u64, data: Vec<u8>) {
+        self.memory.add_rom(base, data);
+    }
+
     /// Register a memory-mapped I/O handler.
     pub fn register_mmio(
         &mut self,
@@ -656,6 +666,36 @@ pub extern "C" fn corevm_load_binary(
     let vm = unsafe { vm_from_handle(handle) };
     let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
     vm.engine.load_binary(addr as usize, slice);
+    0
+}
+
+/// Map a read-only ROM at a guest physical address.
+///
+/// This creates a ROM overlay that serves reads from the specified address
+/// range without requiring the flat RAM allocation to extend that far.
+/// Writes to ROM addresses are silently ignored.
+///
+/// Used for mapping firmware ROMs in a QEMU-compatible layout:
+/// - SeaBIOS 256 KB at 0xFFFC0000 (top of 4 GiB)
+/// - Shadow copy 128 KB at 0xE0000 (below 1 MiB)
+/// - VGA BIOS at 0xC0000
+///
+/// Returns 0 on success, -1 on invalid arguments.
+#[no_mangle]
+pub extern "C" fn corevm_load_rom(
+    handle: u64,
+    addr: u64,
+    data: *const u8,
+    len: u32,
+) -> i32 {
+    if data.is_null() || len == 0 {
+        vm_log!("load_rom: null or empty data");
+        return -1;
+    }
+    vm_log!("mapping {} byte ROM at physical 0x{:08X}", len, addr);
+    let vm = unsafe { vm_from_handle(handle) };
+    let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    vm.engine.load_rom(addr, Vec::from(slice));
     0
 }
 

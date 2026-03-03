@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Integration Test 10: Stress Test / Edge Cases</title>
+  <style>
+    /* === Reset & Base === */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #d4d4d8;
+      font-family: sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+    a { color: #4ecdc4; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* === Page Container === */
+    .page {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .page-title {
+      font-size: 28px;
+      color: #f0f0f5;
+      margin-bottom: 8px;
+    }
+    .page-description {
+      font-size: 14px;
+      color: #8888a0;
+      margin-bottom: 32px;
+    }
+
+    /* === Test Case Section === */
+    .test-case {
+      margin-bottom: 32px;
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .test-case-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid #2a2a4a;
+      background: #0f1a2e;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .test-case-header h2 {
+      font-size: 16px;
+      color: #4ecdc4;
+    }
+    .test-case-header .case-num {
+      font-size: 12px;
+      color: #6868a0;
+      background: #2a2a4a;
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+    .test-case-expected {
+      padding: 10px 20px;
+      background: #1a2a1a;
+      border-bottom: 1px solid #2a4a2a;
+      font-size: 13px;
+      color: #6bff6b;
+      font-style: italic;
+    }
+    .test-case-body {
+      padding: 20px;
+      overflow: auto;
+    }
+
+    /* === Specific styles for stress test elements === */
+
+    /* Deep nesting visual indicator */
+    .nesting-box {
+      border: 1px solid rgba(78, 205, 196, 0.2);
+      padding: 2px;
+      margin: 1px;
+    }
+
+    /* Long word container */
+    .overflow-container {
+      width: 300px;
+      border: 1px solid #ff6b6b;
+      padding: 8px;
+      background: #0f1a2e;
+      overflow-wrap: break-word;
+      word-wrap: break-word;
+    }
+    .no-overflow-container {
+      width: 300px;
+      border: 1px solid #ffd93d;
+      padding: 8px;
+      background: #0f1a2e;
+      /* No overflow-wrap: tests what happens with overflow: visible (default) */
+    }
+
+    /* Large table */
+    .stress-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+    .stress-table th {
+      background: #0f1a2e;
+      color: #4ecdc4;
+      padding: 4px 6px;
+      border: 1px solid #2a2a4a;
+      text-align: left;
+      white-space: nowrap;
+    }
+    .stress-table td {
+      padding: 3px 6px;
+      border: 1px solid #1a2a4a;
+      color: #a0a0b8;
+    }
+    .stress-table tr:nth-child(even) td { background: #12203a; }
+
+    /* Style conflict test elements */
+    .conflict-red { color: red; }
+    .conflict-blue { color: blue; }
+    #conflict-id-green { color: #6bff6b; }
+
+    /* Empty elements with backgrounds/borders */
+    .empty-with-border {
+      border: 2px solid #ff6b6b;
+      margin: 4px;
+      display: inline-block;
+    }
+    .empty-with-bg {
+      background: #533483;
+      width: 40px;
+      height: 20px;
+      display: inline-block;
+      margin: 4px;
+    }
+    .empty-with-padding {
+      padding: 10px;
+      background: #0f3460;
+      display: inline-block;
+      margin: 4px;
+    }
+
+    /* Overlapping elements */
+    .overlap-container {
+      position: relative;
+      width: 200px;
+      height: 150px;
+      background: #0f1a2e;
+      border: 1px solid #2a2a4a;
+    }
+    .overlap-box {
+      position: absolute;
+      width: 80px;
+      height: 80px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: bold;
+      border-radius: 4px;
+    }
+
+    /* Zero-size elements */
+    .zero-width {
+      width: 0;
+      height: 20px;
+      border-left: 2px solid #ff6b6b;
+      display: inline-block;
+    }
+    .zero-height {
+      width: 60px;
+      height: 0;
+      border-top: 2px solid #4ecdc4;
+      display: block;
+      margin: 4px 0;
+    }
+    .zero-both {
+      width: 0;
+      height: 0;
+      border: 5px solid transparent;
+      border-top-color: #ffd93d;
+      display: inline-block;
+      margin: 4px;
+    }
+
+    /* Float test */
+    .float-container { overflow: hidden; }
+    .float-left { float: left; width: 80px; height: 60px; background: #0f3460; margin: 4px; }
+    .float-right { float: right; width: 80px; height: 60px; background: #533483; margin: 4px; }
+
+    /* Deeply nested list marker */
+    .deep-list { color: #a0a0b8; font-size: 13px; }
+    .deep-list ul { margin-left: 16px; }
+
+    /* Test labels */
+    .test-label {
+      display: inline-block;
+      font-size: 11px;
+      color: #6868a0;
+      background: #2a2a4a;
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin-bottom: 8px;
+    }
+
+    /* === Expected Rendering Section === */
+    .expected-rendering {
+      max-width: 1000px;
+      margin: 40px auto;
+      padding: 20px 24px;
+      background: #1a2a1a;
+      border: 1px solid #2a4a2a;
+      border-radius: 8px;
+      color: #6bff6b;
+      font-size: 14px;
+    }
+    .expected-rendering h2 {
+      color: #6bff6b;
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+    .expected-rendering ul { margin-left: 20px; }
+    .expected-rendering li { margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+
+  <!-- Back navigation -->
+  <div style="padding:12px 24px;background:#0a0a1e;">
+    <div class="nav" style="margin-bottom:0"><a href="../index.html" style="color:#4ecdc4;text-decoration:none">&larr; Back to Test Index</a></div>
+  </div>
+
+  <div class="page">
+    <h1 class="page-title">Stress Test &amp; Edge Cases</h1>
+    <p class="page-description">Tests that push the browser engine to its limits. Each case targets a specific edge case in parsing, layout, or rendering. The browser should handle all cases gracefully without crashing.</p>
+
+    <!-- ============================================================
+         CASE 1: 100 Nested Divs
+         Tests deep DOM nesting. Parser and layout must handle
+         arbitrarily deep trees without stack overflow.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>100 Nested Divs</h2>
+        <span class="case-num">Case 1</span>
+      </div>
+      <div class="test-case-expected">Expected: A deeply nested series of rectangles, each slightly inset from its parent due to 2px padding and 1px border. The innermost element contains "Depth 100". Should not crash or stack overflow.</div>
+      <div class="test-case-body" id="nested-divs-container">
+        <!-- 100 nested divs generated by JS below -->
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 2: Very Long Unbroken Word
+         Tests word-break / overflow behavior. Without overflow-wrap,
+         the word should extend beyond its container.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>Very Long Unbroken Word</h2>
+        <span class="case-num">Case 2</span>
+      </div>
+      <div class="test-case-expected">Expected: The first box (red border) has overflow-wrap:break-word, so the long word breaks at the container edge. The second box (yellow border) has no overflow-wrap, so the word may overflow the container horizontally.</div>
+      <div class="test-case-body">
+        <span class="test-label">With overflow-wrap: break-word (300px container)</span>
+        <div class="overflow-container">
+          Supercalifragilisticexpialidociousantidisestablishmentarianismpneumonoultramicroscopicsilicovolcanoconiosishippopotomonstrosesquippedaliophobiafloccinaucinihilipilificationhonorificabilitudinitatibus
+        </div>
+        <br>
+        <span class="test-label">Without overflow-wrap (300px container, default overflow)</span>
+        <div class="no-overflow-container">
+          Supercalifragilisticexpialidociousantidisestablishmentarianismpneumonoultramicroscopicsilicovolcanoconiosishippopotomonstrosesquippedaliophobiafloccinaucinihilipilificationhonorificabilitudinitatibus
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 3: 1000+ Character Paragraph
+         Tests text layout with a very long paragraph.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>1000+ Character Paragraph</h2>
+        <span class="case-num">Case 3</span>
+      </div>
+      <div class="test-case-expected">Expected: A large block of text that wraps naturally within the container. Line breaks should occur at word boundaries. The entire paragraph should be visible and scrollable if needed. No truncation.</div>
+      <div class="test-case-body">
+        <p style="color:#a0a0b8;font-size:14px;">
+          Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum. Curabitur pretium tincidunt lacus. Nulla gravida orci a odio. Nullam varius, turpis et commodo pharetra, est eros bibendum elit, nec luctus magna felis sollicitudin mauris. Integer in mauris eu nibh euismod gravida. Duis ac tellus et risus vulputate vehicula. Donec lobortis risus a elit. Etiam tempor. Ut ullamcorper, ligula ut dictum pharetra, nisi nunc fringilla magna, in commodo elit erat nec turpis. Ut pharetra augue nec augue. Nam elit agna, endrerit sit amet, tincidunt ac, viverra sed, nulla. Donec porta diam eu massa. Quisque diam lorem, interdum vitae, dapibus ac, scelerisque vitae, pede. Donec eget tellus non erat lacinia fermentum. Donec in velit vel ipsum auctor pulvinar. Vestibulum iaculis lacinia est. Proin dictum elementum velit. Fusce euismod consequat ante. Lorem ipsum dolor sit amet, consectetuer adipiscing elit. Pellentesque sed dolor. Aliquam congue fermentum nisl. Mauris accumsan nulla vel diam. Sed in lacus ut enim adipiscing aliquet. Nulla venenatis. In pede mi, aliquet sit amet, euismod in, auctor ut, ligula. Aliquam dapibus tincidunt metus. Praesent justo dolor, lobortis quis, lobortis dignissim, pulvinar ac, lorem.
+        </p>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 4: Large Table (20x20)
+         Tests table layout with many columns and rows.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>Table: 20 Columns x 20 Rows</h2>
+        <span class="case-num">Case 4</span>
+      </div>
+      <div class="test-case-expected">Expected: A table with 20 columns and 20 data rows (plus header row). Cells should be aligned in their columns. The table may extend beyond the container width and require horizontal scrolling. Alternating row backgrounds.</div>
+      <div class="test-case-body" style="overflow-x:auto;">
+        <table class="stress-table" id="stress-table">
+          <!-- Generated by JS -->
+        </table>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 5: 50 List Items
+         Tests list rendering performance.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>50 List Items</h2>
+        <span class="case-num">Case 5</span>
+      </div>
+      <div class="test-case-expected">Expected: An ordered list with items numbered 1 through 50. Each item should have its number marker. All items visible, properly indented, no gaps in numbering.</div>
+      <div class="test-case-body">
+        <ol id="list-50" style="color:#a0a0b8;font-size:13px;margin-left:24px;">
+          <!-- Generated by JS -->
+        </ol>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 6: Deeply Nested Lists (5 Levels)
+         Tests nested list indentation and marker styles.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>Deeply Nested Lists (5 Levels)</h2>
+        <span class="case-num">Case 6</span>
+      </div>
+      <div class="test-case-expected">Expected: Five levels of nested unordered lists. Each level should be indented further. Marker styles may alternate (disc, circle, square, disc, circle) per browser defaults. All levels visible and readable.</div>
+      <div class="test-case-body">
+        <div class="deep-list">
+          <ul>
+            <li>Level 1 - Item A
+              <ul>
+                <li>Level 2 - Item A.1
+                  <ul>
+                    <li>Level 3 - Item A.1.a
+                      <ul>
+                        <li>Level 4 - Item A.1.a.i
+                          <ul>
+                            <li>Level 5 - Item A.1.a.i.alpha</li>
+                            <li>Level 5 - Item A.1.a.i.beta</li>
+                            <li>Level 5 - Item A.1.a.i.gamma</li>
+                          </ul>
+                        </li>
+                        <li>Level 4 - Item A.1.a.ii</li>
+                      </ul>
+                    </li>
+                    <li>Level 3 - Item A.1.b</li>
+                    <li>Level 3 - Item A.1.c
+                      <ul>
+                        <li>Level 4 - Item A.1.c.i
+                          <ul>
+                            <li>Level 5 - Deep nesting still works</li>
+                          </ul>
+                        </li>
+                      </ul>
+                    </li>
+                  </ul>
+                </li>
+                <li>Level 2 - Item A.2</li>
+              </ul>
+            </li>
+            <li>Level 1 - Item B
+              <ul>
+                <li>Level 2 - Item B.1
+                  <ul>
+                    <li>Level 3 - Item B.1.a
+                      <ul>
+                        <li>Level 4 - Item B.1.a.i
+                          <ul>
+                            <li>Level 5 - Another deep item</li>
+                          </ul>
+                        </li>
+                      </ul>
+                    </li>
+                  </ul>
+                </li>
+              </ul>
+            </li>
+            <li>Level 1 - Item C (no children)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 7: Conflicting Styles (Inline vs Class vs ID)
+         Tests CSS specificity and cascade order.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>Conflicting Styles (Specificity)</h2>
+        <span class="case-num">Case 7</span>
+      </div>
+      <div class="test-case-expected">Expected: CSS specificity determines the winner. Inline styles beat ID selectors, which beat class selectors, which beat element selectors. Each line states what color it should be.</div>
+      <div class="test-case-body" style="font-size:14px;">
+        <!-- Class only: .conflict-red = red -->
+        <p class="conflict-red">1. Class says red, no other rules. Should be: <strong>red</strong></p>
+
+        <!-- Two classes: last one in stylesheet wins -->
+        <p class="conflict-red conflict-blue">2. Class red + class blue (blue defined later in CSS). Should be: <strong>blue</strong></p>
+
+        <!-- ID beats class -->
+        <p id="conflict-id-green" class="conflict-red">3. ID says green, class says red. ID wins. Should be: <strong>green</strong></p>
+
+        <!-- Inline beats everything -->
+        <p id="conflict-id-green" class="conflict-blue" style="color: #ffd93d;">4. Inline says yellow, ID says green, class says blue. Inline wins. Should be: <strong>yellow (#ffd93d)</strong></p>
+
+        <!-- Element selector (weakest) -->
+        <p style="color: inherit;">5. No class, no ID, no inline color. Inherits from parent. Should be: <strong>default text color (#d4d4d8)</strong></p>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 8: Zero-Width and Zero-Height Elements
+         Tests how the renderer handles degenerate dimensions.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>Zero-Width and Zero-Height Elements</h2>
+        <span class="case-num">Case 8</span>
+      </div>
+      <div class="test-case-expected">Expected: Zero-width element shows as a 2px red vertical line (border-left). Zero-height element shows as a 2px teal horizontal line (border-top). Zero-both is a CSS triangle (border trick). None should cause layout disruption.</div>
+      <div class="test-case-body">
+        <span class="test-label">Zero width (border-left visible as vertical line):</span><br>
+        <span style="color:#a0a0b8;font-size:13px;">Before</span>
+        <div class="zero-width"></div>
+        <span style="color:#a0a0b8;font-size:13px;">After</span>
+        <br><br>
+
+        <span class="test-label">Zero height (border-top visible as horizontal line):</span>
+        <div class="zero-height"></div>
+        <span style="color:#a0a0b8;font-size:13px;">Text after zero-height element.</span>
+        <br><br>
+
+        <span class="test-label">Zero width AND height (CSS triangle via borders):</span><br>
+        <div class="zero-both"></div>
+        <div class="zero-both" style="border-top-color: #ff6b6b;"></div>
+        <div class="zero-both" style="border-top-color: #4ecdc4;"></div>
+        <span style="color:#a0a0b8;font-size:13px;"> Three CSS triangles pointing down.</span>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 9: Empty Elements with Visual Properties
+         Tests rendering of empty elements that have borders,
+         backgrounds, or padding.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>Empty Elements with Visual Properties</h2>
+        <span class="case-num">Case 9</span>
+      </div>
+      <div class="test-case-expected">Expected: Empty elements with borders should show as small bordered rectangles. Empty elements with backgrounds should show colored rectangles (40x20). Empty elements with padding should show as small filled squares (padding creates their size). All should be visible despite having no content.</div>
+      <div class="test-case-body">
+        <span class="test-label">Empty div with border only:</span><br>
+        <div class="empty-with-border"></div>
+        <div class="empty-with-border" style="width:30px;height:15px;"></div>
+        <div class="empty-with-border" style="border-color:#4ecdc4;width:50px;height:10px;"></div>
+        <br><br>
+
+        <span class="test-label">Empty div with background color:</span><br>
+        <div class="empty-with-bg"></div>
+        <div class="empty-with-bg" style="background:#0f3460;"></div>
+        <div class="empty-with-bg" style="background:#3a1a1a;width:60px;"></div>
+        <br><br>
+
+        <span class="test-label">Empty div with padding only (no explicit size):</span><br>
+        <div class="empty-with-padding"></div>
+        <div class="empty-with-padding" style="padding:20px;background:#533483;"></div>
+        <br><br>
+
+        <span class="test-label">Empty span, em, strong, a (inline empties):</span><br>
+        <span style="border:1px solid #ff6b6b;padding:2px 4px;"></span>
+        <em style="background:#0f3460;padding:2px 8px;"></em>
+        <strong style="border:1px solid #4ecdc4;padding:2px 4px;"></strong>
+        <a href="#" style="background:#533483;padding:2px 8px;"></a>
+        <span style="color:#6868a0;font-size:12px;"> (four empty inline elements with borders/backgrounds)</span>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 10: Overlapping Absolute Positioned Elements
+         Tests z-order and absolute positioning stacking.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>Overlapping Absolutely Positioned Elements</h2>
+        <span class="case-num">Case 10</span>
+      </div>
+      <div class="test-case-expected">Expected: Four colored boxes overlapping within a 200x150 container. They stack in DOM order (last on top) unless z-index is specified. Box D (z-index: 10) should be on top despite being third in DOM. Box C (no z-index) should be under Box D but over Boxes A and B.</div>
+      <div class="test-case-body">
+        <div class="overlap-container">
+          <div class="overlap-box" style="background:rgba(255,107,107,0.8); top:10px; left:10px; z-index:1;">A (z:1)</div>
+          <div class="overlap-box" style="background:rgba(78,205,196,0.8); top:30px; left:40px; z-index:2;">B (z:2)</div>
+          <div class="overlap-box" style="background:rgba(155,89,182,0.8); top:50px; left:70px;">C (no z)</div>
+          <div class="overlap-box" style="background:rgba(255,217,61,0.8); top:20px; left:100px; z-index:10; color:#0a0a1e;">D (z:10)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 11: Float Clearing
+         Tests float layout and container collapse.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>Float Layout and Clearing</h2>
+        <span class="case-num">Case 11</span>
+      </div>
+      <div class="test-case-expected">Expected: The first container uses overflow:hidden to contain floats (self-clearing). Left and right floated boxes should appear on opposite sides with text wrapping between them. The container should expand to encompass the floated elements.</div>
+      <div class="test-case-body">
+        <span class="test-label">Container with overflow:hidden (self-clearing):</span>
+        <div class="float-container" style="border:1px solid #3a3a5a;padding:8px;margin-bottom:12px;background:#0f1a2e;">
+          <div class="float-left" style="display:flex;align-items:center;justify-content:center;color:#a0b4d0;font-size:12px;">Float Left</div>
+          <div class="float-right" style="display:flex;align-items:center;justify-content:center;color:#a0b4d0;font-size:12px;">Float Right</div>
+          <p style="color:#a0a0b8;font-size:13px;">This text should wrap around the floated elements. The container should expand to fit the floated boxes. Without clearing, the container would collapse to the height of this text only, and the floats would overflow visually.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 12: Rapid DOM Manipulation (JS Stress)
+         Tests performance of creating many DOM elements at once.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>Rapid DOM Manipulation (JS)</h2>
+        <span class="case-num">Case 12</span>
+      </div>
+      <div class="test-case-expected">Expected: A button that, when clicked, creates 500 small colored squares arranged in a wrapping flex container. The browser should not freeze or crash. The time taken is displayed.</div>
+      <div class="test-case-body">
+        <button class="btn btn-primary" id="dom-stress-btn" style="margin-bottom:12px;">Generate 500 Elements</button>
+        <div id="dom-stress-time" style="font-size:13px;color:#6868a0;margin-bottom:8px;"></div>
+        <div id="dom-stress-container" style="display:flex;flex-wrap:wrap;gap:2px;"></div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 13: Inline Elements Breaking Across Lines
+         Tests inline formatting across line breaks.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>Inline Elements Breaking Across Lines</h2>
+        <span class="case-num">Case 13</span>
+      </div>
+      <div class="test-case-expected">Expected: A span with a colored background should correctly wrap across multiple lines, with the background color continuing on each line. Bold, italic, and underlined text should also wrap correctly without losing their styling at line breaks.</div>
+      <div class="test-case-body">
+        <p style="width:400px;color:#c8c8d8;font-size:14px;">
+          This sentence contains a <span style="background:rgba(78,205,196,0.3);padding:2px 0;">highlighted span that is long enough to wrap to the next line and should maintain its background color even after the line break occurs</span> and then the normal text continues.
+        </p>
+        <p style="width:400px;color:#c8c8d8;font-size:14px;margin-top:8px;">
+          And here is <strong>bold text that wraps across a line boundary to verify that the bold weight is maintained on both lines</strong> and
+          <em>italic text that similarly wraps across a line boundary to verify that the italic style persists</em> and
+          <u>underlined text that wraps to test that the underline continues on the next line</u>.
+        </p>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CASE 14: Many Siblings
+         Tests layout performance with many sibling elements.
+         ============================================================ -->
+    <div class="test-case">
+      <div class="test-case-header">
+        <h2>200 Sibling Div Elements</h2>
+        <span class="case-num">Case 14</span>
+      </div>
+      <div class="test-case-expected">Expected: 200 thin colored bars stacked vertically. Each bar is 4px tall with alternating colors. The browser should render all 200 without significant lag. Scrolling should be smooth.</div>
+      <div class="test-case-body" id="siblings-container">
+        <!-- Generated by JS -->
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============================================================
+       JAVASCRIPT: Generate dynamic test content
+       ============================================================ -->
+  <script>
+    /**
+     * Case 1: Generate 100 nested divs.
+     * Each div is nested inside the previous one, creating a tree 100 levels deep.
+     */
+    (function() {
+      var container = document.getElementById('nested-divs-container');
+      if (!container) return;
+
+      var current = container;
+      for (var i = 1; i <= 100; i++) {
+        var div = document.createElement('div');
+        div.className = 'nesting-box';
+        if (i === 100) {
+          div.style.background = '#0f3460';
+          div.style.padding = '8px';
+          div.style.color = '#4ecdc4';
+          div.style.fontSize = '13px';
+          div.style.fontWeight = 'bold';
+          div.style.textAlign = 'center';
+          div.textContent = 'Depth 100 (innermost)';
+        }
+        current.appendChild(div);
+        current = div;
+      }
+    })();
+
+    /**
+     * Case 4: Generate 20x20 table.
+     * Creates a table with 20 columns (Col-01 to Col-20) and 20 data rows.
+     */
+    (function() {
+      var table = document.getElementById('stress-table');
+      if (!table) return;
+
+      // Header row
+      var thead = document.createElement('thead');
+      var headerRow = document.createElement('tr');
+      for (var c = 1; c <= 20; c++) {
+        var th = document.createElement('th');
+        th.textContent = 'Col-' + (c < 10 ? '0' : '') + c;
+        headerRow.appendChild(th);
+      }
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+
+      // Data rows
+      var tbody = document.createElement('tbody');
+      for (var r = 1; r <= 20; r++) {
+        var row = document.createElement('tr');
+        for (var c = 1; c <= 20; c++) {
+          var td = document.createElement('td');
+          td.textContent = 'R' + r + 'C' + c;
+          row.appendChild(td);
+        }
+        tbody.appendChild(row);
+      }
+      table.appendChild(tbody);
+    })();
+
+    /**
+     * Case 5: Generate 50 ordered list items.
+     */
+    (function() {
+      var list = document.getElementById('list-50');
+      if (!list) return;
+
+      var items = [
+        'Parse HTML tokens from source',
+        'Build DOM tree structure',
+        'Handle self-closing tags',
+        'Process character entities',
+        'Resolve relative URLs',
+        'Parse CSS selectors',
+        'Compute specificity values',
+        'Resolve cascade conflicts',
+        'Apply inherited properties',
+        'Calculate used values',
+        'Build layout tree from DOM',
+        'Perform block formatting',
+        'Handle inline formatting',
+        'Implement flexbox algorithm',
+        'Support CSS Grid layout',
+        'Handle absolute positioning',
+        'Process fixed positioning',
+        'Compute margin collapsing',
+        'Handle float layout',
+        'Implement clear property',
+        'Calculate percentage widths',
+        'Resolve auto margins',
+        'Handle min/max constraints',
+        'Process overflow behavior',
+        'Implement scrolling regions',
+        'Paint background colors',
+        'Paint background images',
+        'Paint borders and outlines',
+        'Paint text with font metrics',
+        'Handle text decoration',
+        'Process opacity and blending',
+        'Implement box shadow',
+        'Handle border-radius clipping',
+        'Paint list markers',
+        'Process table borders',
+        'Handle replaced elements',
+        'Implement image decoding',
+        'Process SVG rendering',
+        'Handle canvas 2D context',
+        'Implement hit testing',
+        'Handle mouse events',
+        'Process keyboard events',
+        'Manage focus navigation',
+        'Handle form submission',
+        'Process input validation',
+        'Implement history navigation',
+        'Handle fragment scrolling',
+        'Process media queries',
+        'Implement resize observers',
+        'Run garbage collection'
+      ];
+
+      for (var i = 0; i < items.length; i++) {
+        var li = document.createElement('li');
+        li.textContent = items[i];
+        list.appendChild(li);
+      }
+    })();
+
+    /**
+     * Case 12: DOM stress test - create 500 colored squares on button click.
+     */
+    (function() {
+      var btn = document.getElementById('dom-stress-btn');
+      var container = document.getElementById('dom-stress-container');
+      var timeDisplay = document.getElementById('dom-stress-time');
+      if (!btn || !container) return;
+
+      btn.addEventListener('click', function() {
+        container.innerHTML = '';
+        var start = Date.now();
+
+        var colors = ['#ff6b6b', '#4ecdc4', '#ffd93d', '#9b59b6', '#0f3460', '#533483', '#6bff6b', '#ff8b94'];
+        for (var i = 0; i < 500; i++) {
+          var el = document.createElement('div');
+          el.style.width = '12px';
+          el.style.height = '12px';
+          el.style.background = colors[i % colors.length];
+          el.style.borderRadius = '2px';
+          container.appendChild(el);
+        }
+
+        var elapsed = Date.now() - start;
+        timeDisplay.textContent = '500 elements created in ' + elapsed + 'ms';
+        btn.textContent = 'Regenerate 500 Elements';
+      });
+    })();
+
+    /**
+     * Case 14: Generate 200 sibling divs (thin colored bars).
+     */
+    (function() {
+      var container = document.getElementById('siblings-container');
+      if (!container) return;
+
+      var colors = ['#0f3460', '#16213e', '#1a2a4e', '#0f1a2e'];
+      for (var i = 0; i < 200; i++) {
+        var div = document.createElement('div');
+        div.style.height = '4px';
+        div.style.background = colors[i % colors.length];
+        div.style.marginBottom = '1px';
+        if (i % 10 === 0) {
+          div.style.background = '#4ecdc4';
+          div.style.height = '2px';
+        }
+        container.appendChild(div);
+      }
+    })();
+  </script>
+
+  <!-- ============================================================
+       EXPECTED RENDERING (Overall)
+       ============================================================ -->
+  <div class="expected-rendering">
+    <h2>Expected Rendering (Overall)</h2>
+    <ul>
+      <li><strong>Case 1 (100 Nested Divs):</strong> A visible nesting pattern of bordered divs getting progressively smaller toward the center. The innermost div says "Depth 100". No stack overflow, no crash.</li>
+      <li><strong>Case 2 (Long Word):</strong> Two boxes. The first (red border, overflow-wrap) shows the word breaking at the container edge across multiple lines. The second (yellow border, no overflow-wrap) may show the word overflowing the container horizontally.</li>
+      <li><strong>Case 3 (Long Paragraph):</strong> A large paragraph (1000+ characters) that wraps naturally. All text should be visible. No truncation or clipping.</li>
+      <li><strong>Case 4 (20x20 Table):</strong> A wide table with 20 columns and 20 rows. Cells contain "R1C1" through "R20C20". Table headers in teal. Alternating row backgrounds. Horizontal scroll if table exceeds container width.</li>
+      <li><strong>Case 5 (50 List Items):</strong> Ordered list numbered 1-50 with descriptive text per item. All 50 items visible with proper numbering and indentation.</li>
+      <li><strong>Case 6 (5-Level Nesting):</strong> Deeply nested unordered lists with increasing indentation per level. Items named by their hierarchy (e.g., "Level 3 - Item A.1.a"). All 5 levels visible.</li>
+      <li><strong>Case 7 (Style Conflicts):</strong> Five lines testing CSS specificity. Line 1: red (class). Line 2: blue (later class wins). Line 3: green (ID beats class). Line 4: yellow (inline beats all). Line 5: default color (inherited).</li>
+      <li><strong>Case 8 (Zero Dimensions):</strong> A red vertical line (zero width + border), a teal horizontal line (zero height + border), and three downward-pointing CSS triangles (zero width+height + border trick).</li>
+      <li><strong>Case 9 (Empty Elements):</strong> Visible empty elements: bordered rectangles, colored rectangles, padding-only squares, and inline empties with visual properties. All should be visible despite having no text content.</li>
+      <li><strong>Case 10 (Overlapping):</strong> Four semi-transparent colored boxes overlapping in a container. Box D (yellow, z-index:10) is on top. Box C (purple, no z-index) is between B and D. Boxes A and B at lower z-indices are partially obscured.</li>
+      <li><strong>Case 11 (Floats):</strong> Left-floated blue box and right-floated purple box with text wrapping between them. The container expands to contain the floated elements via overflow:hidden.</li>
+      <li><strong>Case 12 (DOM Stress):</strong> A button that generates 500 small colored squares in a flex-wrap container. Displays elapsed time. Should complete in under 500ms and not freeze the browser.</li>
+      <li><strong>Case 13 (Inline Line Breaks):</strong> Highlighted span, bold, italic, and underlined text all wrapping across lines within a 400px container. Styling must persist across the line break.</li>
+      <li><strong>Case 14 (200 Siblings):</strong> 200 thin horizontal bars (4px tall) stacked vertically with alternating colors. Every 10th bar is teal and thinner (2px). All 200 should render smoothly.</li>
+      <li><strong>Overall:</strong> The page should load without crashes, freezes, or stack overflows. Each edge case is contained in its own section. Scrolling through the entire page should be smooth.</li>
+    </ul>
+  </div>
+
+</body>
+</html>

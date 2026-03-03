@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CSS Test 26: CSS Inheritance</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  /* Test 1: Inherited properties - color */
+  .test-area.test-color-inherit .parent-color {
+    color: #ff6b6b;
+  }
+
+  /* Test 2: Inherited properties - font */
+  .test-area.test-font-inherit .parent-font {
+    font-size: 20px;
+    font-weight: bold;
+    font-style: italic;
+    line-height: 1.8;
+  }
+
+  /* Test 3: Inherited properties - text-align */
+  .test-area.test-text-align .parent-align {
+    text-align: center;
+    border: 1px dashed #555;
+    padding: 8px;
+    margin: 6px 0;
+  }
+  .test-area.test-text-align .parent-right {
+    text-align: right;
+    border: 1px dashed #555;
+    padding: 8px;
+    margin: 6px 0;
+  }
+
+  /* Test 4: Non-inherited properties */
+  .test-area.test-no-inherit .parent-border {
+    background: #3a1a2a;
+    margin: 10px;
+    padding: 15px;
+    border: 3px solid #ff6b6b;
+    width: 80%;
+    height: 100px;
+  }
+  .test-area.test-no-inherit .parent-border .child {
+    padding: 4px 8px;
+  }
+
+  /* Test 5: inherit keyword */
+  .test-area.test-inherit-keyword .parent-border-kw {
+    border: 3px solid #4ecdc4;
+    padding: 15px;
+    background: #1a3a3a;
+  }
+  .test-area.test-inherit-keyword .child-inherit {
+    border: inherit;
+    padding: inherit;
+    background: inherit;
+    margin: 5px;
+  }
+
+  /* Test 6: initial keyword */
+  .test-area.test-initial .styled-parent {
+    color: #ff6b6b;
+    font-weight: bold;
+    font-size: 20px;
+  }
+  .test-area.test-initial .reset-child {
+    color: initial;
+    font-weight: initial;
+    font-size: initial;
+  }
+
+  /* Test 7: Deep nesting inheritance */
+  .test-area.test-deep-inherit .grandparent {
+    color: #e2b93d;
+    font-size: 18px;
+    font-weight: bold;
+    border: 2px solid #e2b93d;
+    padding: 10px;
+  }
+  .test-area.test-deep-inherit .parent-mid {
+    padding: 10px;
+    border: 1px dashed #555;
+    margin: 6px 0;
+  }
+  .test-area.test-deep-inherit .grandchild {
+    padding: 8px;
+    background: #1a2a1a;
+    border-radius: 4px;
+  }
+
+  /* Test 8: Inheritance vs direct styling */
+  .test-area.test-override .ancestor {
+    color: #ff6b6b;
+    font-size: 22px;
+    font-weight: bold;
+  }
+  .test-area.test-override .descendant-override {
+    color: #4ecdc4;
+    /* font-size and font-weight NOT overridden, so they inherit */
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 26: CSS Inheritance</h1>
+
+<!-- Test 1: Inherited property - color -->
+<div class="test-group">
+  <h2>Test 1: Inherited Property - color</h2>
+  <div class="expected">Expected: The parent has color: red. All child elements (span, strong, em, nested div) should INHERIT the red color without explicitly setting it. Color is an inherited property.</div>
+  <div class="test-area test-color-inherit">
+    <div class="parent-color">
+      Parent text is RED.
+      <span>Span child - should INHERIT red</span> |
+      <strong>Strong child - should INHERIT red</strong> |
+      <em>Em child - should INHERIT red</em>
+      <div>
+        Nested div child - should INHERIT red
+        <p>Nested paragraph grandchild - should INHERIT red</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 2: Inherited properties - font properties -->
+<div class="test-group">
+  <h2>Test 2: Inherited Properties - font-size, font-weight, font-style, line-height</h2>
+  <div class="expected">Expected: The parent has font-size: 20px, font-weight: bold, font-style: italic, line-height: 1.8. All children should inherit these font properties, appearing as 20px bold italic text with generous line spacing.</div>
+  <div class="test-area test-font-inherit">
+    <div class="parent-font">
+      Parent text: 20px, bold, italic, line-height 1.8
+      <div>
+        <span>Child span - should inherit all font properties (20px, bold, italic)</span>
+        <p>Child paragraph - should inherit all font properties (20px, bold, italic, line-height 1.8)</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 3: Inherited property - text-align -->
+<div class="test-group">
+  <h2>Test 3: Inherited Property - text-align</h2>
+  <div class="expected">Expected: The first parent has text-align: center. All children inside it should be centered. The second parent has text-align: right. All children inside it should be right-aligned. text-align is inherited.</div>
+  <div class="test-area test-text-align">
+    <div class="parent-align">
+      Parent: text-align center
+      <p>Child paragraph - should be CENTERED (inherits text-align)</p>
+      <div>
+        <span>Grandchild span - should be CENTERED (inherits text-align)</span>
+      </div>
+    </div>
+    <div class="parent-right">
+      Parent: text-align right
+      <p>Child paragraph - should be RIGHT-ALIGNED (inherits text-align)</p>
+      <div>
+        <span>Grandchild span - should be RIGHT-ALIGNED (inherits text-align)</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 4: Non-inherited properties -->
+<div class="test-group">
+  <h2>Test 4: Non-Inherited Properties (background, margin, padding, border, width, height)</h2>
+  <div class="expected">Expected: The parent has background (dark red), margin (10px), padding (15px), border (3px solid red), width (80%), height (100px). The child should NOT inherit any of these - it should have transparent background, no margin, no padding, no border, auto width, auto height.</div>
+  <div class="test-area test-no-inherit">
+    <div class="parent-border">
+      Parent: has background, margin, padding, border, width, height
+      <div class="child">
+        Child: should NOT inherit background (transparent), margin (0), padding (small explicit), border (none), width (auto), height (auto). The child sits inside the parent but does not replicate parent's box properties.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 5: inherit keyword -->
+<div class="test-group">
+  <h2>Test 5: The "inherit" Keyword</h2>
+  <div class="expected">Expected: The parent has a teal border (3px solid), padding (15px), and teal background. The child uses "inherit" for border, padding, and background - forcing these normally non-inherited properties to copy from the parent. The child should have the SAME border, padding, and background as the parent.</div>
+  <div class="test-area test-inherit-keyword">
+    <div class="parent-border-kw">
+      Parent: 3px solid teal border, 15px padding, teal-tinted background
+      <div class="child-inherit">
+        Child with border: inherit; padding: inherit; background: inherit;
+        <br>Should have the SAME teal border, padding, and background as parent.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: initial keyword -->
+<div class="test-group">
+  <h2>Test 6: The "initial" Keyword</h2>
+  <div class="expected">Expected: The parent has red color, bold weight, 20px size. The child uses "initial" for all three properties, resetting them to their CSS initial values: color becomes black (initial), font-weight becomes normal (initial = 400), font-size becomes medium (initial, typically 16px). The child should look visually different from the parent.</div>
+  <div class="test-area test-initial">
+    <div class="styled-parent">
+      Parent: RED, bold, 20px
+      <div class="reset-child">
+        Child with color/font-weight/font-size: initial - should be DEFAULT color (black/dark), normal weight, medium (~16px) size. Looks different from parent.
+      </div>
+      <div>
+        Normal child (no initial) - should INHERIT red, bold, 20px from parent
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 7: Deep nesting inheritance -->
+<div class="test-group">
+  <h2>Test 7: Deep Nesting - Grandchild Inherits from Grandparent</h2>
+  <div class="expected">Expected: Grandparent sets color (golden), font-size (18px), font-weight (bold), and border (non-inherited). The middle parent adds NO color/font styles. The grandchild should inherit golden color, 18px size, and bold weight from grandparent through the middle parent. The border should NOT propagate.</div>
+  <div class="test-area test-deep-inherit">
+    <div class="grandparent">
+      Grandparent: golden color, 18px, bold, golden border
+      <div class="parent-mid">
+        Middle parent: no explicit color/font styles (inherits golden, 18px, bold). Has its own dashed border (NOT inherited from grandparent).
+        <div class="grandchild">
+          Grandchild: should inherit GOLDEN color, 18px, bold from grandparent through middle parent. Has its own green background and border-radius (non-inherited properties set directly). No golden border (border does not inherit).
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 8: Inheritance vs direct styling override -->
+<div class="test-group">
+  <h2>Test 8: Inheritance vs Direct Styling Override</h2>
+  <div class="expected">Expected: The ancestor sets color (red), font-size (22px), font-weight (bold). The descendant overrides ONLY color to teal. The font-size (22px) and font-weight (bold) should still be inherited since they are not overridden. Direct styles on an element always beat inherited values.</div>
+  <div class="test-area test-override">
+    <div class="ancestor">
+      Ancestor: RED, 22px, bold
+      <div class="descendant-override">
+        Descendant: overrides color to TEAL, but inherits 22px and bold from ancestor. Should be TEAL, 22px, bold.
+      </div>
+      <div>
+        Normal descendant (no override): should inherit RED, 22px, bold
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

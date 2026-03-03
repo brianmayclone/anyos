@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: Control Flow</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">04 - Control Flow</h1>
+
+<div class="test-group">
+  <h2>Conditionals, Loops, and Branching</h2>
+  <div class="expected">Expected: All control flow constructs (if/else, for, while, switch, break, continue) should produce correct results.</div>
+  <div class="test-area" id="results"></div>
+</div>
+
+<script>
+function test(name, fn) {
+  var resultDiv = document.getElementById('results');
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// --- if / else if / else ---
+test('if: true branch executes', function() {
+  var result = '';
+  if (true) { result = 'yes'; }
+  return result === 'yes';
+});
+
+test('if/else: false takes else branch', function() {
+  var result = '';
+  if (false) { result = 'yes'; } else { result = 'no'; }
+  return result === 'no';
+});
+
+test('if/else if/else chain', function() {
+  function classify(n) {
+    if (n > 0) return 'positive';
+    else if (n < 0) return 'negative';
+    else return 'zero';
+  }
+  return classify(5) === 'positive' && classify(-3) === 'negative' && classify(0) === 'zero';
+});
+
+test('Nested if statements', function() {
+  function nested(a, b) {
+    if (a > 0) {
+      if (b > 0) return 'both positive';
+      else return 'only a positive';
+    } else {
+      return 'a not positive';
+    }
+  }
+  return nested(1, 1) === 'both positive' && nested(1, -1) === 'only a positive' && nested(-1, 1) === 'a not positive';
+});
+
+// --- for loop ---
+test('for loop: sum 1 to 10', function() {
+  var sum = 0;
+  for (var i = 1; i <= 10; i++) {
+    sum += i;
+  }
+  return sum === 55;
+});
+
+test('for loop: iterate array', function() {
+  var arr = [10, 20, 30, 40, 50];
+  var sum = 0;
+  for (var i = 0; i < arr.length; i++) {
+    sum += arr[i];
+  }
+  return sum === 150;
+});
+
+test('for loop: decrement', function() {
+  var result = '';
+  for (var i = 5; i >= 1; i--) {
+    result += i;
+  }
+  return result === '54321';
+});
+
+// --- while loop ---
+test('while loop: count to 5', function() {
+  var count = 0;
+  var sum = 0;
+  while (count < 5) {
+    count++;
+    sum += count;
+  }
+  return sum === 15 && count === 5;
+});
+
+test('while loop: skip on false condition', function() {
+  var ran = false;
+  while (false) {
+    ran = true;
+  }
+  return ran === false;
+});
+
+// --- do...while loop ---
+test('do...while: executes at least once', function() {
+  var count = 0;
+  do {
+    count++;
+  } while (false);
+  return count === 1;
+});
+
+test('do...while: loops until condition false', function() {
+  var n = 1;
+  var result = 1;
+  do {
+    n++;
+    result *= n;
+  } while (n < 5);
+  return result === 120; // 1*2*3*4*5 = 120
+});
+
+// --- for...in (object keys) ---
+test('for...in: iterate object keys', function() {
+  var obj = { a: 1, b: 2, c: 3 };
+  var keys = [];
+  for (var key in obj) {
+    keys.push(key);
+  }
+  return keys.length === 3 && keys.indexOf('a') >= 0 && keys.indexOf('b') >= 0 && keys.indexOf('c') >= 0;
+});
+
+test('for...in: iterate array indices (strings)', function() {
+  var arr = [10, 20, 30];
+  var indices = [];
+  for (var i in arr) {
+    indices.push(i);
+  }
+  return indices.length === 3 && indices[0] == '0' && indices[1] == '1' && indices[2] == '2';
+});
+
+// --- for...of (array values) ---
+test('for...of: iterate array values', function() {
+  var arr = [10, 20, 30];
+  var sum = 0;
+  for (var val of arr) {
+    sum += val;
+  }
+  return sum === 60;
+});
+
+test('for...of: iterate string characters', function() {
+  var chars = [];
+  for (var ch of 'abc') {
+    chars.push(ch);
+  }
+  return chars.length === 3 && chars[0] === 'a' && chars[1] === 'b' && chars[2] === 'c';
+});
+
+// --- switch/case/default ---
+test('switch: matching case', function() {
+  var day = 3;
+  var name = '';
+  switch (day) {
+    case 1: name = 'Monday'; break;
+    case 2: name = 'Tuesday'; break;
+    case 3: name = 'Wednesday'; break;
+    default: name = 'Unknown';
+  }
+  return name === 'Wednesday';
+});
+
+test('switch: default case', function() {
+  var x = 99;
+  var result = '';
+  switch (x) {
+    case 1: result = 'one'; break;
+    case 2: result = 'two'; break;
+    default: result = 'other';
+  }
+  return result === 'other';
+});
+
+test('switch: fall-through without break', function() {
+  var x = 1;
+  var result = '';
+  switch (x) {
+    case 1: result += 'a';
+    case 2: result += 'b';
+    case 3: result += 'c'; break;
+    case 4: result += 'd';
+  }
+  return result === 'abc';
+});
+
+test('switch: string matching', function() {
+  var color = 'green';
+  var hex = '';
+  switch (color) {
+    case 'red': hex = '#ff0000'; break;
+    case 'green': hex = '#00ff00'; break;
+    case 'blue': hex = '#0000ff'; break;
+  }
+  return hex === '#00ff00';
+});
+
+// --- break ---
+test('break: exits for loop early', function() {
+  var last = 0;
+  for (var i = 0; i < 100; i++) {
+    if (i === 5) break;
+    last = i;
+  }
+  return last === 4;
+});
+
+test('break: exits while loop', function() {
+  var count = 0;
+  while (true) {
+    if (count >= 3) break;
+    count++;
+  }
+  return count === 3;
+});
+
+// --- continue ---
+test('continue: skip even numbers', function() {
+  var odds = [];
+  for (var i = 0; i < 10; i++) {
+    if (i % 2 === 0) continue;
+    odds.push(i);
+  }
+  return odds.length === 5 && odds[0] === 1 && odds[4] === 9;
+});
+
+test('continue: skip specific value in while', function() {
+  var result = [];
+  var i = 0;
+  while (i < 5) {
+    i++;
+    if (i === 3) continue;
+    result.push(i);
+  }
+  return result.length === 4 && result.indexOf(3) === -1;
+});
+
+// --- Nested loops ---
+test('Nested for loops: multiplication table cell', function() {
+  var found = false;
+  for (var i = 1; i <= 9; i++) {
+    for (var j = 1; j <= 9; j++) {
+      if (i * j === 42) {
+        found = true;
+        break;
+      }
+    }
+    if (found) break;
+  }
+  return found === true;
+});
+
+test('Nested loops: 2D array traversal', function() {
+  var matrix = [[1, 2], [3, 4], [5, 6]];
+  var sum = 0;
+  for (var r = 0; r < matrix.length; r++) {
+    for (var c = 0; c < matrix[r].length; c++) {
+      sum += matrix[r][c];
+    }
+  }
+  return sum === 21;
+});
+
+// --- Truthiness / falsiness in conditions ---
+test('Falsy values: 0, "", null, undefined, NaN', function() {
+  var falsy = [0, '', null, undefined, NaN];
+  var allFalsy = true;
+  for (var i = 0; i < falsy.length; i++) {
+    if (falsy[i]) allFalsy = false;
+  }
+  return allFalsy;
+});
+
+test('Truthy values: 1, "hello", [], {}', function() {
+  var truthy = [1, 'hello', [], {}];
+  var allTruthy = true;
+  for (var i = 0; i < truthy.length; i++) {
+    if (!truthy[i]) allTruthy = false;
+  }
+  return allTruthy;
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Integration Test 08: Typography Showcase</title>
+  <style>
+    /* === Reset & Base === */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #d4d4d8;
+      font-family: sans-serif;
+      font-size: 16px;
+      line-height: 1.7;
+    }
+    a { color: #4ecdc4; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* === Page Container === */
+    .page {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .page-title {
+      font-size: 32px;
+      color: #f0f0f5;
+      margin-bottom: 8px;
+    }
+    .page-description {
+      font-size: 15px;
+      color: #8888a0;
+      margin-bottom: 40px;
+      border-bottom: 1px solid #2a2a4a;
+      padding-bottom: 16px;
+    }
+
+    /* === Section wrapper === */
+    .typo-section {
+      margin-bottom: 48px;
+    }
+    .typo-section > h2 {
+      font-size: 20px;
+      color: #4ecdc4;
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #2a2a4a;
+    }
+
+    /* ============================================================
+       BODY TEXT
+       Full paragraph at comfortable reading size and line-height
+       ============================================================ */
+    .body-text p {
+      margin-bottom: 16px;
+      color: #c8c8d8;
+    }
+
+    /* ============================================================
+       HEADINGS
+       All six heading levels with descriptive paragraph after each
+       ============================================================ */
+    .heading-demo h1 {
+      font-size: 36px;
+      color: #f0f0f5;
+      line-height: 1.2;
+      margin-bottom: 8px;
+    }
+    .heading-demo h2 {
+      font-size: 28px;
+      color: #f0f0f5;
+      line-height: 1.3;
+      margin-bottom: 8px;
+    }
+    .heading-demo h3 {
+      font-size: 22px;
+      color: #e8e8f0;
+      line-height: 1.3;
+      margin-bottom: 8px;
+    }
+    .heading-demo h4 {
+      font-size: 18px;
+      color: #e0e0e8;
+      line-height: 1.4;
+      margin-bottom: 8px;
+    }
+    .heading-demo h5 {
+      font-size: 16px;
+      color: #d4d4d8;
+      line-height: 1.4;
+      margin-bottom: 8px;
+    }
+    .heading-demo h6 {
+      font-size: 14px;
+      color: #c0c0cc;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      line-height: 1.4;
+      margin-bottom: 8px;
+    }
+    .heading-demo p {
+      margin-bottom: 24px;
+      color: #a0a0b8;
+      font-size: 14px;
+    }
+
+    /* ============================================================
+       INLINE FORMATTING
+       Bold, italic, code, links, underline, strikethrough, etc.
+       ============================================================ */
+    .inline-demo p {
+      margin-bottom: 14px;
+      color: #c8c8d8;
+    }
+
+    /* Inline code */
+    code {
+      background: #0f3460;
+      color: #ffd93d;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 14px;
+    }
+
+    /* Keyboard shortcut */
+    kbd {
+      background: #2a2a4a;
+      color: #e0e0e8;
+      padding: 2px 6px;
+      border: 1px solid #3a3a5a;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 13px;
+    }
+
+    /* Mark / highlight */
+    mark {
+      background: rgba(255,217,61,0.3);
+      color: #ffd93d;
+      padding: 1px 4px;
+      border-radius: 2px;
+    }
+
+    /* Abbreviation */
+    abbr {
+      text-decoration: underline dotted;
+      cursor: help;
+      color: #c8c8d8;
+    }
+
+    /* ============================================================
+       BLOCKQUOTES
+       Styled quotes with left border and citation
+       ============================================================ */
+    blockquote {
+      border-left: 4px solid #4ecdc4;
+      margin: 16px 0;
+      padding: 16px 20px;
+      background: #16213e;
+      border-radius: 0 8px 8px 0;
+    }
+    blockquote p {
+      color: #b0b0c8;
+      font-style: italic;
+      font-size: 16px;
+      line-height: 1.7;
+      margin-bottom: 0;
+    }
+    blockquote cite {
+      display: block;
+      margin-top: 10px;
+      font-size: 13px;
+      color: #6868a0;
+      font-style: normal;
+    }
+    /* Nested blockquote */
+    blockquote blockquote {
+      border-left-color: #9b59b6;
+      margin-top: 12px;
+      background: #1a1a2e;
+    }
+
+    /* ============================================================
+       CODE BLOCKS
+       Pre/code with syntax-like coloring
+       ============================================================ */
+    pre {
+      background: #0a0a1e;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      padding: 16px;
+      overflow-x: auto;
+      margin: 16px 0;
+      line-height: 1.5;
+    }
+    pre code {
+      background: none;
+      padding: 0;
+      color: #d4d4d8;
+      font-size: 14px;
+    }
+    /* Syntax token colors */
+    .tok-kw { color: #ff6b6b; }    /* keywords */
+    .tok-fn { color: #4ecdc4; }    /* function names */
+    .tok-str { color: #ffd93d; }   /* strings */
+    .tok-cm { color: #6a737d; }    /* comments */
+    .tok-num { color: #9b59b6; }   /* numbers */
+    .tok-type { color: #4ecdc4; }  /* type names */
+    .tok-op { color: #d4d4d8; }    /* operators */
+
+    /* ============================================================
+       LISTS
+       Ordered and unordered with proper indentation
+       ============================================================ */
+    .list-demo ul, .list-demo ol {
+      margin: 8px 0 16px 28px;
+      color: #c8c8d8;
+    }
+    .list-demo li {
+      margin-bottom: 4px;
+    }
+    /* Nested lists */
+    .list-demo ul ul, .list-demo ol ol, .list-demo ul ol, .list-demo ol ul {
+      margin-top: 4px;
+      margin-bottom: 4px;
+    }
+
+    /* Definition list */
+    dl {
+      margin: 8px 0 16px;
+    }
+    dt {
+      font-weight: bold;
+      color: #f0f0f5;
+      margin-top: 12px;
+    }
+    dd {
+      margin-left: 20px;
+      color: #a0a0b8;
+      font-size: 14px;
+    }
+
+    /* ============================================================
+       HORIZONTAL RULE
+       ============================================================ */
+    hr {
+      border: none;
+      height: 1px;
+      background: #2a2a4a;
+      margin: 24px 0;
+    }
+
+    /* ============================================================
+       SMALL PRINT / CAPTIONS
+       ============================================================ */
+    .caption {
+      font-size: 12px;
+      color: #6868a0;
+      font-style: italic;
+    }
+    small {
+      font-size: 12px;
+      color: #6868a0;
+    }
+
+    /* ============================================================
+       TEXT ALIGNMENT
+       ============================================================ */
+    .align-left { text-align: left; }
+    .align-center { text-align: center; }
+    .align-right { text-align: right; }
+    .align-justify { text-align: justify; }
+
+    .align-demo {
+      background: #16213e;
+      padding: 12px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+      font-size: 14px;
+      color: #a0a0b8;
+    }
+    .align-label {
+      font-size: 11px;
+      color: #6868a0;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+    }
+
+    /* ============================================================
+       SUPERSCRIPT / SUBSCRIPT
+       ============================================================ */
+    sup { vertical-align: super; font-size: 0.75em; }
+    sub { vertical-align: sub; font-size: 0.75em; }
+
+    /* === Expected Rendering Section === */
+    .expected-rendering {
+      max-width: 800px;
+      margin: 40px auto;
+      padding: 20px 24px;
+      background: #1a2a1a;
+      border: 1px solid #2a4a2a;
+      border-radius: 8px;
+      color: #6bff6b;
+      font-size: 14px;
+    }
+    .expected-rendering h2 {
+      color: #6bff6b;
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+    .expected-rendering ul { margin-left: 20px; }
+    .expected-rendering li { margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+
+  <!-- Back navigation -->
+  <div style="padding:12px 24px;background:#0a0a1e;">
+    <div class="nav" style="margin-bottom:0"><a href="../index.html" style="color:#4ecdc4;text-decoration:none">&larr; Back to Test Index</a></div>
+  </div>
+
+  <div class="page">
+    <h1 class="page-title">Typography Showcase</h1>
+    <p class="page-description">A comprehensive demonstration of text rendering, formatting, and typographic elements. Every element on this page tests a different aspect of text layout and styling.</p>
+
+    <!-- ============================================================
+         SECTION 1: Body Text
+         ============================================================ -->
+    <div class="typo-section body-text">
+      <h2>Body Text</h2>
+      <p>
+        Good typography is the foundation of readable web content. The body text you are reading
+        now uses a 16px sans-serif font with 1.7 line-height, which provides comfortable spacing
+        between lines. The text color is a slightly muted off-white (#c8c8d8) against the dark
+        background, reducing eye strain while maintaining contrast.
+      </p>
+      <p>
+        A second paragraph demonstrates spacing between paragraphs. There should be a clear visual
+        gap (margin-bottom: 16px) separating this paragraph from the one above. Consistent paragraph
+        spacing is essential for readability, especially in long-form content like articles and
+        documentation.
+      </p>
+      <p>
+        This third paragraph contains a much longer text block to test text reflow behavior.
+        When a browser renders body text, it must correctly wrap words at the right edge of the
+        container, maintaining consistent line spacing and avoiding orphaned words where possible.
+        The text column width (max-width: 800px) keeps lines at a comfortable reading length of
+        approximately 70-80 characters per line, which research suggests is optimal for on-screen
+        reading comprehension and speed.
+      </p>
+    </div>
+
+    <!-- ============================================================
+         SECTION 2: Headings
+         ============================================================ -->
+    <div class="typo-section heading-demo">
+      <h2>Heading Levels</h2>
+
+      <h1>Heading Level 1 (h1)</h1>
+      <p>The primary page heading. Used once per page for the main title. Large size (36px), white color, tight line-height.</p>
+
+      <h2>Heading Level 2 (h2)</h2>
+      <p>Section headings. Used to divide major content sections. Size 28px, creating clear visual hierarchy below h1.</p>
+
+      <h3>Heading Level 3 (h3)</h3>
+      <p>Subsection headings. Used within h2 sections for further organization. Size 22px, slightly lighter color.</p>
+
+      <h4>Heading Level 4 (h4)</h4>
+      <p>Fourth-level heading for detailed subsections. Size 18px, approaching body text size.</p>
+
+      <h5>Heading Level 5 (h5)</h5>
+      <p>Fifth-level heading at body text size (16px) but bold, distinguishable by weight alone.</p>
+
+      <h6>Heading Level 6 (h6)</h6>
+      <p>Smallest heading level (14px). Styled with uppercase and letter-spacing to differentiate from body text despite being smaller.</p>
+    </div>
+
+    <!-- ============================================================
+         SECTION 3: Inline Formatting
+         ============================================================ -->
+    <div class="typo-section inline-demo">
+      <h2>Inline Formatting</h2>
+
+      <p>
+        This paragraph contains <strong>bold text</strong> created with the strong element,
+        <em>italic text</em> with the em element, and text that is <strong><em>both bold and
+        italic</em></strong> using nested elements.
+      </p>
+
+      <p>
+        Here is an example of <code>inline code</code> using a monospace font with a colored
+        background. You might see references to functions like <code>document.getElementById()</code>
+        or CSS properties like <code>display: flex</code> in technical documentation.
+      </p>
+
+      <p>
+        Links can appear <a href="#">inline within text</a> and should be visually distinct (teal
+        color). Visited links, <a href="#">like this one</a>, may appear differently in some
+        browsers. <u>Underlined text</u> should be used sparingly as it can be confused with links.
+        <s>Strikethrough text</s> indicates deleted or outdated information.
+      </p>
+
+      <p>
+        Keyboard shortcuts are shown with <kbd>Ctrl</kbd> + <kbd>C</kbd> to copy and
+        <kbd>Ctrl</kbd> + <kbd>V</kbd> to paste. The <kbd>kbd</kbd> element provides a
+        distinct visual style.
+      </p>
+
+      <p>
+        You can <mark>highlight important text</mark> using the mark element. This draws
+        attention to key phrases within a larger body of text, like marking
+        <mark>search results</mark> on a page.
+      </p>
+
+      <p>
+        The <abbr title="HyperText Markup Language">HTML</abbr> abbreviation element provides
+        a dotted underline and tooltip for acronyms. Hover over
+        <abbr title="Cascading Style Sheets">CSS</abbr> to see the full title.
+      </p>
+
+      <p>
+        Scientific notation uses superscript: E = mc<sup>2</sup>, and chemical formulas use
+        subscript: H<sub>2</sub>O. These should position correctly relative to the baseline.
+      </p>
+    </div>
+
+    <!-- ============================================================
+         SECTION 4: Blockquotes
+         ============================================================ -->
+    <div class="typo-section">
+      <h2>Blockquotes</h2>
+
+      <blockquote>
+        <p>The best way to predict the future is to invent it.</p>
+        <cite>-- Alan Kay, 1971</cite>
+      </blockquote>
+
+      <blockquote>
+        <p>
+          Any fool can write code that a computer can understand. Good programmers write
+          code that humans can understand. This principle applies not just to programming
+          but to all forms of technical writing.
+        </p>
+        <cite>-- Martin Fowler, Refactoring: Improving the Design of Existing Code</cite>
+      </blockquote>
+
+      <!-- Nested blockquote -->
+      <blockquote>
+        <p>Someone once said about software complexity:</p>
+        <blockquote>
+          <p>Complexity is the enemy of reliability.</p>
+          <cite>-- Unknown</cite>
+        </blockquote>
+        <p>And I could not agree more. Simplicity should be a core design goal.</p>
+      </blockquote>
+    </div>
+
+    <!-- ============================================================
+         SECTION 5: Code Blocks
+         ============================================================ -->
+    <div class="typo-section">
+      <h2>Code Blocks</h2>
+
+      <p style="color:#a0a0b8;margin-bottom:12px;">A code block with syntax-like token coloring:</p>
+
+      <pre><code><span class="tok-cm">/// Renders a styled button component.</span>
+<span class="tok-cm">/// Returns the computed dimensions after layout.</span>
+<span class="tok-kw">fn</span> <span class="tok-fn">render_button</span>(ctx: &amp;<span class="tok-kw">mut</span> <span class="tok-type">RenderContext</span>, label: &amp;<span class="tok-type">str</span>) -&gt; <span class="tok-type">Rect</span> {
+    <span class="tok-kw">let</span> padding <span class="tok-op">=</span> <span class="tok-num">8</span>;
+    <span class="tok-kw">let</span> font_size <span class="tok-op">=</span> <span class="tok-num">14.0</span>;
+    <span class="tok-kw">let</span> text_width <span class="tok-op">=</span> ctx.<span class="tok-fn">measure_text</span>(label, font_size);
+
+    ctx.<span class="tok-fn">fill_rect</span>(
+        ctx.x, ctx.y,
+        text_width <span class="tok-op">+</span> padding <span class="tok-op">*</span> <span class="tok-num">2</span>,
+        font_size <span class="tok-kw">as</span> <span class="tok-type">i32</span> <span class="tok-op">+</span> padding <span class="tok-op">*</span> <span class="tok-num">2</span>,
+        <span class="tok-num">0xFF4ECDC4</span>, <span class="tok-cm">// teal background</span>
+    );
+    ctx.<span class="tok-fn">draw_text</span>(label, ctx.x <span class="tok-op">+</span> padding, ctx.y <span class="tok-op">+</span> padding, <span class="tok-str">"sans-serif"</span>);
+
+    <span class="tok-type">Rect</span>::<span class="tok-fn">new</span>(ctx.x, ctx.y, text_width <span class="tok-op">+</span> padding <span class="tok-op">*</span> <span class="tok-num">2</span>, <span class="tok-num">30</span>)
+}</code></pre>
+
+      <p style="color:#a0a0b8;margin-bottom:12px;">A shorter code example:</p>
+
+      <pre><code><span class="tok-kw">const</span> message <span class="tok-op">=</span> <span class="tok-str">"Hello, World!"</span>;
+console.<span class="tok-fn">log</span>(message);  <span class="tok-cm">// Output: Hello, World!</span></code></pre>
+    </div>
+
+    <!-- ============================================================
+         SECTION 6: Lists
+         ============================================================ -->
+    <div class="typo-section list-demo">
+      <h2>Lists</h2>
+
+      <h3 style="font-size:17px;color:#e0e0f0;margin-bottom:8px;">Unordered List</h3>
+      <ul>
+        <li>First item in the unordered list</li>
+        <li>Second item with some additional detail text to test wrapping behavior</li>
+        <li>Third item with a nested list:
+          <ul>
+            <li>Nested item A</li>
+            <li>Nested item B</li>
+            <li>Nested item C with another nested level:
+              <ul>
+                <li>Deeply nested item</li>
+                <li>Another deeply nested item</li>
+              </ul>
+            </li>
+          </ul>
+        </li>
+        <li>Fourth item back at the top level</li>
+      </ul>
+
+      <h3 style="font-size:17px;color:#e0e0f0;margin-top:20px;margin-bottom:8px;">Ordered List</h3>
+      <ol>
+        <li>Parse the HTML source into a token stream</li>
+        <li>Build the DOM tree from the tokens</li>
+        <li>Parse CSS stylesheets and compute styles:
+          <ol>
+            <li>Parse selector syntax</li>
+            <li>Calculate specificity</li>
+            <li>Resolve cascade and inheritance</li>
+          </ol>
+        </li>
+        <li>Construct the layout tree</li>
+        <li>Paint the visual output</li>
+      </ol>
+
+      <h3 style="font-size:17px;color:#e0e0f0;margin-top:20px;margin-bottom:8px;">Definition List</h3>
+      <dl>
+        <dt>Serif</dt>
+        <dd>A typeface with small decorative strokes (serifs) at the ends of letterforms. Examples: Times New Roman, Georgia.</dd>
+        <dt>Sans-serif</dt>
+        <dd>A typeface without serifs, resulting in clean and modern letterforms. Examples: Arial, Helvetica, SF Pro.</dd>
+        <dt>Monospace</dt>
+        <dd>A typeface where every character occupies the same horizontal space. Used for code display. Examples: Courier, Andale Mono.</dd>
+      </dl>
+    </div>
+
+    <!-- ============================================================
+         SECTION 7: Text Alignment
+         ============================================================ -->
+    <div class="typo-section">
+      <h2>Text Alignment</h2>
+
+      <div class="align-demo align-left">
+        <div class="align-label">text-align: left</div>
+        This text is left-aligned, which is the default alignment for left-to-right languages. Each line starts at the left margin and the right edge is ragged.
+      </div>
+
+      <div class="align-demo align-center">
+        <div class="align-label">text-align: center</div>
+        This text is center-aligned. Each line is horizontally centered within the container. Common for headings and hero text.
+      </div>
+
+      <div class="align-demo align-right">
+        <div class="align-label">text-align: right</div>
+        This text is right-aligned. Each line is flush with the right margin and ragged on the left. Used in certain UI patterns.
+      </div>
+
+      <div class="align-demo align-justify">
+        <div class="align-label">text-align: justify</div>
+        This text is justified. Both left and right edges are flush, achieved by adjusting word spacing. Justified text works better with longer lines and can create uneven spacing in narrow columns.
+      </div>
+    </div>
+
+    <!-- ============================================================
+         SECTION 8: Small Print and Captions
+         ============================================================ -->
+    <div class="typo-section">
+      <h2>Small Print &amp; Captions</h2>
+
+      <p style="color:#c8c8d8;">Regular body text for size comparison.</p>
+      <p><small>This is small text, useful for legal disclaimers, footnotes, and supplementary information that is less important than body text.</small></p>
+      <p class="caption">Figure 1: An example caption that might appear below an image or diagram, providing context and attribution.</p>
+
+      <hr>
+
+      <p style="color:#c8c8d8;margin-top:16px;">A horizontal rule (above) creates a thematic break between sections of content. It renders as a thin line spanning the full width of the container.</p>
+    </div>
+
+    <!-- ============================================================
+         SECTION 9: Mixed Content Paragraph
+         ============================================================ -->
+    <div class="typo-section">
+      <h2>Mixed Content Paragraph</h2>
+      <p style="color:#c8c8d8;">
+        In a real-world article, you will encounter paragraphs that mix many inline elements.
+        For example, the <code>render()</code> function accepts a <strong>mutable reference</strong>
+        to the <em>canvas object</em> and returns a <code>Result&lt;(), RenderError&gt;</code>.
+        You can read more about this in the
+        <a href="#">official documentation</a>. <mark>Note:</mark> as of version
+        <strong>2.0</strong>, the <kbd>--verbose</kbd> flag enables detailed output.
+        The chemical formula for table salt is Na<sup>+</sup>Cl<sup>-</sup>, and water
+        is H<sub>2</sub>O. The <abbr title="Application Programming Interface">API</abbr>
+        is stable and backward-compatible. <s>The old endpoint has been deprecated.</s>
+        <small>(See changelog for details.)</small>
+      </p>
+    </div>
+
+  </div>
+
+  <!-- ============================================================
+       EXPECTED RENDERING
+       ============================================================ -->
+  <div class="expected-rendering">
+    <h2>Expected Rendering</h2>
+    <ul>
+      <li><strong>Body text:</strong> Three paragraphs of readable text at 16px with 1.7 line-height. Clear spacing between paragraphs. Text wraps naturally at container edges (~800px wide).</li>
+      <li><strong>Headings:</strong> Six heading levels forming a clear visual hierarchy. h1 (36px) through h6 (14px uppercase). Each followed by a descriptive paragraph in smaller muted text. Headings are progressively smaller and lighter.</li>
+      <li><strong>Inline formatting:</strong> Bold, italic, inline code (yellow on dark blue pill), keyboard keys (bordered monospace), highlighted text (yellow tint), abbreviations (dotted underline), superscript/subscript, underline, and strikethrough all visible in the same paragraphs.</li>
+      <li><strong>Blockquotes:</strong> Indented blocks with teal left border, darker background. Italic text with citation below. The nested blockquote has a purple left border and is further indented within the outer quote.</li>
+      <li><strong>Code blocks:</strong> Dark background pre elements with monospace text. Colored syntax tokens: red keywords, teal functions/types, yellow strings, gray comments, purple numbers. Code should be horizontally scrollable if wider than container.</li>
+      <li><strong>Lists:</strong> Unordered list with disc bullets and nested items at increasing indentation (3 levels deep). Ordered list with numbers and nested ordered sub-list. Definition list with bold terms and indented descriptions.</li>
+      <li><strong>Text alignment:</strong> Four boxes demonstrating left, center, right, and justified alignment. Each labeled with its alignment value. Justified text should have even left and right edges.</li>
+      <li><strong>Small print:</strong> Noticeably smaller text (12px) compared to body text. Caption text is small and italic. Horizontal rule renders as a thin line.</li>
+      <li><strong>Mixed content:</strong> Final paragraph contains bold, italic, code, links, highlights, keyboard shortcuts, superscript, subscript, abbreviations, strikethrough, and small text all within a single paragraph. All should render correctly without layout breaks.</li>
+    </ul>
+  </div>
+
+</body>
+</html>

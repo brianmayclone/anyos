@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: Events</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+  .demo-button {
+    padding: 8px 16px;
+    margin: 5px;
+    background: #4ecdc4;
+    color: #1a1a2e;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: bold;
+  }
+  .demo-button:hover { background: #6bff6b; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">13 - Events</h1>
+
+<div class="test-group">
+  <h2>Automated Event Tests</h2>
+  <div class="expected">Expected: Event handler assignment and addEventListener work. Tests simulate events programmatically where possible.</div>
+  <div class="test-area" id="results"></div>
+</div>
+
+<div class="test-group">
+  <h2>Interactive Event Tests</h2>
+  <div class="expected">Expected: Click the buttons below and verify the counters update correctly.</div>
+  <div class="test-area">
+    <div style="margin-bottom: 15px;">
+      <button class="demo-button" id="btn-counter">Click Counter: 0</button>
+      <span id="counter-status" style="margin-left: 10px; color: #999;">Click the button to test onclick</span>
+    </div>
+    <div style="margin-bottom: 15px;">
+      <button class="demo-button" id="btn-multi">Multi-Listener Button</button>
+      <span id="multi-output" style="margin-left: 10px; color: #999;">Click to trigger multiple listeners</span>
+    </div>
+    <div style="margin-bottom: 15px;">
+      <button class="demo-button" id="btn-create">Create Dynamic Button</button>
+      <div id="dynamic-area" style="margin-top: 5px;"></div>
+    </div>
+    <div style="margin-bottom: 15px;">
+      <label>Type here: <input type="text" id="input-test" style="background:#0f3460;color:#e0e0e0;border:1px solid #4ecdc4;padding:5px;border-radius:4px;"></label>
+      <span id="input-output" style="margin-left: 10px; color: #999;">Type to see input events</span>
+    </div>
+  </div>
+</div>
+
+<div id="sandbox" style="display:none;"></div>
+
+<script>
+function test(name, fn) {
+  var resultDiv = document.getElementById('results');
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// --- onclick property assignment ---
+test('onclick: assign function handler', function() {
+  var btn = document.createElement('button');
+  var clicked = false;
+  btn.onclick = function() { clicked = true; };
+  // Simulate click
+  btn.click();
+  return clicked === true;
+});
+
+test('onclick: handler receives event', function() {
+  var btn = document.createElement('button');
+  var receivedEvent = false;
+  btn.onclick = function(e) {
+    if (e) receivedEvent = true;
+  };
+  btn.click();
+  return receivedEvent;
+});
+
+test('onclick: reassignment replaces handler', function() {
+  var btn = document.createElement('button');
+  var firstCalled = false;
+  var secondCalled = false;
+  btn.onclick = function() { firstCalled = true; };
+  btn.onclick = function() { secondCalled = true; };
+  btn.click();
+  return firstCalled === false && secondCalled === true;
+});
+
+// --- addEventListener ---
+test('addEventListener: basic click handler', function() {
+  var btn = document.createElement('button');
+  var clicked = false;
+  btn.addEventListener('click', function() { clicked = true; });
+  btn.click();
+  return clicked;
+});
+
+test('addEventListener: multiple listeners on same event', function() {
+  var btn = document.createElement('button');
+  var count = 0;
+  btn.addEventListener('click', function() { count++; });
+  btn.addEventListener('click', function() { count++; });
+  btn.addEventListener('click', function() { count++; });
+  btn.click();
+  return count === 3;
+});
+
+test('addEventListener: listeners fire in order', function() {
+  var btn = document.createElement('button');
+  var order = '';
+  btn.addEventListener('click', function() { order += 'a'; });
+  btn.addEventListener('click', function() { order += 'b'; });
+  btn.addEventListener('click', function() { order += 'c'; });
+  btn.click();
+  return order === 'abc';
+});
+
+test('addEventListener: does not replace onclick handler', function() {
+  var btn = document.createElement('button');
+  var onclickCalled = false;
+  var listenerCalled = false;
+  btn.onclick = function() { onclickCalled = true; };
+  btn.addEventListener('click', function() { listenerCalled = true; });
+  btn.click();
+  return onclickCalled && listenerCalled;
+});
+
+// --- Event on dynamically created elements ---
+test('Event on dynamically created element', function() {
+  var sandbox = document.getElementById('sandbox');
+  sandbox.innerHTML = '';
+  var btn = document.createElement('button');
+  btn.textContent = 'Dynamic';
+  var clicked = false;
+  btn.addEventListener('click', function() { clicked = true; });
+  sandbox.appendChild(btn);
+  btn.click();
+  sandbox.innerHTML = '';
+  return clicked;
+});
+
+// --- Multiple click simulation ---
+test('Multiple clicks increment counter', function() {
+  var btn = document.createElement('button');
+  var count = 0;
+  btn.addEventListener('click', function() { count++; });
+  btn.click();
+  btn.click();
+  btn.click();
+  btn.click();
+  btn.click();
+  return count === 5;
+});
+
+// --- element.click() method exists ---
+test('element.click() method exists on buttons', function() {
+  var btn = document.createElement('button');
+  return typeof btn.click === 'function';
+});
+
+// --- Interactive demos ---
+
+// Click counter button
+var counterBtn = document.getElementById('btn-counter');
+var clickCount = 0;
+counterBtn.onclick = function() {
+  clickCount++;
+  counterBtn.textContent = 'Click Counter: ' + clickCount;
+  document.getElementById('counter-status').textContent = 'Clicked ' + clickCount + ' time(s)';
+  document.getElementById('counter-status').style.color = '#6bff6b';
+};
+
+// Multi-listener button
+var multiBtn = document.getElementById('btn-multi');
+var multiOutput = document.getElementById('multi-output');
+var multiMessages = [];
+multiBtn.addEventListener('click', function() {
+  multiMessages.push('Listener 1 fired');
+});
+multiBtn.addEventListener('click', function() {
+  multiMessages.push('Listener 2 fired');
+});
+multiBtn.addEventListener('click', function() {
+  multiMessages.push('Listener 3 fired');
+  multiOutput.textContent = multiMessages.join(' | ');
+  multiOutput.style.color = '#6bff6b';
+  multiMessages = [];
+});
+
+// Dynamic button creation
+var createBtn = document.getElementById('btn-create');
+var dynamicArea = document.getElementById('dynamic-area');
+var dynamicCount = 0;
+createBtn.addEventListener('click', function() {
+  dynamicCount++;
+  var newBtn = document.createElement('button');
+  newBtn.className = 'demo-button';
+  newBtn.style.backgroundColor = '#e2b93d';
+  newBtn.textContent = 'Dynamic #' + dynamicCount + ' (click me)';
+  newBtn.addEventListener('click', function() {
+    newBtn.textContent = 'Dynamic #' + dynamicCount + ' CLICKED!';
+    newBtn.style.backgroundColor = '#6bff6b';
+  });
+  dynamicArea.appendChild(newBtn);
+});
+
+// Input event
+var inputField = document.getElementById('input-test');
+var inputOutput = document.getElementById('input-output');
+inputField.addEventListener('input', function() {
+  inputOutput.textContent = 'Current value: "' + inputField.value + '" (length: ' + inputField.value.length + ')';
+  inputOutput.style.color = '#4ecdc4';
+});
+</script>
+</body>
+</html>

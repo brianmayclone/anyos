@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CSS Test 25: Specificity and Cascade</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .spec-item {
+    padding: 8px 12px;
+    margin: 6px 0;
+    border-radius: 4px;
+    background: #1a2a3a;
+    font-size: 16px;
+  }
+
+  .spec-value {
+    font-size: 12px;
+    color: #888;
+    margin-top: 4px;
+  }
+
+  /* Test 1: Element vs Class */
+  /* Element selector: specificity 0,0,1 */
+  .test-area.test-elem-class p {
+    color: #ff6b6b;
+  }
+  /* Class selector: specificity 0,1,0 - wins over element */
+  .test-area.test-elem-class .highlight {
+    color: #4ecdc4;
+  }
+
+  /* Test 2: Class vs ID */
+  /* Class selector: specificity 0,1,0 */
+  .test-area.test-class-id .styled {
+    color: #ff6b6b;
+  }
+  /* ID selector: specificity 1,0,0 - wins over class */
+  .test-area.test-class-id #special {
+    color: #4ecdc4;
+  }
+
+  /* Test 3: ID vs inline style */
+  /* ID selector: specificity 1,0,0 */
+  #inline-test {
+    color: #ff6b6b;
+    font-size: 20px;
+  }
+
+  /* Test 4: Multiple classes increasing specificity */
+  /* Single class: specificity 0,1,0 */
+  .test-area.test-multi-class .item {
+    color: #ff6b6b;
+  }
+  /* Two classes: specificity 0,2,0 - wins */
+  .test-area.test-multi-class .item.special {
+    color: #4ecdc4;
+  }
+  /* Three classes: specificity 0,3,0 - wins over two */
+  .test-area.test-multi-class .item.special.featured {
+    color: #e2b93d;
+  }
+
+  /* Test 5: !important overriding everything */
+  #important-test {
+    color: #ff6b6b;
+  }
+  .important-class {
+    color: #4ecdc4 !important;
+  }
+
+  /* Test 6: Same specificity - last rule wins */
+  .test-area.test-last-wins .demo {
+    color: #ff6b6b;
+    font-weight: bold;
+  }
+  .test-area.test-last-wins .demo {
+    color: #4ecdc4;
+    /* font-weight not overridden here, stays bold from first rule */
+  }
+
+  /* Test 7: Specificity calculation examples */
+  /* 0,0,1: element */
+  .test-area.test-calc p.calc-a {
+    color: #888;
+  }
+  /* 0,1,1: class + element - overrides above */
+  .test-area.test-calc p.calc-a {
+    color: #ff6b6b;
+  }
+  /* 0,2,1: two classes + element */
+  .test-area.test-calc .container p.calc-b {
+    color: #4ecdc4;
+  }
+  /* 0,1,1: fewer classes */
+  .test-area.test-calc p.calc-b {
+    color: #ff6b6b;
+  }
+
+  /* Test 8: Combined specificity battle */
+  /* Specificity: 0,1,3 (div.test-area p span = 0,1,3) */
+  div.test-area.test-battle p span {
+    color: #ff6b6b;
+  }
+  /* Specificity: 0,2,1 (two classes + span = 0,2,1) - WINS */
+  .test-battle .winner span {
+    color: #4ecdc4;
+    font-weight: bold;
+  }
+  /* Specificity: 1,0,1 (ID + span = 1,0,1) - WINS over both */
+  #battle-id span {
+    color: #e2b93d;
+    font-weight: bold;
+    text-decoration: underline;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 25: Specificity and Cascade</h1>
+
+<!-- Test 1: Element vs Class -->
+<div class="test-group">
+  <h2>Test 1: Element Selector vs Class Selector</h2>
+  <div class="expected">Expected: The plain paragraph uses element selector (specificity 0,0,1) and should be red. The paragraph with class="highlight" uses class selector (specificity 0,1,0) which WINS, so it should be teal. Class beats element.</div>
+  <div class="test-area test-elem-class">
+    <p class="spec-item">No class - element selector wins - should be RED</p>
+    <p class="spec-item highlight">Has class="highlight" - class selector WINS over element - should be TEAL</p>
+    <div class="spec-value">Element selector: specificity (0,0,1) | Class selector: specificity (0,1,0)</div>
+  </div>
+</div>
+
+<!-- Test 2: Class vs ID -->
+<div class="test-group">
+  <h2>Test 2: Class Selector vs ID Selector</h2>
+  <div class="expected">Expected: The element with only class="styled" should be red (class specificity 0,1,0). The element with id="special" should be teal (ID specificity 1,0,0 WINS over class). ID beats class.</div>
+  <div class="test-area test-class-id">
+    <div class="spec-item styled">class="styled" only - class selector - should be RED</div>
+    <div class="spec-item styled" id="special">class="styled" AND id="special" - ID selector WINS - should be TEAL</div>
+    <div class="spec-value">Class selector: specificity (0,1,0) | ID selector: specificity (1,0,0)</div>
+  </div>
+</div>
+
+<!-- Test 3: ID vs Inline Style -->
+<div class="test-group">
+  <h2>Test 3: ID Selector vs Inline Style</h2>
+  <div class="expected">Expected: The ID selector sets color to red and font-size 20px. The inline style overrides color to golden (inline specificity beats ID). Font-size stays 20px from the ID rule since inline doesn't set it. Inline style beats ID.</div>
+  <div class="test-area">
+    <div class="spec-item" id="inline-test" style="color: #e2b93d;">id="inline-test" + style="color: golden" - INLINE WINS for color - should be GOLDEN, 20px font</div>
+    <div class="spec-value">ID selector: specificity (1,0,0) | Inline style: specificity (1,0,0,0) - highest</div>
+  </div>
+</div>
+
+<!-- Test 4: Multiple Classes -->
+<div class="test-group">
+  <h2>Test 4: Multiple Classes Increasing Specificity</h2>
+  <div class="expected">Expected: Single class .item = red (0,1,0). Two classes .item.special = teal (0,2,0, wins). Three classes .item.special.featured = golden (0,3,0, wins). More classes = higher specificity.</div>
+  <div class="test-area test-multi-class">
+    <div class="spec-item item">class="item" - single class (0,1,0) - should be RED</div>
+    <div class="spec-item item special">class="item special" - two classes (0,2,0) - should be TEAL</div>
+    <div class="spec-item item special featured">class="item special featured" - three classes (0,3,0) - should be GOLDEN</div>
+    <div class="spec-value">Specificity: .item = (0,1,0) | .item.special = (0,2,0) | .item.special.featured = (0,3,0)</div>
+  </div>
+</div>
+
+<!-- Test 5: !important -->
+<div class="test-group">
+  <h2>Test 5: !important Overriding Everything</h2>
+  <div class="expected">Expected: The element has an ID selector (red, specificity 1,0,0) AND a class with !important (teal). The !important flag OVERRIDES even ID specificity. Text should be TEAL.</div>
+  <div class="test-area">
+    <div class="spec-item important-class" id="important-test">id="important-test" (red) vs class with !important (teal) - !important WINS - should be TEAL</div>
+    <div class="spec-value">ID selector (1,0,0) loses to .important-class with !important</div>
+  </div>
+</div>
+
+<!-- Test 6: Same Specificity - Last Rule Wins -->
+<div class="test-group">
+  <h2>Test 6: Same Specificity - Last Rule Wins (Source Order)</h2>
+  <div class="expected">Expected: Two rules with identical selectors (.demo). Both have specificity (0,1,0). The LAST rule in source order wins for the color property (teal). The first rule's font-weight (bold) is NOT overridden by the second rule, so text should be teal AND bold.</div>
+  <div class="test-area test-last-wins">
+    <div class="spec-item demo">Two identical selectors - last color wins - should be TEAL and BOLD</div>
+    <div class="spec-value">First rule: color red + bold | Second rule: color teal (no font-weight) | Result: teal + bold</div>
+  </div>
+</div>
+
+<!-- Test 7: Specificity Calculation -->
+<div class="test-group">
+  <h2>Test 7: Specificity Calculation Examples</h2>
+  <div class="expected">Expected: For .calc-a, both rules have same specificity (0,1,1 counting .test-area.test-calc context), so last rule wins: RED. For .calc-b, ".container p.calc-b" has higher specificity (extra class) than "p.calc-b", so TEAL wins even though the red rule comes later in source.</div>
+  <div class="test-area test-calc">
+    <p class="spec-item calc-a">p.calc-a - same specificity rules, last one wins - should be RED</p>
+    <div class="container">
+      <p class="spec-item calc-b">.container p.calc-b (0,2,1) vs p.calc-b (0,1,1) - higher specificity wins - should be TEAL</p>
+    </div>
+    <div class="spec-value">.calc-a: both (0,1,1) = last wins | .calc-b: (0,2,1) beats (0,1,1) = higher specificity wins</div>
+  </div>
+</div>
+
+<!-- Test 8: Combined Specificity Battle -->
+<div class="test-group">
+  <h2>Test 8: Combined Specificity Battle</h2>
+  <div class="expected">Expected: The first span is inside a p in .test-battle - only the element+class rule applies, so RED. The second span is inside p.winner - the .winner class rule (0,2,1) beats the element rule (0,1,3), so TEAL and bold. The third span has an ID - the ID rule (1,0,1) beats everything, so GOLDEN, bold, underlined.</div>
+  <div class="test-area test-battle">
+    <p class="spec-item"><span>Span in plain p - element-heavy selector (0,1,3) only - should be RED</span></p>
+    <p class="spec-item winner"><span>Span in p.winner - class-heavy selector (0,2,1) WINS over (0,1,3) - should be TEAL, bold</span></p>
+    <p class="spec-item winner" id="battle-id"><span>Span in #battle-id - ID selector (1,0,1) WINS over all - should be GOLDEN, bold, underlined</span></p>
+    <div class="spec-value">div.test-area p span = (0,1,3) | .test-battle .winner span = (0,2,1) | #battle-id span = (1,0,1)</div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test 07: Absolute and Fixed Positioning</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+    .demo-box {
+      padding: 8px 12px;
+      color: white;
+      font-size: 12px;
+      border: 1px solid rgba(255,255,255,0.3);
+    }
+  </style>
+</head>
+<body>
+  <div class="nav"><a href="../index.html">Index</a></div>
+  <h1 class="page-title">CSS Test 07: Absolute and Fixed Positioning</h1>
+
+  <!-- Test 1: Absolute Inside Relative Parent -->
+  <div class="test-group">
+    <h2>Test 1: Absolute Positioned Inside Relative Parent</h2>
+    <div class="expected">Expected: The blue box is absolutely positioned at top: 10px, right: 10px WITHIN the gray relative container. It should appear in the top-right corner of the container, not the page. The green flow text should be unaffected by the absolute element (it is removed from flow).</div>
+    <div class="test-area">
+      <div style="position: relative; background: #2c3e50; height: 150px; padding: 10px; border: 2px solid #7f8c8d;">
+        <p style="margin: 0; color: #aaa;">This is the relative parent container (position: relative)</p>
+        <div class="demo-box" style="position: absolute; top: 10px; right: 10px; background: #3498db; width: 150px;">
+          Absolute: top: 10px; right: 10px
+        </div>
+        <p style="margin-top: 40px; color: #bdc3c7;">Flow content is not affected by the absolute element above.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 2: Absolute with All Four Offsets -->
+  <div class="test-group">
+    <h2>Test 2: Absolute with top/right/bottom/left</h2>
+    <div class="expected">Expected: Four boxes each positioned in a different corner of the relative container. Top-left (red), top-right (blue), bottom-left (green), bottom-right (orange). Each uses the corresponding pair of offsets.</div>
+    <div class="test-area">
+      <div style="position: relative; background: #2c3e50; height: 180px; border: 2px solid #7f8c8d;">
+        <div class="demo-box" style="position: absolute; top: 10px; left: 10px; background: #e74c3c;">
+          top: 10px; left: 10px
+        </div>
+        <div class="demo-box" style="position: absolute; top: 10px; right: 10px; background: #3498db;">
+          top: 10px; right: 10px
+        </div>
+        <div class="demo-box" style="position: absolute; bottom: 10px; left: 10px; background: #2ecc71;">
+          bottom: 10px; left: 10px
+        </div>
+        <div class="demo-box" style="position: absolute; bottom: 10px; right: 10px; background: #f39c12;">
+          bottom: 10px; right: 10px
+        </div>
+        <div style="position: absolute; top: 50%; left: 50%; color: #7f8c8d; font-size: 11px; transform: translate(-50%,-50%);">
+          center reference
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 3: Absolute Without Offsets -->
+  <div class="test-group">
+    <h2>Test 3: Absolute Without Any Offset</h2>
+    <div class="expected">Expected: The absolute element has NO top/left/right/bottom set. It should appear at the position it would have been in normal flow, but it is removed from flow. The green box below should shift up to fill the space the absolute element would have occupied.</div>
+    <div class="test-area">
+      <div style="position: relative; background: #2c3e50; padding: 10px; border: 2px solid #7f8c8d;">
+        <div class="demo-box" style="background: #e74c3c; margin-bottom: 5px;">
+          Box 1: static (normal flow)
+        </div>
+        <div class="demo-box" style="position: absolute; background: #3498db;">
+          Box 2: absolute, no offsets (at default position, out of flow)
+        </div>
+        <div class="demo-box" style="background: #2ecc71; margin-top: 5px;">
+          Box 3: static (moves up because Box 2 is out of flow)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 4: Absolute Removed From Flow -->
+  <div class="test-group">
+    <h2>Test 4: Absolute Element Removed From Flow</h2>
+    <div class="expected">Expected: Without the absolute element, the three boxes would stack A, B, C. With Box B absolute, Boxes A and C should be adjacent (no gap). Box B is positioned at top: 30px, left: 50% and does not affect the positions of A or C.</div>
+    <div class="test-area">
+      <div style="position: relative; background: #2c3e50; height: 150px; padding: 10px; border: 2px solid #7f8c8d;">
+        <div class="demo-box" style="background: #e74c3c; margin: 5px 0;">Box A: static</div>
+        <div class="demo-box" style="position: absolute; top: 30px; left: 50%; background: #3498db; width: 180px;">
+          Box B: absolute (out of flow)
+        </div>
+        <div class="demo-box" style="background: #2ecc71; margin: 5px 0;">Box C: static (directly after A)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 5: Nested Absolute Contexts -->
+  <div class="test-group">
+    <h2>Test 5: Nested Positioning Contexts</h2>
+    <div class="expected">Expected: Outer (red border) is relative. Middle (blue border) is relative, offset 20px from outer. Inner (green) is absolute, positioned top: 0, right: 0 within the MIDDLE container (its nearest positioned ancestor), not the outer. The green box should be in the top-right of the blue-bordered middle container.</div>
+    <div class="test-area">
+      <div style="position: relative; background: #2c3e50; height: 200px; padding: 20px; border: 2px solid #e74c3c;">
+        <p style="margin: 0; color: #e74c3c; font-size: 11px;">Outer (relative, red border)</p>
+        <div style="position: relative; top: 20px; left: 20px; background: #1a2a4a; height: 130px; padding: 10px; border: 2px solid #3498db;">
+          <p style="margin: 0; color: #3498db; font-size: 11px;">Middle (relative, blue border, top:20 left:20)</p>
+          <div class="demo-box" style="position: absolute; top: 0; right: 0; background: #2ecc71; width: 140px;">
+            Inner: absolute top:0 right:0 (anchored to middle)
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 6: position: fixed -->
+  <div class="test-group">
+    <h2>Test 6: position: fixed (Viewport-Relative)</h2>
+    <div class="expected">Expected: The purple box in the bottom-right corner of the viewport is position: fixed. It should stay in the same screen position even if you scroll the page. It is positioned relative to the viewport, not any parent element. If scrolling is available, verify it does not move on scroll.</div>
+    <div class="test-area">
+      <p>The purple "FIXED" box should be visible in the bottom-right corner of the viewport. It stays fixed to the viewport and does not scroll with the page content.</p>
+      <p style="color: #aaa; font-size: 13px;">Note: If the browser does not support position: fixed, the element will behave like static.</p>
+    </div>
+    <!-- Fixed element placed outside test-area so it's viewport-relative -->
+    <div style="position: fixed; bottom: 20px; right: 20px; background: #9b59b6; color: white; padding: 10px 15px; font-size: 13px; border: 2px solid #8e44ad; border-radius: 4px; z-index: 1000;">
+      FIXED: bottom: 20px; right: 20px
+    </div>
+  </div>
+
+  <!-- Test 7: z-index with Absolute Elements -->
+  <div class="test-group">
+    <h2>Test 7: z-index Stacking with Absolute Elements</h2>
+    <div class="expected">Expected: Three overlapping absolute boxes. Red (z-index: 1) is at the bottom. Green (z-index: 2) is in the middle. Blue (z-index: 3) is on top. The box with the highest z-index should visually cover the others where they overlap.</div>
+    <div class="test-area">
+      <div style="position: relative; background: #2c3e50; height: 160px; border: 2px solid #7f8c8d;">
+        <div class="demo-box" style="position: absolute; z-index: 1; top: 20px; left: 20px; width: 160px; height: 80px; background: rgba(231,76,60,0.9);">
+          z-index: 1 (bottom)
+        </div>
+        <div class="demo-box" style="position: absolute; z-index: 2; top: 40px; left: 60px; width: 160px; height: 80px; background: rgba(46,204,113,0.9);">
+          z-index: 2 (middle)
+        </div>
+        <div class="demo-box" style="position: absolute; z-index: 3; top: 60px; left: 100px; width: 160px; height: 80px; background: rgba(52,152,219,0.9);">
+          z-index: 3 (top)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 8: Overlapping Absolute Elements -->
+  <div class="test-group">
+    <h2>Test 8: Overlapping Absolute Elements (Source Order)</h2>
+    <div class="expected">Expected: Three absolute boxes with NO z-index set. Without z-index, later elements in the source order paint on top of earlier ones. Box 3 (green) should be on top, Box 2 (blue) in the middle, Box 1 (red) at the bottom.</div>
+    <div class="test-area">
+      <div style="position: relative; background: #2c3e50; height: 140px; border: 2px solid #7f8c8d;">
+        <div class="demo-box" style="position: absolute; top: 15px; left: 15px; width: 180px; height: 70px; background: #e74c3c;">
+          Box 1 (first in source, bottom)
+        </div>
+        <div class="demo-box" style="position: absolute; top: 35px; left: 50px; width: 180px; height: 70px; background: #3498db;">
+          Box 2 (second in source, middle)
+        </div>
+        <div class="demo-box" style="position: absolute; top: 55px; left: 85px; width: 180px; height: 70px; background: #2ecc71;">
+          Box 3 (third in source, top)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 9: Absolute Stretching with Opposing Offsets -->
+  <div class="test-group">
+    <h2>Test 9: Absolute Element Stretching (top + bottom, left + right)</h2>
+    <div class="expected">Expected: The blue box has top: 10px, bottom: 10px, left: 10px, right: 10px with NO explicit width/height. It should stretch to fill the container with a 10px margin on all sides. The element's size is determined by the offsets.</div>
+    <div class="test-area">
+      <div style="position: relative; background: #2c3e50; height: 120px; border: 2px solid #7f8c8d;">
+        <div class="demo-box" style="position: absolute; top: 10px; bottom: 10px; left: 10px; right: 10px; background: rgba(52,152,219,0.7); text-align: center;">
+          Stretched: top/bottom/left/right all 10px (fills container minus 10px inset)
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

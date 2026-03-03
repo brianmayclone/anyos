@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: DOM Style Manipulation</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+  .highlight { color: yellow; }
+  .bold-text { font-weight: bold; }
+  .big { font-size: 20px; }
+  .red { color: red; }
+  .blue { color: blue; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">12 - DOM Style Manipulation</h1>
+
+<div class="test-group">
+  <h2>Inline Style Tests</h2>
+  <div class="expected">Expected: Setting element.style properties applies inline styles correctly.</div>
+  <div class="test-area" id="style-results"></div>
+</div>
+
+<div class="test-group">
+  <h2>classList Tests</h2>
+  <div class="expected">Expected: classList.add, remove, toggle, and contains all work correctly.</div>
+  <div class="test-area" id="classlist-results"></div>
+</div>
+
+<div class="test-group">
+  <h2>Visual Style Demos</h2>
+  <div class="expected">Expected: The boxes below should have their styles applied by JavaScript.</div>
+  <div class="test-area">
+    <div id="demo-box1" style="padding: 10px; margin: 5px; display: inline-block;">Box 1 (will be styled)</div>
+    <div id="demo-box2" style="padding: 10px; margin: 5px; display: inline-block;">Box 2 (will be styled)</div>
+    <div id="demo-box3" style="padding: 10px; margin: 5px; display: inline-block;">Box 3 (will be styled)</div>
+  </div>
+</div>
+
+<div id="sandbox" style="display:none;"></div>
+
+<script>
+function testTo(targetId, name, fn) {
+  var resultDiv = document.getElementById(targetId);
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// --- Inline style: color ---
+testTo('style-results', 'style.color: set to red', function() {
+  var div = document.createElement('div');
+  div.style.color = 'red';
+  return div.style.color === 'red';
+});
+
+// --- Inline style: backgroundColor ---
+testTo('style-results', 'style.backgroundColor: set to blue', function() {
+  var div = document.createElement('div');
+  div.style.backgroundColor = 'blue';
+  return div.style.backgroundColor === 'blue';
+});
+
+// --- Inline style: width, height ---
+testTo('style-results', 'style.width: set to 100px', function() {
+  var div = document.createElement('div');
+  div.style.width = '100px';
+  return div.style.width === '100px';
+});
+
+testTo('style-results', 'style.height: set to 50px', function() {
+  var div = document.createElement('div');
+  div.style.height = '50px';
+  return div.style.height === '50px';
+});
+
+// --- Inline style: display ---
+testTo('style-results', 'style.display: set to none', function() {
+  var div = document.createElement('div');
+  div.style.display = 'none';
+  return div.style.display === 'none';
+});
+
+testTo('style-results', 'style.display: set to block', function() {
+  var div = document.createElement('div');
+  div.style.display = 'none';
+  div.style.display = 'block';
+  return div.style.display === 'block';
+});
+
+// --- Inline style: fontSize (camelCase) ---
+testTo('style-results', 'style.fontSize: camelCase property', function() {
+  var div = document.createElement('div');
+  div.style.fontSize = '16px';
+  return div.style.fontSize === '16px';
+});
+
+// --- Inline style: multiple styles ---
+testTo('style-results', 'Multiple inline styles on same element', function() {
+  var div = document.createElement('div');
+  div.style.color = 'white';
+  div.style.backgroundColor = 'black';
+  div.style.padding = '10px';
+  div.style.margin = '5px';
+  return div.style.color === 'white' &&
+         div.style.backgroundColor === 'black' &&
+         div.style.padding === '10px' &&
+         div.style.margin === '5px';
+});
+
+// --- Inline style: overwrite ---
+testTo('style-results', 'Style overwrite: change color', function() {
+  var div = document.createElement('div');
+  div.style.color = 'red';
+  div.style.color = 'green';
+  return div.style.color === 'green';
+});
+
+// --- Inline style: border ---
+testTo('style-results', 'style.border: set border', function() {
+  var div = document.createElement('div');
+  div.style.border = '1px solid red';
+  return div.style.border !== '' && div.style.border !== undefined;
+});
+
+// --- Inline style: fontWeight ---
+testTo('style-results', 'style.fontWeight: set to bold', function() {
+  var div = document.createElement('div');
+  div.style.fontWeight = 'bold';
+  return div.style.fontWeight === 'bold';
+});
+
+// --- classList.add ---
+testTo('classlist-results', 'classList.add: adds a class', function() {
+  var div = document.createElement('div');
+  div.classList.add('foo');
+  return div.className === 'foo';
+});
+
+testTo('classlist-results', 'classList.add: multiple classes', function() {
+  var div = document.createElement('div');
+  div.classList.add('foo');
+  div.classList.add('bar');
+  return div.classList.contains('foo') && div.classList.contains('bar');
+});
+
+testTo('classlist-results', 'classList.add: does not duplicate', function() {
+  var div = document.createElement('div');
+  div.classList.add('foo');
+  div.classList.add('foo');
+  return div.className === 'foo';
+});
+
+// --- classList.remove ---
+testTo('classlist-results', 'classList.remove: removes a class', function() {
+  var div = document.createElement('div');
+  div.classList.add('foo');
+  div.classList.add('bar');
+  div.classList.remove('foo');
+  return div.classList.contains('foo') === false && div.classList.contains('bar') === true;
+});
+
+testTo('classlist-results', 'classList.remove: removing non-existent class is no-op', function() {
+  var div = document.createElement('div');
+  div.classList.add('foo');
+  div.classList.remove('nonexistent');
+  return div.classList.contains('foo') && div.className === 'foo';
+});
+
+// --- classList.toggle ---
+testTo('classlist-results', 'classList.toggle: adds if absent', function() {
+  var div = document.createElement('div');
+  div.classList.toggle('active');
+  return div.classList.contains('active') === true;
+});
+
+testTo('classlist-results', 'classList.toggle: removes if present', function() {
+  var div = document.createElement('div');
+  div.classList.add('active');
+  div.classList.toggle('active');
+  return div.classList.contains('active') === false;
+});
+
+testTo('classlist-results', 'classList.toggle: round-trip', function() {
+  var div = document.createElement('div');
+  div.classList.toggle('x'); // adds
+  div.classList.toggle('x'); // removes
+  div.classList.toggle('x'); // adds again
+  return div.classList.contains('x') === true;
+});
+
+// --- classList.contains ---
+testTo('classlist-results', 'classList.contains: true for existing class', function() {
+  var div = document.createElement('div');
+  div.className = 'alpha beta gamma';
+  return div.classList.contains('beta') === true;
+});
+
+testTo('classlist-results', 'classList.contains: false for missing class', function() {
+  var div = document.createElement('div');
+  div.className = 'alpha';
+  return div.classList.contains('omega') === false;
+});
+
+// --- Visual demo: apply styles via JS ---
+var box1 = document.getElementById('demo-box1');
+box1.style.backgroundColor = '#ff6b6b';
+box1.style.color = 'white';
+box1.style.borderRadius = '8px';
+box1.style.fontWeight = 'bold';
+box1.textContent = 'Red Box (JS styled)';
+
+var box2 = document.getElementById('demo-box2');
+box2.style.backgroundColor = '#4ecdc4';
+box2.style.color = '#1a1a2e';
+box2.style.borderRadius = '8px';
+box2.style.fontWeight = 'bold';
+box2.textContent = 'Teal Box (JS styled)';
+
+var box3 = document.getElementById('demo-box3');
+box3.style.backgroundColor = '#e2b93d';
+box3.style.color = '#1a1a2e';
+box3.style.borderRadius = '8px';
+box3.style.fontWeight = 'bold';
+box3.textContent = 'Gold Box (JS styled)';
+</script>
+</body>
+</html>

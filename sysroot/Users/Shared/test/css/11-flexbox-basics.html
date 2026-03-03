@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CSS Test 11: Flexbox Basics</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .box {
+    width: 100px;
+    height: 100px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    font-weight: bold;
+    color: #1a1a2e;
+    border-radius: 4px;
+    margin: 2px;
+  }
+  .box-1 { background: #ff6b6b; }
+  .box-2 { background: #4ecdc4; }
+  .box-3 { background: #ffd93d; }
+  .box-4 { background: #6c5ce7; color: #e0e0e0; }
+  .box-5 { background: #a8e6cf; }
+  .box-6 { background: #ff8b94; }
+
+  .flex-container {
+    border: 2px dashed #555;
+    padding: 5px;
+    margin-top: 10px;
+    min-height: 120px;
+  }
+
+  .flex-container-wrap {
+    border: 2px dashed #555;
+    padding: 5px;
+    margin-top: 10px;
+    width: 350px;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 11: Flexbox Basics</h1>
+
+<!-- Test 1: display: flex -->
+<div class="test-group">
+  <h2>1. display: flex</h2>
+  <p class="expected">Expected: Three boxes arranged horizontally in a row (default flex behavior). Without flex, they would stack vertically as block elements.</p>
+  <div class="test-area">
+    <p><strong>Without flex (display: block):</strong></p>
+    <div style="border: 2px dashed #555; padding: 5px; margin-bottom: 15px;">
+      <div class="box box-1" style="display: flex;">1</div>
+      <div class="box box-2" style="display: flex;">2</div>
+      <div class="box box-3" style="display: flex;">3</div>
+    </div>
+
+    <p><strong>With display: flex on parent:</strong></p>
+    <div class="flex-container" style="display: flex;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 2: flex-direction: row -->
+<div class="test-group">
+  <h2>2. flex-direction: row (default)</h2>
+  <p class="expected">Expected: Items laid out left-to-right horizontally: 1, 2, 3, 4. This is the default flex-direction.</p>
+  <div class="test-area">
+    <div class="flex-container" style="display: flex; flex-direction: row;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 3: flex-direction: column -->
+<div class="test-group">
+  <h2>3. flex-direction: column</h2>
+  <p class="expected">Expected: Items laid out top-to-bottom vertically: 1 on top, then 2, 3, 4 stacked below.</p>
+  <div class="test-area">
+    <div class="flex-container" style="display: flex; flex-direction: column; min-height: auto;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 4: flex-direction: row-reverse -->
+<div class="test-group">
+  <h2>4. flex-direction: row-reverse</h2>
+  <p class="expected">Expected: Items laid out right-to-left horizontally: 4, 3, 2, 1 (reversed order, starting from the right edge).</p>
+  <div class="test-area">
+    <div class="flex-container" style="display: flex; flex-direction: row-reverse;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 5: flex-direction: column-reverse -->
+<div class="test-group">
+  <h2>5. flex-direction: column-reverse</h2>
+  <p class="expected">Expected: Items laid out bottom-to-top vertically: 4 on top, then 3, 2, 1 (reversed order, starting from the bottom).</p>
+  <div class="test-area">
+    <div class="flex-container" style="display: flex; flex-direction: column-reverse; min-height: auto;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: flex-wrap: nowrap -->
+<div class="test-group">
+  <h2>6. flex-wrap: nowrap (default)</h2>
+  <p class="expected">Expected: All 6 boxes forced onto one line even though the container is only 350px wide. Boxes will shrink to fit.</p>
+  <div class="test-area">
+    <div class="flex-container-wrap" style="display: flex; flex-wrap: nowrap;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+      <div class="box box-5">5</div>
+      <div class="box box-6">6</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 7: flex-wrap: wrap -->
+<div class="test-group">
+  <h2>7. flex-wrap: wrap</h2>
+  <p class="expected">Expected: Boxes wrap to the next line when they don't fit. Container is 350px wide, each box is 100px. Approximately 3 boxes per row, then the rest wrap below.</p>
+  <div class="test-area">
+    <div class="flex-container-wrap" style="display: flex; flex-wrap: wrap;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+      <div class="box box-5">5</div>
+      <div class="box box-6">6</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 8: flex-wrap: wrap-reverse -->
+<div class="test-group">
+  <h2>8. flex-wrap: wrap-reverse</h2>
+  <p class="expected">Expected: Same as wrap but lines are reversed: the first line appears at the bottom, subsequent lines stack upward. Boxes 4, 5, 6 appear on top row; 1, 2, 3 on bottom row.</p>
+  <div class="test-area">
+    <div class="flex-container-wrap" style="display: flex; flex-wrap: wrap-reverse;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+      <div class="box box-5">5</div>
+      <div class="box box-6">6</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 9: flex-flow shorthand -->
+<div class="test-group">
+  <h2>9. flex-flow: row wrap (shorthand)</h2>
+  <p class="expected">Expected: Same as flex-direction: row + flex-wrap: wrap combined. Boxes flow left-to-right and wrap to next line.</p>
+  <div class="test-area">
+    <div class="flex-container-wrap" style="display: flex; flex-flow: row wrap;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+      <div class="box box-5">5</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 10: flex-flow: column wrap -->
+<div class="test-group">
+  <h2>10. flex-flow: column wrap</h2>
+  <p class="expected">Expected: Items flow top-to-bottom in columns, wrapping to a new column when the container height (250px) is exceeded.</p>
+  <div class="test-area">
+    <div style="display: flex; flex-flow: column wrap; height: 250px; border: 2px dashed #555; padding: 5px;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+      <div class="box box-5">5</div>
+      <div class="box box-6">6</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

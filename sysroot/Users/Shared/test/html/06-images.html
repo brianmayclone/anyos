@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test 06: Images (img)</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="../index.html">Back to Index</a>
+    <a href="05-links.html">Prev: Links</a>
+    <a href="07-tables.html">Next: Tables</a>
+  </div>
+
+  <h1 class="page-title">Test 06: Images (img)</h1>
+
+  <!-- Test 1: Image with width and height -->
+  <div class="test-group">
+    <h2>Test 6.1: Image with Explicit Width and Height</h2>
+    <div class="expected">Expected: A 64x64 pixel red square image rendered from a data URI. The image should display at exactly 64x64 pixels as specified by the width and height attributes.</div>
+    <div class="test-area">
+      <!-- 2x2 red PNG, scaled to 64x64 via attributes -->
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVQIW2P8z8DwHwMDAwMAGOgC/Q9HGOAAAAAASUVORK5CYII=" width="64" height="64" alt="Red 2x2 pixel test image">
+      <p>The image above should be a 64x64 red square.</p>
+    </div>
+  </div>
+
+  <!-- Test 2: Image with only width -->
+  <div class="test-group">
+    <h2>Test 6.2: Image with Only Width (Height Auto)</h2>
+    <div class="expected">Expected: The image should scale to 128 pixels wide with the height automatically calculated to maintain aspect ratio. Since the source is 2x2, it should render as 128x128.</div>
+    <div class="test-area">
+      <!-- 2x2 green PNG, width=128, height should auto-scale -->
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVQIW2Ng+M/wnwEIGBgAF2AC/RGrGN0AAAAASUVORK5CYII=" width="128" alt="Green 2x2 pixel test image scaled to 128px wide">
+      <p>The image above should be 128px wide with auto height (128px for square source).</p>
+    </div>
+  </div>
+
+  <!-- Test 3: Image with alt text (missing image) -->
+  <div class="test-group">
+    <h2>Test 6.3: Missing Image with Alt Text</h2>
+    <div class="expected">Expected: Since the image source does not exist, the browser should display the alt text as a fallback. A broken image icon may also appear. The alt text should be visible and readable.</div>
+    <div class="test-area">
+      <img src="nonexistent-image-file.png" alt="This alt text should appear because the image failed to load">
+      <p>The image above should show alt text or a broken image indicator.</p>
+    </div>
+  </div>
+
+  <!-- Test 4: Image with no src -->
+  <div class="test-group">
+    <h2>Test 6.4: Image with No src Attribute</h2>
+    <div class="expected">Expected: An img with no src should show a broken image placeholder or the alt text. It should not crash the browser or cause layout issues.</div>
+    <div class="test-area">
+      <img alt="Image with no src attribute">
+      <p>The element above is an img with no src. It should show alt text or a placeholder.</p>
+    </div>
+  </div>
+
+  <!-- Test 5: Image with empty alt -->
+  <div class="test-group">
+    <h2>Test 6.5: Image with Empty Alt (Decorative)</h2>
+    <div class="expected">Expected: A missing image with alt="" should show a minimal broken image indicator or nothing at all. Empty alt means the image is decorative and can be ignored for accessibility.</div>
+    <div class="test-area">
+      <img src="nonexistent-decorative.png" alt="">
+      <p>The image above has alt="" (empty). Minimal or no placeholder expected.</p>
+    </div>
+  </div>
+
+  <!-- Test 6: Multiple images inline -->
+  <div class="test-group">
+    <h2>Test 6.6: Multiple Inline Images</h2>
+    <div class="expected">Expected: Multiple images on the same line should be placed side by side as inline elements. They should be aligned at the baseline by default.</div>
+    <div class="test-area">
+      <!-- Red, green, and blue 2x2 PNGs at 48x48 each -->
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVQIW2P8z8DwHwMDAwMAGOgC/Q9HGOAAAAAASUVORK5CYII=" width="48" height="48" alt="Red">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVQIW2Ng+M/wnwEIGBgAF2AC/RGrGN0AAAAASUVORK5CYII=" width="48" height="48" alt="Green">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVQIW2NgeM/wn4EBEwAAYEIC/UsJYIgAAAAASUVORK5CYII=" width="48" height="48" alt="Blue">
+      <p>Three colored squares (red, green, blue) should appear side by side above.</p>
+    </div>
+  </div>
+
+  <!-- Test 7: Image with dimensions in different units -->
+  <div class="test-group">
+    <h2>Test 6.7: Images at Various Sizes</h2>
+    <div class="expected">Expected: Three images at different sizes (16x16, 32x32, 64x64). Each should render at the specified pixel dimensions. They should appear progressively larger from left to right.</div>
+    <div class="test-area">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVQIW2P8z8DwHwMDAwMAGOgC/Q9HGOAAAAAASUVORK5CYII=" width="16" height="16" alt="16x16">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVQIW2P8z8DwHwMDAwMAGOgC/Q9HGOAAAAAASUVORK5CYII=" width="32" height="32" alt="32x32">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVQIW2P8z8DwHwMDAwMAGOgC/Q9HGOAAAAAASUVORK5CYII=" width="64" height="64" alt="64x64">
+      <p>Three red squares: 16x16, 32x32, and 64x64 pixels.</p>
+    </div>
+  </div>
+
+  <!-- Test 8: Image inside a link -->
+  <div class="test-group">
+    <h2>Test 6.8: Image Inside a Link</h2>
+    <div class="expected">Expected: The image should be clickable (wrapped in an anchor). It may show a colored border indicating it is a link. The cursor should change to pointer on hover.</div>
+    <div class="test-area">
+      <a href="01-headings.html">
+        <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVQIW2Ng+M/wnwEIGBgAF2AC/RGrGN0AAAAASUVORK5CYII=" width="64" height="64" alt="Click this green square to go to headings test">
+      </a>
+      <p>The green square above is a link to the headings test page.</p>
+    </div>
+  </div>
+
+  <!-- Test 9: Image with text flowing around it -->
+  <div class="test-group">
+    <h2>Test 6.9: Image Inline with Text</h2>
+    <div class="expected">Expected: The image should appear inline with the text, aligned at the text baseline. The text before and after the image should be on the same line if space permits.</div>
+    <div class="test-area">
+      <p>Here is an inline image <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVQIW2P8z8DwHwMDAwMAGOgC/Q9HGOAAAAAASUVORK5CYII=" width="24" height="24" alt="small red square"> embedded within this paragraph text. The text should flow around it naturally.</p>
+    </div>
+  </div>
+
+  <!-- Test 10: Data URI image types -->
+  <div class="test-group">
+    <h2>Test 6.10: Various Image Error States</h2>
+    <div class="expected">Expected: Each broken image scenario should be handled gracefully. The browser should show alt text or a broken image indicator without crashing or breaking the page layout.</div>
+    <div class="test-area">
+      <p><strong>Invalid data URI:</strong></p>
+      <img src="data:image/png;base64,INVALIDBASE64DATA" alt="Alt: Invalid base64 data" width="64" height="64">
+
+      <p><strong>Wrong MIME type:</strong></p>
+      <img src="data:text/plain;base64,SGVsbG8gV29ybGQ=" alt="Alt: Wrong MIME type (text/plain as image)" width="64" height="64">
+
+      <p><strong>Empty src:</strong></p>
+      <img src="" alt="Alt: Empty src attribute" width="64" height="64">
+
+      <p><strong>Path to nonexistent directory:</strong></p>
+      <img src="/no/such/directory/image.png" alt="Alt: Path to nonexistent file" width="64" height="64">
+    </div>
+  </div>
+
+</body>
+</html>

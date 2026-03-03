@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: Web Storage</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+  .demo-button {
+    padding: 8px 16px;
+    margin: 5px;
+    background: #4ecdc4;
+    color: #1a1a2e;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: bold;
+  }
+  .demo-button:hover { background: #6bff6b; }
+  .demo-input {
+    background: #0f3460;
+    color: #e0e0e0;
+    border: 1px solid #4ecdc4;
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">16 - Web Storage</h1>
+
+<div class="test-group">
+  <h2>localStorage Tests</h2>
+  <div class="expected">Expected: localStorage setItem, getItem, removeItem, clear, length, and key() all work correctly.</div>
+  <div class="test-area" id="local-results"></div>
+</div>
+
+<div class="test-group">
+  <h2>sessionStorage Tests</h2>
+  <div class="expected">Expected: sessionStorage provides the same API as localStorage.</div>
+  <div class="test-area" id="session-results"></div>
+</div>
+
+<div class="test-group">
+  <h2>Storage with Complex Types</h2>
+  <div class="expected">Expected: Objects and arrays can be stored via JSON.stringify/parse.</div>
+  <div class="test-area" id="complex-results"></div>
+</div>
+
+<div class="test-group">
+  <h2>Interactive Storage Demo</h2>
+  <div class="expected">Expected: Use the controls below to set, get, and clear localStorage values.</div>
+  <div class="test-area">
+    <div style="margin-bottom: 10px;">
+      <label>Key: <input type="text" id="storage-key" class="demo-input" value="testKey"></label>
+      <label>Value: <input type="text" id="storage-value" class="demo-input" value="testValue"></label>
+    </div>
+    <div style="margin-bottom: 10px;">
+      <button class="demo-button" id="btn-set">Set Item</button>
+      <button class="demo-button" id="btn-get">Get Item</button>
+      <button class="demo-button" id="btn-remove">Remove Item</button>
+      <button class="demo-button" id="btn-clear" style="background:#ff6b6b;">Clear All</button>
+    </div>
+    <div id="storage-output" style="padding: 10px; background: #1a1a2e; border-radius: 4px; min-height: 30px; color: #999;">
+      Storage output will appear here
+    </div>
+    <div style="margin-top: 10px;">
+      <strong>Current localStorage contents:</strong>
+      <div id="storage-contents" style="padding: 5px; color: #4ecdc4;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+function testTo(targetId, name, fn) {
+  var resultDiv = document.getElementById(targetId);
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// Clean up before tests
+try { localStorage.clear(); } catch(e) {}
+try { sessionStorage.clear(); } catch(e) {}
+
+// === localStorage Tests ===
+
+testTo('local-results', 'localStorage exists', function() {
+  return typeof localStorage === 'object' && localStorage !== null;
+});
+
+testTo('local-results', 'setItem and getItem', function() {
+  localStorage.setItem('test_key', 'test_value');
+  return localStorage.getItem('test_key') === 'test_value';
+});
+
+testTo('local-results', 'getItem returns null for non-existent key', function() {
+  return localStorage.getItem('nonexistent_key_xyz') === null;
+});
+
+testTo('local-results', 'setItem overwrites existing value', function() {
+  localStorage.setItem('overwrite_key', 'first');
+  localStorage.setItem('overwrite_key', 'second');
+  return localStorage.getItem('overwrite_key') === 'second';
+});
+
+testTo('local-results', 'removeItem removes a key', function() {
+  localStorage.setItem('remove_me', 'value');
+  localStorage.removeItem('remove_me');
+  return localStorage.getItem('remove_me') === null;
+});
+
+testTo('local-results', 'removeItem on non-existent key is no-op', function() {
+  localStorage.removeItem('never_existed');
+  return true;
+});
+
+testTo('local-results', 'length property counts items', function() {
+  localStorage.clear();
+  localStorage.setItem('a', '1');
+  localStorage.setItem('b', '2');
+  localStorage.setItem('c', '3');
+  return localStorage.length === 3;
+});
+
+testTo('local-results', 'key(index) returns key name', function() {
+  localStorage.clear();
+  localStorage.setItem('alpha', '1');
+  localStorage.setItem('beta', '2');
+  var keys = [];
+  for (var i = 0; i < localStorage.length; i++) {
+    keys.push(localStorage.key(i));
+  }
+  return keys.length === 2 && keys.indexOf('alpha') >= 0 && keys.indexOf('beta') >= 0;
+});
+
+testTo('local-results', 'clear removes all items', function() {
+  localStorage.setItem('x', '1');
+  localStorage.setItem('y', '2');
+  localStorage.clear();
+  return localStorage.length === 0 && localStorage.getItem('x') === null;
+});
+
+testTo('local-results', 'Values are always stored as strings', function() {
+  localStorage.setItem('num', 42);
+  return localStorage.getItem('num') === '42';
+});
+
+testTo('local-results', 'Empty string value', function() {
+  localStorage.setItem('empty', '');
+  return localStorage.getItem('empty') === '';
+});
+
+testTo('local-results', 'Persistence: set then read back', function() {
+  localStorage.clear();
+  localStorage.setItem('persist_test', 'hello');
+  var val = localStorage.getItem('persist_test');
+  localStorage.clear();
+  return val === 'hello';
+});
+
+// === sessionStorage Tests ===
+
+testTo('session-results', 'sessionStorage exists', function() {
+  return typeof sessionStorage === 'object' && sessionStorage !== null;
+});
+
+testTo('session-results', 'setItem and getItem', function() {
+  sessionStorage.setItem('sess_key', 'sess_value');
+  return sessionStorage.getItem('sess_key') === 'sess_value';
+});
+
+testTo('session-results', 'getItem returns null for non-existent key', function() {
+  return sessionStorage.getItem('nonexistent_sess') === null;
+});
+
+testTo('session-results', 'removeItem', function() {
+  sessionStorage.setItem('to_remove', 'val');
+  sessionStorage.removeItem('to_remove');
+  return sessionStorage.getItem('to_remove') === null;
+});
+
+testTo('session-results', 'clear', function() {
+  sessionStorage.setItem('a', '1');
+  sessionStorage.setItem('b', '2');
+  sessionStorage.clear();
+  return sessionStorage.length === 0;
+});
+
+testTo('session-results', 'length property', function() {
+  sessionStorage.clear();
+  sessionStorage.setItem('x', '1');
+  sessionStorage.setItem('y', '2');
+  var len = sessionStorage.length;
+  sessionStorage.clear();
+  return len === 2;
+});
+
+testTo('session-results', 'localStorage and sessionStorage are independent', function() {
+  localStorage.clear();
+  sessionStorage.clear();
+  localStorage.setItem('shared_key', 'local_val');
+  sessionStorage.setItem('shared_key', 'session_val');
+  var result = localStorage.getItem('shared_key') === 'local_val' && sessionStorage.getItem('shared_key') === 'session_val';
+  localStorage.clear();
+  sessionStorage.clear();
+  return result;
+});
+
+// === Complex Types ===
+
+testTo('complex-results', 'Store and retrieve object via JSON', function() {
+  var obj = { name: 'Alice', age: 30, active: true };
+  localStorage.setItem('user', JSON.stringify(obj));
+  var retrieved = JSON.parse(localStorage.getItem('user'));
+  localStorage.removeItem('user');
+  return retrieved.name === 'Alice' && retrieved.age === 30 && retrieved.active === true;
+});
+
+testTo('complex-results', 'Store and retrieve array via JSON', function() {
+  var arr = [1, 'two', true, null];
+  localStorage.setItem('list', JSON.stringify(arr));
+  var retrieved = JSON.parse(localStorage.getItem('list'));
+  localStorage.removeItem('list');
+  return retrieved.length === 4 && retrieved[0] === 1 && retrieved[1] === 'two' && retrieved[3] === null;
+});
+
+testTo('complex-results', 'Store nested object via JSON', function() {
+  var data = { config: { theme: 'dark', fontSize: 14 }, items: ['a', 'b'] };
+  localStorage.setItem('config', JSON.stringify(data));
+  var retrieved = JSON.parse(localStorage.getItem('config'));
+  localStorage.removeItem('config');
+  return retrieved.config.theme === 'dark' && retrieved.items.length === 2;
+});
+
+testTo('complex-results', 'Number round-trip via JSON', function() {
+  var val = 3.14159;
+  localStorage.setItem('pi', JSON.stringify(val));
+  var retrieved = JSON.parse(localStorage.getItem('pi'));
+  localStorage.removeItem('pi');
+  return retrieved === 3.14159;
+});
+
+// Clean up after tests
+localStorage.clear();
+sessionStorage.clear();
+
+// === Interactive Demo ===
+function updateContents() {
+  var contentsDiv = document.getElementById('storage-contents');
+  if (localStorage.length === 0) {
+    contentsDiv.textContent = '(empty)';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < localStorage.length; i++) {
+    var key = localStorage.key(i);
+    html += key + ' = "' + localStorage.getItem(key) + '"<br>';
+  }
+  contentsDiv.innerHTML = html;
+}
+
+updateContents();
+
+document.getElementById('btn-set').addEventListener('click', function() {
+  var key = document.getElementById('storage-key').value;
+  var value = document.getElementById('storage-value').value;
+  localStorage.setItem(key, value);
+  document.getElementById('storage-output').textContent = 'Set: "' + key + '" = "' + value + '"';
+  document.getElementById('storage-output').style.color = '#6bff6b';
+  updateContents();
+});
+
+document.getElementById('btn-get').addEventListener('click', function() {
+  var key = document.getElementById('storage-key').value;
+  var value = localStorage.getItem(key);
+  if (value === null) {
+    document.getElementById('storage-output').textContent = 'Key "' + key + '" not found (null)';
+    document.getElementById('storage-output').style.color = '#ff6b6b';
+  } else {
+    document.getElementById('storage-output').textContent = 'Got: "' + key + '" = "' + value + '"';
+    document.getElementById('storage-output').style.color = '#4ecdc4';
+  }
+});
+
+document.getElementById('btn-remove').addEventListener('click', function() {
+  var key = document.getElementById('storage-key').value;
+  localStorage.removeItem(key);
+  document.getElementById('storage-output').textContent = 'Removed: "' + key + '"';
+  document.getElementById('storage-output').style.color = '#e2b93d';
+  updateContents();
+});
+
+document.getElementById('btn-clear').addEventListener('click', function() {
+  localStorage.clear();
+  document.getElementById('storage-output').textContent = 'All localStorage items cleared';
+  document.getElementById('storage-output').style.color = '#ff6b6b';
+  updateContents();
+});
+</script>
+</body>
+</html>

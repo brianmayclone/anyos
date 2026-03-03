@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test 07: Tables</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+    /* Table styling for visibility on dark background */
+    .test-area table { border-collapse: collapse; margin: 10px 0; }
+    .test-area th, .test-area td { border: 1px solid #555; padding: 8px 12px; text-align: left; }
+    .test-area th { background: #1a1a3e; color: #4ecdc4; font-weight: bold; }
+    .test-area td { background: #0d1f3c; }
+    .test-area caption { color: #ff6b6b; font-weight: bold; margin-bottom: 8px; caption-side: top; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="../index.html">Back to Index</a>
+    <a href="06-images.html">Prev: Images</a>
+    <a href="08-forms.html">Next: Forms</a>
+  </div>
+
+  <h1 class="page-title">Test 07: Tables</h1>
+
+  <!-- Test 1: Basic table with thead/tbody -->
+  <div class="test-group">
+    <h2>Test 7.1: Basic Table with thead/tbody</h2>
+    <div class="expected">Expected: A table with a header row (th cells, distinct styling) and body rows (td cells). Columns should align. Headers should be bold/colored. Border on each cell.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Age</th>
+            <th>City</th>
+            <th>Occupation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Alice</td>
+            <td>30</td>
+            <td>New York</td>
+            <td>Engineer</td>
+          </tr>
+          <tr>
+            <td>Bob</td>
+            <td>25</td>
+            <td>San Francisco</td>
+            <td>Designer</td>
+          </tr>
+          <tr>
+            <td>Charlie</td>
+            <td>35</td>
+            <td>Chicago</td>
+            <td>Manager</td>
+          </tr>
+          <tr>
+            <td>Diana</td>
+            <td>28</td>
+            <td>Austin</td>
+            <td>Developer</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test 2: Table with caption -->
+  <div class="test-group">
+    <h2>Test 7.2: Table with Caption</h2>
+    <div class="expected">Expected: A caption should appear above (or below, depending on caption-side) the table. The caption should be centered by default and clearly associated with the table.</div>
+    <div class="test-area">
+      <table>
+        <caption>Monthly Sales Data (Q1 2025)</caption>
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th>Revenue</th>
+            <th>Expenses</th>
+            <th>Profit</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>January</td>
+            <td>$12,000</td>
+            <td>$8,500</td>
+            <td>$3,500</td>
+          </tr>
+          <tr>
+            <td>February</td>
+            <td>$14,200</td>
+            <td>$9,100</td>
+            <td>$5,100</td>
+          </tr>
+          <tr>
+            <td>March</td>
+            <td>$16,800</td>
+            <td>$10,300</td>
+            <td>$6,500</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test 3: Table with colspan and rowspan -->
+  <div class="test-group">
+    <h2>Test 7.3: colspan and rowspan</h2>
+    <div class="expected">Expected: Cells with colspan should span multiple columns. Cells with rowspan should span multiple rows. The table grid should remain properly aligned despite spanning.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th colspan="3">Full Width Header (colspan=3)</th>
+          </tr>
+          <tr>
+            <th>Column A</th>
+            <th>Column B</th>
+            <th>Column C</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td rowspan="2">Spans 2 rows</td>
+            <td>B1</td>
+            <td>C1</td>
+          </tr>
+          <tr>
+            <td>B2</td>
+            <td>C2</td>
+          </tr>
+          <tr>
+            <td>A3</td>
+            <td colspan="2">Spans 2 columns</td>
+          </tr>
+          <tr>
+            <td rowspan="3">Spans 3 rows</td>
+            <td>B4</td>
+            <td>C4</td>
+          </tr>
+          <tr>
+            <td>B5</td>
+            <td>C5</td>
+          </tr>
+          <tr>
+            <td>B6</td>
+            <td>C6</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test 4: Table with tfoot -->
+  <div class="test-group">
+    <h2>Test 7.4: Table with tfoot</h2>
+    <div class="expected">Expected: The tfoot section should render at the bottom of the table, even if placed before tbody in the source. Footer cells should be distinguishable from body cells.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Quantity</th>
+            <th>Price</th>
+          </tr>
+        </thead>
+        <tfoot>
+          <tr>
+            <th>Total</th>
+            <td>15</td>
+            <td>$165.00</td>
+          </tr>
+        </tfoot>
+        <tbody>
+          <tr>
+            <td>Widget A</td>
+            <td>5</td>
+            <td>$50.00</td>
+          </tr>
+          <tr>
+            <td>Widget B</td>
+            <td>3</td>
+            <td>$45.00</td>
+          </tr>
+          <tr>
+            <td>Widget C</td>
+            <td>7</td>
+            <td>$70.00</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test 5: Nested tables -->
+  <div class="test-group">
+    <h2>Test 7.5: Nested Tables</h2>
+    <div class="expected">Expected: A table inside a td cell. The inner table should render completely within its parent cell. Both tables should have their own borders and layout.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Scores</td>
+            <td>
+              <table>
+                <tr>
+                  <th>Subject</th>
+                  <th>Grade</th>
+                </tr>
+                <tr>
+                  <td>Math</td>
+                  <td>A</td>
+                </tr>
+                <tr>
+                  <td>Science</td>
+                  <td>B+</td>
+                </tr>
+                <tr>
+                  <td>English</td>
+                  <td>A-</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td>Summary</td>
+            <td>Overall: Good performance</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test 6: Table with mixed content -->
+  <div class="test-group">
+    <h2>Test 7.6: Table with Mixed Content</h2>
+    <div class="expected">Expected: Table cells can contain text, links, images, bold, code, and other inline elements. All content types should render correctly within their cells.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Example</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Plain text</td>
+            <td>Hello, World!</td>
+          </tr>
+          <tr>
+            <td>Bold text</td>
+            <td><strong>Bold content</strong></td>
+          </tr>
+          <tr>
+            <td>Link</td>
+            <td><a href="01-headings.html">Link to headings</a></td>
+          </tr>
+          <tr>
+            <td>Code</td>
+            <td><code>console.log("test")</code></td>
+          </tr>
+          <tr>
+            <td>Image</td>
+            <td><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVQIW2P8z8DwHwMDAwMAGOgC/Q9HGOAAAAAASUVORK5CYII=" width="16" height="16" alt="red"></td>
+          </tr>
+          <tr>
+            <td>List</td>
+            <td>
+              <ul>
+                <li>Item A</li>
+                <li>Item B</li>
+              </ul>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test 7: Empty cells -->
+  <div class="test-group">
+    <h2>Test 7.7: Empty Cells</h2>
+    <div class="expected">Expected: Empty td/th cells should still have borders and occupy space in the table grid. The table layout should remain aligned even with empty cells.</div>
+    <div class="test-area">
+      <table>
+        <thead>
+          <tr>
+            <th>A</th>
+            <th>B</th>
+            <th>C</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td></td>
+            <td>3</td>
+          </tr>
+          <tr>
+            <td></td>
+            <td>5</td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>7</td>
+            <td></td>
+            <td>9</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test 8: Wide table (horizontal overflow) -->
+  <div class="test-group">
+    <h2>Test 7.8: Wide Table (Horizontal Overflow)</h2>
+    <div class="expected">Expected: A table wider than its container should either cause horizontal scrolling or overflow. Content should not be truncated or hidden. All columns should be accessible.</div>
+    <div class="test-area" style="overflow-x: auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Col 1</th>
+            <th>Col 2</th>
+            <th>Col 3</th>
+            <th>Col 4</th>
+            <th>Col 5</th>
+            <th>Col 6</th>
+            <th>Col 7</th>
+            <th>Col 8</th>
+            <th>Col 9</th>
+            <th>Col 10</th>
+            <th>Col 11</th>
+            <th>Col 12</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Data that is wide enough</td>
+            <td>Data that is wide enough</td>
+            <td>Data that is wide enough</td>
+            <td>Data that is wide enough</td>
+            <td>Data that is wide enough</td>
+            <td>Data that is wide enough</td>
+            <td>Data that is wide enough</td>
+            <td>Data that is wide enough</td>
+            <td>Data that is wide enough</td>
+            <td>Data that is wide enough</td>
+            <td>Data that is wide enough</td>
+            <td>Data that is wide enough</td>
+          </tr>
+          <tr>
+            <td>Row 2 Col 1</td>
+            <td>Row 2 Col 2</td>
+            <td>Row 2 Col 3</td>
+            <td>Row 2 Col 4</td>
+            <td>Row 2 Col 5</td>
+            <td>Row 2 Col 6</td>
+            <td>Row 2 Col 7</td>
+            <td>Row 2 Col 8</td>
+            <td>Row 2 Col 9</td>
+            <td>Row 2 Col 10</td>
+            <td>Row 2 Col 11</td>
+            <td>Row 2 Col 12</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test 9: Single-row and single-column tables -->
+  <div class="test-group">
+    <h2>Test 7.9: Edge Cases - Single Row/Column</h2>
+    <div class="expected">Expected: A table with a single row should still render as a table with borders. A table with a single column should still have proper table layout. Both should be valid.</div>
+    <div class="test-area">
+      <p><strong>Single row table:</strong></p>
+      <table>
+        <tr>
+          <td>Only</td>
+          <td>one</td>
+          <td>row</td>
+          <td>of</td>
+          <td>data</td>
+        </tr>
+      </table>
+
+      <p><strong>Single column table:</strong></p>
+      <table>
+        <tr><td>Row 1</td></tr>
+        <tr><td>Row 2</td></tr>
+        <tr><td>Row 3</td></tr>
+        <tr><td>Row 4</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test 10: Table without explicit thead/tbody -->
+  <div class="test-group">
+    <h2>Test 7.10: Table Without Explicit thead/tbody</h2>
+    <div class="expected">Expected: A table with just tr elements (no explicit thead/tbody) should still render correctly. The browser should implicitly create a tbody. All rows should be visible with proper alignment.</div>
+    <div class="test-area">
+      <table>
+        <tr>
+          <th>Header A</th>
+          <th>Header B</th>
+          <th>Header C</th>
+        </tr>
+        <tr>
+          <td>Data 1A</td>
+          <td>Data 1B</td>
+          <td>Data 1C</td>
+        </tr>
+        <tr>
+          <td>Data 2A</td>
+          <td>Data 2B</td>
+          <td>Data 2C</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+</body>
+</html>

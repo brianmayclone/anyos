@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CSS Test 15: Flexbox Gap and Order</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .box {
+    width: 80px;
+    height: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    font-weight: bold;
+    color: #1a1a2e;
+    border-radius: 4px;
+    text-align: center;
+  }
+  .box-1 { background: #ff6b6b; }
+  .box-2 { background: #4ecdc4; }
+  .box-3 { background: #ffd93d; }
+  .box-4 { background: #6c5ce7; color: #e0e0e0; }
+  .box-5 { background: #a8e6cf; }
+  .box-6 { background: #ff8b94; }
+
+  .flex-row {
+    display: flex;
+    border: 2px dashed #555;
+    padding: 5px;
+    margin-top: 10px;
+  }
+
+  .label {
+    color: #ff8b94;
+    font-size: 13px;
+    margin-top: 10px;
+    font-weight: bold;
+  }
+
+  .code {
+    font-family: monospace;
+    color: #ffd93d;
+    background: #1a1a2e;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 15: Flexbox Gap and Order</h1>
+
+<!-- Test 1: No gap (default) -->
+<div class="test-group">
+  <h2>1. No gap (default)</h2>
+  <p class="expected">Expected: Boxes are directly adjacent with no spacing between them (only the 2px margin from box styling if any). Boxes touch each other.</p>
+  <div class="test-area">
+    <div class="flex-row" style="gap: 0;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 2: gap: 10px -->
+<div class="test-group">
+  <h2>2. gap: 10px (uniform spacing)</h2>
+  <p class="expected">Expected: 10px of space between each adjacent box. No space before the first box or after the last box -- gap only applies between items.</p>
+  <div class="test-area">
+    <div class="flex-row" style="gap: 10px;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 3: gap: 20px -->
+<div class="test-group">
+  <h2>3. gap: 20px (larger uniform spacing)</h2>
+  <p class="expected">Expected: 20px of space between each box. Compare with test 2 -- the gaps should be twice as wide.</p>
+  <div class="test-area">
+    <div class="flex-row" style="gap: 20px;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 4: gap: 40px -->
+<div class="test-group">
+  <h2>4. gap: 40px (large spacing)</h2>
+  <p class="expected">Expected: Large 40px gaps between boxes. Items may not all fit on one line depending on container width.</p>
+  <div class="test-area">
+    <div class="flex-row" style="gap: 40px;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 5: row-gap and column-gap on wrapped flex -->
+<div class="test-group">
+  <h2>5. row-gap and column-gap (on flex-wrap: wrap)</h2>
+  <p class="expected">Expected: Different spacing horizontally (column-gap: 10px) and vertically (row-gap: 30px). Horizontal gaps are small, vertical gaps between wrapped rows are large.</p>
+  <div class="test-area">
+    <div style="display: flex; flex-wrap: wrap; width: 400px; border: 2px dashed #555; padding: 5px; row-gap: 30px; column-gap: 10px;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+      <div class="box box-5">5</div>
+      <div class="box box-6">6</div>
+      <div class="box box-1">7</div>
+      <div class="box box-2">8</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: Reversed: large column-gap, small row-gap -->
+<div class="test-group">
+  <h2>6. row-gap: 5px, column-gap: 30px (reversed emphasis)</h2>
+  <p class="expected">Expected: Wide horizontal gaps (30px) between columns, tiny vertical gaps (5px) between rows. Rows are close together but items are spaced out horizontally.</p>
+  <div class="test-area">
+    <div style="display: flex; flex-wrap: wrap; width: 500px; border: 2px dashed #555; padding: 5px; row-gap: 5px; column-gap: 30px;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+      <div class="box box-4">4</div>
+      <div class="box box-5">5</div>
+      <div class="box box-6">6</div>
+      <div class="box box-1">7</div>
+      <div class="box box-2">8</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 7: gap with justify-content: center -->
+<div class="test-group">
+  <h2>7. gap with justify-content combinations</h2>
+  <p class="expected">Expected: Gap spacing is maintained between items regardless of justify-content. With center, items are grouped in the center with gaps between them. With space-between, items are spread out but also have gaps.</p>
+  <div class="test-area">
+    <p class="label">gap: 15px + justify-content: flex-start:</p>
+    <div class="flex-row" style="gap: 15px; justify-content: flex-start;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+    </div>
+
+    <p class="label">gap: 15px + justify-content: center:</p>
+    <div class="flex-row" style="gap: 15px; justify-content: center;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+    </div>
+
+    <p class="label">gap: 15px + justify-content: space-between:</p>
+    <div class="flex-row" style="gap: 15px; justify-content: space-between;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+    </div>
+
+    <p class="label">gap: 15px + justify-content: space-evenly:</p>
+    <div class="flex-row" style="gap: 15px; justify-content: space-evenly;">
+      <div class="box box-1">1</div>
+      <div class="box box-2">2</div>
+      <div class="box box-3">3</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 8: order: default -->
+<div class="test-group">
+  <h2>8. order: default (all 0)</h2>
+  <p class="expected">Expected: Items appear in their source order: 1, 2, 3, 4, 5. All have order: 0 (default).</p>
+  <div class="test-area">
+    <div class="flex-row" style="gap: 10px;">
+      <div class="box box-1" style="order: 0;">1</div>
+      <div class="box box-2" style="order: 0;">2</div>
+      <div class="box box-3" style="order: 0;">3</div>
+      <div class="box box-4" style="order: 0;">4</div>
+      <div class="box box-5" style="order: 0;">5</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 9: order: positive values -->
+<div class="test-group">
+  <h2>9. order: reordering with positive values</h2>
+  <p class="expected">Expected: Items are visually reordered. Source order is 1,2,3,4,5 but display order is based on order property. Items with the same order value maintain source order. Order: 3,1,2,5,4 should display as: 2(order:1), 3(order:2), 1(order:3), 5(order:4), 4(order:5).</p>
+  <div class="test-area">
+    <div class="flex-row" style="gap: 10px;">
+      <div class="box box-1" style="order: 3;">1<br><small>order:3</small></div>
+      <div class="box box-2" style="order: 1;">2<br><small>order:1</small></div>
+      <div class="box box-3" style="order: 2;">3<br><small>order:2</small></div>
+      <div class="box box-4" style="order: 5;">4<br><small>order:5</small></div>
+      <div class="box box-5" style="order: 4;">5<br><small>order:4</small></div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 10: order: negative values -->
+<div class="test-group">
+  <h2>10. order: negative values go first</h2>
+  <p class="expected">Expected: Box 4 has order: -2 (appears first), box 2 has order: -1 (appears second). The rest have order: 0 and appear in source order after the negative-ordered items. Visual order: 4, 2, 1, 3, 5.</p>
+  <div class="test-area">
+    <div class="flex-row" style="gap: 10px;">
+      <div class="box box-1" style="order: 0;">1<br><small>order:0</small></div>
+      <div class="box box-2" style="order: -1;">2<br><small>order:-1</small></div>
+      <div class="box box-3" style="order: 0;">3<br><small>order:0</small></div>
+      <div class="box box-4" style="order: -2;">4<br><small>order:-2</small></div>
+      <div class="box box-5" style="order: 0;">5<br><small>order:0</small></div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 11: order: move last item to first -->
+<div class="test-group">
+  <h2>11. order: move last item to first position</h2>
+  <p class="expected">Expected: Box 5 (the last in source) has order: -1 and appears first visually. All others remain in source order. Visual order: 5, 1, 2, 3, 4.</p>
+  <div class="test-area">
+    <div class="flex-row" style="gap: 10px;">
+      <div class="box box-1" style="order: 0;">1<br><small>order:0</small></div>
+      <div class="box box-2" style="order: 0;">2<br><small>order:0</small></div>
+      <div class="box box-3" style="order: 0;">3<br><small>order:0</small></div>
+      <div class="box box-4" style="order: 0;">4<br><small>order:0</small></div>
+      <div class="box box-5" style="order: -1;">5<br><small>order:-1</small></div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 12: gap on column direction -->
+<div class="test-group">
+  <h2>12. gap with flex-direction: column</h2>
+  <p class="expected">Expected: Gap of 15px between each item in the vertical direction. Items are stacked vertically with even spacing between them.</p>
+  <div class="test-area">
+    <div style="display: flex; flex-direction: column; gap: 15px; border: 2px dashed #555; padding: 5px; width: 200px;">
+      <div class="box box-1" style="width: 100%;">1</div>
+      <div class="box box-2" style="width: 100%;">2</div>
+      <div class="box box-3" style="width: 100%;">3</div>
+      <div class="box box-4" style="width: 100%;">4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 13: order combined with flex-grow -->
+<div class="test-group">
+  <h2>13. order combined with flex-grow</h2>
+  <p class="expected">Expected: Items are reordered AND have different flex-grow values. Box 3 (order:-1) appears first and has flex-grow:2 (wider). Box 1 and box 2 appear after with flex-grow:1 (narrower).</p>
+  <div class="test-area">
+    <div class="flex-row" style="gap: 10px;">
+      <div class="box box-1" style="order: 0; flex-grow: 1; width: auto;">1<br><small>order:0, grow:1</small></div>
+      <div class="box box-2" style="order: 0; flex-grow: 1; width: auto;">2<br><small>order:0, grow:1</small></div>
+      <div class="box box-3" style="order: -1; flex-grow: 2; width: auto;">3<br><small>order:-1, grow:2</small></div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 14: gap with wrap and order -->
+<div class="test-group">
+  <h2>14. Combined: gap + wrap + order</h2>
+  <p class="expected">Expected: Items wrap within 400px container, have 10px gaps, and are visually reordered. Box 6 (order:-1) appears first, then boxes in default order.</p>
+  <div class="test-area">
+    <div style="display: flex; flex-wrap: wrap; width: 400px; gap: 10px; border: 2px dashed #555; padding: 5px;">
+      <div class="box box-1" style="order: 0;">1<br><small>o:0</small></div>
+      <div class="box box-2" style="order: 0;">2<br><small>o:0</small></div>
+      <div class="box box-3" style="order: 0;">3<br><small>o:0</small></div>
+      <div class="box box-4" style="order: 0;">4<br><small>o:0</small></div>
+      <div class="box box-5" style="order: 0;">5<br><small>o:0</small></div>
+      <div class="box box-6" style="order: -1;">6<br><small>o:-1</small></div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Integration Test 06: Registration / Settings Form</title>
+  <style>
+    /* === Reset & Base === */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #d4d4d8;
+      font-family: sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+    a { color: #4ecdc4; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* === Page Container === */
+    .page {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    /* === Page Header === */
+    .page-header {
+      margin-bottom: 32px;
+      text-align: center;
+    }
+    .page-header h1 {
+      font-size: 28px;
+      color: #f0f0f5;
+      margin-bottom: 8px;
+    }
+    .page-header p {
+      color: #8888a0;
+      font-size: 14px;
+      max-width: 500px;
+      margin: 0 auto;
+    }
+
+    /* === Form Styles === */
+    form {
+      width: 100%;
+    }
+
+    /* Fieldset groups */
+    fieldset {
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 24px;
+      background: #16213e;
+    }
+    legend {
+      font-size: 16px;
+      font-weight: bold;
+      color: #4ecdc4;
+      padding: 0 8px;
+    }
+
+    /* Form rows */
+    .form-row {
+      margin-bottom: 16px;
+    }
+    .form-row:last-child {
+      margin-bottom: 0;
+    }
+
+    /* Two-column form row */
+    .form-row-2col {
+      display: flex;
+      gap: 16px;
+    }
+    .form-row-2col .form-field {
+      flex: 1;
+    }
+
+    /* Labels */
+    label {
+      display: block;
+      font-size: 13px;
+      color: #c8c8d8;
+      margin-bottom: 4px;
+      font-weight: bold;
+    }
+    label .required {
+      color: #ff6b6b;
+      margin-left: 2px;
+    }
+    label .optional {
+      color: #6868a0;
+      font-weight: normal;
+      font-size: 12px;
+      margin-left: 4px;
+    }
+
+    /* Text inputs, email, password */
+    input[type="text"],
+    input[type="email"],
+    input[type="password"],
+    input[type="tel"],
+    input[type="url"],
+    input[type="date"] {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #3a3a5a;
+      border-radius: 6px;
+      background: #0f1a2e;
+      color: #f0f0f5;
+      font-size: 14px;
+      font-family: sans-serif;
+    }
+    input:focus {
+      outline: none;
+      border-color: #4ecdc4;
+    }
+    input::placeholder {
+      color: #4a4a6a;
+    }
+
+    /* Textarea */
+    textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #3a3a5a;
+      border-radius: 6px;
+      background: #0f1a2e;
+      color: #f0f0f5;
+      font-size: 14px;
+      font-family: sans-serif;
+      resize: vertical;
+      min-height: 80px;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: #4ecdc4;
+    }
+
+    /* Select */
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #3a3a5a;
+      border-radius: 6px;
+      background: #0f1a2e;
+      color: #f0f0f5;
+      font-size: 14px;
+      font-family: sans-serif;
+    }
+    select:focus {
+      outline: none;
+      border-color: #4ecdc4;
+    }
+
+    /* Checkboxes and Radio buttons */
+    .checkbox-group, .radio-group {
+      margin-top: 4px;
+    }
+    .checkbox-item, .radio-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .checkbox-item label, .radio-item label {
+      font-weight: normal;
+      margin-bottom: 0;
+      cursor: pointer;
+    }
+    input[type="checkbox"], input[type="radio"] {
+      width: 16px;
+      height: 16px;
+      accent-color: #4ecdc4;
+      cursor: pointer;
+    }
+
+    /* Help text below inputs */
+    .help-text {
+      font-size: 12px;
+      color: #6868a0;
+      margin-top: 4px;
+    }
+
+    /* Error messages (initially hidden, shown by JS) */
+    .error-msg {
+      font-size: 12px;
+      color: #ff6b6b;
+      margin-top: 4px;
+      display: none;
+    }
+    .error-msg.visible {
+      display: block;
+    }
+    input.error, textarea.error, select.error {
+      border-color: #ff6b6b;
+    }
+
+    /* Success state */
+    input.success {
+      border-color: #6bff6b;
+    }
+
+    /* === Button Group === */
+    .button-group {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      margin-top: 24px;
+    }
+    .btn {
+      padding: 10px 24px;
+      border-radius: 6px;
+      border: none;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: pointer;
+      font-family: sans-serif;
+    }
+    .btn-primary {
+      background: #4ecdc4;
+      color: #0a0a1e;
+    }
+    .btn-primary:hover { background: #3dbdb5; }
+    .btn-secondary {
+      background: #2a2a4a;
+      color: #d4d4d8;
+      border: 1px solid #3a3a5a;
+    }
+    .btn-secondary:hover { background: #3a3a5a; }
+
+    /* === Form validation result banner === */
+    .validation-banner {
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-top: 16px;
+      font-size: 14px;
+      display: none;
+    }
+    .validation-banner.success {
+      display: block;
+      background: #1a3a1a;
+      border: 1px solid #2a4a2a;
+      color: #6bff6b;
+    }
+    .validation-banner.error {
+      display: block;
+      background: #3a1a1a;
+      border: 1px solid #4a2a2a;
+      color: #ff6b6b;
+    }
+
+    /* === Password strength indicator === */
+    .password-strength {
+      display: flex;
+      gap: 4px;
+      margin-top: 6px;
+    }
+    .strength-bar {
+      height: 4px;
+      flex: 1;
+      background: #2a2a4a;
+      border-radius: 2px;
+    }
+    .strength-bar.active-weak { background: #ff6b6b; }
+    .strength-bar.active-medium { background: #ffd93d; }
+    .strength-bar.active-strong { background: #6bff6b; }
+    .strength-label {
+      font-size: 11px;
+      margin-top: 4px;
+      color: #6868a0;
+    }
+
+    /* === Expected Rendering Section === */
+    .expected-rendering {
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 20px 24px;
+      background: #1a2a1a;
+      border: 1px solid #2a4a2a;
+      border-radius: 8px;
+      color: #6bff6b;
+      font-size: 14px;
+    }
+    .expected-rendering h2 {
+      color: #6bff6b;
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+    .expected-rendering ul { margin-left: 20px; }
+    .expected-rendering li { margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+
+  <!-- Back navigation -->
+  <div style="padding:12px 24px;background:#0a0a1e;">
+    <div class="nav" style="margin-bottom:0"><a href="../index.html" style="color:#4ecdc4;text-decoration:none">&larr; Back to Test Index</a></div>
+  </div>
+
+  <div class="page">
+    <!-- === Page Header === -->
+    <div class="page-header">
+      <h1>Create Your Account</h1>
+      <p>Fill in the information below to register. Fields marked with * are required.</p>
+    </div>
+
+    <form id="registration-form" novalidate>
+
+      <!-- ============================================================
+           FIELDSET 1: Personal Information
+           Text inputs for name, phone, date, URL. Two-column layout
+           for first/last name.
+           ============================================================ -->
+      <fieldset>
+        <legend>Personal Information</legend>
+
+        <div class="form-row form-row-2col">
+          <div class="form-field">
+            <label for="first-name">First Name <span class="required">*</span></label>
+            <input type="text" id="first-name" name="first-name" placeholder="John" required>
+            <div class="error-msg" id="err-first-name">First name is required.</div>
+          </div>
+          <div class="form-field">
+            <label for="last-name">Last Name <span class="required">*</span></label>
+            <input type="text" id="last-name" name="last-name" placeholder="Doe" required>
+            <div class="error-msg" id="err-last-name">Last name is required.</div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label for="phone">Phone Number <span class="optional">(optional)</span></label>
+          <input type="tel" id="phone" name="phone" placeholder="+1 (555) 123-4567">
+        </div>
+
+        <div class="form-row form-row-2col">
+          <div class="form-field">
+            <label for="dob">Date of Birth <span class="optional">(optional)</span></label>
+            <input type="date" id="dob" name="dob">
+          </div>
+          <div class="form-field">
+            <label for="website">Website <span class="optional">(optional)</span></label>
+            <input type="url" id="website" name="website" placeholder="https://example.com">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label for="bio">Short Bio <span class="optional">(optional)</span></label>
+          <textarea id="bio" name="bio" placeholder="Tell us a little about yourself..."></textarea>
+          <div class="help-text">Maximum 500 characters.</div>
+        </div>
+      </fieldset>
+
+      <!-- ============================================================
+           FIELDSET 2: Account Details
+           Email, password with strength indicator, confirm password.
+           ============================================================ -->
+      <fieldset>
+        <legend>Account Details</legend>
+
+        <div class="form-row">
+          <label for="email">Email Address <span class="required">*</span></label>
+          <input type="email" id="email" name="email" placeholder="john@example.com" required>
+          <div class="error-msg" id="err-email">Please enter a valid email address.</div>
+        </div>
+
+        <div class="form-row">
+          <label for="username">Username <span class="required">*</span></label>
+          <input type="text" id="username" name="username" placeholder="johndoe" required>
+          <div class="help-text">3-20 characters, letters, numbers, and underscores only.</div>
+          <div class="error-msg" id="err-username">Username is required (3-20 characters).</div>
+        </div>
+
+        <div class="form-row">
+          <label for="password">Password <span class="required">*</span></label>
+          <input type="password" id="password" name="password" placeholder="Minimum 8 characters" required>
+          <div class="password-strength" id="pw-strength">
+            <div class="strength-bar" id="pw-bar-1"></div>
+            <div class="strength-bar" id="pw-bar-2"></div>
+            <div class="strength-bar" id="pw-bar-3"></div>
+            <div class="strength-bar" id="pw-bar-4"></div>
+          </div>
+          <div class="strength-label" id="pw-label">Enter a password</div>
+          <div class="error-msg" id="err-password">Password must be at least 8 characters.</div>
+        </div>
+
+        <div class="form-row">
+          <label for="confirm-password">Confirm Password <span class="required">*</span></label>
+          <input type="password" id="confirm-password" name="confirm-password" placeholder="Re-enter your password" required>
+          <div class="error-msg" id="err-confirm-password">Passwords do not match.</div>
+        </div>
+      </fieldset>
+
+      <!-- ============================================================
+           FIELDSET 3: Preferences
+           Select dropdown, checkboxes, radio buttons.
+           ============================================================ -->
+      <fieldset>
+        <legend>Preferences</legend>
+
+        <div class="form-row">
+          <label for="role">Account Type <span class="required">*</span></label>
+          <select id="role" name="role" required>
+            <option value="">-- Select an account type --</option>
+            <option value="developer">Developer</option>
+            <option value="designer">Designer</option>
+            <option value="manager">Project Manager</option>
+            <option value="other">Other</option>
+          </select>
+          <div class="error-msg" id="err-role">Please select an account type.</div>
+        </div>
+
+        <div class="form-row">
+          <label>Notifications</label>
+          <div class="checkbox-group">
+            <div class="checkbox-item">
+              <input type="checkbox" id="notify-email" name="notify-email" checked>
+              <label for="notify-email">Email notifications</label>
+            </div>
+            <div class="checkbox-item">
+              <input type="checkbox" id="notify-sms" name="notify-sms">
+              <label for="notify-sms">SMS notifications</label>
+            </div>
+            <div class="checkbox-item">
+              <input type="checkbox" id="notify-push" name="notify-push" checked>
+              <label for="notify-push">Push notifications</label>
+            </div>
+            <div class="checkbox-item">
+              <input type="checkbox" id="notify-newsletter" name="notify-newsletter">
+              <label for="notify-newsletter">Weekly newsletter</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label>Theme Preference</label>
+          <div class="radio-group">
+            <div class="radio-item">
+              <input type="radio" id="theme-dark" name="theme" value="dark" checked>
+              <label for="theme-dark">Dark mode</label>
+            </div>
+            <div class="radio-item">
+              <input type="radio" id="theme-light" name="theme" value="light">
+              <label for="theme-light">Light mode</label>
+            </div>
+            <div class="radio-item">
+              <input type="radio" id="theme-system" name="theme" value="system">
+              <label for="theme-system">System default</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label>Language</label>
+          <div class="radio-group">
+            <div class="radio-item">
+              <input type="radio" id="lang-en" name="language" value="en" checked>
+              <label for="lang-en">English</label>
+            </div>
+            <div class="radio-item">
+              <input type="radio" id="lang-de" name="language" value="de">
+              <label for="lang-de">Deutsch</label>
+            </div>
+            <div class="radio-item">
+              <input type="radio" id="lang-ja" name="language" value="ja">
+              <label for="lang-ja">Japanese</label>
+            </div>
+          </div>
+        </div>
+      </fieldset>
+
+      <!-- Terms acceptance -->
+      <div class="form-row" style="margin-bottom:0;">
+        <div class="checkbox-item">
+          <input type="checkbox" id="terms" name="terms" required>
+          <label for="terms">I agree to the <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a> <span class="required">*</span></label>
+        </div>
+        <div class="error-msg" id="err-terms">You must agree to the terms and conditions.</div>
+      </div>
+
+      <!-- Buttons -->
+      <div class="button-group">
+        <button type="reset" class="btn btn-secondary">Reset</button>
+        <button type="submit" class="btn btn-primary">Create Account</button>
+      </div>
+
+      <!-- Validation result banner -->
+      <div class="validation-banner" id="validation-banner"></div>
+
+    </form>
+  </div>
+
+  <!-- ============================================================
+       JAVASCRIPT: Form validation
+       ============================================================ -->
+  <script>
+    /**
+     * Validates the registration form on submit.
+     * Checks required fields, email format, password strength, and matching passwords.
+     * Displays inline error messages and a summary banner.
+     */
+    (function() {
+      var form = document.getElementById('registration-form');
+      var banner = document.getElementById('validation-banner');
+      var passwordInput = document.getElementById('password');
+
+      // === Password strength meter ===
+      if (passwordInput) {
+        passwordInput.addEventListener('input', function() {
+          var pw = this.value;
+          var score = 0;
+
+          if (pw.length >= 8) score++;
+          if (pw.length >= 12) score++;
+          // Check for mixed case
+          var hasUpper = false;
+          var hasLower = false;
+          for (var i = 0; i < pw.length; i++) {
+            if (pw[i] >= 'A' && pw[i] <= 'Z') hasUpper = true;
+            if (pw[i] >= 'a' && pw[i] <= 'z') hasLower = true;
+          }
+          if (hasUpper && hasLower) score++;
+          // Check for numbers or special chars
+          var hasSpecial = false;
+          for (var j = 0; j < pw.length; j++) {
+            var c = pw[j];
+            if ((c >= '0' && c <= '9') || '!@#$%^&*()'.indexOf(c) >= 0) {
+              hasSpecial = true;
+              break;
+            }
+          }
+          if (hasSpecial) score++;
+
+          var bars = [
+            document.getElementById('pw-bar-1'),
+            document.getElementById('pw-bar-2'),
+            document.getElementById('pw-bar-3'),
+            document.getElementById('pw-bar-4')
+          ];
+          var label = document.getElementById('pw-label');
+          var classes = ['', 'active-weak', 'active-medium', 'active-medium', 'active-strong'];
+          var labels = ['Enter a password', 'Weak', 'Fair', 'Good', 'Strong'];
+
+          for (var k = 0; k < 4; k++) {
+            bars[k].className = 'strength-bar';
+            if (k < score) {
+              bars[k].className = 'strength-bar ' + classes[score];
+            }
+          }
+          label.textContent = pw.length === 0 ? labels[0] : labels[score];
+        });
+      }
+
+      // === Form submission validation ===
+      if (form) {
+        form.addEventListener('submit', function(e) {
+          e.preventDefault();
+
+          var errors = [];
+
+          // Clear previous errors
+          var allErrors = document.querySelectorAll('.error-msg');
+          for (var i = 0; i < allErrors.length; i++) {
+            allErrors[i].className = 'error-msg';
+          }
+          var allInputs = document.querySelectorAll('input, textarea, select');
+          for (var j = 0; j < allInputs.length; j++) {
+            allInputs[j].className = allInputs[j].className.replace(' error', '').replace(' success', '');
+          }
+
+          // Validate first name
+          var firstName = document.getElementById('first-name');
+          if (!firstName.value.trim()) {
+            firstName.className += ' error';
+            document.getElementById('err-first-name').className = 'error-msg visible';
+            errors.push('First name');
+          }
+
+          // Validate last name
+          var lastName = document.getElementById('last-name');
+          if (!lastName.value.trim()) {
+            lastName.className += ' error';
+            document.getElementById('err-last-name').className = 'error-msg visible';
+            errors.push('Last name');
+          }
+
+          // Validate email
+          var email = document.getElementById('email');
+          var emailVal = email.value.trim();
+          var atIdx = emailVal.indexOf('@');
+          var dotIdx = emailVal.lastIndexOf('.');
+          if (!emailVal || atIdx < 1 || dotIdx < atIdx + 2 || dotIdx >= emailVal.length - 1) {
+            email.className += ' error';
+            document.getElementById('err-email').className = 'error-msg visible';
+            errors.push('Email');
+          }
+
+          // Validate username
+          var username = document.getElementById('username');
+          var usernameVal = username.value.trim();
+          if (!usernameVal || usernameVal.length < 3 || usernameVal.length > 20) {
+            username.className += ' error';
+            document.getElementById('err-username').className = 'error-msg visible';
+            errors.push('Username');
+          }
+
+          // Validate password
+          var password = document.getElementById('password');
+          if (!password.value || password.value.length < 8) {
+            password.className += ' error';
+            document.getElementById('err-password').className = 'error-msg visible';
+            errors.push('Password');
+          }
+
+          // Validate confirm password
+          var confirmPw = document.getElementById('confirm-password');
+          if (confirmPw.value !== password.value || !confirmPw.value) {
+            confirmPw.className += ' error';
+            document.getElementById('err-confirm-password').className = 'error-msg visible';
+            errors.push('Confirm password');
+          }
+
+          // Validate account type
+          var role = document.getElementById('role');
+          if (!role.value) {
+            role.className += ' error';
+            document.getElementById('err-role').className = 'error-msg visible';
+            errors.push('Account type');
+          }
+
+          // Validate terms
+          var terms = document.getElementById('terms');
+          if (!terms.checked) {
+            document.getElementById('err-terms').className = 'error-msg visible';
+            errors.push('Terms agreement');
+          }
+
+          // Show result
+          if (errors.length > 0) {
+            banner.className = 'validation-banner error';
+            banner.textContent = 'Please fix ' + errors.length + ' error(s): ' + errors.join(', ') + '.';
+          } else {
+            banner.className = 'validation-banner success';
+            banner.textContent = 'Form validated successfully! Account would be created.';
+          }
+        });
+      }
+    })();
+  </script>
+
+  <!-- ============================================================
+       EXPECTED RENDERING
+       ============================================================ -->
+  <div class="expected-rendering">
+    <h2>Expected Rendering</h2>
+    <ul>
+      <li><strong>Page layout:</strong> Centered form container (max-width 720px) with comfortable padding. Page title and description centered at the top.</li>
+      <li><strong>Fieldsets:</strong> Three grouped fieldsets ("Personal Information", "Account Details", "Preferences"), each with a bordered box, rounded corners, darker background, and a legend label in teal that appears to overlap the top border.</li>
+      <li><strong>Two-column rows:</strong> First/last name fields are side by side using flexbox (two equal-width fields with a gap). Date/website also two columns. Other fields are full width.</li>
+      <li><strong>Input styling:</strong> All text inputs, email, password, textarea, and select elements are full-width within their fieldset, with dark backgrounds, subtle borders, and teal focus borders.</li>
+      <li><strong>Labels:</strong> Each input has a bold label above it. Required fields show a red asterisk. Optional fields show "(optional)" in gray.</li>
+      <li><strong>Checkboxes:</strong> Notification preferences shown as a vertical list of checkboxes with labels. "Email notifications" and "Push notifications" are pre-checked.</li>
+      <li><strong>Radio buttons:</strong> Theme preference and language are radio button groups. "Dark mode" and "English" are pre-selected.</li>
+      <li><strong>Password strength:</strong> Four small bars below the password input that fill with color as the password gets stronger (red=weak, yellow=fair, green=strong). Label text updates dynamically.</li>
+      <li><strong>Buttons:</strong> Two buttons right-aligned: gray "Reset" button and teal "Create Account" button.</li>
+      <li><strong>Validation (JS):</strong> On submit, empty required fields get a red border and show inline red error messages. A summary banner appears below the buttons. If all valid, a green success banner appears. The form should NOT actually submit (preventDefault).</li>
+      <li><strong>Help text:</strong> Small gray text appears below the bio textarea ("Maximum 500 characters") and username input with format requirements.</li>
+    </ul>
+  </div>
+
+</body>
+</html>

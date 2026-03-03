@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: DOM Querying</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+  .test-target { display: none; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">10 - DOM Querying</h1>
+
+<!-- Hidden test target elements for querying -->
+<div class="test-target">
+  <div id="target-alpha">Alpha</div>
+  <div id="target-beta" class="item special">Beta</div>
+  <div id="target-gamma" class="item">Gamma</div>
+  <span class="item">Span Item</span>
+  <p id="para-one" class="text-block">Paragraph One</p>
+  <p class="text-block">Paragraph Two</p>
+  <ul id="test-list">
+    <li class="list-item">Item 1</li>
+    <li class="list-item active">Item 2</li>
+    <li class="list-item">Item 3</li>
+  </ul>
+  <div id="nested-parent">
+    <div class="child level-1">
+      <span class="child level-2">Deep child</span>
+    </div>
+  </div>
+</div>
+
+<div class="test-group">
+  <h2>DOM Query Methods</h2>
+  <div class="expected">Expected: All DOM query methods (getElementById, getElementsByClassName, querySelector, etc.) find the correct elements.</div>
+  <div class="test-area" id="results"></div>
+</div>
+
+<script>
+function test(name, fn) {
+  var resultDiv = document.getElementById('results');
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// --- document.getElementById ---
+test('getElementById: finds element by ID', function() {
+  var el = document.getElementById('target-alpha');
+  return el !== null && el.textContent === 'Alpha';
+});
+
+test('getElementById: returns null for non-existent ID', function() {
+  var el = document.getElementById('does-not-exist');
+  return el === null;
+});
+
+test('getElementById: finds correct element among multiple', function() {
+  var el = document.getElementById('target-beta');
+  return el !== null && el.textContent === 'Beta';
+});
+
+// --- document.getElementsByClassName ---
+test('getElementsByClassName: finds elements by class', function() {
+  var items = document.getElementsByClassName('item');
+  return items.length === 3;
+});
+
+test('getElementsByClassName: returns HTMLCollection', function() {
+  var items = document.getElementsByClassName('list-item');
+  return items.length === 3;
+});
+
+test('getElementsByClassName: returns empty for non-existent class', function() {
+  var items = document.getElementsByClassName('no-such-class');
+  return items.length === 0;
+});
+
+// --- document.getElementsByTagName ---
+test('getElementsByTagName: finds p elements', function() {
+  var paras = document.getElementsByTagName('p');
+  return paras.length >= 2;
+});
+
+test('getElementsByTagName: finds li elements', function() {
+  var lis = document.getElementsByTagName('li');
+  return lis.length >= 3;
+});
+
+// --- document.querySelector ---
+test('querySelector: finds by ID selector', function() {
+  var el = document.querySelector('#target-alpha');
+  return el !== null && el.textContent === 'Alpha';
+});
+
+test('querySelector: finds by class selector', function() {
+  var el = document.querySelector('.item');
+  return el !== null;
+});
+
+test('querySelector: finds by tag selector', function() {
+  var el = document.querySelector('ul');
+  return el !== null && el.id === 'test-list';
+});
+
+test('querySelector: compound selector (tag.class)', function() {
+  var el = document.querySelector('div.special');
+  return el !== null && el.id === 'target-beta';
+});
+
+test('querySelector: returns null if not found', function() {
+  var el = document.querySelector('.nonexistent-class');
+  return el === null;
+});
+
+// --- document.querySelectorAll ---
+test('querySelectorAll: finds all matching elements', function() {
+  var items = document.querySelectorAll('.item');
+  return items.length === 3;
+});
+
+test('querySelectorAll: returns NodeList with length', function() {
+  var items = document.querySelectorAll('.list-item');
+  return items.length === 3;
+});
+
+test('querySelectorAll: complex selector (parent > child)', function() {
+  var items = document.querySelectorAll('#test-list > li');
+  return items.length === 3;
+});
+
+test('querySelectorAll: multiple class selector', function() {
+  var items = document.querySelectorAll('.item.special');
+  return items.length === 1 && items[0].id === 'target-beta';
+});
+
+test('querySelectorAll: returns empty NodeList for no matches', function() {
+  var items = document.querySelectorAll('.nonexistent');
+  return items.length === 0;
+});
+
+// --- document.body, document.documentElement ---
+test('document.body exists', function() {
+  return document.body !== null && document.body !== undefined;
+});
+
+test('document.documentElement exists (html element)', function() {
+  return document.documentElement !== null && document.documentElement !== undefined;
+});
+
+test('document.body is a BODY element', function() {
+  return document.body.tagName === 'BODY';
+});
+
+// --- element.children vs childNodes ---
+test('element.children: returns element children only', function() {
+  var list = document.getElementById('test-list');
+  return list.children.length === 3;
+});
+
+test('element.childNodes: may include text nodes', function() {
+  var list = document.getElementById('test-list');
+  // childNodes includes text nodes (whitespace between elements)
+  return list.childNodes.length >= 3;
+});
+
+// --- parentElement ---
+test('parentElement: child knows its parent', function() {
+  var li = document.querySelector('.list-item');
+  return li.parentElement !== null && li.parentElement.id === 'test-list';
+});
+
+test('parentElement: nested child chain', function() {
+  var deep = document.querySelector('.level-2');
+  if (!deep) return false;
+  var parent = deep.parentElement;
+  return parent !== null && parent.parentElement !== null && parent.parentElement.id === 'nested-parent';
+});
+
+// --- Accessing specific queried elements ---
+test('querySelectorAll: access by index', function() {
+  var items = document.querySelectorAll('.list-item');
+  return items[0].textContent === 'Item 1' && items[2].textContent === 'Item 3';
+});
+
+test('querySelector: descendant selector with space', function() {
+  var el = document.querySelector('#nested-parent .level-2');
+  return el !== null && el.textContent === 'Deep child';
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CSS Test 22: Selector Combinators</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  /* Test 1: Descendant combinator */
+  .test-area.test-descendant div p {
+    color: #ff6b6b;
+    font-weight: bold;
+  }
+
+  /* Test 2: Child combinator */
+  .test-area.test-child div > p {
+    color: #4ecdc4;
+    font-weight: bold;
+  }
+
+  /* Test 3: Adjacent sibling combinator */
+  .test-area.test-adjacent h3 + p {
+    color: #e2b93d;
+    font-weight: bold;
+    border-left: 3px solid #e2b93d;
+    padding-left: 8px;
+  }
+
+  /* Test 4: General sibling combinator */
+  .test-area.test-general h3 ~ p {
+    color: #9b59b6;
+    font-style: italic;
+  }
+
+  /* Test 5: Deep nesting - descendant vs child */
+  .test-area.test-deep .outer span {
+    color: #ff6b6b;
+    text-decoration: underline;
+  }
+  .test-area.test-deep .outer > span {
+    color: #4ecdc4;
+    font-weight: bold;
+    text-decoration: none;
+  }
+
+  /* Test 6: Chained combinators */
+  .test-area.test-chained-comb div > ul > li {
+    color: #e2b93d;
+  }
+
+  /* Test 7: Multiple combinators in complex selector */
+  .test-area.test-complex .section > h3 + p {
+    color: #ff6b6b;
+    background: #3a1a1a;
+    padding: 6px;
+    border-radius: 3px;
+  }
+
+  /* Test 8: Combinator with class selectors */
+  .test-area.test-combo-class .container > .item {
+    background: #1a3a3a;
+    padding: 6px 10px;
+    margin: 4px 0;
+    border-radius: 3px;
+  }
+  .test-area.test-combo-class .container .item.active {
+    color: #4ecdc4;
+    border-left: 3px solid #4ecdc4;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 22: Selector Combinators</h1>
+
+<!-- Test 1: Descendant Combinator -->
+<div class="test-group">
+  <h2>Test 1: Descendant Combinator (div p)</h2>
+  <div class="expected">Expected: ALL &lt;p&gt; elements inside any &lt;div&gt; should be red and bold, regardless of nesting depth. The &lt;p&gt; outside any &lt;div&gt; should remain default.</div>
+  <div class="test-area test-descendant">
+    <p>This p is NOT inside a div (direct child of test-area) - should be DEFAULT</p>
+    <div>
+      <p>This p is a direct child of div - should be RED and bold</p>
+      <span>
+        <p>This p is a grandchild of div (inside span) - should STILL be RED and bold (descendant, not just child)</p>
+      </span>
+    </div>
+    <div>
+      <section>
+        <p>This p is deeply nested inside div > section - should be RED and bold</p>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- Test 2: Child Combinator -->
+<div class="test-group">
+  <h2>Test 2: Child Combinator (div &gt; p)</h2>
+  <div class="expected">Expected: Only &lt;p&gt; elements that are DIRECT children of &lt;div&gt; should be teal and bold. Grandchild or deeper &lt;p&gt; elements should remain default.</div>
+  <div class="test-area test-child">
+    <div>
+      <p>This p is a DIRECT child of div - should be TEAL and bold</p>
+      <span>
+        <p>This p is inside div > span > p - should be DEFAULT (not a direct child of div)</p>
+      </span>
+      <p>This p is also a direct child of div - should be TEAL and bold</p>
+    </div>
+    <p>This p is outside any div - should be DEFAULT</p>
+  </div>
+</div>
+
+<!-- Test 3: Adjacent Sibling Combinator -->
+<div class="test-group">
+  <h2>Test 3: Adjacent Sibling Combinator (h3 + p)</h2>
+  <div class="expected">Expected: Only the FIRST &lt;p&gt; immediately following an &lt;h3&gt; should be golden/yellow with a left border. Other &lt;p&gt; elements (even if siblings of h3) should remain default.</div>
+  <div class="test-area test-adjacent">
+    <h3>Heading 3</h3>
+    <p>This p is immediately after h3 - should be GOLDEN with left border</p>
+    <p>This p is the second after h3 - should be DEFAULT (not immediately adjacent)</p>
+    <h3>Another Heading 3</h3>
+    <div>This div breaks adjacency</div>
+    <p>This p is after h3 but separated by a div - should be DEFAULT (adjacent sibling must be immediately next)</p>
+    <h3>Third Heading 3</h3>
+    <p>This p is immediately after h3 - should be GOLDEN with left border</p>
+  </div>
+</div>
+
+<!-- Test 4: General Sibling Combinator -->
+<div class="test-group">
+  <h2>Test 4: General Sibling Combinator (h3 ~ p)</h2>
+  <div class="expected">Expected: ALL &lt;p&gt; elements that are siblings of &lt;h3&gt; and come AFTER it should be purple and italic. The p before h3 should remain default. Non-p siblings should remain default.</div>
+  <div class="test-area test-general">
+    <p>This p is BEFORE h3 - should be DEFAULT</p>
+    <h3>Heading 3</h3>
+    <p>First p after h3 - should be PURPLE and italic</p>
+    <div>A div in between (not affected)</div>
+    <p>Second p after h3 - should ALSO be PURPLE and italic (general sibling, not just adjacent)</p>
+    <span>A span in between (not affected)</span>
+    <p>Third p after h3 - should ALSO be PURPLE and italic</p>
+  </div>
+</div>
+
+<!-- Test 5: Deep Nesting - Descendant vs Child -->
+<div class="test-group">
+  <h2>Test 5: Deep Nesting - Descendant vs Child Priority</h2>
+  <div class="expected">Expected: Direct child spans of .outer should be teal and bold (child combinator, higher specificity for direct). Nested spans deeper inside .outer should be red and underlined (descendant combinator). Both rules have same specificity, but the child rule comes second and applies to direct children.</div>
+  <div class="test-area test-deep">
+    <div class="outer">
+      <span>Direct child span of .outer - should be TEAL and bold (matched by .outer > span, which comes second)</span><br>
+      <div>
+        <span>Nested span inside .outer > div - should be RED and underlined (only matched by .outer span)</span>
+      </div>
+      <span>Another direct child span - should be TEAL and bold</span><br>
+      <div>
+        <div>
+          <span>Deeply nested span - should be RED and underlined (descendant only)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: Chained Combinators -->
+<div class="test-group">
+  <h2>Test 6: Chained Combinators (div &gt; ul &gt; li)</h2>
+  <div class="expected">Expected: Only &lt;li&gt; elements that are direct children of &lt;ul&gt; which is a direct child of &lt;div&gt; should be golden. Nested &lt;li&gt; inside a sub-list should remain default.</div>
+  <div class="test-area test-chained-comb">
+    <div>
+      <ul>
+        <li>Direct li of div > ul - should be GOLDEN</li>
+        <li>Another direct li - should be GOLDEN</li>
+        <li>
+          Third li - should be GOLDEN
+          <ul>
+            <li>Nested li inside sub-ul - should be DEFAULT (parent ul is not direct child of div)</li>
+            <li>Another nested li - should be DEFAULT</li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- Test 7: Complex Combined Selector -->
+<div class="test-group">
+  <h2>Test 7: Complex Selector (.section &gt; h3 + p)</h2>
+  <div class="expected">Expected: Only the &lt;p&gt; that is immediately after an &lt;h3&gt; that is a direct child of .section should be red with dark red background. Other paragraphs should remain default.</div>
+  <div class="test-area test-complex">
+    <div class="section">
+      <h3>Section Heading</h3>
+      <p>This p is immediately after h3 (direct child of .section) - should be RED with dark red bg</p>
+      <p>This p is NOT immediately after h3 - should be DEFAULT</p>
+    </div>
+    <div class="section">
+      <h3>Another Section Heading</h3>
+      <div>A div separating h3 from p</div>
+      <p>This p is after h3 but not adjacent (div in between) - should be DEFAULT</p>
+    </div>
+    <div class="section">
+      <h3>Third Section</h3>
+      <p>Immediately after h3 - should be RED with dark red bg</p>
+    </div>
+  </div>
+</div>
+
+<!-- Test 8: Combinators with Class Selectors -->
+<div class="test-group">
+  <h2>Test 8: Combinators with Class Selectors</h2>
+  <div class="expected">Expected: Direct .item children of .container should have a teal-tinted background. Items with both .item and .active classes (at any depth inside .container) should also have teal text and a left border.</div>
+  <div class="test-area test-combo-class">
+    <div class="container">
+      <div class="item">Direct .item child - should have teal-tinted background</div>
+      <div class="item active">Direct .item.active child - should have teal bg + teal text + left border</div>
+      <div class="item">Another .item - teal-tinted background only</div>
+      <div>
+        <div class="item">Nested .item (not direct child) - should NOT have teal background (child combinator fails)</div>
+        <div class="item active">Nested .item.active - should have teal text + left border (descendant combinator matches) but NOT teal background</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

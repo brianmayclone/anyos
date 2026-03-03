@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CSS Test 19: Float and Clear</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .float-box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: bold;
+    color: #1a1a2e;
+    border-radius: 4px;
+    padding: 10px;
+    text-align: center;
+  }
+
+  .label {
+    color: #ff8b94;
+    font-size: 13px;
+    margin-top: 10px;
+    font-weight: bold;
+  }
+
+  .code {
+    font-family: monospace;
+    color: #ffd93d;
+    background: #1a1a2e;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+
+  .demo-container {
+    border: 2px dashed #555;
+    padding: 10px;
+    margin-top: 10px;
+    overflow: visible;
+  }
+
+  .sample-text {
+    color: #c0c0c0;
+    line-height: 1.6;
+    font-size: 14px;
+  }
+
+  /* Clearfix utility */
+  .clearfix::after {
+    content: "";
+    display: table;
+    clear: both;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 19: Float and Clear</h1>
+
+<!-- Test 1: float: left -->
+<div class="test-group">
+  <h2>1. float: left (text wraps right)</h2>
+  <p class="expected">Expected: The red box floats to the left side. Text wraps around the right side of the box. The box is removed from normal flow and text fills the remaining space beside it.</p>
+  <div class="test-area">
+    <div class="demo-container clearfix">
+      <div class="float-box" style="float: left; width: 120px; height: 120px; background: #ff6b6b; margin-right: 15px; margin-bottom: 10px;">float: left</div>
+      <p class="sample-text">This text wraps around the floated element on its right side. When an element is floated left, it moves to the left edge of its containing block, and inline content flows around it on the right. The text continues to wrap until it clears past the bottom of the floated element, at which point it fills the full width again. This is one of the oldest CSS layout techniques, originally designed for text-around-image layouts in web pages.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Test 2: float: right -->
+<div class="test-group">
+  <h2>2. float: right (text wraps left)</h2>
+  <p class="expected">Expected: The teal box floats to the right side. Text wraps around the left side of the box. The box is pushed to the right edge of the container.</p>
+  <div class="test-area">
+    <div class="demo-container clearfix">
+      <div class="float-box" style="float: right; width: 120px; height: 120px; background: #4ecdc4; margin-left: 15px; margin-bottom: 10px;">float: right</div>
+      <p class="sample-text">This text wraps around the floated element on its left side. When an element is floated right, it moves to the right edge of its containing block, and inline content flows around it on the left. The text fills the space to the left of the float, and once past the bottom of the floated element, the text resumes filling the full container width. Float right is commonly used for pull quotes and sidebars.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Test 3: clear: left, clear: right, clear: both -->
+<div class="test-group">
+  <h2>3. clear: left, clear: right, clear: both</h2>
+  <p class="expected">Expected: "clear: left" paragraph drops below the left-floated box. "clear: right" drops below the right-floated box. "clear: both" drops below whichever float extends furthest.</p>
+  <div class="test-area">
+    <p class="label">clear: left (clears the left float only):</p>
+    <div class="demo-container clearfix">
+      <div class="float-box" style="float: left; width: 100px; height: 80px; background: #ff6b6b; margin-right: 10px;">Left float</div>
+      <div class="float-box" style="float: right; width: 100px; height: 130px; background: #4ecdc4; margin-left: 10px;">Right float<br>(taller)</div>
+      <p class="sample-text" style="clear: left;">This paragraph has <span class="code">clear: left</span>. It drops below the LEFT float (red box) but NOT below the right float (teal box). If the right float is taller, this text may still appear beside it.</p>
+    </div>
+
+    <p class="label">clear: right (clears the right float only):</p>
+    <div class="demo-container clearfix">
+      <div class="float-box" style="float: left; width: 100px; height: 130px; background: #ff6b6b; margin-right: 10px;">Left float<br>(taller)</div>
+      <div class="float-box" style="float: right; width: 100px; height: 80px; background: #4ecdc4; margin-left: 10px;">Right float</div>
+      <p class="sample-text" style="clear: right;">This paragraph has <span class="code">clear: right</span>. It drops below the RIGHT float (teal box) but NOT below the left float (red box). If the left float is taller, this text may still appear beside it.</p>
+    </div>
+
+    <p class="label">clear: both (clears all floats):</p>
+    <div class="demo-container clearfix">
+      <div class="float-box" style="float: left; width: 100px; height: 100px; background: #ff6b6b; margin-right: 10px;">Left float</div>
+      <div class="float-box" style="float: right; width: 100px; height: 120px; background: #4ecdc4; margin-left: 10px;">Right float</div>
+      <p class="sample-text" style="clear: both;">This paragraph has <span class="code">clear: both</span>. It drops below ALL floats, starting on a new line below whichever float is tallest. This is the safest way to ensure content appears after all floated elements.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Test 4: Multiple floats side by side -->
+<div class="test-group">
+  <h2>4. Multiple floats side by side</h2>
+  <p class="expected">Expected: Multiple left-floated boxes line up horizontally, side by side, like a row. They stack from left to right. If the container is too narrow, they wrap to the next line.</p>
+  <div class="test-area">
+    <div class="demo-container clearfix">
+      <div class="float-box" style="float: left; width: 100px; height: 100px; background: #ff6b6b; margin: 5px;">1</div>
+      <div class="float-box" style="float: left; width: 100px; height: 100px; background: #4ecdc4; margin: 5px;">2</div>
+      <div class="float-box" style="float: left; width: 100px; height: 100px; background: #ffd93d; margin: 5px;">3</div>
+      <div class="float-box" style="float: left; width: 100px; height: 100px; background: #6c5ce7; color: #e0e0e0; margin: 5px;">4</div>
+      <div class="float-box" style="float: left; width: 100px; height: 100px; background: #a8e6cf; margin: 5px;">5</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 5: Float with image (text around image) -->
+<div class="test-group">
+  <h2>5. Float with image placeholder (classic text-around-image)</h2>
+  <p class="expected">Expected: A colored placeholder (simulating an image) floats left, and article text wraps neatly around its right side. This is the classic magazine-style text flow.</p>
+  <div class="test-area">
+    <div class="demo-container clearfix">
+      <div style="float: left; width: 180px; height: 140px; background: linear-gradient(135deg, #ff6b6b, #6c5ce7); border-radius: 8px; margin: 0 15px 10px 0; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 14px;">[Image 180x140]</div>
+      <p class="sample-text">This demonstrates the classic text-wrap-around-image pattern. The image (represented by the gradient box) is floated to the left, and the paragraph text wraps around it naturally. This was one of the primary reasons the float property was created in CSS. Before flexbox and grid, this was also commonly used for page layouts, though that was never its intended purpose. The text continues to flow beside the image until it passes the bottom edge, then fills the full width. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+    </div>
+
+    <p class="label">Float right image:</p>
+    <div class="demo-container clearfix">
+      <div style="float: right; width: 160px; height: 120px; background: linear-gradient(135deg, #4ecdc4, #ffd93d); border-radius: 8px; margin: 0 0 10px 15px; display: flex; align-items: center; justify-content: center; color: #1a1a2e; font-weight: bold; font-size: 14px;">[Image 160x120]</div>
+      <p class="sample-text">This shows a float-right image. The placeholder floats to the right edge and text wraps on the left side. Notice how the text fills the space to the left of the image. This pattern is often used for pull quotes, author photos, or decorative images in article layouts. The text flows naturally around the floated element. Once past the bottom of the image, the text expands to the full container width again.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: Clearfix problem (parent collapse) -->
+<div class="test-group">
+  <h2>6. Clearfix problem: parent collapse</h2>
+  <p class="expected">Expected: Without clearfix, the parent container collapses to zero height because floated children are removed from normal flow. The parent border wraps tightly (no height). With clearfix, the parent expands to contain the floats.</p>
+  <div class="test-area">
+    <p class="label">WITHOUT clearfix (parent collapses):</p>
+    <div style="border: 3px solid #ff6b6b; padding: 10px; margin-top: 10px; margin-bottom: 30px;">
+      <div class="float-box" style="float: left; width: 100px; height: 100px; background: #ff6b6b; margin: 5px;">Float 1</div>
+      <div class="float-box" style="float: left; width: 100px; height: 100px; background: #4ecdc4; margin: 5px;">Float 2</div>
+      <!-- Parent border should be very thin / collapsed because floats don't contribute to height -->
+    </div>
+    <p style="color: #ff6b6b; font-size: 13px; margin-top: 130px;">The red border above should have collapsed (very thin), not containing the boxes.</p>
+
+    <p class="label">WITH clearfix (parent contains floats):</p>
+    <div class="clearfix" style="border: 3px solid #6bff6b; padding: 10px; margin-top: 10px;">
+      <div class="float-box" style="float: left; width: 100px; height: 100px; background: #ff6b6b; margin: 5px;">Float 1</div>
+      <div class="float-box" style="float: left; width: 100px; height: 100px; background: #4ecdc4; margin: 5px;">Float 2</div>
+    </div>
+    <p style="color: #6bff6b; font-size: 13px;">The green border above should fully contain both boxes.</p>
+  </div>
+</div>
+
+<!-- Test 7: Clearfix with overflow: hidden -->
+<div class="test-group">
+  <h2>7. Alternative clearfix: overflow: hidden</h2>
+  <p class="expected">Expected: Setting overflow: hidden (or auto) on the parent creates a new Block Formatting Context (BFC), which causes it to contain its floated children. The parent should wrap around the floats properly.</p>
+  <div class="test-area">
+    <p class="label">overflow: hidden (creates BFC, contains floats):</p>
+    <div style="border: 3px solid #ffd93d; padding: 10px; margin-top: 10px; overflow: hidden;">
+      <div class="float-box" style="float: left; width: 100px; height: 100px; background: #ff6b6b; margin: 5px;">Float 1</div>
+      <div class="float-box" style="float: right; width: 100px; height: 100px; background: #4ecdc4; margin: 5px;">Float 2</div>
+    </div>
+    <p style="color: #ffd93d; font-size: 13px;">The yellow border should contain both floated boxes.</p>
+  </div>
+</div>
+
+<!-- Test 8: Float inside block elements -->
+<div class="test-group">
+  <h2>8. Float inside block elements</h2>
+  <p class="expected">Expected: A floated element inside a paragraph. The paragraph text wraps around the float. The next paragraph (with clear: both) starts below the float.</p>
+  <div class="test-area">
+    <div class="demo-container clearfix">
+      <p class="sample-text">
+        <span style="float: left; width: 80px; height: 80px; background: #a8e6cf; border-radius: 4px; margin: 0 10px 5px 0; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #1a1a2e;">A</span>
+        This paragraph contains a floated element (the green "A" box). The text of this paragraph wraps around the float. The float is part of this paragraph but is removed from normal flow, so inline content flows beside it. This is how drop caps and inline decorations traditionally work in CSS.
+      </p>
+      <p class="sample-text" style="clear: both;">This second paragraph has clear: both and starts on a fresh line below any floats. It occupies the full width of the container.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Test 9: Float with different heights (staircase effect) -->
+<div class="test-group">
+  <h2>9. Floats with different heights (staircase effect)</h2>
+  <p class="expected">Expected: Left-floated boxes with different heights create a "staircase" or uneven wrapping pattern. Shorter floats allow subsequent floats to sit beside them, while taller floats push content further down.</p>
+  <div class="test-area">
+    <div class="demo-container clearfix">
+      <div class="float-box" style="float: left; width: 100px; height: 60px; background: #ff6b6b; margin: 5px;">1 (60px)</div>
+      <div class="float-box" style="float: left; width: 100px; height: 120px; background: #4ecdc4; margin: 5px;">2 (120px)</div>
+      <div class="float-box" style="float: left; width: 100px; height: 40px; background: #ffd93d; margin: 5px;">3 (40px)</div>
+      <div class="float-box" style="float: left; width: 100px; height: 90px; background: #6c5ce7; color: #e0e0e0; margin: 5px;">4 (90px)</div>
+      <div class="float-box" style="float: left; width: 100px; height: 70px; background: #a8e6cf; margin: 5px;">5 (70px)</div>
+      <div class="float-box" style="float: left; width: 100px; height: 50px; background: #ff8b94; margin: 5px;">6 (50px)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 10: Mixed left and right floats -->
+<div class="test-group">
+  <h2>10. Mixed left and right floats with text</h2>
+  <p class="expected">Expected: A left float and a right float with text flowing between them. The text fills the space between the two floats.</p>
+  <div class="test-area">
+    <div class="demo-container clearfix">
+      <div class="float-box" style="float: left; width: 120px; height: 100px; background: #ff6b6b; margin-right: 15px; margin-bottom: 10px;">Left float</div>
+      <div class="float-box" style="float: right; width: 120px; height: 100px; background: #4ecdc4; margin-left: 15px; margin-bottom: 10px;">Right float</div>
+      <p class="sample-text">This text flows between the left and right floats. It fills the available space in the middle. When the text extends past the bottom of both floats, it expands to the full container width. This pattern was historically used for two-column layouts with a content area in between. Modern CSS layout (flexbox, grid) has largely replaced this approach for page layouts, but float remains useful for text wrapping around images and similar inline content flows.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Test 11: Float none (default) -->
+<div class="test-group">
+  <h2>11. float: none (default, no floating)</h2>
+  <p class="expected">Expected: All boxes are in normal block flow, stacking vertically. No floating behavior. This is the default and shows the contrast with floated elements.</p>
+  <div class="test-area">
+    <div class="demo-container">
+      <div class="float-box" style="float: none; width: 200px; height: 60px; background: #ff6b6b; margin: 5px;">float: none (block)</div>
+      <div class="float-box" style="float: none; width: 200px; height: 60px; background: #4ecdc4; margin: 5px;">float: none (block)</div>
+      <div class="float-box" style="float: none; width: 200px; height: 60px; background: #ffd93d; margin: 5px;">float: none (block)</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

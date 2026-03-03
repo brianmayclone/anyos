@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test 08: Form Elements</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+    .test-area label { display: inline-block; min-width: 120px; margin-bottom: 8px; }
+    .test-area input, .test-area select, .test-area textarea { margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="../index.html">Back to Index</a>
+    <a href="07-tables.html">Prev: Tables</a>
+    <a href="09-semantic.html">Next: Semantic</a>
+  </div>
+
+  <h1 class="page-title">Test 08: Form Elements</h1>
+
+  <!-- Test 1: Text and Password inputs -->
+  <div class="test-group">
+    <h2>Test 8.1: Text and Password Inputs</h2>
+    <div class="expected">Expected: Text input should show a single-line text box where characters are visible. Password input should mask characters (show dots or asterisks). Both should be editable and focusable.</div>
+    <div class="test-area">
+      <form>
+        <p>
+          <label for="text1">Text input:</label>
+          <input type="text" id="text1" value="Hello, World!">
+        </p>
+        <p>
+          <label for="pass1">Password:</label>
+          <input type="password" id="pass1" value="secret123">
+        </p>
+        <p>
+          <label for="text2">Empty text:</label>
+          <input type="text" id="text2">
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Test 2: Placeholder text -->
+  <div class="test-group">
+    <h2>Test 8.2: Placeholder Text</h2>
+    <div class="expected">Expected: Placeholder text should appear in a lighter/grayed-out color inside empty inputs. When the user types, the placeholder should disappear. It should not be submitted as form data.</div>
+    <div class="test-area">
+      <form>
+        <p>
+          <label for="ph1">With placeholder:</label>
+          <input type="text" id="ph1" placeholder="Enter your name...">
+        </p>
+        <p>
+          <label for="ph2">Email placeholder:</label>
+          <input type="email" id="ph2" placeholder="user@example.com">
+        </p>
+        <p>
+          <label for="ph3">Search placeholder:</label>
+          <input type="search" id="ph3" placeholder="Search...">
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Test 3: Textarea -->
+  <div class="test-group">
+    <h2>Test 8.3: Textarea</h2>
+    <div class="expected">Expected: A multi-line text editing area. Should respect rows and cols attributes for sizing. Content should be editable, scrollable if overflowing, and preserve whitespace.</div>
+    <div class="test-area">
+      <form>
+        <p>
+          <label for="ta1">Default textarea:</label><br>
+          <textarea id="ta1" rows="4" cols="40">This is some default text in the textarea.
+It has multiple lines.
+Line three here.
+And line four.</textarea>
+        </p>
+        <p>
+          <label for="ta2">Textarea with placeholder:</label><br>
+          <textarea id="ta2" rows="3" cols="40" placeholder="Enter your comments here..."></textarea>
+        </p>
+        <p>
+          <label for="ta3">Small textarea:</label><br>
+          <textarea id="ta3" rows="2" cols="20">Small</textarea>
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Test 4: Select/Option/Optgroup -->
+  <div class="test-group">
+    <h2>Test 8.4: Select, Option, Optgroup</h2>
+    <div class="expected">Expected: A dropdown/select control. The selected option should be visible. Clicking should show all options. Optgroup should create labeled groups within the dropdown.</div>
+    <div class="test-area">
+      <form>
+        <p>
+          <label for="sel1">Basic select:</label>
+          <select id="sel1">
+            <option value="apple">Apple</option>
+            <option value="banana">Banana</option>
+            <option value="cherry" selected>Cherry</option>
+            <option value="date">Date</option>
+          </select>
+        </p>
+        <p>
+          <label for="sel2">With optgroup:</label>
+          <select id="sel2">
+            <optgroup label="Fruits">
+              <option>Apple</option>
+              <option>Banana</option>
+              <option>Cherry</option>
+            </optgroup>
+            <optgroup label="Vegetables">
+              <option>Carrot</option>
+              <option>Broccoli</option>
+              <option>Spinach</option>
+            </optgroup>
+          </select>
+        </p>
+        <p>
+          <label for="sel3">Multiple select:</label>
+          <select id="sel3" multiple size="5">
+            <option>Option 1</option>
+            <option>Option 2</option>
+            <option selected>Option 3 (selected)</option>
+            <option>Option 4</option>
+            <option selected>Option 5 (selected)</option>
+            <option>Option 6</option>
+          </select>
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Test 5: Checkbox and Radio -->
+  <div class="test-group">
+    <h2>Test 8.5: Checkbox and Radio Button</h2>
+    <div class="expected">Expected: Checkboxes should be square and allow multiple selections. Radio buttons should be circular and allow only one selection per name group. Both should be toggleable by clicking.</div>
+    <div class="test-area">
+      <form>
+        <p><strong>Checkboxes (select any):</strong></p>
+        <p>
+          <input type="checkbox" id="cb1" name="features" value="html" checked>
+          <label for="cb1">HTML</label>
+        </p>
+        <p>
+          <input type="checkbox" id="cb2" name="features" value="css">
+          <label for="cb2">CSS</label>
+        </p>
+        <p>
+          <input type="checkbox" id="cb3" name="features" value="js" checked>
+          <label for="cb3">JavaScript</label>
+        </p>
+
+        <p><strong>Radio buttons (select one):</strong></p>
+        <p>
+          <input type="radio" id="r1" name="color" value="red">
+          <label for="r1">Red</label>
+        </p>
+        <p>
+          <input type="radio" id="r2" name="color" value="green" checked>
+          <label for="r2">Green</label>
+        </p>
+        <p>
+          <input type="radio" id="r3" name="color" value="blue">
+          <label for="r3">Blue</label>
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Test 6: Buttons -->
+  <div class="test-group">
+    <h2>Test 8.6: Button Types</h2>
+    <div class="expected">Expected: Each button type should render as a clickable element. submit/reset are input types, button element is more flexible. All should be visually distinct from text.</div>
+    <div class="test-area">
+      <form>
+        <p>
+          <input type="submit" value="Submit Button (input)">
+        </p>
+        <p>
+          <input type="reset" value="Reset Button (input)">
+        </p>
+        <p>
+          <input type="button" value="Generic Button (input)">
+        </p>
+        <p>
+          <button type="button">Button Element</button>
+        </p>
+        <p>
+          <button type="submit">Submit Button Element</button>
+        </p>
+        <p>
+          <button type="button"><strong>Bold</strong> button with <em>formatting</em></button>
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Test 7: Fieldset and Legend -->
+  <div class="test-group">
+    <h2>Test 8.7: Fieldset and Legend</h2>
+    <div class="expected">Expected: Fieldset should draw a border around its content. Legend should appear as a label embedded in the top border of the fieldset. Content inside should be grouped visually.</div>
+    <div class="test-area">
+      <form>
+        <fieldset>
+          <legend>Personal Information</legend>
+          <p>
+            <label for="fs1">Name:</label>
+            <input type="text" id="fs1" placeholder="Your name">
+          </p>
+          <p>
+            <label for="fs2">Email:</label>
+            <input type="email" id="fs2" placeholder="your@email.com">
+          </p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Preferences</legend>
+          <p>
+            <input type="checkbox" id="fs3"> <label for="fs3">Subscribe to newsletter</label>
+          </p>
+          <p>
+            <input type="checkbox" id="fs4"> <label for="fs4">Accept terms</label>
+          </p>
+        </fieldset>
+      </form>
+    </div>
+  </div>
+
+  <!-- Test 8: Various input types -->
+  <div class="test-group">
+    <h2>Test 8.8: HTML5 Input Types</h2>
+    <div class="expected">Expected: Each input type should render with appropriate browser-native UI (number spinner, date picker, color picker, range slider, etc.). Unsupported types should fall back to text input.</div>
+    <div class="test-area">
+      <form>
+        <p>
+          <label for="num1">Number:</label>
+          <input type="number" id="num1" value="42" min="0" max="100" step="1">
+        </p>
+        <p>
+          <label for="email1">Email:</label>
+          <input type="email" id="email1" placeholder="user@example.com">
+        </p>
+        <p>
+          <label for="tel1">Telephone:</label>
+          <input type="tel" id="tel1" placeholder="+1-555-0100">
+        </p>
+        <p>
+          <label for="url1">URL:</label>
+          <input type="url" id="url1" placeholder="https://example.com">
+        </p>
+        <p>
+          <label for="date1">Date:</label>
+          <input type="date" id="date1" value="2025-01-15">
+        </p>
+        <p>
+          <label for="color1">Color:</label>
+          <input type="color" id="color1" value="#4ecdc4">
+        </p>
+        <p>
+          <label for="range1">Range:</label>
+          <input type="range" id="range1" min="0" max="100" value="50">
+        </p>
+        <p>
+          <label for="file1">File:</label>
+          <input type="file" id="file1">
+        </p>
+        <p>
+          <label for="hidden1">Hidden:</label>
+          <input type="hidden" id="hidden1" value="invisible">
+          <em>(hidden input - should not be visible)</em>
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Test 9: Disabled inputs -->
+  <div class="test-group">
+    <h2>Test 8.9: Disabled Inputs</h2>
+    <div class="expected">Expected: Disabled inputs should appear grayed out or visually muted. They should not be editable or clickable. The disabled state should be obvious to the user.</div>
+    <div class="test-area">
+      <form>
+        <p>
+          <label for="dis1">Disabled text:</label>
+          <input type="text" id="dis1" value="Cannot edit this" disabled>
+        </p>
+        <p>
+          <label for="dis2">Disabled select:</label>
+          <select id="dis2" disabled>
+            <option>Option 1</option>
+            <option selected>Option 2</option>
+          </select>
+        </p>
+        <p>
+          <input type="checkbox" id="dis3" disabled checked> <label for="dis3">Disabled checkbox (checked)</label>
+        </p>
+        <p>
+          <input type="radio" id="dis4" disabled checked> <label for="dis4">Disabled radio (checked)</label>
+        </p>
+        <p>
+          <button type="button" disabled>Disabled Button</button>
+        </p>
+        <p>
+          <label for="dis5">Disabled textarea:</label><br>
+          <textarea id="dis5" rows="2" cols="30" disabled>Cannot edit this textarea</textarea>
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Test 10: Label association -->
+  <div class="test-group">
+    <h2>Test 8.10: Label Association (for attribute)</h2>
+    <div class="expected">Expected: Clicking a label with a "for" attribute should focus or toggle the associated input. Labels wrapping inputs should also work. This tests accessibility and click target expansion.</div>
+    <div class="test-area">
+      <form>
+        <p><strong>Label with "for" attribute (click the label text):</strong></p>
+        <p>
+          <label for="lbl1">Click me to focus the input:</label>
+          <input type="text" id="lbl1">
+        </p>
+        <p>
+          <label for="lbl2">Click me to toggle the checkbox:</label>
+          <input type="checkbox" id="lbl2">
+        </p>
+
+        <p><strong>Label wrapping input (implicit association):</strong></p>
+        <p>
+          <label>
+            Wrapped text input:
+            <input type="text" placeholder="Click the label">
+          </label>
+        </p>
+        <p>
+          <label>
+            <input type="checkbox"> Wrapped checkbox
+          </label>
+        </p>
+      </form>
+    </div>
+  </div>
+
+</body>
+</html>

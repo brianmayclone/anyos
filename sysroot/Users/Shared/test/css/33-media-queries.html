@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CSS Test 33: Media Queries</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .indicator {
+    padding: 12px 16px;
+    margin: 6px 0;
+    border-radius: 6px;
+    font-weight: bold;
+    text-align: center;
+    font-size: 16px;
+  }
+
+  /* Test 1: min-width */
+  .test-area.test-min-width .wide-only {
+    display: none;
+    background: #1a3a1a;
+    color: #6bff6b;
+    border: 2px solid #6bff6b;
+  }
+  @media (min-width: 600px) {
+    .test-area.test-min-width .wide-only {
+      display: block;
+    }
+  }
+  .test-area.test-min-width .narrow-msg {
+    display: block;
+    background: #3a1a1a;
+    color: #ff6b6b;
+    border: 2px solid #ff6b6b;
+  }
+  @media (min-width: 600px) {
+    .test-area.test-min-width .narrow-msg {
+      display: none;
+    }
+  }
+
+  /* Test 2: max-width */
+  .test-area.test-max-width .small-only {
+    display: none;
+    background: #3a3a1a;
+    color: #e2b93d;
+    border: 2px solid #e2b93d;
+  }
+  @media (max-width: 500px) {
+    .test-area.test-max-width .small-only {
+      display: block;
+    }
+  }
+  .test-area.test-max-width .large-msg {
+    display: block;
+    background: #1a2a3a;
+    color: #4ecdc4;
+    border: 2px solid #4ecdc4;
+  }
+  @media (max-width: 500px) {
+    .test-area.test-max-width .large-msg {
+      display: none;
+    }
+  }
+
+  /* Test 3: Color changes at breakpoints */
+  .test-area.test-breakpoint-color .color-box {
+    padding: 20px;
+    border-radius: 6px;
+    text-align: center;
+    font-weight: bold;
+    font-size: 18px;
+    background: #3a1a1a;
+    color: #ff6b6b;
+    border: 3px solid #ff6b6b;
+  }
+  @media (min-width: 400px) {
+    .test-area.test-breakpoint-color .color-box {
+      background: #3a3a1a;
+      color: #e2b93d;
+      border-color: #e2b93d;
+    }
+  }
+  @media (min-width: 600px) {
+    .test-area.test-breakpoint-color .color-box {
+      background: #1a3a1a;
+      color: #6bff6b;
+      border-color: #6bff6b;
+    }
+  }
+  @media (min-width: 800px) {
+    .test-area.test-breakpoint-color .color-box {
+      background: #1a2a3a;
+      color: #4ecdc4;
+      border-color: #4ecdc4;
+    }
+  }
+  @media (min-width: 1000px) {
+    .test-area.test-breakpoint-color .color-box {
+      background: #2a1a3a;
+      color: #9b59b6;
+      border-color: #9b59b6;
+    }
+  }
+
+  /* Test 4: Layout direction change */
+  .test-area.test-flex-direction .flex-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  @media (min-width: 600px) {
+    .test-area.test-flex-direction .flex-container {
+      flex-direction: row;
+    }
+  }
+  .test-area.test-flex-direction .flex-item {
+    flex: 1;
+    padding: 15px;
+    border-radius: 6px;
+    text-align: center;
+    font-weight: bold;
+  }
+
+  /* Test 5: Multiple breakpoints stacking */
+  .test-area.test-stacking .grid-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .test-area.test-stacking .grid-item {
+    flex: 0 0 100%;
+    padding: 12px;
+    border-radius: 6px;
+    text-align: center;
+    background: #1a3a3a;
+    border: 1px solid #4ecdc4;
+    box-sizing: border-box;
+  }
+  @media (min-width: 500px) {
+    .test-area.test-stacking .grid-item {
+      flex: 0 0 calc(50% - 4px);
+    }
+  }
+  @media (min-width: 800px) {
+    .test-area.test-stacking .grid-item {
+      flex: 0 0 calc(25% - 6px);
+    }
+  }
+
+  /* Test 6: prefers-color-scheme */
+  .test-area.test-color-scheme .scheme-default {
+    background: #16213e;
+    color: #e0e0e0;
+    padding: 12px;
+    border-radius: 6px;
+    border: 2px solid #555;
+    margin: 6px 0;
+  }
+  @media (prefers-color-scheme: dark) {
+    .test-area.test-color-scheme .scheme-default {
+      background: #0a0a1e;
+      border-color: #4ecdc4;
+    }
+    .test-area.test-color-scheme .scheme-default .scheme-label {
+      color: #4ecdc4;
+    }
+  }
+  @media (prefers-color-scheme: light) {
+    .test-area.test-color-scheme .scheme-default {
+      background: #f0f0f0;
+      color: #333;
+      border-color: #333;
+    }
+    .test-area.test-color-scheme .scheme-default .scheme-label {
+      color: #333;
+      font-weight: bold;
+    }
+  }
+
+  /* Test 7: Font size adjustments */
+  .test-area.test-font-mq .responsive-text {
+    font-size: 14px;
+    line-height: 1.4;
+    padding: 10px;
+    background: #1a2a3a;
+    border-radius: 6px;
+    margin: 6px 0;
+  }
+  @media (min-width: 600px) {
+    .test-area.test-font-mq .responsive-text {
+      font-size: 16px;
+      line-height: 1.5;
+    }
+  }
+  @media (min-width: 900px) {
+    .test-area.test-font-mq .responsive-text {
+      font-size: 18px;
+      line-height: 1.6;
+    }
+  }
+
+  /* Test 8: Show/hide navigation pattern */
+  .test-area.test-nav-pattern .mobile-nav {
+    display: block;
+    background: #3a1a2a;
+    color: #ff6b6b;
+    padding: 10px;
+    border-radius: 6px;
+    text-align: center;
+    margin: 4px 0;
+  }
+  .test-area.test-nav-pattern .desktop-nav {
+    display: none;
+    background: #1a3a1a;
+    padding: 10px;
+    border-radius: 6px;
+    margin: 4px 0;
+  }
+  .test-area.test-nav-pattern .desktop-nav a {
+    color: #6bff6b;
+    margin: 0 10px;
+    text-decoration: none;
+  }
+  @media (min-width: 700px) {
+    .test-area.test-nav-pattern .mobile-nav {
+      display: none;
+    }
+    .test-area.test-nav-pattern .desktop-nav {
+      display: flex;
+      justify-content: space-around;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 33: Media Queries</h1>
+
+<p style="color: #888; font-size: 14px; margin-bottom: 20px;">Resize the browser window to see media query effects. Tests respond to viewport width changes.</p>
+
+<!-- Test 1: min-width -->
+<div class="test-group">
+  <h2>Test 1: @media (min-width: 600px)</h2>
+  <div class="expected">Expected: If window width >= 600px: green box saying "Wide viewport detected" is visible, red message is hidden. If window width &lt; 600px: red box saying "Narrow viewport" is visible, green box is hidden. Resize window to test both states.</div>
+  <div class="test-area test-min-width">
+    <div class="indicator wide-only">Wide viewport detected (>= 600px) - This box only appears on wide viewports</div>
+    <div class="indicator narrow-msg">Narrow viewport (&lt; 600px) - This box only appears on narrow viewports</div>
+  </div>
+</div>
+
+<!-- Test 2: max-width -->
+<div class="test-group">
+  <h2>Test 2: @media (max-width: 500px)</h2>
+  <div class="expected">Expected: If window width &lt;= 500px: yellow box saying "Small viewport" is visible, teal message is hidden. If window width > 500px: teal box saying "Large viewport" is visible, yellow box is hidden. This is the inverse of min-width.</div>
+  <div class="test-area test-max-width">
+    <div class="indicator small-only">Small viewport (&lt;= 500px) - This box only appears on small viewports</div>
+    <div class="indicator large-msg">Large viewport (> 500px) - This box only appears on larger viewports</div>
+  </div>
+</div>
+
+<!-- Test 3: Color changes at different breakpoints -->
+<div class="test-group">
+  <h2>Test 3: Color Changes at Multiple Breakpoints</h2>
+  <div class="expected">Expected: A single box that changes color based on viewport width. Under 400px: RED. 400-599px: GOLDEN/YELLOW. 600-799px: GREEN. 800-999px: TEAL. 1000px+: PURPLE. Each breakpoint overrides the previous color. Resize slowly to see all transitions.</div>
+  <div class="test-area test-breakpoint-color">
+    <div class="indicator color-box">
+      Responsive Color Box<br>
+      <span style="font-size: 12px; font-weight: normal;">
+        &lt;400px=Red | 400px=Yellow | 600px=Green | 800px=Teal | 1000px=Purple
+      </span>
+    </div>
+  </div>
+</div>
+
+<!-- Test 4: Flex direction change -->
+<div class="test-group">
+  <h2>Test 4: Layout Direction Change at Breakpoint</h2>
+  <div class="expected">Expected: Below 600px: the three boxes should stack VERTICALLY (flex-direction: column). At 600px and above: the boxes should arrange HORIZONTALLY in a row (flex-direction: row). This is a common responsive pattern for card layouts.</div>
+  <div class="test-area test-flex-direction">
+    <div class="flex-container">
+      <div class="flex-item" style="background: #3a1a1a; border: 2px solid #ff6b6b; color: #ff6b6b;">Card A</div>
+      <div class="flex-item" style="background: #1a3a3a; border: 2px solid #4ecdc4; color: #4ecdc4;">Card B</div>
+      <div class="flex-item" style="background: #3a3a1a; border: 2px solid #e2b93d; color: #e2b93d;">Card C</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 5: Multiple breakpoints stacking -->
+<div class="test-group">
+  <h2>Test 5: Grid Items at Multiple Breakpoints</h2>
+  <div class="expected">Expected: Below 500px: each item takes FULL width (1 column). 500-799px: items are 50% width (2 columns). 800px+: items are 25% width (4 columns). This demonstrates a responsive grid that adapts its column count based on available space.</div>
+  <div class="test-area test-stacking">
+    <div class="grid-container">
+      <div class="grid-item">Item 1</div>
+      <div class="grid-item">Item 2</div>
+      <div class="grid-item">Item 3</div>
+      <div class="grid-item">Item 4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: prefers-color-scheme -->
+<div class="test-group">
+  <h2>Test 6: @media (prefers-color-scheme)</h2>
+  <div class="expected">Expected: The box adapts to the OS color scheme preference. If the system prefers dark mode: darker background with teal border and teal label. If the system prefers light mode: light gray background with dark text and dark border. If no preference is detected, the default dark-themed styling applies.</div>
+  <div class="test-area test-color-scheme">
+    <div class="scheme-default">
+      <span class="scheme-label">prefers-color-scheme test</span><br>
+      <span style="font-size: 13px;">This box changes based on your OS dark/light mode setting.</span><br>
+      <span style="font-size: 12px; color: #888;">Dark mode: teal border, very dark bg. Light mode: light bg, dark text.</span>
+    </div>
+  </div>
+</div>
+
+<!-- Test 7: Responsive font sizes -->
+<div class="test-group">
+  <h2>Test 7: Responsive Font Sizes</h2>
+  <div class="expected">Expected: Below 600px: font-size is 14px with 1.4 line-height (compact). 600-899px: font-size is 16px with 1.5 line-height (medium). 900px+: font-size is 18px with 1.6 line-height (comfortable reading). Text should visibly grow as the viewport widens.</div>
+  <div class="test-area test-font-mq">
+    <div class="responsive-text">
+      This text changes size based on viewport width. At narrow widths it is small and compact (14px). At medium widths it grows slightly (16px). At wide widths it is comfortable reading size (18px). Resize the window to observe the font-size transitions at 600px and 900px breakpoints.
+    </div>
+  </div>
+</div>
+
+<!-- Test 8: Show/hide navigation pattern -->
+<div class="test-group">
+  <h2>Test 8: Mobile/Desktop Navigation Pattern</h2>
+  <div class="expected">Expected: Below 700px: a red "hamburger menu" placeholder is shown (mobile nav), the desktop nav links are hidden. At 700px and above: the desktop navigation links appear in a horizontal row (green), and the mobile nav is hidden. This simulates a responsive navigation bar.</div>
+  <div class="test-area test-nav-pattern">
+    <div class="mobile-nav">Mobile Menu (hamburger icon would go here) - visible below 700px</div>
+    <div class="desktop-nav">
+      <a href="#">Home</a>
+      <a href="#">About</a>
+      <a href="#">Services</a>
+      <a href="#">Portfolio</a>
+      <a href="#">Contact</a>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

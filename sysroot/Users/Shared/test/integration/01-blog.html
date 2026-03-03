@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Integration Test 01: Blog Article Page</title>
+  <style>
+    /* === Reset & Base Dark Theme === */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #d4d4d8;
+      font-family: sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      margin: 0;
+      padding: 0;
+    }
+    a { color: #4ecdc4; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* === Site Navigation Bar === */
+    /* A horizontal nav bar using flexbox with logo on left, links on right */
+    .site-nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #16213e;
+      padding: 12px 24px;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    .site-nav .logo {
+      font-size: 20px;
+      font-weight: bold;
+      color: #ff6b6b;
+    }
+    .site-nav .nav-links {
+      display: flex;
+      gap: 20px;
+    }
+    .site-nav .nav-links a {
+      color: #a0a0b8;
+      font-size: 14px;
+    }
+    .site-nav .nav-links a:hover { color: #4ecdc4; }
+
+    /* === Page Layout: Article + Sidebar using Flexbox === */
+    .page-container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .content-layout {
+      display: flex;
+      gap: 32px;
+    }
+
+    /* === Main Article Column === */
+    .article-main {
+      flex: 1;
+      min-width: 0; /* Prevent flex item overflow */
+    }
+    .article-main .article-header {
+      margin-bottom: 24px;
+      border-bottom: 1px solid #2a2a4a;
+      padding-bottom: 16px;
+    }
+    .article-main .article-header h1 {
+      font-size: 32px;
+      color: #f0f0f5;
+      line-height: 1.3;
+      margin-bottom: 12px;
+    }
+    .article-meta {
+      display: flex;
+      gap: 16px;
+      font-size: 14px;
+      color: #8888a0;
+    }
+    .article-meta .author { color: #4ecdc4; }
+    .article-meta .date { color: #8888a0; }
+    .article-meta .read-time { color: #8888a0; }
+
+    /* === Article Body Content === */
+    .article-body p {
+      margin-bottom: 16px;
+      color: #c8c8d8;
+    }
+    .article-body h2 {
+      font-size: 24px;
+      color: #f0f0f5;
+      margin-top: 32px;
+      margin-bottom: 12px;
+      border-bottom: 1px solid #2a2a4a;
+      padding-bottom: 8px;
+    }
+    .article-body h3 {
+      font-size: 20px;
+      color: #e0e0f0;
+      margin-top: 24px;
+      margin-bottom: 8px;
+    }
+
+    /* Image placeholder: colored div simulating an article image */
+    .image-placeholder {
+      width: 100%;
+      height: 200px;
+      background: linear-gradient(135deg, #0f3460, #533483);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #8888a0;
+      font-size: 14px;
+      margin: 20px 0;
+      border: 1px solid #2a2a4a;
+    }
+
+    /* Blockquote styling */
+    .article-body blockquote {
+      border-left: 4px solid #4ecdc4;
+      margin: 20px 0;
+      padding: 12px 20px;
+      background: #16213e;
+      border-radius: 0 8px 8px 0;
+      color: #b0b0c8;
+      font-style: italic;
+    }
+    .article-body blockquote cite {
+      display: block;
+      margin-top: 8px;
+      font-size: 13px;
+      color: #6868a0;
+      font-style: normal;
+    }
+
+    /* Code blocks */
+    .article-body code {
+      background: #0f3460;
+      color: #ffd93d;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 14px;
+    }
+    .article-body pre {
+      background: #0a0a1e;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      padding: 16px;
+      overflow-x: auto;
+      margin: 16px 0;
+    }
+    .article-body pre code {
+      background: none;
+      padding: 0;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #d4d4d8;
+    }
+    /* Syntax coloring inside code blocks */
+    .kw { color: #ff6b6b; }   /* keywords */
+    .fn { color: #4ecdc4; }   /* function names */
+    .str { color: #ffd93d; }  /* strings */
+    .cm { color: #6a737d; }   /* comments */
+    .num { color: #9b59b6; }  /* numbers */
+
+    /* Lists in the article */
+    .article-body ul, .article-body ol {
+      margin: 12px 0 16px 24px;
+      color: #c8c8d8;
+    }
+    .article-body li {
+      margin-bottom: 6px;
+    }
+
+    /* === Sidebar === */
+    .sidebar {
+      width: 280px;
+      flex-shrink: 0;
+    }
+    .sidebar-section {
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+    .sidebar-section h3 {
+      font-size: 16px;
+      color: #f0f0f5;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    .sidebar-section ul {
+      list-style: none;
+      padding: 0;
+    }
+    .sidebar-section li {
+      margin-bottom: 8px;
+    }
+    .sidebar-section li a {
+      font-size: 14px;
+      color: #a0a0b8;
+    }
+    .sidebar-section li a:hover { color: #4ecdc4; }
+
+    .sidebar .author-card {
+      text-align: center;
+    }
+    .sidebar .author-avatar {
+      width: 64px;
+      height: 64px;
+      background: #533483;
+      border-radius: 50%;
+      margin: 0 auto 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #f0f0f5;
+      font-size: 24px;
+      font-weight: bold;
+    }
+    .sidebar .author-name {
+      font-size: 16px;
+      color: #f0f0f5;
+      margin-bottom: 4px;
+    }
+    .sidebar .author-bio {
+      font-size: 13px;
+      color: #8888a0;
+    }
+
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .tag {
+      background: #0f3460;
+      color: #4ecdc4;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+    }
+
+    /* === Footer === */
+    .site-footer {
+      background: #16213e;
+      border-top: 1px solid #2a2a4a;
+      padding: 24px;
+      margin-top: 40px;
+      text-align: center;
+      color: #6868a0;
+      font-size: 14px;
+    }
+
+    /* === Expected Rendering Section === */
+    .expected-rendering {
+      max-width: 1100px;
+      margin: 40px auto;
+      padding: 20px 24px;
+      background: #1a2a1a;
+      border: 1px solid #2a4a2a;
+      border-radius: 8px;
+      color: #6bff6b;
+      font-size: 14px;
+    }
+    .expected-rendering h2 {
+      color: #6bff6b;
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+    .expected-rendering ul {
+      margin-left: 20px;
+    }
+    .expected-rendering li {
+      margin-bottom: 6px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Back navigation to test index -->
+  <div style="padding:12px 24px;background:#0a0a1e;">
+    <div class="nav" style="margin-bottom:0"><a href="../index.html" style="color:#4ecdc4;text-decoration:none">&larr; Back to Test Index</a></div>
+  </div>
+
+  <!-- ============================================================
+       SITE NAVIGATION BAR
+       Horizontal flexbox nav: logo left, links right.
+       Should render as a single horizontal bar at the top.
+       ============================================================ -->
+  <nav class="site-nav">
+    <div class="logo">TechBlog</div>
+    <div class="nav-links">
+      <a href="#">Home</a>
+      <a href="#">Articles</a>
+      <a href="#">Categories</a>
+      <a href="#">About</a>
+      <a href="#">Contact</a>
+    </div>
+  </nav>
+
+  <div class="page-container">
+    <!-- ============================================================
+         TWO-COLUMN LAYOUT: Article (flex:1) + Sidebar (280px fixed)
+         Uses flexbox row. Sidebar should not overlap the article.
+         ============================================================ -->
+    <div class="content-layout">
+
+      <!-- === Main Article === -->
+      <article class="article-main">
+        <div class="article-header">
+          <h1>Building a Browser Engine from Scratch: Lessons Learned</h1>
+          <div class="article-meta">
+            <span class="author">Jane Mitchell</span>
+            <span class="date">March 1, 2026</span>
+            <span class="read-time">12 min read</span>
+          </div>
+        </div>
+
+        <div class="article-body">
+          <!-- Introductory paragraph -->
+          <p>
+            Creating a web browser engine is one of the most ambitious software engineering
+            projects you can undertake. It requires deep understanding of parsing, layout
+            algorithms, rendering pipelines, and networking protocols. In this article, I
+            share the key insights from building a minimal browser engine over the past year.
+          </p>
+
+          <!-- Image placeholder simulating an article hero image -->
+          <div class="image-placeholder">
+            [Article Hero Image: Browser Architecture Diagram - 800x200]
+          </div>
+
+          <h2>The HTML Parser</h2>
+          <p>
+            The first component we built was the HTML parser. Unlike what many tutorials
+            suggest, a production-quality parser needs to handle malformed markup gracefully.
+            The <a href="#">HTML5 specification</a> defines an incredibly detailed state
+            machine for tokenization that handles edge cases most developers never think about.
+          </p>
+
+          <p>
+            Key challenges we encountered during parser development included handling
+            <code>&lt;script&gt;</code> tags (which change the tokenizer behavior),
+            dealing with self-closing tags like <code>&lt;br&gt;</code> and
+            <code>&lt;img&gt;</code>, and implementing the adoption agency algorithm for
+            misnested formatting elements.
+          </p>
+
+          <!-- Blockquote with citation -->
+          <blockquote>
+            "The hardest part of building a browser is not implementing the happy path.
+            It is correctly handling the millions of broken web pages that real users visit
+            every day."
+            <cite>-- Lars Bergstrom, Mozilla Research</cite>
+          </blockquote>
+
+          <h2>CSS Layout: The Real Beast</h2>
+          <p>
+            If parsing HTML is hard, CSS layout is an order of magnitude harder. The
+            interaction between different layout modes (block, inline, flex, grid), combined
+            with features like floats, positioning, and margin collapsing, creates a
+            combinatorial explosion of edge cases.
+          </p>
+
+          <h3>Block Layout</h3>
+          <p>
+            Block layout is the simplest layout mode, but even it has subtleties. Margin
+            collapsing between adjacent siblings and between parent and first/last child
+            requires careful bookkeeping. Our implementation handles:
+          </p>
+          <ul>
+            <li>Adjacent sibling margin collapsing</li>
+            <li>Parent-child margin collapsing (when no border/padding separates them)</li>
+            <li>Negative margins and their interaction with positive margins</li>
+            <li>Margin collapsing through empty blocks</li>
+          </ul>
+
+          <h3>Flexbox Implementation</h3>
+          <p>
+            Flexbox was the most requested layout mode by our early testers. The algorithm
+            involves multiple passes over flex items to resolve flexible lengths. Here is
+            a simplified overview of the steps:
+          </p>
+          <ol>
+            <li>Determine the available main and cross sizes</li>
+            <li>Collect flex items into flex lines</li>
+            <li>Resolve flexible lengths for each line</li>
+            <li>Determine the hypothetical cross size of each item</li>
+            <li>Calculate cross sizes and align items</li>
+            <li>Distribute remaining space for justify-content</li>
+          </ol>
+
+          <!-- Code block with syntax highlighting -->
+          <h2>Rendering Pipeline</h2>
+          <p>
+            Once layout is complete, each element has a position and size. The rendering
+            phase walks the layout tree and generates draw commands:
+          </p>
+          <pre><code><span class="cm">// Simplified render function</span>
+<span class="kw">fn</span> <span class="fn">render</span>(layout_box: &amp;LayoutBox, canvas: &amp;<span class="kw">mut</span> Canvas) {
+    <span class="kw">match</span> layout_box.box_type {
+        BoxType::Block =&gt; {
+            <span class="fn">render_background</span>(layout_box, canvas);
+            <span class="fn">render_borders</span>(layout_box, canvas);
+            <span class="kw">for</span> child <span class="kw">in</span> &amp;layout_box.children {
+                <span class="fn">render</span>(child, canvas);
+            }
+        }
+        BoxType::Inline =&gt; {
+            <span class="fn">render_text</span>(layout_box, canvas);
+        }
+        BoxType::None =&gt; {} <span class="cm">// display: none</span>
+    }
+}</code></pre>
+
+          <p>
+            Performance is critical in the rendering phase. We implemented a damage tracking
+            system so that only the parts of the page that changed are re-rendered. Combined
+            with layer caching for elements with <code>opacity</code> or <code>transform</code>,
+            this gives us smooth 60fps scrolling on most pages.
+          </p>
+
+          <!-- Another image placeholder -->
+          <div class="image-placeholder">
+            [Diagram: Rendering Pipeline Stages - 800x200]
+          </div>
+
+          <h2>JavaScript Integration</h2>
+          <p>
+            Adding JavaScript support transformed the browser from a document viewer into
+            an application platform. We integrated a JavaScript engine and built bindings
+            for the DOM API. The trickiest part was ensuring that DOM mutations triggered
+            the correct re-layout and re-paint operations without doing unnecessary work.
+          </p>
+
+          <blockquote>
+            "Premature optimization is the root of all evil, but in a browser engine,
+            late optimization means your users see janky scrolling."
+            <cite>-- Our internal engineering mantra</cite>
+          </blockquote>
+
+          <h2>Conclusion</h2>
+          <p>
+            Building a browser engine has been an incredibly rewarding experience. The web
+            platform is vast and complex, but breaking it down into manageable components
+            makes it tractable. If you are interested in contributing to browser engine
+            development, check out the <a href="#">servo project</a> or start with
+            <a href="#">a simple toy engine</a> to learn the fundamentals.
+          </p>
+        </div>
+      </article>
+
+      <!-- === Sidebar === -->
+      <!-- Fixed 280px width, should appear to the right of the article -->
+      <aside class="sidebar">
+        <!-- Author card -->
+        <div class="sidebar-section author-card">
+          <div class="author-avatar">JM</div>
+          <div class="author-name">Jane Mitchell</div>
+          <div class="author-bio">
+            Systems engineer passionate about browsers, compilers, and low-level programming.
+          </div>
+        </div>
+
+        <!-- Tags -->
+        <div class="sidebar-section">
+          <h3>Tags</h3>
+          <div class="tag-list">
+            <span class="tag">Browser</span>
+            <span class="tag">Rust</span>
+            <span class="tag">Layout</span>
+            <span class="tag">CSS</span>
+            <span class="tag">Rendering</span>
+            <span class="tag">HTML Parser</span>
+          </div>
+        </div>
+
+        <!-- Related articles -->
+        <div class="sidebar-section">
+          <h3>Related Articles</h3>
+          <ul>
+            <li><a href="#">Understanding CSS Box Model Internals</a></li>
+            <li><a href="#">How Browsers Handle Malformed HTML</a></li>
+            <li><a href="#">GPU-Accelerated Compositing Explained</a></li>
+            <li><a href="#">The History of Web Rendering Engines</a></li>
+            <li><a href="#">Flexbox vs Grid: Implementation Perspective</a></li>
+          </ul>
+        </div>
+
+        <!-- Table of contents -->
+        <div class="sidebar-section">
+          <h3>Table of Contents</h3>
+          <ul>
+            <li><a href="#">The HTML Parser</a></li>
+            <li><a href="#">CSS Layout: The Real Beast</a></li>
+            <li><a href="#">Rendering Pipeline</a></li>
+            <li><a href="#">JavaScript Integration</a></li>
+            <li><a href="#">Conclusion</a></li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       FOOTER
+       Full width, centered copyright text.
+       ============================================================ -->
+  <footer class="site-footer">
+    <p>&copy; 2026 TechBlog. All rights reserved. Built with passion and caffeine.</p>
+  </footer>
+
+  <!-- ============================================================
+       EXPECTED RENDERING
+       ============================================================ -->
+  <div class="expected-rendering">
+    <h2>Expected Rendering</h2>
+    <ul>
+      <li><strong>Navigation bar:</strong> Horizontal bar at the very top with "TechBlog" logo on the left and five navigation links on the right, all in a single row using flexbox.</li>
+      <li><strong>Article + Sidebar layout:</strong> Two-column flexbox layout. The article takes up the remaining space (flex:1) on the left. The sidebar is fixed at 280px on the right. They should not overlap.</li>
+      <li><strong>Article header:</strong> Large h1 title followed by a row of metadata (author name in teal, date, read time) with a bottom border separating it from content.</li>
+      <li><strong>Image placeholders:</strong> Full-width colored gradient rectangles with centered placeholder text, rounded corners.</li>
+      <li><strong>Blockquotes:</strong> Indented blocks with a teal left border, darker background, italic text, and citation below.</li>
+      <li><strong>Code blocks:</strong> Dark background pre/code blocks with colored syntax tokens. Inline code has a pill-shaped dark background with yellow text.</li>
+      <li><strong>Lists:</strong> Both ordered and unordered lists with proper left indentation and spacing between items.</li>
+      <li><strong>Sidebar sections:</strong> Stacked cards with borders, containing author info (centered avatar circle, name, bio), tags (wrapped flex row of small pills), and link lists.</li>
+      <li><strong>Footer:</strong> Full-width dark bar at the bottom with centered copyright text.</li>
+      <li><strong>Text flow:</strong> Paragraphs should flow naturally with comfortable line-height (1.6), no text should be cut off or hidden.</li>
+    </ul>
+  </div>
+
+</body>
+</html>

@@ -105,7 +105,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **GPU drivers**: Bochs VGA (page flipping), VMware SVGA II (2D acceleration, hardware cursor), VirtualBox VGA, VirtIO GPU
 - **macOS-inspired dark theme** with rounded windows, shadows, and alpha blending
 - **42 UI controls** via the anyui framework + uisys shared library (buttons, text fields, code editor, tree view, data grid, toolbars, canvas, expander, flow/stack panels, etc.)
-- **7 shared libraries** — uisys, libimage, librender, libcompositor (DLIB format) + libanyui, libfont, libgl (.so format with ELF dynamic linking)
+- **8 shared libraries** — uisys, libimage, librender, libcompositor (DLIB format) + libanyui, libfont, libgl, libcorevm (.so format with ELF dynamic linking)
 - **TrueType font rendering** with gamma-corrected subpixel LCD anti-aliasing and size-adaptive smoothing (SF Pro family)
 
 ### 3D Graphics
@@ -142,6 +142,20 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **VMware**: vmmouse absolute mouse input, SVGA II 2D acceleration
 - **QEMU/KVM**: Bochs VGA, E1000, AC'97/HDA, AHCI, NVMe, VirtIO
 
+### CoreVM — Built-in Virtual Machine
+
+anyOS includes **CoreVM**, a pure-software x86 virtual machine built entirely in Rust and NASM assembly, running in userspace. No hardware virtualization (VT-x/AMD-V) required — every instruction is decoded and executed in software.
+
+- **Full x86 ISA** — 16-bit real mode, 32-bit protected mode, 64-bit long mode
+- **Complete PC hardware emulation** — dual 8259A PIC, 8254 PIT, PS/2 keyboard/mouse, CMOS RTC, 16550 UART, VGA/SVGA framebuffer, ATA/IDE disk controller, Intel E1000 NIC, PCI bus
+- **Built-in BIOS** — custom 64 KB NASM BIOS with INT 10h/13h/15h/16h/19h/1Ah services, El Torito CD boot; SeaBIOS also supported
+- **JIT compiler** — two-phase acceleration: decode cache for hot basic blocks + native x86-64 code compilation
+- **Paging support** — 2-level (32-bit), PAE (3-level), and 4-level (long mode) page table walks with NX, WP, U/S enforcement
+- **VM Manager GUI** — create, configure, and run VMs with live VGA display, settings dialog, and disk image creation
+- **58 C ABI exports** via `libcorevm.so` + typed Rust client wrapper (`libcorevm_client`)
+
+See **[CoreVM API Reference](docs/corevm-api.md)** for the complete documentation.
+
 ### C Toolchain & Shell
 
 - **TCC** (Tiny C Compiler) 0.9.27 running natively on the OS
@@ -173,7 +187,7 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 
 127+ command-line and GUI applications:
 
-**GUI Applications (15):** anyOS Code (IDE), Calculator, Clock, Diagnostics, Font Viewer, GL Demo (3D), Image Viewer, Minesweeper, Notepad, Paint, Screenshot, Surf (web browser prototype), Video Player, Web Manager, anyui Demo
+**GUI Applications (16):** anyOS Code (IDE), Calculator, Clock, Diagnostics, Font Viewer, GL Demo (3D), Image Viewer, Minesweeper, Notepad, Paint, Screenshot, Surf (web browser prototype), Video Player, **VM Manager** (virtual machine manager), Web Manager, anyui Demo
 
 **System Applications (15):** Init, Login, Compositor, Terminal, Finder, Settings, Activity Monitor, Permission Dialog, Shell (dash), Audio Monitor, Network Monitor, Input Monitor, Event Viewer, Disk Utility, amid (statistics daemon)
 
@@ -382,13 +396,17 @@ anyos/
     libfont_client/        Client crate for libfont (dynlink-based)
     libgl/                 libgl.so — OpenGL ES 2.0 3D engine (GLSL compiler + SW rasterizer)
     libgl_client/          Client crate for libgl (dynlink-based)
+    libcorevm/             libcorevm.so — CoreVM x86 virtual machine engine (CPU, devices, JIT, BIOS)
+    libcorevm_client/      Client crate for libcorevm (dynlink-based)
     dynlink/               Minimal user-space dynamic linker (dl_open/dl_sym for .so files)
     librender/             librender.dlib — 2D graphics primitives DLL
     librender_client/      Client stub crate for librender
     libcompositor/         libcompositor.dlib — Compositor client API DLL
     libcompositor_client/  Client stub crate for libcompositor
   bin/                   CLI program sources (88 Rust programs)
-  apps/                  GUI application sources (15 .app bundles)
+    vmd/                   CoreVM daemon — VM execution loop, IPC bridge to libcorevm
+  apps/                  GUI application sources (16 .app bundles)
+    vmmanager/             VM Manager — GUI for creating, configuring, and running VMs
   system/                System programs (15)
     init/                  Init system (PID 1)
     login/                 Login manager
@@ -446,6 +464,7 @@ anyOS uses two shared library formats with **dynamic kernel-managed addressing**
 | libanyui | .so | 112 | anyui UI framework (41 controls, Windows Forms-style) |
 | libfont | .so | 7 | TrueType font rendering with LCD subpixel AA (system fonts embedded in .rodata) |
 | libgl | .so | 68 | OpenGL ES 2.0 3D engine with GLSL compiler and software rasterizer |
+| libcorevm | .so | 58 | CoreVM x86 virtual machine engine (CPU emulator, devices, JIT, BIOS) |
 
 DLIB programs link against lightweight client stub crates (e.g. `uisys_client`) that read the export table at the kernel-assigned base address. `.so` programs use `dynlink` crate (`dl_open`/`dl_sym`) for ELF symbol resolution.
 
@@ -465,6 +484,7 @@ DLIB programs link against lightweight client stub crates (e.g. `uisys_client`) 
 - **[libcompositor API](docs/libcompositor-api.md)** — Window management and compositor IPC
 - **[libgl API](docs/libgl-api.md)** — OpenGL ES 2.0 3D engine with GLSL compiler and software rasterizer
 - **[libm API](docs/libm-api.md)** — Hardware-accelerated math (SSE2 + x87 FPU, 56 exports)
+- **[CoreVM API](docs/corevm-api.md)** — Pure-software x86 virtual machine (CPU emulator, JIT, 11 devices, BIOS, 58 exports)
 
 ---
 

@@ -23,10 +23,26 @@ pub mod paging;
 pub mod segment;
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::Result;
+
+// ── ROM region ──
+
+/// A read-only memory region mapped at a fixed physical address.
+///
+/// ROM regions model firmware ROMs (BIOS, VGA BIOS, option ROMs) that
+/// occupy specific locations in the physical address space without
+/// requiring the flat RAM allocation to extend to those addresses.
+/// Reads return the ROM data; writes are silently ignored.
+struct RomRegion {
+    /// Base physical address of this ROM.
+    base: u64,
+    /// ROM content.
+    data: Vec<u8>,
+}
 
 /// Diagnostic: count reads to unmapped memory (above RAM, no MMIO handler).
 static UNMAPPED_READ_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -147,6 +163,10 @@ pub struct GuestMemory {
     ram: FlatMemory,
     /// MMIO region dispatcher (interior mutability for `&self` read path).
     mmio: UnsafeCell<MmioDispatch>,
+    /// Read-only ROM regions (BIOS, VGA BIOS, option ROMs) mapped at
+    /// arbitrary physical addresses outside (or overlapping) flat RAM.
+    /// Checked after MMIO, before flat RAM on reads. Writes are ignored.
+    rom_regions: Vec<RomRegion>,
 }
 
 impl GuestMemory {
@@ -155,6 +175,7 @@ impl GuestMemory {
         GuestMemory {
             ram: FlatMemory::new(ram_size),
             mmio: UnsafeCell::new(MmioDispatch::new()),
+            rom_regions: Vec::new(),
         }
     }
 
@@ -209,6 +230,44 @@ impl GuestMemory {
     pub fn mmio_bounds(&self) -> (u64, u64) {
         unsafe { &*self.mmio.get() }.bounds()
     }
+
+    /// Map a read-only ROM at the given physical base address.
+    ///
+    /// Subsequent reads to `[base, base + data.len())` return ROM content.
+    /// Writes to this range are silently ignored (ROM is read-only).
+    /// Multiple ROMs can be mapped at different addresses; they must not
+    /// overlap each other (behavior is undefined if they do).
+    ///
+    /// This is the mechanism used to place firmware ROMs (SeaBIOS at
+    /// 0xFFFC0000, VGA BIOS at 0xC0000, shadow copy at 0xE0000) without
+    /// allocating a full 4 GiB flat RAM buffer.
+    pub fn add_rom(&mut self, base: u64, data: Vec<u8>) {
+        self.rom_regions.push(RomRegion { base, data });
+    }
+
+    /// Look up a ROM region containing `addr` and return `(offset, &RomRegion)`.
+    #[inline]
+    fn find_rom(&self, addr: u64) -> Option<(usize, &RomRegion)> {
+        for rom in &self.rom_regions {
+            let end = rom.base + rom.data.len() as u64;
+            if addr >= rom.base && addr < end {
+                return Some(((addr - rom.base) as usize, rom));
+            }
+        }
+        None
+    }
+
+    /// Check if a write targets a ROM region (should be silently ignored).
+    #[inline]
+    fn is_rom_addr(&self, addr: u64) -> bool {
+        for rom in &self.rom_regions {
+            let end = rom.base + rom.data.len() as u64;
+            if addr >= rom.base && addr < end {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// Helper: dispatch an MMIO read or fall through to RAM.
@@ -242,17 +301,31 @@ fn try_mmio_write(
 
 impl MemoryBus for GuestMemory {
     fn read_u8(&self, addr: u64) -> Result<u8> {
+        // 1. MMIO
         if let Some(res) = try_mmio_read(self.mmio_mut(), addr, 1) {
             return Ok(res? as u8);
         }
+        // 2. ROM regions
+        if let Some((off, rom)) = self.find_rom(addr) {
+            return Ok(rom.data[off]);
+        }
+        // 3. Flat RAM
         self.ram.read_u8(addr)
     }
 
     fn read_u16(&self, addr: u64) -> Result<u16> {
+        // 1. MMIO
         if let Some(res) = try_mmio_read(self.mmio_mut(), addr, 2) {
             return Ok(res? as u16);
         }
-        // Diagnostic: detect reads to unmapped memory (above RAM, no MMIO handler).
+        // 2. ROM regions
+        if let Some((off, rom)) = self.find_rom(addr) {
+            if off + 2 <= rom.data.len() {
+                let bytes: [u8; 2] = [rom.data[off], rom.data[off + 1]];
+                return Ok(u16::from_le_bytes(bytes));
+            }
+        }
+        // 3. Flat RAM (with diagnostic for unmapped)
         if addr as usize >= self.ram.size() {
             let n = UNMAPPED_READ_COUNT.fetch_add(1, Ordering::Relaxed);
             if n < 50 {
@@ -265,10 +338,21 @@ impl MemoryBus for GuestMemory {
     }
 
     fn read_u32(&self, addr: u64) -> Result<u32> {
+        // 1. MMIO
         if let Some(res) = try_mmio_read(self.mmio_mut(), addr, 4) {
             return Ok(res? as u32);
         }
-        // Diagnostic: detect reads to unmapped memory (above RAM, no MMIO handler).
+        // 2. ROM regions
+        if let Some((off, rom)) = self.find_rom(addr) {
+            if off + 4 <= rom.data.len() {
+                let bytes: [u8; 4] = [
+                    rom.data[off], rom.data[off + 1],
+                    rom.data[off + 2], rom.data[off + 3],
+                ];
+                return Ok(u32::from_le_bytes(bytes));
+            }
+        }
+        // 3. Flat RAM (with diagnostic for unmapped)
         if addr as usize >= self.ram.size() {
             let n = UNMAPPED_READ_COUNT.fetch_add(1, Ordering::Relaxed);
             if n < 50 {
@@ -281,15 +365,33 @@ impl MemoryBus for GuestMemory {
     }
 
     fn read_u64(&self, addr: u64) -> Result<u64> {
+        // 1. MMIO
         if let Some(res) = try_mmio_read(self.mmio_mut(), addr, 8) {
             return res;
         }
+        // 2. ROM regions
+        if let Some((off, rom)) = self.find_rom(addr) {
+            if off + 8 <= rom.data.len() {
+                let bytes: [u8; 8] = [
+                    rom.data[off], rom.data[off + 1],
+                    rom.data[off + 2], rom.data[off + 3],
+                    rom.data[off + 4], rom.data[off + 5],
+                    rom.data[off + 6], rom.data[off + 7],
+                ];
+                return Ok(u64::from_le_bytes(bytes));
+            }
+        }
+        // 3. Flat RAM
         self.ram.read_u64(addr)
     }
 
     fn write_u8(&mut self, addr: u64, val: u8) -> Result<()> {
         if let Some(res) = try_mmio_write(self.mmio_mut(), addr, 1, val as u64) {
             return res;
+        }
+        // Writes to ROM are silently ignored.
+        if self.is_rom_addr(addr) {
+            return Ok(());
         }
         self.ram.write_u8(addr, val)
     }
@@ -298,12 +400,18 @@ impl MemoryBus for GuestMemory {
         if let Some(res) = try_mmio_write(self.mmio_mut(), addr, 2, val as u64) {
             return res;
         }
+        if self.is_rom_addr(addr) {
+            return Ok(());
+        }
         self.ram.write_u16(addr, val)
     }
 
     fn write_u32(&mut self, addr: u64, val: u32) -> Result<()> {
         if let Some(res) = try_mmio_write(self.mmio_mut(), addr, 4, val as u64) {
             return res;
+        }
+        if self.is_rom_addr(addr) {
+            return Ok(());
         }
         self.ram.write_u32(addr, val)
     }
@@ -312,16 +420,33 @@ impl MemoryBus for GuestMemory {
         if let Some(res) = try_mmio_write(self.mmio_mut(), addr, 8, val) {
             return res;
         }
+        if self.is_rom_addr(addr) {
+            return Ok(());
+        }
         self.ram.write_u64(addr, val)
     }
 
     fn read_bytes(&self, addr: u64, buf: &mut [u8]) -> Result<()> {
+        // Check if the read falls within a ROM region.
+        if let Some((off, rom)) = self.find_rom(addr) {
+            let avail = rom.data.len() - off;
+            if buf.len() <= avail {
+                buf.copy_from_slice(&rom.data[off..off + buf.len()]);
+                return Ok(());
+            }
+            // Partial ROM hit — fill what we can, rest from RAM.
+            buf[..avail].copy_from_slice(&rom.data[off..]);
+            buf[avail..].fill(0xFF);
+            return Ok(());
+        }
         self.ram.read_bytes(addr, buf)
     }
 
     fn write_bytes(&mut self, addr: u64, buf: &[u8]) -> Result<()> {
-        // Bulk writes bypass MMIO for performance. Device models that need
-        // bulk writes should use their own handler interface.
+        // Writes to ROM are silently ignored.
+        if self.is_rom_addr(addr) {
+            return Ok(());
+        }
         self.ram.write_bytes(addr, buf)
     }
 }

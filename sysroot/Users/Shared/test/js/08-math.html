@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: Math Object</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">08 - Math Object</h1>
+
+<div class="test-group">
+  <h2>Math Constants and Functions</h2>
+  <div class="expected">Expected: Math constants, rounding, exponents, trigonometry, and number parsing all return correct values.</div>
+  <div class="test-area" id="results"></div>
+</div>
+
+<script>
+function test(name, fn) {
+  var resultDiv = document.getElementById('results');
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// Helper: approximate comparison for floating-point
+function approx(a, b, eps) {
+  if (eps === undefined) eps = 0.0001;
+  return Math.abs(a - b) < eps;
+}
+
+// --- Constants ---
+test('Math.PI is approximately 3.14159', function() {
+  return approx(Math.PI, 3.14159265, 0.00001);
+});
+
+test('Math.E is approximately 2.71828', function() {
+  return approx(Math.E, 2.71828182, 0.00001);
+});
+
+// --- abs, sign ---
+test('Math.abs: positive number', function() {
+  return Math.abs(5) === 5;
+});
+
+test('Math.abs: negative number', function() {
+  return Math.abs(-5) === 5;
+});
+
+test('Math.abs: zero', function() {
+  return Math.abs(0) === 0;
+});
+
+test('Math.sign: positive, negative, zero', function() {
+  return Math.sign(42) === 1 && Math.sign(-42) === -1 && Math.sign(0) === 0;
+});
+
+// --- Rounding ---
+test('Math.floor: rounds down', function() {
+  return Math.floor(4.9) === 4 && Math.floor(-4.1) === -5;
+});
+
+test('Math.ceil: rounds up', function() {
+  return Math.ceil(4.1) === 5 && Math.ceil(-4.9) === -4;
+});
+
+test('Math.round: rounds to nearest', function() {
+  return Math.round(4.5) === 5 && Math.round(4.4) === 4 && Math.round(-4.5) === -4;
+});
+
+test('Math.trunc: removes decimal part', function() {
+  return Math.trunc(4.9) === 4 && Math.trunc(-4.9) === -4;
+});
+
+// --- Exponents and roots ---
+test('Math.pow: 2^10 === 1024', function() {
+  return Math.pow(2, 10) === 1024;
+});
+
+test('Math.pow: 3^0 === 1', function() {
+  return Math.pow(3, 0) === 1;
+});
+
+test('Math.sqrt: sqrt(25) === 5', function() {
+  return Math.sqrt(25) === 5;
+});
+
+test('Math.sqrt: sqrt(2) is approximately 1.4142', function() {
+  return approx(Math.sqrt(2), 1.41421356);
+});
+
+test('Math.cbrt: cbrt(27) === 3', function() {
+  return Math.cbrt(27) === 3;
+});
+
+// --- min, max ---
+test('Math.min: returns smallest', function() {
+  return Math.min(3, 1, 4, 1, 5, 9) === 1;
+});
+
+test('Math.max: returns largest', function() {
+  return Math.max(3, 1, 4, 1, 5, 9) === 9;
+});
+
+test('Math.min with negative numbers', function() {
+  return Math.min(-5, -3, -10) === -10;
+});
+
+// --- Math.random ---
+test('Math.random: returns value between 0 and 1', function() {
+  var r = Math.random();
+  return r >= 0 && r < 1;
+});
+
+test('Math.random: multiple calls produce values in range', function() {
+  for (var i = 0; i < 20; i++) {
+    var r = Math.random();
+    if (r < 0 || r >= 1) return false;
+  }
+  return true;
+});
+
+// --- Trigonometry ---
+test('Math.sin: sin(0) === 0', function() {
+  return Math.sin(0) === 0;
+});
+
+test('Math.sin: sin(PI/2) === 1', function() {
+  return approx(Math.sin(Math.PI / 2), 1);
+});
+
+test('Math.cos: cos(0) === 1', function() {
+  return Math.cos(0) === 1;
+});
+
+test('Math.cos: cos(PI) === -1', function() {
+  return approx(Math.cos(Math.PI), -1);
+});
+
+test('Math.tan: tan(0) === 0', function() {
+  return Math.tan(0) === 0;
+});
+
+test('Math.tan: tan(PI/4) is approximately 1', function() {
+  return approx(Math.tan(Math.PI / 4), 1);
+});
+
+// --- Logarithms ---
+test('Math.log: natural log of E === 1', function() {
+  return approx(Math.log(Math.E), 1);
+});
+
+test('Math.log: log(1) === 0', function() {
+  return Math.log(1) === 0;
+});
+
+test('Math.log10: log10(100) === 2', function() {
+  return approx(Math.log10(100), 2);
+});
+
+test('Math.log2: log2(8) === 3', function() {
+  return approx(Math.log2(8), 3);
+});
+
+// --- Math.exp ---
+test('Math.exp: e^0 === 1', function() {
+  return Math.exp(0) === 1;
+});
+
+test('Math.exp: e^1 is approximately E', function() {
+  return approx(Math.exp(1), Math.E);
+});
+
+// --- parseInt, parseFloat ---
+test('parseInt: "42" === 42', function() {
+  return parseInt("42") === 42;
+});
+
+test('parseInt: "42px" === 42 (stops at non-digit)', function() {
+  return parseInt("42px") === 42;
+});
+
+test('parseInt: "0xFF" with base 16', function() {
+  return parseInt("FF", 16) === 255;
+});
+
+test('parseInt: "10" with base 2 (binary)', function() {
+  return parseInt("10", 2) === 2;
+});
+
+test('parseFloat: "3.14" === 3.14', function() {
+  return parseFloat("3.14") === 3.14;
+});
+
+test('parseFloat: "3.14abc" === 3.14', function() {
+  return parseFloat("3.14abc") === 3.14;
+});
+
+// --- isNaN, isFinite, Number.isInteger ---
+test('isNaN: NaN is NaN', function() {
+  return isNaN(NaN) === true;
+});
+
+test('isNaN: number is not NaN', function() {
+  return isNaN(42) === false;
+});
+
+test('isNaN: "hello" is NaN (global isNaN coerces)', function() {
+  return isNaN("hello") === true;
+});
+
+test('isFinite: 42 is finite', function() {
+  return isFinite(42) === true;
+});
+
+test('isFinite: Infinity is not finite', function() {
+  return isFinite(Infinity) === false;
+});
+
+test('isFinite: NaN is not finite', function() {
+  return isFinite(NaN) === false;
+});
+
+test('Number.isInteger: 42 is integer', function() {
+  return Number.isInteger(42) === true;
+});
+
+test('Number.isInteger: 3.14 is not integer', function() {
+  return Number.isInteger(3.14) === false;
+});
+
+test('Number.isInteger: 5.0 is integer', function() {
+  return Number.isInteger(5.0) === true;
+});
+</script>
+</body>
+</html>

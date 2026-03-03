@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: DOM Manipulation</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">11 - DOM Manipulation</h1>
+
+<div class="test-group">
+  <h2>Creating, Modifying, and Removing DOM Elements</h2>
+  <div class="expected">Expected: createElement, appendChild, removeChild, textContent, innerHTML, attributes, insertBefore, replaceChild, and cloneNode all function correctly.</div>
+  <div class="test-area" id="results"></div>
+</div>
+
+<!-- Sandbox area for DOM manipulation tests -->
+<div id="sandbox" style="display:none;"></div>
+
+<script>
+function test(name, fn) {
+  var resultDiv = document.getElementById('results');
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// Helper: reset sandbox
+function resetSandbox() {
+  var sb = document.getElementById('sandbox');
+  sb.innerHTML = '';
+  return sb;
+}
+
+// --- document.createElement ---
+test('createElement: creates a div', function() {
+  var div = document.createElement('div');
+  return div !== null && div.tagName === 'DIV';
+});
+
+test('createElement: creates a span', function() {
+  var span = document.createElement('span');
+  return span.tagName === 'SPAN';
+});
+
+test('createElement: creates a p', function() {
+  var p = document.createElement('p');
+  return p.tagName === 'P';
+});
+
+// --- appendChild ---
+test('appendChild: adds child to parent', function() {
+  var sb = resetSandbox();
+  var child = document.createElement('div');
+  child.textContent = 'child';
+  sb.appendChild(child);
+  return sb.children.length === 1 && sb.children[0].textContent === 'child';
+});
+
+test('appendChild: multiple children in order', function() {
+  var sb = resetSandbox();
+  for (var i = 0; i < 3; i++) {
+    var el = document.createElement('span');
+    el.textContent = 'item' + i;
+    sb.appendChild(el);
+  }
+  return sb.children.length === 3 && sb.children[0].textContent === 'item0' && sb.children[2].textContent === 'item2';
+});
+
+// --- removeChild ---
+test('removeChild: removes a child', function() {
+  var sb = resetSandbox();
+  var child = document.createElement('div');
+  child.textContent = 'to remove';
+  sb.appendChild(child);
+  sb.removeChild(child);
+  return sb.children.length === 0;
+});
+
+test('removeChild: removes correct child from multiple', function() {
+  var sb = resetSandbox();
+  var a = document.createElement('div'); a.id = 'a'; a.textContent = 'A';
+  var b = document.createElement('div'); b.id = 'b'; b.textContent = 'B';
+  var c = document.createElement('div'); c.id = 'c'; c.textContent = 'C';
+  sb.appendChild(a);
+  sb.appendChild(b);
+  sb.appendChild(c);
+  sb.removeChild(b);
+  return sb.children.length === 2 && sb.children[0].id === 'a' && sb.children[1].id === 'c';
+});
+
+// --- textContent ---
+test('textContent: set and get', function() {
+  var div = document.createElement('div');
+  div.textContent = 'Hello World';
+  return div.textContent === 'Hello World';
+});
+
+test('textContent: overwrite existing content', function() {
+  var div = document.createElement('div');
+  div.textContent = 'First';
+  div.textContent = 'Second';
+  return div.textContent === 'Second';
+});
+
+test('textContent: setting removes child elements', function() {
+  var sb = resetSandbox();
+  var child = document.createElement('span');
+  child.textContent = 'child';
+  sb.appendChild(child);
+  sb.textContent = 'plain text';
+  return sb.children.length === 0 && sb.textContent === 'plain text';
+});
+
+// --- innerHTML ---
+test('innerHTML: set HTML content', function() {
+  var sb = resetSandbox();
+  sb.innerHTML = '<span>Hello</span><span>World</span>';
+  return sb.children.length === 2 && sb.children[0].textContent === 'Hello';
+});
+
+test('innerHTML: get HTML content', function() {
+  var sb = resetSandbox();
+  var span = document.createElement('span');
+  span.textContent = 'test';
+  sb.appendChild(span);
+  var html = sb.innerHTML;
+  return html.indexOf('span') >= 0 && html.indexOf('test') >= 0;
+});
+
+test('innerHTML: overwrites existing content', function() {
+  var sb = resetSandbox();
+  sb.innerHTML = '<div>first</div>';
+  sb.innerHTML = '<p>second</p>';
+  return sb.children.length === 1 && sb.children[0].tagName === 'P';
+});
+
+// --- setAttribute / getAttribute / removeAttribute / hasAttribute ---
+test('setAttribute and getAttribute', function() {
+  var div = document.createElement('div');
+  div.setAttribute('data-value', '42');
+  return div.getAttribute('data-value') === '42';
+});
+
+test('setAttribute: overwrite attribute', function() {
+  var div = document.createElement('div');
+  div.setAttribute('title', 'old');
+  div.setAttribute('title', 'new');
+  return div.getAttribute('title') === 'new';
+});
+
+test('getAttribute: returns null for non-existent attribute', function() {
+  var div = document.createElement('div');
+  return div.getAttribute('nonexistent') === null;
+});
+
+test('hasAttribute: returns true if attribute exists', function() {
+  var div = document.createElement('div');
+  div.setAttribute('data-test', 'yes');
+  return div.hasAttribute('data-test') === true;
+});
+
+test('hasAttribute: returns false if attribute does not exist', function() {
+  var div = document.createElement('div');
+  return div.hasAttribute('nope') === false;
+});
+
+test('removeAttribute: removes the attribute', function() {
+  var div = document.createElement('div');
+  div.setAttribute('data-x', '1');
+  div.removeAttribute('data-x');
+  return div.hasAttribute('data-x') === false && div.getAttribute('data-x') === null;
+});
+
+// --- element.id, element.className ---
+test('element.id: set and get', function() {
+  var div = document.createElement('div');
+  div.id = 'my-id';
+  return div.id === 'my-id';
+});
+
+test('element.className: set and get', function() {
+  var div = document.createElement('div');
+  div.className = 'foo bar';
+  return div.className === 'foo bar';
+});
+
+// --- insertBefore ---
+test('insertBefore: inserts before reference node', function() {
+  var sb = resetSandbox();
+  var first = document.createElement('div'); first.textContent = 'first';
+  var third = document.createElement('div'); third.textContent = 'third';
+  sb.appendChild(first);
+  sb.appendChild(third);
+
+  var second = document.createElement('div'); second.textContent = 'second';
+  sb.insertBefore(second, third);
+
+  return sb.children.length === 3 &&
+         sb.children[0].textContent === 'first' &&
+         sb.children[1].textContent === 'second' &&
+         sb.children[2].textContent === 'third';
+});
+
+test('insertBefore: null reference appends to end', function() {
+  var sb = resetSandbox();
+  var first = document.createElement('div'); first.textContent = 'first';
+  sb.appendChild(first);
+
+  var last = document.createElement('div'); last.textContent = 'last';
+  sb.insertBefore(last, null);
+
+  return sb.children.length === 2 && sb.children[1].textContent === 'last';
+});
+
+// --- replaceChild ---
+test('replaceChild: replaces a child node', function() {
+  var sb = resetSandbox();
+  var old = document.createElement('div'); old.textContent = 'old';
+  sb.appendChild(old);
+
+  var replacement = document.createElement('span'); replacement.textContent = 'new';
+  sb.replaceChild(replacement, old);
+
+  return sb.children.length === 1 && sb.children[0].textContent === 'new' && sb.children[0].tagName === 'SPAN';
+});
+
+// --- cloneNode ---
+test('cloneNode(false): shallow clone', function() {
+  var original = document.createElement('div');
+  original.id = 'original';
+  original.setAttribute('data-x', '42');
+  var child = document.createElement('span');
+  original.appendChild(child);
+
+  var clone = original.cloneNode(false);
+  return clone.id === 'original' && clone.getAttribute('data-x') === '42' && clone.children.length === 0;
+});
+
+test('cloneNode(true): deep clone', function() {
+  var original = document.createElement('div');
+  var child = document.createElement('span');
+  child.textContent = 'inner';
+  original.appendChild(child);
+
+  var clone = original.cloneNode(true);
+  return clone.children.length === 1 && clone.children[0].textContent === 'inner';
+});
+
+// --- Dynamic element creation and verification ---
+test('Create, modify, and verify element dynamically', function() {
+  var sb = resetSandbox();
+  var card = document.createElement('div');
+  card.id = 'dynamic-card';
+  card.className = 'card';
+  card.setAttribute('data-index', '5');
+  card.textContent = 'Dynamic Card';
+  sb.appendChild(card);
+
+  var found = document.getElementById('dynamic-card');
+  return found !== null &&
+         found.className === 'card' &&
+         found.getAttribute('data-index') === '5' &&
+         found.textContent === 'Dynamic Card';
+});
+</script>
+</body>
+</html>

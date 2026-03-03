@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CSS Test 14: Flexbox Grow, Shrink, Basis</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: bold;
+    color: #1a1a2e;
+    border-radius: 4px;
+    height: 60px;
+    padding: 0 10px;
+    text-align: center;
+  }
+  .box-1 { background: #ff6b6b; }
+  .box-2 { background: #4ecdc4; }
+  .box-3 { background: #ffd93d; }
+  .box-4 { background: #6c5ce7; color: #e0e0e0; }
+  .box-5 { background: #a8e6cf; }
+
+  .flex-row {
+    display: flex;
+    border: 2px dashed #555;
+    padding: 5px;
+    margin-top: 10px;
+  }
+
+  .label {
+    color: #ff8b94;
+    font-size: 13px;
+    margin-top: 10px;
+    font-weight: bold;
+  }
+
+  .code {
+    font-family: monospace;
+    color: #ffd93d;
+    background: #1a1a2e;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 14: Flexbox Grow, Shrink &amp; Basis</h1>
+
+<!-- Test 1: flex-grow: 0 -->
+<div class="test-group">
+  <h2>1. flex-grow: 0 (default -- no growing)</h2>
+  <p class="expected">Expected: All boxes keep their natural content width. Remaining space in the container is empty on the right.</p>
+  <div class="test-area">
+    <div class="flex-row">
+      <div class="box box-1" style="flex-grow: 0; width: 100px;">grow: 0</div>
+      <div class="box box-2" style="flex-grow: 0; width: 100px;">grow: 0</div>
+      <div class="box box-3" style="flex-grow: 0; width: 100px;">grow: 0</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 2: flex-grow: 1 on all -->
+<div class="test-group">
+  <h2>2. flex-grow: 1 (all items grow equally)</h2>
+  <p class="expected">Expected: All three boxes expand equally to fill the container width. Each box gets 1/3 of the total space.</p>
+  <div class="test-area">
+    <div class="flex-row">
+      <div class="box box-1" style="flex-grow: 1;">grow: 1</div>
+      <div class="box box-2" style="flex-grow: 1;">grow: 1</div>
+      <div class="box box-3" style="flex-grow: 1;">grow: 1</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 3: flex-grow: 1 on one item -->
+<div class="test-group">
+  <h2>3. flex-grow: 1 on middle item only</h2>
+  <p class="expected">Expected: Box 1 and 3 stay at 100px (their set width). Box 2 expands to fill all remaining space.</p>
+  <div class="test-area">
+    <div class="flex-row">
+      <div class="box box-1" style="flex-grow: 0; width: 100px;">grow: 0<br>100px</div>
+      <div class="box box-2" style="flex-grow: 1;">grow: 1<br>(fills rest)</div>
+      <div class="box box-3" style="flex-grow: 0; width: 100px;">grow: 0<br>100px</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 4: Different flex-grow ratios -->
+<div class="test-group">
+  <h2>4. Different flex-grow ratios (1:2:1)</h2>
+  <p class="expected">Expected: Available space is divided in ratio 1:2:1. Box 2 gets twice as much extra space as box 1 or box 3. Box 2 should be noticeably wider.</p>
+  <div class="test-area">
+    <div class="flex-row">
+      <div class="box box-1" style="flex-grow: 1;">grow: 1</div>
+      <div class="box box-2" style="flex-grow: 2;">grow: 2</div>
+      <div class="box box-3" style="flex-grow: 1;">grow: 1</div>
+    </div>
+
+    <p class="label">Ratio 1:3:1:</p>
+    <div class="flex-row">
+      <div class="box box-1" style="flex-grow: 1;">grow: 1</div>
+      <div class="box box-4" style="flex-grow: 3;">grow: 3</div>
+      <div class="box box-3" style="flex-grow: 1;">grow: 1</div>
+    </div>
+
+    <p class="label">Ratio 1:1:3:</p>
+    <div class="flex-row">
+      <div class="box box-1" style="flex-grow: 1;">grow: 1</div>
+      <div class="box box-2" style="flex-grow: 1;">grow: 1</div>
+      <div class="box box-5" style="flex-grow: 3;">grow: 3</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 5: flex-shrink: 0 -->
+<div class="test-group">
+  <h2>5. flex-shrink: 0 (prevent shrinking)</h2>
+  <p class="expected">Expected: With flex-shrink: 0, items maintain their set width even if they overflow the container. The container should have horizontal overflow. Without shrink: 0, items would shrink to fit.</p>
+  <div class="test-area">
+    <p class="label">flex-shrink: 1 (default, items shrink to fit):</p>
+    <div class="flex-row" style="width: 300px;">
+      <div class="box box-1" style="width: 200px; flex-shrink: 1;">200px<br>shrink: 1</div>
+      <div class="box box-2" style="width: 200px; flex-shrink: 1;">200px<br>shrink: 1</div>
+    </div>
+
+    <p class="label">flex-shrink: 0 (items refuse to shrink, overflow):</p>
+    <div class="flex-row" style="width: 300px; overflow: visible;">
+      <div class="box box-3" style="width: 200px; flex-shrink: 0;">200px<br>shrink: 0</div>
+      <div class="box box-4" style="width: 200px; flex-shrink: 0;">200px<br>shrink: 0</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: flex-shrink ratios -->
+<div class="test-group">
+  <h2>6. Different flex-shrink ratios</h2>
+  <p class="expected">Expected: When items must shrink, higher flex-shrink values shrink more. Box 1 (shrink: 1) shrinks less than box 2 (shrink: 3), so box 2 ends up narrower.</p>
+  <div class="test-area">
+    <div class="flex-row" style="width: 400px;">
+      <div class="box box-1" style="width: 300px; flex-shrink: 1;">300px<br>shrink: 1</div>
+      <div class="box box-2" style="width: 300px; flex-shrink: 3;">300px<br>shrink: 3</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 7: flex-basis -->
+<div class="test-group">
+  <h2>7. flex-basis: explicit size vs auto</h2>
+  <p class="expected">Expected: flex-basis sets the initial size before growing/shrinking. "auto" uses the item's width/content size. "200px" starts at 200px. "0" starts at zero (only grows via flex-grow).</p>
+  <div class="test-area">
+    <p class="label">flex-basis: auto (natural content width):</p>
+    <div class="flex-row">
+      <div class="box box-1" style="flex-basis: auto;">Short</div>
+      <div class="box box-2" style="flex-basis: auto;">Medium text</div>
+      <div class="box box-3" style="flex-basis: auto;">Longer text content here</div>
+    </div>
+
+    <p class="label">flex-basis: 200px (all start at 200px):</p>
+    <div class="flex-row">
+      <div class="box box-1" style="flex-basis: 200px;">basis: 200px</div>
+      <div class="box box-2" style="flex-basis: 200px;">basis: 200px</div>
+      <div class="box box-3" style="flex-basis: 200px;">basis: 200px</div>
+    </div>
+
+    <p class="label">flex-basis: 0 + flex-grow: 1 (equal widths regardless of content):</p>
+    <div class="flex-row">
+      <div class="box box-1" style="flex-basis: 0; flex-grow: 1;">Short</div>
+      <div class="box box-2" style="flex-basis: 0; flex-grow: 1;">Medium text</div>
+      <div class="box box-3" style="flex-basis: 0; flex-grow: 1;">Longer text content here</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 8: flex shorthand -->
+<div class="test-group">
+  <h2>8. flex shorthand: <span class="code">flex: grow shrink basis</span></h2>
+  <p class="expected">Expected: flex shorthand sets grow, shrink, and basis in one property.</p>
+  <div class="test-area">
+    <p class="label"><span class="code">flex: 1</span> (equivalent to flex: 1 1 0) -- equal sizing:</p>
+    <div class="flex-row">
+      <div class="box box-1" style="flex: 1;">flex: 1</div>
+      <div class="box box-2" style="flex: 1;">flex: 1</div>
+      <div class="box box-3" style="flex: 1;">flex: 1</div>
+    </div>
+
+    <p class="label"><span class="code">flex: 0 0 auto</span> (no grow, no shrink, auto basis) -- fixed at content width:</p>
+    <div class="flex-row">
+      <div class="box box-1" style="flex: 0 0 auto; width: 120px;">0 0 auto<br>120px</div>
+      <div class="box box-2" style="flex: 0 0 auto; width: 180px;">0 0 auto<br>180px</div>
+      <div class="box box-3" style="flex: 0 0 auto; width: 80px;">0 0 auto<br>80px</div>
+    </div>
+
+    <p class="label"><span class="code">flex: 1 1 200px</span> (grow and shrink from 200px basis):</p>
+    <div class="flex-row">
+      <div class="box box-1" style="flex: 1 1 200px;">1 1 200px</div>
+      <div class="box box-2" style="flex: 1 1 200px;">1 1 200px</div>
+      <div class="box box-3" style="flex: 1 1 200px;">1 1 200px</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 9: Mixed flex values -->
+<div class="test-group">
+  <h2>9. Mixed flex values (sidebar layout pattern)</h2>
+  <p class="expected">Expected: Fixed 200px sidebar on left, flexible main content area that fills the rest, fixed 150px sidebar on right. Classic Holy Grail layout pattern.</p>
+  <div class="test-area">
+    <div class="flex-row" style="height: 150px;">
+      <div class="box box-4" style="flex: 0 0 200px;">Sidebar<br>200px fixed</div>
+      <div class="box box-2" style="flex: 1 1 auto;">Main Content<br>flex: 1 (fills remaining)</div>
+      <div class="box box-5" style="flex: 0 0 150px;">Aside<br>150px fixed</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 10: flex-grow with different basis -->
+<div class="test-group">
+  <h2>10. flex-grow with different flex-basis values</h2>
+  <p class="expected">Expected: All items have flex-grow: 1, but different starting sizes (flex-basis). Extra space is distributed equally, so the items that start larger remain larger. Box 1 starts at 100px, box 2 at 200px, box 3 at 50px.</p>
+  <div class="test-area">
+    <div class="flex-row">
+      <div class="box box-1" style="flex: 1 1 100px;">basis: 100px<br>grow: 1</div>
+      <div class="box box-2" style="flex: 1 1 200px;">basis: 200px<br>grow: 1</div>
+      <div class="box box-3" style="flex: 1 1 50px;">basis: 50px<br>grow: 1</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 11: flex: none vs flex: auto -->
+<div class="test-group">
+  <h2>11. <span class="code">flex: none</span> vs <span class="code">flex: auto</span></h2>
+  <p class="expected">Expected: flex: none (0 0 auto) makes items completely inflexible. flex: auto (1 1 auto) makes items fully flexible. The "none" items keep their content width; the "auto" items grow to fill remaining space.</p>
+  <div class="test-area">
+    <p class="label">flex: none on all (items stay at content width):</p>
+    <div class="flex-row">
+      <div class="box box-1" style="flex: none;">none</div>
+      <div class="box box-2" style="flex: none;">none (longer)</div>
+      <div class="box box-3" style="flex: none;">none</div>
+    </div>
+
+    <p class="label">flex: auto on all (items grow to share space, based on content):</p>
+    <div class="flex-row">
+      <div class="box box-1" style="flex: auto;">auto</div>
+      <div class="box box-2" style="flex: auto;">auto (longer)</div>
+      <div class="box box-3" style="flex: auto;">auto</div>
+    </div>
+
+    <p class="label">Mixed: middle is flex: auto, sides are flex: none:</p>
+    <div class="flex-row">
+      <div class="box box-1" style="flex: none; width: 100px;">none<br>100px</div>
+      <div class="box box-2" style="flex: auto;">auto (grows)</div>
+      <div class="box box-3" style="flex: none; width: 100px;">none<br>100px</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CSS Test 05: Display Property</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+    .demo-box {
+      padding: 8px 12px;
+      margin: 4px;
+      color: white;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="nav"><a href="../index.html">Index</a></div>
+  <h1 class="page-title">CSS Test 05: Display Property</h1>
+
+  <!-- Test 1: display: block -->
+  <div class="test-group">
+    <h2>Test 1: display: block</h2>
+    <div class="expected">Expected: Block elements take the full width of their container. Each block element starts on a new line and stacks vertically. Even though the text is short, the background stretches the full container width.</div>
+    <div class="test-area">
+      <div class="demo-box" style="display: block; background: #e74c3c;">display: block (1) -- full width</div>
+      <div class="demo-box" style="display: block; background: #3498db;">display: block (2) -- full width</div>
+      <div class="demo-box" style="display: block; background: #2ecc71;">display: block (3) -- full width</div>
+    </div>
+  </div>
+
+  <!-- Test 2: display: inline -->
+  <div class="test-group">
+    <h2>Test 2: display: inline</h2>
+    <div class="expected">Expected: Inline elements flow with surrounding text on the same line. They only take as much width as their content. Width and height properties are IGNORED on inline elements. The boxes should appear side by side on one line (wrapping only if the line runs out of space).</div>
+    <div class="test-area">
+      <p style="margin: 0 0 10px 0;">
+        Text before
+        <span class="demo-box" style="display: inline; background: #e74c3c;">inline (1)</span>
+        <span class="demo-box" style="display: inline; background: #3498db;">inline (2)</span>
+        <span class="demo-box" style="display: inline; background: #2ecc71;">inline (3)</span>
+        text after.
+      </p>
+      <p style="color: #aaa; font-size: 12px; margin: 5px 0 0 0;">Note: width/height on inline elements should have no effect:</p>
+      <span class="demo-box" style="display: inline; background: #9b59b6; width: 300px; height: 100px;">inline with width:300px height:100px (IGNORED)</span>
+    </div>
+  </div>
+
+  <!-- Test 3: display: inline-block -->
+  <div class="test-group">
+    <h2>Test 3: display: inline-block</h2>
+    <div class="expected">Expected: Inline-block elements flow inline (side by side) like inline elements, BUT they respect width and height. The first three boxes should appear on the same line (space permitting), each with their specified width and height.</div>
+    <div class="test-area">
+      <div class="demo-box" style="display: inline-block; background: #e74c3c; width: 150px; height: 60px;">inline-block<br>150x60</div>
+      <div class="demo-box" style="display: inline-block; background: #3498db; width: 120px; height: 80px;">inline-block<br>120x80</div>
+      <div class="demo-box" style="display: inline-block; background: #2ecc71; width: 100px; height: 50px;">inline-block<br>100x50</div>
+      <p style="color: #aaa; font-size: 12px; margin: 10px 0 0 0;">All three boxes should be on the same line, each respecting their width/height.</p>
+    </div>
+  </div>
+
+  <!-- Test 4: display: none -->
+  <div class="test-group">
+    <h2>Test 4: display: none (Hidden Element)</h2>
+    <div class="expected">Expected: Three boxes labeled 1, 2, 3. Box 2 has display: none, so it should be completely invisible and take up NO space. Box 1 and Box 3 should be adjacent with no gap where Box 2 would have been.</div>
+    <div class="test-area">
+      <div class="demo-box" style="display: block; background: #e74c3c;">Box 1 (visible)</div>
+      <div class="demo-box" style="display: none; background: #3498db;">Box 2 (display: none -- SHOULD NOT BE VISIBLE)</div>
+      <div class="demo-box" style="display: block; background: #2ecc71;">Box 3 (visible, should be immediately after Box 1)</div>
+    </div>
+  </div>
+
+  <!-- Test 5: Switching Default Display Types -->
+  <div class="test-group">
+    <h2>Test 5: Overriding Default Display Types</h2>
+    <div class="expected">Expected: A span (normally inline) forced to display: block -- should take full width and start on its own line. A div (normally block) forced to display: inline -- should flow inline with text and not take full width.</div>
+    <div class="test-area">
+      <p style="margin: 0 0 10px 0; color: #aaa; font-size: 13px;">span elements made block:</p>
+      <span class="demo-box" style="display: block; background: #e74c3c;">span with display: block (takes full width)</span>
+      <span class="demo-box" style="display: block; background: #3498db;">another span with display: block</span>
+
+      <p style="margin: 15px 0 10px 0; color: #aaa; font-size: 13px;">div elements made inline:</p>
+      <p style="margin: 0;">
+        Text before
+        <div class="demo-box" style="display: inline; background: #2ecc71;">div display: inline</div>
+        <div class="demo-box" style="display: inline; background: #f39c12;">another div display: inline</div>
+        text after.
+      </p>
+    </div>
+  </div>
+
+  <!-- Test 6: Width/Height Behavior per Display Type -->
+  <div class="test-group">
+    <h2>Test 6: Width/Height Behavior per Display Type</h2>
+    <div class="expected">Expected: Block with width:200px height:60px -- the box should be 200px wide and 60px tall. Inline with width:200px height:60px -- width and height should be IGNORED (box wraps its content). Inline-block with width:200px height:60px -- the box should be 200px wide and 60px tall, but flow inline.</div>
+    <div class="test-area">
+      <p style="color: #aaa; font-size: 13px; margin: 0 0 5px 0;">All three have: width: 200px; height: 60px</p>
+      <div class="demo-box" style="display: block; background: #e74c3c; width: 200px; height: 60px;">block (200x60 works)</div>
+      <span class="demo-box" style="display: inline; background: #3498db; width: 200px; height: 60px;">inline (200x60 ignored)</span>
+      <br><br>
+      <div class="demo-box" style="display: inline-block; background: #2ecc71; width: 200px; height: 60px;">inline-block (200x60 works)</div>
+    </div>
+  </div>
+
+  <!-- Test 7: Inline vs Block Margin/Padding -->
+  <div class="test-group">
+    <h2>Test 7: Margin and Padding Behavior by Display Type</h2>
+    <div class="expected">Expected: Block element: all margin and padding apply normally. Inline element: horizontal margin/padding work, but vertical margin has NO effect and vertical padding does not push surrounding content (it may bleed visually). Inline-block: all margin and padding work normally.</div>
+    <div class="test-area">
+      <p style="color: #aaa; font-size: 13px; margin: 0 0 5px 0;">All have: margin: 20px; padding: 15px</p>
+      <div style="border: 1px dashed #555; margin-bottom: 10px;">
+        <div class="demo-box" style="display: block; background: #e74c3c; margin: 20px; padding: 15px;">block: margin and padding fully respected</div>
+      </div>
+      <div style="border: 1px dashed #555; margin-bottom: 10px;">
+        Text before
+        <span class="demo-box" style="display: inline; background: #3498db; margin: 20px; padding: 15px;">inline: vertical margin ignored</span>
+        text after (notice vertical padding may overlap)
+      </div>
+      <div style="border: 1px dashed #555;">
+        Text before
+        <span class="demo-box" style="display: inline-block; background: #2ecc71; margin: 20px; padding: 15px;">inline-block: all margin/padding work</span>
+        text after
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 8: Multiple Inline-Blocks in a Row -->
+  <div class="test-group">
+    <h2>Test 8: Navigation Bar with Inline-Block</h2>
+    <div class="expected">Expected: A simulated navigation bar using inline-block elements. All items should appear in a horizontal row, each with consistent width and height, evenly spaced. This demonstrates the common use case of inline-block for horizontal layouts.</div>
+    <div class="test-area">
+      <div style="background: #2c3e50; padding: 5px; text-align: center;">
+        <div class="demo-box" style="display: inline-block; background: #e74c3c; width: 80px; text-align: center;">Home</div>
+        <div class="demo-box" style="display: inline-block; background: #3498db; width: 80px; text-align: center;">About</div>
+        <div class="demo-box" style="display: inline-block; background: #2ecc71; width: 80px; text-align: center;">Blog</div>
+        <div class="demo-box" style="display: inline-block; background: #f39c12; width: 80px; text-align: center;">Contact</div>
+        <div class="demo-box" style="display: inline-block; background: #9b59b6; width: 80px; text-align: center;">Help</div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

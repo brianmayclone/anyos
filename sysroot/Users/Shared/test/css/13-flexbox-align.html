@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CSS Test 13: Flexbox Alignment</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+
+  .box {
+    width: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: bold;
+    color: #1a1a2e;
+    border-radius: 4px;
+  }
+  .box-1 { background: #ff6b6b; }
+  .box-2 { background: #4ecdc4; }
+  .box-3 { background: #ffd93d; }
+  .box-4 { background: #6c5ce7; color: #e0e0e0; }
+  .box-5 { background: #a8e6cf; }
+
+  .flex-row {
+    display: flex;
+    border: 2px dashed #555;
+    padding: 5px;
+    margin-top: 10px;
+    height: 200px;
+  }
+
+  .flex-wrap-container {
+    display: flex;
+    flex-wrap: wrap;
+    border: 2px dashed #555;
+    padding: 5px;
+    margin-top: 10px;
+    width: 350px;
+    height: 350px;
+  }
+
+  .label {
+    color: #ff8b94;
+    font-size: 13px;
+    margin-top: 10px;
+    font-weight: bold;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">CSS Test 13: Flexbox Cross-Axis Alignment</h1>
+
+<!-- Test 1: align-items: stretch -->
+<div class="test-group">
+  <h2>1. align-items: stretch (default)</h2>
+  <p class="expected">Expected: All boxes stretch to fill the full 200px height of the container, regardless of their content height. This is the default behavior.</p>
+  <div class="test-area">
+    <div class="flex-row" style="align-items: stretch;">
+      <div class="box box-1" style="height: auto;">1<br>Short</div>
+      <div class="box box-2" style="height: auto;">2<br>Medium<br>Text</div>
+      <div class="box box-3" style="height: auto;">3</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 2: align-items: flex-start -->
+<div class="test-group">
+  <h2>2. align-items: flex-start</h2>
+  <p class="expected">Expected: All boxes aligned to the top of the container. Each box has its natural height based on content. Remaining vertical space is below the boxes.</p>
+  <div class="test-area">
+    <div class="flex-row" style="align-items: flex-start;">
+      <div class="box box-1" style="height: 60px;">1</div>
+      <div class="box box-2" style="height: 100px;">2</div>
+      <div class="box box-3" style="height: 40px;">3</div>
+      <div class="box box-4" style="height: 140px;">4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 3: align-items: center -->
+<div class="test-group">
+  <h2>3. align-items: center</h2>
+  <p class="expected">Expected: All boxes vertically centered in the 200px container. Each box's midpoint aligns with the container's vertical center.</p>
+  <div class="test-area">
+    <div class="flex-row" style="align-items: center;">
+      <div class="box box-1" style="height: 60px;">1</div>
+      <div class="box box-2" style="height: 100px;">2</div>
+      <div class="box box-3" style="height: 40px;">3</div>
+      <div class="box box-4" style="height: 140px;">4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 4: align-items: flex-end -->
+<div class="test-group">
+  <h2>4. align-items: flex-end</h2>
+  <p class="expected">Expected: All boxes aligned to the bottom of the container. Each box's bottom edge is flush with the container's bottom. Remaining space is above.</p>
+  <div class="test-area">
+    <div class="flex-row" style="align-items: flex-end;">
+      <div class="box box-1" style="height: 60px;">1</div>
+      <div class="box box-2" style="height: 100px;">2</div>
+      <div class="box box-3" style="height: 40px;">3</div>
+      <div class="box box-4" style="height: 140px;">4</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 5: align-items: baseline -->
+<div class="test-group">
+  <h2>5. align-items: baseline</h2>
+  <p class="expected">Expected: All boxes aligned so their text baselines match. Box 1 has large text, box 2 has small text, box 3 has medium text -- all baselines should line up horizontally.</p>
+  <div class="test-area">
+    <div class="flex-row" style="align-items: baseline;">
+      <div class="box box-1" style="height: auto; font-size: 32px; padding-top: 20px;">Aa</div>
+      <div class="box box-2" style="height: auto; font-size: 12px; padding-top: 40px;">Bb</div>
+      <div class="box box-3" style="height: auto; font-size: 22px; padding-top: 10px;">Cc</div>
+      <div class="box box-4" style="height: auto; font-size: 16px; padding-top: 60px;">Dd</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: align-self override -->
+<div class="test-group">
+  <h2>6. align-self: overriding individual items</h2>
+  <p class="expected">Expected: Container has align-items: flex-start (all boxes at top), but box 2 uses align-self: center (vertically centered), box 3 uses align-self: flex-end (at bottom), and box 4 uses align-self: stretch (full height).</p>
+  <div class="test-area">
+    <div class="flex-row" style="align-items: flex-start;">
+      <div class="box box-1" style="height: 60px;">1<br><small>start</small></div>
+      <div class="box box-2" style="height: 60px; align-self: center;">2<br><small>center</small></div>
+      <div class="box box-3" style="height: 60px; align-self: flex-end;">3<br><small>end</small></div>
+      <div class="box box-4" style="height: auto; align-self: stretch;">4<br><small>stretch</small></div>
+      <div class="box box-5" style="height: 60px;">5<br><small>start</small></div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 7: align-self with center container -->
+<div class="test-group">
+  <h2>7. align-self with centered container</h2>
+  <p class="expected">Expected: Container has align-items: center (all centered by default). Box 1 overrides to flex-start (top). Box 4 overrides to flex-end (bottom). Others remain centered.</p>
+  <div class="test-area">
+    <div class="flex-row" style="align-items: center;">
+      <div class="box box-1" style="height: 60px; align-self: flex-start;">1<br><small>top</small></div>
+      <div class="box box-2" style="height: 80px;">2<br><small>center</small></div>
+      <div class="box box-3" style="height: 50px;">3<br><small>center</small></div>
+      <div class="box box-4" style="height: 70px; align-self: flex-end;">4<br><small>bottom</small></div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 8: align-content: flex-start -->
+<div class="test-group">
+  <h2>8. align-content: flex-start (wrapped flex)</h2>
+  <p class="expected">Expected: Multiple wrapped rows are packed to the top of the 350px container. Remaining vertical space is at the bottom.</p>
+  <div class="test-area">
+    <div class="flex-wrap-container" style="align-content: flex-start;">
+      <div class="box box-1" style="height: 60px;">1</div>
+      <div class="box box-2" style="height: 60px;">2</div>
+      <div class="box box-3" style="height: 60px;">3</div>
+      <div class="box box-4" style="height: 60px;">4</div>
+      <div class="box box-5" style="height: 60px;">5</div>
+      <div class="box box-1" style="height: 60px;">6</div>
+      <div class="box box-2" style="height: 60px;">7</div>
+      <div class="box box-3" style="height: 60px;">8</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 9: align-content: center -->
+<div class="test-group">
+  <h2>9. align-content: center (wrapped flex)</h2>
+  <p class="expected">Expected: All wrapped rows are grouped together and vertically centered in the 350px container.</p>
+  <div class="test-area">
+    <div class="flex-wrap-container" style="align-content: center;">
+      <div class="box box-1" style="height: 60px;">1</div>
+      <div class="box box-2" style="height: 60px;">2</div>
+      <div class="box box-3" style="height: 60px;">3</div>
+      <div class="box box-4" style="height: 60px;">4</div>
+      <div class="box box-5" style="height: 60px;">5</div>
+      <div class="box box-1" style="height: 60px;">6</div>
+      <div class="box box-2" style="height: 60px;">7</div>
+      <div class="box box-3" style="height: 60px;">8</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 10: align-content: space-between -->
+<div class="test-group">
+  <h2>10. align-content: space-between (wrapped flex)</h2>
+  <p class="expected">Expected: First row at top, last row at bottom, remaining rows evenly spaced between them. No space above first row or below last row.</p>
+  <div class="test-area">
+    <div class="flex-wrap-container" style="align-content: space-between;">
+      <div class="box box-1" style="height: 60px;">1</div>
+      <div class="box box-2" style="height: 60px;">2</div>
+      <div class="box box-3" style="height: 60px;">3</div>
+      <div class="box box-4" style="height: 60px;">4</div>
+      <div class="box box-5" style="height: 60px;">5</div>
+      <div class="box box-1" style="height: 60px;">6</div>
+      <div class="box box-2" style="height: 60px;">7</div>
+      <div class="box box-3" style="height: 60px;">8</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 11: align-content: space-around -->
+<div class="test-group">
+  <h2>11. align-content: space-around (wrapped flex)</h2>
+  <p class="expected">Expected: Equal space around each row. Space between rows is double the space at top/bottom edges.</p>
+  <div class="test-area">
+    <div class="flex-wrap-container" style="align-content: space-around;">
+      <div class="box box-1" style="height: 60px;">1</div>
+      <div class="box box-2" style="height: 60px;">2</div>
+      <div class="box box-3" style="height: 60px;">3</div>
+      <div class="box box-4" style="height: 60px;">4</div>
+      <div class="box box-5" style="height: 60px;">5</div>
+      <div class="box box-1" style="height: 60px;">6</div>
+      <div class="box box-2" style="height: 60px;">7</div>
+      <div class="box box-3" style="height: 60px;">8</div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 12: align-content: stretch -->
+<div class="test-group">
+  <h2>12. align-content: stretch (wrapped flex)</h2>
+  <p class="expected">Expected: Rows stretch to fill the full container height. Each row is allocated an equal portion of the container height, and items within stretch to fill their row.</p>
+  <div class="test-area">
+    <div class="flex-wrap-container" style="align-content: stretch;">
+      <div class="box box-1" style="height: auto;">1</div>
+      <div class="box box-2" style="height: auto;">2</div>
+      <div class="box box-3" style="height: auto;">3</div>
+      <div class="box box-4" style="height: auto;">4</div>
+      <div class="box box-5" style="height: auto;">5</div>
+      <div class="box box-1" style="height: auto;">6</div>
+      <div class="box box-2" style="height: auto;">7</div>
+      <div class="box box-3" style="height: auto;">8</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

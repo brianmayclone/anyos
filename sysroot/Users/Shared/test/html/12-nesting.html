@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test 12: Complex Nesting</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+    h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+    .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+    .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+    .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+    .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+    /* Visual nesting helpers */
+    .nest-box { border: 1px dashed #555; padding: 10px; margin: 5px; }
+    .nest-1 { border-color: #ff6b6b; }
+    .nest-2 { border-color: #4ecdc4; }
+    .nest-3 { border-color: #ffd93d; }
+    .nest-4 { border-color: #6bff6b; }
+    .nest-5 { border-color: #c56cf0; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="../index.html">Back to Index</a>
+    <a href="11-preformatted.html">Prev: Preformatted</a>
+  </div>
+
+  <h1 class="page-title">Test 12: Complex Nesting</h1>
+
+  <!-- Test 1: Deep div nesting -->
+  <div class="test-group">
+    <h2>Test 12.1: Deeply Nested Divs</h2>
+    <div class="expected">Expected: Five levels of nested divs, each with a colored dashed border. Each level should be visually contained within its parent. Content at the deepest level should be accessible and readable.</div>
+    <div class="test-area">
+      <div class="nest-box nest-1">
+        Level 1 (red border)
+        <div class="nest-box nest-2">
+          Level 2 (teal border)
+          <div class="nest-box nest-3">
+            Level 3 (yellow border)
+            <div class="nest-box nest-4">
+              Level 4 (green border)
+              <div class="nest-box nest-5">
+                Level 5 (purple border) - Deepest level content
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 2: Inline inside block elements -->
+  <div class="test-group">
+    <h2>Test 12.2: Inline Elements Inside Block Elements</h2>
+    <div class="expected">Expected: Inline elements (span, strong, em, a, code) should render correctly inside block elements (div, p, h3, li). The inline elements should not break the flow of the block containers.</div>
+    <div class="test-area">
+      <div>
+        A div with <strong>bold</strong>, <em>italic</em>, <a href="#">link</a>, and <code>code</code>.
+      </div>
+      <p>
+        A paragraph with <span style="color: #ff6b6b;">colored span</span>, <strong><em>bold italic</em></strong>,
+        and a <a href="#"><strong>bold link</strong></a>.
+      </p>
+      <h3>
+        Heading with <code>inline code</code> and <em>emphasis</em>
+      </h3>
+      <ul>
+        <li>List item with <strong>bold</strong>, <a href="#">link</a>, <code>code</code>, and <mark>highlight</mark>.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Test 3: Block inside inline (invalid but should handle) -->
+  <div class="test-group">
+    <h2>Test 12.3: Block Inside Inline (Invalid HTML)</h2>
+    <div class="expected">Expected: Placing block elements (div, p) inside inline elements (span, em) is invalid HTML. The browser should handle this gracefully - typically by auto-closing the inline element and promoting the block element. Content should still be visible and not crash the parser.</div>
+    <div class="test-area">
+      <span>Span containing <div>a div (invalid)</div> and continuing after.</span>
+      <em>Emphasis containing <p>a paragraph (invalid)</p> and continuing.</em>
+      <strong>Strong containing <h4>a heading (invalid)</h4> and continuing.</strong>
+    </div>
+  </div>
+
+  <!-- Test 4: Deeply nested lists (3+ levels) -->
+  <div class="test-group">
+    <h2>Test 12.4: Deeply Nested Lists (4 Levels)</h2>
+    <div class="expected">Expected: Four levels of nested lists. Each level should be further indented. Unordered lists should change marker style at each level (disc, circle, square). All items at all levels should be readable.</div>
+    <div class="test-area">
+      <ul>
+        <li>Level 1 - Item A
+          <ul>
+            <li>Level 2 - Item A.1
+              <ul>
+                <li>Level 3 - Item A.1.a
+                  <ul>
+                    <li>Level 4 - Item A.1.a.i</li>
+                    <li>Level 4 - Item A.1.a.ii</li>
+                  </ul>
+                </li>
+                <li>Level 3 - Item A.1.b</li>
+              </ul>
+            </li>
+            <li>Level 2 - Item A.2</li>
+          </ul>
+        </li>
+        <li>Level 1 - Item B
+          <ol>
+            <li>Level 2 - Ordered 1
+              <ol>
+                <li>Level 3 - Ordered 1.1
+                  <ol>
+                    <li>Level 4 - Ordered 1.1.1</li>
+                    <li>Level 4 - Ordered 1.1.2</li>
+                  </ol>
+                </li>
+              </ol>
+            </li>
+            <li>Level 2 - Ordered 2</li>
+          </ol>
+        </li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Test 5: List containing table -->
+  <div class="test-group">
+    <h2>Test 12.5: Lists Containing Tables</h2>
+    <div class="expected">Expected: A table inside a list item should render completely within that list item. The table should have its own borders and layout. The list marker should align with the start of the table.</div>
+    <div class="test-area">
+      <ol>
+        <li>
+          <p>First item with a data table:</p>
+          <table style="border-collapse: collapse;">
+            <tr>
+              <th style="border: 1px solid #555; padding: 4px 8px; background: #1a1a3e; color: #4ecdc4;">Key</th>
+              <th style="border: 1px solid #555; padding: 4px 8px; background: #1a1a3e; color: #4ecdc4;">Value</th>
+            </tr>
+            <tr>
+              <td style="border: 1px solid #555; padding: 4px 8px;">Name</td>
+              <td style="border: 1px solid #555; padding: 4px 8px;">anyOS</td>
+            </tr>
+            <tr>
+              <td style="border: 1px solid #555; padding: 4px 8px;">Language</td>
+              <td style="border: 1px solid #555; padding: 4px 8px;">Rust</td>
+            </tr>
+          </table>
+        </li>
+        <li>Second item (simple text after the table-containing item).</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- Test 6: Table containing lists -->
+  <div class="test-group">
+    <h2>Test 12.6: Tables Containing Lists</h2>
+    <div class="expected">Expected: Lists inside table cells should render with bullets/numbers and indentation, contained within the cell boundaries. The table layout should accommodate the list content.</div>
+    <div class="test-area">
+      <table style="border-collapse: collapse; width: 100%;">
+        <tr>
+          <th style="border: 1px solid #555; padding: 8px; background: #1a1a3e; color: #4ecdc4;">Category</th>
+          <th style="border: 1px solid #555; padding: 8px; background: #1a1a3e; color: #4ecdc4;">Items</th>
+        </tr>
+        <tr>
+          <td style="border: 1px solid #555; padding: 8px; vertical-align: top;">Fruits</td>
+          <td style="border: 1px solid #555; padding: 8px;">
+            <ul>
+              <li>Apple</li>
+              <li>Banana</li>
+              <li>Cherry</li>
+            </ul>
+          </td>
+        </tr>
+        <tr>
+          <td style="border: 1px solid #555; padding: 8px; vertical-align: top;">Steps</td>
+          <td style="border: 1px solid #555; padding: 8px;">
+            <ol>
+              <li>Preheat oven</li>
+              <li>Mix ingredients</li>
+              <li>Bake for 30 minutes</li>
+            </ol>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test 7: Mixed nesting patterns -->
+  <div class="test-group">
+    <h2>Test 12.7: Mixed Nesting (div + p + ul + blockquote)</h2>
+    <div class="expected">Expected: A complex mixture of block elements nested together. Each element should maintain its own rendering behavior (blockquote indented, list with bullets, paragraphs with margins) while being properly contained within parent elements.</div>
+    <div class="test-area">
+      <div class="nest-box nest-1">
+        <h3>Section Title</h3>
+        <p>Introductory paragraph.</p>
+        <blockquote>
+          <p>A relevant quotation:</p>
+          <ul>
+            <li>Point one from the quote
+              <blockquote>
+                <p>Sub-quote within the list item within the blockquote.</p>
+              </blockquote>
+            </li>
+            <li>Point two from the quote</li>
+          </ul>
+        </blockquote>
+        <p>Concluding paragraph after the blockquote.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test 8: Inline nesting depth -->
+  <div class="test-group">
+    <h2>Test 12.8: Deep Inline Nesting</h2>
+    <div class="expected">Expected: Multiple levels of inline element nesting. All styles should combine: bold + italic + underline + strikethrough + color. The deepest nested text should show all accumulated styles.</div>
+    <div class="test-area">
+      <p>
+        Normal text,
+        <strong>bold,
+          <em>bold italic,
+            <u>bold italic underline,
+              <s>bold italic underline strikethrough,
+                <code>bold italic underline strikethrough code,
+                  <span style="color: #ff6b6b;">and red!</span>
+                </code>
+              </s>
+            </u>
+          </em>
+        </strong>
+        back to normal.
+      </p>
+    </div>
+  </div>
+
+  <!-- Test 9: Form inside table inside list -->
+  <div class="test-group">
+    <h2>Test 12.9: Form Inside Table Inside List</h2>
+    <div class="expected">Expected: Three levels of nesting (list > table > form elements). All form controls should be functional inside the table cells, which are inside a list item. Layout should not break at any level.</div>
+    <div class="test-area">
+      <ul>
+        <li>
+          <p>User registration form (nested in a list item and table):</p>
+          <table style="border-collapse: collapse;">
+            <tr>
+              <td style="border: 1px solid #555; padding: 8px;">
+                <label>Name:</label>
+              </td>
+              <td style="border: 1px solid #555; padding: 8px;">
+                <input type="text" placeholder="Your name">
+              </td>
+            </tr>
+            <tr>
+              <td style="border: 1px solid #555; padding: 8px;">
+                <label>Role:</label>
+              </td>
+              <td style="border: 1px solid #555; padding: 8px;">
+                <select>
+                  <option>Developer</option>
+                  <option>Designer</option>
+                  <option>Manager</option>
+                </select>
+              </td>
+            </tr>
+            <tr>
+              <td style="border: 1px solid #555; padding: 8px;">
+                <label>Agree:</label>
+              </td>
+              <td style="border: 1px solid #555; padding: 8px;">
+                <input type="checkbox"> I accept the terms
+              </td>
+            </tr>
+          </table>
+        </li>
+        <li>Next list item after the form table.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Test 10: Semantic elements nesting -->
+  <div class="test-group">
+    <h2>Test 12.10: Semantic Elements Nesting</h2>
+    <div class="expected">Expected: HTML5 semantic elements nested within each other (article > section > aside, etc.). Each should render as a block element. The nesting should not cause rendering issues.</div>
+    <div class="test-area">
+      <article class="nest-box nest-1">
+        <header>
+          <h3>Article: Deep Nesting Test</h3>
+        </header>
+        <section class="nest-box nest-2">
+          <h4>Section 1</h4>
+          <p>Content with an aside:</p>
+          <aside class="nest-box nest-3">
+            <p>This aside is inside a section inside an article.</p>
+            <figure class="nest-box nest-4">
+              <pre>Code inside figure inside aside inside section inside article</pre>
+              <figcaption>Figure caption at nesting level 4.</figcaption>
+            </figure>
+          </aside>
+        </section>
+        <section class="nest-box nest-2">
+          <h4>Section 2</h4>
+          <details>
+            <summary>Expandable within section within article</summary>
+            <div class="nest-box nest-3">
+              <p>Details content with another level of nesting.</p>
+              <blockquote class="nest-box nest-4">
+                <p>A blockquote inside details inside section inside article.</p>
+              </blockquote>
+            </div>
+          </details>
+        </section>
+        <footer>
+          <p><small>Article footer</small></p>
+        </footer>
+      </article>
+    </div>
+  </div>
+
+  <!-- Test 11: Stress test - many sibling elements -->
+  <div class="test-group">
+    <h2>Test 12.11: Many Sibling Elements</h2>
+    <div class="expected">Expected: A large number of sibling elements (20+ paragraphs) should render without performance issues. Vertical spacing should remain consistent. The browser should not slow down or crash with many DOM nodes.</div>
+    <div class="test-area">
+      <p>Paragraph 1 of 20.</p>
+      <p>Paragraph 2 of 20.</p>
+      <p>Paragraph 3 of 20.</p>
+      <p>Paragraph 4 of 20.</p>
+      <p>Paragraph 5 of 20.</p>
+      <p>Paragraph 6 of 20.</p>
+      <p>Paragraph 7 of 20.</p>
+      <p>Paragraph 8 of 20.</p>
+      <p>Paragraph 9 of 20.</p>
+      <p>Paragraph 10 of 20.</p>
+      <p>Paragraph 11 of 20.</p>
+      <p>Paragraph 12 of 20.</p>
+      <p>Paragraph 13 of 20.</p>
+      <p>Paragraph 14 of 20.</p>
+      <p>Paragraph 15 of 20.</p>
+      <p>Paragraph 16 of 20.</p>
+      <p>Paragraph 17 of 20.</p>
+      <p>Paragraph 18 of 20.</p>
+      <p>Paragraph 19 of 20.</p>
+      <p>Paragraph 20 of 20.</p>
+    </div>
+  </div>
+
+  <!-- Test 12: Everything combined -->
+  <div class="test-group">
+    <h2>Test 12.12: Kitchen Sink - Everything Combined</h2>
+    <div class="expected">Expected: A comprehensive nesting test combining headings, paragraphs, lists, tables, blockquotes, code blocks, links, images, and inline formatting all nested together. The page should render without errors.</div>
+    <div class="test-area">
+      <div class="nest-box nest-1">
+        <h3>Project Summary</h3>
+        <p>This is a <strong>complex test</strong> that combines <em>many</em> HTML elements:</p>
+
+        <blockquote>
+          <p>Key features of the <a href="#">project</a>:</p>
+          <ul>
+            <li><strong>Performance</strong> - Optimized for speed
+              <table style="border-collapse: collapse; margin: 5px 0;">
+                <tr>
+                  <th style="border: 1px solid #555; padding: 4px 8px; background: #1a1a3e; color: #4ecdc4;">Metric</th>
+                  <th style="border: 1px solid #555; padding: 4px 8px; background: #1a1a3e; color: #4ecdc4;">Value</th>
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #555; padding: 4px 8px;">Latency</td>
+                  <td style="border: 1px solid #555; padding: 4px 8px;">&lt; 1ms</td>
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #555; padding: 4px 8px;">Throughput</td>
+                  <td style="border: 1px solid #555; padding: 4px 8px;">10K req/s</td>
+                </tr>
+              </table>
+            </li>
+            <li><em>Reliability</em> - Built with <code>Rust</code>
+              <blockquote>
+                <p>Memory safety without garbage collection &mdash; <cite>Rust Documentation</cite></p>
+              </blockquote>
+            </li>
+            <li><u>Extensibility</u> - Plugin architecture
+              <ol>
+                <li>Define interface</li>
+                <li>Implement plugin</li>
+                <li>Register &amp; load</li>
+              </ol>
+            </li>
+          </ul>
+        </blockquote>
+
+        <p>Sample code:</p>
+<pre><code>fn process(data: &amp;[u8]) -&gt; Result&lt;Output, Error&gt; {
+    let parsed = parse(data)?;
+    Ok(transform(parsed))
+}</code></pre>
+
+        <p>For more details, see the <a href="01-headings.html">heading tests</a> and <a href="07-tables.html">table tests</a>.</p>
+
+        <figure>
+          <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVQIW2Ng+M/wnwEIGBgAF2AC/RGrGN0AAAAASUVORK5CYII=" width="80" height="80" alt="Project logo placeholder">
+          <figcaption>Figure: Project logo (placeholder)</figcaption>
+        </figure>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JS Test: Error Handling</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; margin: 0; padding: 20px; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: #4ecdc4; text-decoration: none; margin-right: 15px; }
+  h1.page-title { color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px; }
+  .test-group { margin: 20px 0; padding: 15px; border: 1px solid #333; border-radius: 8px; background: #16213e; }
+  .test-group h2 { color: #4ecdc4; margin-top: 0; font-size: 18px; }
+  .expected { color: #6bff6b; font-style: italic; font-size: 14px; margin-bottom: 10px; padding: 8px; background: #1a2a1a; border-radius: 4px; }
+  .test-area { padding: 10px; background: #0f3460; border-radius: 4px; }
+  .pass { color: #6bff6b; font-weight: bold; }
+  .fail { color: #ff6b6b; font-weight: bold; }
+  .result { margin: 5px 0; padding: 5px 10px; border-left: 3px solid #333; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../index.html">Index</a></div>
+<h1 class="page-title">17 - Error Handling</h1>
+
+<div class="test-group">
+  <h2>try/catch/finally and Error Types</h2>
+  <div class="expected">Expected: try/catch catches errors, finally always runs, throw creates errors, and various error types are detectable.</div>
+  <div class="test-area" id="results"></div>
+</div>
+
+<script>
+function test(name, fn) {
+  var resultDiv = document.getElementById('results');
+  var div = document.createElement('div');
+  div.className = 'result';
+  try {
+    var result = fn();
+    if (result === true) {
+      div.innerHTML = '<span class="pass">PASS</span> - ' + name;
+      div.style.borderLeftColor = '#6bff6b';
+    } else {
+      div.innerHTML = '<span class="fail">FAIL</span> - ' + name + ' (got: ' + result + ')';
+      div.style.borderLeftColor = '#ff6b6b';
+    }
+  } catch(e) {
+    div.innerHTML = '<span class="fail">ERROR</span> - ' + name + ': ' + e;
+    div.style.borderLeftColor = '#ff6b6b';
+  }
+  resultDiv.appendChild(div);
+}
+
+// --- try/catch basic ---
+test('try/catch: catches thrown error', function() {
+  var caught = false;
+  try {
+    throw new Error('test error');
+  } catch(e) {
+    caught = true;
+  }
+  return caught;
+});
+
+test('try/catch: no error means catch is skipped', function() {
+  var caught = false;
+  try {
+    var x = 42;
+  } catch(e) {
+    caught = true;
+  }
+  return caught === false;
+});
+
+// --- Error message ---
+test('catch(e): error has message property', function() {
+  try {
+    throw new Error('hello error');
+  } catch(e) {
+    return e.message === 'hello error';
+  }
+  return false;
+});
+
+test('Error: name property', function() {
+  try {
+    throw new Error('test');
+  } catch(e) {
+    return e.name === 'Error';
+  }
+  return false;
+});
+
+// --- try/catch/finally ---
+test('try/catch/finally: finally runs after try', function() {
+  var finallyRan = false;
+  try {
+    var x = 1;
+  } catch(e) {
+    // skip
+  } finally {
+    finallyRan = true;
+  }
+  return finallyRan;
+});
+
+test('try/catch/finally: finally runs after catch', function() {
+  var finallyRan = false;
+  try {
+    throw new Error('oops');
+  } catch(e) {
+    // caught
+  } finally {
+    finallyRan = true;
+  }
+  return finallyRan;
+});
+
+test('try/finally: finally runs even without catch', function() {
+  var finallyRan = false;
+  try {
+    var x = 42;
+  } finally {
+    finallyRan = true;
+  }
+  return finallyRan;
+});
+
+test('finally: runs even when error is thrown and caught', function() {
+  var order = '';
+  try {
+    order += 'try,';
+    throw new Error('err');
+  } catch(e) {
+    order += 'catch,';
+  } finally {
+    order += 'finally';
+  }
+  return order === 'try,catch,finally';
+});
+
+// --- throw ---
+test('throw new Error: creates Error object', function() {
+  try {
+    throw new Error('custom message');
+  } catch(e) {
+    return e instanceof Error && e.message === 'custom message';
+  }
+  return false;
+});
+
+test('throw string: can throw non-Error values', function() {
+  try {
+    throw 'a string error';
+  } catch(e) {
+    return e === 'a string error';
+  }
+  return false;
+});
+
+test('throw number: can throw numbers', function() {
+  try {
+    throw 404;
+  } catch(e) {
+    return e === 404;
+  }
+  return false;
+});
+
+test('throw object: can throw plain objects', function() {
+  try {
+    throw { code: 'ERR', detail: 'something broke' };
+  } catch(e) {
+    return e.code === 'ERR' && e.detail === 'something broke';
+  }
+  return false;
+});
+
+// --- TypeError ---
+test('TypeError: calling non-function', function() {
+  try {
+    var x = 42;
+    x();
+  } catch(e) {
+    return e instanceof TypeError || e.name === 'TypeError';
+  }
+  return false;
+});
+
+test('TypeError: accessing property of null', function() {
+  try {
+    var x = null;
+    var y = x.prop;
+  } catch(e) {
+    return e instanceof TypeError || e.name === 'TypeError';
+  }
+  return false;
+});
+
+test('TypeError: accessing property of undefined', function() {
+  try {
+    var x = undefined;
+    var y = x.prop;
+  } catch(e) {
+    return e instanceof TypeError || e.name === 'TypeError';
+  }
+  return false;
+});
+
+// --- ReferenceError ---
+test('ReferenceError: undefined variable', function() {
+  try {
+    var y = thisVariableDoesNotExist_xyz;
+  } catch(e) {
+    return e instanceof ReferenceError || e.name === 'ReferenceError';
+  }
+  return false;
+});
+
+// --- SyntaxError from eval ---
+test('SyntaxError: from eval of bad code', function() {
+  try {
+    eval('if (');
+  } catch(e) {
+    return e instanceof SyntaxError || e.name === 'SyntaxError';
+  }
+  return false;
+});
+
+// --- Errors in callbacks ---
+test('Error in callback caught by outer try/catch', function() {
+  function riskyCallback() {
+    throw new Error('callback error');
+  }
+  var caught = false;
+  try {
+    riskyCallback();
+  } catch(e) {
+    caught = e.message === 'callback error';
+  }
+  return caught;
+});
+
+// --- Division by zero ---
+test('Division by zero: produces Infinity, not an error', function() {
+  var result = 1 / 0;
+  return result === Infinity;
+});
+
+test('Division by zero: negative produces -Infinity', function() {
+  return (-1 / 0) === -Infinity;
+});
+
+test('Division by zero: 0/0 produces NaN', function() {
+  return isNaN(0 / 0);
+});
+
+// --- Access undefined property ---
+test('Accessing undefined property: returns undefined (no error)', function() {
+  var obj = { a: 1 };
+  return obj.b === undefined;
+});
+
+test('Accessing nested undefined property: throws TypeError', function() {
+  try {
+    var obj = { a: 1 };
+    var x = obj.b.c;
+  } catch(e) {
+    return e instanceof TypeError || e.name === 'TypeError';
+  }
+  return false;
+});
+
+// --- Re-throwing ---
+test('Re-throw: catch and re-throw preserves error', function() {
+  try {
+    try {
+      throw new Error('original');
+    } catch(e) {
+      throw e;
+    }
+  } catch(e2) {
+    return e2.message === 'original';
+  }
+  return false;
+});
+
+// --- Error constructor properties ---
+test('new Error() has correct properties', function() {
+  var e = new Error('test message');
+  return e.message === 'test message' && e.name === 'Error' && e instanceof Error;
+});
+
+// --- Nested try/catch ---
+test('Nested try/catch: inner catches first', function() {
+  var innerCaught = false;
+  var outerCaught = false;
+  try {
+    try {
+      throw new Error('inner');
+    } catch(e) {
+      innerCaught = true;
+    }
+  } catch(e) {
+    outerCaught = true;
+  }
+  return innerCaught === true && outerCaught === false;
+});
+
+test('Nested try/catch: uncaught inner propagates to outer', function() {
+  var outerCaught = false;
+  try {
+    try {
+      throw new Error('propagate');
+    } finally {
+      // finally runs but does not catch
+    }
+  } catch(e) {
+    outerCaught = e.message === 'propagate';
+  }
+  return outerCaught;
+});
+</script>
+</body>
+</html>
