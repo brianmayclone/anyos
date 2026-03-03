@@ -223,7 +223,16 @@ impl<'a> Session<'a> {
             }
             "SYST" => { self.reply("215", "UNIX Type: L8"); return false; }
             "FEAT" => {
-                self.send_raw(b"211-Features:\r\n SIZE\r\n PASV\r\n EPSV\r\n UTF8\r\n211 End\r\n");
+                self.send_raw(b"211-Features:\r\n SIZE\r\n MDTM\r\n MLSD\r\n PASV\r\n EPSV\r\n EPRT\r\n REST STREAM\r\n UTF8\r\n211 End\r\n");
+                return false;
+            }
+            "OPTS" => {
+                // OPTS UTF8 ON — acknowledge UTF-8 support
+                if arg.eq_ignore_ascii_case("UTF8 ON") || arg.eq_ignore_ascii_case("UTF-8 ON") {
+                    self.reply("200", "UTF-8 enabled.");
+                } else {
+                    self.reply("501", "Unknown option.");
+                }
                 return false;
             }
             "NOOP" => { self.reply("200", "NOOP ok."); return false; }
@@ -264,7 +273,11 @@ impl<'a> Session<'a> {
             "RNFR" => self.cmd_rnfr(arg),
             "RNTO" => self.cmd_rnto(arg),
             "SIZE" => self.cmd_size(arg),
-            "MDTM" => { self.reply("213", "19700101000000"); }
+            "MDTM" => self.cmd_mdtm(arg),
+            "MLSD" => self.cmd_mlsd_auto(arg),
+            "MLST" => self.cmd_mlst(arg),
+            "EPRT" => self.cmd_eprt_list(arg),
+            "REST" => { self.reply("350", "Restart position accepted."); }
             "ABOR" => { self.reply("226", "ABOR ok."); }
             _ => { self.reply("502", "Command not implemented."); }
         }
@@ -380,6 +393,7 @@ impl<'a> Session<'a> {
         let (cmd, arg) = split_cmd_owned(&next);
         match cmd.as_str() {
             "LIST" | "NLST" => self.do_list_pasv(listener, &arg),
+            "MLSD"          => self.do_mlsd_pasv(listener, &arg),
             "RETR"          => self.do_retr_pasv(listener, &arg),
             "STOR" | "STOU" => self.do_stor_pasv(listener, &arg),
             _ => {
@@ -449,6 +463,7 @@ impl<'a> Session<'a> {
         let (cmd, arg) = split_cmd_owned(&next);
         match cmd.as_str() {
             "LIST" | "NLST" => self.do_list_pasv(listener, &arg),
+            "MLSD"          => self.do_mlsd_pasv(listener, &arg),
             "RETR"          => self.do_retr_pasv(listener, &arg),
             "STOR" | "STOU" => self.do_stor_pasv(listener, &arg),
             _ => {
@@ -497,6 +512,7 @@ impl<'a> Session<'a> {
         }
         match cmd.as_str() {
             "LIST" | "NLST" => self.do_list(data_sock, &darg),
+            "MLSD"          => self.do_mlsd(data_sock, &darg),
             "RETR" => self.do_retr(data_sock, &darg),
             "STOR" | "STOU" => self.do_stor(data_sock, &darg),
             _ => {
@@ -612,8 +628,8 @@ impl<'a> Session<'a> {
             self.reply("550", "No such file.");
             return;
         }
-        // stat_buf[3] = file size (low 32 bits)
-        let size = stat_buf[3];
+        // stat_buf[1] = file size (low 32 bits)
+        let size = stat_buf[1];
         let mut buf = [0u8; 12];
         let s = fmt_u32(size, &mut buf);
         self.reply("213", core::str::from_utf8(s).unwrap_or("0"));
@@ -785,9 +801,11 @@ impl<'a> Session<'a> {
                 Ok(n) => n, Err(_) => continue,
             };
             if name.is_empty() { break; }
-            if entry_type == 2 {
+            if entry_type == 1 {
+                // Directory (type 1)
                 output.extend_from_slice(b"drwxr-xr-x  1 ftp  ftp          0 Jan 01 00:00 ");
             } else {
+                // File (type 0) or device (type 2)
                 output.extend_from_slice(b"-rw-r--r--  1 ftp  ftp  ");
                 let mut size_buf = [0u8; 12];
                 let s = fmt_u32(size, &mut size_buf);
@@ -880,6 +898,177 @@ impl<'a> Session<'a> {
         net::tcp_close(data_sock);
         self.reply("226", "Transfer complete.");
         self.log_info(&alloc::format!("upload: {} ({} bytes)", abs, total));
+    }
+
+    // ── MDTM — file modification time (RFC 3659) ────────────────────────────
+
+    fn cmd_mdtm(&mut self, arg: &str) {
+        let path = self.resolve_path(arg);
+        if !self.can_access(&path, false) {
+            self.reply("550", "Permission denied.");
+            return;
+        }
+        let mut stat_buf = [0u32; 7];
+        if fs::stat(&path, &mut stat_buf) == u32::MAX {
+            self.reply("550", "No such file.");
+            return;
+        }
+        // stat_buf[6] = mtime (unix timestamp)
+        let ts = format_mdtm_timestamp(stat_buf[6]);
+        self.reply("213", &ts);
+    }
+
+    // ── MLST — single entry info on control connection (RFC 3659) ─────────
+
+    fn cmd_mlst(&mut self, arg: &str) {
+        let path = if arg.is_empty() {
+            String::from(self.cwd_str())
+        } else {
+            self.resolve_path(arg)
+        };
+        if !self.can_access(&path, false) {
+            self.reply("550", "Permission denied.");
+            return;
+        }
+        let mut stat_buf = [0u32; 7];
+        if fs::stat(&path, &mut stat_buf) == u32::MAX {
+            self.reply("550", "No such file.");
+            return;
+        }
+        let name = path.rsplit('/').next().unwrap_or(&path);
+        let entry = format_mlsd_entry(name, stat_buf[0], stat_buf[1], stat_buf[6]);
+        let mut resp = String::from("250-Begin\r\n ");
+        resp.push_str(&entry);
+        resp.push_str("\r\n250 End\r\n");
+        self.send_raw(resp.as_bytes());
+    }
+
+    // ── MLSD — machine-readable directory listing (RFC 3659) ──────────────
+
+    fn cmd_mlsd_auto(&mut self, _arg: &str) {
+        self.reply("425", "Use PORT or PASV first.");
+    }
+
+    fn do_mlsd(&mut self, data_sock: u32, arg: &str) {
+        let dir = if arg.is_empty() {
+            String::from(self.cwd_str())
+        } else {
+            self.resolve_path(arg)
+        };
+        if !self.can_access(&dir, false) {
+            self.reply("550", "Permission denied.");
+            net::tcp_close(data_sock);
+            return;
+        }
+        self.reply("150", "Opening data connection for MLSD.");
+        let output = self.build_mlsd_output(&dir);
+        net::tcp_send(data_sock, &output);
+        net::tcp_close(data_sock);
+        self.reply("226", "Transfer complete.");
+    }
+
+    fn do_mlsd_pasv(&mut self, listener: u32, arg: &str) {
+        let dir = if arg.is_empty() {
+            String::from(self.cwd_str())
+        } else {
+            self.resolve_path(arg)
+        };
+        if !self.can_access(&dir, false) {
+            net::tcp_close(listener);
+            self.reply("550", "Permission denied.");
+            return;
+        }
+        self.reply("150", "Opening data connection for MLSD.");
+        let data_sock = self.accept_pasv_listener(listener);
+        if data_sock == u32::MAX { return; }
+        let output = self.build_mlsd_output(&dir);
+        net::tcp_send(data_sock, &output);
+        net::tcp_close(data_sock);
+        self.reply("226", "Transfer complete.");
+    }
+
+    /// Build MLSD output for a directory.
+    /// Format per RFC 3659: "type=<type>;size=<n>;modify=<ts>; <name>\r\n"
+    fn build_mlsd_output(&self, dir: &str) -> Vec<u8> {
+        let mut output: Vec<u8> = Vec::new();
+
+        // Current directory entry
+        output.extend_from_slice(b"type=cdir;modify=19700101000000; .\r\n");
+        // Parent directory entry
+        output.extend_from_slice(b"type=pdir;modify=19700101000000; ..\r\n");
+
+        let mut dir_buf = [0u8; 64 * 256];
+        let count = fs::readdir(dir, &mut dir_buf);
+        if count == u32::MAX { return output; }
+
+        for i in 0..count as usize {
+            let entry_offset = i * 64;
+            if entry_offset + 8 > dir_buf.len() { break; }
+            let entry_type = dir_buf[entry_offset];
+            let name_len = dir_buf[entry_offset + 1] as usize;
+            if name_len == 0 || name_len > 56 { break; }
+            if entry_offset + 8 + name_len > dir_buf.len() { break; }
+            let size = u32::from_le_bytes([
+                dir_buf[entry_offset + 4], dir_buf[entry_offset + 5],
+                dir_buf[entry_offset + 6], dir_buf[entry_offset + 7],
+            ]);
+            let name = match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len]) {
+                Ok(n) => n, Err(_) => continue,
+            };
+            if name.is_empty() { break; }
+
+            // Get mtime via stat for each entry
+            let mut child_path = String::from(dir);
+            if !child_path.ends_with('/') { child_path.push('/'); }
+            child_path.push_str(name);
+            let mut st = [0u32; 7];
+            let mtime = if fs::stat(&child_path, &mut st) != u32::MAX { st[6] } else { 0 };
+
+            let entry = format_mlsd_entry(name, entry_type as u32, size, mtime);
+            output.extend_from_slice(entry.as_bytes());
+            output.push(b'\r');
+            output.push(b'\n');
+        }
+        output
+    }
+
+    // ── EPRT — Extended PORT (RFC 2428) ───────────────────────────────────
+
+    fn cmd_eprt_list(&mut self, arg: &str) {
+        // Format: EPRT |<net-prt>|<net-addr>|<tcp-port>|
+        // Example: EPRT |1|192.168.1.2|50000|
+        let (ip, port) = match parse_eprt_arg(arg) {
+            Some(v) => v,
+            None => { self.reply("501", "Syntax error in EPRT."); return; }
+        };
+        // Loopback fix (same as PORT)
+        let connect_ip = if ip[0] == 127 || ip == [0, 0, 0, 0] {
+            self.remote_ip
+        } else {
+            ip
+        };
+        self.log_info(&alloc::format!(
+            "eprt: connecting to {}.{}.{}.{}:{}",
+            connect_ip[0], connect_ip[1], connect_ip[2], connect_ip[3], port
+        ));
+        self.reply("200", "EPRT command successful.");
+        let next = self.read_one_command();
+        let (cmd, darg) = split_cmd_owned(&next);
+        let data_sock = net::tcp_connect(&connect_ip, port, 5000);
+        if data_sock == u32::MAX {
+            self.reply("425", "Can't open data connection.");
+            return;
+        }
+        match cmd.as_str() {
+            "LIST" | "NLST" => self.do_list(data_sock, &darg),
+            "MLSD"          => self.do_mlsd(data_sock, &darg),
+            "RETR" => self.do_retr(data_sock, &darg),
+            "STOR" | "STOU" => self.do_stor(data_sock, &darg),
+            _ => {
+                net::tcp_close(data_sock);
+                self.reply("503", "Bad sequence of commands.");
+            }
+        }
     }
 
     /// Read exactly one complete FTP command line from the control socket.
@@ -1007,4 +1196,142 @@ fn fmt_u32(mut v: u32, buf: &mut [u8]) -> &[u8] {
     let mut i = buf.len();
     while v > 0 && i > 0 { i -= 1; buf[i] = b'0' + (v % 10) as u8; v /= 10; }
     &buf[i..]
+}
+
+/// Convert a Unix timestamp to MDTM format: "YYYYMMDDHHmmSS".
+fn format_mdtm_timestamp(ts: u32) -> String {
+    if ts == 0 {
+        return String::from("19700101000000");
+    }
+    // Simple UTC breakdown (no leap seconds, assumes Unix epoch)
+    let mut secs = ts;
+    let sec = secs % 60; secs /= 60;
+    let min = secs % 60; secs /= 60;
+    let hour = secs % 24; secs /= 24;
+    // Days since epoch → year/month/day
+    let mut days = secs;
+    let mut year = 1970u32;
+    loop {
+        let days_in_year = if is_leap(year) { 366 } else { 365 };
+        if days < days_in_year { break; }
+        days -= days_in_year;
+        year += 1;
+    }
+    let leap = is_leap(year);
+    let months: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 0u32;
+    for m in 0..12 {
+        if days < months[m] { month = m as u32; break; }
+        days -= months[m];
+        if m == 11 { month = 11; }
+    }
+    let day = days + 1;
+    month += 1;
+
+    let mut s = String::with_capacity(14);
+    push_pad4(&mut s, year);
+    push_pad2(&mut s, month);
+    push_pad2(&mut s, day);
+    push_pad2(&mut s, hour);
+    push_pad2(&mut s, min);
+    push_pad2(&mut s, sec);
+    s
+}
+
+fn is_leap(y: u32) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+}
+
+fn push_pad2(s: &mut String, v: u32) {
+    if v < 10 { s.push('0'); }
+    let mut buf = [0u8; 4];
+    let slice = fmt_u32(v, &mut buf);
+    s.push_str(core::str::from_utf8(slice).unwrap_or("0"));
+}
+
+fn push_pad4(s: &mut String, v: u32) {
+    if v < 1000 { s.push('0'); }
+    if v < 100 { s.push('0'); }
+    if v < 10 { s.push('0'); }
+    let mut buf = [0u8; 6];
+    let slice = fmt_u32(v, &mut buf);
+    s.push_str(core::str::from_utf8(slice).unwrap_or("0"));
+}
+
+/// Format a single MLSD entry line (without CRLF).
+/// RFC 3659: "type=<type>;size=<n>;modify=<ts>; <name>"
+fn format_mlsd_entry(name: &str, entry_type: u32, size: u32, mtime: u32) -> String {
+    let mut s = String::from("type=");
+    if entry_type == 1 {
+        s.push_str("dir");
+    } else {
+        s.push_str("file");
+    }
+    s.push_str(";size=");
+    let mut buf = [0u8; 12];
+    let sz = fmt_u32(size, &mut buf);
+    s.push_str(core::str::from_utf8(sz).unwrap_or("0"));
+    s.push_str(";modify=");
+    let ts = format_mdtm_timestamp(mtime);
+    s.push_str(&ts);
+    s.push_str("; ");
+    s.push_str(name);
+    s
+}
+
+/// Parse EPRT argument: |<net-prt>|<net-addr>|<tcp-port>|
+/// net-prt: 1=IPv4, 2=IPv6 (only IPv4 supported)
+fn parse_eprt_arg(arg: &str) -> Option<([u8; 4], u16)> {
+    let bytes = arg.as_bytes();
+    if bytes.is_empty() { return None; }
+    let delim = bytes[0]; // Usually '|'
+    // Split by delimiter, skipping first empty part
+    let mut parts: [&str; 4] = [""; 4];
+    let mut idx = 0;
+    let mut start = 1; // skip first delimiter
+    for i in 1..arg.len() {
+        if bytes[i] == delim {
+            if idx < 4 {
+                parts[idx] = &arg[start..i];
+                idx += 1;
+            }
+            start = i + 1;
+        }
+    }
+    if idx < 3 { return None; }
+    // parts[0] = net-prt ("1"), parts[1] = address, parts[2] = port
+    if parts[0] != "1" { return None; } // Only IPv4
+    let ip = parse_ip_str(parts[1])?;
+    let port = parse_u16(parts[2])?;
+    Some((ip, port))
+}
+
+fn parse_ip_str(s: &str) -> Option<[u8; 4]> {
+    let mut parts = [0u8; 4];
+    let mut idx = 0;
+    let mut num: u32 = 0;
+    let mut has = false;
+    for b in s.bytes() {
+        match b {
+            b'0'..=b'9' => { num = num * 10 + (b - b'0') as u32; has = true; }
+            b'.' => {
+                if !has || idx >= 3 || num > 255 { return None; }
+                parts[idx] = num as u8; idx += 1; num = 0; has = false;
+            }
+            _ => return None,
+        }
+    }
+    if !has || idx != 3 || num > 255 { return None; }
+    parts[3] = num as u8;
+    Some(parts)
+}
+
+fn parse_u16(s: &str) -> Option<u16> {
+    let mut val: u32 = 0;
+    for b in s.bytes() {
+        if b < b'0' || b > b'9' { return None; }
+        val = val * 10 + (b - b'0') as u32;
+        if val > 65535 { return None; }
+    }
+    Some(val as u16)
 }
