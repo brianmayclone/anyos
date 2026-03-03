@@ -360,6 +360,26 @@ add_shared_lib(libgl ${CMAKE_SOURCE_DIR}/libs/libgl)
 add_shared_lib(libm ${CMAKE_SOURCE_DIR}/libs/libm)
 if(NOT ANYOS_ARCH STREQUAL "arm64")
   add_shared_lib(libcorevm ${CMAKE_SOURCE_DIR}/libs/libcorevm)
+
+  # --- CoreVM BIOS (assembled with NASM, copied to sysroot) ---
+  set(_COREVM_BIOS_DIR "${CMAKE_SOURCE_DIR}/libs/libcorevm/bios")
+  set(_COREVM_BIOS_BIN "${CMAKE_BINARY_DIR}/bios.bin")
+  set(_COREVM_BIOS_SYSROOT "${SYSROOT_DIR}/Libraries/libcorevm/bios/bios.bin")
+  file(GLOB _COREVM_BIOS_SRC "${_COREVM_BIOS_DIR}/*.asm")
+  file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libcorevm/bios")
+  add_custom_command(
+    OUTPUT ${_COREVM_BIOS_BIN}
+    COMMAND nasm -f bin -I ${_COREVM_BIOS_DIR}/ -o ${_COREVM_BIOS_BIN} ${_COREVM_BIOS_DIR}/bios.asm
+    DEPENDS ${_COREVM_BIOS_SRC}
+    COMMENT "Assembling CoreVM BIOS"
+  )
+  add_custom_command(
+    OUTPUT ${_COREVM_BIOS_SYSROOT}
+    COMMAND ${CMAKE_COMMAND} -E copy ${_COREVM_BIOS_BIN} ${_COREVM_BIOS_SYSROOT}
+    DEPENDS ${_COREVM_BIOS_BIN}
+    COMMENT "Installing CoreVM BIOS to sysroot"
+  )
+  add_custom_target(corevm_bios ALL DEPENDS ${_COREVM_BIOS_SYSROOT})
 endif()
 
 # --- libhttp (custom: links BearSSL for HTTPS support) ---

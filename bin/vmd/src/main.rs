@@ -40,11 +40,8 @@ const SHM_HEADER: usize = 64;
 /// 4 MiB covers up to 1024x768x32bpp.
 const SHM_SIZE: u32 = 4 * 1024 * 1024;
 
-/// Path to the SeaBIOS ROM image.
-const SEABIOS_PATH: &str = "/System/shared/corevm/bios/seabios.bin";
-
-/// Path to the VGA BIOS (SeaVGABIOS/stdvga) ROM image.
-const VGABIOS_PATH: &str = "/System/shared/corevm/bios/vgabios.bin";
+/// Path to the CoreVM BIOS ROM image (custom BIOS, 64 KB).
+const BIOS_PATH: &str = "/Libraries/libcorevm/bios/bios.bin";
 
 /// Instructions to run per execution batch before checking IPC.
 /// Higher = more throughput, lower = more responsive to commands.
@@ -442,55 +439,16 @@ fn cmd_start() {
             return;
         }
 
-        // Load SeaBIOS.
-        let bios_data = read_file(SEABIOS_PATH);
-        let mut seabios_load_addr: u64 = 0;
-        let mut seabios_size: usize = 0;
+        // Load CoreVM BIOS (custom BIOS, 64 KB at 0xF0000).
+        let bios_data = read_file(BIOS_PATH);
         if !bios_data.is_empty() {
-            let load_addr = if bios_data.len() <= 0x10000 {
-                0xF0000u64
-            } else {
-                (0x10_0000u64).wrapping_sub(bios_data.len() as u64)
-            };
-            inst.handle.load_binary(load_addr, &bios_data);
+            inst.handle.load_binary(0xF0000, &bios_data);
             inst.handle.set_rip(0xFFF0);
-            seabios_load_addr = load_addr;
-            seabios_size = bios_data.len();
-            anyos_std::println!("[vmd] loaded SeaBIOS ({} bytes at 0x{:X})", bios_data.len(), load_addr);
+            anyos_std::println!("[vmd] loaded CoreVM BIOS ({} bytes at 0xF0000)", bios_data.len());
         } else {
-            send_status("error 0 SeaBIOS not found");
-            anyos_std::println!("[vmd] ERROR: SeaBIOS not found at {}", SEABIOS_PATH);
+            send_status("error 0 BIOS not found");
+            anyos_std::println!("[vmd] ERROR: BIOS not found at {}", BIOS_PATH);
             return;
-        }
-
-        // Load VGA BIOS: provide it both as a fw_cfg file for SeaBIOS's
-        // modern path AND at 0xC0000 in RAM for the legacy ROM scan path.
-        let vgabios_data = read_file(VGABIOS_PATH);
-        if !vgabios_data.is_empty() {
-            // fw_cfg file entry — SeaBIOS loads VGA ROMs via "vgaroms/" prefix.
-            inst.handle.fw_cfg_add_file("vgaroms/vgabios-stdvga.bin", &vgabios_data);
-
-            // Legacy fallback at 0xC0000 is only safe if it does not overlap
-            // the SeaBIOS image range.
-            let vga_rom_start = 0xC0000u64;
-            let vga_rom_end = vga_rom_start.wrapping_add(vgabios_data.len() as u64);
-            let bios_start = seabios_load_addr;
-            let bios_end = bios_start.wrapping_add(seabios_size as u64);
-            let overlaps_seabios = vga_rom_start < bios_end && bios_start < vga_rom_end;
-
-            if overlaps_seabios {
-                anyos_std::println!(
-                    "[vmd] loaded VGA BIOS ({} bytes, fw_cfg only; skipped 0xC0000 fallback due SeaBIOS overlap 0x{:X}-0x{:X})",
-                    vgabios_data.len(),
-                    bios_start,
-                    bios_end,
-                );
-            } else {
-                inst.handle.load_binary(vga_rom_start, &vgabios_data);
-                anyos_std::println!("[vmd] loaded VGA BIOS ({} bytes, fw_cfg + 0xC0000)", vgabios_data.len());
-            }
-        } else {
-            anyos_std::println!("[vmd] WARNING: VGA BIOS not found at {}", VGABIOS_PATH);
         }
 
         // Log MMIO diagnostic info before starting execution.

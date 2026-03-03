@@ -83,6 +83,10 @@ impl PciDevice {
         config_space[0x02] = device_id as u8;
         config_space[0x03] = (device_id >> 8) as u8;
 
+        // Command (offset 0x04): enable I/O + memory space access.
+        config_space[0x04] = 0x03;
+        config_space[0x05] = 0x00;
+
         // Status (offset 0x06): capabilities list not supported.
         config_space[0x06] = 0x00;
         config_space[0x07] = 0x00;
