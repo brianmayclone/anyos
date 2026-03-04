@@ -817,6 +817,8 @@ impl Desktop {
             None => new_w * 4,
         };
 
+        self.desktop_icons.reposition_for_width(self.screen_width, new_w);
+
         self.screen_width = new_w;
         self.screen_height = new_h;
 
@@ -831,6 +833,7 @@ impl Desktop {
         self.draw_gradient_background();
         self.wallpaper_pending = true;
 
+        self.menu_bar.recompute_status_positions(new_w);
         self.draw_menubar();
         self.compositor.damage_all();
     }

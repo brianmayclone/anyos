@@ -211,7 +211,7 @@ impl MenuBar {
         }
     }
 
-    fn recompute_status_positions(&mut self, screen_width: u32) {
+    pub fn recompute_status_positions(&mut self, screen_width: u32) {
         self.status_icon_x.clear();
         let clock_region = 60i32;
         let icon_spacing = 8i32;

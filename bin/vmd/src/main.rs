@@ -859,7 +859,7 @@ fn run_vm_batch() -> bool {
         }
         ExitReason::InstructionLimit => {
             inst.batch_count += 1;
-            if inst.batch_count % 100 == 0 && inst.batch_count <= 1000 {
+            if inst.batch_count % 50 == 0 && inst.batch_count <= 1000 {
                 let rip = inst.handle.rip();
                 let cs = inst.handle.cs();
                 let cs_base = inst.handle.cs_base();
@@ -895,6 +895,18 @@ fn run_vm_batch() -> bool {
                     code[4], code[5], code[6], code[7],
                     code[8], code[9], code[10], code[11],
                     code[12], code[13], code[14], code[15]
+                );
+                // Also dump bytes at 0x100000 to check decompressed kernel
+                let mut kern = [0u8; 16];
+                for i in 0..16u64 {
+                    kern[i as usize] = inst.handle.read_phys_u8(0x100000 + i);
+                }
+                anyos_std::println!(
+                    "[vmd]  kern@100000: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                    kern[0], kern[1], kern[2], kern[3],
+                    kern[4], kern[5], kern[6], kern[7],
+                    kern[8], kern[9], kern[10], kern[11],
+                    kern[12], kern[13], kern[14], kern[15]
                 );
             }
         }

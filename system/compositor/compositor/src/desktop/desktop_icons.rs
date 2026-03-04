@@ -180,6 +180,17 @@ impl DesktopIconManager {
         self.load_positions(screen_width);
     }
 
+    /// Adjust all icon x-positions when the screen width changes.
+    /// Shifts by the delta so icons keep their distance from the right edge.
+    pub fn reposition_for_width(&mut self, old_width: u32, new_width: u32) {
+        if old_width == new_width { return; }
+        let dx = new_width as i32 - old_width as i32;
+        for icon in &mut self.icons {
+            icon.x += dx;
+        }
+        self.wallpaper_cache.clear();
+    }
+
     // ── Mount Scanning ─────────────────────────────────────────────────
 
     /// Poll mounts and update icons if changed. Returns true if icons changed.

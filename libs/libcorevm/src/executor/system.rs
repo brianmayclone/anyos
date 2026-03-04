@@ -242,11 +242,29 @@ pub fn exec_mov_cr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
         let val = cpu.regs.read_gpr64(src_gpr);
         match cr_idx {
             0 => {
+                let old = cpu.regs.cr0;
                 cpu.regs.cr0 = val;
                 cpu.update_mode();
+                // Only log PG bit transitions (not PE toggling — ISOLINUX spam)
+                if (old ^ val) & 0x8000_0000 != 0 {
+                    libsyscall::serial_print(format_args!(
+                        "[CR0] 0x{:08X} -> 0x{:08X} at CS:IP={:04X}:{:X}\n",
+                        old, val,
+                        cpu.regs.seg[crate::SegReg::Cs as usize].selector,
+                        cpu.regs.rip,
+                    ));
+                }
             }
             2 => cpu.regs.cr2 = val,
-            3 => cpu.regs.cr3 = val,
+            3 => {
+                libsyscall::serial_print(format_args!(
+                    "[CR3] 0x{:08X} at CS:IP={:04X}:{:X}\n",
+                    val,
+                    cpu.regs.seg[crate::SegReg::Cs as usize].selector,
+                    cpu.regs.rip,
+                ));
+                cpu.regs.cr3 = val;
+            }
             4 => cpu.regs.cr4 = val,
             8 => cpu.regs.cr8 = val,
             _ => return Err(VmError::UndefinedOpcode(op)),
