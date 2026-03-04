@@ -115,20 +115,6 @@ pub fn exec_movs(
     let delta = step(cpu, elem);
 
     if inst.rep == RepPrefix::Rep {
-        // REP MOVS — log first iteration for debugging
-        let initial_count = read_counter(cpu, inst);
-        if initial_count > 0 {
-            let s0 = src_linear(cpu, inst);
-            let d0 = dst_linear(cpu, inst);
-            libsyscall::serial_print(format_args!(
-                "[corevm] [REP MOVS] src={:05X} dst={:05X} cnt={} elem={:?} DS={:04X} ES={:04X} SI={:04X} DI={:04X}\n",
-                s0, d0, initial_count, elem,
-                cpu.regs.segment(crate::registers::SegReg::Ds).selector,
-                cpu.regs.segment(crate::registers::SegReg::Es).selector,
-                read_si(cpu, inst) as u16,
-                read_di(cpu, inst) as u16,
-            ));
-        }
         loop {
             let count = read_counter(cpu, inst);
             if count == 0 {

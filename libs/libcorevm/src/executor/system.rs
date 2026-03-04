@@ -41,7 +41,6 @@ pub fn exec_lgdt(
         }
     };
 
-    libsyscall::serial_print(format_args!("[corevm] [LGDT] base={:08X} limit={:04X} opsz={:?}\n", base, limit, inst.operand_size));
     cpu.regs.gdtr = TableRegister { base, limit };
     cpu.regs.rip += inst.length as u64;
     Ok(())
@@ -243,17 +242,8 @@ pub fn exec_mov_cr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
         let val = cpu.regs.read_gpr64(src_gpr);
         match cr_idx {
             0 => {
-                let old = cpu.regs.cr0;
                 cpu.regs.cr0 = val;
                 cpu.update_mode();
-                libsyscall::serial_print(format_args!(
-                    "[corevm] [CR0] {:08X} -> {:08X}  PE={} CS={:04X} IP={:04X}\n",
-                    old,
-                    val,
-                    val & 1,
-                    cpu.regs.segment(crate::registers::SegReg::Cs).selector,
-                    cpu.regs.rip as u16,
-                ));
             }
             2 => cpu.regs.cr2 = val,
             3 => cpu.regs.cr3 = val,
