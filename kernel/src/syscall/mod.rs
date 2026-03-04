@@ -65,6 +65,7 @@ pub const SYS_SYSINFO: u32 = 32;
 pub const SYS_DMESG: u32 = 33;
 pub const SYS_TICK_HZ: u32 = 34;
 pub const SYS_UPTIME_MS: u32 = 35;
+pub const SYS_SLEEP_US: u32 = 36;
 
 // Networking
 pub const SYS_NET_CONFIG: u32 = 40;
@@ -356,6 +357,7 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         SYS_GETPID => handlers::sys_getpid(),
         SYS_YIELD => handlers::sys_yield(),
         SYS_SLEEP => handlers::sys_sleep(arg1),
+        SYS_SLEEP_US => handlers::sys_sleep_us(arg1),
         SYS_SBRK => handlers::sys_sbrk(arg1 as i32),
         SYS_MMAP => handlers::sys_mmap(arg1),
         SYS_MUNMAP => handlers::sys_munmap(arg1, arg2),

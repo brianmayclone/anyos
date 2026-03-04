@@ -44,6 +44,14 @@ pub fn sleep(ms: u32) {
     syscall1(SYS_SLEEP, ms as u64);
 }
 
+/// Sleep for `us` microseconds.
+///
+/// For durations >= 1 ms, the thread is blocked by the scheduler.
+/// For sub-ms durations, uses TSC-based busy-wait in the kernel.
+pub fn sleep_us(us: u32) {
+    syscall1(SYS_SLEEP_US, us as u64);
+}
+
 pub fn sbrk(increment: i32) -> usize {
     syscall1(SYS_SBRK, increment as i64 as u64) as usize
 }

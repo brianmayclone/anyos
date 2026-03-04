@@ -21,6 +21,7 @@
 #define SYS_GETPID           6
 #define SYS_YIELD            7
 #define SYS_SLEEP            8
+#define SYS_SLEEP_US        36
 #define SYS_SBRK             9
 #define SYS_FORK            10
 #define SYS_EXEC            11

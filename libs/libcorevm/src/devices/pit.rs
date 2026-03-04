@@ -164,29 +164,25 @@ impl PitChannel {
             }
             2 => {
                 // Mode 2: Rate generator.
-                // Output is normally high, goes low for one tick when count
-                // reaches 1, then reloads.
-                if self.current <= 1 {
+                // Output normally high, goes low for one tick at current==1,
+                // reloads at current==0. A reload value of 0 represents a
+                // period of 65536 ticks (full u16 wrap via wrapping_sub).
+                self.current = self.current.wrapping_sub(1);
+                if self.current == 0 {
                     self.current = self.count;
                     self.output = true;
-                } else {
-                    self.current = self.current.wrapping_sub(1);
-                    if self.current == 1 {
-                        self.output = false;
-                    } else {
-                        self.output = true;
-                    }
+                } else if self.current == 1 {
+                    self.output = false;
                 }
             }
             3 => {
                 // Mode 3: Square wave generator.
-                // Output toggles when the counter reaches zero, reloads
-                // with half the reload value each time.
+                // Output toggles when the counter wraps to zero, reloads.
+                // Decrements by 2 each tick. Count=0 represents 65536.
+                self.current = self.current.wrapping_sub(2);
                 if self.current <= 1 {
                     self.output = !self.output;
                     self.current = self.count;
-                } else {
-                    self.current = self.current.wrapping_sub(2);
                 }
             }
             _ => {
@@ -294,7 +290,9 @@ impl IoHandler for Pit {
                     ch.access_mode = access;
                     ch.mode = (byte >> 1) & 0x07;
                     ch.bcd = byte & 0x01 != 0;
-                    ch.output = false;
+                    // Mode 2 (rate generator) and 3 (square wave) start with
+                    // output HIGH; mode 0 (interrupt on terminal count) starts LOW.
+                    ch.output = matches!(ch.mode, 2 | 3);
                     ch.enabled = false;
                     ch.write_hi = false;
                     ch.read_hi = false;

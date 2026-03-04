@@ -28,6 +28,7 @@ pub(crate) const SYS_CLOSE: u32 = 5;
 pub(crate) const SYS_GETPID: u32 = 6;
 pub(crate) const SYS_YIELD: u32 = 7;
 pub(crate) const SYS_SLEEP: u32 = 8;
+pub(crate) const SYS_SLEEP_US: u32 = 36;
 pub(crate) const SYS_SBRK: u32 = 9;
 pub(crate) const SYS_FORK: u32 = 10;
 pub(crate) const SYS_EXEC: u32 = 11;

@@ -57,8 +57,11 @@ const DEFAULT_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 const E1000_MMIO_BASE: u64 = 0xD000_0000;
 
 /// Instructions to run per execution batch before checking IPC.
-/// Higher = more throughput, lower = more responsive to commands.
-const BATCH_SIZE: u64 = 5_000_000;
+///
+/// With 1M per batch, a BIOS spin loop of 64M instructions spans ~64
+/// batches — enough for the PIT timer to fire at least once (needs ~55
+/// batches at 1193 ticks/batch for the 65536-tick period).
+const BATCH_SIZE: u64 = 1_000_000;
 
 /// PIT ticks per millisecond (1,193,182 Hz / 1000 ≈ 1193).
 const PIT_TICKS_PER_MS: u32 = 1193;
@@ -725,7 +728,7 @@ fn run_vm_batch() -> bool {
         ExitReason::Halted => {
             // HLT pauses until the next interrupt. Sleep briefly to let
             // wall-clock time elapse, then advance PIT based on real time.
-            anyos_std::process::sleep(1);
+            anyos_std::process::sleep_us(500);
             advance_pit_realtime(inst);
             // Drain serial and debug port output (SeaBIOS debug messages).
             let serial_out = inst.handle.serial_take_output_vec();
@@ -932,10 +935,12 @@ fn main() {
         let vm_active = run_vm_batch();
 
         // Sleep briefly to avoid 100% CPU usage.
+        // With BATCH_SIZE=1M, use 500us between batches for responsive
+        // timer delivery (~18 Hz PIT) without wasting a full millisecond.
         if !vm_active {
             anyos_std::process::sleep(10);
         } else {
-            anyos_std::process::sleep(1);
+            anyos_std::process::sleep_us(500);
         }
     }
 }

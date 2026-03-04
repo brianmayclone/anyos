@@ -141,6 +141,59 @@ pub fn sys_sleep(ms: u32) -> u32 {
     0
 }
 
+/// sys_sleep_us - Sleep for N microseconds.
+///
+/// For durations >= 1 ms, uses scheduler-based sleep (non-busy).
+/// For sub-ms durations, uses TSC-based busy-wait for precision.
+pub fn sys_sleep_us(us: u32) -> u32 {
+    if us == 0 {
+        return 0;
+    }
+    // For >= 1ms, use scheduler sleep (non-busy, efficient).
+    if us >= 1000 {
+        let ms = us / 1000;
+        let pit_hz = crate::arch::hal::timer_frequency_hz() as u32;
+        let ticks = (ms as u64 * pit_hz as u64 / 1000) as u32;
+        let ticks = if ticks == 0 { 1 } else { ticks };
+        let now = crate::arch::hal::timer_current_ticks();
+        let wake_at = now.wrapping_add(ticks);
+        crate::task::scheduler::sleep_until(wake_at);
+        // Handle remaining sub-ms fraction.
+        let remainder_us = us % 1000;
+        if remainder_us > 0 {
+            busy_wait_us(remainder_us);
+        }
+    } else {
+        // Sub-ms: TSC busy-wait.
+        busy_wait_us(us);
+    }
+    0
+}
+
+/// TSC-based busy-wait for microsecond precision.
+fn busy_wait_us(us: u32) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let tsc_hz = crate::arch::x86::pit::tsc_hz();
+        if tsc_hz == 0 {
+            // No TSC calibration — fall back to yield.
+            crate::task::scheduler::schedule();
+            return;
+        }
+        let wait_cycles = us as u64 * tsc_hz / 1_000_000;
+        let start = crate::arch::x86::pit::rdtsc();
+        while crate::arch::x86::pit::rdtsc().wrapping_sub(start) < wait_cycles {
+            core::hint::spin_loop();
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // AArch64: just yield — no TSC.
+        let _ = us;
+        crate::task::scheduler::schedule();
+    }
+}
+
 /// sys_sbrk - Grow/shrink the process heap
 pub fn sys_sbrk(increment: i32) -> u32 {
     use crate::memory::address::VirtAddr;

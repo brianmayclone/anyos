@@ -46,6 +46,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_DMESG, "dmesg"),
     (SYS_TICK_HZ, "tick_hz"),
     (SYS_UPTIME_MS, "uptime_ms"),
+    (SYS_SLEEP_US, "sleep_us"),
     (SYS_PIPE_CREATE, "pipe_create"),
     (SYS_PIPE_READ, "pipe_read"),
     (SYS_PIPE_CLOSE, "pipe_close"),
