@@ -29,6 +29,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::fs;
 use anyos_std::ipc;
+use anyos_std::sys;
 use libcorevm_client::{ExitReason, VmHandle};
 
 anyos_std::entry!(main);
@@ -59,11 +60,13 @@ const E1000_MMIO_BASE: u64 = 0xD000_0000;
 /// Higher = more throughput, lower = more responsive to commands.
 const BATCH_SIZE: u64 = 5_000_000;
 
-/// PIT ticks to advance per batch.
-/// The real PIT clock is 1,193,182 Hz.  With BATCH_SIZE = 5M instructions
-/// and an assumed emulated clock of ~1 GHz, one batch ≈ 5 ms, which
-/// corresponds to ~5966 PIT ticks.  We round to 6000.
-const PIT_TICKS_PER_BATCH: u32 = 6000;
+/// PIT ticks per millisecond (1,193,182 Hz / 1000 ≈ 1193).
+/// Used to convert wall-clock elapsed time to PIT tick count.
+const PIT_TICKS_PER_MS: u32 = 1193;
+
+/// Maximum wall-clock ms to advance PIT in one call.
+/// Caps catch-up after long pauses (e.g. host scheduling delays).
+const PIT_MAX_ADVANCE_MS: u32 = 100;
 
 /// SHM state constants (written to offset 16).
 const STATE_STOPPED: u32 = 0;
@@ -87,6 +90,8 @@ struct VmInstance {
     bios_type: String,
     /// Whether JIT acceleration is enabled.
     jit_enabled: bool,
+    /// Last wall-clock ms when PIT was advanced (for real-time timer).
+    last_pit_ms: u32,
 }
 
 /// Global daemon state.
@@ -433,6 +438,7 @@ fn cmd_create(uuid: &str) {
         name: config.name.clone(),
         bios_type: config.bios_type.clone(),
         jit_enabled: config.jit_enabled,
+        last_pit_ms: sys::uptime_ms(),
     };
 
     d.vm = Some(inst);
@@ -673,6 +679,32 @@ fn dispatch_command(line: &str) {
 
 // ── VM execution ───────────────────────────────────────────────────────
 
+/// Advance PIT based on real elapsed wall-clock time.
+/// Measures time since last call and advances the PIT by the corresponding
+/// number of ticks, delivering IRQ 0 whenever channel 0 fires.
+fn advance_pit_realtime(inst: &mut VmInstance) {
+    let now = sys::uptime_ms();
+    let mut elapsed = now.wrapping_sub(inst.last_pit_ms);
+
+    // Cap to avoid long stalls after host scheduling delays.
+    if elapsed > PIT_MAX_ADVANCE_MS {
+        elapsed = PIT_MAX_ADVANCE_MS;
+    }
+
+    if elapsed == 0 {
+        return;
+    }
+
+    let ticks = elapsed * PIT_TICKS_PER_MS;
+    for _ in 0..ticks {
+        if inst.handle.pit_tick() {
+            inst.handle.pic_raise_irq(0);
+        }
+    }
+
+    inst.last_pit_ms = now;
+}
+
 /// Run one execution batch for the active VM.
 /// Returns true if the VM is still running after this batch.
 fn run_vm_batch() -> bool {
@@ -682,25 +714,18 @@ fn run_vm_batch() -> bool {
         _ => return false,
     };
 
-    // Advance PIT and deliver timer interrupts.
-    for _ in 0..PIT_TICKS_PER_BATCH {
-        if inst.handle.pit_tick() {
-            inst.handle.pic_raise_irq(0);
-        }
-    }
+    // Advance PIT based on real wall-clock time.
+    advance_pit_realtime(inst);
 
     // Execute instructions.
     let exit = inst.handle.run(BATCH_SIZE);
 
     match exit {
         ExitReason::Halted => {
-            // HLT pauses until the next interrupt — deliver a PIT tick
-            // and resume. This is critical: SeaBIOS uses HLT during POST
-            // to wait for timer events. Sleep briefly to avoid busy-spinning.
+            // HLT pauses until the next interrupt. Sleep briefly to let
+            // wall-clock time elapse, then advance PIT based on real time.
             anyos_std::process::sleep(1);
-            if inst.handle.pit_tick() {
-                inst.handle.pic_raise_irq(0);
-            }
+            advance_pit_realtime(inst);
             // Drain serial and debug port output (SeaBIOS debug messages).
             let serial_out = inst.handle.serial_take_output_vec();
             if !serial_out.is_empty() {

@@ -541,8 +541,10 @@ selftest_timer:
     mov eax, [BDA_TIMER_COUNT]
     mov ebx, eax                ; Save initial value
 
-    ; Spin up to ~4M iterations waiting for a tick.
-    mov ecx, 0x003FFFFF
+    ; Spin waiting for a tick.  PIT fires at ~18.2 Hz (every ~55ms).
+    ; With wall-clock-based PIT, we just need enough iterations for
+    ; ~55ms of real time to elapse.  Use a generous limit.
+    mov ecx, 0x00FFFFFF
 .wait:
     cmp [BDA_TIMER_COUNT], ebx
     jne .ok

@@ -1,7 +1,7 @@
 //! macOS-style file/folder dialogs — OpenFolder, OpenFile, SaveFile, CreateFolder.
 //!
-//! Each dialog is a modal Card panel centered on a dark overlay that blocks the
-//! parent window. Uses the same blocking mini event loop as MessageBox.
+//! Each dialog is a standalone compositor window that is set modal to the
+//! calling window. Uses the same blocking mini event loop as MessageBox.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -524,26 +524,18 @@ fn run_file_dialog(
 ) -> usize {
     let st = state();
     if st.windows.is_empty() { return 0; }
+    let owner_win_id = *st.windows.last().unwrap();
 
-    let win_id = *st.windows.last().unwrap();
-    let (win_w, win_h) = {
-        let ctrl = st.controls.iter().find(|c| c.id() == win_id);
-        match ctrl {
-            Some(c) => (c.base().w, c.base().h),
-            None => return 0,
-        }
+    let is_create_folder = matches!(dialog_type, DialogType::CreateFolder);
+
+    // Dialog dimensions and metadata
+    let (dlg_w, dlg_h, title, confirm_label, show_files, has_name_field, confirm_userdata):
+        (u32, u32, &[u8], &[u8], bool, bool, u64) = match dialog_type {
+        DialogType::OpenFolder   => (650, 520, b"Open Folder" as &[u8], b"Open" as &[u8], false, false, 0),
+        DialogType::OpenFile     => (650, 520, b"Open File" as &[u8],   b"Open" as &[u8], true,  false, 1),
+        DialogType::SaveFile     => (650, 520, b"Save File" as &[u8],   b"Save" as &[u8], true,  true,  2),
+        DialogType::CreateFolder => (350, 200, b"New Folder" as &[u8],  b"Create" as &[u8], false, true, 3),
     };
-
-    // Dialog dimensions (650x520 for file dialogs, 350x200 for create folder)
-    let (card_w, card_h, title, confirm_label, show_files, has_name_field, confirm_userdata) = match dialog_type {
-        DialogType::OpenFolder => (650u32, 520u32, b"Open Folder" as &[u8], b"Open" as &[u8], false, false, 0u64),
-        DialogType::OpenFile => (650u32, 520u32, b"Open File" as &[u8], b"Open" as &[u8], true, false, 1u64),
-        DialogType::SaveFile => (650u32, 520u32, b"Save File" as &[u8], b"Save" as &[u8], true, true, 2u64),
-        DialogType::CreateFolder => (350u32, 200u32, b"New Folder" as &[u8], b"Create" as &[u8], false, true, 3u64),
-    };
-
-    let card_x = ((win_w as i32) - (card_w as i32)) / 2;
-    let card_y = ((win_h as i32) - (card_h as i32)) / 2;
 
     // Initialize current directory
     let mut cwd_buf = [0u8; 257];
@@ -563,134 +555,85 @@ fn run_file_dialog(
         DIALOG_DISMISSED = false;
     }
 
-    let is_create_folder = matches!(dialog_type, DialogType::CreateFolder);
+    // ── Create standalone dialog window ──────────────────────────────
+    // Flags: NOT_RESIZABLE(0x02) | NO_MINIMIZE(0x10) | NO_MAXIMIZE(0x20)
+    let dialog_win_id = crate::anyui_create_window(
+        title.as_ptr(), title.len() as u32,
+        -1, -1, dlg_w, dlg_h,
+        0x02 | 0x10 | 0x20,
+    );
+    if dialog_win_id == 0 { return 0; }
 
-    // Allocate IDs
-    let overlay_id = st.next_id; st.next_id += 1;
-    let card_id = st.next_id; st.next_id += 1;
-    let header_bar_id = st.next_id; st.next_id += 1;
-    let title_id = st.next_id; st.next_id += 1;
-    let up_btn_id = if !is_create_folder { let id = st.next_id; st.next_id += 1; id } else { 0 };
-    let separator_id = if !is_create_folder { let id = st.next_id; st.next_id += 1; id } else { 0 };
-    let path_bar_id = st.next_id; st.next_id += 1;
+    // Make it modal to the owner window
+    crate::anyui_set_modal(dialog_win_id, owner_win_id);
+
+    // ── Allocate control IDs ─────────────────────────────────────────
+    let st = state();
+    let path_bar_id   = st.next_id; st.next_id += 1;
     let path_label_id = st.next_id; st.next_id += 1;
-    let bottom_bar_id = st.next_id; st.next_id += 1;
-    let cancel_btn_id = st.next_id; st.next_id += 1;
+    let up_btn_id = if !is_create_folder { let id = st.next_id; st.next_id += 1; id } else { 0 };
+    let bottom_bar_id  = st.next_id; st.next_id += 1;
+    let cancel_btn_id  = st.next_id; st.next_id += 1;
     let confirm_btn_id = st.next_id; st.next_id += 1;
-    let tree_id = st.next_id; st.next_id += 1;
+    let tree_id = if !is_create_folder { let id = st.next_id; st.next_id += 1; id } else { 0 };
     let name_field_id = if has_name_field { let id = st.next_id; st.next_id += 1; id } else { 0 };
 
     // Store IDs for callbacks
     unsafe {
         DIALOG_TREE_ID = tree_id;
-        DIALOG_CARD_ID = card_id;
+        DIALOG_CARD_ID = dialog_win_id;
         DIALOG_PATH_LABEL_ID = path_label_id;
         DIALOG_NAME_FIELD_ID = name_field_id;
     }
 
-    // ── Create dark overlay (full-window, blocks input behind dialog) ──
-    let mut overlay = controls::create_control(
-        ControlKind::View, overlay_id, win_id, 0, 0, win_w, win_h, &[],
-    );
-    overlay.set_color(0xAA000000);
-    st.controls.push(overlay);
-    add_child_to_parent(win_id, overlay_id);
-
-    // Push onto modal stack (in-window overlay modal)
-    st.modal_stack.push(crate::ModalEntry {
-        modal_win_id: 0,
-        owner_win_id: win_id,
-        overlay_id,
-    });
-
-    // ── Create card (child of overlay) ──────────────────────────────
-    let card = controls::create_control(
-        ControlKind::Card, card_id, overlay_id, card_x, card_y, card_w, card_h, &[],
-    );
-    st.controls.push(card);
-    add_child_to_parent(overlay_id, card_id);
-
-    // ── Header bar (lighter background with title + nav buttons) ────
-    let mut header_bar = controls::create_control(
-        ControlKind::View, header_bar_id, card_id, 0, 0, card_w, 44, &[],
-    );
-    header_bar.base_mut().dock = DockStyle::Top;
-    header_bar.set_color(0xFF383838);
-    st.controls.push(header_bar);
-    add_child_to_parent(card_id, header_bar_id);
-
-    // Title label inside header bar
-    let mut title_ctrl = controls::create_control(
-        ControlKind::Label, title_id, header_bar_id, 0, 0, card_w - 80, 44, title,
-    );
-    title_ctrl.base_mut().dock = DockStyle::Fill;
-    title_ctrl.base_mut().margin.left = 16;
-    title_ctrl.set_color(0xFFE0E0E0);
-    st.controls.push(title_ctrl);
-    add_child_to_parent(header_bar_id, title_id);
-
-    // Navigation button: "^" (go to parent directory)
-    if !is_create_folder {
-        let mut up_btn = controls::create_control(
-            ControlKind::Button, up_btn_id, header_bar_id,
-            0, 7, 30, 30, b"^",
-        );
-        up_btn.base_mut().dock = DockStyle::Right;
-        up_btn.base_mut().margin.right = 8;
-        st.controls.push(up_btn);
-        add_child_to_parent(header_bar_id, up_btn_id);
-    }
-
-    // ── 1px separator line ──────────────────────────────────────────
-    if !is_create_folder {
-        let mut separator = controls::create_control(
-            ControlKind::View, separator_id, card_id, 0, 0, card_w, 1, &[],
-        );
-        separator.base_mut().dock = DockStyle::Top;
-        separator.set_color(0xFF505050);
-        st.controls.push(separator);
-        add_child_to_parent(card_id, separator_id);
-    }
-
-    // ── Path bar (darker background) ─────────────────────────────────
+    // ── Path bar (top, darker background with path label + "^" button) ──
     let mut path_bar = controls::create_control(
-        ControlKind::View, path_bar_id, card_id, 0, 0, card_w, 28, &[],
+        ControlKind::View, path_bar_id, dialog_win_id, 0, 0, dlg_w, 32, &[],
     );
     path_bar.base_mut().dock = DockStyle::Top;
-    path_bar.base_mut().margin.left = 12;
-    path_bar.base_mut().margin.right = 12;
-    path_bar.base_mut().margin.top = if is_create_folder { 8 } else { 0 };
     path_bar.set_color(0xFF2A2A2C);
     st.controls.push(path_bar);
-    add_child_to_parent(card_id, path_bar_id);
+    add_child_to_parent(dialog_win_id, path_bar_id);
+
+    // "^" button inside path bar (navigate to parent directory)
+    if !is_create_folder {
+        let mut up_btn = controls::create_control(
+            ControlKind::Button, up_btn_id, path_bar_id,
+            0, 2, 28, 28, b"^",
+        );
+        up_btn.base_mut().dock = DockStyle::Right;
+        up_btn.base_mut().margin.right = 4;
+        st.controls.push(up_btn);
+        add_child_to_parent(path_bar_id, up_btn_id);
+    }
 
     // Path label inside path bar
     let mut path_label = controls::create_control(
-        ControlKind::Label, path_label_id, path_bar_id, 0, 0, card_w - 24, 28,
+        ControlKind::Label, path_label_id, path_bar_id, 0, 0, dlg_w - 40, 32,
         &cwd_buf[..cwd_len],
     );
     path_label.base_mut().dock = DockStyle::Fill;
-    path_label.base_mut().margin.left = 8;
+    path_label.base_mut().margin.left = 10;
     path_label.set_color(0xFF9CDCFE);
     st.controls.push(path_label);
     add_child_to_parent(path_bar_id, path_label_id);
 
-    // ── Bottom bar ───────────────────────────────────────────────────
+    // ── Bottom bar (buttons + optional name field) ───────────────────
     let mut bottom_bar = controls::create_control(
-        ControlKind::View, bottom_bar_id, card_id, 0, 0, card_w, 44, &[],
+        ControlKind::View, bottom_bar_id, dialog_win_id, 0, 0, dlg_w, 44, &[],
     );
     bottom_bar.base_mut().dock = DockStyle::Bottom;
-    bottom_bar.base_mut().margin.left = 12;
-    bottom_bar.base_mut().margin.right = 12;
+    bottom_bar.base_mut().margin.left = 10;
+    bottom_bar.base_mut().margin.right = 10;
     bottom_bar.base_mut().margin.bottom = 8;
     bottom_bar.set_color(0x00000000); // transparent
     st.controls.push(bottom_bar);
-    add_child_to_parent(card_id, bottom_bar_id);
+    add_child_to_parent(dialog_win_id, bottom_bar_id);
 
     // Name field (Save/CreateFolder only)
     if has_name_field {
         let text_to_set = if !default_name.is_empty() { default_name } else { &[] };
-        let field_w = if matches!(dialog_type, DialogType::CreateFolder) { card_w - 44 } else { card_w - 200 };
+        let field_w = if is_create_folder { dlg_w - 44 } else { dlg_w - 200 };
         let mut name_field = controls::create_control(
             ControlKind::TextField, name_field_id, bottom_bar_id, 0, 6, field_w, 28, text_to_set,
         );
@@ -720,21 +663,20 @@ fn run_file_dialog(
     st.controls.push(cancel_btn);
     add_child_to_parent(bottom_bar_id, cancel_btn_id);
 
-    // ── TreeView (file list) ─────────────────────────────────────────
+    // ── TreeView (file list, fills remaining space) ──────────────────
     if !is_create_folder {
-        let tree_h = card_h.saturating_sub(120);
         let mut tree = controls::create_control(
-            ControlKind::TreeView, tree_id, card_id, 0, 0, card_w, tree_h, &[],
+            ControlKind::TreeView, tree_id, dialog_win_id, 0, 0, dlg_w, 400, &[],
         );
         tree.base_mut().dock = DockStyle::Fill;
-        tree.base_mut().margin.left = 12;
-        tree.base_mut().margin.right = 12;
+        tree.base_mut().margin.left = 8;
+        tree.base_mut().margin.right = 8;
         tree.base_mut().margin.top = 4;
         tree.base_mut().margin.bottom = 4;
         st.controls.push(tree);
-        add_child_to_parent(card_id, tree_id);
+        add_child_to_parent(dialog_win_id, tree_id);
 
-        // Set tree row height
+        // Configure tree view
         if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == tree_id) {
             if let Some(tv) = as_tree_view_mut(ctrl) {
                 tv.row_height = 22;
@@ -751,18 +693,21 @@ fn run_file_dialog(
         populate_file_list(show_files);
     }
 
-    // Register button callbacks
+    // ── Register callbacks ───────────────────────────────────────────
     if let Some(b) = st.controls.iter_mut().find(|c| c.id() == cancel_btn_id) {
         b.set_event_callback(EVENT_CLICK, dialog_cancel_clicked, 0);
     }
     if let Some(b) = st.controls.iter_mut().find(|c| c.id() == confirm_btn_id) {
         b.set_event_callback(EVENT_CLICK, dialog_confirm_clicked, confirm_userdata);
     }
-    // "^" button → navigate to parent directory
     if up_btn_id != 0 {
         if let Some(b) = st.controls.iter_mut().find(|c| c.id() == up_btn_id) {
             b.set_event_callback(EVENT_CLICK, dialog_up_clicked, 0);
         }
+    }
+    // Window close button (X) → same as Cancel
+    if let Some(b) = st.controls.iter_mut().find(|c| c.id() == dialog_win_id) {
+        b.set_event_callback(crate::control::EVENT_CLOSE, dialog_cancel_clicked, 0);
     }
 
     // ── Mini event loop ──────────────────────────────────────────────
@@ -773,14 +718,8 @@ fn run_file_dialog(
         if elapsed < 16 { syscall::sleep(16 - elapsed); }
     }
 
-    // Pop modal stack
-    let st = state();
-    if let Some(pos) = st.modal_stack.iter().position(|e| e.overlay_id == overlay_id) {
-        st.modal_stack.remove(pos);
-    }
-
-    // Clean up — remove overlay and all descendants (card is a child of overlay)
-    crate::anyui_remove(overlay_id);
+    // Destroy dialog window — auto-clears modal + removes all child controls
+    crate::anyui_destroy_window(dialog_win_id);
 
     unsafe { DIALOG_RESULT_LEN }
 }
