@@ -127,6 +127,28 @@ impl Cpu {
         self.jit_engine.flush();
     }
 
+    /// Mask RIP to the appropriate width for the current CPU mode.
+    ///
+    /// In real mode and 16-bit protected mode, RIP is limited to 16 bits.
+    /// In 32-bit protected mode (CS.D=1), RIP is limited to 32 bits.
+    /// In long mode, RIP is used as-is.
+    #[inline]
+    pub fn mask_rip(&mut self) {
+        match self.mode {
+            Mode::RealMode => {
+                self.regs.rip &= 0xFFFF;
+            }
+            Mode::ProtectedMode => {
+                if self.regs.seg[SegReg::Cs as usize].big {
+                    self.regs.rip &= 0xFFFF_FFFF;
+                } else {
+                    self.regs.rip &= 0xFFFF;
+                }
+            }
+            Mode::LongMode => {}
+        }
+    }
+
     /// Request the CPU to stop at the next instruction boundary.
     pub fn request_stop(&mut self) {
         self.stop_requested = true;
@@ -492,6 +514,7 @@ impl Cpu {
             match crate::executor::execute(self, &inst, memory, mmu, io, interrupts) {
                 Ok(()) => {
                     self.instruction_count += 1;
+                    self.mask_rip();
                 }
                 Err(VmError::Halted) => {
                     self.instruction_count += 1;
@@ -554,6 +577,7 @@ impl Cpu {
             match crate::executor::execute(self, inst, memory, mmu, io, interrupts) {
                 Ok(()) => {
                     self.instruction_count += 1;
+                    self.mask_rip();
                 }
                 Err(VmError::Halted) => {
                     self.instruction_count += 1;
@@ -672,6 +696,7 @@ impl Cpu {
 
         // Update instruction count with the number of guest instructions.
         self.instruction_count += inst_count;
+        self.mask_rip();
 
         match result {
             JIT_OK => BlockExitReason::Continue,

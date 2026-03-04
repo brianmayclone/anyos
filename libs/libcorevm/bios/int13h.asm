@@ -471,7 +471,7 @@ int13h_handler:
     mov eax, [es:si + 8]           ; LBA (2048-byte CD sector units)
     shl eax, 2                     ; × 4 → ATA LBA (512-byte units)
 
-    ; Trace: CD read LBA and count before ide_read_sectors.
+    ; Trace: CD read LBA, count, and buffer address before ide_read_sectors.
     push ax
     push bx
     mov al, 'R'
@@ -497,6 +497,27 @@ int13h_handler:
     call int13_trace_putchar
     ; Print count (low byte of ECX).
     mov al, cl
+    call int13_trace_hex8
+    mov al, ' '
+    call int13_trace_putchar
+    ; Print buffer address BX:DI (segment:offset).
+    mov al, 'B'
+    call int13_trace_putchar
+    pop eax
+    pop bx
+    push bx
+    push eax
+    mov ax, bx             ; buffer segment
+    shr ax, 8
+    call int13_trace_hex8
+    mov ax, bx
+    call int13_trace_hex8
+    mov al, ':'
+    call int13_trace_putchar
+    mov ax, di             ; buffer offset
+    shr ax, 8
+    call int13_trace_hex8
+    mov ax, di
     call int13_trace_hex8
     mov al, 10
     call int13_trace_putchar
