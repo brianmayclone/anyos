@@ -1,6 +1,6 @@
 # anyOS Syscall Reference
 
-Complete reference for all 155+ system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
+Complete reference for all 170+ system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
 
 ## Calling Conventions
 
@@ -143,7 +143,8 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 131 | `tcp_shutdown_wr` | socket_id | 0 | Half-close: send FIN, can still receive |
 | 132 | `tcp_listen` | port, backlog | listener_id or 0xFFFFFFFF | Listen for incoming TCP connections on port |
 | 133 | `tcp_accept` | listener_id, result_ptr | 0 or 0xFFFFFFFF | Accept connection. Writes to result_ptr: [socket_id:u32, ip:u8[4], port:u16, pad:u16] |
-| 134 | `tcp_list` | buf_ptr, buf_size | entry_count | List all active TCP connections |
+| 134 | `tcp_list` | buf_ptr, buf_size | entry_count | List all active TCP connections. Each entry: 16 bytes [local_ip:4, local_port:u16, remote_ip:4, remote_port:u16, state:u8, owner_tid:u8, recv_buf_len:u16] |
+| 136 | `tcp_accept_nowait` | listener_id, result_ptr | 0 or 0xFFFFFFFF | Non-blocking accept. Returns immediately: connection if pending, or 0xFFFFFFFF if none ready. Same result format as `tcp_accept` |
 
 ## Networking — UDP
 
@@ -153,7 +154,9 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 151 | `udp_unbind` | port | 0 | Release UDP port binding |
 | 152 | `udp_sendto` | params_ptr | bytes_sent or error | Send datagram. Params: 20 bytes [dst_ip:4, dst_port:u32, src_port:u32, data_ptr:u32, data_len:u32] |
 | 153 | `udp_recvfrom` | port, buf_ptr, buf_len | total_bytes | Receive datagram. Header: [src_ip:4, src_port:u16, payload_len:u16] + payload |
-| 154 | `udp_set_opt` | port, opt, val | 0 or error | Set socket option. opt: 1=SO_BROADCAST, 2=SO_RCVTIMEO |
+| 154 | `udp_set_opt` | port, opt, val | 0 or error | Set socket option. opt: 1=SO_BROADCAST, 2=SO_RCVTIMEO (ms, 0=non-blocking) |
+| 155 | `udp_list` | buf_ptr, max_entries | entry_count | List all bound UDP ports. Each entry: 8 bytes [port:u16, owner_tid:u16, recv_queue_len:u16, pad:u16] |
+| 156 | `net_stats` | buf_ptr, buf_size | 0 or error | Get network protocol statistics. Output: 104 bytes [rx/tx packets, bytes, errors (each u64), TCP counters] |
 
 ## Pipes / Named IPC
 
@@ -229,6 +232,8 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 33 | `dmesg` | buf_ptr, buf_size | bytes_written | Read kernel log ring buffer |
 | 34 | `tick_hz` | — | hz | Get PIT tick frequency in Hz |
 | 35 | `uptime_ms` | — | ms | System uptime in milliseconds (TSC-based, sub-ms precision) |
+| 36 | `sleep_us` | microseconds | 0 | Sleep for N microseconds (high-resolution sleep) |
+| 37 | `set_time` | buf_ptr (8 bytes) | 0 or error | Set RTC date/time. Input: [year_lo, year_hi, month, day, hour, min, sec, 0]. Year must be 2000–2099. Writes directly to CMOS RTC registers |
 
 ## Device Management
 
@@ -386,3 +391,49 @@ Runtime per-user, per-app permission management. Apps declare capabilities in th
 | 274 | `partition_create` | disk_id, entry_ptr, entry_size | 0 or error | Create a new partition entry |
 | 275 | `partition_delete` | disk_id, index | 0 or error | Delete a partition |
 | 276 | `partition_rescan` | disk_id | 0 or error | Rescan disk partitions |
+
+## Hostname
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 280 | `get_hostname` | buf_ptr, buf_size | bytes_written or error | Get system hostname. Copies null-terminated hostname string to buffer |
+| 281 | `set_hostname` | name_ptr, name_len | 0 or error | Set system hostname. Max 63 bytes |
+
+## Power Management
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 282 | `shutdown` | cmd | — | Power management. cmd: 0=shutdown, 1=reboot |
+
+## Debug / Trace (anyTrace)
+
+Debugging syscalls for the anyTrace debugger. Allows attaching to processes, reading/writing memory and registers, setting breakpoints, and single-stepping.
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 300 | `debug_attach` | tid | 0 or error | Attach debugger to target thread |
+| 301 | `debug_detach` | tid | 0 or error | Detach debugger from target thread |
+| 302 | `debug_suspend` | tid | 0 or error | Suspend target thread execution |
+| 303 | `debug_resume` | tid | 0 or error | Resume suspended target thread |
+| 304 | `debug_get_regs` | tid, buf_ptr | 0 or error | Read target thread register state |
+| 305 | `debug_set_regs` | tid, buf_ptr | 0 or error | Write target thread register state |
+| 306 | `debug_read_mem` | tid, addr, buf_ptr, len | bytes_read | Read memory from target process address space |
+| 307 | `debug_write_mem` | tid, addr, buf_ptr, len | bytes_written | Write memory to target process address space |
+| 308 | `debug_set_breakpoint` | tid, addr | 0 or error | Set hardware breakpoint at address |
+| 309 | `debug_clr_breakpoint` | tid, addr | 0 or error | Clear hardware breakpoint at address |
+| 310 | `debug_single_step` | tid | 0 or error | Single-step target thread (execute one instruction) |
+| 311 | `debug_get_mem_map` | tid, buf_ptr, buf_size | entry_count | Get memory map of target process |
+| 312 | `debug_wait_event` | tid, buf_ptr, timeout_ms | event_type or 0 | Wait for debug event (breakpoint hit, single-step complete) |
+| 313 | `thread_info_ex` | tid, buf_ptr, buf_size | bytes_written | Get extended thread information (name, state, priority, CPU time) |
+
+## GPU 3D Acceleration (SVGA3D)
+
+Hardware-accelerated 3D graphics via VMware SVGA3D. Requires `gpu_has_accel`.
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 512 | `gpu_3d_submit` | cmd_buf_ptr, cmd_size | 0 or error | Submit SVGA3D command buffer to GPU |
+| 513 | `gpu_3d_query` | query_type, buf_ptr | result | Query 3D capability. query_type: 0=has_3d, 1=max_texture_size, 2=supported_formats |
+| 514 | `gpu_3d_sync` | fence_id | 0 or error | Wait for GPU to complete all commands up to fence |
+| 515 | `gpu_3d_surface_dma` | params_ptr | 0 or error | DMA transfer from system memory to GPU surface |
+| 516 | `gpu_3d_surface_dma_read` | params_ptr | 0 or error | DMA transfer from GPU surface to system memory |
