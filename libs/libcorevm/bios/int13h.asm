@@ -100,6 +100,10 @@ int13h_handler:
 
     ; Convert CHS to LBA: LBA = (C * H + h) * S + (s - 1)
     ; where H = total heads, S = sectors per track.
+    ;
+    ; NOTE: MUL clobbers EDX, so DH (head) and DL (drive) must be read
+    ; from the pushed EDX on the stack ([esp+6]=DL, [esp+7]=DH) after
+    ; any MUL instruction.
     movzx eax, ch               ; Cylinder low 8 bits
     mov bl, cl
     shr bl, 6                   ; Cylinder high 2 bits
@@ -111,18 +115,18 @@ int13h_handler:
     ; HDD: use IDENTIFY geometry.
     ; CD no-emulation: expose synthetic geometry (64 heads, 32 spt)
     ; consistent with AH=08.
-    cmp dl, 0xE0
+    cmp dl, 0xE0                ; DL still valid here (before MUL)
     jne .chs_geom_hdd
     mov ebx, 64
     jmp .chs_heads_ok
 .chs_geom_hdd:
     movzx ebx, word [cs:ide_master_heads]
 .chs_heads_ok:
-    mul ebx                     ; EAX = C * H
-    movzx ebx, dh               ; Head
+    mul ebx                     ; EAX = C * H (EDX clobbered!)
+    movzx ebx, byte [esp + 7]  ; DH (head) from pushed EDX
     add eax, ebx                ; EAX = C * H + h
 
-    cmp dl, 0xE0
+    cmp byte [esp + 6], 0xE0   ; DL (drive) from pushed EDX
     jne .chs_spt_hdd
     mov ebx, 32
     jmp .chs_spt_ok
@@ -139,13 +143,17 @@ int13h_handler:
 
     ; Now read using LBA. Sector count was in AL on entry.
     ; We saved original regs, so recover sector count.
+    ; Stack frame: push eax(4)+ebx(4)+ecx(4)+edx(4)+edi(4)+es(2) = 22 bytes.
+    ; push es is 2 bytes in [BITS 16] mode, so offsets are:
+    ;   [esp+0]=ES, [esp+2]=EDI, [esp+6]=EDX, [esp+10]=ECX,
+    ;   [esp+14]=EBX, [esp+18]=EAX.
     pop es
     push es
-    mov ecx, [esp + 20]         ; Original EAX (AL = count)
+    mov ecx, [esp + 18]         ; Original EAX (AL = count)
     movzx ecx, cl               ; ECX = sector count
     ; EAX = LBA, ECX = count, ES:BX was set by caller.
     ; Recover original BX from stack.
-    mov edi, [esp + 16]         ; Original EBX
+    mov edi, [esp + 14]         ; Original EBX
     and edi, 0xFFFF             ; DI = buffer offset (original BX)
 
     call ide_read_sectors
@@ -370,13 +378,17 @@ int13h_handler:
     jmp .ext_read_ok
 
 .ext_read_cd:
-    ; CD-ROM: DAP uses 512-byte sectors (EDD semantics).
+    ; CD-ROM: AH=48h reports 2048-byte CD sectors, so ISOLINUX (and other
+    ; El Torito bootloaders) pass LBAs and counts in 2048-byte units.
+    ; Convert to 512-byte ATA sectors for ide_read_sectors.
     push bx
     pop es                          ; ES = caller's DS
-    movzx ecx, word [es:si + 2]    ; Sector count (512-byte sectors)
+    movzx ecx, word [es:si + 2]    ; Sector count (2048-byte CD sectors)
+    shl ecx, 2                     ; × 4 → 512-byte ATA sectors
     mov di, [es:si + 4]            ; Buffer offset
     mov bx, [es:si + 6]            ; Buffer segment
-    mov eax, [es:si + 8]           ; LBA (512-byte sector units)
+    mov eax, [es:si + 8]           ; LBA (2048-byte CD sector units)
+    shl eax, 2                     ; × 4 → ATA LBA (512-byte units)
     mov es, bx                      ; ES = buffer segment
     call ide_read_sectors
     jc .ext_read_fail_pop
