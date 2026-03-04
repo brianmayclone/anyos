@@ -396,6 +396,82 @@ pub fn exec_mov_seg(
     Ok(())
 }
 
+/// LES/LDS/LSS/LFS/LGS: load a far pointer (seg:offset) from memory.
+///
+/// Reads `operand_size` bytes for the offset followed by a 16-bit selector
+/// from the memory operand. Stores the offset in the GP register (operand 0)
+/// and loads the selector into the implicit segment register determined by
+/// the opcode.
+pub fn exec_load_far_ptr(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    use crate::instruction::OpcodeMap;
+
+    let op = inst.opcode as u8;
+
+    // Determine which segment register to load.
+    let seg_reg = match inst.opcode_map {
+        OpcodeMap::Primary => match op {
+            0xC4 => SegReg::Es,
+            0xC5 => SegReg::Ds,
+            _ => return Err(VmError::UndefinedOpcode(op)),
+        },
+        OpcodeMap::Secondary => match op {
+            0xB2 => SegReg::Ss,
+            0xB4 => SegReg::Fs,
+            0xB5 => SegReg::Gs,
+            _ => return Err(VmError::UndefinedOpcode(op)),
+        },
+        _ => return Err(VmError::UndefinedOpcode(op)),
+    };
+
+    // operand[1] is the memory source (r/m). Compute its linear address.
+    let mem_op = match &inst.operands[1] {
+        Operand::Memory(m) => m,
+        _ => return Err(VmError::UndefinedOpcode(op)),
+    };
+    let linear = compute_effective_address(cpu, mem_op, inst)?;
+    let off_size = inst.operand_size;
+
+    // Read the offset (16 or 32 bits).
+    let offset = translate_and_read(cpu, linear, off_size, mmu, memory)?;
+
+    // Read the selector (16 bits) immediately following the offset.
+    let sel_offset = match off_size {
+        OperandSize::Word => 2u64,
+        OperandSize::Dword => 4u64,
+        _ => 4u64,
+    };
+    let selector = translate_and_read(cpu, linear.wrapping_add(sel_offset), OperandSize::Word, mmu, memory)? as u16;
+
+    // Write the offset to the destination GP register (operand 0).
+    write_operand(cpu, inst, &inst.operands[0], offset, memory, mmu)?;
+
+    // Load the segment register.
+    match cpu.mode {
+        Mode::RealMode => {
+            cpu.regs.load_segment_real(seg_reg, selector);
+        }
+        Mode::ProtectedMode => {
+            cpu.load_segment_from_gdt(seg_reg, selector, memory, mmu)?;
+        }
+        Mode::LongMode => {
+            let desc = cpu.regs.segment_mut(seg_reg);
+            desc.selector = selector;
+            match seg_reg {
+                SegReg::Fs | SegReg::Gs => {}
+                _ => desc.base = 0,
+            }
+        }
+    }
+
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
 /// SAHF: store AH into the low byte of FLAGS (SF, ZF, AF, PF, CF).
 ///
 /// Bits 1, 3, 5 of FLAGS are reserved and handled accordingly:

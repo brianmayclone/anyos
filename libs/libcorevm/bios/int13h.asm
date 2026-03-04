@@ -409,6 +409,20 @@ int13h_handler:
     push ds
     push si
 
+    ; Trace: DL value for AH=42h.
+    push ax
+    mov al, 'X'
+    call int13_trace_putchar
+    mov al, 'R'
+    call int13_trace_putchar
+    mov al, ' '
+    call int13_trace_putchar
+    mov al, dl
+    call int13_trace_hex8
+    mov al, 10
+    call int13_trace_putchar
+    pop ax
+
     ; BIOS variables use cs: prefix (in the ROM segment) so they are safe
     ; regardless of caller's DS.  Save caller's DS in BX for DAP access.
     mov bx, ds
@@ -469,11 +483,42 @@ int13h_handler:
     mov di, [es:si + 4]            ; Buffer offset
     mov bx, [es:si + 6]            ; Buffer segment
     mov eax, [es:si + 8]           ; LBA (2048-byte CD sector units)
+
+    ; Trace: raw DAP LBA before ×4 conversion.
+    push ax
+    mov al, 'D'
+    call int13_trace_putchar
+    mov al, 'A'
+    call int13_trace_putchar
+    mov al, 'P'
+    call int13_trace_putchar
+    mov al, ' '
+    call int13_trace_putchar
+    pop ax
+    push eax
+    shr eax, 16
+    push ax
+    shr ax, 8
+    call int13_trace_hex8
+    pop ax
+    call int13_trace_hex8
+    pop eax
+    push eax
+    push ax
+    shr ax, 8
+    call int13_trace_hex8
+    pop ax
+    call int13_trace_hex8
+    mov al, 10
+    call int13_trace_putchar
+    pop eax
+
     shl eax, 2                     ; × 4 → ATA LBA (512-byte units)
 
-    ; Trace: CD read LBA, count, and buffer address before ide_read_sectors.
-    push ax
-    push bx
+    ; Trace: CD read ATA LBA, count, buffer.  Save all regs with push eax.
+    push eax
+    push ebx
+
     mov al, 'R'
     call int13_trace_putchar
     mov al, 'C'
@@ -482,47 +527,42 @@ int13h_handler:
     call int13_trace_putchar
     mov al, 'L'
     call int13_trace_putchar
-    ; Print ATA LBA (low 16 bits of EAX).
-    pop bx
-    push bx
-    push eax
-    shr eax, 8
+
+    ; Print ATA LBA (low 16 bits of EAX from stack).
+    mov eax, [esp + 4]     ; peek saved EAX from stack
+    shr ax, 8
     call int13_trace_hex8
-    pop eax
-    push eax
+    mov eax, [esp + 4]
     call int13_trace_hex8
+
     mov al, ' '
     call int13_trace_putchar
     mov al, 'N'
     call int13_trace_putchar
-    ; Print count (low byte of ECX).
     mov al, cl
     call int13_trace_hex8
+
     mov al, ' '
     call int13_trace_putchar
-    ; Print buffer address BX:DI (segment:offset).
     mov al, 'B'
     call int13_trace_putchar
-    pop eax
-    pop bx
-    push bx
-    push eax
-    mov ax, bx             ; buffer segment
+    mov ax, bx
     shr ax, 8
     call int13_trace_hex8
     mov ax, bx
     call int13_trace_hex8
     mov al, ':'
     call int13_trace_putchar
-    mov ax, di             ; buffer offset
+    mov ax, di
     shr ax, 8
     call int13_trace_hex8
     mov ax, di
     call int13_trace_hex8
     mov al, 10
     call int13_trace_putchar
+
+    pop ebx
     pop eax
-    pop bx
 
     mov es, bx                      ; ES = buffer segment
     call ide_read_sectors

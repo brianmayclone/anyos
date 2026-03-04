@@ -1332,10 +1332,28 @@ impl<'m> DecodeCursor<'m> {
                 self.decode_modrm_rm_r(sz)
             }
 
+            // -- LSS r, m16:16/32 --
+            0xB2 => {
+                let sz = self.inst.operand_size;
+                self.decode_modrm_r_rm(sz)
+            }
+
             // -- BTR r/m, r --
             0xB3 => {
                 let sz = self.inst.operand_size;
                 self.decode_modrm_rm_r(sz)
+            }
+
+            // -- LFS r, m16:16/32 --
+            0xB4 => {
+                let sz = self.inst.operand_size;
+                self.decode_modrm_r_rm(sz)
+            }
+
+            // -- LGS r, m16:16/32 --
+            0xB5 => {
+                let sz = self.inst.operand_size;
+                self.decode_modrm_r_rm(sz)
             }
 
             // -- MOVZX r, r/m8 --

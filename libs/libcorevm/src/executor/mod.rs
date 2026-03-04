@@ -351,7 +351,7 @@ fn exec_primary(
         0xC3 => control::exec_ret_near(cpu, inst, memory, mmu),
 
         // ── LES/LDS (32-bit only, invalid in 64-bit) ──
-        0xC4 | 0xC5 => Err(VmError::UndefinedOpcode(op)),
+        0xC4 | 0xC5 => data::exec_load_far_ptr(cpu, inst, memory, mmu),
 
         // ── MOV r/m8, imm8 ──
         0xC6 => data::exec_mov(cpu, inst, memory, mmu),
@@ -684,8 +684,17 @@ fn exec_secondary(
         // ── CMPXCHG ──
         0xB0 | 0xB1 => data::exec_cmpxchg(cpu, inst, memory, mmu),
 
+        // ── LSS r, m16:16/32 ──
+        0xB2 => data::exec_load_far_ptr(cpu, inst, memory, mmu),
+
         // ── BTR r/m, r ──
         0xB3 => logic::exec_btr(cpu, inst, memory, mmu),
+
+        // ── LFS r, m16:16/32 ──
+        0xB4 => data::exec_load_far_ptr(cpu, inst, memory, mmu),
+
+        // ── LGS r, m16:16/32 ──
+        0xB5 => data::exec_load_far_ptr(cpu, inst, memory, mmu),
 
         // ── MOVZX r, r/m8 ──
         0xB6 => data::exec_movzx(cpu, inst, memory, mmu),
