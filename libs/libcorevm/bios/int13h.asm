@@ -834,22 +834,8 @@ int13_trace_nibble:
     call int13_trace_putchar
     ret
 
-; Input: AL=char
+; Input: AL=char (disabled for performance — immediate return)
 int13_trace_putchar:
-    push dx
-    push ax
-
-    ; COM1 serial output
-    pop ax
-    push ax
-    call serial_putchar
-
-    ; QEMU/SeaBIOS-style debug port output (vmd also drains this)
-    mov dx, 0x0402
-    pop ax
-    out dx, al
-
-    pop dx
     ret
 
 ; =============================================================================

@@ -33,13 +33,9 @@ use crate::error::Result;
 use crate::io::IoHandler;
 use crate::syscall;
 
-/// Log a line to the serial console for IDE debugging.
+/// Log a line to the serial console for IDE debugging (disabled for performance).
 macro_rules! ide_log {
-    ($($arg:tt)*) => {{
-        libsyscall::serial_print(format_args!("[ide] "));
-        libsyscall::serial_print(format_args!($($arg)*));
-        libsyscall::write_bytes(b"\n");
-    }};
+    ($($arg:tt)*) => {{}};
 }
 
 // ── ATA status register bits ──
