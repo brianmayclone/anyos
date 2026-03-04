@@ -23,8 +23,19 @@ fn read_cmos(reg: u8) -> u8 {
     }
 }
 
+fn write_cmos(reg: u8, val: u8) {
+    unsafe {
+        outb(0x70, reg);
+        outb(0x71, val);
+    }
+}
+
 fn bcd_to_binary(bcd: u8) -> u8 {
     (bcd & 0x0F) + ((bcd >> 4) * 10)
+}
+
+fn binary_to_bcd(val: u8) -> u8 {
+    ((val / 10) << 4) | (val % 10)
 }
 
 fn is_updating() -> bool {
@@ -81,6 +92,40 @@ pub fn read_time() -> RtcTime {
 pub fn read_datetime() -> (u16, u8, u8, u8, u8, u8) {
     let t = read_time();
     (t.year, t.month, t.day, t.hours, t.minutes, t.seconds)
+}
+
+/// Set the RTC date/time.
+///
+/// Disables RTC update cycle, writes all registers, re-enables updates.
+pub fn set_time(year: u16, month: u8, day: u8, hour: u8, min: u8, sec: u8) {
+    // Read register B to determine BCD vs binary mode.
+    let reg_b = read_cmos(0x0B);
+    let is_bcd = reg_b & 0x04 == 0;
+
+    // Disable RTC updates (set bit 7 of register B).
+    write_cmos(0x0B, reg_b | 0x80);
+
+    // Year: RTC stores only 2-digit year (0-99), we assume 21st century.
+    let year2 = (year % 100) as u8;
+
+    if is_bcd {
+        write_cmos(0x00, binary_to_bcd(sec));
+        write_cmos(0x02, binary_to_bcd(min));
+        write_cmos(0x04, binary_to_bcd(hour));
+        write_cmos(0x07, binary_to_bcd(day));
+        write_cmos(0x08, binary_to_bcd(month));
+        write_cmos(0x09, binary_to_bcd(year2));
+    } else {
+        write_cmos(0x00, sec);
+        write_cmos(0x02, min);
+        write_cmos(0x04, hour);
+        write_cmos(0x07, day);
+        write_cmos(0x08, month);
+        write_cmos(0x09, year2);
+    }
+
+    // Re-enable RTC updates (clear bit 7 of register B).
+    write_cmos(0x0B, reg_b & !0x80);
 }
 
 /// Initialize the RTC driver and log the current date/time.

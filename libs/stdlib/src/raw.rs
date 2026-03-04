@@ -61,6 +61,7 @@ pub(crate) const SYS_SYSINFO: u32 = 32;
 pub(crate) const SYS_DMESG: u32 = 33;
 pub(crate) const SYS_TICK_HZ: u32 = 34;
 pub(crate) const SYS_UPTIME_MS: u32 = 35;
+pub(crate) const SYS_SET_TIME: u32 = 37;
 
 // Networking
 pub(crate) const SYS_NET_CONFIG: u32 = 40;

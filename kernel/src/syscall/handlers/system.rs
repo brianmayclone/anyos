@@ -34,6 +34,38 @@ pub fn sys_time(buf_ptr: u32) -> u32 {
     0
 }
 
+/// sys_set_time - Set system date/time via RTC.
+/// arg1=buf_ptr: input [year_lo:u8, year_hi:u8, month:u8, day:u8, hour:u8, min:u8, sec:u8, pad:u8]
+/// Returns 0 on success, u32::MAX on error.
+pub fn sys_set_time(buf_ptr: u32) -> u32 {
+    if buf_ptr == 0 {
+        return u32::MAX;
+    }
+    let (year, month, day, hour, min, sec) = unsafe {
+        let buf = buf_ptr as *const u8;
+        let year = *buf as u16 | ((*buf.add(1) as u16) << 8);
+        let month = *buf.add(2);
+        let day = *buf.add(3);
+        let hour = *buf.add(4);
+        let min = *buf.add(5);
+        let sec = *buf.add(6);
+        (year, month, day, hour, min, sec)
+    };
+    // Basic validation.
+    if month == 0 || month > 12 || day == 0 || day > 31
+        || hour > 23 || min > 59 || sec > 59 || year < 2000 || year > 2099
+    {
+        return u32::MAX;
+    }
+    #[cfg(target_arch = "x86_64")]
+    crate::drivers::rtc::set_time(year, month, day, hour, min, sec);
+    crate::serial_println!(
+        "RTC set: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year, month, day, hour, min, sec
+    );
+    0
+}
+
 /// sys_uptime - Get system uptime in timer ticks (see `hal::timer_frequency_hz`).
 pub fn sys_uptime() -> u32 {
     crate::arch::hal::timer_current_ticks()

@@ -7,6 +7,13 @@ pub fn time(buf: &mut [u8; 8]) -> u32 {
     syscall1(SYS_TIME, buf.as_mut_ptr() as u64)
 }
 
+/// Set system date/time via RTC.
+/// buf: [year_lo, year_hi, month, day, hour, min, sec, 0]
+/// Returns 0 on success, u32::MAX on error.
+pub fn set_time(buf: &[u8; 8]) -> u32 {
+    syscall1(SYS_SET_TIME, buf.as_ptr() as u64)
+}
+
 /// Get uptime in PIT ticks.
 pub fn uptime() -> u32 {
     syscall0(SYS_UPTIME)

@@ -114,6 +114,54 @@ pub fn calculate_delay(resp: &NtpResponse, t4: NtpTimestamp) -> i64 {
     total - server
 }
 
+/// Compute the corrected time as a syscall buffer [year_lo, year_hi, month, day, hour, min, sec, 0].
+/// Takes the current system time and applies offset_ms correction.
+pub fn corrected_time_buf(offset_ms: i64) -> [u8; 8] {
+    // Get current system time as Unix seconds.
+    let mut time_buf = [0u8; 8];
+    sys::time(&mut time_buf);
+    let year = time_buf[0] as u32 | ((time_buf[1] as u32) << 8);
+    let month = time_buf[2] as u32;
+    let day = time_buf[3] as u32;
+    let hour = time_buf[4] as u32;
+    let min = time_buf[5] as u32;
+    let sec = time_buf[6] as u32;
+
+    let unix_secs = date_to_unix(year, month, day, hour, min, sec) as i64;
+    // Apply offset (positive offset = our clock is behind, so add).
+    let corrected = (unix_secs * 1000 + offset_ms) / 1000;
+    let corrected = if corrected < 0 { 0u64 } else { corrected as u64 };
+
+    let (y, mo, d, h, mi, s) = unix_to_date(corrected);
+    let year_bytes = (y as u16).to_le_bytes();
+    [year_bytes[0], year_bytes[1], mo as u8, d as u8, h as u8, mi as u8, s as u8, 0]
+}
+
+/// Convert Unix timestamp to (year, month, day, hour, min, sec).
+fn unix_to_date(mut secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+    let sec = (secs % 60) as u32; secs /= 60;
+    let min = (secs % 60) as u32; secs /= 60;
+    let hour = (secs % 24) as u32; secs /= 24;
+    let mut year = 1970u32;
+    loop {
+        let days_in_year = if is_leap(year) { 366u64 } else { 365 };
+        if secs < days_in_year { break; }
+        secs -= days_in_year;
+        year += 1;
+    }
+    let month_days: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1u32;
+    for m in 0..12 {
+        let mut d = month_days[m] as u64;
+        if m == 1 && is_leap(year) { d += 1; }
+        if secs < d { break; }
+        secs -= d;
+        month += 1;
+    }
+    let day = secs as u32 + 1;
+    (year, month, day, hour, min, sec)
+}
+
 /// Query a single NTP server. Returns (offset_ms, delay_ms, stratum) or None.
 pub fn query_server(server_ip: &[u8; 4]) -> Option<(i64, i64, u8)> {
     let mut request = [0u8; NTP_PACKET_SIZE];

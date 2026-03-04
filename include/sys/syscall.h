@@ -57,6 +57,7 @@
 #define SYS_DMESG           33
 #define SYS_TICK_HZ         34
 #define SYS_UPTIME_MS       35
+#define SYS_SET_TIME        37
 
 /* ---- Networking (general) ---- */
 #define SYS_NET_CONFIG      40

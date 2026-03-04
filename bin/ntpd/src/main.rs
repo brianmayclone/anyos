@@ -118,6 +118,18 @@ fn do_sync(cfg: &config::NtpdConfig, state: &mut SyncState) {
                 println!("ntpd: synced with {} (stratum {}): offset {}{}ms, delay {}ms",
                     cfg.servers[i].hostname_str(), stratum,
                     sign, abs_offset, delay);
+
+                // Set system clock if offset exceeds 100ms.
+                if abs_offset > 100 {
+                    let mut time_buf = ntp::corrected_time_buf(offset);
+                    let rc = sys::set_time(&time_buf);
+                    if rc == 0 {
+                        println!("ntpd: system clock adjusted by {}{}ms", sign, abs_offset);
+                    } else {
+                        println!("ntpd: failed to set system time");
+                    }
+                }
+
                 write_status(cfg, state);
                 return;
             }
