@@ -820,6 +820,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ntp"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "ntpd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "nvi"
 version = "0.1.0"
 dependencies = [
