@@ -318,16 +318,18 @@ impl Cpu {
             0
         };
         loop {
-            // Check stop request and instruction limit periodically (every 256 instructions)
-            // to reduce branch overhead in the hot loop.
-            if self.instruction_count & 0xFF == 0 {
-                if self.stop_requested {
-                    self.stop_requested = false;
-                    return ExitReason::StopRequested;
-                }
-                if target > 0 && self.instruction_count >= target {
-                    return ExitReason::InstructionLimit;
-                }
+            // Check stop request and instruction limit every iteration.
+            // The branch predictor handles these near-always-false checks
+            // with negligible overhead. The previous `& 0xFF` gating was
+            // broken: with basic blocks of 2 instructions, an odd starting
+            // instruction_count stays odd forever and never hits a multiple
+            // of 256, causing run() to never return.
+            if self.stop_requested {
+                self.stop_requested = false;
+                return ExitReason::StopRequested;
+            }
+            if target > 0 && self.instruction_count >= target {
+                return ExitReason::InstructionLimit;
             }
             // Sync MMU state from control registers (fast-path: skips if unchanged).
             mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
@@ -599,16 +601,10 @@ impl Cpu {
 
             inst_phys += inst.length as u64;
 
-            // Check for stop/limit between instructions within the block.
-            if self.instruction_count & 0xFF == 0 {
-                if self.stop_requested {
-                    self.stop_requested = false;
-                    return BlockExitReason::Exit(ExitReason::StopRequested);
-                }
-                // Note: we don't check the instruction limit here because the
-                // block is short (max 64 instructions) and the outer loop
-                // checks it at the top. This avoids passing `target` into
-                // this method.
+            // Check for stop request between instructions within the block.
+            if self.stop_requested {
+                self.stop_requested = false;
+                return BlockExitReason::Exit(ExitReason::StopRequested);
             }
         }
         BlockExitReason::Continue

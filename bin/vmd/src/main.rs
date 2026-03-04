@@ -93,12 +93,6 @@ struct VmInstance {
     jit_enabled: bool,
     /// Last wall-clock ms when PIT was advanced (for real-time timer).
     last_pit_ms: u32,
-    /// Total PIT advance calls (for diagnostics).
-    pit_calls: u32,
-    /// Total PIT ticks advanced.
-    pit_total_ticks: u64,
-    /// Total PIT fires (IRQ 0 raised).
-    pit_total_fires: u32,
 }
 
 /// Global daemon state.
@@ -446,9 +440,6 @@ fn cmd_create(uuid: &str) {
         bios_type: config.bios_type.clone(),
         jit_enabled: config.jit_enabled,
         last_pit_ms: sys::uptime_ms(),
-        pit_calls: 0,
-        pit_total_ticks: 0,
-        pit_total_fires: 0,
     };
 
     d.vm = Some(inst);
@@ -713,21 +704,6 @@ fn advance_pit_realtime(inst: &mut VmInstance) {
     let fires = inst.handle.pit_advance(ticks);
     if fires > 0 {
         inst.handle.pic_raise_irq(0);
-    }
-
-    // Diagnostics.
-    inst.pit_calls += 1;
-    inst.pit_total_ticks += ticks as u64;
-    inst.pit_total_fires += fires;
-
-    // Log first 5 calls and every fire.
-    if inst.pit_calls <= 5 {
-        anyos_std::println!("[pit] #{} elapsed={}ms ticks={} fires={} total_ticks={}",
-            inst.pit_calls, elapsed, ticks, fires, inst.pit_total_ticks);
-    }
-    if fires > 0 {
-        anyos_std::println!("[pit] FIRE! call#{} fires={} total_fires={} total_ticks={}",
-            inst.pit_calls, fires, inst.pit_total_fires, inst.pit_total_ticks);
     }
 
     inst.last_pit_ms = now;
