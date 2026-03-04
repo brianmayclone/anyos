@@ -78,6 +78,9 @@ pci_enumerate:
     push edx
     push edi
     push si
+    push ds
+    push cs
+    pop ds                          ; DS = CS = 0xF000 for BIOS variable writes
 
     mov si, pci_device_table
     xor cx, cx                  ; Device count = 0
@@ -201,6 +204,7 @@ pci_enumerate:
 .done:
     mov [pci_device_count], cx
 
+    pop ds
     pop si
     pop edi
     pop edx

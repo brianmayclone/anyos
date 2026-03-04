@@ -124,26 +124,27 @@ ide_detect:
     mov cx, 256
     rep insw
 
-    ; Parse IDENTIFY data.
+    ; Parse IDENTIFY data.  Store results in the BIOS ROM segment (cs:) so
+    ; they survive when the boot image reuses low RAM for its own data.
     ; Word 1: cylinders.
     mov ax, [ide_identify_buf + 2]
-    mov [ide_master_cyls], ax
+    mov [cs:ide_master_cyls], ax
     ; Word 3: heads.
     mov ax, [ide_identify_buf + 6]
-    mov [ide_master_heads], ax
+    mov [cs:ide_master_heads], ax
     ; Word 6: sectors per track.
     mov ax, [ide_identify_buf + 12]
-    mov [ide_master_spt], ax
+    mov [cs:ide_master_spt], ax
     ; Words 60-61: total LBA28 sectors.
     mov eax, [ide_identify_buf + 120]
-    mov [ide_master_lba28], eax
+    mov [cs:ide_master_lba28], eax
     ; Words 100-103: total LBA48 sectors (if supported).
     mov eax, [ide_identify_buf + 200]
-    mov [ide_master_lba48], eax
+    mov [cs:ide_master_lba48], eax
     mov eax, [ide_identify_buf + 204]
-    mov [ide_master_lba48 + 4], eax
+    mov [cs:ide_master_lba48 + 4], eax
 
-    mov byte [ide_master_present], 1
+    mov byte [cs:ide_master_present], 1
 
     ; Update BDA: number of hard disks.
     xor ax, ax
@@ -153,7 +154,7 @@ ide_detect:
     jmp .done
 
 .no_drive:
-    mov byte [ide_master_present], 0
+    mov byte [cs:ide_master_present], 0
 .done:
     pop es
     pop di

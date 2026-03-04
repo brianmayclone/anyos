@@ -26,6 +26,7 @@ el_torito_emul:     db 0       ; Boot Media Type (0=no-emul, 1-3=floppy, 4=HD)
 el_torito_load_seg: dw 0x07C0  ; Load segment (from catalog or default 0x07C0)
 el_torito_rba:      dd 0       ; Boot image Load RBA (ISO 2048-byte sectors)
 el_torito_count:    dw 1       ; Sector count (512-byte virtual sectors loaded)
+el_torito_handoff:  db 0       ; Set to 1 right before jumping into boot image
 
 ; ── Work buffer ─────────────────────────────────────────────────────────────
 ; ide_identify_buf is only needed during POST (ide_detect). After POST it is
@@ -36,7 +37,7 @@ el_torito_buf       equ ide_identify_buf
 int19h_handler:
     sti
 
-    cmp byte [ide_master_present], 0
+    cmp byte [cs:ide_master_present], 0
     je .no_boot
 
     ; ── Step 1: Try El Torito ──────────────────────────────────────────────
@@ -161,7 +162,7 @@ detect_el_torito:
 
     ; Byte 33: Boot Media Type.
     mov al, [el_torito_buf + 33]
-    mov [el_torito_emul], al
+    mov [cs:el_torito_emul], al
 
     ; Bytes 34–35: Load Segment (0 → default 0x07C0).
     mov ax, [el_torito_buf + 34]
@@ -169,7 +170,7 @@ detect_el_torito:
     jnz .store_seg
     mov ax, 0x07C0
 .store_seg:
-    mov [el_torito_load_seg], ax
+    mov [cs:el_torito_load_seg], ax
 
     ; Bytes 38–39: Sector Count (512-byte virtual sectors to transfer).
     ; A count of 0 is treated as 1.
@@ -178,31 +179,31 @@ detect_el_torito:
     jnz .store_count
     mov ax, 1
 .store_count:
-    mov [el_torito_count], ax
+    mov [cs:el_torito_count], ax
 
     ; Bytes 40–43: Load RBA (2048-byte CD sector of the boot image).
     mov eax, [el_torito_buf + 40]
-    mov [el_torito_rba], eax
+    mov [cs:el_torito_rba], eax
 
     ; ── Mark detection as successful ──────────────────────────────────────
-    mov byte [el_torito_present], 1
+    mov byte [cs:el_torito_present], 1
 
     ; Set el_torito_drive based on emulation type.
-    ; The ROM initial value (db 0xE0) is not the runtime value — at runtime
-    ; all BIOS variables live in low RAM (segment 0), starting at 0.
-    mov al, [el_torito_emul]
+    ; All BIOS variables live in the ROM segment (cs:) to avoid conflicts
+    ; with bootloader data in low RAM.
+    mov al, [cs:el_torito_emul]
     cmp al, 0x04
     je .drive_hd
     cmp al, 0x00
     je .drive_cd
     ; Floppy emulation (1–3).
-    mov byte [el_torito_drive], 0x00
+    mov byte [cs:el_torito_drive], 0x00
     jmp .drive_done
 .drive_hd:
-    mov byte [el_torito_drive], 0x80
+    mov byte [cs:el_torito_drive], 0x80
     jmp .drive_done
 .drive_cd:
-    mov byte [el_torito_drive], 0xE0
+    mov byte [cs:el_torito_drive], 0xE0
 .drive_done:
 
     pop es
@@ -247,29 +248,29 @@ boot_el_torito:
     ; Print El Torito parameters for diagnostics.
     mov si, str_et_rba
     call bios_print
-    mov eax, [el_torito_rba]
+    mov eax, [cs:el_torito_rba]
     call bios_print_hex32
     mov si, str_et_cnt
     call bios_print
-    mov ax, [el_torito_count]
+    mov ax, [cs:el_torito_count]
     call bios_print_dec16
     mov si, str_et_seg
     call bios_print
-    mov ax, [el_torito_load_seg]
+    mov ax, [cs:el_torito_load_seg]
     call bios_print_hex16
     mov si, str_et_emul
     call bios_print
-    movzx ax, byte [el_torito_emul]
+    movzx ax, byte [cs:el_torito_emul]
     call bios_print_hex8
     mov si, str_et_load
     call bios_print
 
     ; Convert Load RBA (ISO 2048-byte sector units) to ATA LBA.
-    mov eax, [el_torito_rba]
+    mov eax, [cs:el_torito_rba]
     shl eax, 2              ; × 4 → ATA LBA
 
     ; Number of 512-byte sectors to load.
-    movzx ecx, word [el_torito_count]
+    movzx ecx, word [cs:el_torito_count]
     test ecx, ecx
     jnz .count_ok
     mov ecx, 1
@@ -277,7 +278,7 @@ boot_el_torito:
 
     ; Set ES:DI to (load_seg):0x0000 for the read.
     push es
-    mov bx, [el_torito_load_seg]
+    mov bx, [cs:el_torito_load_seg]
     mov es, bx
     mov di, 0x0000
     call ide_read_sectors
@@ -288,7 +289,7 @@ boot_el_torito:
     call bios_print
 
     ; ── Choose DL based on emulation type ─────────────────────────────────
-    mov al, [el_torito_emul]
+    mov al, [cs:el_torito_emul]
     cmp al, 0x04
     je .hd_emul
     cmp al, 0x00
@@ -310,9 +311,12 @@ boot_el_torito:
     mov ds, ax
     xor si, si
 
+    ; Mark that we are handing off to CD boot image.
+    mov byte [cs:el_torito_handoff], 1
+
     ; Far-jump to (load_seg):0x0000 via a far return.
     ; Stack layout for retf: [SP+0]=offset(IP), [SP+2]=segment(CS).
-    mov ax, [el_torito_load_seg]
+    mov ax, [cs:el_torito_load_seg]
     push ax             ; CS
     push word 0x0000    ; IP
     retf                ; CS:IP ← load_seg:0x0000

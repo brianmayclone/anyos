@@ -164,14 +164,23 @@ impl VmEngine {
         self.io.register(base, count, handler);
     }
 
-    /// Map a read-only ROM at a guest physical address.
+    /// Load a firmware ROM into guest memory at a physical address.
     ///
-    /// Reads to `[base, base + data.len())` return ROM data; writes are
-    /// silently ignored. Used for BIOS ROMs at high physical addresses
-    /// (e.g., SeaBIOS at 0xFFFC0000) without allocating a full 4 GiB
-    /// flat RAM buffer.
+    /// The data is copied directly into flat RAM so the firmware can
+    /// use the same region for both code and writable runtime variables
+    /// (BIOS data tables, El Torito state, IDE geometry, etc.).
+    /// If the address falls within the flat RAM allocation the data is
+    /// writable; otherwise it is added as a read-only ROM overlay.
     pub fn load_rom(&mut self, base: u64, data: Vec<u8>) {
-        self.memory.add_rom(base, data);
+        let end = base as usize + data.len();
+        if end <= self.memory.ram().size() {
+            // Within flat RAM — load as read-write so the BIOS can
+            // modify its own data segment at runtime.
+            self.memory.load_at(base as usize, &data);
+        } else {
+            // Above flat RAM — use a read-only ROM overlay.
+            self.memory.add_rom(base, data);
+        }
     }
 
     /// Register a memory-mapped I/O handler.

@@ -33,11 +33,10 @@ i15_e820:
     push esi
     push ds
 
-    ; The runtime E820 table is in low RAM (segment 0).
-    ; memory_detect wrote it there with DS=0; we must read it with DS=0 too.
-    ; The caller's DS is unknown, so we always set DS=0 explicitly here.
-    xor ax, ax
-    mov ds, ax
+    ; The E820 table lives in the BIOS ROM segment (cs:).
+    ; memory_detect wrote it with DS=CS; we read it with DS=CS too.
+    push cs
+    pop ds
 
     movzx eax, word [e820_count]
     cmp ebx, eax
@@ -83,7 +82,7 @@ i15_e820:
 ; ---------------------------------------------------------------------------
 i15_get_ext_mem:
     push ebx
-    mov eax, [ram_size_bytes]
+    mov eax, [cs:ram_size_bytes]
     sub eax, 0x100000
     shr eax, 10
     cmp eax, 0xFFFF
@@ -99,7 +98,7 @@ i15_get_ext_mem:
 ; ---------------------------------------------------------------------------
 i15_e801:
     push esi
-    mov eax, [ram_size_bytes]
+    mov eax, [cs:ram_size_bytes]
 
     cmp eax, 0x1000000
     jbe .below_16

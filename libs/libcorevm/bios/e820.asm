@@ -27,6 +27,9 @@ memory_detect:
     push ebx
     push ecx
     push edx
+    push ds
+    push cs
+    pop ds                          ; DS = CS = 0xF000 for BIOS variable writes
 
     ; Read extended memory (1MB-16MB) from CMOS 0x17/0x18.
     mov al, 0x17
@@ -131,6 +134,7 @@ memory_detect:
 
     mov [e820_count], cx
 
+    pop ds
     pop edx
     pop ecx
     pop ebx

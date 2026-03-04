@@ -29,6 +29,7 @@
 %include "int19h.asm"
 %include "int1ah.asm"
 %include "int_misc.asm"
+%include "selftest.asm"
 %include "boot.asm"
 %include "ivt.asm"
 %include "post.asm"

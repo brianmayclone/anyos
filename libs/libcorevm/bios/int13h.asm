@@ -2,7 +2,32 @@
 ; int13h.asm — INT 13h: Disk BIOS services
 ; =============================================================================
 
+; Last INT 13h status (AH-style code). 0 = success.
+int13_last_status: db 0
+int13_last_ah:     db 0
+int13_last_dl:     db 0
+int13_call_count:  dw 0
+int13_trace_counter: dw 0
+INT13_TRACE_MAX     equ 512
+
 int13h_handler:
+    inc word [cs:int13_call_count]
+    mov [cs:int13_last_ah], ah
+    mov [cs:int13_last_dl], dl
+
+    ; Trace INT 13h calls to serial: "[13 AH=xx DL=xx]".
+    push ax
+    push bx
+    push dx
+    mov bl, ah
+    mov bh, dl
+    call int13_trace_enter
+    pop dx
+    pop bx
+    pop ax
+
+    cmp ah, 0x01
+    je .get_last_status
     cmp ah, 0x00
     je .reset_disk
     cmp ah, 0x02
@@ -27,9 +52,23 @@ int13h_handler:
     iret
 
 ; ---------------------------------------------------------------------------
+; AH=01h: Get status of last operation.
+; ---------------------------------------------------------------------------
+.get_last_status:
+    mov ah, [cs:int13_last_status]
+    test ah, ah
+    jz .gls_ok
+    stc
+    iret
+.gls_ok:
+    clc
+    iret
+
+; ---------------------------------------------------------------------------
 ; AH=00h: Reset disk system.
 ; ---------------------------------------------------------------------------
 .reset_disk:
+    mov byte [cs:int13_last_status], 0
     xor ah, ah                  ; Success
     clc
     iret
@@ -47,11 +86,16 @@ int13h_handler:
     push edi
     push es
 
-    ; Only support drive 0x80 (first HD).
+    ; Support first HDD (0x80) and virtual El Torito drive (0xE0).
     cmp dl, 0x80
-    jne .chs_error
+    je .chs_drive_ok
+    cmp dl, 0xE0
+    je .chs_drive_ok
+    jmp .chs_error
 
-    cmp byte [ide_master_present], 0
+.chs_drive_ok:
+
+    cmp byte [cs:ide_master_present], 0
     je .chs_error
 
     ; Convert CHS to LBA: LBA = (C * H + h) * S + (s - 1)
@@ -63,12 +107,28 @@ int13h_handler:
     shl ebx, 8
     or eax, ebx                 ; EAX = cylinder
 
-    movzx ebx, word [ide_master_heads]
+    ; CHS geometry for conversion.
+    ; HDD: use IDENTIFY geometry.
+    ; CD no-emulation: expose synthetic geometry (64 heads, 32 spt)
+    ; consistent with AH=08.
+    cmp dl, 0xE0
+    jne .chs_geom_hdd
+    mov ebx, 64
+    jmp .chs_heads_ok
+.chs_geom_hdd:
+    movzx ebx, word [cs:ide_master_heads]
+.chs_heads_ok:
     mul ebx                     ; EAX = C * H
     movzx ebx, dh               ; Head
     add eax, ebx                ; EAX = C * H + h
 
-    movzx ebx, word [ide_master_spt]
+    cmp dl, 0xE0
+    jne .chs_spt_hdd
+    mov ebx, 32
+    jmp .chs_spt_ok
+.chs_spt_hdd:
+    movzx ebx, word [cs:ide_master_spt]
+.chs_spt_ok:
     mul ebx                     ; EAX = (C*H + h) * S
 
     mov bl, cl
@@ -98,6 +158,7 @@ int13h_handler:
     pop ebx
     pop eax
     ; AL = sectors read (set by ide_read_sectors).
+    mov byte [cs:int13_last_status], 0
     xor ah, ah
     clc
     iret
@@ -110,6 +171,7 @@ int13h_handler:
     pop ebx
     pop eax
 .chs_error:
+    mov byte [cs:int13_last_status], 0x01
     mov ah, 0x01
     stc
     iret
@@ -122,33 +184,75 @@ int13h_handler:
 ; ---------------------------------------------------------------------------
 .get_drive_params:
     cmp dl, 0x80
-    jne .gdp_no_drive
-    cmp byte [ide_master_present], 0
+    je .gdp_hdd
+    cmp dl, 0xE0
+    je .gdp_cd
+    jmp .gdp_no_drive
+
+.gdp_hdd:
+    cmp byte [cs:ide_master_present], 0
     je .gdp_no_drive
 
     push bx
-    mov ax, [ide_master_cyls]
+    mov ax, [cs:ide_master_cyls]
     dec ax                      ; Max cylinder (0-based)
     mov ch, al                  ; Low 8 bits of cylinder
     mov cl, ah
     shl cl, 6                   ; High 2 bits into CL[7:6]
 
-    mov ax, [ide_master_spt]
+    mov ax, [cs:ide_master_spt]
     and al, 0x3F
     or cl, al                   ; Max sector in CL[5:0]
 
-    mov ax, [ide_master_heads]
+    mov ax, [cs:ide_master_heads]
     dec ax
     mov dh, al                  ; Max head (0-based)
 
     mov dl, 1                   ; 1 drive
+    mov byte [cs:int13_last_status], 0
     xor ax, ax                  ; AH = 0 (success)
     mov bl, 0                   ; Drive type (not applicable for HD)
     pop bx
     clc
     iret
 
+.gdp_cd:
+    cmp byte [cs:ide_master_present], 0
+    je .gdp_no_drive
+
+    ; Synthetic CHS for CD no-emulation compatibility.
+    ; Heads = 64, SPT = 32, cylinders derived from total sectors.
+    push bx
+    mov eax, [cs:ide_master_lba28]
+    xor edx, edx
+    mov ebx, 2048               ; 64 * 32
+    div ebx                     ; EAX = cylinders
+    test eax, eax
+    jz .gdp_cd_cyl_zero
+    dec eax
+.gdp_cd_cyl_zero:
+    cmp eax, 1023
+    jbe .gdp_cd_cyl_ok
+    mov eax, 1023
+.gdp_cd_cyl_ok:
+
+    mov ch, al                  ; Cylinder low 8 bits
+    mov cl, ah                  ; Cylinder high 2 bits in AH[1:0]
+    and cl, 0x03
+    shl cl, 6
+    or cl, 32                   ; SPT = 32
+
+    mov dh, 63                  ; Heads = 64 => max head 63
+    mov dl, 1                   ; 1 drive
+    mov byte [cs:int13_last_status], 0
+    xor ax, ax
+    mov bl, 0
+    pop bx
+    clc
+    iret
+
 .gdp_no_drive:
+    mov byte [cs:int13_last_status], 0x07
     mov ah, 0x07                ; Drive parameter error
     mov dl, 0
     stc
@@ -160,20 +264,22 @@ int13h_handler:
 .get_disk_type:
     cmp dl, 0x80
     jne .gdt_none
-    cmp byte [ide_master_present], 0
+    cmp byte [cs:ide_master_present], 0
     je .gdt_none
 
     mov ah, 0x03                ; Type 3 = hard disk
     ; CX:DX = total sectors.
-    mov eax, [ide_master_lba28]
+    mov eax, [cs:ide_master_lba28]
     mov cx, ax
     shr eax, 16
     mov dx, ax
     xchg cx, dx                 ; CX = high, DX = low
+    mov byte [cs:int13_last_status], 0
     clc
     iret
 
 .gdt_none:
+    mov byte [cs:int13_last_status], 0
     mov ah, 0x00                ; No drive
     clc
     iret
@@ -200,10 +306,12 @@ int13h_handler:
     mov bx, 0xAA55
     mov ah, 0x30                ; Version 3.0
     mov cx, 0x0001              ; Extended disk access supported
+    mov byte [cs:int13_last_status], 0
     clc
     iret
 
 .chk_ext_fail:
+    mov byte [cs:int13_last_status], 0x01
     mov ah, 0x01
     stc
     iret
@@ -220,9 +328,10 @@ int13h_handler:
 ;     Word 6: buffer segment
 ;     Qword 8: starting LBA
 ;
-;   For DL=0xE0 (virtual CD-ROM): the DAP LBA and sector count are in
-;   ISO 2048-byte CD-sector units.  We translate to 512-byte ATA sectors
-;   by multiplying both by 4 before calling ide_read_sectors.
+;   For DL=0xE0 (virtual CD-ROM): use standard EDD DAP semantics
+;   (LBA + count in 512-byte sectors), same as HDD.  Linux El Torito
+;   bootloaders (e.g. ISOLINUX) already convert catalog RBAs to 512-byte
+;   units before calling AH=42.
 ; ---------------------------------------------------------------------------
 .extended_read:
     push eax
@@ -234,16 +343,11 @@ int13h_handler:
     push ds
     push si
 
-    ; All BIOS variables live in segment 0 (written by POST with DS=0).
-    ; The boot image may call us with DS set to its own segment, so we
-    ; save caller's DS in BX (already pushed; used as scratch here) and
-    ; zero DS before touching any BIOS variable.
-    ; DAP fields ([si+N]) are read via ES after loading caller's DS there.
+    ; BIOS variables use cs: prefix (in the ROM segment) so they are safe
+    ; regardless of caller's DS.  Save caller's DS in BX for DAP access.
     mov bx, ds
-    xor ax, ax
-    mov ds, ax
 
-    cmp byte [ide_master_present], 0
+    cmp byte [cs:ide_master_present], 0
     je .ext_read_fail_pop          ; FIX: was .ext_read_fail — stack already pushed
 
     cmp dl, 0x80
@@ -266,15 +370,13 @@ int13h_handler:
     jmp .ext_read_ok
 
 .ext_read_cd:
-    ; CD-ROM: DAP LBA and count are in 2048-byte ISO sector units → ×4 for ATA.
+    ; CD-ROM: DAP uses 512-byte sectors (EDD semantics).
     push bx
     pop es                          ; ES = caller's DS
-    movzx ecx, word [es:si + 2]    ; ISO sector count
-    shl ecx, 2                      ; × 4 → 512-byte ATA sector count
+    movzx ecx, word [es:si + 2]    ; Sector count (512-byte sectors)
     mov di, [es:si + 4]            ; Buffer offset
     mov bx, [es:si + 6]            ; Buffer segment
-    mov eax, [es:si + 8]           ; ISO LBA (2048-byte sector units)
-    shl eax, 2                      ; × 4 → ATA LBA
+    mov eax, [es:si + 8]           ; LBA (512-byte sector units)
     mov es, bx                      ; ES = buffer segment
     call ide_read_sectors
     jc .ext_read_fail_pop
@@ -288,6 +390,7 @@ int13h_handler:
     pop ecx
     pop ebx
     pop eax
+    mov byte [cs:int13_last_status], 0
     xor ah, ah
     clc
     iret
@@ -302,6 +405,7 @@ int13h_handler:
     pop ebx
     pop eax
 .ext_read_fail:
+    mov byte [cs:int13_last_status], 0x01
     mov ah, 0x01
     stc
     iret
@@ -322,7 +426,7 @@ int13h_handler:
     cmp dl, 0x80
     jne .ext_write_fail
 
-    cmp byte [ide_master_present], 0
+    cmp byte [cs:ide_master_present], 0
     je .ext_write_fail
 
     ; Read DAP.
@@ -343,6 +447,7 @@ int13h_handler:
     pop ecx
     pop ebx
     pop eax
+    mov byte [cs:int13_last_status], 0
     xor ah, ah
     clc
     iret
@@ -357,6 +462,7 @@ int13h_handler:
     pop ebx
     pop eax
 .ext_write_fail:
+    mov byte [cs:int13_last_status], 0x01
     mov ah, 0x01
     stc
     iret
@@ -366,7 +472,7 @@ int13h_handler:
 ;   DL = drive, DS:SI = result buffer.
 ; ---------------------------------------------------------------------------
 .get_ext_params:
-    cmp byte [ide_master_present], 0
+    cmp byte [cs:ide_master_present], 0
     je .gep_fail
 
     cmp dl, 0x80
@@ -381,21 +487,22 @@ int13h_handler:
     mov word [si + 2], 0x0002   ; Flags: CHS valid
 
     ; CHS geometry.
-    movzx eax, word [ide_master_cyls]
+    movzx eax, word [cs:ide_master_cyls]
     mov [si + 4], eax           ; Cylinders
-    movzx eax, word [ide_master_heads]
+    movzx eax, word [cs:ide_master_heads]
     mov [si + 8], eax           ; Heads
-    movzx eax, word [ide_master_spt]
+    movzx eax, word [cs:ide_master_spt]
     mov [si + 12], eax          ; Sectors per track
 
     ; Total sectors (64-bit, in 512-byte units).
-    mov eax, [ide_master_lba28]
+    mov eax, [cs:ide_master_lba28]
     mov [si + 16], eax
     mov dword [si + 20], 0      ; High dword
 
     ; Bytes per sector.
     mov word [si + 24], 512
 
+    mov byte [cs:int13_last_status], 0
     xor ah, ah
     clc
     iret
@@ -410,7 +517,7 @@ int13h_handler:
     mov dword [si + 12], 0      ; Sectors per track (N/A)
 
     ; Total ISO sectors = ATA sectors / 4.
-    mov eax, [ide_master_lba28]
+    mov eax, [cs:ide_master_lba28]
     shr eax, 2
     mov [si + 16], eax
     mov dword [si + 20], 0      ; High dword
@@ -418,11 +525,13 @@ int13h_handler:
     ; Bytes per sector: 2048.
     mov word [si + 24], 2048
 
+    mov byte [cs:int13_last_status], 0
     xor ah, ah
     clc
     iret
 
 .gep_fail:
+    mov byte [cs:int13_last_status], 0x01
     mov ah, 0x01
     stc
     iret
@@ -447,35 +556,47 @@ int13h_handler:
 ;   +18  (byte)  reserved (0)
 ; ---------------------------------------------------------------------------
 .get_cd_emul_status:
-    ; Save caller's ES, then use ES to hold caller's DS for output-buffer
-    ; access (ES:SI replaces DS:SI), while we zero DS for BIOS variable reads.
-    push es
-    push ds
-    pop es              ; ES = caller's DS
-    xor ax, ax
-    mov ds, ax          ; DS = 0  — el_torito_* variables are in segment 0
+        ; Only support subfunctions 00h (terminate/query) and 01h (status).
+        cmp al, 0x00
+        je .gcds_sub_ok
+        cmp al, 0x01
+        je .gcds_sub_ok
+        jmp .gcds_fail          ; Nothing pushed yet — skip pops
+    .gcds_sub_ok:
 
-    cmp byte [el_torito_present], 0
+    ; Save caller's DS in ES for output-buffer writes (ES:SI).
+    push es
+    mov ax, ds
+    mov es, ax          ; ES = caller's DS
+
+    ; All el_torito_* variables are in the BIOS ROM segment (cs:).
+    ; No DS change needed — use cs: prefix for every BIOS variable read.
+
+    ; Caller's DL must match our El Torito drive.
+    cmp dl, [cs:el_torito_drive]
+    jne .gcds_fail_pop
+
+    cmp byte [cs:el_torito_present], 0
     je .gcds_fail_pop
 
     ; Fill the 19-byte specification packet at ES:SI (caller's DS:SI).
     mov byte [es:si + 0],  0x13    ; Packet size
-    mov al, [el_torito_emul]
+    mov al, [cs:el_torito_emul]
     mov [es:si + 1], al            ; Boot media type
-    mov al, [el_torito_drive]
+    mov al, [cs:el_torito_drive]
     mov [es:si + 2], al            ; Drive number
     mov byte [es:si + 3],  0x00    ; Controller index
 
-    mov eax, [el_torito_rba]
+    mov eax, [cs:el_torito_rba]
     mov [es:si + 4], eax           ; Load RBA (CD-sector units)
 
     mov word [es:si + 8],  0x0000  ; Device specification
     mov word [es:si + 10], 0x0000  ; User buffer segment
 
-    mov ax, [el_torito_load_seg]
+    mov ax, [cs:el_torito_load_seg]
     mov [es:si + 12], ax           ; Load segment
 
-    mov ax, [el_torito_count]
+    mov ax, [cs:el_torito_count]
     mov [es:si + 14], ax           ; Sector count
 
     mov word [es:si + 16], 0x0000  ; CHS (unused for no-emulation)
@@ -483,15 +604,113 @@ int13h_handler:
 
     xor ah, ah
     clc
+    mov byte [cs:int13_last_status], 0
     pop es
     iret
 
 .gcds_fail_pop:
     pop es
 .gcds_fail:
+    mov byte [cs:int13_last_status], 0x01
     mov ah, 0x01
     stc
     iret
+
+; ---------------------------------------------------------------------------
+; INT 13h serial tracing helpers
+; ---------------------------------------------------------------------------
+; Input: BL=function (AH), BH=drive (DL)
+int13_trace_enter:
+    push ax
+    push bx
+    push dx
+
+    mov ax, [cs:int13_trace_counter]
+    cmp ax, INT13_TRACE_MAX
+    jae .done
+    inc ax
+    mov [cs:int13_trace_counter], ax
+
+    mov al, '['
+    call int13_trace_putchar
+    mov al, '1'
+    call int13_trace_putchar
+    mov al, '3'
+    call int13_trace_putchar
+    mov al, ' '
+    call int13_trace_putchar
+    mov al, 'A'
+    call int13_trace_putchar
+    mov al, 'H'
+    call int13_trace_putchar
+    mov al, '='
+    call int13_trace_putchar
+    mov al, bl
+    call int13_trace_hex8
+    mov al, ' '
+    call int13_trace_putchar
+    mov al, 'D'
+    call int13_trace_putchar
+    mov al, 'L'
+    call int13_trace_putchar
+    mov al, '='
+    call int13_trace_putchar
+    mov al, bh
+    call int13_trace_hex8
+    mov al, ']'
+    call int13_trace_putchar
+    mov al, 13
+    call int13_trace_putchar
+    mov al, 10
+    call int13_trace_putchar
+
+.done:
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+; Input: AL=value
+int13_trace_hex8:
+    push ax
+    mov ah, al
+    shr al, 4
+    call int13_trace_nibble
+    mov al, ah
+    and al, 0x0F
+    call int13_trace_nibble
+    pop ax
+    ret
+
+; Input: AL=nibble (0..15)
+int13_trace_nibble:
+    cmp al, 10
+    jb .digit
+    add al, 'A' - 10
+    jmp .out
+.digit:
+    add al, '0'
+.out:
+    call int13_trace_putchar
+    ret
+
+; Input: AL=char
+int13_trace_putchar:
+    push dx
+    push ax
+
+    ; COM1 serial output
+    pop ax
+    push ax
+    call serial_putchar
+
+    ; QEMU/SeaBIOS-style debug port output (vmd also drains this)
+    mov dx, 0x0402
+    pop ax
+    out dx, al
+
+    pop dx
+    ret
 
 ; =============================================================================
 ; IDE PIO helpers

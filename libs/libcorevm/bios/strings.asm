@@ -2,7 +2,7 @@
 ; strings.asm — BIOS text strings
 ; =============================================================================
 
-str_banner:         db 'CoreVM BIOS v1.0', 13, 10, 0
+str_banner:         db 'CoreVM BIOS v1.0-trace2', 13, 10, 0
 str_memory:         db 'Memory: ', 0
 str_mb:             db ' MB', 13, 10, 0
 str_kb:             db ' KB', 13, 10, 0
@@ -21,3 +21,39 @@ str_et_seg:         db ' seg=', 0
 str_et_emul:        db ' emul=', 0
 str_et_load:        db 13, 10, 'Loading boot image...', 13, 10, 0
 str_et_loaded:      db 'Boot image loaded. Jumping.', 13, 10, 0
+str_cd_reentry:     db '[diag] returned to POST after CD handoff', 13, 10, 0
+str_cd_reentry_ah:  db ' last INT13 AH=', 0
+str_cd_reentry_dl:  db ' DL=', 0
+str_cd_reentry_st:  db ' ST=', 0
+str_i13_diag:       db '[diag] INT13 cnt=', 0
+
+; Self-test strings.
+str_st_header:      db '=== BIOS Self-Test ===', 13, 10, 0
+str_st_ok:          db ' OK', 13, 10, 0
+str_st_fail:        db ' FAIL', 13, 10, 0
+str_st_summary:     db '=== Self-Test: ', 0
+str_st_slash:       db '/', 0
+str_st_passed:      db ' passed ===', 13, 10, 0
+str_st_warn:        db '!!! WARNING: ', 0
+str_st_failed:      db ' test(s) FAILED !!!', 13, 10, 0
+str_st_ram:         db '  RAM read/write ........', 0
+str_st_biosvar:     db '  BIOS var persist ......', 0
+str_st_biosvar_hint:db '    (ROM area not writable!)', 13, 10, 0
+str_st_int15_88:    db '  INT 15h AH=88 extmem .', 0
+str_st_e820:        db '  INT 15h E820 map .....', 0
+str_st_a20:         db '  A20 gate status ......', 0
+str_st_rtc:         db '  INT 1Ah RTC time .....', 0
+str_st_pci_bios:    db '  INT 1Ah PCI BIOS .....', 0
+str_st_pci_enum:    db '  PCI enumeration ......', 0
+str_st_ide:         db '  IDE detection ........', 0
+str_st_timer:       db '  Timer tick (PIT) .....', 0
+str_st_ivt:         db '  IVT integrity ........', 0
+str_st_lparen:      db ' (', 0
+str_st_rparen:      db ')', 13, 10, 0
+str_st_rparen_nocrlf: db ')', 0
+str_st_kb:          db ' KB)', 13, 10, 0
+str_st_entries:     db ' entries)', 13, 10, 0
+str_st_devs:        db ' devs)', 13, 10, 0
+str_st_colon:       db ':', 0
+str_st_dot:         db '.', 0
+str_st_pci_ver:     db 'v', 0
