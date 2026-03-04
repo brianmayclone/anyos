@@ -21,18 +21,18 @@ LIB_OBJS = $(filter-out $(CRT0_OBJ), $(C_OBJS) $(S_OBJS))
 all: $(OBJDIR) libc.a $(CRT0_OBJ)
 
 $(OBJDIR):
-	cmake -E make_directory $(OBJDIR)
+	mkdir -p $(OBJDIR)
 
-$(OBJDIR)/%.o: $(SRCDIR)/%.c
+$(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(OBJDIR)/%.o: $(SRCDIR)/%.S
+$(OBJDIR)/%.o: $(SRCDIR)/%.S | $(OBJDIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 libc.a: $(LIB_OBJS)
 	$(AR) rcs $@ $^
 
 clean:
-	cmake -E rm -rf $(OBJDIR) libc.a
+	rm -rf $(OBJDIR) libc.a
 
 .PHONY: all clean
