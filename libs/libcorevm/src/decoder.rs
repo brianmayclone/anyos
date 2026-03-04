@@ -903,10 +903,14 @@ impl<'m> DecodeCursor<'m> {
                 let modrm = self.fetch_modrm()?;
                 let (md, _reg, rm) = Self::split_modrm(modrm);
                 if md != 3 {
-                    // Memory operand -- consume displacement / SIB.
-                    let _ = self.decode_rm(md, rm, OperandSize::Dword)?;
+                    // Memory operand -- consume displacement / SIB and store
+                    // so the FPU executor can find the linear address.
+                    let mem_op = self.decode_rm(md, rm, OperandSize::Dword)?;
+                    self.set_operand(0, mem_op);
+                    self.inst.operand_count = 1;
+                } else {
+                    self.inst.operand_count = 0;
                 }
-                self.inst.operand_count = 0;
                 Ok(())
             }
 

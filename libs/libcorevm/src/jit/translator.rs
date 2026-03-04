@@ -674,11 +674,7 @@ impl Translator {
             emit.mov_rr(OpSize::S64, Reg::Rdx, MMU_PTR);
             emit.mov_rr(OpSize::S64, Reg::Rcx, Reg::Rax);  // linear
             emit.mov_ri32(Reg::R8, opsize_bytes(size) as u32); // size
-            emit.pop(TEMP1); // restore value
-            emit.mov_rr(OpSize::S64, TEMP2, TEMP1); // R9 = value (6th arg on stack? No, R9 in SysV)
-            // SysV ABI: RDI, RSI, RDX, RCX, R8, R9
-            // jit_mem_write(cpu, memory, mmu, linear, size, value)
-            // Args: RDI=cpu, RSI=memory, RDX=mmu, RCX=linear, R8=size(u8), R9=value(u64)
+            emit.pop(TEMP1); // restore value → R9 (6th SysV arg)
             let helper = helpers::jit_mem_write as *const () as usize as u64;
             emit.call_abs(helper);
 
@@ -997,7 +993,7 @@ impl Translator {
         emit.mov_rr(OpSize::S64, Reg::Rdx, MMU_PTR);
         emit.mov_rr(OpSize::S64, Reg::Rcx, Reg::Rax); // linear
         emit.mov_ri32(Reg::R8, push_size as u32);       // size
-        emit.mov_rr(OpSize::S64, TEMP2, TEMP1);         // R9=R10=value
+        // TEMP1=R9 already holds the value (6th SysV arg)
         let wr = helpers::jit_mem_write as *const () as usize as u64;
         emit.call_abs(wr);
 
@@ -1098,9 +1094,7 @@ impl Translator {
         emit.mov_rr(OpSize::S64, Reg::Rdx, MMU_PTR);
         emit.mov_rr(OpSize::S64, Reg::Rcx, Reg::Rax);   // linear
         emit.mov_ri32(Reg::R8, push_size as u32);          // size
-        emit.mov_rr(OpSize::S64, TEMP2, TEMP1);            // R10=value (6th arg = R9)
-        // R9 is TEMP1, but we moved return addr there. Let's fix:
-        // TEMP1=R9, TEMP2=R10. SysV 6th arg = R9. Return addr is in TEMP1=R9.
+        // TEMP1=R9 already holds return address (6th SysV arg)
         let wr = helpers::jit_mem_write as *const () as usize as u64;
         emit.call_abs(wr);
 
