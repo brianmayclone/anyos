@@ -573,10 +573,11 @@ fn cmd_start() {
         );
 
         inst.running = true;
-        inst.last_pit_ms = sys::uptime_ms(); // Reset so first batch doesn't catch up
+        inst.last_pit_ms = sys::uptime_ms();
         update_shm_state(inst, STATE_RUNNING);
         send_status("state 0 running");
-        anyos_std::println!("[vmd] VM '{}' started", inst.name);
+        anyos_std::println!("[vmd] VM '{}' started (uptime_ms={}, batch={})",
+            inst.name, inst.last_pit_ms, BATCH_SIZE);
     }
 }
 
@@ -871,15 +872,19 @@ fn parse_i16(s: &str) -> i16 {
 // ── Entry point ────────────────────────────────────────────────────────
 
 fn main() {
-    anyos_std::println!("[vmd] starting...");
+    anyos_std::println!("[vmd] starting... (PIT: wall-clock, {}t/ms, cap={}ms)",
+        PIT_TICKS_PER_MS, PIT_MAX_ADVANCE_MS);
 
     // Initialize libcorevm.
+    anyos_std::println!("[vmd] loading libcorevm.so...");
     if !libcorevm_client::init() {
         anyos_std::println!("[vmd] ERROR: failed to load libcorevm.so");
         anyos_std::process::exit(1);
     }
+    anyos_std::println!("[vmd] libcorevm.so loaded OK");
 
     // Open IPC pipes (created by vmmanager before spawning us).
+    anyos_std::println!("[vmd] opening IPC pipes...");
     let cmd_pipe = ipc::pipe_open("vmd_cmd");
     let status_pipe = ipc::pipe_open("vmd_status");
 
