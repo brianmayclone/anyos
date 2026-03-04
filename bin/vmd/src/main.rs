@@ -61,7 +61,7 @@ const E1000_MMIO_BASE: u64 = 0xD000_0000;
 /// With 1M per batch, a BIOS spin loop of 64M instructions spans ~64
 /// batches — enough for the PIT timer to fire at least once (needs ~55
 /// batches at 1193 ticks/batch for the 65536-tick period).
-const BATCH_SIZE: u64 = 1_000_000;
+const BATCH_SIZE: u64 = 50_000;
 
 /// PIT ticks per millisecond (1,193,182 Hz / 1000 ≈ 1193).
 const PIT_TICKS_PER_MS: u32 = 1193;

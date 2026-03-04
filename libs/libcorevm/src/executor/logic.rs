@@ -237,6 +237,127 @@ pub fn exec_shr(
     Ok(())
 }
 
+/// SHLD: double-precision shift left.
+///
+/// Shifts dest left by count, filling vacated low bits from source.
+/// operands[0] = r/m (dest), operands[1] = r (source), operands[2] = imm8/CL (count).
+pub fn exec_shld(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let dst_val = read_operand(cpu, inst, &inst.operands[0], memory, mmu)?;
+    let src_val = read_operand(cpu, inst, &inst.operands[1], memory, mmu)?;
+    let size = inst.operand_size;
+    let bits = size.bits();
+    let mask = size.mask();
+
+    // Count from operands[2] (imm8 or CL), masked to 5 bits (6 for 64-bit).
+    let count_mask = if size == OperandSize::Qword { 0x3F } else { 0x1F };
+    let count = (read_operand(cpu, inst, &inst.operands[2], memory, mmu)? as u32) & count_mask;
+
+    if count == 0 {
+        cpu.regs.rip += inst.length as u64;
+        return Ok(());
+    }
+
+    let result = if count < bits {
+        // result = (dst << count) | (src >> (bits - count))
+        ((dst_val << count) | (src_val >> (bits - count))) & mask
+    } else {
+        // Undefined for count >= operand size, but real hardware wraps.
+        // Match common behavior: treat as if count were modulo bits.
+        let c = count % bits;
+        if c == 0 {
+            dst_val & mask
+        } else {
+            ((dst_val << c) | (src_val >> (bits - c))) & mask
+        }
+    };
+
+    // CF = last bit shifted out of dest.
+    let cf = if count <= bits {
+        ((dst_val >> (bits - count)) & 1) != 0
+    } else {
+        false
+    };
+
+    // OF defined only for count=1: set if sign changed.
+    let of = if count == 1 {
+        (((result >> (bits - 1)) & 1) != 0) != (((dst_val >> (bits - 1)) & 1) != 0)
+    } else {
+        false
+    };
+
+    write_operand(cpu, inst, &inst.operands[0], result, memory, mmu)?;
+
+    let f = flags::flags_shift(result, cf, of, size);
+    flags::update_flags(&mut cpu.regs.rflags, f);
+
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+/// SHRD: double-precision shift right.
+///
+/// Shifts dest right by count, filling vacated high bits from source.
+/// operands[0] = r/m (dest), operands[1] = r (source), operands[2] = imm8/CL (count).
+pub fn exec_shrd(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let dst_val = read_operand(cpu, inst, &inst.operands[0], memory, mmu)? & inst.operand_size.mask();
+    let src_val = read_operand(cpu, inst, &inst.operands[1], memory, mmu)? & inst.operand_size.mask();
+    let size = inst.operand_size;
+    let bits = size.bits();
+    let mask = size.mask();
+
+    let count_mask = if size == OperandSize::Qword { 0x3F } else { 0x1F };
+    let count = (read_operand(cpu, inst, &inst.operands[2], memory, mmu)? as u32) & count_mask;
+
+    if count == 0 {
+        cpu.regs.rip += inst.length as u64;
+        return Ok(());
+    }
+
+    let result = if count < bits {
+        // result = (dst >> count) | (src << (bits - count))
+        ((dst_val >> count) | (src_val << (bits - count))) & mask
+    } else {
+        let c = count % bits;
+        if c == 0 {
+            dst_val & mask
+        } else {
+            ((dst_val >> c) | (src_val << (bits - c))) & mask
+        }
+    };
+
+    // CF = last bit shifted out of dest.
+    let cf = if count <= bits {
+        ((dst_val >> (count - 1)) & 1) != 0
+    } else {
+        false
+    };
+
+    // OF defined only for count=1: set if sign changed.
+    let of = if count == 1 {
+        (((result >> (bits - 1)) & 1) != 0) != (((dst_val >> (bits - 1)) & 1) != 0)
+    } else {
+        false
+    };
+
+    write_operand(cpu, inst, &inst.operands[0], result, memory, mmu)?;
+
+    let f = flags::flags_shift(result, cf, of, size);
+    flags::update_flags(&mut cpu.regs.rflags, f);
+
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
 /// SAR: arithmetic shift right (preserves sign bit).
 ///
 /// CF = last bit shifted out. OF = 0 for count=1 (sign doesn't change).

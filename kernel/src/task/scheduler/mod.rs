@@ -1309,8 +1309,18 @@ fn schedule_inner(from_timer: bool) {
         PER_CPU_IN_SCHEDULER[cpu_id_exit].store(false, Ordering::Relaxed);
     }
 
-    // Re-enable interrupts (CRITICAL for voluntary schedule — without this, IF stays 0)
-    crate::arch::hal::enable_interrupts();
+    // Re-enable interrupts ONLY for the voluntary path.  In the timer path
+    // (from_timer=true), IF is already saved in the interrupt frame and will
+    // be restored by IRET.  Calling `sti` here in the timer path allows a
+    // pending timer to fire immediately — while the old interrupt frame is
+    // still on the stack.  If schedule_inner then context-switches the idle
+    // thread, its RSP is saved at the deeper (nested) position.  Each such
+    // cycle accumulates one extra interrupt frame (~770 bytes) that is never
+    // unwound, eventually overflowing the 512 KiB kernel stack.  This was
+    // the root cause of the VirtualBox double-fault on CPU 3 (TID 4).
+    if !from_timer {
+        crate::arch::hal::enable_interrupts();
+    }
 }
 
 // =============================================================================

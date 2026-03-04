@@ -661,9 +661,9 @@ fn exec_secondary(
         0xA3 => logic::exec_bt(cpu, inst, memory, mmu),
 
         // ── SHLD r/m, r, imm8 ──
-        0xA4 => logic::exec_shl(cpu, inst, memory, mmu),
+        0xA4 => logic::exec_shld(cpu, inst, memory, mmu),
         // ── SHLD r/m, r, CL ──
-        0xA5 => logic::exec_shl(cpu, inst, memory, mmu),
+        0xA5 => logic::exec_shld(cpu, inst, memory, mmu),
 
         // ── PUSH GS ──
         0xA8 => stack::exec_push_seg(cpu, inst, memory, mmu),
@@ -674,9 +674,9 @@ fn exec_secondary(
         0xAB => logic::exec_bts(cpu, inst, memory, mmu),
 
         // ── SHRD r/m, r, imm8 ──
-        0xAC => logic::exec_shr(cpu, inst, memory, mmu),
+        0xAC => logic::exec_shrd(cpu, inst, memory, mmu),
         // ── SHRD r/m, r, CL ──
-        0xAD => logic::exec_shr(cpu, inst, memory, mmu),
+        0xAD => logic::exec_shrd(cpu, inst, memory, mmu),
 
         // ── IMUL r, r/m ──
         0xAF => arith::exec_imul_2op(cpu, inst, memory, mmu),
