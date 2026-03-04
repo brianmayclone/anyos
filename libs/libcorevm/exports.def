@@ -40,6 +40,7 @@ EXPORTS
     corevm_e1000_receive_packet
     corevm_e1000_take_tx_packets
     corevm_pit_tick
+    corevm_pit_advance
     corevm_pic_raise_irq
     corevm_pic_get_interrupt
     corevm_setup_ide
