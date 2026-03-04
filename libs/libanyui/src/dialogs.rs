@@ -554,16 +554,11 @@ fn run_file_dialog(
         DialogType::CreateFolder => (350, 200, b"New Folder" as &[u8],  b"Create" as &[u8], false, true, 3),
     };
 
-    // Initialize current directory
+    // Initialize current directory — start at root
     let mut cwd_buf = [0u8; 257];
-    let cwd_len = syscall::getcwd(&mut cwd_buf);
-    let cwd_len = if cwd_len == u32::MAX || cwd_len == 0 {
-        cwd_buf[0] = b'/';
-        cwd_buf[1] = 0;
-        1usize
-    } else {
-        cwd_len as usize
-    };
+    cwd_buf[0] = b'/';
+    cwd_buf[1] = 0;
+    let cwd_len = 1usize;
     unsafe {
         DIALOG_CURRENT_DIR[..cwd_len].copy_from_slice(&cwd_buf[..cwd_len]);
         DIALOG_CURRENT_DIR_LEN = cwd_len;

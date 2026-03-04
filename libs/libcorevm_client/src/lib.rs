@@ -1015,6 +1015,7 @@ impl VmHandle {
         (blocks, native, fallback, buf_used)
     }
 
+
     // ── Error reporting ─────────────────────────────────────────
 
     /// Get a human-readable description of the last error.

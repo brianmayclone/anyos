@@ -395,12 +395,8 @@ impl Cpu {
             };
 
             if let Some(cached_block) = self.decode_cache.lookup(&block_key) {
-                // Clone the instruction list so we can mutably borrow self
-                // during execution. The Vec<DecodedInst> is stack-allocated
-                // metadata — the actual data is small (typically 1-64 entries).
                 let block_insts = cached_block.instructions.clone();
 
-                // ── JIT path: compile and execute natively ──
                 if self.jit_engine.is_enabled() {
                     let jit_result = self.jit_execute_block(
                         &block_key, &block_insts,
@@ -422,13 +418,9 @@ impl Cpu {
             }
 
             // Cache miss: try to detect and cache a full basic block.
-            // If detection succeeds, cache it and execute the block.
-            // If detection fails (e.g. decode error on first instruction),
-            // fall through to single-instruction decode below.
             if let Ok(new_block) = block::detect_basic_block(
                 &self.decoder, &*memory, phys_addr,
             ) {
-                // ── JIT path: compile and execute natively ──
                 if self.jit_engine.is_enabled() {
                     let block_insts = new_block.instructions.clone();
                     self.decode_cache.insert(block_key, new_block);
