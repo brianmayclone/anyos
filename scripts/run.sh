@@ -56,6 +56,31 @@ ARM64_MODE=false
 MIN_RES_W=1024
 MIN_RES_H=768
 
+# ── WSL: prefer Windows QEMU if installed ───────────────────────────────────
+QEMU_BIN="qemu-system-x86_64"
+if grep -qi microsoft /proc/version 2>/dev/null; then
+    # Only use Windows QEMU if WSL interop is active (binfmt_misc WSLInterop entry exists)
+    if [ -f /proc/sys/fs/binfmt_misc/WSLInterop ]; then
+        for _p in \
+            "/mnt/c/Program Files/QEMU/qemu-system-x86_64.exe" \
+            "/mnt/c/Program Files (x86)/QEMU/qemu-system-x86_64.exe"; do
+            if [ -f "$_p" ]; then
+                QEMU_BIN="$_p"
+                break
+            fi
+        done
+    else
+        echo "Warning: WSL interop not active (binfmt_misc/WSLInterop missing) -- using Linux QEMU instead of Windows QEMU."
+        echo "  To fix: add '[interop]\\nenabled=true' to /etc/wsl.conf and run 'wsl --shutdown' in PowerShell."
+    fi
+fi
+
+# Convert a WSL path to a Windows path (no-op if wslpath not available)
+to_win_path() { wslpath -w "$1" 2>/dev/null || echo "$1"; }
+
+# Escape QEMU_BIN for use in eval (handles spaces in Windows paths)
+QEMU_BIN_ESC=$(printf '%q' "$QEMU_BIN")
+
 for arg in "$@"; do
     if [ "$EXPECT_BRIDGE" = true ]; then
         EXPECT_BRIDGE=false
@@ -234,6 +259,14 @@ fi
 # ── VMware Workstation mode ─────────────────────────────────────────────────
 
 if [ "$VMWARE_WS" = true ]; then
+    # In WSL: delegate to PowerShell script (uses Windows named pipes, not Unix sockets)
+    if [[ "$QEMU_BIN" == *.exe ]]; then
+        PS1_SCRIPT="$(to_win_path "${SCRIPT_DIR}/run.ps1")"
+        # Remove Windows Zone.Identifier (UNC paths from WSL are flagged as "Internet")
+        powershell.exe -NoProfile -Command "Unblock-File -Path '$PS1_SCRIPT'" 2>/dev/null
+        exec powershell.exe -ExecutionPolicy Bypass -NoProfile -Command "& { . '$PS1_SCRIPT' -VMwareWS }"
+    fi
+
     BUILD_DIR="${SCRIPT_DIR}/../build"
     IMG_PATH="${BUILD_DIR}/anyos.img"
     VM_NAME="anyos"
@@ -332,7 +365,12 @@ if [ "$VMWARE_WS" = true ]; then
         rm -rf "$VM_DIR"/*.lck 2>/dev/null
 
         echo "  Converting anyos.img -> $DISK_FILE ..."
-        "$VBOXMANAGE" convertfromraw "$IMG_PATH" "$DISK_FULL" --format VMDK
+        # If VBoxManage is a Windows binary (.exe), convert WSL paths to Windows paths
+        if [[ "$VBOXMANAGE" == *.exe ]]; then
+            "$VBOXMANAGE" convertfromraw "$(to_win_path "$IMG_PATH")" "$(to_win_path "$DISK_FULL")" --format VMDK
+        else
+            "$VBOXMANAGE" convertfromraw "$IMG_PATH" "$DISK_FULL" --format VMDK
+        fi
         echo "[OK] Disk refreshed."
 
         # ── Configure serial port as pipe in .vmx ──────────────────────
@@ -555,11 +593,29 @@ else
     [ -n "$FWD_RULES" ] && NET_LABEL="${NET_LABEL}${FWD_RULES//,hostfwd=tcp::/ fwd:}"
 fi
 
+# ── Windows QEMU (WSL): convert paths and adjust flags ──────────────────────
+if [[ "$QEMU_BIN" == *.exe ]]; then
+    WIN_IMAGE="$(to_win_path "$IMAGE")"
+    # Double backslashes so eval doesn't collapse \\ -> \ (UNC paths need \\wsl.localhost\...)
+    WIN_IMAGE_EVAL="${WIN_IMAGE//\\/\\\\}"
+    DRIVE_FLAGS="${DRIVE_FLAGS//$IMAGE/$WIN_IMAGE_EVAL}"
+    if [ -n "$OVMF_FW" ]; then
+        WIN_OVMF="$(to_win_path "$OVMF_FW")"
+        WIN_OVMF_EVAL="${WIN_OVMF//\\/\\\\}"
+        BIOS_FLAGS="${BIOS_FLAGS//$OVMF_FW/$WIN_OVMF_EVAL}"
+    fi
+    # KVM is Linux-only; Windows uses WHPX (Windows Hypervisor Platform)
+    KVM_FLAGS="${KVM_FLAGS//-enable-kvm/-accel whpx}"
+    KVM_LABEL="${KVM_LABEL//, KVM enabled/, WHPX enabled}"
+    # PulseAudio is Linux-only; use DirectSound on Windows
+    AUDIO_FLAGS="${AUDIO_FLAGS//-audiodev pa,/-audiodev dsound,}"
+fi
+
 echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL"
 
 # On Linux with --res and non-virtio: use xdotool to resize QEMU window after startup
 USE_XDOTOOL=false
-if [ -n "$RESOLUTION" ] && [ "$VGA" != "virtio" ] && [ "$(uname -s)" = "Linux" ]; then
+if [ -n "$RESOLUTION" ] && [ "$VGA" != "virtio" ] && [ "$(uname -s)" = "Linux" ] && [[ "$QEMU_BIN" != *.exe ]]; then
     if command -v xdotool &>/dev/null; then
         USE_XDOTOOL=true
     else
@@ -570,7 +626,7 @@ fi
 
 if [ "$USE_XDOTOOL" = true ]; then
     # Start QEMU in background, capture PID
-    eval qemu-system-x86_64 \
+    eval "$QEMU_BIN_ESC" \
         $CPU_FLAGS \
         $KVM_FLAGS \
         $BIOS_FLAGS \
@@ -603,7 +659,7 @@ if [ "$USE_XDOTOOL" = true ]; then
     # Wait for QEMU to exit
     wait "$QEMU_PID"
 else
-    eval qemu-system-x86_64 \
+    eval "$QEMU_BIN_ESC" \
         $CPU_FLAGS \
         $KVM_FLAGS \
         $BIOS_FLAGS \

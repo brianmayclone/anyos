@@ -2,9 +2,9 @@
 ; int19h.asm — INT 19h: Bootstrap loader
 ;
 ; Boot priority:
-;   1. El Torito CD boot (reads ISO 9660 Boot Record VD at ISO sector 17 =
-;      ATA LBA 68, parses the Boot Catalog, loads the boot image).
-;   2. MBR hard-disk boot (reads ATA LBA 0, checks 0xAA55 signature).
+;   1. El Torito CD boot — probes the slave drive first (ISO/CD).
+;      If no slave is present, falls back to probing master.
+;   2. MBR hard-disk boot (reads ATA LBA 0 from master, checks 0xAA55).
 ;
 ; ISO ↔ ATA sector translation:
 ;   ISO uses 2048-byte logical sectors; the ATA device uses 512-byte sectors.
@@ -37,8 +37,13 @@ el_torito_buf       equ ide_identify_buf
 int19h_handler:
     sti
 
+    ; Need at least one drive to boot.
     cmp byte [cs:ide_master_present], 0
-    je .no_boot
+    jne .have_drive
+    cmp byte [cs:ide_slave_present], 0
+    jne .have_drive
+    jmp .no_boot
+.have_drive:
 
     ; ── Step 1: Try El Torito ──────────────────────────────────────────────
     call detect_el_torito
@@ -51,8 +56,14 @@ int19h_handler:
 
     ; ── Step 2: Fall back to MBR/HDD boot ─────────────────────────────────
 .try_hd:
+    cmp byte [cs:ide_master_present], 0
+    je .no_boot
+
     mov si, str_booting_hd
     call bios_print
+
+    ; Select master drive for MBR read.
+    mov byte [cs:ide_drive_sel], 0xE0  ; Master
 
     ; Read LBA 0 (MBR) to 0x0000:0x7C00.
     mov eax, 0
@@ -86,6 +97,7 @@ int19h_handler:
 ; detect_el_torito
 ;
 ; Checks whether the attached IDE disk is an El Torito CD image.
+; Probes slave first (if present), then master as fallback.
 ; Reads ISO sector 17 (ATA LBA 68) which, for a standards-compliant ISO,
 ; contains the Boot Record Volume Descriptor.  On success it reads the Boot
 ; Catalog and fills all el_torito_* variables.
@@ -99,6 +111,18 @@ detect_el_torito:
     push edi
     push es
 
+    ; Decide which drive to probe for El Torito.
+    ; Prefer slave (CD/ISO), fall back to master.
+    cmp byte [cs:ide_slave_present], 1
+    je .et_use_slave
+    cmp byte [cs:ide_master_present], 0
+    je .fail
+    mov byte [cs:ide_drive_sel], 0xE0  ; Master
+    jmp .et_read_brvd
+.et_use_slave:
+    mov byte [cs:ide_drive_sel], 0xF0  ; Slave
+
+.et_read_brvd:
     ; ── Read ISO sector 17 = ATA LBA 68 ──────────────────────────────────
     ; The Boot Record Volume Descriptor occupies bytes 0–2047 of ISO sector 17.
     ; We only need the first 512 bytes (fits in one ATA sector).
@@ -227,6 +251,8 @@ detect_el_torito:
 ;
 ; Loads and executes the El Torito boot image.
 ; Assumes detect_el_torito succeeded and el_torito_* variables are filled.
+; The ide_drive_sel variable is already set to the correct drive from
+; detect_el_torito.
 ;
 ; The boot image is read from ATA LBA (el_torito_rba × 4) into
 ; (el_torito_load_seg):0x0000.
@@ -276,6 +302,7 @@ boot_el_torito:
     mov ecx, 1
 .count_ok:
 
+    ; ide_drive_sel is already set by detect_el_torito.
     ; Set ES:DI to (load_seg):0x0000 for the read.
     push es
     mov bx, [cs:el_torito_load_seg]

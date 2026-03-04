@@ -94,9 +94,16 @@ int13h_handler:
     jmp .chs_error
 
 .chs_drive_ok:
-
+    ; Check that the appropriate drive is present.
+    cmp dl, 0xE0
+    jne .chs_check_master
+    cmp byte [cs:ide_slave_present], 0
+    je .chs_error
+    jmp .chs_present_ok
+.chs_check_master:
     cmp byte [cs:ide_master_present], 0
     je .chs_error
+.chs_present_ok:
 
     ; Convert CHS to LBA: LBA = (C * H + h) * S + (s - 1)
     ; where H = total heads, S = sectors per track.
@@ -140,6 +147,15 @@ int13h_handler:
     dec bl
     movzx ebx, bl
     add eax, ebx                ; EAX = LBA
+
+    ; Set drive select for ide_read_sectors.
+    cmp byte [esp + 6], 0xE0   ; DL from pushed EDX
+    jne .chs_sel_master
+    mov byte [cs:ide_drive_sel], 0xF0  ; Slave
+    jmp .chs_sel_done
+.chs_sel_master:
+    mov byte [cs:ide_drive_sel], 0xE0  ; Master
+.chs_sel_done:
 
     ; Now read using LBA. Sector count was in AL on entry.
     ; We saved original regs, so recover sector count.
@@ -225,13 +241,13 @@ int13h_handler:
     iret
 
 .gdp_cd:
-    cmp byte [cs:ide_master_present], 0
+    cmp byte [cs:ide_slave_present], 0
     je .gdp_no_drive
 
     ; Synthetic CHS for CD no-emulation compatibility.
     ; Heads = 64, SPT = 32, cylinders derived from total sectors.
     push bx
-    mov eax, [cs:ide_master_lba28]
+    mov eax, [cs:ide_slave_lba28]
     xor edx, edx
     mov ebx, 2048               ; 64 * 32
     div ebx                     ; EAX = cylinders
@@ -271,7 +287,12 @@ int13h_handler:
 ; ---------------------------------------------------------------------------
 .get_disk_type:
     cmp dl, 0x80
-    jne .gdt_none
+    je .gdt_hdd
+    cmp dl, 0xE0
+    je .gdt_cd
+    jmp .gdt_none
+
+.gdt_hdd:
     cmp byte [cs:ide_master_present], 0
     je .gdt_none
 
@@ -282,6 +303,21 @@ int13h_handler:
     shr eax, 16
     mov dx, ax
     xchg cx, dx                 ; CX = high, DX = low
+    mov byte [cs:int13_last_status], 0
+    clc
+    iret
+
+.gdt_cd:
+    cmp byte [cs:ide_slave_present], 0
+    je .gdt_none
+
+    mov ah, 0x03                ; Type 3 = hard disk (CD presented as disk)
+    ; CX:DX = total sectors.
+    mov eax, [cs:ide_slave_lba28]
+    mov cx, ax
+    shr eax, 16
+    mov dx, ax
+    xchg cx, dx
     mov byte [cs:int13_last_status], 0
     clc
     iret
@@ -297,17 +333,26 @@ int13h_handler:
 ;   BX = 0x55AA, DL = drive.
 ;   Returns: BX = 0xAA55, AH = version, CX = API bitmap.
 ;
-;   Supported drives: 0x80 (HDD) and 0xE0 (virtual CD-ROM, El Torito).
+;   Supported drives: 0x80 (HDD master) and 0xE0 (CD-ROM slave).
 ; ---------------------------------------------------------------------------
 .check_extensions:
     ; Accept 0x80 (HDD) and 0xE0 (virtual CD) only.
     cmp dl, 0x80
-    je .chk_ext_ok
+    je .chk_ext_master
     cmp dl, 0xE0
-    je .chk_ext_ok
+    je .chk_ext_slave
     jmp .chk_ext_fail
 
-.chk_ext_ok:
+.chk_ext_master:
+    cmp byte [cs:ide_master_present], 0
+    je .chk_ext_fail
+    jmp .chk_ext_proceed
+
+.chk_ext_slave:
+    cmp byte [cs:ide_slave_present], 0
+    je .chk_ext_fail
+
+.chk_ext_proceed:
     cmp bx, 0x55AA
     jne .chk_ext_fail
 
@@ -336,10 +381,11 @@ int13h_handler:
 ;     Word 6: buffer segment
 ;     Qword 8: starting LBA
 ;
-;   For DL=0xE0 (virtual CD-ROM): use standard EDD DAP semantics
-;   (LBA + count in 512-byte sectors), same as HDD.  Linux El Torito
-;   bootloaders (e.g. ISOLINUX) already convert catalog RBAs to 512-byte
-;   units before calling AH=42.
+;   For DL=0x80 (HDD master): DAP LBA and count are in 512-byte sectors.
+;   For DL=0xE0 (virtual CD-ROM slave): the DAP LBA and count are in
+;   2048-byte CD sector units (matching the 2048-byte sector size reported
+;   by AH=48h). The code below converts them to 512-byte ATA sectors (x4)
+;   before calling ide_read_sectors.
 ; ---------------------------------------------------------------------------
 .extended_read:
     push eax
@@ -355,17 +401,25 @@ int13h_handler:
     ; regardless of caller's DS.  Save caller's DS in BX for DAP access.
     mov bx, ds
 
-    cmp byte [cs:ide_master_present], 0
-    je .ext_read_fail_pop          ; FIX: was .ext_read_fail — stack already pushed
-
     cmp dl, 0x80
-    je .ext_read_hdd
+    je .ext_read_check_master
     cmp dl, 0xE0
-    je .ext_read_cd
-    jmp .ext_read_fail_pop         ; FIX: was .ext_read_fail — stack already pushed
+    je .ext_read_check_slave
+    jmp .ext_read_fail_pop
+
+.ext_read_check_master:
+    cmp byte [cs:ide_master_present], 0
+    je .ext_read_fail_pop
+    jmp .ext_read_hdd
+
+.ext_read_check_slave:
+    cmp byte [cs:ide_slave_present], 0
+    je .ext_read_fail_pop
+    jmp .ext_read_cd
 
 .ext_read_hdd:
     ; Read DAP fields via caller's DS (saved in BX), using ES as proxy segment.
+    mov byte [cs:ide_drive_sel], 0xE0  ; Master
     push bx
     pop es                          ; ES = caller's DS
     movzx ecx, word [es:si + 2]    ; Sector count (512-byte sectors)
@@ -381,6 +435,7 @@ int13h_handler:
     ; CD-ROM: AH=48h reports 2048-byte CD sectors, so ISOLINUX (and other
     ; El Torito bootloaders) pass LBAs and counts in 2048-byte units.
     ; Convert to 512-byte ATA sectors for ide_read_sectors.
+    mov byte [cs:ide_drive_sel], 0xF0  ; Slave
     push bx
     pop es                          ; ES = caller's DS
     movzx ecx, word [es:si + 2]    ; Sector count (2048-byte CD sectors)
@@ -442,6 +497,7 @@ int13h_handler:
     je .ext_write_fail
 
     ; Read DAP.
+    mov byte [cs:ide_drive_sel], 0xE0  ; Master
     movzx ecx, word [si + 2]
     mov di, [si + 4]
     mov ax, [si + 6]
@@ -484,9 +540,6 @@ int13h_handler:
 ;   DL = drive, DS:SI = result buffer.
 ; ---------------------------------------------------------------------------
 .get_ext_params:
-    cmp byte [cs:ide_master_present], 0
-    je .gep_fail
-
     cmp dl, 0x80
     je .gep_hdd
     cmp dl, 0xE0
@@ -494,6 +547,9 @@ int13h_handler:
     jmp .gep_fail
 
 .gep_hdd:
+    cmp byte [cs:ide_master_present], 0
+    je .gep_fail
+
     ; Buffer size (minimum 26 bytes).
     mov word [si + 0], 26       ; Size of result
     mov word [si + 2], 0x0002   ; Flags: CHS valid
@@ -520,6 +576,9 @@ int13h_handler:
     iret
 
 .gep_cd:
+    cmp byte [cs:ide_slave_present], 0
+    je .gep_fail
+
     ; Virtual CD-ROM: report 2048-byte sectors.
     ; Total capacity in 2048-byte sectors = total_ata_sectors / 4.
     mov word [si + 0], 26       ; Size of result
@@ -529,7 +588,7 @@ int13h_handler:
     mov dword [si + 12], 0      ; Sectors per track (N/A)
 
     ; Total ISO sectors = ATA sectors / 4.
-    mov eax, [cs:ide_master_lba28]
+    mov eax, [cs:ide_slave_lba28]
     shr eax, 2
     mov [si + 16], eax
     mov dword [si + 20], 0      ; High dword
@@ -729,8 +788,9 @@ int13_trace_putchar:
 ; =============================================================================
 
 ; ---------------------------------------------------------------------------
-; ide_read_sectors — Read sectors from IDE master using PIO LBA28.
+; ide_read_sectors — Read sectors from IDE using PIO LBA28.
 ;   Input:  EAX = start LBA, ECX = sector count, ES:DI = buffer
+;           cs:ide_drive_sel = 0xE0 (master) or 0xF0 (slave)
 ;   Output: CF set on error
 ; ---------------------------------------------------------------------------
 ide_read_sectors:
@@ -749,7 +809,7 @@ ide_read_sectors:
     mov edx, eax
     shr edx, 24
     and dl, 0x0F
-    or dl, 0xE0                 ; Master, LBA mode
+    or dl, [cs:ide_drive_sel]   ; Master (0xE0) or Slave (0xF0)
     mov al, dl
     mov dx, IDE_DRIVE_HEAD
     out dx, al
@@ -844,8 +904,9 @@ ide_read_sectors:
     ret
 
 ; ---------------------------------------------------------------------------
-; ide_write_sectors — Write sectors to IDE master using PIO LBA28.
+; ide_write_sectors — Write sectors to IDE using PIO LBA28.
 ;   Input:  EAX = start LBA, ECX = sector count, ES:DI = buffer
+;           cs:ide_drive_sel = 0xE0 (master) or 0xF0 (slave)
 ;   Output: CF set on error
 ; ---------------------------------------------------------------------------
 ide_write_sectors:
@@ -866,7 +927,7 @@ ide_write_sectors:
     mov edx, eax
     shr edx, 24
     and dl, 0x0F
-    or dl, 0xE0
+    or dl, [cs:ide_drive_sel]   ; Master (0xE0) or Slave (0xF0)
     mov al, dl
     mov dx, IDE_DRIVE_HEAD
     out dx, al

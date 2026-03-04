@@ -45,7 +45,11 @@ EXPORTS
     corevm_pic_get_interrupt
     corevm_setup_ide
     corevm_ide_attach_disk
+    corevm_ide_attach_slave
+    corevm_ide_attach_disk_fd
+    corevm_ide_attach_slave_fd
     corevm_ide_detach_disk
+    corevm_ide_detach_slave
     corevm_ide_irq_raised
     corevm_ide_clear_irq
     corevm_get_last_error

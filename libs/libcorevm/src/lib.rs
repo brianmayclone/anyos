@@ -44,9 +44,11 @@ pub mod sse_state;
 pub mod devices;
 pub mod jit;
 
-/// Syscall wrappers for the allocator, panic handler, and debug output.
-mod syscall {
+/// Syscall wrappers for the allocator, panic handler, debug output, and
+/// file I/O (used by the IDE controller for on-demand disk access).
+pub(crate) mod syscall {
     pub use libsyscall::{sbrk, mmap, munmap, exit, serial_print, write_bytes};
+    pub use libsyscall::{open, read, write, lseek, close};
 }
 
 /// Print a formatted line to the serial console (stdout fd=1).
@@ -1415,7 +1417,7 @@ pub extern "C" fn corevm_setup_ide(handle: u64) {
     vm.engine.io.register(0x3F6, 2, Box::new(IoProxy { ptr: ide }));
 }
 
-/// Attach a disk image to the IDE controller.
+/// Attach an in-memory disk image to the IDE master drive.
 ///
 /// `data` points to the raw disk image bytes; `len` is the byte count.
 /// The data is copied into the VM — the caller retains ownership of the
@@ -1430,16 +1432,63 @@ pub extern "C" fn corevm_ide_attach_disk(handle: u64, data: *const u8, len: u32)
         return;
     }
     let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
-    vm_log!("attaching IDE disk image ({} bytes)", len);
+    vm_log!("attaching IDE master disk image ({} bytes)", len);
     let mut image = alloc::vec::Vec::with_capacity(len as usize);
     image.extend_from_slice(slice);
     unsafe { (*vm.ide_ptr).attach_disk(image) };
 }
 
-/// Detach the disk image from the IDE controller.
+/// Attach an in-memory disk image to the IDE slave drive.
 ///
-/// The image data is freed. No-op if IDE has not been set up or no disk
-/// is attached.
+/// Same semantics as [`corevm_ide_attach_disk`] but for the slave (drive 1).
+#[no_mangle]
+pub extern "C" fn corevm_ide_attach_slave(handle: u64, data: *const u8, len: u32) {
+    if data.is_null() || len == 0 {
+        return;
+    }
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ide_ptr.is_null() {
+        return;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    vm_log!("attaching IDE slave disk image ({} bytes)", len);
+    let mut image = alloc::vec::Vec::with_capacity(len as usize);
+    image.extend_from_slice(slice);
+    unsafe { (*vm.ide_ptr).attach_slave(image) };
+}
+
+/// Attach a file-descriptor-backed disk to the IDE master drive.
+///
+/// Instead of copying the entire image into RAM, the IDE controller reads
+/// sectors on demand via the given file descriptor. The caller must keep
+/// `fd` open for the lifetime of the VM. `size` is the file size in bytes.
+#[no_mangle]
+pub extern "C" fn corevm_ide_attach_disk_fd(handle: u64, fd: u32, size: u64) {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ide_ptr.is_null() {
+        return;
+    }
+    vm_log!("attaching IDE master disk via fd {} ({} bytes)", fd, size);
+    unsafe { (*vm.ide_ptr).attach_disk_fd(fd as i32, size) };
+}
+
+/// Attach a file-descriptor-backed disk to the IDE slave drive.
+///
+/// Same semantics as [`corevm_ide_attach_disk_fd`] but for the slave.
+#[no_mangle]
+pub extern "C" fn corevm_ide_attach_slave_fd(handle: u64, fd: u32, size: u64) {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ide_ptr.is_null() {
+        return;
+    }
+    vm_log!("attaching IDE slave disk via fd {} ({} bytes)", fd, size);
+    unsafe { (*vm.ide_ptr).attach_slave_fd(fd as i32, size) };
+}
+
+/// Detach the master disk image from the IDE controller.
+///
+/// The image data is freed (or the FD is closed). No-op if IDE has not
+/// been set up or no disk is attached.
 #[no_mangle]
 pub extern "C" fn corevm_ide_detach_disk(handle: u64) {
     let vm = unsafe { vm_from_handle(handle) };
@@ -1447,6 +1496,16 @@ pub extern "C" fn corevm_ide_detach_disk(handle: u64) {
         return;
     }
     unsafe { (*vm.ide_ptr).detach_disk() };
+}
+
+/// Detach the slave disk image from the IDE controller.
+#[no_mangle]
+pub extern "C" fn corevm_ide_detach_slave(handle: u64) {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ide_ptr.is_null() {
+        return;
+    }
+    unsafe { (*vm.ide_ptr).detach_slave() };
 }
 
 /// Check whether the IDE controller has a pending IRQ (IRQ 14).

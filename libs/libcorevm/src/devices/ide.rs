@@ -1,8 +1,12 @@
 //! ATA/IDE disk controller emulation.
 //!
-//! Emulates a single-channel ATA controller with one drive (master)
+//! Emulates a single-channel ATA controller with two drives (master + slave)
 //! attached. Supports PIO data transfers used by BIOS INT 13h and
 //! early Linux boot (before DMA drivers are loaded).
+//!
+//! Each drive can be backed by either an in-memory `Vec<u8>` image or an
+//! open file descriptor for on-demand sector I/O (avoiding loading the
+//! entire disk image into RAM).
 //!
 //! # I/O Ports
 //!
@@ -27,6 +31,7 @@
 use alloc::vec::Vec;
 use crate::error::Result;
 use crate::io::IoHandler;
+use crate::syscall;
 
 // ── ATA status register bits ──
 
@@ -67,17 +72,149 @@ const CMD_NOP: u8 = 0x00;
 /// Sector size in bytes.
 const SECTOR_SIZE: usize = 512;
 
-/// IDE/ATA disk controller with one attached drive.
-///
-/// The drive image is stored as a flat `Vec<u8>`. Reads/writes beyond
-/// the image size return zeros / are silently ignored.
-pub struct Ide {
-    // ── Drive image ──
+// ── Per-drive state ──
 
-    /// Flat disk image data. Length determines drive capacity.
+/// State for a single ATA drive on the channel.
+///
+/// A drive can be backed by either an in-memory `Vec<u8>` or an open file
+/// descriptor. When `disk_fd >= 0`, sectors are read/written via syscalls
+/// (`lseek` + `read`/`write`), avoiding loading the entire image into RAM.
+struct DriveState {
+    /// Flat disk image data (used when `disk_fd < 0`).
     disk: Vec<u8>,
-    /// Total number of sectors (disk.len() / 512).
+    /// Open file descriptor for on-demand I/O, or -1 if in-memory.
+    disk_fd: i32,
+    /// Total number of 512-byte sectors on this drive.
     total_sectors: u64,
+    /// Whether this drive is present (has an image or valid fd).
+    present: bool,
+}
+
+impl DriveState {
+    fn new() -> Self {
+        DriveState {
+            disk: Vec::new(),
+            disk_fd: -1,
+            total_sectors: 0,
+            present: false,
+        }
+    }
+
+    /// Seek the file descriptor to `byte_offset`.
+    ///
+    /// The anyOS `lseek` takes an `i32` offset, limiting single seeks to
+    /// ~2 GB.  For larger offsets we chain SEEK_SET(0) + SEEK_CUR chunks.
+    fn seek_to(&self, byte_offset: u64) {
+        let fd = self.disk_fd as u32;
+        // Start from the beginning.
+        syscall::lseek(fd, 0, 0); // SEEK_SET
+        let mut remaining = byte_offset;
+        const MAX_CHUNK: u64 = 0x7FFF_FFFF; // i32::MAX
+        while remaining > MAX_CHUNK {
+            syscall::lseek(fd, MAX_CHUNK as i32, 1); // SEEK_CUR
+            remaining -= MAX_CHUNK;
+        }
+        if remaining > 0 {
+            syscall::lseek(fd, remaining as i32, 1); // SEEK_CUR
+        }
+    }
+
+    /// Read one 512-byte sector into `buffer`.
+    fn read_sector(&self, lba: u64, buffer: &mut [u8; SECTOR_SIZE]) {
+        if lba >= self.total_sectors {
+            *buffer = [0u8; SECTOR_SIZE];
+            return;
+        }
+        if self.disk_fd >= 0 {
+            // FD-backed: seek + read.
+            let byte_offset = lba * SECTOR_SIZE as u64;
+            self.seek_to(byte_offset);
+            let n = syscall::read(self.disk_fd as u32, buffer);
+            // Pad remainder with zeros if short read.
+            if (n as usize) < SECTOR_SIZE {
+                let start = if n == u32::MAX { 0 } else { n as usize };
+                buffer[start..].fill(0);
+            }
+        } else {
+            // In-memory.
+            let offset = (lba as usize) * SECTOR_SIZE;
+            if offset + SECTOR_SIZE <= self.disk.len() {
+                buffer.copy_from_slice(&self.disk[offset..offset + SECTOR_SIZE]);
+            } else {
+                *buffer = [0u8; SECTOR_SIZE];
+            }
+        }
+    }
+
+    /// Write one 512-byte sector from `buffer`.
+    fn write_sector(&mut self, lba: u64, buffer: &[u8; SECTOR_SIZE]) {
+        if lba >= self.total_sectors {
+            return;
+        }
+        if self.disk_fd >= 0 {
+            // FD-backed: seek + write.
+            let byte_offset = lba * SECTOR_SIZE as u64;
+            self.seek_to(byte_offset);
+            syscall::write(self.disk_fd as u32, buffer);
+        } else {
+            // In-memory.
+            let offset = (lba as usize) * SECTOR_SIZE;
+            if offset + SECTOR_SIZE <= self.disk.len() {
+                self.disk[offset..offset + SECTOR_SIZE].copy_from_slice(buffer);
+            }
+        }
+    }
+
+    /// Attach an in-memory disk image (flat sector dump).
+    fn attach_image(&mut self, mut image: Vec<u8>) {
+        // Close any previous FD.
+        if self.disk_fd >= 0 {
+            syscall::close(self.disk_fd as u32);
+            self.disk_fd = -1;
+        }
+        let sectors = image.len() / SECTOR_SIZE;
+        image.truncate(sectors * SECTOR_SIZE);
+        self.total_sectors = sectors as u64;
+        self.disk = image;
+        self.present = true;
+    }
+
+    /// Attach a file-descriptor-backed disk for on-demand I/O.
+    fn attach_fd(&mut self, fd: i32, size: u64) {
+        // Close any previous FD.
+        if self.disk_fd >= 0 {
+            syscall::close(self.disk_fd as u32);
+        }
+        // Free any in-memory image.
+        self.disk = Vec::new();
+        self.disk_fd = fd;
+        self.total_sectors = size / SECTOR_SIZE as u64;
+        self.present = true;
+    }
+
+    /// Detach the drive and free resources.
+    fn detach(&mut self) -> Vec<u8> {
+        if self.disk_fd >= 0 {
+            syscall::close(self.disk_fd as u32);
+            self.disk_fd = -1;
+        }
+        self.total_sectors = 0;
+        self.present = false;
+        core::mem::take(&mut self.disk)
+    }
+}
+
+// ── IDE controller ──
+
+/// IDE/ATA disk controller with master and slave drives.
+///
+/// Both drives share the same I/O ports (0x1F0-0x1F7, 0x3F6-0x3F7).
+/// The guest selects between them via bit 4 of the drive/head register.
+pub struct Ide {
+    // ── Drives ──
+
+    /// Two drives: index 0 = master, index 1 = slave.
+    drives: [DriveState; 2],
 
     // ── Task file registers ──
 
@@ -92,7 +229,8 @@ pub struct Ide {
     cylinder_low: u8,
     /// Cylinder high / LBA[23:16].
     cylinder_high: u8,
-    /// Drive/head register (LBA[27:24] in low nibble, bit 6=LBA mode).
+    /// Drive/head register (LBA[27:24] in low nibble, bit 4 = drive select,
+    /// bit 6 = LBA mode).
     drive_head: u8,
     /// Status register.
     status: u8,
@@ -128,11 +266,10 @@ pub struct Ide {
 }
 
 impl Ide {
-    /// Create a new IDE controller with no disk attached.
+    /// Create a new IDE controller with no disks attached.
     pub fn new() -> Self {
         Ide {
-            disk: Vec::new(),
-            total_sectors: 0,
+            drives: [DriveState::new(), DriveState::new()],
             error: 0,
             features: 0,
             sector_count: 1,
@@ -156,23 +293,39 @@ impl Ide {
         }
     }
 
-    /// Attach a disk image. The image is a flat sector dump.
-    ///
-    /// The image length is rounded down to the nearest sector boundary.
-    pub fn attach_disk(&mut self, mut image: Vec<u8>) {
-        let sectors = image.len() / SECTOR_SIZE;
-        image.truncate(sectors * SECTOR_SIZE);
-        self.total_sectors = sectors as u64;
-        self.disk = image;
-        // Update status to indicate drive present and ready.
+    // ── Public drive management ──
+
+    /// Attach an in-memory disk image to the master drive (drive 0).
+    pub fn attach_disk(&mut self, image: Vec<u8>) {
+        self.drives[0].attach_image(image);
         self.status = SR_DRDY | SR_DSC;
     }
 
-    /// Detach the current disk image and return it.
+    /// Attach an in-memory disk image to the slave drive (drive 1).
+    pub fn attach_slave(&mut self, image: Vec<u8>) {
+        self.drives[1].attach_image(image);
+    }
+
+    /// Attach a file-descriptor-backed disk to the master drive.
+    pub fn attach_disk_fd(&mut self, fd: i32, size: u64) {
+        self.drives[0].attach_fd(fd, size);
+        self.status = SR_DRDY | SR_DSC;
+    }
+
+    /// Attach a file-descriptor-backed disk to the slave drive.
+    pub fn attach_slave_fd(&mut self, fd: i32, size: u64) {
+        self.drives[1].attach_fd(fd, size);
+    }
+
+    /// Detach the master disk image and return it.
     pub fn detach_disk(&mut self) -> Vec<u8> {
-        self.total_sectors = 0;
         self.status = 0;
-        core::mem::take(&mut self.disk)
+        self.drives[0].detach()
+    }
+
+    /// Detach the slave disk image and return it.
+    pub fn detach_slave(&mut self) -> Vec<u8> {
+        self.drives[1].detach()
     }
 
     /// Returns true if an IRQ is pending (and nIEN is not set).
@@ -185,12 +338,17 @@ impl Ide {
         self.irq_pending = false;
     }
 
-    /// Get total disk size in bytes.
+    /// Get total master disk size in bytes.
     pub fn disk_size(&self) -> u64 {
-        self.disk.len() as u64
+        self.drives[0].total_sectors * SECTOR_SIZE as u64
     }
 
     // ── Internal helpers ──
+
+    /// Returns 0 (master) or 1 (slave) based on drive_head bit 4.
+    fn selected_drive(&self) -> usize {
+        if self.drive_head & 0x10 != 0 { 1 } else { 0 }
+    }
 
     /// Compute the 28-bit LBA from the current task file registers.
     fn lba28(&self) -> u64 {
@@ -212,25 +370,17 @@ impl Ide {
         lo | (hi << 24)
     }
 
-    /// Read one sector from the disk image into the buffer.
+    /// Read one sector from the selected drive into the buffer.
     fn read_sector(&mut self, lba: u64) {
-        let offset = (lba as usize) * SECTOR_SIZE;
-        if offset + SECTOR_SIZE <= self.disk.len() {
-            self.buffer.copy_from_slice(&self.disk[offset..offset + SECTOR_SIZE]);
-        } else {
-            // Beyond disk — return zeros.
-            self.buffer = [0u8; SECTOR_SIZE];
-        }
+        let drv = self.selected_drive();
+        self.drives[drv].read_sector(lba, &mut self.buffer);
         self.buffer_offset = 0;
     }
 
-    /// Write the buffer contents to the disk image at the given LBA.
+    /// Write the buffer contents to the selected drive at the given LBA.
     fn write_sector(&mut self, lba: u64) {
-        let offset = (lba as usize) * SECTOR_SIZE;
-        if offset + SECTOR_SIZE <= self.disk.len() {
-            self.disk[offset..offset + SECTOR_SIZE].copy_from_slice(&self.buffer);
-        }
-        // Writes beyond the disk boundary are silently ignored.
+        let drv = self.selected_drive();
+        self.drives[drv].write_sector(lba, &self.buffer);
     }
 
     /// Current LBA for the ongoing transfer, computed from the task file.
@@ -253,8 +403,11 @@ impl Ide {
         self.drive_head = (self.drive_head & 0xF0) | ((lba >> 24) & 0x0F) as u8;
     }
 
-    /// Fill the identify buffer with drive information.
+    /// Fill the identify buffer with drive information for the selected drive.
     fn fill_identify(&mut self) {
+        let drv = self.selected_drive();
+        let total_sectors = self.drives[drv].total_sectors;
+
         self.buffer = [0u8; SECTOR_SIZE];
         let w = |buf: &mut [u8; 512], idx: usize, val: u16| {
             let off = idx * 2;
@@ -266,13 +419,17 @@ impl Ide {
         w(&mut self.buffer, 0, 0x0040);
 
         // Words 1, 3, 6: Legacy CHS geometry.
-        let cyls = (self.total_sectors / (16 * 63)).min(16383) as u16;
+        let cyls = (total_sectors / (16 * 63)).min(16383) as u16;
         w(&mut self.buffer, 1, cyls);         // cylinders
         w(&mut self.buffer, 3, 16);           // heads
         w(&mut self.buffer, 6, 63);           // sectors per track
 
         // Words 10-19: Serial number (ASCII, swapped bytes).
-        let serial = b"COREVM00000000000001";
+        let serial = if drv == 0 {
+            b"COREVM00000000000001"
+        } else {
+            b"COREVM00000000000002"
+        };
         for i in 0..10 {
             let hi = serial[i * 2];
             let lo = serial[i * 2 + 1];
@@ -288,7 +445,11 @@ impl Ide {
         }
 
         // Words 27-46: Model number.
-        let model = b"CoreVM Virtual Disk                     ";
+        let model = if drv == 0 {
+            b"CoreVM Virtual Disk                     "
+        } else {
+            b"CoreVM Virtual CD-ROM                   "
+        };
         for i in 0..20 {
             let hi = model[i * 2];
             let lo = model[i * 2 + 1];
@@ -315,7 +476,7 @@ impl Ide {
         w(&mut self.buffer, 58, (chs_sectors >> 16) as u16);
 
         // Words 60-61: Total addressable sectors (28-bit LBA).
-        let lba28_max = self.total_sectors.min(0x0FFF_FFFF) as u32;
+        let lba28_max = total_sectors.min(0x0FFF_FFFF) as u32;
         w(&mut self.buffer, 60, lba28_max as u16);
         w(&mut self.buffer, 61, (lba28_max >> 16) as u16);
 
@@ -329,19 +490,19 @@ impl Ide {
         w(&mut self.buffer, 86, 0x0400);
 
         // Words 100-103: 48-bit total sectors.
-        w(&mut self.buffer, 100, self.total_sectors as u16);
-        w(&mut self.buffer, 101, (self.total_sectors >> 16) as u16);
-        w(&mut self.buffer, 102, (self.total_sectors >> 32) as u16);
-        w(&mut self.buffer, 103, (self.total_sectors >> 48) as u16);
+        w(&mut self.buffer, 100, total_sectors as u16);
+        w(&mut self.buffer, 101, (total_sectors >> 16) as u16);
+        w(&mut self.buffer, 102, (total_sectors >> 32) as u16);
+        w(&mut self.buffer, 103, (total_sectors >> 48) as u16);
 
         self.buffer_offset = 0;
     }
 
     /// Execute a command written to the command register.
     fn execute_command(&mut self, cmd: u8) {
-        // Only drive 0 (master) is present.
-        if self.drive_head & 0x10 != 0 {
-            // Drive 1 selected — abort.
+        let drv = self.selected_drive();
+        if !self.drives[drv].present {
+            // Selected drive not present — abort.
             self.status = SR_DRDY | SR_ERR;
             self.error = ER_ABRT;
             return;
@@ -349,12 +510,6 @@ impl Ide {
 
         match cmd {
             CMD_IDENTIFY => {
-                if self.total_sectors == 0 {
-                    // No disk attached.
-                    self.status = SR_DRDY | SR_ERR;
-                    self.error = ER_ABRT;
-                    return;
-                }
                 self.fill_identify();
                 self.status = SR_DRDY | SR_DRQ | SR_DSC;
                 self.error = 0;
@@ -456,7 +611,8 @@ impl Ide {
 
     /// Begin a PIO read transfer.
     fn start_read(&mut self, lba: u64, count: u32) {
-        if lba >= self.total_sectors {
+        let drv = self.selected_drive();
+        if lba >= self.drives[drv].total_sectors {
             self.status = SR_DRDY | SR_ERR;
             self.error = ER_ABRT;
             self.irq_pending = true;

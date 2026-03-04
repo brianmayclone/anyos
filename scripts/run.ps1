@@ -348,6 +348,12 @@ if ($VMwareWS) {
         Get-ChildItem -Path $vmDir -Directory -Filter "*.lck" -ErrorAction SilentlyContinue |
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
+        # Ensure the output directory exists
+        $diskDir2 = Split-Path -Parent $diskFullPath
+        if (-not (Test-Path $diskDir2)) {
+            New-Item -ItemType Directory -Path $diskDir2 -Force | Out-Null
+        }
+
         Write-Host "  Converting anyos.img -> $diskFullPath ..." -ForegroundColor DarkGray
         & $vbm convertfromraw $imgPath $diskFullPath --format VMDK
         if ($LASTEXITCODE -ne 0) {

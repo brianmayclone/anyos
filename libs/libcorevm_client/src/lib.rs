@@ -263,10 +263,18 @@ struct CoreVmLib {
     // ── IDE/ATA disk controller ─────────────────────────────────
     /// Register an IDE controller on the primary channel.
     setup_ide: extern "C" fn(u64),
-    /// Attach a disk image (raw bytes) to the IDE controller.
+    /// Attach an in-memory disk image to IDE master.
     ide_attach_disk: extern "C" fn(u64, *const u8, u32),
-    /// Detach the disk image from the IDE controller.
+    /// Attach an in-memory disk image to IDE slave.
+    ide_attach_slave: extern "C" fn(u64, *const u8, u32),
+    /// Attach FD-backed disk to IDE master (fd, size).
+    ide_attach_disk_fd: extern "C" fn(u64, u32, u64),
+    /// Attach FD-backed disk to IDE slave (fd, size).
+    ide_attach_slave_fd: extern "C" fn(u64, u32, u64),
+    /// Detach the master disk image.
     ide_detach_disk: extern "C" fn(u64),
+    /// Detach the slave disk image.
+    ide_detach_slave: extern "C" fn(u64),
     /// Check if the IDE controller has a pending IRQ (1=yes, 0=no).
     ide_irq_raised: extern "C" fn(u64) -> u32,
     /// Clear the pending IDE IRQ.
@@ -401,7 +409,11 @@ pub fn init() -> bool {
             // IDE
             setup_ide: resolve(&handle, "corevm_setup_ide"),
             ide_attach_disk: resolve(&handle, "corevm_ide_attach_disk"),
+            ide_attach_slave: resolve(&handle, "corevm_ide_attach_slave"),
+            ide_attach_disk_fd: resolve(&handle, "corevm_ide_attach_disk_fd"),
+            ide_attach_slave_fd: resolve(&handle, "corevm_ide_attach_slave_fd"),
             ide_detach_disk: resolve(&handle, "corevm_ide_detach_disk"),
+            ide_detach_slave: resolve(&handle, "corevm_ide_detach_slave"),
             ide_irq_raised: resolve(&handle, "corevm_ide_irq_raised"),
             ide_clear_irq: resolve(&handle, "corevm_ide_clear_irq"),
             // fw_cfg
@@ -933,7 +945,7 @@ impl VmHandle {
         (lib().setup_ide)(self.handle);
     }
 
-    /// Attach a disk image to the IDE controller.
+    /// Attach an in-memory disk image to the IDE master drive.
     ///
     /// The raw disk image bytes are copied into the VM. The caller retains
     /// ownership of the source data. Must be called after
@@ -942,11 +954,33 @@ impl VmHandle {
         (lib().ide_attach_disk)(self.handle, data.as_ptr(), data.len() as u32);
     }
 
-    /// Detach the disk image from the IDE controller.
+    /// Attach an in-memory disk image to the IDE slave drive.
+    pub fn ide_attach_slave(&self, data: &[u8]) {
+        (lib().ide_attach_slave)(self.handle, data.as_ptr(), data.len() as u32);
+    }
+
+    /// Attach a file-descriptor-backed disk to the IDE master drive.
     ///
-    /// Frees the in-VM copy of the disk image.
+    /// The IDE controller reads sectors on demand via `fd` instead of
+    /// copying the entire image into RAM. The caller must keep `fd` open
+    /// for the lifetime of the VM.
+    pub fn ide_attach_disk_fd(&self, fd: u32, size: u64) {
+        (lib().ide_attach_disk_fd)(self.handle, fd, size);
+    }
+
+    /// Attach a file-descriptor-backed disk to the IDE slave drive.
+    pub fn ide_attach_slave_fd(&self, fd: u32, size: u64) {
+        (lib().ide_attach_slave_fd)(self.handle, fd, size);
+    }
+
+    /// Detach the master disk image from the IDE controller.
     pub fn ide_detach_disk(&self) {
         (lib().ide_detach_disk)(self.handle);
+    }
+
+    /// Detach the slave disk image from the IDE controller.
+    pub fn ide_detach_slave(&self) {
+        (lib().ide_detach_slave)(self.handle);
     }
 
     /// Check whether the IDE controller has a pending IRQ (IRQ 14).

@@ -449,27 +449,44 @@ fn cmd_create(uuid: &str) {
     send_status(&format!("created 0 {}", shm_id));
     anyos_std::println!("[vmd] VM '{}' created ({} MiB RAM, shm={})", config.name, config.ram_mb, shm_id);
 
-    // Attach disk image if configured.
+    // Attach disk image as FD-backed IDE master drive.
+    // The file descriptor remains open for on-demand sector I/O — the
+    // entire image is NOT loaded into RAM.
     if !config.disk_image.is_empty() {
-        let data = read_file(&config.disk_image);
-        if !data.is_empty() {
-            if let Some(ref inst) = d.vm {
-                inst.handle.ide_attach_disk(&data);
+        let fd = fs::open(&config.disk_image, 0);
+        if fd != u32::MAX {
+            let size = fs::lseek(fd, 0, 2) as u64; // seek to end
+            fs::lseek(fd, 0, 0);                    // seek back to start
+            if size > 0 {
+                if let Some(ref inst) = d.vm {
+                    inst.handle.ide_attach_disk_fd(fd, size);
+                }
+                anyos_std::println!("[vmd] attached disk (fd={}): {} ({} bytes)", fd, config.disk_image, size);
+            } else {
+                fs::close(fd);
+                send_status(&format!("error 0 disk image empty: {}", config.disk_image));
             }
-            anyos_std::println!("[vmd] attached disk: {} ({} bytes)", config.disk_image, data.len());
         } else {
-            send_status(&format!("error 0 failed to read disk image: {}", config.disk_image));
+            send_status(&format!("error 0 failed to open disk image: {}", config.disk_image));
         }
     }
 
-    // Attach ISO as IDE disk if configured (allows BIOS to boot from it).
+    // Attach ISO image as FD-backed IDE slave drive.
+    // This allows both a HDD and a CD-ROM to be present simultaneously.
+    // The BIOS maps DL=0x80 to master (HDD) and DL=0xE0 to slave (CD).
     if !config.iso_image.is_empty() {
-        let data = read_file(&config.iso_image);
-        if !data.is_empty() {
-            if let Some(ref inst) = d.vm {
-                inst.handle.ide_attach_disk(&data);
+        let fd = fs::open(&config.iso_image, 0);
+        if fd != u32::MAX {
+            let size = fs::lseek(fd, 0, 2) as u64;
+            fs::lseek(fd, 0, 0);
+            if size > 0 {
+                if let Some(ref inst) = d.vm {
+                    inst.handle.ide_attach_slave_fd(fd, size);
+                }
+                anyos_std::println!("[vmd] attached ISO as IDE slave (fd={}): {} ({} bytes)", fd, config.iso_image, size);
+            } else {
+                fs::close(fd);
             }
-            anyos_std::println!("[vmd] attached ISO as IDE disk: {} ({} bytes)", config.iso_image, data.len());
         }
     }
 }
