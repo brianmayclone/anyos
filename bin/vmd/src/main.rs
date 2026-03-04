@@ -29,7 +29,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::fs;
 use anyos_std::ipc;
+use anyos_std::process::Thread;
 use anyos_std::sys;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use libcorevm_client::{ExitReason, VmHandle};
 
 anyos_std::entry!(main);
@@ -93,6 +95,8 @@ struct VmInstance {
     jit_enabled: bool,
     /// Last wall-clock ms when PIT was advanced (for real-time timer).
     last_pit_ms: u32,
+    /// Batch counter for periodic diagnostics.
+    batch_count: u64,
 }
 
 /// Global daemon state.
@@ -106,6 +110,79 @@ struct DaemonState {
 }
 
 static mut DAEMON: Option<DaemonState> = None;
+
+// ── Management thread shared state ──────────────────────────────────────
+
+/// Command pipe ID, set before spawning the management thread.
+static mut MGMT_CMD_PIPE: u32 = 0;
+
+/// Command buffer shared between management thread (writer) and main loop (reader).
+static mut CMD_BUF: [u8; 512] = [0; 512];
+static mut CMD_BUF_LEN: u32 = 0;
+
+/// Set by management thread when a new command is ready.
+static CMD_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Set by main thread to signal the management thread to exit.
+static MGMT_STOP: AtomicBool = AtomicBool::new(false);
+
+/// Management thread entry point.
+///
+/// Continuously reads from the command pipe and forwards commands to the
+/// main loop via the atomic CMD_PENDING slot.  This runs in its own thread
+/// so IPC stays responsive even when the VM is executing a batch.
+fn mgmt_thread_entry() {
+    let pipe_id = unsafe { MGMT_CMD_PIPE };
+    let mut buf = [0u8; 512];
+
+    loop {
+        if MGMT_STOP.load(Ordering::Acquire) {
+            break;
+        }
+
+        let n = ipc::pipe_read(pipe_id, &mut buf);
+        if n > 0 && n != u32::MAX {
+            // Wait for main thread to consume the previous command.
+            while CMD_PENDING.load(Ordering::Acquire) {
+                if MGMT_STOP.load(Ordering::Relaxed) {
+                    return;
+                }
+                anyos_std::process::yield_cpu();
+            }
+
+            let len = (n as usize).min(512);
+            unsafe {
+                CMD_BUF[..len].copy_from_slice(&buf[..len]);
+                CMD_BUF_LEN = len as u32;
+            }
+            CMD_PENDING.store(true, Ordering::Release);
+        } else {
+            // No data available — sleep briefly before retrying.
+            anyos_std::process::sleep(5);
+        }
+    }
+}
+
+/// Read a command forwarded by the management thread (non-blocking).
+fn recv_command_from_mgmt() -> Option<String> {
+    if !CMD_PENDING.load(Ordering::Acquire) {
+        return None;
+    }
+
+    let text = unsafe {
+        let len = CMD_BUF_LEN as usize;
+        let s = core::str::from_utf8(&CMD_BUF[..len]).unwrap_or("");
+        String::from(s)
+    };
+
+    CMD_PENDING.store(false, Ordering::Release);
+
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
 
 fn daemon() -> &'static mut DaemonState {
     unsafe { DAEMON.as_mut().unwrap() }
@@ -440,6 +517,7 @@ fn cmd_create(uuid: &str) {
         bios_type: config.bios_type.clone(),
         jit_enabled: config.jit_enabled,
         last_pit_ms: sys::uptime_ms(),
+        batch_count: 0,
     };
 
     d.vm = Some(inst);
@@ -780,7 +858,45 @@ fn run_vm_batch() -> bool {
             return false;
         }
         ExitReason::InstructionLimit => {
-            // Normal: ran full batch, continue.
+            inst.batch_count += 1;
+            if inst.batch_count % 100 == 0 && inst.batch_count <= 1000 {
+                let rip = inst.handle.rip();
+                let cs = inst.handle.cs();
+                let cs_base = inst.handle.cs_base();
+                let ds = inst.handle.ds();
+                let icount = inst.handle.instruction_count();
+                let mode = inst.handle.mode();
+                let cr0 = inst.handle.cr(0);
+                let eax = inst.handle.gpr(0);
+                let ecx = inst.handle.gpr(1);
+                let edx = inst.handle.gpr(2);
+                let ebx = inst.handle.gpr(3);
+                let esp = inst.handle.gpr(4);
+                let esi = inst.handle.gpr(6);
+                let edi = inst.handle.gpr(7);
+                // Physical fetch address = CS.base + RIP
+                let phys = cs_base.wrapping_add(rip);
+                let mut code = [0u8; 16];
+                for i in 0..16u64 {
+                    code[i as usize] = inst.handle.read_phys_u8(phys + i);
+                }
+                anyos_std::println!(
+                    "[vmd] diag: CS={:04X} (base=0x{:X}) IP=0x{:X} phys=0x{:X} mode={:?} CR0=0x{:X} ic={}",
+                    cs, cs_base, rip, phys, mode, cr0, icount
+                );
+                anyos_std::println!(
+                    "[vmd]  EAX={:08X} ECX={:08X} EDX={:08X} EBX={:08X} ESP={:08X} ESI={:08X} EDI={:08X} DS={:04X}",
+                    eax, ecx, edx, ebx, esp, esi, edi, ds
+                );
+                anyos_std::println!(
+                    "[vmd]  code@{:X}: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                    phys,
+                    code[0], code[1], code[2], code[3],
+                    code[4], code[5], code[6], code[7],
+                    code[8], code[9], code[10], code[11],
+                    code[12], code[13], code[14], code[15]
+                );
+            }
         }
         ExitReason::StopRequested => {
             inst.running = false;
@@ -927,16 +1043,23 @@ fn main() {
         });
     }
 
+    // Spawn management thread for IPC command reception.
+    // The management thread continuously reads from cmd_pipe and forwards
+    // commands to the main loop via the atomic CMD_PENDING slot, ensuring
+    // IPC stays responsive even during heavy VM execution.
+    unsafe { MGMT_CMD_PIPE = cmd_pipe; }
+    let _mgmt = Thread::spawn(mgmt_thread_entry, "vmd-mgmt");
+    anyos_std::println!("[vmd] management thread spawned");
+
     // Signal readiness.
     send_status("ready");
 
-    // Main loop: poll commands, run VM, repeat.
+    // Main loop: dispatch commands from mgmt thread, run VM, repeat.
     loop {
-        // Process all pending commands.
+        // Process all pending commands forwarded by the management thread.
         loop {
-            match recv_command() {
+            match recv_command_from_mgmt() {
                 Some(cmd) => {
-                    // Commands may contain multiple lines (unlikely but handle it).
                     for line in cmd.split('\n') {
                         let trimmed = line.trim();
                         if !trimmed.is_empty() {
@@ -951,9 +1074,6 @@ fn main() {
         // Run VM execution batch if active.
         let vm_active = run_vm_batch();
 
-        // Sleep briefly to avoid 100% CPU usage.
-        // With BATCH_SIZE=1M, use 500us between batches for responsive
-        // timer delivery (~18 Hz PIT) without wasting a full millisecond.
         if !vm_active {
             anyos_std::process::sleep(10);
         } else {

@@ -158,6 +158,12 @@ struct CoreVmLib {
     /// Write a 64-bit GPR by index.
     set_gpr: extern "C" fn(u64, u8, u64),
 
+    // ── CPU state: segment registers ─────────────────────────────
+    /// Get segment selector by index (0=ES, 1=CS, 2=SS, 3=DS, 4=FS, 5=GS).
+    get_segment_selector: extern "C" fn(u64, u8) -> u16,
+    /// Get segment base by index.
+    get_segment_base: extern "C" fn(u64, u8) -> u64,
+
     // ── CPU state: flags ─────────────────────────────────────────
     /// Get RFLAGS.
     get_rflags: extern "C" fn(u64) -> u64,
@@ -363,6 +369,9 @@ pub fn init() -> bool {
             // CPU state: GPR
             get_gpr: resolve(&handle, "corevm_get_gpr"),
             set_gpr: resolve(&handle, "corevm_set_gpr"),
+            // CPU state: segment registers
+            get_segment_selector: resolve(&handle, "corevm_get_segment_selector"),
+            get_segment_base: resolve(&handle, "corevm_get_segment_base"),
             // CPU state: flags
             get_rflags: resolve(&handle, "corevm_get_rflags"),
             set_rflags: resolve(&handle, "corevm_set_rflags"),
@@ -549,6 +558,31 @@ impl VmHandle {
     /// See [`gpr`](Self::gpr) for the index mapping.
     pub fn set_gpr(&self, index: u8, val: u64) {
         (lib().set_gpr)(self.handle, index, val);
+    }
+
+    /// Get a segment selector by index (0=ES, 1=CS, 2=SS, 3=DS, 4=FS, 5=GS).
+    pub fn segment_selector(&self, index: u8) -> u16 {
+        (lib().get_segment_selector)(self.handle, index)
+    }
+
+    /// Get a segment base by index (0=ES, 1=CS, 2=SS, 3=DS, 4=FS, 5=GS).
+    pub fn segment_base(&self, index: u8) -> u64 {
+        (lib().get_segment_base)(self.handle, index)
+    }
+
+    /// Get the CS segment selector.
+    pub fn cs(&self) -> u16 {
+        self.segment_selector(1)
+    }
+
+    /// Get the CS segment base address.
+    pub fn cs_base(&self) -> u64 {
+        self.segment_base(1)
+    }
+
+    /// Get the DS segment selector.
+    pub fn ds(&self) -> u16 {
+        self.segment_selector(3)
     }
 
     // ── CPU state: flags ─────────────────────────────────────────

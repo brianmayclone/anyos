@@ -536,6 +536,8 @@ set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/bin/gunzip)
 add_rust_user_program(banner)
 add_rust_user_program(jscript)
 add_rust_user_program(jp2a)
+add_rust_user_program(ntp)
+add_rust_user_program(ntpd)
 add_rust_user_program(neofetch)
 add_rust_user_program(nvi)
 # Privileged sbin programs

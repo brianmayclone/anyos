@@ -402,6 +402,7 @@ pub extern "C" fn corevm_get_gpr(handle: u64, index: u8) -> u64 {
     }
 }
 
+
 /// Write a general-purpose register by index (0=RAX .. 15=R15).
 ///
 /// Silently ignored if `index` is out of range.
@@ -1036,6 +1037,8 @@ pub extern "C" fn corevm_ps2_key_press(handle: u64, scancode: u8) {
     if !vm.ps2_ptr.is_null() {
         unsafe { (*vm.ps2_ptr).key_press(scancode) };
     }
+    // Raise IRQ 1 (keyboard) so the BIOS INT 09h handler fires.
+    raise_keyboard_irq(vm);
 }
 
 /// Inject a keyboard key-release (break) scancode into the PS/2 controller.
@@ -1046,6 +1049,22 @@ pub extern "C" fn corevm_ps2_key_release(handle: u64, scancode: u8) {
     let vm = unsafe { vm_from_handle(handle) };
     if !vm.ps2_ptr.is_null() {
         unsafe { (*vm.ps2_ptr).key_release(scancode) };
+    }
+    // Raise IRQ 1 for the break code as well.
+    raise_keyboard_irq(vm);
+}
+
+/// Helper: raise IRQ 1 (keyboard) on the PIC and inject the resulting
+/// interrupt vector into the CPU.
+fn raise_keyboard_irq(vm: &mut VmInstance) {
+    if vm.pic_ptr.is_null() {
+        return;
+    }
+    let pic = unsafe { &mut *vm.pic_ptr };
+    pic.raise_irq(1);
+    if let Some(vector) = pic.get_interrupt_vector() {
+        pic.acknowledge(1);
+        vm.engine.interrupts.raise_irq(vector);
     }
 }
 
