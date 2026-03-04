@@ -1,6 +1,6 @@
 //! Current thread accessors — lock-based and lock-free variants.
 
-use super::{get_cpu_id, SCHEDULER, PER_CPU_CURRENT_TID, PER_CPU_IS_USER,
+use super::{SCHEDULER, PER_CPU_CURRENT_TID, PER_CPU_IS_USER,
             PER_CPU_HAS_THREAD, PER_CPU_THREAD_NAME, PER_CPU_IN_SCHEDULER,
             PER_CPU_STACK_BOTTOM, PER_CPU_STACK_TOP, PER_CPU_IDLE_STACK_TOP};
 use crate::arch::hal::MAX_CPUS;
@@ -8,37 +8,34 @@ use crate::task::thread::ThreadState;
 use core::sync::atomic::Ordering;
 
 /// Get the current thread's TID (on the calling CPU).
+///
+/// Lock-free: reads from PER_CPU_CURRENT_TID which is kept in sync by the
+/// scheduler during every context switch.  Previously this acquired the
+/// SCHEDULER lock, which caused deadlocks when called from inside
+/// serial_println! (OUTPUT_LOCK held → SCHEDULER lock = lock-order inversion).
 pub fn current_tid() -> u32 {
-    let guard = SCHEDULER.lock();
-    let cpu_id = get_cpu_id();
-    if let Some(sched) = guard.as_ref() {
-        return sched.per_cpu[cpu_id].current_tid.unwrap_or(0);
-    }
-    0
+    let cpu_id = crate::arch::hal::cpu_id();
+    if cpu_id < MAX_CPUS { PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed) } else { 0 }
 }
 
 /// Check if the current thread is a user process.
+///
+/// Lock-free: reads from PER_CPU_IS_USER (same rationale as current_tid).
 pub fn is_current_thread_user() -> bool {
-    let guard = SCHEDULER.lock();
-    let cpu_id = get_cpu_id();
-    if let Some(sched) = guard.as_ref() {
-        if let Some(idx) = sched.current_idx(cpu_id) {
-            return sched.threads[idx].is_user;
-        }
-    }
-    false
+    let cpu_id = crate::arch::hal::cpu_id();
+    if cpu_id < MAX_CPUS { PER_CPU_IS_USER[cpu_id].load(Ordering::Relaxed) } else { false }
 }
 
 /// Get the current thread's name.
+///
+/// Lock-free: reads from PER_CPU_THREAD_NAME (same rationale as current_tid).
 pub fn current_thread_name() -> [u8; 32] {
-    let guard = SCHEDULER.lock();
-    let cpu_id = get_cpu_id();
-    if let Some(sched) = guard.as_ref() {
-        if let Some(idx) = sched.current_idx(cpu_id) {
-            return sched.threads[idx].name;
-        }
+    let cpu_id = crate::arch::hal::cpu_id();
+    if cpu_id >= MAX_CPUS { return [0u8; 32]; }
+    unsafe {
+        let src = core::ptr::addr_of!(PER_CPU_THREAD_NAME[cpu_id]);
+        core::ptr::read_volatile(src)
     }
-    [0u8; 32]
 }
 
 /// Lock-free read of the current TID on this CPU.

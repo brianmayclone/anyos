@@ -243,7 +243,11 @@ fn ahci_irq_handler(_irq: u8) {
 
     let tid = AHCI_WAITER.load(Ordering::Acquire);
     if tid != 0 {
-        crate::task::scheduler::wake_thread(tid);
+        // Non-blocking: try_wake avoids spinning on SCHEDULER lock in IRQ context.
+        // If contended, deferred_wake queues the TID for the next timer tick.
+        if !crate::task::scheduler::try_wake_thread(tid) {
+            crate::task::scheduler::deferred_wake(tid);
+        }
     }
 }
 

@@ -33,6 +33,15 @@ use crate::error::Result;
 use crate::io::IoHandler;
 use crate::syscall;
 
+/// Log a line to the serial console for IDE debugging.
+macro_rules! ide_log {
+    ($($arg:tt)*) => {{
+        libsyscall::serial_print(format_args!("[ide] "));
+        libsyscall::serial_print(format_args!($($arg)*));
+        libsyscall::write_bytes(b"\n");
+    }};
+}
+
 // ── ATA status register bits ──
 
 /// BSY — drive is busy processing a command.
@@ -308,12 +317,14 @@ impl Ide {
 
     /// Attach a file-descriptor-backed disk to the master drive.
     pub fn attach_disk_fd(&mut self, fd: i32, size: u64) {
+        ide_log!("attach master fd={} size={} sectors={}", fd, size, size / SECTOR_SIZE as u64);
         self.drives[0].attach_fd(fd, size);
         self.status = SR_DRDY | SR_DSC;
     }
 
     /// Attach a file-descriptor-backed disk to the slave drive.
     pub fn attach_slave_fd(&mut self, fd: i32, size: u64) {
+        ide_log!("attach slave fd={} size={} sectors={}", fd, size, size / SECTOR_SIZE as u64);
         self.drives[1].attach_fd(fd, size);
     }
 
@@ -501,8 +512,11 @@ impl Ide {
     /// Execute a command written to the command register.
     fn execute_command(&mut self, cmd: u8) {
         let drv = self.selected_drive();
+        ide_log!("cmd=0x{:02X} drv={} present={} dh=0x{:02X}",
+                 cmd, drv, self.drives[drv].present, self.drive_head);
         if !self.drives[drv].present {
             // Selected drive not present — abort.
+            ide_log!("  -> ABORT: drive {} not present", drv);
             self.status = SR_DRDY | SR_ERR;
             self.error = ER_ABRT;
             return;
@@ -612,7 +626,10 @@ impl Ide {
     /// Begin a PIO read transfer.
     fn start_read(&mut self, lba: u64, count: u32) {
         let drv = self.selected_drive();
+        ide_log!("  read: drv={} lba={} cnt={} total_sec={}",
+                 drv, lba, count, self.drives[drv].total_sectors);
         if lba >= self.drives[drv].total_sectors {
+            ide_log!("  -> ABORT: lba {} >= total {}", lba, self.drives[drv].total_sectors);
             self.status = SR_DRDY | SR_ERR;
             self.error = ER_ABRT;
             self.irq_pending = true;

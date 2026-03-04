@@ -8,7 +8,7 @@ int13_last_ah:     db 0
 int13_last_dl:     db 0
 int13_call_count:  dw 0
 int13_trace_counter: dw 0
-INT13_TRACE_MAX     equ 512
+INT13_TRACE_MAX     equ 65535
 
 int13h_handler:
     inc word [cs:int13_call_count]
@@ -364,6 +364,18 @@ int13h_handler:
     iret
 
 .chk_ext_fail:
+    ; Trace: 41h failed for this drive
+    push ax
+    mov al, '4'
+    call int13_trace_putchar
+    mov al, '1'
+    call int13_trace_putchar
+    mov al, 'F'
+    call int13_trace_putchar
+    mov al, 10
+    call int13_trace_putchar
+    pop ax
+
     mov byte [cs:int13_last_status], 0x01
     mov ah, 0x01
     stc
@@ -414,8 +426,22 @@ int13h_handler:
 
 .ext_read_check_slave:
     cmp byte [cs:ide_slave_present], 0
-    je .ext_read_fail_pop
+    je .ext_read_slave_missing
     jmp .ext_read_cd
+
+.ext_read_slave_missing:
+    ; Trace: slave not present for AH=42h
+    push ax
+    mov al, '!'
+    call int13_trace_putchar
+    mov al, 'S'
+    call int13_trace_putchar
+    mov al, 'L'
+    call int13_trace_putchar
+    mov al, 10
+    call int13_trace_putchar
+    pop ax
+    jmp .ext_read_fail_pop
 
 .ext_read_hdd:
     ; Read DAP fields via caller's DS (saved in BX), using ES as proxy segment.
@@ -444,11 +470,58 @@ int13h_handler:
     mov bx, [es:si + 6]            ; Buffer segment
     mov eax, [es:si + 8]           ; LBA (2048-byte CD sector units)
     shl eax, 2                     ; × 4 → ATA LBA (512-byte units)
+
+    ; Trace: CD read LBA and count before ide_read_sectors.
+    push ax
+    push bx
+    mov al, 'R'
+    call int13_trace_putchar
+    mov al, 'C'
+    call int13_trace_putchar
+    mov al, ' '
+    call int13_trace_putchar
+    mov al, 'L'
+    call int13_trace_putchar
+    ; Print ATA LBA (low 16 bits of EAX).
+    pop bx
+    push bx
+    push eax
+    shr eax, 8
+    call int13_trace_hex8
+    pop eax
+    push eax
+    call int13_trace_hex8
+    mov al, ' '
+    call int13_trace_putchar
+    mov al, 'N'
+    call int13_trace_putchar
+    ; Print count (low byte of ECX).
+    mov al, cl
+    call int13_trace_hex8
+    mov al, 10
+    call int13_trace_putchar
+    pop eax
+    pop bx
+
     mov es, bx                      ; ES = buffer segment
     call ide_read_sectors
     jc .ext_read_fail_pop
 
 .ext_read_ok:
+    ; Trace success
+    push ax
+    mov al, '4'
+    call int13_trace_putchar
+    mov al, '2'
+    call int13_trace_putchar
+    mov al, 'o'
+    call int13_trace_putchar
+    mov al, 'k'
+    call int13_trace_putchar
+    mov al, 10
+    call int13_trace_putchar
+    pop ax
+
     pop si
     pop ds
     pop es
@@ -463,6 +536,22 @@ int13h_handler:
     iret
 
 .ext_read_fail_pop:
+    ; Trace failure
+    push ax
+    mov al, '4'
+    call int13_trace_putchar
+    mov al, '2'
+    call int13_trace_putchar
+    mov al, 'E'
+    call int13_trace_putchar
+    mov al, 'R'
+    call int13_trace_putchar
+    mov al, 'R'
+    call int13_trace_putchar
+    mov al, 10
+    call int13_trace_putchar
+    pop ax
+
     pop si
     pop ds
     pop es
@@ -602,6 +691,18 @@ int13h_handler:
     iret
 
 .gep_fail:
+    ; Trace: 48h failed
+    push ax
+    mov al, '4'
+    call int13_trace_putchar
+    mov al, '8'
+    call int13_trace_putchar
+    mov al, 'F'
+    call int13_trace_putchar
+    mov al, 10
+    call int13_trace_putchar
+    pop ax
+
     mov byte [cs:int13_last_status], 0x01
     mov ah, 0x01
     stc
@@ -843,6 +944,8 @@ ide_read_sectors:
     pop eax
 
     ; Send READ SECTORS command.
+    ; Save EAX (LBA) — the command byte and status polling clobber AL.
+    push eax
     mov dx, IDE_CMD
     mov al, IDE_CMD_READ_SECTORS
     out dx, al
@@ -863,10 +966,12 @@ ide_read_sectors:
     dec cx
     jnz .read_wait
     pop cx
+    pop eax
     jmp .read_error
 
 .read_err:
     pop cx
+    pop eax
     jmp .read_error
 
 .read_ready:
@@ -881,6 +986,7 @@ ide_read_sectors:
     pop dx
     pop cx
 
+    pop eax                     ; Restore EAX (LBA) before incrementing
     inc eax                     ; Next LBA
     dec ecx                     ; Decrement count
     jmp .read_loop
@@ -953,11 +1059,11 @@ ide_write_sectors:
     pop eax
 
     ; WRITE SECTORS command.
+    ; Save EAX (LBA) — the command byte, status polling, and flush clobber AL.
+    push eax
     mov dx, IDE_CMD
-    push ax
     mov al, 0x30                ; WRITE SECTORS
     out dx, al
-    pop ax
 
     ; Wait for DRQ.
     mov dx, IDE_STATUS
@@ -974,9 +1080,11 @@ ide_write_sectors:
     dec cx
     jnz .write_wait
     pop cx
+    pop eax
     jmp .write_error
 .write_err:
     pop cx
+    pop eax
     jmp .write_error
 .write_ready:
     pop cx
@@ -1003,6 +1111,7 @@ ide_write_sectors:
 .write_flushed:
     pop cx
 
+    pop eax                     ; Restore EAX (LBA) before incrementing
     inc eax
     dec ecx
     jmp .write_loop
