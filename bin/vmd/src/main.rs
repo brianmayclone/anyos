@@ -61,12 +61,10 @@ const E1000_MMIO_BASE: u64 = 0xD000_0000;
 const BATCH_SIZE: u64 = 5_000_000;
 
 /// PIT ticks per millisecond (1,193,182 Hz / 1000 ≈ 1193).
-/// Used to convert wall-clock elapsed time to PIT tick count.
 const PIT_TICKS_PER_MS: u32 = 1193;
 
-/// Maximum wall-clock ms to advance PIT in one call.
-/// Caps catch-up after long pauses (e.g. host scheduling delays).
-const PIT_MAX_ADVANCE_MS: u32 = 100;
+/// Maximum wall-clock ms to advance PIT in one call (caps catch-up bursts).
+const PIT_MAX_ADVANCE_MS: u32 = 10;
 
 /// SHM state constants (written to offset 16).
 const STATE_STOPPED: u32 = 0;
@@ -575,6 +573,7 @@ fn cmd_start() {
         );
 
         inst.running = true;
+        inst.last_pit_ms = sys::uptime_ms(); // Reset so first batch doesn't catch up
         update_shm_state(inst, STATE_RUNNING);
         send_status("state 0 running");
         anyos_std::println!("[vmd] VM '{}' started", inst.name);
@@ -680,26 +679,27 @@ fn dispatch_command(line: &str) {
 // ── VM execution ───────────────────────────────────────────────────────
 
 /// Advance PIT based on real elapsed wall-clock time.
-/// Measures time since last call and advances the PIT by the corresponding
-/// number of ticks, delivering IRQ 0 whenever channel 0 fires.
+///
+/// Uses `uptime_ms()` to measure elapsed time since the last call and
+/// advances the PIT by the corresponding number of ticks in a single
+/// bulk FFI call.  Always advances at least 1 ms worth of ticks to
+/// guarantee progress even when batches execute in sub-millisecond time.
 fn advance_pit_realtime(inst: &mut VmInstance) {
     let now = sys::uptime_ms();
-    let mut elapsed = now.wrapping_sub(inst.last_pit_ms);
+    let elapsed = now.wrapping_sub(inst.last_pit_ms).min(PIT_MAX_ADVANCE_MS);
 
-    // Cap to avoid long stalls after host scheduling delays.
-    if elapsed > PIT_MAX_ADVANCE_MS {
-        elapsed = PIT_MAX_ADVANCE_MS;
-    }
+    // At least 1 ms worth of ticks per call — ensures PIT makes progress
+    // even when uptime_ms() resolution is too coarse to detect < 1 ms.
+    let ticks = if elapsed > 0 {
+        elapsed * PIT_TICKS_PER_MS
+    } else {
+        PIT_TICKS_PER_MS
+    };
 
-    if elapsed == 0 {
-        return;
-    }
-
-    let ticks = elapsed * PIT_TICKS_PER_MS;
-    for _ in 0..ticks {
-        if inst.handle.pit_tick() {
-            inst.handle.pic_raise_irq(0);
-        }
+    // Bulk-advance: one FFI call instead of thousands.
+    let fires = inst.handle.pit_advance(ticks);
+    if fires > 0 {
+        inst.handle.pic_raise_irq(0);
     }
 
     inst.last_pit_ms = now;

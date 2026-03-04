@@ -229,6 +229,23 @@ impl Pit {
         self.channels[2].tick();
         irq
     }
+
+    /// Advance all channels by `n` ticks in bulk.
+    ///
+    /// Returns the number of times channel 0 fired (IRQ 0 count).
+    /// Much more efficient than calling `tick()` individually through FFI.
+    pub fn advance(&mut self, n: u32) -> u32 {
+        let mut fires: u32 = 0;
+        for _ in 0..n {
+            let irq = self.channels[0].tick();
+            self.channels[1].tick();
+            self.channels[2].tick();
+            if irq {
+                fires += 1;
+            }
+        }
+        fires
+    }
 }
 
 impl IoHandler for Pit {

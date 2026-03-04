@@ -249,6 +249,10 @@ struct CoreVmLib {
     /// Returns 1 if channel 0 fired (IRQ 0 should be raised), 0 otherwise.
     pit_tick: extern "C" fn(u64) -> u32,
 
+    /// Advance the PIT by n ticks in bulk.
+    /// Returns number of times channel 0 fired.
+    pit_advance: extern "C" fn(u64, u32) -> u32,
+
     // ── PIC interrupt controller ─────────────────────────────────
     /// Assert an IRQ line on the PIC (0-15).
     pic_raise_irq: extern "C" fn(u64, u8),
@@ -390,6 +394,7 @@ pub fn init() -> bool {
             e1000_take_tx_packets: resolve(&handle, "corevm_e1000_take_tx_packets"),
             // PIT
             pit_tick: resolve(&handle, "corevm_pit_tick"),
+            pit_advance: resolve(&handle, "corevm_pit_advance"),
             // PIC
             pic_raise_irq: resolve(&handle, "corevm_pic_raise_irq"),
             pic_get_interrupt: resolve(&handle, "corevm_pic_get_interrupt"),
@@ -883,6 +888,14 @@ impl VmHandle {
     /// [`pic_raise_irq(0)`](Self::pic_raise_irq) to deliver it).
     pub fn pit_tick(&self) -> bool {
         (lib().pit_tick)(self.handle) != 0
+    }
+
+    /// Advance the PIT by `n` ticks in a single call.
+    ///
+    /// Returns the number of times channel 0 fired.  The caller should
+    /// raise IRQ 0 on the PIC at least once if the return value is > 0.
+    pub fn pit_advance(&self, n: u32) -> u32 {
+        (lib().pit_advance)(self.handle, n)
     }
 
     // ── PIC interrupt controller ─────────────────────────────────

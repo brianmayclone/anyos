@@ -2179,6 +2179,28 @@ extern "C" fn msgbox_ok_clicked(_id: u32, _event_type: u32, _userdata: u64) {
     unsafe { MSGBOX_DISMISSED = true; }
 }
 
+/// Compute logical (x, y) that centers a dialog of size (dlg_w, dlg_h)
+/// on the screen position of `owner_win_id`.
+pub(crate) fn center_on_owner(owner_win_id: ControlId, dlg_w: u32, dlg_h: u32) -> (i32, i32) {
+    let st = state();
+    if let Some(idx) = st.windows.iter().position(|&w| w == owner_win_id) {
+        let cw = &st.comp_windows[idx];
+        let (owner_px, owner_py) = compositor::get_window_position(
+            st.channel_id, st.sub_id, cw.window_id,
+        );
+        let owner_pw = cw.width as i32;
+        let owner_ph = cw.height as i32;
+        let phys_dlg_w = theme::scale(dlg_w) as i32;
+        let phys_dlg_h = theme::scale(dlg_h) as i32;
+        let cx = owner_px + (owner_pw - phys_dlg_w) / 2;
+        let cy = owner_py + (owner_ph - phys_dlg_h) / 2;
+        // Convert physical screen coordinates to logical for anyui_create_window
+        (theme::unscale(cx), theme::unscale(cy))
+    } else {
+        (-1, -1) // fallback: auto-placement
+    }
+}
+
 /// Show a modal message box. Blocks until the user dismisses it.
 ///
 /// `msg_type`: 0 = alert (red), 1 = info (blue), 2 = warning (yellow).
@@ -2195,14 +2217,7 @@ pub extern "C" fn anyui_message_box(
     let st = state();
     if st.windows.is_empty() { return; }
 
-    let win_id = *st.windows.last().unwrap();
-    let (win_w, win_h) = {
-        let ctrl = st.controls.iter().find(|c| c.id() == win_id);
-        match ctrl {
-            Some(c) => (c.base().w, c.base().h),
-            None => return,
-        }
-    };
+    let owner_win_id = *st.windows.last().unwrap();
 
     let text_slice = if !text.is_null() && text_len > 0 {
         unsafe { core::slice::from_raw_parts(text, text_len as usize) }
@@ -2216,83 +2231,73 @@ pub extern "C" fn anyui_message_box(
     };
 
     // Icon and accent color based on type
-    let (icon_char, icon_color) = match msg_type {
-        0 => (b"!" as &[u8], 0xFFFF3B30u32),  // alert — red
-        1 => (b"i" as &[u8], 0xFF007AFFu32),   // info — blue
-        _ => (b"!" as &[u8], 0xFFFFD60Au32),   // warning — yellow
+    let (icon_char, icon_color, title) = match msg_type {
+        0 => (b"!" as &[u8], 0xFFFF3B30u32, b"Alert" as &[u8]),
+        1 => (b"i" as &[u8], 0xFF007AFFu32, b"Info" as &[u8]),
+        _ => (b"!" as &[u8], 0xFFFFD60Au32, b"Warning" as &[u8]),
     };
 
-    let card_w = 320u32;
-    let card_h = 160u32;
-    let card_x = ((win_w as i32) - (card_w as i32)) / 2;
-    let card_y = ((win_h as i32) - (card_h as i32)) / 2;
+    let dlg_w = 320u32;
+    let dlg_h = 160u32;
 
-    // Allocate IDs
-    let overlay_id = st.next_id; st.next_id += 1;
-    let card_id = st.next_id; st.next_id += 1;
+    // Compute center position relative to the owner window
+    let (dlg_x, dlg_y) = center_on_owner(owner_win_id, dlg_w, dlg_h);
+
+    // Create standalone MessageBox window
+    // Flags: NOT_RESIZABLE(0x02) | NO_MINIMIZE(0x10) | NO_MAXIMIZE(0x20)
+    let dlg_win_id = anyui_create_window(
+        title.as_ptr(), title.len() as u32,
+        dlg_x, dlg_y, dlg_w, dlg_h,
+        0x02 | 0x10 | 0x20,
+    );
+    if dlg_win_id == 0 { return; }
+
+    // Make it modal to the owner window
+    anyui_set_modal(dlg_win_id, owner_win_id);
+
+    // Allocate child IDs
+    let st = state();
     let icon_id = st.next_id; st.next_id += 1;
     let msg_id = st.next_id; st.next_id += 1;
     let btn_id = st.next_id; st.next_id += 1;
 
-    // Create overlay (full-window view, dark background)
-    let mut overlay = controls::create_control(
-        ControlKind::View, overlay_id, win_id, 0, 0, win_w, win_h, &[],
-    );
-    overlay.set_color(0xAA000000);
-    st.controls.push(overlay);
-    if let Some(w) = st.controls.iter_mut().find(|c| c.id() == win_id) {
-        w.add_child(overlay_id);
-    }
-
-    // Push onto modal stack (in-window overlay modal)
-    st.modal_stack.push(ModalEntry {
-        modal_win_id: 0,
-        owner_win_id: win_id,
-        overlay_id,
-    });
-
-    // Create card
-    let card = controls::create_control(
-        ControlKind::Card, card_id, overlay_id, card_x, card_y, card_w, card_h, &[],
-    );
-    st.controls.push(card);
-    if let Some(o) = st.controls.iter_mut().find(|c| c.id() == overlay_id) {
-        o.add_child(card_id);
-    }
-
     // Icon label
     let mut icon = controls::create_control(
-        ControlKind::Label, icon_id, card_id, 20, 16, 24, 24, icon_char,
+        ControlKind::Label, icon_id, dlg_win_id, 20, 16, 24, 24, icon_char,
     );
     icon.set_color(icon_color);
     st.controls.push(icon);
-    if let Some(c) = st.controls.iter_mut().find(|c| c.id() == card_id) {
-        c.add_child(icon_id);
+    if let Some(w) = st.controls.iter_mut().find(|c| c.id() == dlg_win_id) {
+        w.add_child(icon_id);
     }
 
     // Message label
     let msg = controls::create_control(
-        ControlKind::Label, msg_id, card_id, 52, 16, card_w - 72, 80, text_slice,
+        ControlKind::Label, msg_id, dlg_win_id, 52, 16, dlg_w - 72, 80, text_slice,
     );
     st.controls.push(msg);
-    if let Some(c) = st.controls.iter_mut().find(|c| c.id() == card_id) {
-        c.add_child(msg_id);
+    if let Some(w) = st.controls.iter_mut().find(|c| c.id() == dlg_win_id) {
+        w.add_child(msg_id);
     }
 
     // OK button
     let btn = controls::create_control(
-        ControlKind::Button, btn_id, card_id,
-        ((card_w as i32) - 80) / 2, (card_h as i32) - 48, 80, 32,
+        ControlKind::Button, btn_id, dlg_win_id,
+        ((dlg_w as i32) - 80) / 2, (dlg_h as i32) - 48, 80, 32,
         btn_slice,
     );
     st.controls.push(btn);
-    if let Some(c) = st.controls.iter_mut().find(|c| c.id() == card_id) {
-        c.add_child(btn_id);
+    if let Some(w) = st.controls.iter_mut().find(|c| c.id() == dlg_win_id) {
+        w.add_child(btn_id);
     }
 
     // Register click handler on the button
     if let Some(b) = st.controls.iter_mut().find(|c| c.id() == btn_id) {
         b.set_event_callback(control::EVENT_CLICK, msgbox_ok_clicked, 0);
+    }
+    // Window close button (X) → same as OK
+    if let Some(b) = st.controls.iter_mut().find(|c| c.id() == dlg_win_id) {
+        b.set_event_callback(control::EVENT_CLOSE, msgbox_ok_clicked, 0);
     }
 
     // Mini event loop — block until dismissed
@@ -2304,14 +2309,8 @@ pub extern "C" fn anyui_message_box(
         if elapsed < 16 { syscall::sleep(16 - elapsed); }
     }
 
-    // Pop modal stack
-    let st = state();
-    if let Some(pos) = st.modal_stack.iter().position(|e| e.overlay_id == overlay_id) {
-        st.modal_stack.remove(pos);
-    }
-
-    // Clean up — remove overlay and all descendants
-    anyui_remove(overlay_id);
+    // Destroy dialog window — auto-clears modal + removes all children
+    anyui_destroy_window(dlg_win_id);
 }
 
 // ── File Dialogs ─────────────────────────────────────────────────────

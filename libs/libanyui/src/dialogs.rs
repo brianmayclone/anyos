@@ -187,13 +187,20 @@ fn populate_file_list(show_files: bool) {
 
         if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == tree_id) {
             if let Some(tv) = as_tree_view_mut(ctrl) {
-                let node_idx = tv.add_node(None, entry.name_slice());
                 if entry.is_dir {
+                    // Show directories with trailing "/" for clarity
+                    let name = entry.name_slice();
+                    let mut dir_label = [0u8; 58];
+                    let nl = name.len().min(56);
+                    dir_label[..nl].copy_from_slice(&name[..nl]);
+                    dir_label[nl] = b'/';
+                    let node_idx = tv.add_node(None, &dir_label[..nl + 1]);
                     tv.set_node_style(node_idx, 1); // bold
-                    tv.set_node_text_color(node_idx, 0xFFCCCCCC);
+                    tv.set_node_text_color(node_idx, 0xFFE8E8E8);
                     num_dirs += 1;
                 } else {
-                    tv.set_node_text_color(node_idx, 0xFFBBBBBB);
+                    let node_idx = tv.add_node(None, entry.name_slice());
+                    tv.set_node_text_color(node_idx, 0xFFA0A0A0);
                     num_files += 1;
                 }
             }
@@ -293,6 +300,15 @@ fn get_selected_index() -> Option<usize> {
     None
 }
 
+/// Strip trailing '/' from a directory name (as displayed in the tree).
+fn strip_dir_suffix(name: &[u8]) -> &[u8] {
+    if name.len() > 1 && name[name.len() - 1] == b'/' {
+        &name[..name.len() - 1]
+    } else {
+        name
+    }
+}
+
 // ── Navigate into a directory ────────────────────────────────────────
 
 fn navigate_to(name: &[u8]) {
@@ -351,16 +367,16 @@ fn confirm_open_folder() {
     if let Some(sel_idx) = get_selected_index() {
         let is_dir = unsafe { sel_idx < DIALOG_ENTRY_COUNT && DIALOG_ENTRY_IS_DIR[sel_idx] };
         if is_dir {
-            if let Some(name) = get_selected_node_text() {
-                if name == b".." {
-                    // Navigate to parent instead
+            if let Some(raw_name) = get_selected_node_text() {
+                if raw_name == b".." {
                     navigate_to(b"..");
                     return;
                 }
+                let name = strip_dir_suffix(&raw_name);
                 // Build full path of selected dir
                 let mut full = [0u8; 257];
                 let full_len = unsafe {
-                    path_join(&DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN], &name, &mut full)
+                    path_join(&DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN], name, &mut full)
                 };
                 unsafe {
                     DIALOG_RESULT[..full_len].copy_from_slice(&full[..full_len]);
@@ -383,20 +399,20 @@ fn confirm_open_folder() {
 fn confirm_open_file() {
     if let Some(sel_idx) = get_selected_index() {
         let is_dir = unsafe { sel_idx < DIALOG_ENTRY_COUNT && DIALOG_ENTRY_IS_DIR[sel_idx] };
-        if let Some(name) = get_selected_node_text() {
-            if name == b".." {
+        if let Some(raw_name) = get_selected_node_text() {
+            if raw_name == b".." {
                 navigate_to(b"..");
                 return;
             }
+            let name = strip_dir_suffix(&raw_name);
             if is_dir {
-                // Navigate into directory
-                navigate_to(&name);
+                navigate_to(name);
                 return;
             }
             // It's a file — select it
             let mut full = [0u8; 257];
             let full_len = unsafe {
-                path_join(&DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN], &name, &mut full)
+                path_join(&DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN], name, &mut full)
             };
             unsafe {
                 DIALOG_RESULT[..full_len].copy_from_slice(&full[..full_len]);
@@ -457,13 +473,14 @@ extern "C" fn dialog_up_clicked(_id: u32, _event_type: u32, _userdata: u64) {
 extern "C" fn dialog_tree_double_click(_id: u32, _event_type: u32, _userdata: u64) {
     if let Some(sel_idx) = get_selected_index() {
         let is_dir = unsafe { sel_idx < DIALOG_ENTRY_COUNT && DIALOG_ENTRY_IS_DIR[sel_idx] };
-        if let Some(name) = get_selected_node_text() {
-            if name == b".." {
+        if let Some(raw_name) = get_selected_node_text() {
+            if raw_name == b".." {
                 navigate_to(b"..");
                 return;
             }
+            let name = strip_dir_suffix(&raw_name);
             if is_dir {
-                navigate_to(&name);
+                navigate_to(name);
             } else {
                 // Double-click on file in open_file mode → select it
                 let show_files = unsafe { DIALOG_SHOW_FILES };
@@ -555,11 +572,12 @@ fn run_file_dialog(
         DIALOG_DISMISSED = false;
     }
 
-    // ── Create standalone dialog window ──────────────────────────────
+    // ── Create standalone dialog window, centered on owner ──────────
     // Flags: NOT_RESIZABLE(0x02) | NO_MINIMIZE(0x10) | NO_MAXIMIZE(0x20)
+    let (dlg_x, dlg_y) = crate::center_on_owner(owner_win_id, dlg_w, dlg_h);
     let dialog_win_id = crate::anyui_create_window(
         title.as_ptr(), title.len() as u32,
-        -1, -1, dlg_w, dlg_h,
+        dlg_x, dlg_y, dlg_w, dlg_h,
         0x02 | 0x10 | 0x20,
     );
     if dialog_win_id == 0 { return 0; }
@@ -577,6 +595,9 @@ fn run_file_dialog(
     let confirm_btn_id = st.next_id; st.next_id += 1;
     let tree_id = if !is_create_folder { let id = st.next_id; st.next_id += 1; id } else { 0 };
     let name_field_id = if has_name_field { let id = st.next_id; st.next_id += 1; id } else { 0 };
+    // Separator line IDs (between path bar ↔ tree, tree ↔ bottom bar)
+    let sep_top_id = if !is_create_folder { let id = st.next_id; st.next_id += 1; id } else { 0 };
+    let sep_bot_id = if !is_create_folder { let id = st.next_id; st.next_id += 1; id } else { 0 };
 
     // Store IDs for callbacks
     unsafe {
@@ -586,12 +607,12 @@ fn run_file_dialog(
         DIALOG_NAME_FIELD_ID = name_field_id;
     }
 
-    // ── Path bar (top, darker background with path label + "^" button) ──
+    // ── Path bar (top, subtle contrast background) ───────────────────
     let mut path_bar = controls::create_control(
-        ControlKind::View, path_bar_id, dialog_win_id, 0, 0, dlg_w, 32, &[],
+        ControlKind::View, path_bar_id, dialog_win_id, 0, 0, dlg_w, 36, &[],
     );
     path_bar.base_mut().dock = DockStyle::Top;
-    path_bar.set_color(0xFF2A2A2C);
+    path_bar.set_color(0xFF2D2D30);
     st.controls.push(path_bar);
     add_child_to_parent(dialog_win_id, path_bar_id);
 
@@ -599,46 +620,69 @@ fn run_file_dialog(
     if !is_create_folder {
         let mut up_btn = controls::create_control(
             ControlKind::Button, up_btn_id, path_bar_id,
-            0, 2, 28, 28, b"^",
+            0, 4, 28, 28, b"^",
         );
         up_btn.base_mut().dock = DockStyle::Right;
-        up_btn.base_mut().margin.right = 4;
+        up_btn.base_mut().margin.right = 6;
         st.controls.push(up_btn);
         add_child_to_parent(path_bar_id, up_btn_id);
     }
 
     // Path label inside path bar
     let mut path_label = controls::create_control(
-        ControlKind::Label, path_label_id, path_bar_id, 0, 0, dlg_w - 40, 32,
+        ControlKind::Label, path_label_id, path_bar_id, 0, 0, dlg_w - 44, 36,
         &cwd_buf[..cwd_len],
     );
     path_label.base_mut().dock = DockStyle::Fill;
-    path_label.base_mut().margin.left = 10;
-    path_label.set_color(0xFF9CDCFE);
+    path_label.base_mut().margin.left = 12;
+    if let Some(tb) = path_label.text_base_mut() {
+        tb.text_style.text_color = 0xFFCCCCCC;
+    }
     st.controls.push(path_label);
     add_child_to_parent(path_bar_id, path_label_id);
 
+    // ── Separator line (path bar → tree) ─────────────────────────────
+    if !is_create_folder {
+        let mut sep_top = controls::create_control(
+            ControlKind::View, sep_top_id, dialog_win_id, 0, 0, dlg_w, 1, &[],
+        );
+        sep_top.base_mut().dock = DockStyle::Top;
+        sep_top.set_color(0xFF3E3E42);
+        st.controls.push(sep_top);
+        add_child_to_parent(dialog_win_id, sep_top_id);
+    }
+
     // ── Bottom bar (buttons + optional name field) ───────────────────
     let mut bottom_bar = controls::create_control(
-        ControlKind::View, bottom_bar_id, dialog_win_id, 0, 0, dlg_w, 44, &[],
+        ControlKind::View, bottom_bar_id, dialog_win_id, 0, 0, dlg_w, 48, &[],
     );
     bottom_bar.base_mut().dock = DockStyle::Bottom;
-    bottom_bar.base_mut().margin.left = 10;
-    bottom_bar.base_mut().margin.right = 10;
-    bottom_bar.base_mut().margin.bottom = 8;
-    bottom_bar.set_color(0x00000000); // transparent
+    bottom_bar.base_mut().margin.left = 12;
+    bottom_bar.base_mut().margin.right = 12;
+    bottom_bar.base_mut().margin.bottom = 10;
     st.controls.push(bottom_bar);
     add_child_to_parent(dialog_win_id, bottom_bar_id);
+
+    // Separator line (tree → bottom bar)
+    if !is_create_folder {
+        let mut sep_bot = controls::create_control(
+            ControlKind::View, sep_bot_id, dialog_win_id, 0, 0, dlg_w, 1, &[],
+        );
+        sep_bot.base_mut().dock = DockStyle::Bottom;
+        sep_bot.set_color(0xFF3E3E42);
+        st.controls.push(sep_bot);
+        add_child_to_parent(dialog_win_id, sep_bot_id);
+    }
 
     // Name field (Save/CreateFolder only)
     if has_name_field {
         let text_to_set = if !default_name.is_empty() { default_name } else { &[] };
         let field_w = if is_create_folder { dlg_w - 44 } else { dlg_w - 200 };
         let mut name_field = controls::create_control(
-            ControlKind::TextField, name_field_id, bottom_bar_id, 0, 6, field_w, 28, text_to_set,
+            ControlKind::TextField, name_field_id, bottom_bar_id, 0, 8, field_w, 30, text_to_set,
         );
         name_field.base_mut().dock = DockStyle::Left;
-        name_field.base_mut().margin.right = 8;
+        name_field.base_mut().margin.right = 10;
         st.controls.push(name_field);
         add_child_to_parent(bottom_bar_id, name_field_id);
     }
@@ -646,7 +690,7 @@ fn run_file_dialog(
     // Confirm button (right side)
     let mut confirm_btn = controls::create_control(
         ControlKind::Button, confirm_btn_id, bottom_bar_id,
-        0, 6, 80, 30, confirm_label,
+        0, 8, 84, 32, confirm_label,
     );
     confirm_btn.base_mut().dock = DockStyle::Right;
     confirm_btn.set_color(0xFF0E639C); // blue accent
@@ -656,10 +700,10 @@ fn run_file_dialog(
     // Cancel button
     let mut cancel_btn = controls::create_control(
         ControlKind::Button, cancel_btn_id, bottom_bar_id,
-        0, 6, 80, 30, b"Cancel",
+        0, 8, 84, 32, b"Cancel",
     );
     cancel_btn.base_mut().dock = DockStyle::Right;
-    cancel_btn.base_mut().margin.right = 8;
+    cancel_btn.base_mut().margin.right = 10;
     st.controls.push(cancel_btn);
     add_child_to_parent(bottom_bar_id, cancel_btn_id);
 
@@ -669,17 +713,17 @@ fn run_file_dialog(
             ControlKind::TreeView, tree_id, dialog_win_id, 0, 0, dlg_w, 400, &[],
         );
         tree.base_mut().dock = DockStyle::Fill;
-        tree.base_mut().margin.left = 8;
-        tree.base_mut().margin.right = 8;
-        tree.base_mut().margin.top = 4;
-        tree.base_mut().margin.bottom = 4;
+        tree.base_mut().margin.left = 0;
+        tree.base_mut().margin.right = 0;
+        tree.base_mut().margin.top = 0;
+        tree.base_mut().margin.bottom = 0;
         st.controls.push(tree);
         add_child_to_parent(dialog_win_id, tree_id);
 
-        // Configure tree view
+        // Configure tree view — taller rows for better readability
         if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == tree_id) {
             if let Some(tv) = as_tree_view_mut(ctrl) {
-                tv.row_height = 22;
+                tv.row_height = 26;
                 tv.indent_width = 0; // flat list, no indentation
             }
         }

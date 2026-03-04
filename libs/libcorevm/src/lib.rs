@@ -1339,6 +1339,20 @@ pub extern "C" fn corevm_pit_tick(handle: u64) -> u32 {
     if fired { 1 } else { 0 }
 }
 
+/// Advance the PIT by `n` ticks in bulk.
+///
+/// Returns the number of times channel 0 fired.
+/// For each fire, the caller should raise IRQ 0 on the PIC.
+/// Returns 0 if PIT has not been set up.
+#[no_mangle]
+pub extern "C" fn corevm_pit_advance(handle: u64, n: u32) -> u32 {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.pit_ptr.is_null() {
+        return 0;
+    }
+    unsafe { (*vm.pit_ptr).advance(n) }
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // Device Interaction — PIC
 // ════════════════════════════════════════════════════════════════════════
