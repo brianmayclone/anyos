@@ -68,6 +68,13 @@ impl Window {
         (lib().on_event_fn)(self.container.ctrl.id, EVENT_RESIZE, thunk, ud);
     }
 
+    /// Mark this window as a modal child of `owner`.
+    /// The owner will be blocked until this modal window is destroyed.
+    /// The modal relationship is automatically cleared when this window is destroyed.
+    pub fn set_modal(&self, owner: &Window) {
+        (lib().set_modal)(self.container.ctrl.id, owner.container.ctrl.id);
+    }
+
     /// Register a typed key-down handler on this window.
     /// The closure receives a `KeyEvent` with keycode, char_code, and modifiers.
     /// This fires for unhandled key events that bubble up to the window.

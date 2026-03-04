@@ -1662,6 +1662,11 @@ fn open_create_disk_dialog(disk_field_id: u32) {
     }
 
     let win = anyui::Window::new("Create Disk Image", -1, -1, 420, 210);
+    if let Some(ref settings) = a.settings {
+        win.set_modal(&settings.win);
+    } else {
+        win.set_modal(&a.win);
+    }
 
     let content = anyui::View::new();
     content.set_dock(anyui::DOCK_FILL);
@@ -1847,6 +1852,7 @@ fn open_settings_dialog() {
     let config = a.vms[a.selected_vm].config.clone();
 
     let win = anyui::Window::new("VM Settings", -1, -1, 500, 440);
+    win.set_modal(&a.win);
 
     // Outer content container.
     let content = anyui::View::new();

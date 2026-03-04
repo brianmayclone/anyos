@@ -27,13 +27,14 @@ const CMD_GET_WINDOW_POS: u32 = 0x1013;
 const CMD_MINIMIZE_WINDOW: u32 = 0x1015;
 const CMD_SHOW_NOTIFICATION: u32 = 0x1020;
 const CMD_DISMISS_NOTIFICATION: u32 = 0x1021;
+const CMD_SET_MODAL_OWNER: u32 = 0x1024;
 const RESP_WINDOW_CREATED: u32 = 0x2001;
 const RESP_VRAM_WINDOW_CREATED: u32 = 0x2004;
 const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
 const RESP_WINDOW_POS: u32 = 0x2006;
 const RESP_CLIPBOARD_DATA: u32 = 0x2010;
 
-const NUM_EXPORTS: u32 = 24;
+const NUM_EXPORTS: u32 = 25;
 
 #[repr(C)]
 pub struct LibcompositorExports {
@@ -175,6 +176,11 @@ pub struct LibcompositorExports {
 
     /// Minimize a window (move off-screen, save bounds for later restore).
     pub minimize_window: extern "C" fn(channel_id: u32, window_id: u32),
+
+    /// Set a window as a modal child of another window.
+    /// The modal window will stay above its owner and clicking the owner re-focuses the modal.
+    /// owner_window_id=0 clears the modal relationship.
+    pub set_modal_owner: extern "C" fn(channel_id: u32, modal_window_id: u32, owner_window_id: u32),
 }
 
 #[link_section = ".exports"]
@@ -209,6 +215,7 @@ pub static LIBCOMPOSITOR_EXPORTS: LibcompositorExports = LibcompositorExports {
     dismiss_notification: export_dismiss_notification,
     get_window_position: export_get_window_position,
     minimize_window: export_minimize_window,
+    set_modal_owner: export_set_modal_owner,
 };
 
 // ── Export Implementations ───────────────────────────────────────────────────
@@ -818,5 +825,10 @@ extern "C" fn export_get_window_position(
 
 extern "C" fn export_minimize_window(channel_id: u32, window_id: u32) {
     let cmd: [u32; 5] = [CMD_MINIMIZE_WINDOW, window_id, 0, 0, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
+}
+
+extern "C" fn export_set_modal_owner(channel_id: u32, modal_window_id: u32, owner_window_id: u32) {
+    let cmd: [u32; 5] = [CMD_SET_MODAL_OWNER, modal_window_id, owner_window_id, 0, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 }

@@ -216,6 +216,12 @@ pub const CMD_INJECT_KEY: u32 = 0x1022;
 /// Sent by vncd to relay VNC client pointer events into the desktop.
 pub const CMD_INJECT_POINTER: u32 = 0x1023;
 
+/// Set a window as a modal child of another window.
+/// [CMD, modal_window_id, owner_window_id, 0, 0]
+/// The modal window will stay above its owner and clicking the owner re-focuses the modal.
+/// owner_window_id=0 clears the modal relationship.
+pub const CMD_SET_MODAL_OWNER: u32 = 0x1024;
+
 // ── Compositor → App: Notification Events ────────────────────────────────
 
 /// Notification clicked by user: [EVT, notification_id, sender_tid, 0, 0]

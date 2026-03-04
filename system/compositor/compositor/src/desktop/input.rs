@@ -472,6 +472,16 @@ impl Desktop {
             }
 
             if let Some(win_id) = hit_win_id {
+                // If the clicked window has a modal child, block the click and
+                // redirect focus to the modal child instead.
+                let has_modal_child = self.windows.iter()
+                    .any(|w| w.modal_owner == win_id);
+                if has_modal_child {
+                    // focus_window will walk the chain to the topmost modal
+                    self.focus_window(win_id);
+                    return;
+                }
+
                 if self.focused_window != Some(win_id) {
                     self.focus_window(win_id);
                 }

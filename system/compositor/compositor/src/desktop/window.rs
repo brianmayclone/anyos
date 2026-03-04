@@ -171,6 +171,9 @@ pub struct WindowInfo {
     pub shm_height: u32,
     /// Set true on CMD_PRESENT, cleared after compose emits EVT_FRAME_ACK.
     pub needs_frame_ack: bool,
+    /// If this window is a modal child, the compositor window ID of its owner.
+    /// 0 = no owner (normal window). Set via CMD_SET_MODAL_OWNER.
+    pub modal_owner: u32,
 }
 
 impl WindowInfo {
@@ -400,6 +403,7 @@ impl Desktop {
             shm_width: 0,
             shm_height: 0,
             needs_frame_ack: false,
+            modal_owner: 0,
         };
 
         self.windows.push(win);
@@ -411,6 +415,12 @@ impl Desktop {
     /// Destroy a window.
     pub fn destroy_window(&mut self, id: u32) {
         if let Some(idx) = self.windows.iter().position(|w| w.id == id) {
+            // Clear modal_owner on any windows that reference the destroyed window.
+            for w in &mut self.windows {
+                if w.modal_owner == id {
+                    w.modal_owner = 0;
+                }
+            }
             let layer_id = self.windows[idx].layer_id;
             self.compositor.remove_layer(layer_id);
             self.windows.remove(idx);
@@ -463,9 +473,24 @@ impl Desktop {
     }
 
     /// Focus a window (bring to front and set focused style).
+    /// If the target window has a modal child, redirect focus to the modal instead.
     pub fn focus_window(&mut self, id: u32) {
+        // Check if this window has a modal child — if so, redirect focus to the modal.
+        // Walk the chain to find the topmost modal descendant.
+        let mut target_id = id;
+        for _ in 0..16 { // prevent infinite loops
+            if let Some(modal_child_id) = self.windows.iter()
+                .find(|w| w.modal_owner == target_id)
+                .map(|w| w.id)
+            {
+                target_id = modal_child_id;
+            } else {
+                break;
+            }
+        }
+
         if let Some(old_id) = self.focused_window {
-            if old_id != id {
+            if old_id != target_id {
                 if let Some(idx) = self.windows.iter().position(|w| w.id == old_id) {
                     self.windows[idx].focused = false;
                     let win_id = self.windows[idx].id;
@@ -475,9 +500,9 @@ impl Desktop {
             }
         }
 
-        if let Some(idx) = self.windows.iter().position(|w| w.id == id) {
+        if let Some(idx) = self.windows.iter().position(|w| w.id == target_id) {
             self.windows[idx].focused = true;
-            self.focused_window = Some(id);
+            self.focused_window = Some(target_id);
             let layer_id = self.windows[idx].layer_id;
             self.compositor.set_focused_layer(Some(layer_id));
             self.compositor.raise_layer(layer_id);
@@ -486,9 +511,9 @@ impl Desktop {
             self.windows.push(win);
 
             self.ensure_top_layers();
-            self.render_window(id);
+            self.render_window(target_id);
 
-            if self.menu_bar.on_focus_change(Some(id)) {
+            if self.menu_bar.on_focus_change(Some(target_id)) {
                 self.draw_menubar();
                 self.compositor.add_damage(Rect::new(
                     0, 0, self.screen_width, menubar_height() + 1,
@@ -532,11 +557,18 @@ impl Desktop {
         }
     }
 
-    /// Re-raise always-on-top windows and the menubar.
+    /// Re-raise always-on-top windows, modal children, and the menubar.
     pub(crate) fn ensure_top_layers(&mut self) {
         for win in &self.windows {
             if win.is_always_on_top() {
                 self.compositor.raise_layer(win.layer_id);
+            }
+        }
+        // Raise modal children above their owners (iterate in order so chains
+        // A→B→C raise correctly: B above A, then C above B).
+        for i in 0..self.windows.len() {
+            if self.windows[i].modal_owner != 0 {
+                self.compositor.raise_layer(self.windows[i].layer_id);
             }
         }
         self.compositor.raise_layer(self.menubar_layer_id);
@@ -980,6 +1012,7 @@ impl Desktop {
             shm_width: content_w,
             shm_height: content_h,
             needs_frame_ack: false,
+            modal_owner: 0,
         };
 
         self.windows.push(win);
@@ -1061,6 +1094,7 @@ impl Desktop {
             shm_width: content_w,
             shm_height: content_h,
             needs_frame_ack: false,
+            modal_owner: 0,
         };
 
         self.windows.push(win);
@@ -1151,6 +1185,7 @@ impl Desktop {
             shm_width: content_w,
             shm_height: content_h,
             needs_frame_ack: false,
+            modal_owner: 0,
         };
 
         self.windows.push(win);

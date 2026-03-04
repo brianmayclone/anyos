@@ -342,6 +342,9 @@ struct AnyuiLib {
     on_window_closed_fn: extern "C" fn(Callback, u64),
     // Focus by task ID
     focus_by_tid_fn: extern "C" fn(u32),
+    // Modal dialog API
+    set_modal: extern "C" fn(u32, u32),
+    clear_modal: extern "C" fn(u32),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -581,6 +584,9 @@ pub fn init() -> bool {
             on_window_opened_fn: resolve(&handle, "anyui_on_window_opened"),
             on_window_closed_fn: resolve(&handle, "anyui_on_window_closed"),
             focus_by_tid_fn: resolve(&handle, "anyui_focus_by_tid"),
+            // Modal dialog API
+            set_modal: resolve(&handle, "anyui_set_modal"),
+            clear_modal: resolve(&handle, "anyui_clear_modal"),
             _handle: handle,
         };
         (lib.init)();

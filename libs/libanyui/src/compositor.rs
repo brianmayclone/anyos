@@ -106,6 +106,8 @@ struct LibcompositorExports {
     get_window_position: extern "C" fn(channel_id: u32, sub_id: u32, window_id: u32, out_x: *mut i32, out_y: *mut i32) -> u32,
 
     minimize_window: extern "C" fn(channel_id: u32, window_id: u32),
+
+    set_modal_owner: extern "C" fn(channel_id: u32, modal_window_id: u32, owner_window_id: u32),
 }
 
 fn exports() -> &'static LibcompositorExports {
@@ -260,6 +262,12 @@ pub fn show_notification(
         icon,
         timeout_ms, flags,
     );
+}
+
+/// Set a window as a modal child of another window.
+/// owner_window_id=0 clears the modal relationship.
+pub fn set_modal_owner(channel_id: u32, modal_window_id: u32, owner_window_id: u32) {
+    (exports().set_modal_owner)(channel_id, modal_window_id, owner_window_id);
 }
 
 /// Get a window's content area screen position.

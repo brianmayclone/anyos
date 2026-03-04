@@ -515,6 +515,16 @@ impl Desktop {
                 self.inject_pointer_event(x, y, buttons);
                 None
             }
+            proto::CMD_SET_MODAL_OWNER => {
+                let modal_id = cmd[1];
+                let owner_id = cmd[2];
+                if let Some(idx) = self.windows.iter().position(|w| w.id == modal_id) {
+                    self.windows[idx].modal_owner = owner_id;
+                    // Re-raise modal windows to enforce z-order
+                    self.ensure_top_layers();
+                }
+                None
+            }
             _ => None,
         }
     }

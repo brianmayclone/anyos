@@ -141,6 +141,20 @@ pub(crate) struct PopupInfo {
     pub owner_autocomplete: Option<ControlId>,
 }
 
+// ── Modal dialog tracking ─────────────────────────────────────────────
+
+/// An active modal context. Tracks the relationship between a modal dialog
+/// and its blocked owner window.
+pub(crate) struct ModalEntry {
+    /// ControlId of the modal window (for separate-window modals like VMManager Settings).
+    /// 0 for in-window overlays (MessageBox, FileDialog).
+    pub modal_win_id: ControlId,
+    /// ControlId of the blocked owner window.
+    pub owner_win_id: ControlId,
+    /// ControlId of the overlay control (for in-window modals). 0 for separate-window modals.
+    pub overlay_id: ControlId,
+}
+
 // ── Global state (per-process, lives in .data/.bss of the .so) ───────
 
 pub(crate) struct AnyuiState {
@@ -212,6 +226,11 @@ pub(crate) struct AnyuiState {
     pub on_window_opened: Option<(Callback, u64)>,
     /// Callback for EVT_WINDOW_CLOSED (0x0061). Called with (app_tid, 0x0061, userdata).
     pub on_window_closed: Option<(Callback, u64)>,
+
+    // ── Modal dialog stack ──────────────────────────────────────────
+    /// Stack of active modal contexts. Last entry = topmost modal.
+    /// When non-empty, only the topmost modal's window receives input events.
+    pub modal_stack: Vec<ModalEntry>,
 }
 
 /// Signal that at least one control needs repainting.
@@ -302,6 +321,7 @@ pub extern "C" fn anyui_init() -> u32 {
             current_cursor: 0,
             on_window_opened: None,
             on_window_closed: None,
+            modal_stack: Vec::new(),
         });
     }
     1
@@ -2175,7 +2195,7 @@ pub extern "C" fn anyui_message_box(
     let st = state();
     if st.windows.is_empty() { return; }
 
-    let win_id = st.windows[0];
+    let win_id = *st.windows.last().unwrap();
     let (win_w, win_h) = {
         let ctrl = st.controls.iter().find(|c| c.id() == win_id);
         match ctrl {
@@ -2223,6 +2243,13 @@ pub extern "C" fn anyui_message_box(
     if let Some(w) = st.controls.iter_mut().find(|c| c.id() == win_id) {
         w.add_child(overlay_id);
     }
+
+    // Push onto modal stack (in-window overlay modal)
+    st.modal_stack.push(ModalEntry {
+        modal_win_id: 0,
+        owner_win_id: win_id,
+        overlay_id,
+    });
 
     // Create card
     let card = controls::create_control(
@@ -2275,6 +2302,12 @@ pub extern "C" fn anyui_message_box(
         if event_loop::run_once() == 0 { break; }
         let elapsed = syscall::uptime_ms().wrapping_sub(t0);
         if elapsed < 16 { syscall::sleep(16 - elapsed); }
+    }
+
+    // Pop modal stack
+    let st = state();
+    if let Some(pos) = st.modal_stack.iter().position(|e| e.overlay_id == overlay_id) {
+        st.modal_stack.remove(pos);
     }
 
     // Clean up — remove overlay and all descendants
@@ -2495,6 +2528,9 @@ pub extern "C" fn anyui_move_window(win_id: ControlId, x: i32, y: i32) {
 
 #[no_mangle]
 pub extern "C" fn anyui_destroy_window(win_id: ControlId) {
+    // Clear modal relationship before destroying
+    anyui_clear_modal(win_id);
+
     let st = state();
 
     if let Some(idx) = st.windows.iter().position(|&w| w == win_id) {
@@ -2505,6 +2541,51 @@ pub extern "C" fn anyui_destroy_window(win_id: ControlId) {
     }
 
     anyui_remove(win_id);
+}
+
+// ── Modal dialog API ─────────────────────────────────────────────────
+
+/// Mark a window as a modal child of another window.
+/// The modal window will block input to the owner and stay on top.
+#[no_mangle]
+pub extern "C" fn anyui_set_modal(modal_id: ControlId, owner_id: ControlId) {
+    let st = state();
+
+    let modal_win_idx = st.windows.iter().position(|&w| w == modal_id);
+    let owner_win_idx = st.windows.iter().position(|&w| w == owner_id);
+
+    if let (Some(mi), Some(oi)) = (modal_win_idx, owner_win_idx) {
+        let modal_comp_wid = st.comp_windows[mi].window_id;
+        let owner_comp_wid = st.comp_windows[oi].window_id;
+
+        // Tell compositor about the modal relationship
+        compositor::set_modal_owner(st.channel_id, modal_comp_wid, owner_comp_wid);
+
+        // Push onto modal stack
+        st.modal_stack.push(ModalEntry {
+            modal_win_id: modal_id,
+            owner_win_id: owner_id,
+            overlay_id: 0, // separate-window modal, no in-window overlay
+        });
+    }
+}
+
+/// Clear the modal relationship for a window.
+/// Called automatically by anyui_destroy_window.
+#[no_mangle]
+pub extern "C" fn anyui_clear_modal(modal_id: ControlId) {
+    let st = state();
+
+    // Find and remove from modal stack
+    if let Some(pos) = st.modal_stack.iter().position(|e| e.modal_win_id == modal_id) {
+        st.modal_stack.remove(pos);
+
+        // Tell compositor to clear the relationship
+        if let Some(idx) = st.windows.iter().position(|&w| w == modal_id) {
+            let modal_comp_wid = st.comp_windows[idx].window_id;
+            compositor::set_modal_owner(st.channel_id, modal_comp_wid, 0);
+        }
+    }
 }
 
 fn collect_descendants(st: &AnyuiState, id: ControlId, out: &mut Vec<ControlId>) {

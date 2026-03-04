@@ -318,11 +318,52 @@ pub fn run_once() -> u32 {
         }
     }
 
+    // ── Modal filtering: determine which window index is allowed to receive events ──
+    // When a modal is active, only the topmost modal's window gets input events.
+    // For in-window modals (overlay_id != 0), the overlay catches clicks within the window.
+    // For separate-window modals (modal_win_id != 0), other windows' events are discarded.
+    let modal_allowed_win_idx: Option<usize> = if !st.modal_stack.is_empty() {
+        let top = st.modal_stack.last().unwrap();
+        if top.modal_win_id != 0 {
+            // Separate-window modal: only the modal window gets events
+            st.windows.iter().position(|&w| w == top.modal_win_id)
+        } else if top.overlay_id != 0 {
+            // In-window overlay modal: the owner window gets events (overlay blocks clicks)
+            st.windows.iter().position(|&w| w == top.owner_win_id)
+        } else {
+            None
+        }
+    } else {
+        None // No modal active — all windows receive events
+    };
+
     let win_count = st.windows.len();
     for wi in 0..win_count {
         if wi >= st.windows.len() { break; }
         let win_id = st.windows[wi];
         let comp_window_id = st.comp_windows[wi].window_id;
+
+        // Modal event filtering: skip input events for non-modal windows.
+        // Allow EVT_WINDOW_CLOSE (0x3007) and EVT_FRAME_ACK (0x300B) through
+        // so that windows can still be closed and rendering continues.
+        if let Some(allowed_wi) = modal_allowed_win_idx {
+            if wi != allowed_wi {
+                // Still process non-input events for this window
+                for ev in all_events.iter() {
+                    if ev[0] == 0 { continue; }
+                    if ev[0] >= 0x3000 && ev[1] != comp_window_id { continue; }
+                    match ev[0] {
+                        compositor::EVT_FRAME_ACK => {
+                            if let Some(cw) = st.comp_windows.get_mut(wi) {
+                                cw.frame_presented = false;
+                            }
+                        }
+                        _ => {} // Discard all other events for blocked windows
+                    }
+                }
+                continue;
+            }
+        }
 
         // Process events that belong to this window
         // Buffer layout: [event_type, window_id, arg1, arg2, arg3]
