@@ -59,8 +59,11 @@ const E1000_MMIO_BASE: u64 = 0xD000_0000;
 /// Higher = more throughput, lower = more responsive to commands.
 const BATCH_SIZE: u64 = 5_000_000;
 
-/// PIT ticks to advance per batch (approximate real PIT rate).
-const PIT_TICKS_PER_BATCH: u32 = 4;
+/// PIT ticks to advance per batch.
+/// The real PIT clock is 1,193,182 Hz.  With BATCH_SIZE = 5M instructions
+/// and an assumed emulated clock of ~1 GHz, one batch ≈ 5 ms, which
+/// corresponds to ~5966 PIT ticks.  We round to 6000.
+const PIT_TICKS_PER_BATCH: u32 = 6000;
 
 /// SHM state constants (written to offset 16).
 const STATE_STOPPED: u32 = 0;
