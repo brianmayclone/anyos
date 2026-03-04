@@ -859,7 +859,7 @@ fn run_vm_batch() -> bool {
         }
         ExitReason::InstructionLimit => {
             inst.batch_count += 1;
-            if inst.batch_count % 100 == 0 && inst.batch_count <= 1000 {
+            if (inst.batch_count <= 10 || inst.batch_count % 100 == 0) && inst.batch_count <= 1000 {
                 let rip = inst.handle.rip();
                 let cs = inst.handle.cs();
                 let cs_base = inst.handle.cs_base();
@@ -916,6 +916,27 @@ fn run_vm_batch() -> bool {
                     buf7c00[4], buf7c00[5], buf7c00[6], buf7c00[7],
                     buf7c00[8], buf7c00[9], buf7c00[10], buf7c00[11],
                     buf7c00[12], buf7c00[13], buf7c00[14], buf7c00[15]
+                );
+                // Dump relocated code area (0x7EE60) and far jump target (0x7C6C)
+                let mut buf_reloc = [0u8; 16];
+                let mut buf_jmptgt = [0u8; 16];
+                for i in 0..16u64 {
+                    buf_reloc[i as usize] = inst.handle.read_phys_u8(0x7EE60 + i);
+                    buf_jmptgt[i as usize] = inst.handle.read_phys_u8(0x7C6C + i);
+                }
+                anyos_std::println!(
+                    "[vmd]  mem@7EE60: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                    buf_reloc[0], buf_reloc[1], buf_reloc[2], buf_reloc[3],
+                    buf_reloc[4], buf_reloc[5], buf_reloc[6], buf_reloc[7],
+                    buf_reloc[8], buf_reloc[9], buf_reloc[10], buf_reloc[11],
+                    buf_reloc[12], buf_reloc[13], buf_reloc[14], buf_reloc[15]
+                );
+                anyos_std::println!(
+                    "[vmd]  mem@7C6C: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                    buf_jmptgt[0], buf_jmptgt[1], buf_jmptgt[2], buf_jmptgt[3],
+                    buf_jmptgt[4], buf_jmptgt[5], buf_jmptgt[6], buf_jmptgt[7],
+                    buf_jmptgt[8], buf_jmptgt[9], buf_jmptgt[10], buf_jmptgt[11],
+                    buf_jmptgt[12], buf_jmptgt[13], buf_jmptgt[14], buf_jmptgt[15]
                 );
             }
         }

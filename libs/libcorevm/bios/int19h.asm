@@ -296,10 +296,15 @@ boot_el_torito:
     shl eax, 2              ; × 4 → ATA LBA
 
     ; Number of 512-byte sectors to load.
+    ; Many ISOs set the El Torito sector count to just 4 (2 KB), expecting the
+    ; bootloader bootstrap to reload the rest.  ISOLINUX keeps the self-load
+    ; code in the upper portion of the image, so if only 4 sectors are loaded
+    ; that code is missing.  To work around this, enforce a minimum of 64
+    ; sectors (32 KB) which covers a full ISOLINUX/SYSLINUX image.
     movzx ecx, word [cs:el_torito_count]
-    test ecx, ecx
-    jnz .count_ok
-    mov ecx, 1
+    cmp ecx, 64
+    jae .count_ok
+    mov ecx, 64
 .count_ok:
 
     ; ide_drive_sel is already set by detect_el_torito.

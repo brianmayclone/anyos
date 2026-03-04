@@ -32,9 +32,16 @@ pub fn exec_lgdt(
     let base = if matches!(cpu.mode, Mode::LongMode) {
         translate_and_read(cpu, linear.wrapping_add(2), OperandSize::Qword, mmu, memory)?
     } else {
-        translate_and_read(cpu, linear.wrapping_add(2), OperandSize::Dword, mmu, memory)?
+        let raw = translate_and_read(cpu, linear.wrapping_add(2), OperandSize::Dword, mmu, memory)?;
+        // In 16-bit operand-size mode, the base is only 24 bits (upper byte zeroed).
+        if inst.operand_size == OperandSize::Word {
+            raw & 0x00FF_FFFF
+        } else {
+            raw
+        }
     };
 
+    libsyscall::serial_print(format_args!("[corevm] [LGDT] base={:08X} limit={:04X} opsz={:?}\n", base, limit, inst.operand_size));
     cpu.regs.gdtr = TableRegister { base, limit };
     cpu.regs.rip += inst.length as u64;
     Ok(())
@@ -53,7 +60,13 @@ pub fn exec_lidt(
     let base = if matches!(cpu.mode, Mode::LongMode) {
         translate_and_read(cpu, linear.wrapping_add(2), OperandSize::Qword, mmu, memory)?
     } else {
-        translate_and_read(cpu, linear.wrapping_add(2), OperandSize::Dword, mmu, memory)?
+        let raw = translate_and_read(cpu, linear.wrapping_add(2), OperandSize::Dword, mmu, memory)?;
+        // In 16-bit operand-size mode, the base is only 24 bits (upper byte zeroed).
+        if inst.operand_size == OperandSize::Word {
+            raw & 0x00FF_FFFF
+        } else {
+            raw
+        }
     };
 
     cpu.regs.idtr = TableRegister { base, limit };
@@ -230,8 +243,17 @@ pub fn exec_mov_cr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
         let val = cpu.regs.read_gpr64(src_gpr);
         match cr_idx {
             0 => {
+                let old = cpu.regs.cr0;
                 cpu.regs.cr0 = val;
                 cpu.update_mode();
+                libsyscall::serial_print(format_args!(
+                    "[corevm] [CR0] {:08X} -> {:08X}  PE={} CS={:04X} IP={:04X}\n",
+                    old,
+                    val,
+                    val & 1,
+                    cpu.regs.segment(crate::registers::SegReg::Cs).selector,
+                    cpu.regs.rip as u16,
+                ));
             }
             2 => cpu.regs.cr2 = val,
             3 => cpu.regs.cr3 = val,
