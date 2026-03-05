@@ -862,9 +862,8 @@ impl Cpu {
     ) -> BlockExitReason {
         use crate::jit::helpers::{JIT_OK, JIT_EXIT_BLOCK};
 
-        // Current JIT native paths are only validated for long mode.
-        // Keep interpreter semantics for real/protected mode boot flows.
-        if key.mode != CpuMode::Long64 {
+        // Keep real-mode boot flows on interpreter semantics.
+        if key.mode == CpuMode::Real16 {
             return self.execute_cached_block(
                 instructions, key.phys_addr,
                 memory, mmu, io, interrupts,

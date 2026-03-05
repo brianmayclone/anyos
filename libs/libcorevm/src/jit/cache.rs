@@ -6,6 +6,7 @@
 //! eviction avoids per-access LRU overhead).
 
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use super::block::{BasicBlock, BlockKey};
 
@@ -15,7 +16,7 @@ const DEFAULT_MAX_ENTRIES: usize = 16384;
 /// Cache of pre-decoded basic blocks keyed by physical address + mode.
 pub struct DecodeCache {
     /// Cached blocks, keyed by (phys_addr, mode, cs_base).
-    blocks: BTreeMap<BlockKey, BasicBlock>,
+    blocks: BTreeMap<BlockKey, Arc<BasicBlock>>,
     /// Maximum number of entries before eviction.
     max_entries: usize,
     /// Cache hit counter (diagnostics).
@@ -37,12 +38,12 @@ impl DecodeCache {
 
     /// Look up a cached basic block by its key.
     ///
-    /// Returns `Some(&BasicBlock)` on hit, `None` on miss.
+    /// Returns `Some(Arc<BasicBlock>)` on hit, `None` on miss.
     #[inline]
-    pub fn lookup(&mut self, key: &BlockKey) -> Option<&BasicBlock> {
+    pub fn lookup(&mut self, key: &BlockKey) -> Option<Arc<BasicBlock>> {
         if let Some(block) = self.blocks.get(key) {
             self.hits += 1;
-            Some(block)
+            Some(Arc::clone(block))
         } else {
             self.misses += 1;
             None
@@ -56,7 +57,7 @@ impl DecodeCache {
         if self.blocks.len() >= self.max_entries {
             self.evict();
         }
-        self.blocks.insert(key, block);
+        self.blocks.insert(key, Arc::new(block));
     }
 
     /// Invalidate all blocks whose physical address range overlaps a given

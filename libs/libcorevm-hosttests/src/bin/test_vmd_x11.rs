@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use libcorevm::{
     corevm_create_ex, corevm_debug_take_output, corevm_destroy, corevm_get_last_error,
-    corevm_get_last_error_rip, corevm_get_mode, corevm_ide_attach_slave, corevm_load_rom,
-    corevm_jit_enable,
+    corevm_get_instruction_count, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rip,
+    corevm_get_segment_selector, corevm_ide_attach_slave, corevm_jit_enable, corevm_jit_stats,
+    corevm_load_rom,
     corevm_pic_raise_irq, corevm_pit_advance, corevm_ps2_key_press, corevm_ps2_key_release,
     corevm_run, corevm_serial_take_output, corevm_setup_ide, corevm_setup_pci_bus,
     corevm_setup_standard_devices, corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
@@ -26,6 +27,11 @@ const KEY_RELEASE_MASK: c_long = 1 << 1;
 const EXPOSURE_MASK: c_long = 1 << 15;
 const STRUCTURE_NOTIFY_MASK: c_long = 1 << 17;
 const ZPIXMAP: c_int = 2;
+const CHAR_W: usize = 8;
+const CHAR_H: usize = 16;
+const OVERLAY_PAD: usize = 8;
+const RENDER_MIN_INTERVAL: Duration = Duration::from_millis(16);
+const OVERLAY_UPDATE_INTERVAL: Duration = Duration::from_millis(250);
 
 const XK_BACKSPACE: c_ulong = 0xFF08;
 const XK_TAB: c_ulong = 0xFF09;
@@ -384,6 +390,61 @@ fn color16(idx: u8) -> c_ulong {
     ((r as c_ulong) << 16) | ((g as c_ulong) << 8) | (b as c_ulong)
 }
 
+fn mode_name(mode: u32) -> &'static str {
+    match mode {
+        0 => "RealMode",
+        1 => "ProtectedMode",
+        2 => "LongMode",
+        _ => "Unknown",
+    }
+}
+
+fn text_sig(cells: &[u16]) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    for &v in cells.iter().take(2000) {
+        h ^= v as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+fn draw_diag_overlay(
+    display: *mut Display,
+    window: c_ulong,
+    gc: GC,
+    win_w: usize,
+    win_h: usize,
+    lines: &[String],
+) {
+    if lines.is_empty() {
+        return;
+    }
+    let max_chars = lines.iter().map(|l| l.len()).max().unwrap_or(0);
+    let box_w = max_chars.saturating_mul(CHAR_W).saturating_add(OVERLAY_PAD * 2);
+    let box_h = lines.len().saturating_mul(CHAR_H).saturating_add(OVERLAY_PAD * 2);
+    let x = win_w.saturating_sub(box_w + OVERLAY_PAD) as c_int;
+    let y = win_h.saturating_sub(box_h + OVERLAY_PAD) as c_int;
+
+    unsafe {
+        XSetForeground(display, gc, 0x000000);
+        XFillRectangle(display, window, gc, x, y, box_w as c_uint, box_h as c_uint);
+        XSetForeground(display, gc, 0x00FF88);
+        for (i, line) in lines.iter().enumerate() {
+            let tx = x + OVERLAY_PAD as c_int;
+            let ty = y + OVERLAY_PAD as c_int + (i * CHAR_H + 13) as c_int;
+            XDrawString(
+                display,
+                window,
+                gc,
+                tx,
+                ty,
+                line.as_ptr() as *const c_char,
+                line.len() as c_int,
+            );
+        }
+    }
+}
+
 fn scancode_for_ascii(ch: u8) -> Option<(bool, u8)> {
     let lower = ch.to_ascii_lowercase();
     let shift = ch.is_ascii_uppercase();
@@ -646,9 +707,18 @@ fn main() {
     let start = Instant::now();
     let mut last_pit_tick = Instant::now();
     let max_duration = Duration::from_secs(cfg.max_seconds);
+    let mut last_render = Instant::now() - RENDER_MIN_INTERVAL;
+    let mut last_overlay_update = Instant::now() - OVERLAY_UPDATE_INTERVAL;
+    let mut run_calls: u64 = 0;
+    let mut last_ic: u64 = 0;
+    let mut last_calls: u64 = 0;
+    let mut diag_lines = vec![String::new(); 3];
+    let mut last_text_hash: u64 = 0;
+    let mut need_redraw = true;
 
     while !STOP_REQUESTED.load(Ordering::SeqCst) {
         advance_pit_realtime(vm.0, &mut last_pit_tick);
+        run_calls = run_calls.saturating_add(1);
         let exit_code = corevm_run(vm.0, cfg.batch);
 
         let text = take_text_output(vm.0);
@@ -664,6 +734,7 @@ fn main() {
                 let kev = unsafe { &mut *(&mut ev as *mut XEvent as *mut XKeyEvent) };
                 let ks = unsafe { XLookupKeysym(kev, 0) };
                 keysym_to_ps2(vm.0, ks, any.type_ == KEY_PRESS);
+                need_redraw = true;
             } else if any.type_ == CONFIGURE_NOTIFY {
                 let cev = unsafe { &*(&ev as *const XEvent as *const XConfigureEvent) };
                 let nw = (cev.width.max(1)) as usize;
@@ -686,14 +757,82 @@ fn main() {
                             0,
                         )
                     };
+                    need_redraw = true;
                 }
+            } else {
+                need_redraw = true;
             }
+        }
+
+        let now = Instant::now();
+        if now.duration_since(last_overlay_update) >= OVERLAY_UPDATE_INTERVAL {
+            let ic = corevm_get_instruction_count(vm.0);
+            let dt = now.duration_since(last_overlay_update).as_secs_f64().max(1e-6);
+            let dic = ic.saturating_sub(last_ic);
+            let dcalls = run_calls.saturating_sub(last_calls);
+            let mode = corevm_get_mode(vm.0);
+            let cs = corevm_get_segment_selector(vm.0, 1);
+            let rip = corevm_get_rip(vm.0);
+            let ipc = if dcalls > 0 { dic as f64 / dcalls as f64 } else { 0.0 };
+            let mips = (dic as f64 / dt) / 1_000_000.0;
+            let mut jit_blocks = 0u64;
+            let mut jit_native = 0u64;
+            let mut jit_fallback = 0u64;
+            let mut jit_code = 0u32;
+            corevm_jit_stats(
+                vm.0,
+                &mut jit_blocks as *mut u64,
+                &mut jit_native as *mut u64,
+                &mut jit_fallback as *mut u64,
+                &mut jit_code as *mut u32,
+            );
+            diag_lines[0] = format!(
+                "mode={} cs:ip={:04X}:{:08X}",
+                mode_name(mode),
+                cs,
+                rip as u32
+            );
+            diag_lines[1] = format!("IPC={:.1} MIPS={:.2} ic={}", ipc, mips, ic);
+            diag_lines[2] = if cfg.jit {
+                format!("JIT b={} n={} f={}", jit_blocks, jit_native, jit_fallback)
+            } else {
+                "JIT off".to_string()
+            };
+            last_ic = ic;
+            last_calls = run_calls;
+            last_overlay_update = now;
+            need_redraw = true;
+        }
+
+        if !need_redraw && now.duration_since(last_render) < RENDER_MIN_INTERVAL {
+            match exit_code {
+                0 => {
+                    thread::sleep(Duration::from_micros(200));
+                }
+                1 => {
+                    let err = last_error(vm.0);
+                    let rip = corevm_get_last_error_rip(vm.0);
+                    eprintln!("\n[test-vmd-x11] exception at rip=0x{rip:X}: {err}");
+                    break;
+                }
+                2 => {}
+                3 | 4 => break,
+                _ => break,
+            }
+            if start.elapsed() >= max_duration {
+                eprintln!("\n[test-vmd-x11] timeout after {} seconds", cfg.max_seconds);
+                break;
+            }
+            continue;
         }
 
         let mut text_count = 0u32;
         let text_ptr = corevm_vga_get_text_buffer(vm.0, &mut text_count as *mut u32);
         if !text_ptr.is_null() && text_count >= 2000 {
             let cells = unsafe { std::slice::from_raw_parts(text_ptr, text_count as usize) };
+            let hash = text_sig(cells);
+            if hash != last_text_hash || now.duration_since(last_render) >= RENDER_MIN_INTERVAL {
+                last_text_hash = hash;
             for row in 0..25usize {
                 for col in 0..80usize {
                     let cell = cells[row * 80 + col];
@@ -714,8 +853,12 @@ fn main() {
                     }
                 }
             }
+            draw_diag_overlay(display, window, gc, win_w, win_h, &diag_lines);
             unsafe {
                 XFlush(display);
+            }
+                last_render = now;
+                need_redraw = false;
             }
         } else {
             let mut fb_w = 0u32;
@@ -756,8 +899,11 @@ fn main() {
                         win_w as c_uint,
                         win_h as c_uint,
                     );
+                    draw_diag_overlay(display, window, gc, win_w, win_h, &diag_lines);
                     XFlush(display);
                 }
+                last_render = now;
+                need_redraw = false;
             }
         }
 

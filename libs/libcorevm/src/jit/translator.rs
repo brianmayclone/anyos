@@ -367,13 +367,25 @@ impl Translator {
             0xC1 => self.try_shift_ri(emit, inst, state),
 
             // ── RET near ──
-            0xC3 => false,
+            0xC3 => {
+                if self.current_mode == CpuMode::Long64 {
+                    self.try_ret_near(emit, inst, state)
+                } else {
+                    false
+                }
+            }
 
             // ── Shift Group 2: r/m, 1 (0xD1) ──
             0xD1 => self.try_shift_r1(emit, inst, state),
 
             // ── CALL rel32 ──
-            0xE8 => false,
+            0xE8 => {
+                if self.current_mode == CpuMode::Long64 {
+                    self.try_call_rel(emit, inst, state)
+                } else {
+                    false
+                }
+            }
 
             // ── JMP rel32 ──
             0xE9 => {
@@ -398,10 +410,22 @@ impl Translator {
             0xFE | 0xFF => self.try_group5(emit, inst, state),
 
             // ── PUSH r ──
-            0x50..=0x57 => false,
+            0x50..=0x57 => {
+                if self.current_mode != CpuMode::Real16 {
+                    self.try_push_r(emit, inst, state)
+                } else {
+                    false
+                }
+            }
 
             // ── POP r ──
-            0x58..=0x5F => false,
+            0x58..=0x5F => {
+                if self.current_mode != CpuMode::Real16 {
+                    self.try_pop_r(emit, inst, state)
+                } else {
+                    false
+                }
+            }
 
             _ => false,
         }

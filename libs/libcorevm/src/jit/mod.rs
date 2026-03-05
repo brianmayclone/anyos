@@ -75,6 +75,9 @@ pub struct JitEngine {
 }
 
 impl JitEngine {
+    /// Minimum native-translation ratio (percent) required to keep a block in JIT.
+    const MIN_NATIVE_RATIO_PCT: u64 = 70;
+
     /// Create a new JIT engine (disabled by default).
     pub fn new() -> Self {
         JitEngine {
@@ -122,6 +125,12 @@ impl JitEngine {
     ) -> Option<(usize, u64)> {
         let compiled = self.translator.translate_block(block, key.phys_addr, key.mode);
         if compiled.native_instruction_count == 0 {
+            self.no_native.insert(key);
+            return None;
+        }
+        let total = compiled.guest_instruction_count.max(1);
+        let native = compiled.native_instruction_count;
+        if native.saturating_mul(100) < total.saturating_mul(Self::MIN_NATIVE_RATIO_PCT) {
             self.no_native.insert(key);
             return None;
         }

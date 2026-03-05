@@ -5,8 +5,19 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 make -C "${ROOT_DIR}/libs/libcorevm/bios" >/dev/null
 
+# Fast host-runner defaults:
+# - release profile
+# - host CPU tuning
+# - ensure local X11 shim/search path is always visible to the linker
+NATIVE_LIB_FLAG="-L native=${ROOT_DIR}/libs/libcorevm-hosttests/native-libs"
+if [[ -z "${RUSTFLAGS:-}" ]]; then
+  export RUSTFLAGS="-C target-cpu=native ${NATIVE_LIB_FLAG}"
+else
+  export RUSTFLAGS="${RUSTFLAGS} -C target-cpu=native ${NATIVE_LIB_FLAG}"
+fi
+
 cargo +stable run \
-  --config "build.rustflags = [\"-L\", \"native=${ROOT_DIR}/libs/libcorevm-hosttests/native-libs\"]" \
+  --release \
   --manifest-path "${ROOT_DIR}/libs/libcorevm-hosttests/Cargo.toml" \
   --target x86_64-unknown-linux-gnu \
   --bin test_vmd_x11 \
