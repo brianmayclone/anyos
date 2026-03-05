@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use libcorevm::{
     corevm_create_ex, corevm_destroy, corevm_get_instruction_count, corevm_get_last_error,
     corevm_get_gpr, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rflags, corevm_get_rip,
-    corevm_get_segment_selector, corevm_pic_diag_state, corevm_read_linear_u8, corevm_read_phys_u8,
+    corevm_get_segment_selector, corevm_jit_cache_stats, corevm_jit_enable, corevm_jit_stats,
+    corevm_pic_diag_state, corevm_read_linear_u8, corevm_read_phys_u8,
     corevm_ide_attach_slave, corevm_load_rom, corevm_ps2_key_press, corevm_ps2_key_release,
     corevm_pic_raise_irq, corevm_pit_advance, corevm_run, corevm_serial_take_output,
     corevm_setup_ide, corevm_setup_pci_bus, corevm_setup_standard_devices, corevm_debug_take_output,
@@ -54,6 +55,7 @@ struct Config {
     show_vga_text: bool,
     plain: bool,
     auto_enter_ms: u64,
+    jit: bool,
 }
 
 struct SttyGuard {
@@ -120,6 +122,7 @@ fn parse_args() -> Result<Config, String> {
         show_vga_text: true,
         plain: false,
         auto_enter_ms: 0,
+        jit: false,
     };
 
     let mut args = env::args().skip(1);
@@ -179,6 +182,7 @@ fn parse_args() -> Result<Config, String> {
                     .parse::<u64>()
                     .map_err(|_| "invalid --auto-enter-ms")?;
             }
+            "--jit" => cfg.jit = true,
             "--help" | "-h" => {
                 return Err(String::new());
             }
@@ -194,7 +198,7 @@ fn parse_args() -> Result<Config, String> {
 
 fn usage(program: &str) {
     eprintln!(
-        "Usage: {program} --iso <path> [--bios <path>] [--bios-base <addr>] [--ram-mb <mb>] [--cores <n>] [--batch <n>] [--max-seconds <n>] [--max-instructions <n>] [--stdin-kbd] [--no-vga-text] [--plain] [--auto-enter-ms <ms>]"
+        "Usage: {program} --iso <path> [--bios <path>] [--bios-base <addr>] [--ram-mb <mb>] [--cores <n>] [--batch <n>] [--max-seconds <n>] [--max-instructions <n>] [--stdin-kbd] [--no-vga-text] [--plain] [--auto-enter-ms <ms>] [--jit]"
     );
 }
 
@@ -748,6 +752,9 @@ fn main() {
     corevm_setup_pci_bus(vm.0);
     corevm_setup_ide(vm.0);
     corevm_ide_attach_slave(vm.0, iso.as_ptr(), iso.len() as u32);
+    if cfg.jit {
+        corevm_jit_enable(vm.0, 1);
+    }
 
     let (kbd_tx, kbd_rx) = mpsc::channel::<u8>();
     if cfg.stdin_keyboard {
@@ -906,6 +913,43 @@ fn main() {
     if saw_booting_kernel {
         eprintln!("[test-vmd] marker reached: Booting the kernel");
     }
+    let elapsed = start.elapsed().as_secs_f64().max(0.001);
+    let total_ic = corevm_get_instruction_count(vm.0);
+    let mips = (total_ic as f64) / elapsed / 1_000_000.0;
+    let mut blocks_compiled = 0u64;
+    let mut native_count = 0u64;
+    let mut fallback_count = 0u64;
+    let mut code_used = 0u32;
+    corevm_jit_stats(
+        vm.0,
+        &mut blocks_compiled as *mut u64,
+        &mut native_count as *mut u64,
+        &mut fallback_count as *mut u64,
+        &mut code_used as *mut u32,
+    );
+    let mut cache_blocks = 0u32;
+    let mut cache_hits = 0u64;
+    let mut cache_misses = 0u64;
+    corevm_jit_cache_stats(
+        vm.0,
+        &mut cache_blocks as *mut u32,
+        &mut cache_hits as *mut u64,
+        &mut cache_misses as *mut u64,
+    );
+    eprintln!(
+        "[test-vmd] perf: elapsed={:.2}s ic={} ({:.2} MIPS) jit={} blocks={} native={} fallback={} code={}B cache_blocks={} hits={} misses={}",
+        elapsed,
+        total_ic,
+        mips,
+        if cfg.jit { 1 } else { 0 },
+        blocks_compiled,
+        native_count,
+        fallback_count,
+        code_used,
+        cache_blocks,
+        cache_hits,
+        cache_misses
+    );
     if !interactive_ui && display.in_text_mode {
         dump_text_screen(&display.text_cells);
     }

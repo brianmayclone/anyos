@@ -13,6 +13,9 @@ use crate::registers::*;
 
 use super::{compute_effective_address, translate_and_read, translate_and_write};
 
+/// Synthetic TSC increment per RDTS(C/P) read.
+const TSC_STEP: u64 = 100_000;
+
 // ── Descriptor table operations ──
 
 /// LGDT: load the Global Descriptor Table Register from memory.
@@ -509,7 +512,7 @@ pub fn exec_rdtsc(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
     cpu.regs.write_gpr32(GprIndex::Rdx as u8, (tsc >> 32) as u32);
 
     // Increment TSC for next read
-    cpu.regs.write_msr(MSR_TSC, tsc.wrapping_add(100));
+    cpu.regs.write_msr(MSR_TSC, tsc.wrapping_add(TSC_STEP));
 
     cpu.regs.rip += inst.length as u64;
     Ok(())
@@ -524,7 +527,7 @@ pub fn exec_rdtscp(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
     cpu.regs.write_gpr32(GprIndex::Rdx as u8, (tsc >> 32) as u32);
     cpu.regs.write_gpr32(GprIndex::Rcx as u8, 0);
 
-    cpu.regs.write_msr(MSR_TSC, tsc.wrapping_add(100));
+    cpu.regs.write_msr(MSR_TSC, tsc.wrapping_add(TSC_STEP));
     cpu.regs.rip += inst.length as u64;
     Ok(())
 }

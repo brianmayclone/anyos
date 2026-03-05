@@ -73,6 +73,10 @@ pub struct Lapic {
     lvt_thermal: u32,
     /// Timer Initial Count.
     timer_init_count: u32,
+    /// Timer Current Count.
+    timer_cur_count: u32,
+    /// Fractional instruction credits toward the next timer tick.
+    timer_credit: u64,
     /// Timer Divide Configuration.
     timer_divide: u32,
     /// Error Status Register.
@@ -106,6 +110,8 @@ impl Lapic {
             lvt_perf: 1 << 16,    // masked
             lvt_thermal: 1 << 16, // masked
             timer_init_count: 0,
+            timer_cur_count: 0,
+            timer_credit: 0,
             timer_divide: 0,
             esr: 0,
             isr: [0; 8],
@@ -116,6 +122,65 @@ impl Lapic {
 }
 
 impl Lapic {
+    fn timer_divisor(&self) -> u64 {
+        // APIC timer divide encoding:
+        // 0b0000=2, 0001=4, 0010=8, 0011=16,
+        // 1000=32, 1001=64, 1010=128, 1011=1.
+        match self.timer_divide & 0xB {
+            0x0 => 2,
+            0x1 => 4,
+            0x2 => 8,
+            0x3 => 16,
+            0x8 => 32,
+            0x9 => 64,
+            0xA => 128,
+            0xB => 1,
+            _ => 2,
+        }
+    }
+
+    /// Advance the LAPIC timer by a number of guest instructions.
+    ///
+    /// Returns the timer interrupt vector when the counter expires and the
+    /// timer is unmasked. For periodic mode, the counter reloads.
+    pub fn advance(&mut self, guest_instructions: u64) -> Option<u8> {
+        // APIC software enable (SVR bit 8) must be set.
+        if (self.svr & (1 << 8)) == 0 {
+            return None;
+        }
+        // Timer masked?
+        if (self.lvt_timer & (1 << 16)) != 0 {
+            return None;
+        }
+        if self.timer_cur_count == 0 {
+            return None;
+        }
+
+        let div = self.timer_divisor();
+        self.timer_credit = self.timer_credit.saturating_add(guest_instructions);
+        if self.timer_credit < div {
+            return None;
+        }
+
+        let dec = (self.timer_credit / div) as u32;
+        self.timer_credit %= div;
+
+        if dec < self.timer_cur_count {
+            self.timer_cur_count -= dec;
+            return None;
+        }
+
+        // Counter expired.
+        let vec = (self.lvt_timer & 0xFF) as u8;
+        let periodic = (self.lvt_timer & (1 << 17)) != 0;
+        if periodic && self.timer_init_count != 0 {
+            self.timer_cur_count = self.timer_init_count;
+        } else {
+            self.timer_cur_count = 0;
+        }
+        Some(vec)
+    }
+
     /// Read the raw 32-bit value of a register by its 16-byte-aligned offset.
     fn read_register(&self, reg_base: u32) -> u32 {
         match reg_base {
@@ -142,7 +207,7 @@ impl Lapic {
             0x360 => self.lvt_lint1,
             0x370 => self.lvt_error,
             0x380 => self.timer_init_count,
-            0x390 => 0, // Timer Current Count — stub: always 0
+            0x390 => self.timer_cur_count,
             0x3E0 => self.timer_divide,
             _ => 0,
         }
@@ -177,7 +242,11 @@ impl Lapic {
             0x350 => self.lvt_lint0 = v,
             0x360 => self.lvt_lint1 = v,
             0x370 => self.lvt_error = v,
-            0x380 => self.timer_init_count = v,
+            0x380 => {
+                self.timer_init_count = v;
+                self.timer_cur_count = v;
+                self.timer_credit = 0;
+            }
             0x3E0 => self.timer_divide = v,
             _ => {}
         }

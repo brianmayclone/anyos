@@ -293,6 +293,8 @@ struct VmInstance {
     ps2_ptr: *mut devices::ps2::Ps2Controller,
     serial_ptr: *mut devices::serial::Serial,
     svga_ptr: *mut devices::svga::Svga,
+    lapic_ptr: *mut devices::lapic::Lapic,
+    ioapic_ptr: *mut devices::ioapic::IoApic,
     e1000_ptr: *mut devices::e1000::E1000,
     bus_ptr: *mut devices::bus::PciBus,
     ide_ptr: *mut devices::ide::Ide,
@@ -310,6 +312,8 @@ impl Drop for VmInstance {
             if !self.ps2_ptr.is_null() { let _ = Box::from_raw(self.ps2_ptr); }
             if !self.serial_ptr.is_null() { let _ = Box::from_raw(self.serial_ptr); }
             if !self.svga_ptr.is_null() { let _ = Box::from_raw(self.svga_ptr); }
+            if !self.lapic_ptr.is_null() { let _ = Box::from_raw(self.lapic_ptr); }
+            if !self.ioapic_ptr.is_null() { let _ = Box::from_raw(self.ioapic_ptr); }
             if !self.e1000_ptr.is_null() { let _ = Box::from_raw(self.e1000_ptr); }
             if !self.bus_ptr.is_null() { let _ = Box::from_raw(self.bus_ptr); }
             if !self.ide_ptr.is_null() { let _ = Box::from_raw(self.ide_ptr); }
@@ -364,6 +368,8 @@ pub extern "C" fn corevm_create_ex(ram_size_mb: u32, vcpu_count: u32) -> u64 {
         ps2_ptr: ptr::null_mut(),
         serial_ptr: ptr::null_mut(),
         svga_ptr: ptr::null_mut(),
+        lapic_ptr: ptr::null_mut(),
+        ioapic_ptr: ptr::null_mut(),
         e1000_ptr: ptr::null_mut(),
         bus_ptr: ptr::null_mut(),
         ide_ptr: ptr::null_mut(),
@@ -576,7 +582,19 @@ pub extern "C" fn corevm_get_vcpu_count(handle: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
     let vm = unsafe { vm_from_handle(handle) };
+    let before_ic = vm.engine.instruction_count();
     let exit = vm.engine.run(max_instructions);
+    let after_ic = vm.engine.instruction_count();
+    let ran = after_ic.saturating_sub(before_ic);
+
+    // Advance LAPIC timer using guest instruction progress and inject timer IRQs.
+    if ran > 0 && !vm.lapic_ptr.is_null() {
+        let lapic = unsafe { &mut *vm.lapic_ptr };
+        if let Some(vector) = lapic.advance(ran) {
+            vm.engine.interrupts.raise_irq(vector);
+        }
+    }
+
     match exit {
         ExitReason::Halted => {
             0
@@ -1004,12 +1022,14 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
 
     // IO-APIC at standard MMIO address.
     let ioapic = Box::into_raw(Box::new(devices::ioapic::IoApic::new()));
+    vm.ioapic_ptr = ioapic;
     vm.engine.memory.add_mmio(0xFEC00000, 0x1000, Box::new(MmioProxy { ptr: ioapic }));
 
     // Local APIC at standard MMIO address (0xFEE00000, 4 KB).
     // SeaBIOS probes LAPIC Version (0xFEE00030) to detect APIC support.
     // Without this, SeaBIOS reports "No apic" and may skip APIC-dependent init.
     let lapic = Box::into_raw(Box::new(devices::lapic::Lapic::new()));
+    vm.lapic_ptr = lapic;
     vm.engine.memory.add_mmio(0xFEE00000, 0x1000, Box::new(MmioProxy { ptr: lapic }));
 
     // ACPI PM — Power Management timer and control registers.
