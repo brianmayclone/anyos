@@ -10,6 +10,7 @@ use libcorevm::registers::{
     GprIndex, MSR_IA32_APIC_BASE, MSR_IA32_SYSENTER_CS, MSR_IA32_SYSENTER_EIP,
     MSR_IA32_SYSENTER_ESP, MSR_TSC, SegReg, CR0_PE,
 };
+use libcorevm::registers::CR0_PG;
 use libcorevm::{corevm_create_ex, corevm_destroy, corevm_get_vcpu_count};
 
 fn run_one(cpu: &mut Cpu, mmu: &mut Mmu, mem: &mut GuestMemory, bytes: &[u8]) {
@@ -556,4 +557,60 @@ fn protected_interrupt_16bit_gate_pushes_16bit_frame() {
         mem.read_u16(sp + 4).unwrap(),
         (RFLAGS_FIXED as u16) | (flags::IF as u16)
     );
+}
+
+#[test]
+fn mmu_translation_updates_when_cr3_changes() {
+    let mut mmu = Mmu::new();
+    let mut mem = GuestMemory::new(0x40_000);
+    mmu.update_from_regs(CR0_PG, 0, 0);
+
+    let linear = 0x0000_4000u64;
+    let pte_index = ((linear >> 12) & 0x3FF) as u64;
+
+    // CR3=A: PD@0x1000 -> PT@0x2000 -> linear page -> phys 0xA000
+    mem.write_u32(0x1000, 0x2000 | 0x3).unwrap();
+    mem.write_u32(0x2000 + pte_index * 4, 0xA000 | 0x3).unwrap();
+
+    // CR3=B: PD@0x3000 -> PT@0x4000 -> linear page -> phys 0xB000
+    mem.write_u32(0x3000, 0x4000 | 0x3).unwrap();
+    mem.write_u32(0x4000 + pte_index * 4, 0xB000 | 0x3).unwrap();
+
+    let pa_a = mmu
+        .translate_linear(linear, 0x1000, libcorevm::memory::AccessType::Read, 0, &mem)
+        .unwrap();
+    assert_eq!(pa_a, 0xA000);
+
+    let pa_b = mmu
+        .translate_linear(linear, 0x3000, libcorevm::memory::AccessType::Read, 0, &mem)
+        .unwrap();
+    assert_eq!(pa_b, 0xB000);
+}
+
+#[test]
+fn mmu_flush_tlb_observes_updated_pte() {
+    let mut mmu = Mmu::new();
+    let mut mem = GuestMemory::new(0x40_000);
+    mmu.update_from_regs(CR0_PG, 0, 0);
+
+    let linear = 0x0000_4000u64;
+    let pte_index = ((linear >> 12) & 0x3FF) as u64;
+    let cr3 = 0x1000u64;
+
+    mem.write_u32(0x1000, 0x2000 | 0x3).unwrap();
+    mem.write_u32(0x2000 + pte_index * 4, 0xA000 | 0x3).unwrap();
+
+    let pa1 = mmu
+        .translate_linear(linear, cr3, libcorevm::memory::AccessType::Read, 0, &mem)
+        .unwrap();
+    assert_eq!(pa1, 0xA000);
+
+    // Remap same linear page and flush TLB.
+    mem.write_u32(0x2000 + pte_index * 4, 0xB000 | 0x3).unwrap();
+    mmu.flush_tlb();
+
+    let pa2 = mmu
+        .translate_linear(linear, cr3, libcorevm::memory::AccessType::Read, 0, &mem)
+        .unwrap();
+    assert_eq!(pa2, 0xB000);
 }

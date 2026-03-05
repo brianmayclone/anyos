@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cargo +stable run \
+  --manifest-path "${ROOT_DIR}/libs/libcorevm-hosttests/Cargo.toml" \
+  --target x86_64-unknown-linux-gnu \
+  --bin test_vmd \
+  -- "$@"

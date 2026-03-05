@@ -671,10 +671,9 @@ fn cmd_start() {
             );
         }
 
-        // Enable JIT acceleration if configured.
+        // JIT is currently unstable; keep it disabled in production boots.
         if inst.jit_enabled {
-            inst.handle.jit_enable(true);
-            anyos_std::println!("[vmd] JIT acceleration enabled");
+            anyos_std::println!("[vmd] JIT requested but currently disabled (unstable)");
         }
 
         // Log MMIO diagnostic info before starting execution.

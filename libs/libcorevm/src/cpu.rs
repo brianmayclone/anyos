@@ -456,23 +456,7 @@ impl Cpu {
             self.last_fetch_addr = phys_addr;
 
             // ── Self-modifying code: invalidate decode cache for written pages ──
-            {
-                let mut pages_buf = [0u64; 256];
-                let smc_result = crate::memory::smc::drain_to_buf(&mut pages_buf);
-                match smc_result {
-                    crate::memory::smc::DrainResult::None => {}
-                    crate::memory::smc::DrainResult::Pages(n) => {
-                        for i in 0..n {
-                            self.decode_cache.invalidate_page(pages_buf[i]);
-                            self.jit_engine.invalidate_page(pages_buf[i]);
-                        }
-                    }
-                    crate::memory::smc::DrainResult::Overflow => {
-                        self.decode_cache.flush();
-                        self.jit_engine.flush();
-                    }
-                }
-            }
+            self.drain_smc_invalidations();
 
             // ── Decode Cache path ──────────────────────────────────
             // Try the decode cache first: look up a pre-decoded basic block
@@ -487,6 +471,7 @@ impl Cpu {
 
             if let Some(cached_block) = self.decode_cache.lookup(&block_key) {
                 let block_insts = cached_block.instructions.clone();
+                let block_exits_with_branch = cached_block.exits_with_branch;
 
                 if self.jit_engine.is_enabled() {
                     let jit_result = self.jit_execute_block(
@@ -499,8 +484,15 @@ impl Cpu {
                     }
                 }
 
-                let block_exit = self.execute_cached_block(
-                    &block_insts, phys_addr, fetch_addr, memory, mmu, io, interrupts,
+                let block_exit = self.execute_cached_block_chain(
+                    block_key,
+                    block_insts,
+                    block_exits_with_branch,
+                    target,
+                    memory,
+                    mmu,
+                    io,
+                    interrupts,
                 );
                 match block_exit {
                     BlockExitReason::Continue => continue,
@@ -512,8 +504,9 @@ impl Cpu {
             if let Ok(new_block) = block::detect_basic_block(
                 &self.decoder, &*memory, phys_addr,
             ) {
+                let block_insts = new_block.instructions.clone();
+                let block_exits_with_branch = new_block.exits_with_branch;
                 if self.jit_engine.is_enabled() {
-                    let block_insts = new_block.instructions.clone();
                     self.decode_cache.insert(block_key, new_block);
                     let jit_result = self.jit_execute_block(
                         &block_key, &block_insts,
@@ -525,10 +518,16 @@ impl Cpu {
                     }
                 }
 
-                let block_insts = new_block.instructions.clone();
                 self.decode_cache.insert(block_key, new_block);
-                let block_exit = self.execute_cached_block(
-                    &block_insts, phys_addr, fetch_addr, memory, mmu, io, interrupts,
+                let block_exit = self.execute_cached_block_chain(
+                    block_key,
+                    block_insts,
+                    block_exits_with_branch,
+                    target,
+                    memory,
+                    mmu,
+                    io,
+                    interrupts,
                 );
                 match block_exit {
                     BlockExitReason::Continue => continue,
@@ -674,6 +673,100 @@ impl Cpu {
         }
     }
 
+    /// Drain self-modifying-code dirty page markers and invalidate caches.
+    #[inline]
+    fn drain_smc_invalidations(&mut self) {
+        let mut pages_buf = [0u64; 256];
+        let smc_result = crate::memory::smc::drain_to_buf(&mut pages_buf);
+        match smc_result {
+            crate::memory::smc::DrainResult::None => {}
+            crate::memory::smc::DrainResult::Pages(n) => {
+                for page in pages_buf.iter().take(n) {
+                    self.decode_cache.invalidate_page(*page);
+                    self.jit_engine.invalidate_page(*page);
+                }
+            }
+            crate::memory::smc::DrainResult::Overflow => {
+                self.decode_cache.flush();
+                self.jit_engine.flush();
+            }
+        }
+    }
+
+    /// Execute one cached block and keep chaining into subsequent cached blocks
+    /// while it is safe to do so.
+    fn execute_cached_block_chain(
+        &mut self,
+        mut block_key: BlockKey,
+        mut block_insts: alloc::vec::Vec<crate::instruction::DecodedInst>,
+        mut exits_with_branch: bool,
+        target: u64,
+        memory: &mut GuestMemory,
+        mmu: &mut Mmu,
+        io: &mut IoDispatch,
+        interrupts: &mut InterruptController,
+    ) -> BlockExitReason {
+        loop {
+            let block_exit = self.execute_cached_block(
+                &block_insts,
+                block_key.phys_addr,
+                memory,
+                mmu,
+                io,
+                interrupts,
+            );
+            match block_exit {
+                BlockExitReason::Continue => {}
+                BlockExitReason::Exit(reason) => return BlockExitReason::Exit(reason),
+            }
+
+            if target > 0 && self.instruction_count >= target {
+                return BlockExitReason::Exit(ExitReason::InstructionLimit);
+            }
+
+            if exits_with_branch {
+                return BlockExitReason::Continue;
+            }
+
+            // Give pending interrupts a chance before chaining further blocks.
+            if interrupts.pending_interrupt(self.regs.rflags).is_some() || interrupts.interrupt_shadow {
+                return BlockExitReason::Continue;
+            }
+
+            self.drain_smc_invalidations();
+
+            let cs = &self.regs.seg[SegReg::Cs as usize];
+            let fetch_addr = if self.a20_enabled {
+                cs.base.wrapping_add(self.regs.rip)
+            } else {
+                cs.base.wrapping_add(self.regs.rip) & !0x10_0000
+            };
+            let next_phys = match mmu.translate_linear(
+                fetch_addr,
+                self.regs.cr3,
+                AccessType::Execute,
+                self.regs.cpl,
+                &*memory,
+            ) {
+                Ok(p) => p,
+                Err(_) => return BlockExitReason::Continue,
+            };
+
+            let next_key = BlockKey {
+                phys_addr: next_phys,
+                mode: self.decoder.mode(),
+                cs_base: cs.base,
+            };
+
+            let Some(next_block) = self.decode_cache.lookup(&next_key) else {
+                return BlockExitReason::Continue;
+            };
+            block_insts = next_block.instructions.clone();
+            exits_with_branch = next_block.exits_with_branch;
+            block_key = next_key;
+        }
+    }
+
     /// Execute a cached basic block (pre-decoded instruction sequence).
     ///
     /// Iterates through the block's instructions, executing each one and
@@ -684,7 +777,6 @@ impl Cpu {
         &mut self,
         instructions: &[crate::instruction::DecodedInst],
         block_phys: u64,
-        _block_fetch: u64,
         memory: &mut GuestMemory,
         mmu: &mut Mmu,
         io: &mut IoDispatch,
@@ -791,9 +883,7 @@ impl Cpu {
                     None => {
                         // JIT buffer full — fall back to interpreter path.
                         return self.execute_cached_block(
-                            instructions, key.phys_addr, key.cs_base.wrapping_add(
-                                self.regs.rip,
-                            ),
+                            instructions, key.phys_addr,
                             memory, mmu, io, interrupts,
                         );
                     }
@@ -1201,8 +1291,12 @@ impl Cpu {
         // Log exception delivery for debugging
         if self.consecutive_exception_count <= 3 {
             libsyscall::serial_print(format_args!(
-                "[corevm]  -> deliver vec={} to CS={:04X}:{:08X} old_CS:EIP={:04X}:{:08X} old_ESP={:08X}\n",
-                vector, entry.selector, entry.offset as u32,
+                "[corevm]  -> deliver vec={} gate={:?} frame={} to CS={:04X}:{:08X} old_CS:EIP={:04X}:{:08X} old_ESP={:08X}\n",
+                vector,
+                entry.gate_type,
+                if gate_is_16 { 16 } else { 32 },
+                entry.selector,
+                entry.offset as u32,
                 old_cs, old_eip, self.regs.sp() as u32,
             ));
         }

@@ -24,7 +24,7 @@ pub mod segment;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::cell::UnsafeCell;
+use core::cell::{Cell, UnsafeCell};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::Result;
@@ -547,6 +547,16 @@ pub struct Mmu {
     cached_cr4: u64,
     /// Cached EFER value.
     cached_efer: u64,
+    /// Last CR3 value seen by the translation fast path.
+    tlb_last_cr3: Cell<u64>,
+    /// Direct-mapped TLB validity/permission flags per entry.
+    tlb_valid: UnsafeCell<[u8; 256]>,
+    /// Direct-mapped TLB tag: linear page number.
+    tlb_linear_page: UnsafeCell<[u64; 256]>,
+    /// Direct-mapped TLB tag: CR3 value used for translation.
+    tlb_cr3: UnsafeCell<[u64; 256]>,
+    /// Direct-mapped TLB payload: physical page number.
+    tlb_phys_page: UnsafeCell<[u64; 256]>,
 }
 
 impl Mmu {
@@ -562,7 +572,18 @@ impl Mmu {
             cached_cr0: 0,
             cached_cr4: 0,
             cached_efer: 0,
+            tlb_last_cr3: Cell::new(0),
+            tlb_valid: UnsafeCell::new([0; 256]),
+            tlb_linear_page: UnsafeCell::new([0; 256]),
+            tlb_cr3: UnsafeCell::new([0; 256]),
+            tlb_phys_page: UnsafeCell::new([0; 256]),
         }
+    }
+
+    /// Flush the internal linear→physical translation cache.
+    #[inline]
+    pub fn flush_tlb(&self) {
+        unsafe { (*self.tlb_valid.get()).fill(0) };
     }
 
     /// Synchronize MMU state from the current CR0, CR4, and EFER values.
@@ -577,6 +598,7 @@ impl Mmu {
         self.cached_cr0 = cr0;
         self.cached_cr4 = cr4;
         self.cached_efer = efer;
+        self.flush_tlb();
         self.paging_enabled = (cr0 & CR0_PG) != 0;
         self.wp = (cr0 & CR0_WP) != 0;
         self.pse = (cr4 & CR4_PSE) != 0;
@@ -638,6 +660,55 @@ impl Mmu {
         if !self.paging_enabled {
             return Ok(linear);
         }
-        walk_page_tables(linear, cr3, access, cpl, self, mem)
+
+        // CR3 reload invalidates non-global TLB entries. We model this
+        // conservatively by flushing the full software TLB on CR3 change.
+        if self.tlb_last_cr3.get() != cr3 {
+            self.flush_tlb();
+            self.tlb_last_cr3.set(cr3);
+        }
+
+        let linear_page = linear >> 12;
+        let offset = linear & 0xFFF;
+        let idx = ((linear_page ^ (cr3 >> 12)) as usize) & 0xFF;
+        let access_mask = match access {
+            AccessType::Read => 0x1,
+            AccessType::Write => 0x2,
+            AccessType::Execute => 0x4,
+        };
+
+        unsafe {
+            let valid = &*self.tlb_valid.get();
+            let lin = &*self.tlb_linear_page.get();
+            let tag_cr3 = &*self.tlb_cr3.get();
+            let phys = &*self.tlb_phys_page.get();
+
+            if (valid[idx] & access_mask) != 0 && lin[idx] == linear_page && tag_cr3[idx] == cr3 {
+                return Ok((phys[idx] << 12) | offset);
+            }
+        }
+
+        let translated = walk_page_tables(linear, cr3, access, cpl, self, mem)?;
+        let phys_page = translated >> 12;
+
+        unsafe {
+            let valid = &mut *self.tlb_valid.get();
+            let lin = &mut *self.tlb_linear_page.get();
+            let tag_cr3 = &mut *self.tlb_cr3.get();
+            let phys = &mut *self.tlb_phys_page.get();
+
+            // Keep cached permission bits for the same mapping to avoid
+            // unnecessary walk repeats when access type varies.
+            if lin[idx] == linear_page && tag_cr3[idx] == cr3 && phys[idx] == phys_page {
+                valid[idx] |= access_mask;
+            } else {
+                lin[idx] = linear_page;
+                tag_cr3[idx] = cr3;
+                phys[idx] = phys_page;
+                valid[idx] = access_mask;
+            }
+        }
+
+        Ok(translated)
     }
 }

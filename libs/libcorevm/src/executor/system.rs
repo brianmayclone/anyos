@@ -587,13 +587,16 @@ pub fn exec_invlpg(
     cpu: &mut Cpu,
     inst: &DecodedInst,
     _memory: &mut GuestMemory,
-    _mmu: &Mmu,
+    mmu: &Mmu,
 ) -> Result<()> {
     // Validate that operand 0 is a memory operand (INVLPG requires it)
     match &inst.operands[0] {
         Operand::Memory(_) => {}
         _ => return Err(VmError::UndefinedOpcode(inst.opcode as u8)),
     }
+
+    // Conservative invalidation of the software TLB cache.
+    mmu.flush_tlb();
 
     cpu.regs.rip += inst.length as u64;
     Ok(())
