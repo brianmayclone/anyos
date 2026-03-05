@@ -341,10 +341,11 @@ pub fn exec_wrmsr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
 /// Output: EAX, EBX, ECX, EDX.
 pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
     let leaf = cpu.regs.read_gpr32(GprIndex::Rax as u8);
+    let subleaf = cpu.regs.read_gpr32(GprIndex::Rcx as u8);
 
-    let (eax, ebx, ecx, edx) = match leaf {
+    let (eax, ebx, ecx, edx) = match (leaf, subleaf) {
         // Leaf 0: max standard leaf + vendor string
-        0 => {
+        (0, _) => {
             // Vendor: "CoreVMx86Em\0" -> EBX:EDX:ECX
             // "Core" = 0x65726F43
             // "VMx8" = 0x3878_4D56
@@ -352,13 +353,24 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             (0x0D, 0x65726F43, 0x006D4536, 0x38784D56)
         }
         // Leaf 1: family/model/stepping + feature flags
-        1 => {
+        (1, _) => {
             // Family 6, Model 0x3C, Stepping 1 -> EAX = 0x000306C1
             let eax_val = 0x0003_06C1u32;
             // EBX: brand index=0, CLFLUSH=8, max IDs=1, APIC ID=0
             let ebx_val = 0x0001_0800u32;
-            // ECX feature flags: SSE3(0), SSE4.1(19), SSE4.2(20), POPCNT(23)
-            let ecx_val = (1 << 0) | (1 << 19) | (1 << 20) | (1 << 23);
+            // ECX feature flags:
+            // SSE3(0), SSSE3(9), CMPXCHG16B(13), SSE4.1(19), SSE4.2(20),
+            // POPCNT(23), XSAVE(26), OSXSAVE(27)
+            let mut ecx_val = (1 << 0)
+                | (1 << 9)
+                | (1 << 13)
+                | (1 << 19)
+                | (1 << 20)
+                | (1 << 23)
+                | (1 << 26);
+            if (cpu.regs.cr4 & CR4_OSXSAVE) != 0 {
+                ecx_val |= 1 << 27;
+            }
             // EDX feature flags:
             // FPU(0), VME(1), DE(2), PSE(3), TSC(4), MSR(5), PAE(6),
             // MCE(7), CX8(8), APIC(9), PGE(13), MCA(14), CMOV(15),
@@ -386,25 +398,55 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
                 | (1 << 26);
             (eax_val, ebx_val, ecx_val, edx_val)
         }
+
+        // Leaf 7, subleaf 0: structured feature flags (minimal baseline)
+        (7, 0) => {
+            // Report max subleaf = 0, no advanced feature bits set.
+            (0, 0, 0, 0)
+        }
+
+        // Leaf D, subleaf 0: XSAVE features and area size for enabled XCR0 bits.
+        (0x0D, 0) => {
+            // Support x87 (bit0) and SSE (bit1) in XCR0.
+            let supported: u64 = 0x3;
+            let xcr0 = cpu.regs.xcr0 & supported;
+            // Legacy region (512) + XSAVE header (64) when any state enabled.
+            let xsave_size = if xcr0 == 0 { 0 } else { 576 };
+            (supported as u32, xsave_size, (supported >> 32) as u32, 0)
+        }
+
+        // Leaf D, subleaf 1: XSAVEOPT etc. (not supported).
+        (0x0D, 1) => (0, 0, 0, 0),
+
         // Leaf 0x80000000: max extended leaf
-        0x8000_0000 => (0x8000_0004, 0, 0, 0),
+        (0x8000_0000, _) => (0x8000_0008, 0, 0, 0),
         // Leaf 0x80000001: extended feature flags
-        0x8000_0001 => {
-            // EDX: SYSCALL(11), NX(20), LM(29)
+        (0x8000_0001, _) => {
+            // ECX: LAHF/SAHF in long mode (bit 0)
+            let ecx_val: u32 = 1 << 0;
+            // EDX: SYSCALL(11), NX(20), RDTSCP(27), LM(29)
             let edx_val: u32 = (1 << 11) | (1 << 20) | (1 << 29);
-            (0, 0, 0, edx_val)
+            let edx_val = edx_val | (1 << 27);
+            (0, 0, ecx_val, edx_val)
         }
         // Leaf 0x80000002-0x80000004: processor brand string
         // "CoreVM x86 Emulator" padded to 48 bytes
-        0x8000_0002 => {
+        (0x8000_0002, _) => {
             // "Core"
             (0x65726F43, 0x78204D56, 0x45203638, 0x616C756D)
         }
-        0x8000_0003 => {
+        (0x8000_0003, _) => {
             // "tor\0" + padding
             (0x00726F74, 0, 0, 0)
         }
-        0x8000_0004 => (0, 0, 0, 0),
+        (0x8000_0004, _) => (0, 0, 0, 0),
+
+        // Leaf 0x80000008: physical/virtual address width.
+        (0x8000_0008, _) => {
+            // 48-bit virtual, 40-bit physical is a common baseline.
+            ((40u32) | (48u32 << 8), 0, 0, 0)
+        }
+
         // All other leaves return zero
         _ => (0, 0, 0, 0),
     };
@@ -432,6 +474,68 @@ pub fn exec_rdtsc(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
     // Increment TSC for next read
     cpu.regs.write_msr(MSR_TSC, tsc.wrapping_add(100));
 
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+/// RDTSCP: ordered read of the Time Stamp Counter plus IA32_TSC_AUX.
+///
+/// Returns TSC in EDX:EAX and TSC_AUX in ECX.
+pub fn exec_rdtscp(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
+    let tsc = cpu.regs.read_msr(MSR_TSC);
+    cpu.regs.write_gpr32(GprIndex::Rax as u8, tsc as u32);
+    cpu.regs.write_gpr32(GprIndex::Rdx as u8, (tsc >> 32) as u32);
+    cpu.regs.write_gpr32(GprIndex::Rcx as u8, 0);
+
+    cpu.regs.write_msr(MSR_TSC, tsc.wrapping_add(100));
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+/// XGETBV: read extended control register (XCRn).
+///
+/// Only XCR0 (ECX=0) is implemented.
+pub fn exec_xgetbv(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
+    let xcr = cpu.regs.read_gpr32(GprIndex::Rcx as u8);
+    if xcr != 0 {
+        return Err(VmError::GeneralProtection(0));
+    }
+
+    let val = cpu.regs.xcr0;
+    cpu.regs.write_gpr32(GprIndex::Rax as u8, val as u32);
+    cpu.regs.write_gpr32(GprIndex::Rdx as u8, (val >> 32) as u32);
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+/// XSETBV: write extended control register (XCRn).
+///
+/// Only XCR0 (ECX=0) is implemented.
+pub fn exec_xsetbv(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
+    if cpu.regs.cpl != 0 {
+        return Err(VmError::GeneralProtection(0));
+    }
+
+    let xcr = cpu.regs.read_gpr32(GprIndex::Rcx as u8);
+    if xcr != 0 {
+        return Err(VmError::GeneralProtection(0));
+    }
+
+    let lo = cpu.regs.read_gpr32(GprIndex::Rax as u8) as u64;
+    let hi = cpu.regs.read_gpr32(GprIndex::Rdx as u8) as u64;
+    let val = (hi << 32) | lo;
+
+    // Support only x87 (bit0), SSE (bit1), AVX (bit2); x87 must stay enabled.
+    let allowed_mask = 0x7u64;
+    if (val & !allowed_mask) != 0 || (val & 0x1) == 0 {
+        return Err(VmError::GeneralProtection(0));
+    }
+    // AVX requires SSE.
+    if (val & 0x4) != 0 && (val & 0x2) == 0 {
+        return Err(VmError::GeneralProtection(0));
+    }
+
+    cpu.regs.xcr0 = val;
     cpu.regs.rip += inst.length as u64;
     Ok(())
 }
@@ -619,6 +723,121 @@ pub fn exec_sysret(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
 
     cpu.regs.cpl = 3;
 
+    Ok(())
+}
+
+/// SYSENTER: fast system call entry.
+///
+/// Loads CS/SS from IA32_SYSENTER_CS and RIP/RSP from IA32_SYSENTER_EIP/ESP.
+pub fn exec_sysenter(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
+    if matches!(cpu.mode, Mode::RealMode) {
+        return Err(VmError::UndefinedOpcode(0x34));
+    }
+
+    let sysenter_cs = cpu.regs.read_msr(MSR_IA32_SYSENTER_CS) as u16;
+    if (sysenter_cs & 0xFFFC) == 0 {
+        return Err(VmError::GeneralProtection(0));
+    }
+
+    let cs = sysenter_cs & !0x3;
+    let ss = cs.wrapping_add(8);
+    cpu.regs.segment_mut(SegReg::Cs).selector = cs;
+    cpu.regs.segment_mut(SegReg::Ss).selector = ss;
+
+    let long = matches!(cpu.mode, Mode::LongMode);
+    cpu.regs.segment_mut(SegReg::Cs).long_mode = long;
+    cpu.regs.segment_mut(SegReg::Cs).big = !long;
+    cpu.regs.segment_mut(SegReg::Cs).is_code = true;
+    cpu.regs.segment_mut(SegReg::Cs).dpl = 0;
+    cpu.regs.segment_mut(SegReg::Cs).present = true;
+    cpu.regs.segment_mut(SegReg::Cs).base = 0;
+    cpu.regs.segment_mut(SegReg::Cs).limit = 0xFFFF_FFFF;
+
+    cpu.regs.segment_mut(SegReg::Ss).long_mode = false;
+    cpu.regs.segment_mut(SegReg::Ss).big = !long;
+    cpu.regs.segment_mut(SegReg::Ss).is_code = false;
+    cpu.regs.segment_mut(SegReg::Ss).writable = true;
+    cpu.regs.segment_mut(SegReg::Ss).dpl = 0;
+    cpu.regs.segment_mut(SegReg::Ss).present = true;
+    cpu.regs.segment_mut(SegReg::Ss).base = 0;
+    cpu.regs.segment_mut(SegReg::Ss).limit = 0xFFFF_FFFF;
+
+    let eip = cpu.regs.read_msr(MSR_IA32_SYSENTER_EIP);
+    let esp = cpu.regs.read_msr(MSR_IA32_SYSENTER_ESP);
+    if long {
+        cpu.regs.rip = eip;
+        cpu.regs.set_sp(esp);
+    } else {
+        cpu.regs.rip = (eip as u32) as u64;
+        cpu.regs.set_sp((esp as u32) as u64);
+    }
+
+    // SYSENTER clears IF/VM/RF.
+    cpu.regs.rflags &= !(flags::IF | flags::VM | flags::RF);
+    cpu.regs.rflags |= flags::RFLAGS_FIXED;
+    cpu.regs.cpl = 0;
+    cpu.update_mode();
+    let _ = inst;
+    Ok(())
+}
+
+/// SYSEXIT: fast return from system call.
+///
+/// Uses RCX/RDX (or ECX/EDX) as return stack/IP.
+pub fn exec_sysexit(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
+    if matches!(cpu.mode, Mode::RealMode) {
+        return Err(VmError::UndefinedOpcode(0x35));
+    }
+    if cpu.regs.cpl != 0 {
+        return Err(VmError::GeneralProtection(0));
+    }
+
+    let sysenter_cs = cpu.regs.read_msr(MSR_IA32_SYSENTER_CS) as u16;
+    if (sysenter_cs & 0xFFFC) == 0 {
+        return Err(VmError::GeneralProtection(0));
+    }
+
+    let is_64_ret = matches!(cpu.mode, Mode::LongMode) && inst.prefix.rex_w();
+    let (user_cs, user_ss) = if is_64_ret {
+        (
+            (sysenter_cs.wrapping_add(32) & !0x3) | 0x3,
+            (sysenter_cs.wrapping_add(40) & !0x3) | 0x3,
+        )
+    } else {
+        (
+            (sysenter_cs.wrapping_add(16) & !0x3) | 0x3,
+            (sysenter_cs.wrapping_add(24) & !0x3) | 0x3,
+        )
+    };
+
+    cpu.regs.segment_mut(SegReg::Cs).selector = user_cs;
+    cpu.regs.segment_mut(SegReg::Ss).selector = user_ss;
+    cpu.regs.segment_mut(SegReg::Cs).long_mode = is_64_ret;
+    cpu.regs.segment_mut(SegReg::Cs).big = !is_64_ret;
+    cpu.regs.segment_mut(SegReg::Cs).is_code = true;
+    cpu.regs.segment_mut(SegReg::Cs).dpl = 3;
+    cpu.regs.segment_mut(SegReg::Cs).present = true;
+    cpu.regs.segment_mut(SegReg::Cs).base = 0;
+    cpu.regs.segment_mut(SegReg::Cs).limit = 0xFFFF_FFFF;
+    cpu.regs.segment_mut(SegReg::Ss).long_mode = false;
+    cpu.regs.segment_mut(SegReg::Ss).big = !is_64_ret;
+    cpu.regs.segment_mut(SegReg::Ss).is_code = false;
+    cpu.regs.segment_mut(SegReg::Ss).writable = true;
+    cpu.regs.segment_mut(SegReg::Ss).dpl = 3;
+    cpu.regs.segment_mut(SegReg::Ss).present = true;
+    cpu.regs.segment_mut(SegReg::Ss).base = 0;
+    cpu.regs.segment_mut(SegReg::Ss).limit = 0xFFFF_FFFF;
+
+    if is_64_ret {
+        cpu.regs.rip = cpu.regs.read_gpr64(GprIndex::Rdx as u8);
+        cpu.regs.set_sp(cpu.regs.read_gpr64(GprIndex::Rcx as u8));
+    } else {
+        cpu.regs.rip = cpu.regs.read_gpr32(GprIndex::Rdx as u8) as u64;
+        cpu.regs.set_sp(cpu.regs.read_gpr32(GprIndex::Rcx as u8) as u64);
+    }
+
+    cpu.regs.cpl = 3;
+    cpu.update_mode();
     Ok(())
 }
 

@@ -334,11 +334,8 @@ impl<'m> DecodeCursor<'m> {
         match self.inst.opcode_map {
             OpcodeMap::Primary => self.decode_primary(),
             OpcodeMap::Secondary => self.decode_secondary(),
-            OpcodeMap::Escape0F38 | OpcodeMap::Escape0F3A => {
-                // Minimal handling: read ModR/M if present and mark as
-                // undefined for now -- full SSE/AVX decoding is future work.
-                Err(VmError::UndefinedOpcode(self.inst.opcode as u8))
-            }
+            OpcodeMap::Escape0F38 => self.decode_escape_0f38(),
+            OpcodeMap::Escape0F3A => self.decode_escape_0f3a(),
         }
     }
 
@@ -1132,6 +1129,19 @@ impl<'m> DecodeCursor<'m> {
                 Ok(())
             }
 
+            // -- NOP r/m16/32/64 (multi-byte NOP form) --
+            0x1F => {
+                let modrm = self.fetch_modrm()?;
+                let (md, reg, rm) = Self::split_modrm(modrm);
+                if reg != 0 {
+                    return Err(VmError::UndefinedOpcode(op_lo));
+                }
+                let rm_op = self.decode_rm(md, rm, self.inst.operand_size)?;
+                self.set_operand(0, rm_op);
+                self.inst.operand_count = 1;
+                Ok(())
+            }
+
             // -- SYSCALL --
             0x05 => {
                 self.inst.operand_count = 0;
@@ -1212,6 +1222,12 @@ impl<'m> DecodeCursor<'m> {
 
             // -- RDMSR --
             0x32 => {
+                self.inst.operand_count = 0;
+                Ok(())
+            }
+
+            // -- SYSENTER / SYSEXIT --
+            0x34 | 0x35 => {
                 self.inst.operand_count = 0;
                 Ok(())
             }
@@ -1321,6 +1337,62 @@ impl<'m> DecodeCursor<'m> {
                 Ok(())
             }
 
+            // -- SSE/SSE2 2-operand forms (xmm,r/m and r/m,xmm) --
+            0x10 | 0x12 | 0x16 | 0x28 | 0x54 | 0x55 | 0x56 | 0x57 | 0x6E | 0x6F
+            | 0x70 | 0x74 | 0x75 | 0x76 | 0xEF => self.decode_modrm_xmm_rm(OperandSize::Qword),
+            0x60..=0x6D => self.decode_modrm_xmm_rm(OperandSize::Qword),
+            0x11 | 0x13 | 0x17 | 0x29 | 0x7F | 0xD6 => self.decode_modrm_rm_xmm(OperandSize::Qword),
+
+            // -- MOVD/MOVQ variant split by F3 prefix --
+            // F3 0F 7E = MOVQ xmm, xmm/m64 (xmm <- r/m)
+            // 66 0F 7E = MOVD/MOVQ r/m, xmm     (r/m <- xmm)
+            0x7E => {
+                if self.inst.rep == RepPrefix::Rep {
+                    self.decode_modrm_xmm_rm(OperandSize::Qword)
+                } else {
+                    self.decode_modrm_rm_xmm(OperandSize::Qword)
+                }
+            }
+
+            // -- 0F AE group: FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/CLFLUSH/FENCE --
+            0xAE => {
+                let modrm = self.fetch_modrm()?;
+                let (md, reg, rm) = Self::split_modrm(modrm);
+                match reg {
+                    // /0 FXSAVE, /1 FXRSTOR, /2 LDMXCSR, /3 STMXCSR
+                    0..=3 => {
+                        if md == 3 {
+                            return Err(VmError::UndefinedOpcode(op_lo));
+                        }
+                        let rm_op = self.decode_rm(md, rm, OperandSize::Qword)?;
+                        self.set_operand(0, rm_op);
+                        self.inst.operand_count = 1;
+                        Ok(())
+                    }
+                    // /7 CLFLUSH (memory) or SFENCE (register encoding)
+                    7 => {
+                        if md == 3 {
+                            self.inst.operand_count = 0;
+                            Ok(())
+                        } else {
+                            let rm_op = self.decode_rm(md, rm, OperandSize::Qword)?;
+                            self.set_operand(0, rm_op);
+                            self.inst.operand_count = 1;
+                            Ok(())
+                        }
+                    }
+                    // /5 LFENCE, /6 MFENCE use mod=3 encodings.
+                    5 | 6 => {
+                        if md != 3 {
+                            return Err(VmError::UndefinedOpcode(op_lo));
+                        }
+                        self.inst.operand_count = 0;
+                        Ok(())
+                    }
+                    _ => Err(VmError::UndefinedOpcode(op_lo)),
+                }
+            }
+
             // -- IMUL r, r/m --
             0xAF => {
                 let sz = self.inst.operand_size;
@@ -1384,6 +1456,12 @@ impl<'m> DecodeCursor<'m> {
                 self.set_operand(1, rm_op);
                 self.inst.operand_count = 2;
                 Ok(())
+            }
+
+            // -- POPCNT r, r/m --
+            0xB8 => {
+                let sz = self.inst.operand_size;
+                self.decode_modrm_r_rm(sz)
             }
 
             // -- Group 8: BT/BTS/BTR/BTC r/m, imm8 --
@@ -1453,6 +1531,19 @@ impl<'m> DecodeCursor<'m> {
                 self.decode_modrm_rm_r(sz)
             }
 
+            // -- CMPXCHG8B/CMPXCHG16B m64/m128 --
+            0xC7 => {
+                let modrm = self.fetch_modrm()?;
+                let (md, reg, rm) = Self::split_modrm(modrm);
+                if reg != 1 || md == 3 {
+                    return Err(VmError::UndefinedOpcode(op_lo));
+                }
+                let rm_op = self.decode_rm(md, rm, OperandSize::Qword)?;
+                self.set_operand(0, rm_op);
+                self.inst.operand_count = 1;
+                Ok(())
+            }
+
             // -- BSWAP r32/r64 --
             0xC8..=0xCF => {
                 let reg = self.extend_b(op_lo & 0x07);
@@ -1463,6 +1554,103 @@ impl<'m> DecodeCursor<'m> {
             }
 
             _ => Err(VmError::UndefinedOpcode(op_lo)),
+        }
+    }
+
+    fn decode_escape_0f38(&mut self) -> Result<()> {
+        let op = self.inst.opcode as u8;
+        match op {
+            // 66 0F 38 00 /r -- PSHUFB xmm, xmm/m128
+            0x00 => self.decode_modrm_xmm_rm(OperandSize::Qword),
+
+            // 0F 38 F0 /r -- MOVBE r16/32/64, m16/32/64
+            // F2 0F 38 F0 /r -- CRC32 r32/r64, r/m8
+            0xF0 => {
+                let modrm = self.fetch_modrm()?;
+                let (md, reg, rm) = Self::split_modrm(modrm);
+                if self.inst.rep == RepPrefix::Repne {
+                    let dst = self.extend_r(reg);
+                    let rm_op = self.decode_rm(md, rm, OperandSize::Byte)?;
+                    self.set_operand(0, self.gpr_operand(dst, self.inst.operand_size));
+                    self.set_operand(1, rm_op);
+                    self.inst.operand_count = 2;
+                    Ok(())
+                } else {
+                    if md == 3 {
+                        return Err(VmError::UndefinedOpcode(op));
+                    }
+                    let sz = if self.inst.prefix.rex_w() {
+                        OperandSize::Qword
+                    } else if self.inst.prefix.operand_size_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    };
+                    let dst = self.extend_r(reg);
+                    let rm_op = self.decode_rm(md, rm, sz)?;
+                    self.set_operand(0, self.gpr_operand(dst, sz));
+                    self.set_operand(1, rm_op);
+                    self.inst.operand_count = 2;
+                    Ok(())
+                }
+            }
+
+            // 0F 38 F1 /r -- MOVBE m16/32/64, r16/32/64
+            // F2 0F 38 F1 /r -- CRC32 r32/r64, r/m16/32/64
+            0xF1 => {
+                let modrm = self.fetch_modrm()?;
+                let (md, reg, rm) = Self::split_modrm(modrm);
+                if self.inst.rep == RepPrefix::Repne {
+                    let src_sz = if self.inst.prefix.rex_w() {
+                        OperandSize::Qword
+                    } else if self.inst.prefix.operand_size_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    };
+                    let dst = self.extend_r(reg);
+                    let rm_op = self.decode_rm(md, rm, src_sz)?;
+                    self.set_operand(0, self.gpr_operand(dst, self.inst.operand_size));
+                    self.set_operand(1, rm_op);
+                    self.inst.operand_count = 2;
+                    Ok(())
+                } else {
+                    if md == 3 {
+                        return Err(VmError::UndefinedOpcode(op));
+                    }
+                    let sz = if self.inst.prefix.rex_w() {
+                        OperandSize::Qword
+                    } else if self.inst.prefix.operand_size_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    };
+                    let src = self.extend_r(reg);
+                    let rm_op = self.decode_rm(md, rm, sz)?;
+                    self.set_operand(0, rm_op);
+                    self.set_operand(1, self.gpr_operand(src, sz));
+                    self.inst.operand_count = 2;
+                    Ok(())
+                }
+            }
+
+            _ => Err(VmError::UndefinedOpcode(op)),
+        }
+    }
+
+    fn decode_escape_0f3a(&mut self) -> Result<()> {
+        let op = self.inst.opcode as u8;
+        match op {
+            // 66 0F 3A 0F /r ib -- PALIGNR xmm, xmm/m128, imm8
+            0x0F => {
+                self.decode_modrm_xmm_rm(OperandSize::Qword)?;
+                let imm = self.fetch_u8()? as u64;
+                self.inst.immediate = imm;
+                self.set_operand(2, Operand::Immediate(imm));
+                self.inst.operand_count = 3;
+                Ok(())
+            }
+            _ => Err(VmError::UndefinedOpcode(op)),
         }
     }
 
@@ -1721,6 +1909,38 @@ impl<'m> DecodeCursor<'m> {
         Ok(())
     }
 
+    /// Decode `operand[0] = xmm, operand[1] = r/m`.
+    fn decode_modrm_xmm_rm(&mut self, size: OperandSize) -> Result<()> {
+        let modrm = self.fetch_modrm()?;
+        let (md, reg, rm) = Self::split_modrm(modrm);
+        let reg = self.extend_r(reg);
+        let rm_op = if md == 3 {
+            Operand::Register(RegOperand::Xmm(self.extend_b(rm)))
+        } else {
+            self.decode_rm(md, rm, size)?
+        };
+        self.set_operand(0, self.xmm_operand(reg));
+        self.set_operand(1, rm_op);
+        self.inst.operand_count = 2;
+        Ok(())
+    }
+
+    /// Decode `operand[0] = r/m, operand[1] = xmm`.
+    fn decode_modrm_rm_xmm(&mut self, size: OperandSize) -> Result<()> {
+        let modrm = self.fetch_modrm()?;
+        let (md, reg, rm) = Self::split_modrm(modrm);
+        let reg = self.extend_r(reg);
+        let rm_op = if md == 3 {
+            Operand::Register(RegOperand::Xmm(self.extend_b(rm)))
+        } else {
+            self.decode_rm(md, rm, size)?
+        };
+        self.set_operand(0, rm_op);
+        self.set_operand(1, self.xmm_operand(reg));
+        self.inst.operand_count = 2;
+        Ok(())
+    }
+
     /// Decode `operand[0] = AL, operand[1] = imm8`.
     fn decode_al_imm8(&mut self) -> Result<()> {
         self.inst.operand_size = OperandSize::Byte;
@@ -1884,6 +2104,11 @@ impl<'m> DecodeCursor<'m> {
     /// Build a GPR register operand.
     fn gpr_operand(&self, reg: u8, _size: OperandSize) -> Operand {
         Operand::Register(RegOperand::Gpr(reg))
+    }
+
+    /// Build an XMM register operand.
+    fn xmm_operand(&self, reg: u8) -> Operand {
+        Operand::Register(RegOperand::Xmm(reg))
     }
 
     /// Store an operand at the given index.

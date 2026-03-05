@@ -52,9 +52,7 @@ pub fn execute(
     match inst.opcode_map {
         OpcodeMap::Primary => exec_primary(cpu, inst, memory, mmu, io, interrupts),
         OpcodeMap::Secondary => exec_secondary(cpu, inst, memory, mmu, io, interrupts),
-        OpcodeMap::Escape0F38 | OpcodeMap::Escape0F3A => {
-            Err(VmError::UndefinedOpcode(inst.opcode as u8))
-        }
+        OpcodeMap::Escape0F38 | OpcodeMap::Escape0F3A => sse::exec_sse_escape(cpu, inst, memory, mmu),
     }
 }
 
@@ -588,6 +586,26 @@ fn exec_secondary(
 
         // ── Group 7 (SGDT/SIDT/LGDT/LIDT/SMSW/LMSW/INVLPG/SWAPGS) ──
         0x01 => {
+            if inst.modrm_mod() == 3 {
+                let reg = inst.modrm_reg() & 7;
+                let rm = inst.modrm_rm() & 7;
+                return match reg {
+                    // SWAPGS / RDTSCP
+                    7 => match rm {
+                        0 => system::exec_swapgs(cpu, inst),
+                        1 => system::exec_rdtscp(cpu, inst),
+                        _ => Err(VmError::UndefinedOpcode(op2)),
+                    },
+                    // XGETBV / XSETBV
+                    2 => match rm {
+                        0 => system::exec_xgetbv(cpu, inst),
+                        1 => system::exec_xsetbv(cpu, inst),
+                        _ => Err(VmError::UndefinedOpcode(op2)),
+                    },
+                    _ => Err(VmError::UndefinedOpcode(op2)),
+                };
+            }
+
             let reg = inst.modrm_reg() & 7;
             match reg {
                 0 => system::exec_sgdt(cpu, inst, memory, mmu),
@@ -596,20 +614,15 @@ fn exec_secondary(
                 3 => system::exec_lidt(cpu, inst, memory, mmu),
                 4 => system::exec_smsw(cpu, inst, memory, mmu),
                 6 => system::exec_lmsw(cpu, inst, memory, mmu),
-                7 => {
-                    // INVLPG if modrm_mod != 3, else SWAPGS/RDTSCP
-                    if inst.modrm_mod() != 3 {
-                        system::exec_invlpg(cpu, inst, memory, mmu)
-                    } else {
-                        let rm = inst.modrm_rm() & 7;
-                        match rm {
-                            0 => system::exec_swapgs(cpu, inst),
-                            _ => Err(VmError::UndefinedOpcode(op2)),
-                        }
-                    }
-                }
+                7 => system::exec_invlpg(cpu, inst, memory, mmu),
                 _ => Err(VmError::UndefinedOpcode(op2)),
             }
+        }
+
+        // ── NOP r/m16/32/64 (0F 1F /0) ──
+        0x1F => {
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
         }
 
         // ── MOV r, CRn / MOV CRn, r ──
@@ -627,12 +640,13 @@ fn exec_secondary(
         // ── RDMSR ──
         0x32 => system::exec_rdmsr(cpu, inst),
 
-        // ── CPUID ──
+        // ── SYSCALL/SYSRET ──
         0x05 => system::exec_syscall(cpu, inst),
         0x07 => system::exec_sysret(cpu, inst),
 
-        // ── SYSENTER/SYSEXIT (not implemented) ──
-        0x34 | 0x35 => Err(VmError::UndefinedOpcode(op2)),
+        // ── SYSENTER/SYSEXIT ──
+        0x34 => system::exec_sysenter(cpu, inst),
+        0x35 => system::exec_sysexit(cpu, inst),
 
         // ── WBINVD ──
         0x09 => system::exec_wbinvd(cpu, inst),
@@ -700,6 +714,8 @@ fn exec_secondary(
         0xB6 => data::exec_movzx(cpu, inst, memory, mmu),
         // ── MOVZX r, r/m16 ──
         0xB7 => data::exec_movzx(cpu, inst, memory, mmu),
+        // ── POPCNT r, r/m ──
+        0xB8 => data::exec_popcnt(cpu, inst, memory, mmu),
 
         // ── Group 8: BT/BTS/BTR/BTC r/m, imm8 ──
         0xBA => {
@@ -730,11 +746,14 @@ fn exec_secondary(
         // ── XADD ──
         0xC0 | 0xC1 => data::exec_xadd(cpu, inst, memory, mmu),
 
+        // ── CMPXCHG8B/CMPXCHG16B ──
+        0xC7 => data::exec_cmpxchg8b16b(cpu, inst, memory, mmu),
+
         // ── BSWAP r32/r64 ──
         0xC8..=0xCF => data::exec_bswap(cpu, inst),
 
         // ── SSE instructions (various prefixes) ──
-        0x10..=0x17 | 0x28..=0x2F | 0x50..=0x7F | 0xC2..=0xC6 | 0xD0..=0xFE => {
+        0x10..=0x17 | 0x28..=0x2F | 0x50..=0x7F | 0xAE | 0xC2..=0xC6 | 0xD0..=0xFE => {
             sse::exec_sse(cpu, inst, memory, mmu)
         }
 

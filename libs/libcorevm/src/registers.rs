@@ -226,6 +226,9 @@ pub struct RegisterFile {
     /// Cached EFER value (shadows `msr[MSR_EFER]` for hot-path access).
     pub efer: u64,
 
+    /// Extended Control Register 0 (XCR0) visible via XGETBV/XSETBV.
+    pub xcr0: u64,
+
     /// Current privilege level (0-3).
     pub cpl: u8,
 }
@@ -250,6 +253,14 @@ pub const MSR_GS_BASE: u32 = 0xC000_0101;
 pub const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
 /// Time Stamp Counter.
 pub const MSR_TSC: u32 = 0x0000_0010;
+/// APIC base address and control bits (IA32_APIC_BASE).
+pub const MSR_IA32_APIC_BASE: u32 = 0x0000_001B;
+/// SYSENTER target code selector.
+pub const MSR_IA32_SYSENTER_CS: u32 = 0x0000_0174;
+/// SYSENTER target stack pointer.
+pub const MSR_IA32_SYSENTER_ESP: u32 = 0x0000_0175;
+/// SYSENTER target instruction pointer.
+pub const MSR_IA32_SYSENTER_EIP: u32 = 0x0000_0176;
 
 // ── EFER bits ──
 
@@ -311,6 +322,8 @@ pub const CR4_OSFXSR: u64 = 1 << 9;
 pub const CR4_OSXMMEXCPT: u64 = 1 << 10;
 /// PCID enable.
 pub const CR4_PCIDE: u64 = 1 << 17;
+/// XSAVE/XRSTOR enable.
+pub const CR4_OSXSAVE: u64 = 1 << 18;
 
 impl RegisterFile {
     /// Create a new register file with power-on reset defaults.
@@ -342,10 +355,13 @@ impl RegisterFile {
             tr: 0,
             msr: BTreeMap::new(),
             efer: 0,
+            xcr0: 1, // x87 state enabled by default
             cpl: 0,
         };
         // EDX contains processor identification on reset (we report a generic P6)
         regs.gpr[GprIndex::Rdx as usize] = 0x0000_0600;
+        // IA32_APIC_BASE: BSP bit (8) + global enable (11) + default base 0xFEE00000.
+        regs.write_msr(MSR_IA32_APIC_BASE, 0xFEE0_0900);
         // DR6 initial value: all breakpoint conditions clear
         regs.dr[6] = 0xFFFF_0FF0;
         // DR7 initial value: all breakpoints disabled

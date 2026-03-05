@@ -23,10 +23,11 @@
 //! The VM handle is an opaque `u64` representing a pointer to a heap-allocated
 //! `VmInstance`.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(not(feature = "host_test"), no_std)]
+#![cfg_attr(not(feature = "host_test"), no_main)]
 
 extern crate alloc;
+#[cfg(not(feature = "host_test"))]
 extern crate libheap;
 
 pub mod error;
@@ -54,14 +55,19 @@ pub(crate) mod syscall {
 /// Print a formatted line to the serial console (stdout fd=1).
 macro_rules! vm_log {
     ($($arg:tt)*) => {{
-        libsyscall::serial_print(format_args!("[corevm] "));
-        libsyscall::serial_print(format_args!($($arg)*));
-        libsyscall::write_bytes(b"\n");
+        #[cfg(not(feature = "host_test"))]
+        {
+            libsyscall::serial_print(format_args!("[corevm] "));
+            libsyscall::serial_print(format_args!($($arg)*));
+            libsyscall::write_bytes(b"\n");
+        }
     }};
 }
 
+#[cfg(not(feature = "host_test"))]
 libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
 
+#[cfg(not(feature = "host_test"))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     syscall::exit(1);

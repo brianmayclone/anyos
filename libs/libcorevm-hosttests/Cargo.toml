@@ -1,0 +1,9 @@
+[package]
+name = "libcorevm-hosttests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libcorevm = { path = "../libcorevm", features = ["host_test"] }
+
+[workspace]

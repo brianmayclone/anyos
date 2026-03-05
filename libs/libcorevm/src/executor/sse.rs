@@ -14,11 +14,11 @@
 use crate::cpu::Cpu;
 use crate::error::{Result, VmError};
 use crate::flags::OperandSize;
-use crate::instruction::{DecodedInst, Operand, RegOperand};
+use crate::instruction::{DecodedInst, OpcodeMap, Operand, RegOperand};
 use crate::memory::{GuestMemory, Mmu};
 use crate::sse_state::{Xmm, MXCSR_WRITE_MASK};
 
-use super::{compute_effective_address, translate_and_read, translate_and_write};
+use super::{compute_effective_address, read_operand, translate_and_read, translate_and_write, write_operand};
 
 /// Dispatch an SSE/SSE2 instruction.
 ///
@@ -37,6 +37,15 @@ pub fn exec_sse(
     let has_f2 = inst.rep == crate::instruction::RepPrefix::Repne;
 
     match op2 {
+        // ── MOVSS (F3 0F 10/11) / MOVSD (F2 0F 10/11) ──
+        0x10 | 0x11 if has_f3 || has_f2 => {
+            if has_f3 {
+                exec_movss(cpu, inst, op2, memory, mmu)
+            } else {
+                exec_movsd(cpu, inst, op2, memory, mmu)
+            }
+        }
+
         // ── MOVUPS/MOVAPS/MOVUPD/MOVAPD xmm, xmm/m128 (load) ──
         0x10 | 0x28 => {
             let (src_lo, src_hi) = read_xmm_or_mem128(cpu, inst, &inst.operands[1], memory, mmu)?;
@@ -53,17 +62,6 @@ pub fn exec_sse(
             write_xmm_or_mem128(cpu, inst, &inst.operands[0], src.lo, src.hi, memory, mmu)?;
             cpu.regs.rip += inst.length as u64;
             Ok(())
-        }
-
-        // ── MOVSS (F3 0F 10/11) / MOVSD (F2 0F 10/11) ──
-        0x10 | 0x11 if has_f3 || has_f2 => {
-            // These are already handled by 0x10/0x11 above for the non-prefix case.
-            // With F3: MOVSS, with F2: MOVSD
-            if has_f3 {
-                exec_movss(cpu, inst, op2, memory, mmu)
-            } else {
-                exec_movsd(cpu, inst, op2, memory, mmu)
-            }
         }
 
         // ── MOVLPS/MOVLPD (0F 12/13) ──
@@ -188,6 +186,12 @@ pub fn exec_sse(
             Ok(())
         }
 
+        // ── FXSAVE (0F AE /0) ──
+        0xAE if inst.modrm_reg() == 0 => exec_fxsave(cpu, inst, memory, mmu),
+
+        // ── FXRSTOR (0F AE /1) ──
+        0xAE if inst.modrm_reg() == 1 => exec_fxrstor(cpu, inst, memory, mmu),
+
         // ── LDMXCSR (0F AE /2) ──
         0xAE if inst.modrm_reg() == 2 => {
             let linear = get_mem_linear(cpu, inst)?;
@@ -274,6 +278,92 @@ pub fn exec_sse(
 
         // ── Everything else: #UD ──
         _ => Err(VmError::UndefinedOpcode(op2)),
+    }
+}
+
+/// Dispatch minimal 0F 38 / 0F 3A instruction subset.
+pub fn exec_sse_escape(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    match inst.opcode_map {
+        OpcodeMap::Escape0F38 => exec_sse_0f38(cpu, inst, memory, mmu),
+        OpcodeMap::Escape0F3A => exec_sse_0f3a(cpu, inst, memory, mmu),
+        _ => Err(VmError::UndefinedOpcode(inst.opcode as u8)),
+    }
+}
+
+fn exec_sse_0f38(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let op = inst.opcode as u8;
+    match op {
+        // 66 0F 38 00 /r -- PSHUFB xmm, xmm/m128
+        0x00 => {
+            let dst_idx = xmm_dst_index(inst)?;
+            let (src_lo, src_hi) = read_xmm_or_mem128(cpu, inst, &inst.operands[1], memory, mmu)?;
+            let mut dst = cpu.sse.xmm[dst_idx];
+            pshufb_lane(&mut dst.lo, src_lo);
+            pshufb_lane(&mut dst.hi, src_hi);
+            cpu.sse.xmm[dst_idx] = dst;
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+
+        // F2 0F 38 F0/F1 /r -- CRC32
+        0xF0 | 0xF1 if inst.rep == crate::instruction::RepPrefix::Repne => {
+            exec_crc32(cpu, inst, memory, mmu)
+        }
+
+        // 0F 38 F0/F1 /r -- MOVBE
+        0xF0 | 0xF1 => exec_movbe(cpu, inst, memory, mmu),
+
+        _ => Err(VmError::UndefinedOpcode(op)),
+    }
+}
+
+fn exec_sse_0f3a(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let op = inst.opcode as u8;
+    match op {
+        // 66 0F 3A 0F /r ib -- PALIGNR xmm, xmm/m128, imm8
+        0x0F => {
+            let dst_idx = xmm_dst_index(inst)?;
+            let dst = cpu.sse.xmm[dst_idx];
+            let (src_lo, src_hi) = read_xmm_or_mem128(cpu, inst, &inst.operands[1], memory, mmu)?;
+            let imm = (inst.immediate as u8) as usize;
+
+            let mut cat = [0u8; 32];
+            cat[..8].copy_from_slice(&dst.lo.to_le_bytes());
+            cat[8..16].copy_from_slice(&dst.hi.to_le_bytes());
+            cat[16..24].copy_from_slice(&src_lo.to_le_bytes());
+            cat[24..32].copy_from_slice(&src_hi.to_le_bytes());
+
+            let mut out = [0u8; 16];
+            for i in 0..16 {
+                out[i] = if imm + i < 32 { cat[imm + i] } else { 0 };
+            }
+            let mut lo_arr = [0u8; 8];
+            let mut hi_arr = [0u8; 8];
+            lo_arr.copy_from_slice(&out[..8]);
+            hi_arr.copy_from_slice(&out[8..]);
+            cpu.sse.xmm[dst_idx] = Xmm {
+                lo: u64::from_le_bytes(lo_arr),
+                hi: u64::from_le_bytes(hi_arr),
+            };
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+        _ => Err(VmError::UndefinedOpcode(op)),
     }
 }
 
@@ -495,6 +585,131 @@ fn write_qword_operand(
     }
 }
 
+fn pshufb_lane(dst_lane: &mut u64, src_lane: u64) {
+    let src = src_lane.to_le_bytes();
+    let mut out = [0u8; 8];
+    let ctrl = dst_lane.to_le_bytes();
+    for i in 0..8 {
+        let c = ctrl[i];
+        if (c & 0x80) != 0 {
+            out[i] = 0;
+        } else {
+            out[i] = src[(c & 0x07) as usize];
+        }
+    }
+    *dst_lane = u64::from_le_bytes(out);
+}
+
+fn crc32_update(mut crc: u32, val: u64, bytes: usize) -> u32 {
+    for i in 0..bytes {
+        crc ^= ((val >> (i * 8)) as u8) as u32;
+        for _ in 0..8 {
+            if (crc & 1) != 0 {
+                crc = (crc >> 1) ^ 0x82F6_3B78;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc
+}
+
+fn read_crc_src(
+    cpu: &Cpu,
+    inst: &DecodedInst,
+    memory: &GuestMemory,
+    mmu: &Mmu,
+) -> Result<(u64, usize)> {
+    match &inst.operands[1] {
+        Operand::Memory(mem_op) => {
+            let linear = compute_effective_address(cpu, mem_op, inst)?;
+            let val = translate_and_read(cpu, linear, mem_op.size, mmu, memory)?;
+            Ok((val, mem_op.size.bytes() as usize))
+        }
+        Operand::Register(RegOperand::Gpr(idx)) => {
+            let size = match inst.opcode as u8 {
+                0xF0 => OperandSize::Byte,
+                0xF1 => {
+                    if inst.prefix.rex_w() {
+                        OperandSize::Qword
+                    } else if inst.prefix.operand_size_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    }
+                }
+                _ => return Err(VmError::UndefinedOpcode(inst.opcode as u8)),
+            };
+            let val = cpu.regs.read_gpr(*idx, size, inst.prefix.has_rex());
+            Ok((val, size.bytes() as usize))
+        }
+        _ => Err(VmError::UndefinedOpcode(inst.opcode as u8)),
+    }
+}
+
+fn exec_crc32(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let dst = match &inst.operands[0] {
+        Operand::Register(RegOperand::Gpr(idx)) => *idx,
+        _ => return Err(VmError::UndefinedOpcode(inst.opcode as u8)),
+    };
+    let (src_val, src_bytes) = read_crc_src(cpu, inst, memory, mmu)?;
+
+    if inst.prefix.rex_w() {
+        let old = cpu.regs.read_gpr64(dst) as u32;
+        let new_crc = crc32_update(old, src_val, src_bytes);
+        cpu.regs.write_gpr64(dst, new_crc as u64);
+    } else {
+        let old = cpu.regs.read_gpr32(dst);
+        let new_crc = crc32_update(old, src_val, src_bytes);
+        cpu.regs.write_gpr32(dst, new_crc);
+    }
+
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+fn exec_movbe(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let sz = match &inst.operands[0] {
+        Operand::Memory(mem) => mem.size,
+        _ => inst.operand_size,
+    };
+    let mask = sz.mask();
+    if (inst.opcode as u8) == 0xF0 {
+        // MOVBE r, m
+        let src = read_operand(cpu, inst, &inst.operands[1], memory, mmu)? & mask;
+        let swapped = match sz {
+            OperandSize::Word => (src as u16).swap_bytes() as u64,
+            OperandSize::Dword => (src as u32).swap_bytes() as u64,
+            OperandSize::Qword => src.swap_bytes(),
+            OperandSize::Byte => src,
+        };
+        write_operand(cpu, inst, &inst.operands[0], swapped, memory, mmu)?;
+    } else {
+        // MOVBE m, r
+        let src = read_operand(cpu, inst, &inst.operands[1], memory, mmu)? & mask;
+        let swapped = match sz {
+            OperandSize::Word => (src as u16).swap_bytes() as u64,
+            OperandSize::Dword => (src as u32).swap_bytes() as u64,
+            OperandSize::Qword => src.swap_bytes(),
+            OperandSize::Byte => src,
+        };
+        write_operand(cpu, inst, &inst.operands[0], swapped, memory, mmu)?;
+    }
+
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
 /// Get the linear address from the memory operand at position 0.
 fn get_mem_linear(cpu: &Cpu, inst: &DecodedInst) -> Result<u64> {
     get_mem_linear_operand(cpu, inst, 0)
@@ -506,4 +721,92 @@ fn get_mem_linear_operand(cpu: &Cpu, inst: &DecodedInst, operand_idx: usize) -> 
         Operand::Memory(mem_op) => compute_effective_address(cpu, mem_op, inst),
         _ => Err(VmError::UndefinedOpcode(inst.opcode as u8)),
     }
+}
+
+/// FXSAVE: store x87/SSE state to a 512-byte memory region.
+fn exec_fxsave(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let base = get_mem_linear(cpu, inst)?;
+
+    translate_and_write(cpu, base, OperandSize::Word, cpu.fpu.fcw as u64, mmu, memory)?;
+    translate_and_write(cpu, base.wrapping_add(2), OperandSize::Word, cpu.fpu.fsw as u64, mmu, memory)?;
+    // Abridged FTW in FXSAVE: one bit per ST entry, 1 = valid
+    let mut abridged_ftw: u8 = 0;
+    for i in 0..8u8 {
+        let tag = cpu.fpu.get_tag(i);
+        if tag != crate::fpu_state::TAG_EMPTY {
+            abridged_ftw |= 1 << i;
+        }
+    }
+    translate_and_write(cpu, base.wrapping_add(4), OperandSize::Byte, abridged_ftw as u64, mmu, memory)?;
+    translate_and_write(cpu, base.wrapping_add(6), OperandSize::Word, cpu.fpu.fop as u64, mmu, memory)?;
+    translate_and_write(cpu, base.wrapping_add(8), OperandSize::Qword, cpu.fpu.fip, mmu, memory)?;
+    translate_and_write(cpu, base.wrapping_add(16), OperandSize::Qword, cpu.fpu.fdp, mmu, memory)?;
+    translate_and_write(cpu, base.wrapping_add(24), OperandSize::Dword, cpu.sse.mxcsr as u64, mmu, memory)?;
+    translate_and_write(cpu, base.wrapping_add(28), OperandSize::Dword, 0x0000_FFFF, mmu, memory)?;
+
+    // ST/MM registers (8 x 16 bytes). We store f64 bits in low qword.
+    for i in 0..8u64 {
+        let st = cpu.fpu.st(i as u8).to_bits();
+        let off = base.wrapping_add(32 + i * 16);
+        translate_and_write(cpu, off, OperandSize::Qword, st, mmu, memory)?;
+        translate_and_write(cpu, off.wrapping_add(8), OperandSize::Qword, 0, mmu, memory)?;
+    }
+
+    // XMM registers (16 x 16 bytes)
+    for i in 0..16u64 {
+        let xmm = cpu.sse.xmm[i as usize];
+        let off = base.wrapping_add(160 + i * 16);
+        translate_and_write(cpu, off, OperandSize::Qword, xmm.lo, mmu, memory)?;
+        translate_and_write(cpu, off.wrapping_add(8), OperandSize::Qword, xmm.hi, mmu, memory)?;
+    }
+
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+/// FXRSTOR: load x87/SSE state from a 512-byte memory region.
+fn exec_fxrstor(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let base = get_mem_linear(cpu, inst)?;
+
+    cpu.fpu.fcw = translate_and_read(cpu, base, OperandSize::Word, mmu, memory)? as u16;
+    cpu.fpu.fsw = translate_and_read(cpu, base.wrapping_add(2), OperandSize::Word, mmu, memory)? as u16;
+    let abridged_ftw = translate_and_read(cpu, base.wrapping_add(4), OperandSize::Byte, mmu, memory)? as u8;
+    cpu.fpu.fop = translate_and_read(cpu, base.wrapping_add(6), OperandSize::Word, mmu, memory)? as u16;
+    cpu.fpu.fip = translate_and_read(cpu, base.wrapping_add(8), OperandSize::Qword, mmu, memory)?;
+    cpu.fpu.fdp = translate_and_read(cpu, base.wrapping_add(16), OperandSize::Qword, mmu, memory)?;
+
+    let mxcsr = translate_and_read(cpu, base.wrapping_add(24), OperandSize::Dword, mmu, memory)? as u32;
+    if (mxcsr & !MXCSR_WRITE_MASK) != 0 {
+        return Err(VmError::GeneralProtection(0));
+    }
+    cpu.sse.mxcsr = mxcsr;
+
+    for i in 0..8u64 {
+        let off = base.wrapping_add(32 + i * 16);
+        let lo = translate_and_read(cpu, off, OperandSize::Qword, mmu, memory)?;
+        cpu.fpu.set_st(i as u8, f64::from_bits(lo));
+        if (abridged_ftw & (1 << i)) == 0 {
+            cpu.fpu.set_tag(i as u8, crate::fpu_state::TAG_EMPTY);
+        }
+    }
+
+    for i in 0..16u64 {
+        let off = base.wrapping_add(160 + i * 16);
+        let lo = translate_and_read(cpu, off, OperandSize::Qword, mmu, memory)?;
+        let hi = translate_and_read(cpu, off.wrapping_add(8), OperandSize::Qword, mmu, memory)?;
+        cpu.sse.xmm[i as usize] = Xmm { lo, hi };
+    }
+
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
 }

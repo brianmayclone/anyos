@@ -10,7 +10,9 @@ use crate::instruction::{DecodedInst, Operand, RegOperand};
 use crate::memory::{GuestMemory, Mmu};
 use crate::registers::{GprIndex, SegReg};
 
-use super::{compute_effective_address, read_operand, translate_and_read, write_operand};
+use super::{
+    compute_effective_address, read_operand, translate_and_read, translate_and_write, write_operand,
+};
 
 /// MOV: simple data transfer with no flags modification.
 pub fn exec_mov(
@@ -294,6 +296,69 @@ pub fn exec_cmpxchg(
     Ok(())
 }
 
+/// CMPXCHG8B/CMPXCHG16B: compare and exchange 64/128-bit memory operand.
+///
+/// - 0F C7 /1                => CMPXCHG8B m64
+/// - REX.W + 0F C7 /1 (64b)  => CMPXCHG16B m128
+///
+/// Only ZF is architecturally defined; other flags are left unchanged.
+pub fn exec_cmpxchg8b16b(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    let mem = match &inst.operands[0] {
+        Operand::Memory(mem_op) => mem_op,
+        _ => return Err(VmError::UndefinedOpcode(inst.opcode as u8)),
+    };
+    let linear = compute_effective_address(cpu, mem, inst)?;
+
+    if inst.prefix.rex_w() && matches!(cpu.mode, Mode::LongMode) {
+        // CMPXCHG16B m128
+        let mem_lo = translate_and_read(cpu, linear, OperandSize::Qword, mmu, memory)?;
+        let mem_hi = translate_and_read(cpu, linear.wrapping_add(8), OperandSize::Qword, mmu, memory)?;
+
+        let acc_lo = cpu.regs.read_gpr64(GprIndex::Rax as u8);
+        let acc_hi = cpu.regs.read_gpr64(GprIndex::Rdx as u8);
+
+        if mem_lo == acc_lo && mem_hi == acc_hi {
+            let new_lo = cpu.regs.read_gpr64(GprIndex::Rbx as u8);
+            let new_hi = cpu.regs.read_gpr64(GprIndex::Rcx as u8);
+            translate_and_write(cpu, linear, OperandSize::Qword, new_lo, mmu, memory)?;
+            translate_and_write(cpu, linear.wrapping_add(8), OperandSize::Qword, new_hi, mmu, memory)?;
+            cpu.regs.rflags |= flags::ZF;
+        } else {
+            cpu.regs.write_gpr64(GprIndex::Rax as u8, mem_lo);
+            cpu.regs.write_gpr64(GprIndex::Rdx as u8, mem_hi);
+            cpu.regs.rflags &= !flags::ZF;
+        }
+    } else {
+        // CMPXCHG8B m64
+        let mem_lo = translate_and_read(cpu, linear, OperandSize::Dword, mmu, memory)? as u32;
+        let mem_hi = translate_and_read(cpu, linear.wrapping_add(4), OperandSize::Dword, mmu, memory)? as u32;
+        let mem_u64 = (mem_hi as u64) << 32 | (mem_lo as u64);
+
+        let acc_u64 = ((cpu.regs.read_gpr32(GprIndex::Rdx as u8) as u64) << 32)
+            | (cpu.regs.read_gpr32(GprIndex::Rax as u8) as u64);
+
+        if mem_u64 == acc_u64 {
+            let new_lo = cpu.regs.read_gpr32(GprIndex::Rbx as u8) as u64;
+            let new_hi = cpu.regs.read_gpr32(GprIndex::Rcx as u8) as u64;
+            translate_and_write(cpu, linear, OperandSize::Dword, new_lo, mmu, memory)?;
+            translate_and_write(cpu, linear.wrapping_add(4), OperandSize::Dword, new_hi, mmu, memory)?;
+            cpu.regs.rflags |= flags::ZF;
+        } else {
+            cpu.regs.write_gpr32(GprIndex::Rax as u8, mem_lo);
+            cpu.regs.write_gpr32(GprIndex::Rdx as u8, mem_hi);
+            cpu.regs.rflags &= !flags::ZF;
+        }
+    }
+
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
 /// XADD: exchange and add.
 ///
 /// Swaps dst and src, then stores (original_dst + original_src) in dst.
@@ -316,6 +381,35 @@ pub fn exec_xadd(
 
     let f = flags::flags_add(dst_val, src_val, sum, size);
     flags::update_flags(&mut cpu.regs.rflags, f);
+
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
+/// POPCNT: population count.
+///
+/// Counts bits set in source and writes count to destination.
+pub fn exec_popcnt(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+) -> Result<()> {
+    if inst.rep != crate::instruction::RepPrefix::Rep {
+        return Err(VmError::UndefinedOpcode(inst.opcode as u8));
+    }
+
+    let src = read_operand(cpu, inst, &inst.operands[1], memory, mmu)?;
+    let src = src & inst.operand_size.mask();
+    let count = src.count_ones() as u64;
+    write_operand(cpu, inst, &inst.operands[0], count, memory, mmu)?;
+
+    // POPCNT defines: ZF = (src==0), CF/OF/SF/AF/PF cleared.
+    cpu.regs.rflags &= !(flags::CF | flags::OF | flags::SF | flags::AF | flags::PF | flags::ZF);
+    if src == 0 {
+        cpu.regs.rflags |= flags::ZF;
+    }
+    cpu.regs.rflags |= flags::RFLAGS_FIXED;
 
     cpu.regs.rip += inst.length as u64;
     Ok(())
