@@ -91,6 +91,9 @@ pub struct Cpu {
     pub decode_cache: DecodeCache,
     /// JIT engine for native code compilation and execution (Phase 2+3).
     pub jit_engine: JitEngine,
+    /// Consecutive exception count at the same RIP (for #PF loop detection).
+    consecutive_exception_rip: u64,
+    consecutive_exception_count: u32,
 }
 
 impl Cpu {
@@ -113,6 +116,8 @@ impl Cpu {
             prev_exec_cs: 0,
             decode_cache: DecodeCache::new(),
             jit_engine: JitEngine::new(),
+            consecutive_exception_rip: 0,
+            consecutive_exception_count: 0,
         }
     }
 
@@ -133,6 +138,8 @@ impl Cpu {
         self.prev_exec_cs = 0;
         self.decode_cache.flush();
         self.jit_engine.flush();
+        self.consecutive_exception_rip = 0;
+        self.consecutive_exception_count = 0;
     }
 
     /// Mask RIP to the appropriate width for the current CPU mode.
@@ -554,24 +561,47 @@ impl Cpu {
                     return ExitReason::Breakpoint;
                 }
                 Err(ref e) => {
-                    use crate::memory::MemoryBus;
-                    let b0 = memory.read_u8(phys_addr).unwrap_or(0xFF);
-                    let b1 = memory.read_u8(phys_addr + 1).unwrap_or(0xFF);
-                    let b2 = memory.read_u8(phys_addr + 2).unwrap_or(0xFF);
-                    let b3 = memory.read_u8(phys_addr + 3).unwrap_or(0xFF);
-                    libsyscall::serial_print(format_args!(
-                        "[corevm] exec error at CS:IP={:04X}:{:X} phys={:X} opcode=0x{:04X} bytes=[{:02X} {:02X} {:02X} {:02X}] modrm_reg={} CS.base={:X} prev={:04X}:{:X}: {:?}\n",
-                        self.regs.seg[SegReg::Cs as usize].selector,
-                        self.last_exec_rip,
-                        phys_addr,
-                        inst.opcode,
-                        b0, b1, b2, b3,
-                        inst.modrm_reg(),
-                        self.regs.seg[SegReg::Cs as usize].base,
-                        self.prev_exec_cs,
-                        self.prev_exec_rip,
-                        e
-                    ));
+                    // Detect infinite exception loops (e.g. #PF handler itself faults).
+                    // Track by faulting RIP — the handler runs instructions between
+                    // faults, so we can't rely on strictly consecutive errors.
+                    if self.last_exec_rip == self.consecutive_exception_rip {
+                        self.consecutive_exception_count += 1;
+                    } else {
+                        self.consecutive_exception_rip = self.last_exec_rip;
+                        self.consecutive_exception_count = 1;
+                    }
+                    // Log only the first few occurrences (avoid flooding serial).
+                    if self.consecutive_exception_count <= 3 {
+                        use crate::memory::MemoryBus;
+                        let b0 = memory.read_u8(phys_addr).unwrap_or(0xFF);
+                        let b1 = memory.read_u8(phys_addr + 1).unwrap_or(0xFF);
+                        let b2 = memory.read_u8(phys_addr + 2).unwrap_or(0xFF);
+                        let b3 = memory.read_u8(phys_addr + 3).unwrap_or(0xFF);
+                        libsyscall::serial_print(format_args!(
+                            "[corevm] exec error at CS:IP={:04X}:{:X} phys={:X} opcode=0x{:04X} bytes=[{:02X} {:02X} {:02X} {:02X}] modrm_reg={} CS.base={:X}: {:?}\n",
+                            self.regs.seg[SegReg::Cs as usize].selector,
+                            self.last_exec_rip,
+                            phys_addr,
+                            inst.opcode,
+                            b0, b1, b2, b3,
+                            inst.modrm_reg(),
+                            self.regs.seg[SegReg::Cs as usize].base,
+                            e
+                        ));
+                    }
+                    // Triple-fault: if the same RIP keeps faulting, the guest is stuck.
+                    if self.consecutive_exception_count > 20 {
+                        libsyscall::serial_print(format_args!(
+                            "[corevm] triple fault: exception loop at CS:IP={:04X}:{:X} ({} repeats) CR2={:X} ESP={:X} err={:?}\n",
+                            self.regs.seg[SegReg::Cs as usize].selector,
+                            self.last_exec_rip,
+                            self.consecutive_exception_count,
+                            self.regs.cr2,
+                            self.regs.sp(),
+                            e,
+                        ));
+                        return ExitReason::Exception(VmError::DoubleFault);
+                    }
                     match self.inject_exception_from_error(e, memory, mmu, interrupts) {
                         Err(ref e2) => {
                             libsyscall::serial_print(format_args!(
@@ -981,22 +1011,6 @@ impl Cpu {
         self.update_mode();
         self.regs.rip = entry.offset;
         self.regs.cpl = 0; // Handler runs in ring 0
-
-        {
-            use crate::memory::MemoryBus;
-            let handler_phys = mmu.translate_linear(
-                entry.offset, self.regs.cr3, AccessType::Execute, 0, &*memory
-            ).unwrap_or(0xDEAD);
-            let b: [u8; 8] = core::array::from_fn(|i|
-                memory.read_u8(handler_phys + i as u64).unwrap_or(0xFF)
-            );
-            libsyscall::serial_print(format_args!(
-                "[corevm] deliver_int vec={} off={:X} phys={:X} code=[{:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}] ESP={:X} CR2={:X}\n",
-                vector, entry.offset, handler_phys,
-                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-                self.regs.sp(), self.regs.cr2,
-            ));
-        }
 
         Ok(())
     }
