@@ -46,6 +46,72 @@ struct RomRegion {
 
 /// Diagnostic: count reads to unmapped memory (above RAM, no MMIO handler).
 static UNMAPPED_READ_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Self-modifying code detection: tracks which 4 KiB pages have been written.
+/// The CPU loop drains this to invalidate decode-cache entries for those pages.
+///
+/// Uses a simple ring buffer with deduplication of the last page. Since the
+/// emulator is single-threaded, no locking is needed beyond the atomics.
+pub mod smc {
+    use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+    /// Maximum number of unique dirty pages we track before forcing a full flush.
+    const MAX_DIRTY: usize = 256;
+
+    /// Ring buffer of dirty page-aligned physical addresses.
+    static mut DIRTY_PAGES: [u64; MAX_DIRTY] = [0; MAX_DIRTY];
+    /// Number of dirty entries (saturates at MAX_DIRTY+1 to signal "flush all").
+    static DIRTY_COUNT: AtomicU32 = AtomicU32::new(0);
+    /// Last page marked dirty — used to deduplicate consecutive writes to the
+    /// same page (very common with REP STOS/MOVS).
+    static LAST_DIRTY_PAGE: AtomicU64 = AtomicU64::new(u64::MAX);
+
+    /// Record a write to physical address `phys`. Called from memory write paths.
+    #[inline]
+    pub fn mark_page_dirty(phys: u64) {
+        let page = phys & !0xFFF;
+        // Fast path: skip if same page as last write.
+        if LAST_DIRTY_PAGE.load(Ordering::Relaxed) == page {
+            return;
+        }
+        LAST_DIRTY_PAGE.store(page, Ordering::Relaxed);
+
+        let idx = DIRTY_COUNT.load(Ordering::Relaxed) as usize;
+        if idx < MAX_DIRTY {
+            unsafe { DIRTY_PAGES[idx] = page; }
+            DIRTY_COUNT.store((idx + 1) as u32, Ordering::Relaxed);
+        } else {
+            // Overflow — signal a full flush.
+            DIRTY_COUNT.store((MAX_DIRTY + 1) as u32, Ordering::Relaxed);
+        }
+    }
+
+    /// Result of draining the dirty page buffer.
+    pub enum DrainResult {
+        /// No pages were dirtied.
+        None,
+        /// `n` pages were dirtied (copied into the caller's buffer).
+        Pages(usize),
+        /// Too many pages — caller should flush the entire cache.
+        Overflow,
+    }
+
+    /// Drain dirty pages into `buf`. Returns how many were copied, or Overflow.
+    pub fn drain_to_buf(buf: &mut [u64; MAX_DIRTY]) -> DrainResult {
+        let count = DIRTY_COUNT.swap(0, Ordering::Relaxed) as usize;
+        if count == 0 {
+            return DrainResult::None;
+        }
+        LAST_DIRTY_PAGE.store(u64::MAX, Ordering::Relaxed);
+        if count > MAX_DIRTY {
+            return DrainResult::Overflow;
+        }
+        for i in 0..count {
+            buf[i] = unsafe { DIRTY_PAGES[i] };
+        }
+        DrainResult::Pages(count)
+    }
+}
 /// Diagnostic: count writes to SeaBIOS mmconfig variable at 0xF4DF8.
 static MMCFG_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 use crate::registers::{
@@ -393,6 +459,7 @@ impl MemoryBus for GuestMemory {
         if self.is_rom_addr(addr) {
             return Ok(());
         }
+        smc::mark_page_dirty(addr);
         self.ram.write_u8(addr, val)
     }
 
@@ -403,6 +470,7 @@ impl MemoryBus for GuestMemory {
         if self.is_rom_addr(addr) {
             return Ok(());
         }
+        smc::mark_page_dirty(addr);
         self.ram.write_u16(addr, val)
     }
 
@@ -413,6 +481,7 @@ impl MemoryBus for GuestMemory {
         if self.is_rom_addr(addr) {
             return Ok(());
         }
+        smc::mark_page_dirty(addr);
         self.ram.write_u32(addr, val)
     }
 
@@ -423,6 +492,7 @@ impl MemoryBus for GuestMemory {
         if self.is_rom_addr(addr) {
             return Ok(());
         }
+        smc::mark_page_dirty(addr);
         self.ram.write_u64(addr, val)
     }
 

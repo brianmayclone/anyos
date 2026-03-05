@@ -87,10 +87,6 @@ pub struct Cpu {
     pub prev_exec_rip: u64,
     /// CS selector of the instruction before the current one.
     pub prev_exec_cs: u16,
-    /// Counter for CS=0x0010 transition traces (fire up to N times).
-    pub cs_0010_trace_count: u8,
-    /// Last CS seen in the run loop (for detecting transitions).
-    pub last_seen_cs: u16,
     /// Decode cache for pre-decoded basic blocks (JIT Phase 1).
     pub decode_cache: DecodeCache,
     /// JIT engine for native code compilation and execution (Phase 2+3).
@@ -115,8 +111,6 @@ impl Cpu {
             last_fetch_addr: 0,
             prev_exec_rip: 0,
             prev_exec_cs: 0,
-            cs_0010_trace_count: 0,
-            last_seen_cs: 0,
             decode_cache: DecodeCache::new(),
             jit_engine: JitEngine::new(),
         }
@@ -137,8 +131,6 @@ impl Cpu {
         self.last_fetch_addr = 0;
         self.prev_exec_rip = 0;
         self.prev_exec_cs = 0;
-        self.cs_0010_trace_count = 0;
-        self.last_seen_cs = 0;
         self.decode_cache.flush();
         self.jit_engine.flush();
     }
@@ -423,63 +415,21 @@ impl Cpu {
             self.last_exec_cs = self.regs.seg[SegReg::Cs as usize].selector;
             self.last_fetch_addr = phys_addr;
 
-            // Trace CS→0x0010 transitions — early ones (up to 5) plus any after IC 15M
+            // ── Self-modifying code: invalidate decode cache for written pages ──
             {
-                let cur_cs = self.regs.seg[SegReg::Cs as usize].selector;
-                let is_transition = cur_cs == 0x0010 && self.last_seen_cs != 0x0010;
-                let should_trace = is_transition && (self.cs_0010_trace_count < 5 || self.instruction_count > 15_000_000);
-                if should_trace {
-                    self.cs_0010_trace_count += 1;
-                    use crate::memory::MemoryBus;
-                    let mut entry_bytes = [0u8; 16];
-                    for i in 0..16u64 {
-                        entry_bytes[i as usize] = memory.read_u8(0x100000 + i).unwrap_or(0xFF);
+                let mut pages_buf = [0u64; 256];
+                let smc_result = crate::memory::smc::drain_to_buf(&mut pages_buf);
+                match smc_result {
+                    crate::memory::smc::DrainResult::None => {}
+                    crate::memory::smc::DrainResult::Pages(n) => {
+                        for i in 0..n {
+                            self.decode_cache.invalidate_page(pages_buf[i]);
+                        }
                     }
-                    // Also dump bytes at the actual IP target
-                    let mut ip_bytes = [0u8; 16];
-                    for i in 0..16u64 {
-                        ip_bytes[i as usize] = memory.read_u8(self.regs.rip.wrapping_add(i)).unwrap_or(0xFF);
+                    crate::memory::smc::DrainResult::Overflow => {
+                        self.decode_cache.flush();
                     }
-                    libsyscall::serial_print(format_args!(
-                        "[CS->0010 #{}] IP=0x{:X} CR0=0x{:X} CR3=0x{:X} ESP={:08X} ic={} from={:04X}:{:X}\n",
-                        self.cs_0010_trace_count, self.regs.rip, self.regs.cr0, self.regs.cr3,
-                        self.regs.read_gpr64(4) as u32, self.instruction_count,
-                        self.last_seen_cs, self.prev_exec_rip,
-                    ));
-                    libsyscall::serial_print(format_args!(
-                        "[CS->0010 #{}] GDTR=0x{:X}/0x{:X} code@IP: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}\n",
-                        self.cs_0010_trace_count,
-                        self.regs.gdtr.base, self.regs.gdtr.limit,
-                        ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3],
-                        ip_bytes[4], ip_bytes[5], ip_bytes[6], ip_bytes[7],
-                    ));
-                    libsyscall::serial_print(format_args!(
-                        "[CS->0010 #{}] kern@100000: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} EAX={:08X} EBX={:08X} EBP={:08X}\n",
-                        self.cs_0010_trace_count,
-                        entry_bytes[0], entry_bytes[1], entry_bytes[2], entry_bytes[3],
-                        entry_bytes[4], entry_bytes[5], entry_bytes[6], entry_bytes[7],
-                        self.regs.read_gpr64(0) as u32,  // EAX
-                        self.regs.read_gpr64(3) as u32,  // EBX
-                        self.regs.read_gpr64(5) as u32,  // EBP
-                    ));
-                    // Dump GDT entry for selector 0x0010 (index 2) and CS.base
-                    let gdt_entry_addr = self.regs.gdtr.base + 0x10;
-                    let mut gdt_bytes = [0u8; 8];
-                    for i in 0..8u64 {
-                        gdt_bytes[i as usize] = memory.read_u8(gdt_entry_addr + i).unwrap_or(0xFF);
-                    }
-                    let cs_base = self.regs.seg[SegReg::Cs as usize].base;
-                    let cs_limit = self.regs.seg[SegReg::Cs as usize].limit;
-                    libsyscall::serial_print(format_args!(
-                        "[CS->0010 #{}] CS.base=0x{:X} CS.limit=0x{:X} GDT@{:X}: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} phys=0x{:X}\n",
-                        self.cs_0010_trace_count,
-                        cs_base, cs_limit, gdt_entry_addr,
-                        gdt_bytes[0], gdt_bytes[1], gdt_bytes[2], gdt_bytes[3],
-                        gdt_bytes[4], gdt_bytes[5], gdt_bytes[6], gdt_bytes[7],
-                        cs_base.wrapping_add(self.regs.rip),
-                    ));
                 }
-                self.last_seen_cs = cur_cs;
             }
 
             // ── Decode Cache path ──────────────────────────────────
