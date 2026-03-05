@@ -200,12 +200,11 @@ impl Translator {
     /// Emit the block prologue.
     ///
     /// Stack layout after prologue (relative to RBP):
-    ///   On entry: RSP is 8-misaligned (return address from CALL into JIT block).
-    ///   PUSH Rbx, R12, R13, R14, R15, Rbp  → 6 × 8 = 48 bytes → 16-aligned again.
-    ///   MOV Rbp, Rsp                         → frame pointer set.
-    ///   PUSH R8     (InterruptController*)   → [RBP - 8],  RSP 8-misaligned.
-    ///   SUB Rsp, 8  (alignment padding)      → [RBP - 16], RSP 16-aligned.
-    ///   CALL jit_get_gpr_ptr                 → needs 16-aligned RSP ✓.
+    ///   On entry: RSP % 16 == 8.
+    ///   PUSH Rbx, R12, R13, R14, R15, Rbp  → 6 × 8 = 48 bytes, RSP % 16 still 8.
+    ///   MOV Rbp, Rsp                        → frame pointer set.
+    ///   PUSH R8     (InterruptController*)  → [RBP - 8], RSP % 16 == 0.
+    ///   CALL jit_get_gpr_ptr                → caller-side alignment valid.
     ///
     /// emit_restore_and_ret uses `MOV Rsp, Rbp` to unwind everything.
     fn emit_prologue(&self, emit: &mut Emitter) {
@@ -219,10 +218,7 @@ impl Translator {
         emit.mov_rr(OpSize::S64, Reg::Rbp, Reg::Rsp);
 
         // Save InterruptController* (5th arg = R8) at [RBP - 8].
-        emit.push(Reg::R8); // RSP now 8-misaligned
-
-        // Align RSP to 16 bytes before any CALL.
-        emit.sub_ri(OpSize::S64, Reg::Rsp, 8); // RSP now 16-aligned
+        emit.push(Reg::R8);
 
         // Copy context pointers to callee-saved registers.
         emit.mov_rr(OpSize::S64, CPU_PTR, Reg::Rdi);  // RBX = cpu

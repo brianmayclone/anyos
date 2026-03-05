@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use libcorevm::{
     corevm_create_ex, corevm_debug_take_output, corevm_destroy, corevm_get_last_error,
     corevm_get_last_error_rip, corevm_get_mode, corevm_ide_attach_slave, corevm_load_rom,
+    corevm_jit_enable,
     corevm_pic_raise_irq, corevm_pit_advance, corevm_ps2_key_press, corevm_ps2_key_release,
     corevm_run, corevm_serial_take_output, corevm_setup_ide, corevm_setup_pci_bus,
     corevm_setup_standard_devices, corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
@@ -215,6 +216,7 @@ struct Config {
     cores: u32,
     batch: u64,
     max_seconds: u64,
+    jit: bool,
 }
 
 fn default_bios_path() -> PathBuf {
@@ -247,6 +249,7 @@ fn parse_args() -> Result<Config, String> {
         cores: 1,
         batch: 50_000,
         max_seconds: 300,
+        jit: false,
     };
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -288,6 +291,7 @@ fn parse_args() -> Result<Config, String> {
                     .map_err(|_| "invalid --max-seconds")?
                     .max(1);
             }
+            "--jit" => cfg.jit = true,
             "--help" | "-h" => return Err(String::new()),
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -299,7 +303,7 @@ fn parse_args() -> Result<Config, String> {
 }
 
 fn usage(program: &str) {
-    eprintln!("Usage: {program} --iso <path> [--bios <path>] [--bios-base <addr>] [--ram-mb <mb>] [--cores <n>] [--batch <n>] [--max-seconds <n>]");
+    eprintln!("Usage: {program} --iso <path> [--bios <path>] [--bios-base <addr>] [--ram-mb <mb>] [--cores <n>] [--batch <n>] [--max-seconds <n>] [--jit]");
 }
 
 fn ensure_exists(path: &Path, what: &str) -> Result<(), String> {
@@ -587,6 +591,9 @@ fn main() {
     corevm_setup_pci_bus(vm.0);
     corevm_setup_ide(vm.0);
     corevm_ide_attach_slave(vm.0, iso.as_ptr(), iso.len() as u32);
+    if cfg.jit {
+        corevm_jit_enable(vm.0, 1);
+    }
 
     unsafe {
         signal(SIGINT, on_sigint as *const () as usize);
