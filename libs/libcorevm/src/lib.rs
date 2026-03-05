@@ -810,6 +810,25 @@ pub extern "C" fn corevm_read_phys_u32(handle: u64, addr: u64) -> u32 {
     vm.engine.memory.read_u32(addr).unwrap_or(0)
 }
 
+/// Read one byte from a guest linear address using current paging state.
+///
+/// Returns 0 on translation/read failure.
+#[no_mangle]
+pub extern "C" fn corevm_read_linear_u8(handle: u64, linear: u64) -> u8 {
+    let vm = unsafe { vm_from_handle(handle) };
+    use memory::{AccessType, MemoryBus};
+    let cpl = vm.engine.cpu.regs.cpl;
+    let cr3 = vm.engine.cpu.regs.cr3;
+    match vm
+        .engine
+        .mmu
+        .translate_linear(linear, cr3, AccessType::Read, cpl, &vm.engine.memory)
+    {
+        Ok(phys) => vm.engine.memory.read_u8(phys).unwrap_or(0),
+        Err(_) => 0,
+    }
+}
+
 /// Write a single byte to guest physical memory.
 #[no_mangle]
 pub extern "C" fn corevm_write_phys_u8(handle: u64, addr: u64, val: u8) {
@@ -1477,6 +1496,30 @@ pub extern "C" fn corevm_pic_get_interrupt(handle: u64) -> i32 {
         Some(vec) => vec as i32,
         None => -1,
     }
+}
+
+/// Return PIC state packed into a u64 for diagnostics.
+///
+/// Layout:
+/// - bits 0..7:   master IRR
+/// - bits 8..15:  master ISR
+/// - bits 16..23: master IMR
+/// - bits 24..31: slave IRR
+/// - bits 32..39: slave ISR
+/// - bits 40..47: slave IMR
+#[no_mangle]
+pub extern "C" fn corevm_pic_diag_state(handle: u64) -> u64 {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.pic_ptr.is_null() {
+        return 0;
+    }
+    let pic = unsafe { &*vm.pic_ptr };
+    (pic.master.irr as u64)
+        | ((pic.master.isr as u64) << 8)
+        | ((pic.master.imr as u64) << 16)
+        | ((pic.slave.irr as u64) << 24)
+        | ((pic.slave.isr as u64) << 32)
+        | ((pic.slave.imr as u64) << 40)
 }
 
 // ════════════════════════════════════════════════════════════════════════

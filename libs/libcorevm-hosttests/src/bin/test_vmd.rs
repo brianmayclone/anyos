@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use libcorevm::{
     corevm_create_ex, corevm_destroy, corevm_get_instruction_count, corevm_get_last_error,
     corevm_get_gpr, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rflags, corevm_get_rip,
-    corevm_get_segment_selector, corevm_read_phys_u8,
+    corevm_get_segment_selector, corevm_pic_diag_state, corevm_read_linear_u8, corevm_read_phys_u8,
     corevm_ide_attach_slave, corevm_load_rom, corevm_ps2_key_press, corevm_ps2_key_release,
     corevm_pic_raise_irq, corevm_pit_advance, corevm_run, corevm_serial_take_output,
     corevm_setup_ide, corevm_setup_pci_bus, corevm_setup_standard_devices, corevm_debug_take_output,
@@ -230,6 +230,13 @@ fn mode_name(mode: u32) -> &'static str {
 
 fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
     let rflags = corevm_get_rflags(handle);
+    let pic = corevm_pic_diag_state(handle);
+    let m_irr = (pic & 0xFF) as u8;
+    let m_isr = ((pic >> 8) & 0xFF) as u8;
+    let m_imr = ((pic >> 16) & 0xFF) as u8;
+    let s_irr = ((pic >> 24) & 0xFF) as u8;
+    let s_isr = ((pic >> 32) & 0xFF) as u8;
+    let s_imr = ((pic >> 40) & 0xFF) as u8;
     let ax = corevm_get_gpr(handle, 0) as u32;
     let cx = corevm_get_gpr(handle, 1) as u32;
     let dx = corevm_get_gpr(handle, 2) as u32;
@@ -239,21 +246,25 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
     let si = corevm_get_gpr(handle, 6) as u32;
     let di = corevm_get_gpr(handle, 7) as u32;
     let ip16 = (rip as u16) as u64;
-    let phys = if mode == 0 {
+    let probe_addr = if mode == 0 {
         ((cs as u64) << 4).wrapping_add(ip16)
     } else {
         rip
     };
     let mut bytes = [0u8; 8];
     for (i, b) in bytes.iter_mut().enumerate() {
-        *b = corevm_read_phys_u8(handle, phys.wrapping_add(i as u64));
+        *b = if mode == 0 {
+            corevm_read_phys_u8(handle, probe_addr.wrapping_add(i as u64))
+        } else {
+            corevm_read_linear_u8(handle, probe_addr.wrapping_add(i as u64))
+        };
     }
     eprintln!(
-        "[test-vmd] cpu probe: mode={} cs:ip={:04X}:{:04X} phys={:08X} AX={:04X} BX={:04X} CX={:04X} DX={:04X} SI={:04X} DI={:04X} BP={:04X} SP={:04X} FLAGS={:04X} IF={} ZF={} CF={} bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+        "[test-vmd] cpu probe: mode={} cs:ip={:04X}:{:04X} addr={:08X} AX={:04X} BX={:04X} CX={:04X} DX={:04X} SI={:04X} DI={:04X} BP={:04X} SP={:04X} FLAGS={:04X} IF={} ZF={} CF={} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
         mode_name(mode),
         cs,
         ip16 as u32,
-        phys as u32,
+        probe_addr as u32,
         ax as u16,
         bx as u16,
         cx as u16,
@@ -266,6 +277,12 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         if (rflags & 0x0200) != 0 { 1 } else { 0 },
         if (rflags & 0x0040) != 0 { 1 } else { 0 },
         if (rflags & 0x0001) != 0 { 1 } else { 0 },
+        m_irr,
+        m_isr,
+        m_imr,
+        s_irr,
+        s_isr,
+        s_imr,
         bytes[0],
         bytes[1],
         bytes[2],
