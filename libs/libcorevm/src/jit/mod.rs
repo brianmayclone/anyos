@@ -65,6 +65,9 @@ pub struct JitEngine {
     translator: Translator,
     /// Map from block key to compiled code location.
     compiled: alloc::collections::BTreeMap<BlockKey, CompiledEntry>,
+    /// Blocks that currently produce no native instructions.
+    /// These are better executed directly by the interpreter path.
+    no_native: alloc::collections::BTreeSet<BlockKey>,
     /// Whether the JIT engine is enabled.
     enabled: bool,
     /// Total number of blocks compiled.
@@ -78,6 +81,7 @@ impl JitEngine {
             buffer: JitBuffer::new(),
             translator: Translator::new(),
             compiled: alloc::collections::BTreeMap::new(),
+            no_native: alloc::collections::BTreeSet::new(),
             enabled: false,
             blocks_compiled: 0,
         }
@@ -102,6 +106,11 @@ impl JitEngine {
         })
     }
 
+    /// Whether this block key should skip JIT compilation/execution.
+    pub fn should_skip_compile(&self, key: &BlockKey) -> bool {
+        self.no_native.contains(key)
+    }
+
     /// Compile a decoded basic block and store it in the code buffer.
     ///
     /// Returns the code offset and guest instruction count on success,
@@ -112,6 +121,11 @@ impl JitEngine {
         block: &crate::jit::block::BasicBlock,
     ) -> Option<(usize, u64)> {
         let compiled = self.translator.translate_block(block, key.phys_addr, key.mode);
+        if compiled.native_instruction_count == 0 {
+            self.no_native.insert(key);
+            return None;
+        }
+        self.no_native.remove(&key);
 
         let code_offset = self.buffer.emit(&compiled.code)?;
 
@@ -151,6 +165,7 @@ impl JitEngine {
     /// Flush all compiled blocks (e.g., on CR3 change or mode switch).
     pub fn flush(&mut self) {
         self.compiled.clear();
+        self.no_native.clear();
         self.buffer.reset();
     }
 
@@ -166,6 +181,9 @@ impl JitEngine {
         let page_base = page_phys & !0xFFF;
         let page_end  = page_base + 0x1000;
         self.compiled.retain(|key, _| {
+            key.phys_addr < page_base || key.phys_addr >= page_end
+        });
+        self.no_native.retain(|key| {
             key.phys_addr < page_base || key.phys_addr >= page_end
         });
     }

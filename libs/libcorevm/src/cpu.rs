@@ -862,10 +862,25 @@ impl Cpu {
     ) -> BlockExitReason {
         use crate::jit::helpers::{JIT_OK, JIT_EXIT_BLOCK};
 
+        // Current JIT native paths are only validated for long mode.
+        // Keep interpreter semantics for real/protected mode boot flows.
+        if key.mode != CpuMode::Long64 {
+            return self.execute_cached_block(
+                instructions, key.phys_addr,
+                memory, mmu, io, interrupts,
+            );
+        }
+
         // Look up or compile the block.
         let (code_offset, inst_count) = match self.jit_engine.lookup_compiled(key) {
             Some(entry) => entry,
             None => {
+                if self.jit_engine.should_skip_compile(key) {
+                    return self.execute_cached_block(
+                        instructions, key.phys_addr,
+                        memory, mmu, io, interrupts,
+                    );
+                }
                 // Build a BasicBlock wrapper for the translator.
                 let block = crate::jit::block::BasicBlock {
                     instructions: instructions.into(),
@@ -928,8 +943,9 @@ impl Cpu {
                 // The block signaled an early exit (HLT, page fault, or interpreter
                 // fallback that returned JIT_EXIT_BLOCK). instruction_count was
                 // already updated by jit_interpret_one for the fallback instruction.
-                // Add the remaining native instructions (conservatively inst_count).
-                self.instruction_count += inst_count;
+                // Do not add full block size here: many exits happen after only a
+                // small prefix ran natively, and overcounting distorts timer/IRQ
+                // behavior in guest firmware and bootloaders.
                 BlockExitReason::Continue
             }
             _ => {

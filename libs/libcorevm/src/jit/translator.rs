@@ -130,6 +130,8 @@ pub struct CompiledBlock {
     pub guest_instruction_count: u64,
     /// Physical address of the block entry.
     pub entry_phys_addr: u64,
+    /// Number of guest instructions translated natively in this block.
+    pub native_instruction_count: u64,
 }
 
 /// Translates decoded basic blocks into native x86-64 machine code.
@@ -166,6 +168,7 @@ impl Translator {
         self.current_mode = mode;
         let mut emit = Emitter::new();
         let inst_count = block.instructions.len() as u64;
+        let mut native_in_block = 0u64;
         let mut state = BlockState { flags_dirty: false };
 
         self.emit_prologue(&mut emit);
@@ -175,10 +178,11 @@ impl Translator {
                 // Must flush lazy flags before interpreter fallback
                 // since the interpreter reads RFLAGS from the register file.
                 self.flush_lazy_flags(&mut emit, &mut state);
-                self.emit_interpreter_fallback(&mut emit);
+                self.emit_interpreter_fallback(&mut emit, inst.length);
                 self.fallback_count += 1;
             } else {
                 self.native_count += 1;
+                native_in_block += 1;
             }
         }
 
@@ -190,6 +194,7 @@ impl Translator {
             code: emit.finalize(),
             guest_instruction_count: inst_count,
             entry_phys_addr: entry_phys,
+            native_instruction_count: native_in_block,
         }
     }
 
@@ -362,13 +367,13 @@ impl Translator {
             0xC1 => self.try_shift_ri(emit, inst, state),
 
             // ── RET near ──
-            0xC3 => self.try_ret_near(emit, inst, state),
+            0xC3 => false,
 
             // ── Shift Group 2: r/m, 1 (0xD1) ──
             0xD1 => self.try_shift_r1(emit, inst, state),
 
             // ── CALL rel32 ──
-            0xE8 => self.try_call_rel(emit, inst, state),
+            0xE8 => false,
 
             // ── JMP rel32 ──
             0xE9 => {
@@ -393,10 +398,10 @@ impl Translator {
             0xFE | 0xFF => self.try_group5(emit, inst, state),
 
             // ── PUSH r ──
-            0x50..=0x57 => self.try_push_r(emit, inst, state),
+            0x50..=0x57 => false,
 
             // ── POP r ──
-            0x58..=0x5F => self.try_pop_r(emit, inst, state),
+            0x58..=0x5F => false,
 
             _ => false,
         }
@@ -483,34 +488,7 @@ impl Translator {
             self.emit_alu_rr(emit, inst, alu_op, dst_idx, src_idx, size, state);
             true
         } else {
-            // r ← r OP [mem]: read memory, ALU with register
-            let mem_op = match &inst.operands[1] {
-                Operand::Memory(m) => m,
-                _ => return false,
-            };
-            // Flush lazy flags before helper call (clobbers RFLAGS)
-            self.flush_lazy_flags(emit, state);
-            let dst_idx = inst.modrm_reg();
-
-            // Compute linear address → call jit_mem_read → ALU
-            self.emit_compute_linear(emit, mem_op, inst);
-            self.emit_call_mem_read(emit, size);
-            // RAX = value from memory
-
-            // Load dst reg, perform ALU
-            self.emit_load_gpr(emit, TEMP1, dst_idx, size);
-            emit_native_alu_rr(emit, alu_op, size, TEMP1, Reg::Rax);
-
-            // Capture flags
-            self.emit_capture_flags(emit, state);
-
-            // Store result (CMP doesn't write back)
-            if alu_op != AluOp::Cmp {
-                self.emit_store_gpr(emit, dst_idx, TEMP1, size);
-            }
-
-            self.emit_advance_rip(emit, inst.length);
-            true
+            false
         }
     }
 
@@ -688,42 +666,7 @@ impl Translator {
             self.emit_advance_rip(emit, inst.length);
             true
         } else {
-            // [mem] ← reg: compute address, call jit_mem_write
-            let mem_op = match &inst.operands[0] {
-                Operand::Memory(m) => m,
-                _ => return false,
-            };
-            self.flush_lazy_flags(emit, state);
-
-            let src_idx = inst.modrm_reg();
-            self.emit_load_gpr(emit, TEMP1, src_idx, size);
-            // Save value to stack temporarily (jit_mem_write needs it as arg 6)
-            emit.push(TEMP1);
-
-            self.emit_compute_linear(emit, mem_op, inst);
-            // RAX = linear address
-
-            // Call jit_mem_write(cpu, memory, mmu, linear, size, value)
-            emit.mov_rr(OpSize::S64, Reg::Rdi, CPU_PTR);
-            emit.mov_rr(OpSize::S64, Reg::Rsi, MEM_PTR);
-            emit.mov_rr(OpSize::S64, Reg::Rdx, MMU_PTR);
-            emit.mov_rr(OpSize::S64, Reg::Rcx, Reg::Rax);  // linear
-            emit.mov_ri32(Reg::R8, opsize_bytes(size) as u32); // size
-            emit.pop(TEMP1); // restore value → R9 (6th SysV arg)
-            let helper = helpers::jit_mem_write as *const () as usize as u64;
-            emit.call_abs(helper);
-
-            // Check result (JIT_EXIT_BLOCK = page fault)
-            let ok_label = emit.new_label();
-            emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
-            emit.jcc_label(Cc::Ne, ok_label);
-            // Return JIT_EXIT_BLOCK
-            emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-            self.emit_restore_and_ret(emit);
-            emit.bind_label(ok_label);
-
-            self.emit_advance_rip(emit, inst.length);
-            true
+            false
         }
     }
 
@@ -744,37 +687,7 @@ impl Translator {
             self.emit_advance_rip(emit, inst.length);
             true
         } else {
-            // reg ← [mem]: compute address, call jit_mem_read
-            let mem_op = match &inst.operands[1] {
-                Operand::Memory(m) => m,
-                _ => return false,
-            };
-            self.flush_lazy_flags(emit, state);
-
-            let dst_idx = inst.modrm_reg();
-            self.emit_compute_linear(emit, mem_op, inst);
-            self.emit_call_mem_read(emit, size);
-            // RAX = value from memory
-
-            // Store to guest register
-            match size {
-                OpSize::S32 => {
-                    // 32-bit: zero-extend to 64 (RAX already zero-extended)
-                    emit.mov_mr(OpSize::S64, GPR_BASE, dst_idx as i32 * 8, Reg::Rax);
-                }
-                OpSize::S64 => {
-                    emit.mov_mr(OpSize::S64, GPR_BASE, dst_idx as i32 * 8, Reg::Rax);
-                }
-                OpSize::S16 => {
-                    emit.mov_mr(OpSize::S16, GPR_BASE, dst_idx as i32 * 8, Reg::Rax);
-                }
-                OpSize::S8 => {
-                    emit.mov_mr(OpSize::S8, GPR_BASE, dst_idx as i32 * 8, Reg::Rax);
-                }
-            }
-
-            self.emit_advance_rip(emit, inst.length);
-            true
+            false
         }
     }
 
@@ -1012,6 +925,7 @@ impl Translator {
         // RSP (gpr[4]) -= push_size
         emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, 4 * 8); // guest RSP
         emit.sub_ri(OpSize::S64, Reg::Rax, push_size as i32);
+        emit_mask_sp(emit, self.current_mode, Reg::Rax);
         emit.mov_mr(OpSize::S64, GPR_BASE, 4 * 8, Reg::Rax); // store new RSP
 
         // Compute linear address: SS.base + RSP
@@ -1059,6 +973,7 @@ impl Translator {
 
         // Compute linear address: SS.base + RSP
         emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, 4 * 8); // guest RSP
+        emit_mask_sp(emit, self.current_mode, Reg::Rax);
         let ss_base_off = SEG_ARRAY_OFFSET + SegReg::Ss as i32 * SEG_DESC_SIZE + SEG_BASE_IN_DESC;
         emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, ss_base_off);
         emit.add_rr(OpSize::S64, Reg::Rax, TEMP1); // RAX = linear addr
@@ -1078,6 +993,7 @@ impl Translator {
         // RSP += pop_size
         emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, 4 * 8);
         emit.add_ri(OpSize::S64, TEMP1, pop_size as i32);
+        emit_mask_sp(emit, self.current_mode, TEMP1);
         emit.mov_mr(OpSize::S64, GPR_BASE, 4 * 8, TEMP1);
 
         self.emit_advance_rip(emit, inst.length);
@@ -1116,6 +1032,7 @@ impl Translator {
 
         emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, 4 * 8); // guest RSP
         emit.sub_ri(OpSize::S64, Reg::Rax, push_size as i32);
+        emit_mask_sp(emit, self.current_mode, Reg::Rax);
         emit.mov_mr(OpSize::S64, GPR_BASE, 4 * 8, Reg::Rax); // store new RSP
 
         // Linear = SS.base + RSP
@@ -1162,6 +1079,7 @@ impl Translator {
 
         // Read return address from [SS:RSP]
         emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, 4 * 8); // guest RSP
+        emit_mask_sp(emit, self.current_mode, Reg::Rax);
         let ss_base_off = SEG_ARRAY_OFFSET + SegReg::Ss as i32 * SEG_DESC_SIZE + SEG_BASE_IN_DESC;
         emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, ss_base_off);
         emit.add_rr(OpSize::S64, Reg::Rax, TEMP1); // RAX = linear
@@ -1180,6 +1098,7 @@ impl Translator {
         // RSP += pop_size
         emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, 4 * 8);
         emit.add_ri(OpSize::S64, TEMP1, pop_size as i32);
+        emit_mask_sp(emit, self.current_mode, TEMP1);
         emit.mov_mr(OpSize::S64, GPR_BASE, 4 * 8, TEMP1);
 
         true
@@ -1245,7 +1164,16 @@ impl Translator {
     // ════════════════════════════════════════════════════════════════════
 
     /// Emit a call to `jit_interpret_one` for one guest instruction.
-    fn emit_interpreter_fallback(&self, emit: &mut Emitter) {
+    fn emit_interpreter_fallback(&self, emit: &mut Emitter, inst_len: u8) {
+        // expected_next = mask_ip(rip + inst_len)
+        emit.mov_rm(OpSize::S64, TEMP2, GPR_BASE, RIP_OFFSET);
+        emit.add_ri(OpSize::S64, TEMP2, inst_len as i32);
+        emit_mask_ip(emit, self.current_mode, TEMP2);
+        // Preserve expected_next across helper call.
+        emit.push(TEMP2);
+        // Keep SysV stack alignment before call (16-byte aligned).
+        emit.sub_ri(OpSize::S64, Reg::Rsp, 8);
+
         emit.mov_rr(OpSize::S64, Reg::Rdi, CPU_PTR);
         emit.mov_rr(OpSize::S64, Reg::Rsi, MEM_PTR);
         emit.mov_rr(OpSize::S64, Reg::Rdx, MMU_PTR);
@@ -1255,9 +1183,23 @@ impl Translator {
         let helper_addr = helpers::jit_interpret_one as *const () as usize as u64;
         emit.call_abs(helper_addr);
 
+        emit.add_ri(OpSize::S64, Reg::Rsp, 8);
+        emit.pop(TEMP2);
+
+        // If helper requested exit, propagate exit.
+        let check_rip = emit.new_label();
+        emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_OK as i32);
+        emit.jcc_label(Cc::E, check_rip);
+        emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
+        self.emit_restore_and_ret(emit);
+
+        // Continue only if RIP advanced linearly to expected_next.
+        emit.bind_label(check_rip);
+        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RIP_OFFSET);
+        emit.cmp_rr(OpSize::S64, Reg::Rax, TEMP2);
         let continue_label = emit.new_label();
-        emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
-        emit.jcc_label(Cc::Ne, continue_label);
+        emit.jcc_label(Cc::E, continue_label);
+        emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
         self.emit_restore_and_ret(emit);
         emit.bind_label(continue_label);
     }
@@ -1381,17 +1323,29 @@ impl Translator {
     // ════════════════════════════════════════════════════════════════════
 
     /// Load a guest GPR into a host temporary register.
-    fn emit_load_gpr(&self, emit: &mut Emitter, host_dst: Reg, guest_idx: u8, _size: OpSize) {
+    fn emit_load_gpr(&self, emit: &mut Emitter, host_dst: Reg, guest_idx: u8, size: OpSize) {
         let offset = GPR_OFFSET + guest_idx as i32 * 8;
-        emit.mov_rm(OpSize::S64, host_dst, GPR_BASE, offset);
+        match size {
+            // 32-bit register reads in 64-bit host code should ignore upper
+            // bits; loading as S32 gives a clean zero-extended host value.
+            OpSize::S32 => emit.mov_rm(OpSize::S32, host_dst, GPR_BASE, offset),
+            OpSize::S64 | OpSize::S16 | OpSize::S8 => {
+                emit.mov_rm(OpSize::S64, host_dst, GPR_BASE, offset);
+            }
+        }
     }
 
     /// Store a host temporary register back to a guest GPR.
     fn emit_store_gpr(&self, emit: &mut Emitter, guest_idx: u8, host_src: Reg, size: OpSize) {
         let offset = GPR_OFFSET + guest_idx as i32 * 8;
         match size {
-            OpSize::S64 | OpSize::S32 => {
-                // 32-bit zero-extends the upper 32 bits.
+            OpSize::S64 => {
+                emit.mov_mr(OpSize::S64, GPR_BASE, offset, host_src);
+            }
+            OpSize::S32 => {
+                // x86 writes to r32 must zero-extend into the architectural
+                // 64-bit register. Canonicalize upper bits before storing.
+                emit.mov_rr(OpSize::S32, host_src, host_src);
                 emit.mov_mr(OpSize::S64, GPR_BASE, offset, host_src);
             }
             OpSize::S16 => {
@@ -1451,6 +1405,35 @@ fn emit_mask_rip(emit: &mut Emitter, mode: CpuMode) {
         CpuMode::Long64 => {
             // Long mode: full 64-bit RIP, no masking needed.
         }
+    }
+}
+
+/// Emit instruction-pointer masking into an arbitrary register.
+fn emit_mask_ip(emit: &mut Emitter, mode: CpuMode, reg: Reg) {
+    match mode {
+        CpuMode::Real16 => {
+            emit.and_ri(OpSize::S64, reg, 0xFFFF);
+        }
+        CpuMode::Protected32 => {
+            emit.mov_rr(OpSize::S32, reg, reg);
+        }
+        CpuMode::Long64 => {}
+    }
+}
+
+/// Emit stack-pointer masking for the current mode.
+///
+/// Real mode uses 16-bit SP wrapping semantics. Protected mode here uses
+/// 32-bit ESP semantics. Long mode keeps full 64-bit RSP.
+fn emit_mask_sp(emit: &mut Emitter, mode: CpuMode, reg: Reg) {
+    match mode {
+        CpuMode::Real16 => {
+            emit.and_ri(OpSize::S64, reg, 0xFFFF);
+        }
+        CpuMode::Protected32 => {
+            emit.mov_rr(OpSize::S32, reg, reg);
+        }
+        CpuMode::Long64 => {}
     }
 }
 
