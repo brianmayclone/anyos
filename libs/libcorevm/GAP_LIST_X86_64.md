@@ -13,6 +13,8 @@ Stand: 2026-03-05
 - Erste `0F 38`/`0F 3A`-Basis: `CRC32`, `PSHUFB`, `PALIGNR`
 - `SYSENTER`/`SYSEXIT` (inkl. 32-bit und 64-bit Returnpfad)
 - P1-Teile: `MOVBE`, `POPCNT`
+- Protected-Interrupt/IRET-Framebreite für 16-bit Gates korrigiert
+- SMP-Grundlagen: konfigurierbare vCPU-Anzahl (`corevm_create_ex`), CPUID-Topologie-Reporting (Leaf `1`/`0x0B`)
 
 ## P0 (kritisch für stabile Linux/Windows-Bootpfade)
 
@@ -30,6 +32,7 @@ Stand: 2026-03-05
 4. Exception-/Privilege-Semantik härten
 - `#GP/#UD/#PF`-Bedingungen näher an SDM
 - Ring-Checks für systemnahe Instruktionen und I/O-Pfade
+- Task-Gate-/Task-Switch-Pfade für Exceptions (u.a. #DF-Fallback) vervollständigen
 
 ## P1 (hohe Relevanz für moderne Userlands)
 
@@ -46,6 +49,7 @@ Stand: 2026-03-05
 ## Geräte-/Plattform-Themen parallel tracken
 
 1. APIC/IOAPIC Timer-/Interruptpfade gegen reale Gastanforderungen prüfen
+1.5 SMP-Ausbau: reale Mehr-vCPU-Ausführung + LAPIC pro vCPU + IPI-Routing
 2. PCI/ACPI-Tabellenkonsistenz für Windows-Installpfade härten
 3. IDE/E1000-Fallbackpfade robust halten (fehlende Option-ROMs etc.)
 

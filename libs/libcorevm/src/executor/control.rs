@@ -446,7 +446,7 @@ fn dispatch_software_interrupt(
 /// restores RSP and SS.
 pub fn exec_iret(
     cpu: &mut Cpu,
-    _inst: &DecodedInst,
+    inst: &DecodedInst,
     memory: &mut GuestMemory,
     mmu: &Mmu,
 ) -> Result<()> {
@@ -464,19 +464,24 @@ pub fn exec_iret(
             cpu.regs.rflags |= flags::RFLAGS_FIXED;
         }
         Mode::ProtectedMode => {
-            let size = OperandSize::Dword;
-            let eip = pop_val(cpu, size, mmu, memory)? as u32;
+            let size = stack_operand_size(cpu, inst);
+            let is_16 = size == OperandSize::Word;
+            let ip = pop_val(cpu, size, mmu, memory)?;
             let cs = pop_val(cpu, size, mmu, memory)? as u16;
-            let eflags = pop_val(cpu, size, mmu, memory)? as u32;
+            let flags_val = pop_val(cpu, size, mmu, memory)?;
             let old_cpl = cpu.regs.cpl;
             let new_cpl = (cs & 0x3) as u8;
 
             cpu.load_segment_from_gdt(SegReg::Cs, cs, memory, mmu)?;
             cpu.update_mode();
-            cpu.regs.rip = eip as u64;
+            cpu.regs.rip = if is_16 { ip & 0xFFFF } else { ip & 0xFFFF_FFFF };
 
             // Restore EFLAGS (preserve IOPL and IF based on CPL)
-            let mut new_flags = eflags as u64;
+            let mut new_flags = if is_16 {
+                (cpu.regs.rflags & !0xFFFF) | (flags_val & 0xFFFF)
+            } else {
+                flags_val & 0xFFFF_FFFF
+            };
             new_flags |= flags::RFLAGS_FIXED;
             if cpu.regs.cpl > 0 {
                 // Ring > 0: cannot change IOPL
@@ -491,9 +496,13 @@ pub fn exec_iret(
 
             // Outer-privilege return pops ESP and SS.
             if new_cpl > old_cpl {
-                let esp = pop_val(cpu, size, mmu, memory)? as u32;
+                let sp = pop_val(cpu, size, mmu, memory)?;
                 let ss = pop_val(cpu, size, mmu, memory)? as u16;
-                cpu.regs.set_sp(esp as u64);
+                if is_16 {
+                    cpu.regs.set_sp(sp & 0xFFFF);
+                } else {
+                    cpu.regs.set_sp(sp & 0xFFFF_FFFF);
+                }
                 cpu.load_segment_from_gdt(SegReg::Ss, ss, memory, mmu)?;
             }
             cpu.regs.cpl = new_cpl;

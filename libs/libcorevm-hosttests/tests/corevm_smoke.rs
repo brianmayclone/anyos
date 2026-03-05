@@ -62,6 +62,14 @@ fn make_idt32_interrupt_gate(offset: u32, selector: u16) -> u64 {
     off_lo | ((selector as u64) << 16) | (type_attr << 40) | (off_hi << 48)
 }
 
+fn make_idt16_interrupt_gate(offset: u16, selector: u16) -> u64 {
+    let off_lo = offset as u64;
+    let off_hi = 0u64;
+    // type_attr: P=1, DPL=0, type=0x6 (16-bit interrupt gate)
+    let type_attr = 0x86u64;
+    off_lo | ((selector as u64) << 16) | (type_attr << 40) | (off_hi << 48)
+}
+
 #[test]
 fn cpuid_leaf1_reports_boot_critical_features() {
     let mut cpu = Cpu::new();
@@ -497,4 +505,55 @@ fn protected_interrupt_cpl3_to_cpl0_uses_tss_stack() {
     assert_eq!(mem.read_u32((esp + 12) as u64).unwrap(), (RFLAGS_FIXED | flags::IF) as u32);
     assert_eq!(mem.read_u32((esp + 16) as u64).unwrap(), 0x0000_8000); // old ESP
     assert_eq!(mem.read_u32((esp + 20) as u64).unwrap(), 0x0023); // old SS
+}
+
+#[test]
+fn protected_interrupt_16bit_gate_pushes_16bit_frame() {
+    let mut cpu = Cpu::new();
+    cpu.mode = Mode::ProtectedMode;
+    cpu.decoder = Decoder::new(CpuMode::Protected32);
+    cpu.regs.cr0 = CR0_PE;
+    cpu.regs.cpl = 0;
+    cpu.regs.rip = 0x0001_2345;
+    cpu.regs.rflags = RFLAGS_FIXED | flags::IF;
+    cpu.regs.set_sp(0x0000_8000);
+
+    let mut mmu = Mmu::new();
+    let mut mem = GuestMemory::new(0x20_000);
+    let mut ints = InterruptController::new();
+
+    // GDT: null, 16-bit code(0x08), 16-bit data(0x10)
+    let gdt_base = 0x1000u64;
+    mem.load_at((gdt_base + 0x00) as usize, &0u64.to_le_bytes());
+    mem.load_at(
+        (gdt_base + 0x08) as usize,
+        &make_seg_desc(0, 0x0000_FFFF, 0x9A, 0x0).to_le_bytes(),
+    );
+    mem.load_at(
+        (gdt_base + 0x10) as usize,
+        &make_seg_desc(0, 0x0000_FFFF, 0x92, 0x0).to_le_bytes(),
+    );
+    cpu.regs.gdtr.base = gdt_base;
+    cpu.regs.gdtr.limit = 0x17;
+    cpu.regs.idtr.base = 0x3000;
+    cpu.regs.idtr.limit = 0x07FF;
+    cpu.load_segment_from_gdt(SegReg::Cs, 0x08, &mem, &mmu).unwrap();
+    cpu.load_segment_from_gdt(SegReg::Ss, 0x10, &mem, &mmu).unwrap();
+
+    // IDT vector 0x20 -> 16-bit handler 0x04D0 in CS=0x08.
+    let idt_entry = make_idt16_interrupt_gate(0x04D0, 0x08);
+    mem.load_at((0x3000 + 0x20 * 8) as usize, &idt_entry.to_le_bytes());
+
+    cpu.deliver_interrupt(0x20, false, None, &mut mem, &mut mmu, &mut ints)
+        .unwrap();
+
+    assert_eq!(cpu.regs.rip, 0x04D0);
+    assert_eq!(cpu.regs.sp(), 0x8000 - 6);
+    let sp = cpu.regs.sp() as u64;
+    assert_eq!(mem.read_u16(sp).unwrap(), 0x2345);
+    assert_eq!(mem.read_u16(sp + 2).unwrap(), 0x0008);
+    assert_eq!(
+        mem.read_u16(sp + 4).unwrap(),
+        (RFLAGS_FIXED as u16) | (flags::IF as u16)
+    );
 }

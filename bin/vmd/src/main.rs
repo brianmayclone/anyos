@@ -514,6 +514,8 @@ fn cmd_create(uuid: &str) {
         );
     }
 
+    let vcpu_count = handle.vcpu_count();
+
     let inst = VmInstance {
         handle,
         shm_id,
@@ -535,7 +537,7 @@ fn cmd_create(uuid: &str) {
         "[vmd] VM '{}' created ({} MiB RAM, {} cores, shm={})",
         config.name,
         config.ram_mb,
-        handle.vcpu_count(),
+        vcpu_count,
         shm_id
     );
 
