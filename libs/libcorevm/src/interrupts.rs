@@ -7,7 +7,7 @@
 
 use crate::error::{Result, VmError};
 use crate::flags;
-use crate::memory::MemoryBus;
+use crate::memory::{AccessType, MemoryBus, Mmu};
 
 /// IDT gate descriptor type, matching the x86 gate type field encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +151,9 @@ impl InterruptController {
         vector: u8,
         idtr_base: u64,
         idtr_limit: u16,
+        cr3: u64,
+        cpl: u8,
+        mmu: &Mmu,
         mem: &dyn MemoryBus,
     ) -> Result<IdtEntry> {
         let entry_offset = (vector as u64) * 8;
@@ -159,7 +162,9 @@ impl InterruptController {
                 (vector as u32) * 8 + 2, // error code: IDT selector index + IDT flag
             ));
         }
-        let addr = idtr_base + entry_offset;
+        let linear = idtr_base + entry_offset;
+        // IDTR.base is a linear address — translate through page tables.
+        let addr = mmu.translate_linear(linear, cr3, AccessType::Read, cpl, mem)?;
 
         // Bytes [0..1]: offset low 16 bits
         let offset_low = mem.read_u16(addr)? as u64;
@@ -213,6 +218,9 @@ impl InterruptController {
         vector: u8,
         idtr_base: u64,
         idtr_limit: u16,
+        cr3: u64,
+        cpl: u8,
+        mmu: &Mmu,
         mem: &dyn MemoryBus,
     ) -> Result<IdtEntry> {
         let entry_offset = (vector as u64) * 16;
@@ -221,7 +229,9 @@ impl InterruptController {
                 (vector as u32) * 16 + 2,
             ));
         }
-        let addr = idtr_base + entry_offset;
+        let linear = idtr_base + entry_offset;
+        // IDTR.base is a linear address — translate through page tables.
+        let addr = mmu.translate_linear(linear, cr3, AccessType::Read, cpl, mem)?;
 
         // Bytes [0..1]: offset bits [15:0]
         let offset_low = mem.read_u16(addr)? as u64;

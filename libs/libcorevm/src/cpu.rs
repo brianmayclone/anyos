@@ -572,10 +572,16 @@ impl Cpu {
                         self.prev_exec_rip,
                         e
                     ));
-                    if let Err(e2) =
-                        self.inject_exception_from_error(e, memory, mmu, interrupts)
-                    {
-                        return ExitReason::Exception(e2);
+                    match self.inject_exception_from_error(e, memory, mmu, interrupts) {
+                        Err(ref e2) => {
+                            libsyscall::serial_print(format_args!(
+                                "[corevm] exception delivery failed: {:?}\n", e2
+                            ));
+                            return ExitReason::Exception(*e2);
+                        }
+                        Ok(()) => {
+                            // Exception delivered — loop will re-enter at handler.
+                        }
                     }
                 }
             }
@@ -913,6 +919,9 @@ impl Cpu {
             vector,
             self.regs.idtr.base,
             self.regs.idtr.limit,
+            self.regs.cr3,
+            self.regs.cpl,
+            mmu,
             &*memory,
         )?;
 
@@ -973,6 +982,22 @@ impl Cpu {
         self.regs.rip = entry.offset;
         self.regs.cpl = 0; // Handler runs in ring 0
 
+        {
+            use crate::memory::MemoryBus;
+            let handler_phys = mmu.translate_linear(
+                entry.offset, self.regs.cr3, AccessType::Execute, 0, &*memory
+            ).unwrap_or(0xDEAD);
+            let b: [u8; 8] = core::array::from_fn(|i|
+                memory.read_u8(handler_phys + i as u64).unwrap_or(0xFF)
+            );
+            libsyscall::serial_print(format_args!(
+                "[corevm] deliver_int vec={} off={:X} phys={:X} code=[{:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}] ESP={:X} CR2={:X}\n",
+                vector, entry.offset, handler_phys,
+                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                self.regs.sp(), self.regs.cr2,
+            ));
+        }
+
         Ok(())
     }
 
@@ -993,6 +1018,9 @@ impl Cpu {
             vector,
             self.regs.idtr.base,
             self.regs.idtr.limit,
+            self.regs.cr3,
+            self.regs.cpl,
+            mmu,
             &*memory,
         )?;
 

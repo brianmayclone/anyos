@@ -357,6 +357,9 @@ fn dispatch_software_interrupt(
                 vector,
                 cpu.regs.idtr.base,
                 cpu.regs.idtr.limit,
+                cpu.regs.cr3,
+                cpu.regs.cpl,
+                mmu,
                 memory,
             )?;
 
@@ -393,6 +396,9 @@ fn dispatch_software_interrupt(
                 vector,
                 cpu.regs.idtr.base,
                 cpu.regs.idtr.limit,
+                cpu.regs.cr3,
+                cpu.regs.cpl,
+                mmu,
                 memory,
             )?;
 
