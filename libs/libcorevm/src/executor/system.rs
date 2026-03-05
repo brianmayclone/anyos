@@ -313,20 +313,27 @@ pub fn exec_wrmsr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
     let hi = cpu.regs.read_gpr32(GprIndex::Rdx as u8) as u64;
     let val = (hi << 32) | lo;
 
-    cpu.regs.write_msr(msr_index, val);
-
-    // Special handling for FS/GS base MSRs
+    // Special handling for selected MSRs
     match msr_index {
+        MSR_IA32_APIC_BASE => {
+            // Keep only base (4K aligned) plus BSP/APIC-enable bits.
+            // xAPIC mode uses bits 12.. for the MMIO base.
+            let sanitized = (val & 0xFFFF_F000) | (val & ((1 << 8) | (1 << 11)));
+            cpu.regs.write_msr(msr_index, sanitized);
+        }
         MSR_FS_BASE => {
+            cpu.regs.write_msr(msr_index, val);
             cpu.regs.segment_mut(SegReg::Fs).base = val;
         }
         MSR_GS_BASE => {
+            cpu.regs.write_msr(msr_index, val);
             cpu.regs.segment_mut(SegReg::Gs).base = val;
         }
         MSR_EFER => {
+            cpu.regs.write_msr(msr_index, val);
             cpu.update_mode();
         }
-        _ => {}
+        _ => cpu.regs.write_msr(msr_index, val),
     }
 
     cpu.regs.rip += inst.length as u64;
@@ -342,6 +349,8 @@ pub fn exec_wrmsr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
 pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
     let leaf = cpu.regs.read_gpr32(GprIndex::Rax as u8);
     let subleaf = cpu.regs.read_gpr32(GprIndex::Rcx as u8);
+    let logical_cpus = cpu.logical_cpu_count.max(1) as u32;
+    let apic_id = cpu.apic_id & 0xFF;
 
     let (eax, ebx, ecx, edx) = match (leaf, subleaf) {
         // Leaf 0: max standard leaf + vendor string
@@ -356,8 +365,8 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
         (1, _) => {
             // Family 6, Model 0x3C, Stepping 1 -> EAX = 0x000306C1
             let eax_val = 0x0003_06C1u32;
-            // EBX: brand index=0, CLFLUSH=8, max IDs=1, APIC ID=0
-            let ebx_val = 0x0001_0800u32;
+            // EBX: brand index=0, CLFLUSH=8, max IDs=logical_cpus, APIC ID=apic_id
+            let ebx_val = (8u32 << 8) | ((logical_cpus & 0xFF) << 16) | (apic_id << 24);
             // ECX feature flags:
             // SSE3(0), SSSE3(9), CMPXCHG16B(13), SSE4.1(19), SSE4.2(20),
             // POPCNT(23), XSAVE(26), OSXSAVE(27)
@@ -376,7 +385,7 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             // MCE(7), CX8(8), APIC(9), PGE(13), MCA(14), CMOV(15),
             // PAT(16), PSE-36(17), CLFLUSH(19), MMX(23), FXSR(24),
             // SSE(25), SSE2(26)
-            let edx_val: u32 = (1 << 0)
+            let mut edx_val: u32 = (1 << 0)
                 | (1 << 1)
                 | (1 << 2)
                 | (1 << 3)
@@ -396,13 +405,41 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
                 | (1 << 24)
                 | (1 << 25)
                 | (1 << 26);
+            if logical_cpus > 1 {
+                // HTT indicates support for multiple logical processors.
+                edx_val |= 1 << 28;
+            }
             (eax_val, ebx_val, ecx_val, edx_val)
         }
 
+        // Leaf 0x0B: x2APIC topology (minimal SMT/package view).
+        (0x0B, 0) => {
+            let mut shift = 0u32;
+            let mut n = logical_cpus.saturating_sub(1);
+            while n > 0 {
+                shift += 1;
+                n >>= 1;
+            }
+            // EAX[4:0] = shift, EBX = number of logical processors at this level,
+            // ECX[15:8] = level type 1 (SMT), ECX[7:0] = level number 0.
+            (shift, logical_cpus, (1 << 8), apic_id)
+        }
+        (0x0B, 1) => {
+            let mut shift = 0u32;
+            let mut n = logical_cpus.saturating_sub(1);
+            while n > 0 {
+                shift += 1;
+                n >>= 1;
+            }
+            // Level type 2 (core/package).
+            (shift, logical_cpus, (2 << 8) | 1, apic_id)
+        }
+        (0x0B, _) => (0, 0, subleaf & 0xFF, apic_id),
+
         // Leaf 7, subleaf 0: structured feature flags (minimal baseline)
         (7, 0) => {
-            // Report max subleaf = 0, no advanced feature bits set.
-            (0, 0, 0, 0)
+            // EBX: BMI1 (bit 3) for TZCNT.
+            (0, 1 << 3, 0, 0)
         }
 
         // Leaf D, subleaf 0: XSAVE features and area size for enabled XCR0 bits.
@@ -422,8 +459,8 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
         (0x8000_0000, _) => (0x8000_0008, 0, 0, 0),
         // Leaf 0x80000001: extended feature flags
         (0x8000_0001, _) => {
-            // ECX: LAHF/SAHF in long mode (bit 0)
-            let ecx_val: u32 = 1 << 0;
+            // ECX: LAHF/SAHF in long mode (bit 0), ABM/LZCNT (bit 5)
+            let ecx_val: u32 = (1 << 0) | (1 << 5);
             // EDX: SYSCALL(11), NX(20), RDTSCP(27), LM(29)
             let edx_val: u32 = (1 << 11) | (1 << 20) | (1 << 29);
             let edx_val = edx_val | (1 << 27);

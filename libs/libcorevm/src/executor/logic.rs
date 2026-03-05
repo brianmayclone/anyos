@@ -6,7 +6,7 @@
 use crate::cpu::Cpu;
 use crate::error::Result;
 use crate::flags::{self, OperandSize};
-use crate::instruction::{DecodedInst, Operand};
+use crate::instruction::{DecodedInst, Operand, RepPrefix};
 use crate::memory::{GuestMemory, Mmu};
 
 use super::{read_operand, write_operand};
@@ -813,6 +813,25 @@ pub fn exec_bsf(
     mmu: &Mmu,
 ) -> Result<()> {
     let src = read_operand(cpu, inst, &inst.operands[1], memory, mmu)? & inst.operand_size.mask();
+    let width = (inst.operand_size.bytes() * 8) as u64;
+
+    // F3 0F BC /r = TZCNT (BMI1), otherwise BSF.
+    if inst.rep == RepPrefix::Rep {
+        let result = if src == 0 { width } else { src.trailing_zeros() as u64 };
+        write_operand(cpu, inst, &inst.operands[0], result, memory, mmu)?;
+        if src == 0 {
+            cpu.regs.rflags |= flags::CF;
+        } else {
+            cpu.regs.rflags &= !flags::CF;
+        }
+        if result == 0 {
+            cpu.regs.rflags |= flags::ZF;
+        } else {
+            cpu.regs.rflags &= !flags::ZF;
+        }
+        cpu.regs.rip += inst.length as u64;
+        return Ok(());
+    }
 
     if src == 0 {
         cpu.regs.rflags |= flags::ZF;
@@ -837,6 +856,33 @@ pub fn exec_bsr(
     mmu: &Mmu,
 ) -> Result<()> {
     let src = read_operand(cpu, inst, &inst.operands[1], memory, mmu)? & inst.operand_size.mask();
+    let width = (inst.operand_size.bytes() * 8) as u64;
+
+    // F3 0F BD /r = LZCNT (ABM), otherwise BSR.
+    if inst.rep == RepPrefix::Rep {
+        let result = if src == 0 {
+            width
+        } else if inst.operand_size == OperandSize::Qword {
+            src.leading_zeros() as u64
+        } else if inst.operand_size == OperandSize::Dword {
+            (src as u32).leading_zeros() as u64
+        } else {
+            (src as u16).leading_zeros() as u64
+        };
+        write_operand(cpu, inst, &inst.operands[0], result, memory, mmu)?;
+        if src == 0 {
+            cpu.regs.rflags |= flags::CF;
+        } else {
+            cpu.regs.rflags &= !flags::CF;
+        }
+        if result == 0 {
+            cpu.regs.rflags |= flags::ZF;
+        } else {
+            cpu.regs.rflags &= !flags::ZF;
+        }
+        cpu.regs.rip += inst.length as u64;
+        return Ok(());
+    }
 
     if src == 0 {
         cpu.regs.rflags |= flags::ZF;

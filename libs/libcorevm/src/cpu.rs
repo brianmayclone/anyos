@@ -94,6 +94,10 @@ pub struct Cpu {
     /// Consecutive exception count at the same RIP (for #PF loop detection).
     consecutive_exception_rip: u64,
     consecutive_exception_count: u32,
+    /// Local APIC/x2APIC ID used for CPUID topology reporting.
+    pub apic_id: u32,
+    /// Configured number of logical CPUs in the VM package.
+    pub logical_cpu_count: u8,
 }
 
 impl Cpu {
@@ -118,6 +122,8 @@ impl Cpu {
             jit_engine: JitEngine::new(),
             consecutive_exception_rip: 0,
             consecutive_exception_count: 0,
+            apic_id: 0,
+            logical_cpu_count: 1,
         }
     }
 
@@ -140,6 +146,18 @@ impl Cpu {
         self.jit_engine.flush();
         self.consecutive_exception_rip = 0;
         self.consecutive_exception_count = 0;
+        self.apic_id = 0;
+        self.logical_cpu_count = 1;
+    }
+
+    /// Configure the CPU topology values used for CPUID/APIC reporting.
+    ///
+    /// The emulator currently executes a single vCPU, but the configured
+    /// `logical_cpu_count` is exposed to guests so SMP-capable kernels can
+    /// detect the intended topology.
+    pub fn configure_topology(&mut self, apic_id: u32, logical_cpu_count: u8) {
+        self.apic_id = apic_id;
+        self.logical_cpu_count = logical_cpu_count.max(1);
     }
 
     /// Mask RIP to the appropriate width for the current CPU mode.
@@ -1001,37 +1019,173 @@ impl Cpu {
         let old_eflags = self.regs.rflags as u32;
         let old_cs = self.regs.seg[SegReg::Cs as usize].selector;
         let old_eip = self.regs.rip as u32;
+        let old_ss = self.regs.seg[SegReg::Ss as usize].selector;
+        let old_esp = self.regs.sp() as u32;
+        let old_cpl = self.regs.cpl;
 
-        // TODO: Privilege level transition (load new SS:ESP from TSS)
-        // For now, assume same privilege level
+        // Determine target CPL from target code segment descriptor.
+        let target_cs_desc = self.read_gdt_descriptor(entry.selector, memory, mmu)?;
+        let target_cpl = target_cs_desc.dpl;
+
+        // Inter-privilege interrupt entry: switch stack via TSS ring stack.
+        if target_cpl < old_cpl {
+            let (new_ss, new_esp) = self.read_tss_ring_stack32(target_cpl, memory, mmu)?;
+            self.load_segment_from_gdt(SegReg::Ss, new_ss, memory, mmu)?;
+            self.regs.set_sp(new_esp as u64);
+            self.regs.cpl = target_cpl;
+        }
 
         let ss_base = self.regs.seg[SegReg::Ss as usize].base;
+        let gate_is_16 = matches!(
+            entry.gate_type,
+            crate::interrupts::GateType::Interrupt16 | crate::interrupts::GateType::Trap16
+        );
 
-        // Push EFLAGS
-        let esp = self.regs.sp().wrapping_sub(4);
-        self.regs.set_sp(esp);
-        let phys = mmu.translate_linear(ss_base + esp, self.regs.cr3, AccessType::Write, self.regs.cpl, &*memory)?;
-        memory.write_u32(phys, old_eflags)?;
+        // Push old SS:ESP only on privilege-level change.
+        if target_cpl < old_cpl {
+            if gate_is_16 {
+                let esp = self.regs.sp().wrapping_sub(2);
+                self.regs.set_sp(esp);
+                let phys = mmu.translate_linear(
+                    ss_base + esp,
+                    self.regs.cr3,
+                    AccessType::Write,
+                    self.regs.cpl,
+                    &*memory,
+                )?;
+                memory.write_u16(phys, old_ss)?;
 
-        // Push CS
-        let esp = self.regs.sp().wrapping_sub(4);
-        self.regs.set_sp(esp);
-        let phys = mmu.translate_linear(ss_base + esp, self.regs.cr3, AccessType::Write, self.regs.cpl, &*memory)?;
-        memory.write_u32(phys, old_cs as u32)?;
+                let esp = self.regs.sp().wrapping_sub(2);
+                self.regs.set_sp(esp);
+                let phys = mmu.translate_linear(
+                    ss_base + esp,
+                    self.regs.cr3,
+                    AccessType::Write,
+                    self.regs.cpl,
+                    &*memory,
+                )?;
+                memory.write_u16(phys, old_esp as u16)?;
+            } else {
+                let esp = self.regs.sp().wrapping_sub(4);
+                self.regs.set_sp(esp);
+                let phys = mmu.translate_linear(
+                    ss_base + esp,
+                    self.regs.cr3,
+                    AccessType::Write,
+                    self.regs.cpl,
+                    &*memory,
+                )?;
+                memory.write_u32(phys, old_ss as u32)?;
 
-        // Push EIP
-        let esp = self.regs.sp().wrapping_sub(4);
-        self.regs.set_sp(esp);
-        let phys = mmu.translate_linear(ss_base + esp, self.regs.cr3, AccessType::Write, self.regs.cpl, &*memory)?;
-        memory.write_u32(phys, old_eip)?;
+                let esp = self.regs.sp().wrapping_sub(4);
+                self.regs.set_sp(esp);
+                let phys = mmu.translate_linear(
+                    ss_base + esp,
+                    self.regs.cr3,
+                    AccessType::Write,
+                    self.regs.cpl,
+                    &*memory,
+                )?;
+                memory.write_u32(phys, old_esp)?;
+            }
+        }
+
+        if gate_is_16 {
+            // 16-bit gate frame: FLAGS, CS, IP (words).
+            let esp = self.regs.sp().wrapping_sub(2);
+            self.regs.set_sp(esp);
+            let phys = mmu.translate_linear(
+                ss_base + esp,
+                self.regs.cr3,
+                AccessType::Write,
+                self.regs.cpl,
+                &*memory,
+            )?;
+            memory.write_u16(phys, old_eflags as u16)?;
+
+            let esp = self.regs.sp().wrapping_sub(2);
+            self.regs.set_sp(esp);
+            let phys = mmu.translate_linear(
+                ss_base + esp,
+                self.regs.cr3,
+                AccessType::Write,
+                self.regs.cpl,
+                &*memory,
+            )?;
+            memory.write_u16(phys, old_cs)?;
+
+            let esp = self.regs.sp().wrapping_sub(2);
+            self.regs.set_sp(esp);
+            let phys = mmu.translate_linear(
+                ss_base + esp,
+                self.regs.cr3,
+                AccessType::Write,
+                self.regs.cpl,
+                &*memory,
+            )?;
+            memory.write_u16(phys, old_eip as u16)?;
+        } else {
+            // 32-bit gate frame: EFLAGS, CS, EIP (dwords).
+            let esp = self.regs.sp().wrapping_sub(4);
+            self.regs.set_sp(esp);
+            let phys = mmu.translate_linear(
+                ss_base + esp,
+                self.regs.cr3,
+                AccessType::Write,
+                self.regs.cpl,
+                &*memory,
+            )?;
+            memory.write_u32(phys, old_eflags)?;
+
+            let esp = self.regs.sp().wrapping_sub(4);
+            self.regs.set_sp(esp);
+            let phys = mmu.translate_linear(
+                ss_base + esp,
+                self.regs.cr3,
+                AccessType::Write,
+                self.regs.cpl,
+                &*memory,
+            )?;
+            memory.write_u32(phys, old_cs as u32)?;
+
+            let esp = self.regs.sp().wrapping_sub(4);
+            self.regs.set_sp(esp);
+            let phys = mmu.translate_linear(
+                ss_base + esp,
+                self.regs.cr3,
+                AccessType::Write,
+                self.regs.cpl,
+                &*memory,
+            )?;
+            memory.write_u32(phys, old_eip)?;
+        }
 
         // Push error code if applicable
         if has_error_code {
             let ec = error_code.unwrap_or(0);
-            let esp = self.regs.sp().wrapping_sub(4);
-            self.regs.set_sp(esp);
-            let phys = mmu.translate_linear(ss_base + esp, self.regs.cr3, AccessType::Write, self.regs.cpl, &*memory)?;
-            memory.write_u32(phys, ec)?;
+            if gate_is_16 {
+                let esp = self.regs.sp().wrapping_sub(2);
+                self.regs.set_sp(esp);
+                let phys = mmu.translate_linear(
+                    ss_base + esp,
+                    self.regs.cr3,
+                    AccessType::Write,
+                    self.regs.cpl,
+                    &*memory,
+                )?;
+                memory.write_u16(phys, ec as u16)?;
+            } else {
+                let esp = self.regs.sp().wrapping_sub(4);
+                self.regs.set_sp(esp);
+                let phys = mmu.translate_linear(
+                    ss_base + esp,
+                    self.regs.cr3,
+                    AccessType::Write,
+                    self.regs.cpl,
+                    &*memory,
+                )?;
+                memory.write_u32(phys, ec)?;
+            }
         }
 
         // Clear IF for interrupt gates (not trap gates)
@@ -1057,7 +1211,7 @@ impl Cpu {
         self.load_segment_from_gdt(SegReg::Cs, entry.selector, &*memory, mmu)?;
         self.update_mode();
         self.regs.rip = entry.offset;
-        self.regs.cpl = 0; // Handler runs in ring 0
+        self.regs.cpl = target_cpl;
 
         Ok(())
     }
@@ -1155,5 +1309,34 @@ impl Cpu {
         self.regs.cpl = 0;
 
         Ok(())
+    }
+}
+
+impl Cpu {
+    /// Read 32-bit ring stack selector/pointer (SS:ESP) from current 32-bit TSS.
+    fn read_tss_ring_stack32(
+        &self,
+        ring: u8,
+        memory: &GuestMemory,
+        mmu: &Mmu,
+    ) -> Result<(u16, u32)> {
+        if ring > 2 {
+            return Err(VmError::InvalidTss(0));
+        }
+        let tr = self.regs.tr;
+        if (tr & 0xFFFC) == 0 {
+            return Err(VmError::InvalidTss(0));
+        }
+        let tss_desc = self.read_gdt_descriptor(tr, memory, mmu)?;
+        let tss_base = tss_desc.base;
+        let off_esp = 4u64 + (ring as u64) * 8;
+        let off_ss = 8u64 + (ring as u64) * 8;
+
+        // TSS base is linear, translate through paging as supervisor.
+        let esp_phys = mmu.translate_linear(tss_base + off_esp, self.regs.cr3, AccessType::Read, 0, memory)?;
+        let ss_phys = mmu.translate_linear(tss_base + off_ss, self.regs.cr3, AccessType::Read, 0, memory)?;
+        let esp = memory.read_u32(esp_phys)?;
+        let ss = memory.read_u16(ss_phys)?;
+        Ok((ss, esp))
     }
 }

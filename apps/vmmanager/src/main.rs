@@ -129,6 +129,8 @@ struct VmConfig {
     name: String,
     /// Guest RAM size in megabytes.
     ram_mb: u32,
+    /// Number of virtual CPU cores to expose to the guest.
+    cpu_cores: u8,
     /// RAM allocation strategy.
     ram_alloc: RamAlloc,
     /// Path to a raw disk image file on the host filesystem.
@@ -162,6 +164,7 @@ impl VmConfig {
             uuid: generate_uuid(),
             name: String::from(name),
             ram_mb: 64,
+            cpu_cores: 1,
             ram_alloc: RamAlloc::OnDemand,
             disk_image: String::new(),
             iso_image: String::new(),
@@ -231,6 +234,7 @@ struct SettingsDialog {
     name_field: anyui::TextField,
     ram_slider: anyui::Slider,
     ram_value_label: anyui::Label,
+    cores_seg: anyui::SegmentedControl,
     ram_alloc_seg: anyui::SegmentedControl,
     bios_seg: anyui::SegmentedControl,
     jit_toggle: anyui::Toggle,
@@ -457,6 +461,10 @@ fn save_vm_config(config: &VmConfig) {
     let s = fmt_u32(&mut buf, config.ram_mb);
     data.extend_from_slice(s.as_bytes());
     data.push(b'\n');
+    data.extend_from_slice(b"cpu_cores=");
+    let s = fmt_u32(&mut buf, config.cpu_cores as u32);
+    data.extend_from_slice(s.as_bytes());
+    data.push(b'\n');
     data.extend_from_slice(b"disk=");
     data.extend_from_slice(config.disk_image.as_bytes());
     data.push(b'\n');
@@ -581,6 +589,9 @@ fn load_vm_config(uuid: &str) -> Option<VmConfig> {
             config.name = bytes_to_string(val);
         } else if let Some(val) = strip_prefix(line, b"ram=") {
             config.ram_mb = parse_u32(val).unwrap_or(64);
+        } else if let Some(val) = strip_prefix(line, b"cpu_cores=") {
+            let cores = parse_u32(val).unwrap_or(1).clamp(1, 64);
+            config.cpu_cores = cores as u8;
         } else if let Some(val) = strip_prefix(line, b"disk=") {
             config.disk_image = bytes_to_string(val);
         } else if let Some(val) = strip_prefix(line, b"iso=") {
@@ -1832,6 +1843,24 @@ fn settings_label(parent: &anyui::View, text: &str, x: i32, y: i32) {
     parent.add(&lbl);
 }
 
+fn cpu_cores_to_seg_state(cores: u8) -> u32 {
+    match cores {
+        2 => 1,
+        4 => 2,
+        8 => 3,
+        _ => 0,
+    }
+}
+
+fn seg_state_to_cpu_cores(state: u32) -> u8 {
+    match state {
+        1 => 2,
+        2 => 4,
+        3 => 8,
+        _ => 1,
+    }
+}
+
 /// Open the settings dialog for the currently selected VM.
 ///
 /// Creates a tabbed dialog with three tabs:
@@ -1919,15 +1948,23 @@ fn open_settings_dialog() {
     });
     general_panel.add(&bios_seg);
 
+    // CPU cores
+    settings_label(&general_panel, "CPU Cores:", 16, 168);
+    let cores_seg = anyui::SegmentedControl::new("1|2|4|8");
+    cores_seg.set_position(120, 164);
+    cores_seg.set_size(240, 28);
+    cores_seg.set_state(cpu_cores_to_seg_state(config.cpu_cores));
+    general_panel.add(&cores_seg);
+
     // JIT acceleration
-    settings_label(&general_panel, "Acceleration:", 16, 168);
+    settings_label(&general_panel, "Acceleration:", 16, 208);
     let jit_toggle = anyui::Toggle::new(config.jit_enabled);
-    jit_toggle.set_position(120, 168);
+    jit_toggle.set_position(120, 208);
     jit_toggle.set_size(48, 24);
     general_panel.add(&jit_toggle);
 
     let jit_hint = anyui::Label::new("JIT (compile hot basic blocks to native code)");
-    jit_hint.set_position(176, 168);
+    jit_hint.set_position(176, 208);
     jit_hint.set_size(300, 24);
     jit_hint.set_text_color(0xFF888888);
     jit_hint.set_font_size(11);
@@ -2127,6 +2164,7 @@ fn open_settings_dialog() {
         name_field,
         ram_slider,
         ram_value_label,
+        cores_seg,
         ram_alloc_seg,
         bios_seg,
         jit_toggle,
@@ -2172,6 +2210,7 @@ fn save_settings() {
             _ => BiosType::CoreVm,
         };
 
+        let cpu_cores = seg_state_to_cpu_cores(dlg.cores_seg.get_state());
         let jit_enabled = dlg.jit_toggle.get_state() != 0;
 
         // ── Devices tab ──
@@ -2220,6 +2259,7 @@ fn save_settings() {
             config.name = name;
         }
         config.ram_mb = ram_mb.max(16).min(512);
+        config.cpu_cores = cpu_cores.clamp(1, 8);
         config.ram_alloc = ram_alloc;
         config.bios_type = bios_type;
         config.jit_enabled = jit_enabled;

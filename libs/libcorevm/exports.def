@@ -1,6 +1,7 @@
 LIBRARY libcorevm
 EXPORTS
     corevm_create
+    corevm_create_ex
     corevm_destroy
     corevm_reset
     corevm_get_rip
@@ -15,6 +16,7 @@ EXPORTS
     corevm_get_segment_base
     corevm_get_mode
     corevm_get_cpl
+    corevm_get_vcpu_count
     corevm_run
     corevm_request_stop
     corevm_get_instruction_count

@@ -468,6 +468,8 @@ pub fn exec_iret(
             let eip = pop_val(cpu, size, mmu, memory)? as u32;
             let cs = pop_val(cpu, size, mmu, memory)? as u16;
             let eflags = pop_val(cpu, size, mmu, memory)? as u32;
+            let old_cpl = cpu.regs.cpl;
+            let new_cpl = (cs & 0x3) as u8;
 
             cpu.load_segment_from_gdt(SegReg::Cs, cs, memory, mmu)?;
             cpu.update_mode();
@@ -481,11 +483,20 @@ pub fn exec_iret(
                 new_flags = (new_flags & !flags::IOPL_MASK) | (cpu.regs.rflags & flags::IOPL_MASK);
                 // Ring > IOPL: cannot change IF
                 let iopl = ((cpu.regs.rflags & flags::IOPL_MASK) >> flags::IOPL_SHIFT) as u8;
-                if cpu.regs.cpl > iopl {
+                if new_cpl > iopl {
                     new_flags = (new_flags & !flags::IF) | (cpu.regs.rflags & flags::IF);
                 }
             }
             cpu.regs.rflags = new_flags;
+
+            // Outer-privilege return pops ESP and SS.
+            if new_cpl > old_cpl {
+                let esp = pop_val(cpu, size, mmu, memory)? as u32;
+                let ss = pop_val(cpu, size, mmu, memory)? as u16;
+                cpu.regs.set_sp(esp as u64);
+                cpu.load_segment_from_gdt(SegReg::Ss, ss, memory, mmu)?;
+            }
+            cpu.regs.cpl = new_cpl;
         }
         Mode::LongMode => {
             let size = OperandSize::Qword;

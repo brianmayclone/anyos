@@ -135,6 +135,8 @@ struct CoreVmLib {
     /// Create a new VM with `ram_size_mb` megabytes of guest RAM.
     /// Returns an opaque handle (0 on failure).
     create: extern "C" fn(u32) -> u64,
+    /// Extended create call with explicit logical CPU count.
+    create_ex: Option<extern "C" fn(u32, u32) -> u64>,
     /// Destroy a VM and free all associated resources.
     destroy: extern "C" fn(u64),
     /// Reset the VM to power-on state (preserves RAM content and I/O
@@ -183,6 +185,8 @@ struct CoreVmLib {
     get_cpl: extern "C" fn(u64) -> u8,
     /// Get the total number of instructions executed since last reset.
     get_instruction_count: extern "C" fn(u64) -> u64,
+    /// Get configured logical CPU count.
+    get_vcpu_count: Option<extern "C" fn(u64) -> u32>,
 
     // ── Memory access ────────────────────────────────────────────
     /// Load raw binary data at a guest physical address.
@@ -340,6 +344,12 @@ unsafe fn resolve<T: Copy>(handle: &DlHandle, name: &str) -> T {
     core::mem::transmute_copy::<*const (), T>(&ptr)
 }
 
+/// Resolve an optional function pointer from the loaded library.
+unsafe fn resolve_optional<T: Copy>(handle: &DlHandle, name: &str) -> Option<T> {
+    let ptr = dl_sym(handle, name)?;
+    Some(core::mem::transmute_copy::<*const (), T>(&ptr))
+}
+
 // ══════════════════════════════════════════════════════════════════════
 //  Public API: init
 // ══════════════════════════════════════════════════════════════════════
@@ -359,6 +369,7 @@ pub fn init() -> bool {
         let corevm = CoreVmLib {
             // VM lifecycle
             create: resolve(&handle, "corevm_create"),
+            create_ex: resolve_optional(&handle, "corevm_create_ex"),
             destroy: resolve(&handle, "corevm_destroy"),
             reset: resolve(&handle, "corevm_reset"),
             run: resolve(&handle, "corevm_run"),
@@ -382,6 +393,7 @@ pub fn init() -> bool {
             get_mode: resolve(&handle, "corevm_get_mode"),
             get_cpl: resolve(&handle, "corevm_get_cpl"),
             get_instruction_count: resolve(&handle, "corevm_get_instruction_count"),
+            get_vcpu_count: resolve_optional(&handle, "corevm_get_vcpu_count"),
             // Memory
             load_binary: resolve(&handle, "corevm_load_binary"),
             load_rom: resolve(&handle, "corevm_load_rom"),
@@ -485,7 +497,16 @@ impl VmHandle {
     /// `Some(VmHandle)` on success, `None` if allocation failed (e.g.,
     /// out of memory for the requested RAM size).
     pub fn new(ram_size_mb: u32) -> Option<Self> {
-        let h = (lib().create)(ram_size_mb);
+        Self::new_with_cores(ram_size_mb, 1)
+    }
+
+    /// Create a new virtual machine with explicit logical CPU count.
+    pub fn new_with_cores(ram_size_mb: u32, cores: u32) -> Option<Self> {
+        let h = if let Some(create_ex) = lib().create_ex {
+            create_ex(ram_size_mb, cores.max(1))
+        } else {
+            (lib().create)(ram_size_mb)
+        };
         if h == 0 {
             None
         } else {
@@ -523,6 +544,15 @@ impl VmHandle {
     /// [`ExitReason::StopRequested`] promptly.
     pub fn request_stop(&self) {
         (lib().request_stop)(self.handle);
+    }
+
+    /// Return the configured logical CPU count (defaults to 1 if unsupported).
+    pub fn vcpu_count(&self) -> u32 {
+        if let Some(getter) = lib().get_vcpu_count {
+            getter(self.handle).max(1)
+        } else {
+            1
+        }
     }
 
     // ── CPU state: instruction pointer ──────────────────────────

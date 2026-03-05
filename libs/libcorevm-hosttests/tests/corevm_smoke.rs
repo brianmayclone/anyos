@@ -1,14 +1,16 @@
 use libcorevm::cpu::{Cpu, Mode};
 use libcorevm::decoder::{CpuMode, Decoder};
 use libcorevm::executor;
+use libcorevm::flags::RFLAGS_FIXED;
 use libcorevm::flags;
 use libcorevm::interrupts::InterruptController;
 use libcorevm::io::IoDispatch;
 use libcorevm::memory::{GuestMemory, MemoryBus, Mmu};
 use libcorevm::registers::{
     GprIndex, MSR_IA32_APIC_BASE, MSR_IA32_SYSENTER_CS, MSR_IA32_SYSENTER_EIP,
-    MSR_IA32_SYSENTER_ESP, MSR_TSC,
+    MSR_IA32_SYSENTER_ESP, MSR_TSC, SegReg, CR0_PE,
 };
+use libcorevm::{corevm_create_ex, corevm_destroy, corevm_get_vcpu_count};
 
 fn run_one(cpu: &mut Cpu, mmu: &mut Mmu, mem: &mut GuestMemory, bytes: &[u8]) {
     mem.load_at(0, bytes);
@@ -37,6 +39,29 @@ fn crc32_update(mut crc: u32, val: u64, bytes: usize) -> u32 {
     crc
 }
 
+fn make_seg_desc(base: u32, limit: u32, access: u8, flags: u8) -> u64 {
+    let limit_low = (limit & 0xFFFF) as u64;
+    let limit_high = ((limit >> 16) & 0x0F) as u64;
+    let base_low = (base & 0xFFFF) as u64;
+    let base_mid = ((base >> 16) & 0xFF) as u64;
+    let base_high = ((base >> 24) & 0xFF) as u64;
+    limit_low
+        | (base_low << 16)
+        | ((base_mid as u64) << 32)
+        | ((access as u64) << 40)
+        | (limit_high << 48)
+        | (((flags & 0x0F) as u64) << 52)
+        | (base_high << 56)
+}
+
+fn make_idt32_interrupt_gate(offset: u32, selector: u16) -> u64 {
+    let off_lo = (offset & 0xFFFF) as u64;
+    let off_hi = ((offset >> 16) & 0xFFFF) as u64;
+    // type_attr: P=1, DPL=0, type=0xE (32-bit interrupt gate)
+    let type_attr = 0x8Eu64;
+    off_lo | ((selector as u64) << 16) | (type_attr << 40) | (off_hi << 48)
+}
+
 #[test]
 fn cpuid_leaf1_reports_boot_critical_features() {
     let mut cpu = Cpu::new();
@@ -51,6 +76,34 @@ fn cpuid_leaf1_reports_boot_critical_features() {
     let ecx = cpu.regs.read_gpr32(GprIndex::Rcx as u8);
     assert_ne!(ecx & (1 << 13), 0, "CMPXCHG16B missing");
     assert_ne!(ecx & (1 << 9), 0, "SSSE3 missing");
+}
+
+#[test]
+fn cpuid_leaf1_reports_configured_logical_cpu_count() {
+    let mut cpu = Cpu::new();
+    cpu.configure_topology(0, 4);
+    cpu.mode = Mode::ProtectedMode;
+    cpu.decoder = Decoder::new(CpuMode::Protected32);
+    cpu.regs.write_gpr32(GprIndex::Rax as u8, 1);
+
+    let mut mmu = Mmu::new();
+    let mut mem = GuestMemory::new(0x4000);
+    run_one(&mut cpu, &mut mmu, &mut mem, &[0x0F, 0xA2]); // CPUID
+
+    let ebx = cpu.regs.read_gpr32(GprIndex::Rbx as u8);
+    let logical = (ebx >> 16) & 0xFF;
+    let edx = cpu.regs.read_gpr32(GprIndex::Rdx as u8);
+    assert_eq!(logical, 4);
+    assert_ne!(edx & (1 << 28), 0, "HTT bit should be set for SMP topology");
+}
+
+#[test]
+fn corevm_create_ex_persists_vcpu_count() {
+    let h = corevm_create_ex(64, 4);
+    assert_ne!(h, 0);
+    let cores = corevm_get_vcpu_count(h);
+    assert_eq!(cores, 4);
+    corevm_destroy(h);
 }
 
 #[test]
@@ -378,4 +431,70 @@ fn movbe_load_and_store_work() {
     // MOVBE [RSI], EBX
     run_one(&mut cpu, &mut mmu, &mut mem, &[0x0F, 0x38, 0xF1, 0x1E]);
     assert_eq!(mem.read_u32(0x120).unwrap(), 0x4433_2211);
+}
+
+#[test]
+fn protected_interrupt_cpl3_to_cpl0_uses_tss_stack() {
+    let mut cpu = Cpu::new();
+    cpu.mode = Mode::ProtectedMode;
+    cpu.decoder = Decoder::new(CpuMode::Protected32);
+    cpu.regs.cr0 = CR0_PE;
+    cpu.regs.cpl = 3;
+    cpu.regs.rip = 0x0040_0000;
+    cpu.regs.rflags = RFLAGS_FIXED | flags::IF;
+    cpu.regs.set_sp(0x0000_8000);
+
+    let mut mmu = Mmu::new();
+    let mut mem = GuestMemory::new(0x20_000);
+    let mut ints = InterruptController::new();
+
+    // GDT @ 0x1000: null, kcode(0x08), kdata(0x10), ucode(0x18), udata(0x20), tss(0x28)
+    let gdt_base = 0x1000u64;
+    mem.load_at((gdt_base + 0x00) as usize, &0u64.to_le_bytes());
+    // 32-bit flat kernel code: access=0x9A, flags=0xC (G=1,D=1)
+    mem.load_at((gdt_base + 0x08) as usize, &make_seg_desc(0, 0x000F_FFFF, 0x9A, 0xC).to_le_bytes());
+    // 32-bit flat kernel data
+    mem.load_at((gdt_base + 0x10) as usize, &make_seg_desc(0, 0x000F_FFFF, 0x92, 0xC).to_le_bytes());
+    // 32-bit flat user code (DPL=3)
+    mem.load_at((gdt_base + 0x18) as usize, &make_seg_desc(0, 0x000F_FFFF, 0xFA, 0xC).to_le_bytes());
+    // 32-bit flat user data (DPL=3)
+    mem.load_at((gdt_base + 0x20) as usize, &make_seg_desc(0, 0x000F_FFFF, 0xF2, 0xC).to_le_bytes());
+    // 32-bit available TSS at 0x2000, limit 0x67: access=0x89, flags=0
+    mem.load_at((gdt_base + 0x28) as usize, &make_seg_desc(0x2000, 0x67, 0x89, 0x0).to_le_bytes());
+
+    cpu.regs.gdtr.base = gdt_base;
+    cpu.regs.gdtr.limit = 0x2F;
+    cpu.regs.idtr.base = 0x3000;
+    cpu.regs.idtr.limit = 0x07FF;
+    cpu.regs.tr = 0x28;
+
+    // Current user segments
+    cpu.load_segment_from_gdt(SegReg::Cs, 0x1B, &mem, &mmu).unwrap();
+    cpu.load_segment_from_gdt(SegReg::Ss, 0x23, &mem, &mmu).unwrap();
+
+    // IDT vector 14 -> kernel handler 0x0010_1000 in CS=0x08
+    let idt_entry = make_idt32_interrupt_gate(0x0010_1000, 0x08);
+    mem.load_at((0x3000 + 14 * 8) as usize, &idt_entry.to_le_bytes());
+
+    // TSS ring0 stack: ESP0=0x9000, SS0=0x10
+    mem.load_at(0x2004, &0x0000_9000u32.to_le_bytes()); // ESP0
+    mem.load_at(0x2008, &0x0010u16.to_le_bytes()); // SS0
+
+    cpu.deliver_interrupt(14, true, Some(0xDEAD_BEEFu32), &mut mem, &mut mmu, &mut ints)
+        .unwrap();
+
+    assert_eq!(cpu.regs.cpl, 0);
+    assert_eq!(cpu.regs.segment(SegReg::Cs).selector, 0x08);
+    assert_eq!(cpu.regs.segment(SegReg::Ss).selector, 0x10);
+    assert_eq!(cpu.regs.rip, 0x0010_1000);
+
+    // New ESP after pushing old SS, old ESP, EFLAGS, CS, EIP, error code
+    let esp = cpu.regs.sp() as u32;
+    assert_eq!(esp, 0x9000 - 24);
+    assert_eq!(mem.read_u32(esp as u64).unwrap(), 0xDEAD_BEEF);
+    assert_eq!(mem.read_u32((esp + 4) as u64).unwrap(), 0x0040_0000); // old EIP
+    assert_eq!(mem.read_u32((esp + 8) as u64).unwrap(), 0x001B); // old CS
+    assert_eq!(mem.read_u32((esp + 12) as u64).unwrap(), (RFLAGS_FIXED | flags::IF) as u32);
+    assert_eq!(mem.read_u32((esp + 16) as u64).unwrap(), 0x0000_8000); // old ESP
+    assert_eq!(mem.read_u32((esp + 20) as u64).unwrap(), 0x0023); // old SS
 }

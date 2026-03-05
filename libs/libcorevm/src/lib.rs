@@ -107,6 +107,8 @@ pub struct VmEngine {
     pub interrupts: InterruptController,
     /// Port I/O dispatcher (maps port ranges to device handlers).
     pub io: IoDispatch,
+    /// Configured logical CPU count exposed to the guest.
+    pub vcpu_count: u8,
 }
 
 impl VmEngine {
@@ -114,12 +116,21 @@ impl VmEngine {
     ///
     /// The CPU starts in real mode at the standard reset vector (CS:IP = F000:FFF0).
     pub fn new(ram_size: usize) -> Self {
+        Self::new_with_vcpus(ram_size, 1)
+    }
+
+    /// Create a new VM with a configured logical CPU count.
+    pub fn new_with_vcpus(ram_size: usize, vcpu_count: u8) -> Self {
+        let count = vcpu_count.max(1);
+        let mut cpu = Cpu::new();
+        cpu.configure_topology(0, count);
         VmEngine {
-            cpu: Cpu::new(),
+            cpu,
             memory: GuestMemory::new(ram_size),
             mmu: Mmu::new(),
             interrupts: InterruptController::new(),
             io: IoDispatch::new(),
+            vcpu_count: count,
         }
     }
 
@@ -157,6 +168,7 @@ impl VmEngine {
     /// Reset the VM to power-on state.
     pub fn reset(&mut self) {
         self.cpu.reset();
+        self.cpu.configure_topology(0, self.vcpu_count);
         self.mmu = Mmu::new();
         self.interrupts = InterruptController::new();
         // Memory and I/O handlers are preserved across reset
@@ -328,10 +340,23 @@ unsafe fn vm_from_handle(handle: u64) -> &'static mut VmInstance {
 /// The handle must be destroyed with [`corevm_destroy`] when no longer needed.
 #[no_mangle]
 pub extern "C" fn corevm_create(ram_size_mb: u32) -> u64 {
-    vm_log!("creating VM with {} MiB RAM", ram_size_mb);
+    corevm_create_ex(ram_size_mb, 1)
+}
+
+/// Create a new VM instance with RAM size and logical CPU count.
+///
+/// `vcpu_count` is clamped to at least 1.
+#[no_mangle]
+pub extern "C" fn corevm_create_ex(ram_size_mb: u32, vcpu_count: u32) -> u64 {
+    let count = (vcpu_count.clamp(1, 255)) as u8;
+    vm_log!(
+        "creating VM with {} MiB RAM (vcpus={})",
+        ram_size_mb,
+        count
+    );
     let ram_bytes = (ram_size_mb as usize) * 1024 * 1024;
     let instance = Box::new(VmInstance {
-        engine: VmEngine::new(ram_bytes),
+        engine: VmEngine::new_with_vcpus(ram_bytes, count),
         last_error: None,
         last_error_rip: 0,
         pic_ptr: ptr::null_mut(),
@@ -527,6 +552,13 @@ pub extern "C" fn corevm_get_mode(handle: u64) -> u32 {
 pub extern "C" fn corevm_get_cpl(handle: u64) -> u8 {
     let vm = unsafe { vm_from_handle(handle) };
     vm.engine.cpu.regs.cpl
+}
+
+/// Get configured logical CPU count for this VM.
+#[no_mangle]
+pub extern "C" fn corevm_get_vcpu_count(handle: u64) -> u32 {
+    let vm = unsafe { vm_from_handle(handle) };
+    vm.engine.vcpu_count as u32
 }
 
 // ════════════════════════════════════════════════════════════════════════

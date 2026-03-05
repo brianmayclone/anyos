@@ -316,6 +316,7 @@ const VMS_DIR: &str = "/System/shared/vmmanager/vms";
 struct VmConfigInfo {
     name: String,
     ram_mb: u32,
+    cpu_cores: u32,
     ram_prealloc: bool,
     disk_image: String,
     iso_image: String,
@@ -374,6 +375,7 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
     let text = core::str::from_utf8(&data).unwrap_or("");
     let mut name = String::new();
     let mut ram_mb: u32 = 64;
+    let mut cpu_cores: u32 = 1;
     let mut ram_prealloc = false;
     let mut disk_image = String::new();
     let mut iso_image = String::new();
@@ -399,6 +401,9 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
             }
         } else if let Some(val) = line.strip_prefix("ram_alloc=") {
             ram_prealloc = val == "prealloc";
+        } else if let Some(val) = line.strip_prefix("cpu_cores=") {
+            let parsed = parse_u32(val);
+            cpu_cores = parsed.clamp(1, 64);
         } else if let Some(val) = line.strip_prefix("disk=") {
             disk_image = String::from(val);
         } else if let Some(val) = line.strip_prefix("iso=") {
@@ -427,6 +432,7 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
     Some(VmConfigInfo {
         name,
         ram_mb,
+        cpu_cores,
         ram_prealloc,
         disk_image,
         iso_image,
@@ -469,7 +475,7 @@ fn cmd_create(uuid: &str) {
     };
 
     // Create VM with configured RAM.
-    let handle = match VmHandle::new(config.ram_mb) {
+    let handle = match VmHandle::new_with_cores(config.ram_mb, config.cpu_cores) {
         Some(h) => h,
         None => {
             send_status("error 0 failed to create VM (out of memory?)");
@@ -525,7 +531,13 @@ fn cmd_create(uuid: &str) {
     // Report success with SHM ID BEFORE loading disk/ISO.
     // vmmanager needs the SHM ID promptly; disk/ISO loading can be slow.
     send_status(&format!("created 0 {}", shm_id));
-    anyos_std::println!("[vmd] VM '{}' created ({} MiB RAM, shm={})", config.name, config.ram_mb, shm_id);
+    anyos_std::println!(
+        "[vmd] VM '{}' created ({} MiB RAM, {} cores, shm={})",
+        config.name,
+        config.ram_mb,
+        handle.vcpu_count(),
+        shm_id
+    );
 
     // Attach disk image as FD-backed IDE master drive.
     // The file descriptor remains open for on-demand sector I/O — the
