@@ -37,6 +37,8 @@ const INFO_BAR_H: u32 = 28;
 
 /// SHM header size in bytes (must match vmd).
 const SHM_HEADER: usize = 64;
+/// VMD SHM size (must match `bin/vmd/src/main.rs`).
+const SHM_SIZE: usize = 4 * 1024 * 1024;
 
 /// Maximum number of VMs that can be configured.
 const MAX_VMS: usize = 16;
@@ -1551,6 +1553,17 @@ fn render_graphics_mode(canvas: &anyui::Canvas, fb: &[u8], width: u32, height: u
                     }
                 } else { 0xFF000000 }
             }
+            4 => {
+                // CoreVM exports 4bpp legacy mode as 1 byte per pixel index.
+                // Use low nibble as VGA palette entry.
+                let off = (sy * width + sx) as usize;
+                if off < fb.len() {
+                    let idx = (fb[off] & 0x0F) as usize;
+                    VGA_COLORS[idx]
+                } else {
+                    0xFF000000
+                }
+            }
             _ => 0xFF2D2D2D,
         }
     };
@@ -2430,10 +2443,35 @@ fn vm_tick() {
                     render_text_mode(&a.canvas, text_buf);
                 } else if bpp > 0 && width > 0 && height > 0 {
                     // Graphics mode: payload is raw pixel data.
-                    let bytes_per_pixel = ((bpp as usize) + 7) / 8;
-                    let byte_len = (width as usize) * (height as usize) * bytes_per_pixel;
-                    let fb = core::slice::from_raw_parts(payload, byte_len);
-                    render_graphics_mode(&a.canvas, fb, width, height, bpp as u8);
+                    let bpp_u8 = bpp as u8;
+                    // Accept known pixel formats only to avoid invalid SHM payloads.
+                    if bpp_u8 == 4 || bpp_u8 == 8 || bpp_u8 == 24 || bpp_u8 == 32 {
+                        let bytes_per_pixel = ((bpp as usize) + 7) / 8;
+                        let byte_len = (width as usize)
+                            .checked_mul(height as usize)
+                            .and_then(|px| px.checked_mul(bytes_per_pixel));
+                        if let Some(byte_len) = byte_len {
+                            if byte_len <= SHM_SIZE.saturating_sub(SHM_HEADER) {
+                                let fb = core::slice::from_raw_parts(payload, byte_len);
+                                render_graphics_mode(&a.canvas, fb, width, height, bpp_u8);
+                            } else {
+                                anyos_std::println!(
+                                    "vmmanager: invalid SHM frame size w={} h={} bpp={} len={}",
+                                    width, height, bpp, byte_len
+                                );
+                            }
+                        } else {
+                            anyos_std::println!(
+                                "vmmanager: SHM frame size overflow w={} h={} bpp={}",
+                                width, height, bpp
+                            );
+                        }
+                    } else {
+                        anyos_std::println!(
+                            "vmmanager: unsupported SHM bpp={} (w={} h={})",
+                            bpp, width, height
+                        );
+                    }
                 }
             }
 

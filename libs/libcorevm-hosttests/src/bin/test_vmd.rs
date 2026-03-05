@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use libcorevm::{
     corevm_create_ex, corevm_destroy, corevm_get_instruction_count, corevm_get_last_error,
-    corevm_get_last_error_rip, corevm_get_mode, corevm_get_rip, corevm_get_segment_selector,
+    corevm_get_gpr, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rflags, corevm_get_rip,
+    corevm_get_segment_selector, corevm_read_phys_u8,
     corevm_ide_attach_slave, corevm_load_rom, corevm_ps2_key_press, corevm_ps2_key_release,
     corevm_pic_raise_irq, corevm_pit_advance, corevm_run, corevm_serial_take_output,
     corevm_setup_ide, corevm_setup_pci_bus, corevm_setup_standard_devices, corevm_debug_take_output,
@@ -227,6 +228,55 @@ fn mode_name(mode: u32) -> &'static str {
     }
 }
 
+fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
+    let rflags = corevm_get_rflags(handle);
+    let ax = corevm_get_gpr(handle, 0) as u32;
+    let cx = corevm_get_gpr(handle, 1) as u32;
+    let dx = corevm_get_gpr(handle, 2) as u32;
+    let bx = corevm_get_gpr(handle, 3) as u32;
+    let sp = corevm_get_gpr(handle, 4) as u32;
+    let bp = corevm_get_gpr(handle, 5) as u32;
+    let si = corevm_get_gpr(handle, 6) as u32;
+    let di = corevm_get_gpr(handle, 7) as u32;
+    let ip16 = (rip as u16) as u64;
+    let phys = if mode == 0 {
+        ((cs as u64) << 4).wrapping_add(ip16)
+    } else {
+        rip
+    };
+    let mut bytes = [0u8; 8];
+    for (i, b) in bytes.iter_mut().enumerate() {
+        *b = corevm_read_phys_u8(handle, phys.wrapping_add(i as u64));
+    }
+    eprintln!(
+        "[test-vmd] cpu probe: mode={} cs:ip={:04X}:{:04X} phys={:08X} AX={:04X} BX={:04X} CX={:04X} DX={:04X} SI={:04X} DI={:04X} BP={:04X} SP={:04X} FLAGS={:04X} IF={} ZF={} CF={} bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+        mode_name(mode),
+        cs,
+        ip16 as u32,
+        phys as u32,
+        ax as u16,
+        bx as u16,
+        cx as u16,
+        dx as u16,
+        si as u16,
+        di as u16,
+        bp as u16,
+        sp as u16,
+        (rflags & 0xFFFF) as u16,
+        if (rflags & 0x0200) != 0 { 1 } else { 0 },
+        if (rflags & 0x0040) != 0 { 1 } else { 0 },
+        if (rflags & 0x0001) != 0 { 1 } else { 0 },
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7]
+    );
+}
+
 fn last_error(handle: u64) -> String {
     let mut buf = [0u8; 1024];
     let n = corevm_get_last_error(handle, buf.as_mut_ptr(), buf.len() as u32);
@@ -260,6 +310,48 @@ struct DisplayState {
     fb_height: u32,
     fb_bpp: u8,
     in_text_mode: bool,
+}
+
+fn display_signature(state: &DisplayState) -> u64 {
+    if state.in_text_mode {
+        let mut sig = 0u64;
+        let n = state.text_cells.len().min(64);
+        for i in 0..n {
+            sig = sig.wrapping_mul(131).wrapping_add(state.text_cells[i] as u64);
+        }
+        sig ^ 0x54585400u64
+    } else {
+        let mut sig = 0u64;
+        let n = state.fb_bytes.len().min(256);
+        for i in 0..n {
+            sig = sig.wrapping_mul(131).wrapping_add(state.fb_bytes[i] as u64);
+        }
+        sig ^ ((state.fb_width as u64) << 32) ^ ((state.fb_height as u64) << 8) ^ state.fb_bpp as u64
+    }
+}
+
+fn dump_text_screen(cells: &[u16]) {
+    let cols = 80usize;
+    let rows = 25usize;
+    eprintln!("[test-vmd] final text screen dump:");
+    for r in 0..rows {
+        let mut line = String::with_capacity(cols);
+        for c in 0..cols {
+            let idx = r * cols + c;
+            let ch = if idx < cells.len() {
+                (cells[idx] & 0xFF) as u8
+            } else {
+                b' '
+            };
+            let out = if ch.is_ascii_graphic() || ch == b' ' {
+                ch as char
+            } else {
+                '.'
+            };
+            line.push(out);
+        }
+        eprintln!("{:02}: {}", r, line);
+    }
 }
 
 fn update_display_state(handle: u64, state: &mut DisplayState) {
@@ -663,6 +755,9 @@ fn main() {
     let max_duration = Duration::from_secs(cfg.max_seconds);
     let interactive_ui = !cfg.plain && io::stdout().is_terminal();
     let mut display = DisplayState::default();
+    let mut last_display_meta = String::new();
+    let mut last_display_sig = 0u64;
+    let mut last_plain_diag = Instant::now();
     let mut log_lines: VecDeque<String> = VecDeque::new();
     let mut log_pending = String::new();
     let mut last_render = Instant::now();
@@ -716,6 +811,37 @@ fn main() {
             last_auto_enter = Instant::now();
         }
         update_display_state(vm.0, &mut display);
+        if !interactive_ui {
+            let meta = if display.in_text_mode {
+                format!("text cells={}", display.text_cells.len())
+            } else {
+                format!(
+                    "gfx {}x{}x{} bytes={}",
+                    display.fb_width, display.fb_height, display.fb_bpp, display.fb_bytes.len()
+                )
+            };
+            let sig = display_signature(&display);
+            if meta != last_display_meta || sig != last_display_sig {
+                eprintln!("[test-vmd] display: {meta} sig=0x{sig:016X}");
+                last_display_meta = meta;
+                last_display_sig = sig;
+            } else if last_plain_diag.elapsed() >= Duration::from_secs(5) {
+                let mode = corevm_get_mode(vm.0);
+                let cs = corevm_get_segment_selector(vm.0, 1);
+                let rip = corevm_get_rip(vm.0);
+                eprintln!(
+                    "[test-vmd] display steady: {} sig=0x{:016X} ic={} mode={} cs={:04X} rip={:08X}",
+                    last_display_meta,
+                    last_display_sig,
+                    corevm_get_instruction_count(vm.0),
+                    mode_name(mode),
+                    cs,
+                    rip as u32
+                );
+                dump_cpu_probe(vm.0, mode, cs, rip);
+                last_plain_diag = Instant::now();
+            }
+        }
 
         if interactive_ui && last_render.elapsed() >= Duration::from_millis(100) {
             let lines = build_ui_lines(&cfg, vm.0, start, &display, &log_lines);
@@ -762,6 +888,9 @@ fn main() {
 
     if saw_booting_kernel {
         eprintln!("[test-vmd] marker reached: Booting the kernel");
+    }
+    if !interactive_ui && display.in_text_mode {
+        dump_text_screen(&display.text_cells);
     }
 
     // Restore terminal state on exit.

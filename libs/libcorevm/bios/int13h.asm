@@ -932,6 +932,7 @@ ide_read_sectors:
     pop cx
 
     ; Read 256 words (512 bytes).
+    push di
     push cx
     push dx
     mov dx, IDE_DATA
@@ -939,6 +940,15 @@ ide_read_sectors:
     rep insw
     pop dx
     pop cx
+    pop bx
+    cmp di, bx
+    jae .read_no_wrap
+    ; DI wrapped across 64 KiB boundary: advance ES by 0x1000 paragraphs
+    ; so linear destination still advances by +0x10000 bytes.
+    mov bx, es
+    add bx, 0x1000
+    mov es, bx
+.read_no_wrap:
 
     pop eax                     ; Restore EAX (LBA) before incrementing
     inc eax                     ; Next LBA
