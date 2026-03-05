@@ -111,7 +111,7 @@ impl JitEngine {
         key: BlockKey,
         block: &crate::jit::block::BasicBlock,
     ) -> Option<(usize, u64)> {
-        let compiled = self.translator.translate_block(block, key.phys_addr);
+        let compiled = self.translator.translate_block(block, key.phys_addr, key.mode);
 
         let code_offset = self.buffer.emit(&compiled.code)?;
 
@@ -152,6 +152,22 @@ impl JitEngine {
     pub fn flush(&mut self) {
         self.compiled.clear();
         self.buffer.reset();
+    }
+
+    /// Invalidate all compiled blocks whose physical address falls within
+    /// the given 4 KiB page. Called on self-modifying code detection.
+    ///
+    /// Because compiled code is stored in a flat linear buffer (no per-block
+    /// free list), we cannot reclaim the buffer space for individual blocks.
+    /// We simply remove the lookup entries — on next execution the block will
+    /// be recompiled into the buffer. If the buffer fills up, `compile_block`
+    /// returns `None` and the interpreter fallback is used instead.
+    pub fn invalidate_page(&mut self, page_phys: u64) {
+        let page_base = page_phys & !0xFFF;
+        let page_end  = page_base + 0x1000;
+        self.compiled.retain(|key, _| {
+            key.phys_addr < page_base || key.phys_addr >= page_end
+        });
     }
 
     /// Return the number of compiled blocks.

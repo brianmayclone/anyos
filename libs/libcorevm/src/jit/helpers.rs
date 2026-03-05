@@ -211,10 +211,14 @@ pub extern "C" fn jit_interpret_one(
     match crate::executor::execute(cpu, &inst, memory, mmu, io, interrupts) {
         Ok(()) => {
             cpu.instruction_count += 1;
+            // Mirror the interpreter's mask_rip() call so RIP stays within
+            // the correct width for the current mode (16-bit real/protected).
+            cpu.mask_rip();
             JIT_OK
         }
         Err(VmError::Halted) => {
             cpu.instruction_count += 1;
+            cpu.mask_rip();
             JIT_EXIT_BLOCK
         }
         Err(_) => JIT_EXIT_BLOCK,

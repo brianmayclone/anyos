@@ -1106,16 +1106,26 @@ pub extern "C" fn corevm_vga_get_framebuffer(
         return ptr::null();
     }
     let svga = unsafe { &*vm.svga_ptr };
-    if !width.is_null() {
-        unsafe { *width = svga.width };
+    match svga.mode {
+        devices::svga::VgaMode::Text80x25 => {
+            if !width.is_null() { unsafe { *width = 0 }; }
+            if !height.is_null() { unsafe { *height = 0 }; }
+            if !bpp.is_null() { unsafe { *bpp = 0 }; }
+            ptr::null()
+        }
+        _ => {
+            if !width.is_null() {
+                unsafe { *width = svga.width };
+            }
+            if !height.is_null() {
+                unsafe { *height = svga.height };
+            }
+            if !bpp.is_null() {
+                unsafe { *bpp = svga.bpp };
+            }
+            svga.framebuffer.as_ptr()
+        }
     }
-    if !height.is_null() {
-        unsafe { *height = svga.height };
-    }
-    if !bpp.is_null() {
-        unsafe { *bpp = svga.bpp };
-    }
-    svga.framebuffer.as_ptr()
 }
 
 /// Get a pointer to the VGA text-mode buffer (80x25 cells, `u16` per cell).
@@ -1127,13 +1137,27 @@ pub extern "C" fn corevm_vga_get_framebuffer(
 pub extern "C" fn corevm_vga_get_text_buffer(handle: u64, count: *mut u32) -> *const u16 {
     let vm = unsafe { vm_from_handle(handle) };
     if vm.svga_ptr.is_null() {
+        if !count.is_null() {
+            unsafe { *count = 0 };
+        }
         return ptr::null();
     }
     let svga = unsafe { &*vm.svga_ptr };
-    if !count.is_null() {
-        unsafe { *count = svga.text_buffer.len() as u32 };
+    match svga.mode {
+        devices::svga::VgaMode::Text80x25 => {
+            if !count.is_null() {
+                unsafe { *count = svga.text_buffer.len() as u32 };
+            }
+            svga.text_buffer.as_ptr()
+        }
+        _ => {
+            // Not in text mode.
+            if !count.is_null() {
+                unsafe { *count = 0 };
+            }
+            ptr::null()
+        }
     }
-    svga.text_buffer.as_ptr()
 }
 
 /// Get VGA MMIO debug counters.

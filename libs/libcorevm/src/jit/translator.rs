@@ -41,12 +41,25 @@
 //! | `[RBP-8]`    | Saved `InterruptController*`               |
 
 use alloc::vec::Vec;
+use crate::decoder::CpuMode;
 use crate::flags::OperandSize;
 use crate::instruction::{DecodedInst, MemOperand, OpcodeMap, Operand};
 use crate::jit::block::BasicBlock;
 use crate::jit::emitter::{Cc, Emitter, Reg, OpSize};
 use crate::jit::helpers;
-use crate::registers::SegReg;
+use crate::registers::{RegisterFile, SegmentDescriptor, SegReg};
+
+// ── Compile-time layout assertions ────────────────────────────────────────────
+// These catch any Rust layout change that would break the JIT's hardcoded
+// field offsets. If any assert fires, update the constants below to match.
+
+const _: () = {
+    assert!(core::mem::size_of::<RegisterFile>() >= 144 + 6 * 32);
+    assert!(core::mem::size_of::<SegmentDescriptor>() == 32);
+    assert!(core::mem::align_of::<SegmentDescriptor>() == 8);
+    // base is the first field in the Rust-reordered layout (highest alignment → first).
+    assert!(core::mem::offset_of!(SegmentDescriptor, base) == 0);
+};
 
 // ── RegisterFile field offsets (valid because RegisterFile is #[repr(C)]) ──
 
@@ -90,8 +103,16 @@ const INTR_STACK_OFF: i32 = -8;
 // The `base` field is at offset 8 within SegmentDescriptor.
 // So seg[n].base = GPR_BASE + 144 + n * 40 + 8
 const SEG_ARRAY_OFFSET: i32 = 144; // offset of seg[0] from GPR_BASE
-const SEG_DESC_SIZE: i32 = 40;     // sizeof(SegmentDescriptor)
-const SEG_BASE_IN_DESC: i32 = 8;   // offset of `base` within SegmentDescriptor
+// SegmentDescriptor is NOT #[repr(C)]: Rust reorders fields by alignment.
+// Actual layout (verified at compile time via offset_of! assertions below):
+//   base: u64     @ offset  0  (largest alignment field → placed first)
+//   limit: u32    @ offset  8
+//   selector: u16 @ offset 12
+//   access..bool  @ offset 14  (8 × 1-byte booleans/u8)
+//   padding       @ offset 22..23 (to align to 8)
+//   sizeof = 32, alignof = 8
+const SEG_DESC_SIZE: i32 = 32;     // sizeof(SegmentDescriptor)
+const SEG_BASE_IN_DESC: i32 = 0;   // offset of `base` within SegmentDescriptor
 
 // ── ALU operation dispatch ──
 
@@ -117,6 +138,9 @@ pub struct Translator {
     pub native_count: u64,
     /// Count of instructions that fell back to interpreter (diagnostics).
     pub fallback_count: u64,
+    /// CPU mode for the block currently being translated.
+    /// Set at the start of `translate_block` and valid throughout translation.
+    current_mode: CpuMode,
 }
 
 /// Per-block mutable state during translation.
@@ -133,11 +157,13 @@ impl Translator {
         Translator {
             native_count: 0,
             fallback_count: 0,
+            current_mode: CpuMode::Real16,
         }
     }
 
     /// Translate a decoded basic block into native x86-64 machine code.
-    pub fn translate_block(&mut self, block: &BasicBlock, entry_phys: u64) -> CompiledBlock {
+    pub fn translate_block(&mut self, block: &BasicBlock, entry_phys: u64, mode: CpuMode) -> CompiledBlock {
+        self.current_mode = mode;
         let mut emit = Emitter::new();
         let inst_count = block.instructions.len() as u64;
         let mut state = BlockState { flags_dirty: false };
@@ -172,8 +198,18 @@ impl Translator {
     // ════════════════════════════════════════════════════════════════════
 
     /// Emit the block prologue.
+    ///
+    /// Stack layout after prologue (relative to RBP):
+    ///   On entry: RSP is 8-misaligned (return address from CALL into JIT block).
+    ///   PUSH Rbx, R12, R13, R14, R15, Rbp  → 6 × 8 = 48 bytes → 16-aligned again.
+    ///   MOV Rbp, Rsp                         → frame pointer set.
+    ///   PUSH R8     (InterruptController*)   → [RBP - 8],  RSP 8-misaligned.
+    ///   SUB Rsp, 8  (alignment padding)      → [RBP - 16], RSP 16-aligned.
+    ///   CALL jit_get_gpr_ptr                 → needs 16-aligned RSP ✓.
+    ///
+    /// emit_restore_and_ret uses `MOV Rsp, Rbp` to unwind everything.
     fn emit_prologue(&self, emit: &mut Emitter) {
-        // Save callee-saved registers (6 pushes + PUSH RBP = 7 → RSP 16-aligned).
+        // Save callee-saved registers (6 pushes → RSP 16-aligned).
         emit.push(Reg::Rbx);
         emit.push(Reg::R12);
         emit.push(Reg::R13);
@@ -182,16 +218,19 @@ impl Translator {
         emit.push(Reg::Rbp);
         emit.mov_rr(OpSize::S64, Reg::Rbp, Reg::Rsp);
 
-        // Save InterruptController* (R8) on the stack.
-        emit.push(Reg::R8); // [RBP - 8]
+        // Save InterruptController* (5th arg = R8) at [RBP - 8].
+        emit.push(Reg::R8); // RSP now 8-misaligned
+
+        // Align RSP to 16 bytes before any CALL.
+        emit.sub_ri(OpSize::S64, Reg::Rsp, 8); // RSP now 16-aligned
 
         // Copy context pointers to callee-saved registers.
         emit.mov_rr(OpSize::S64, CPU_PTR, Reg::Rdi);  // RBX = cpu
         emit.mov_rr(OpSize::S64, MEM_PTR, Reg::Rsi);  // R12 = memory
-        emit.mov_rr(OpSize::S64, MMU_PTR, Reg::Rdx);   // R13 = mmu
-        emit.mov_rr(OpSize::S64, IO_PTR, Reg::Rcx);    // R14 = io
+        emit.mov_rr(OpSize::S64, MMU_PTR, Reg::Rdx);  // R13 = mmu
+        emit.mov_rr(OpSize::S64, IO_PTR, Reg::Rcx);   // R14 = io
 
-        // Call jit_get_gpr_ptr(cpu) to get GPR base pointer.
+        // Call jit_get_gpr_ptr(cpu) to get GPR base pointer (RSP 16-aligned ✓).
         emit.mov_rr(OpSize::S64, Reg::Rdi, CPU_PTR);
         let helper = helpers::jit_get_gpr_ptr as *const () as usize as u64;
         emit.call_abs(helper);
@@ -1138,9 +1177,8 @@ impl Translator {
             _ => return false,
         };
         self.emit_call_mem_read_with_linear(emit, Reg::Rax, read_size);
-        // RAX = return address
-
-        // RIP = return address
+        // RAX = return address — apply mode mask before storing to RIP.
+        emit_mask_rip(emit, self.current_mode);
         emit.mov_mr(OpSize::S64, GPR_BASE, RIP_OFFSET, Reg::Rax);
 
         // RSP += pop_size
@@ -1370,13 +1408,21 @@ impl Translator {
     }
 
     /// Advance guest RIP by a fixed instruction length.
+    ///
+    /// Applies the same RIP masking as `Cpu::mask_rip()`:
+    /// - Real16/Protected16 → mask to 16 bits
+    /// - Protected32        → mask to 32 bits (zero-extend via 32-bit mov)
+    /// - Long64             → no masking
     fn emit_advance_rip(&self, emit: &mut Emitter, length: u8) {
         emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RIP_OFFSET);
         emit.add_ri(OpSize::S64, Reg::Rax, length as i32);
+        emit_mask_rip(emit, self.current_mode);
         emit.mov_mr(OpSize::S64, GPR_BASE, RIP_OFFSET, Reg::Rax);
     }
 
     /// Advance guest RIP by a signed delta (for branches).
+    ///
+    /// Applies RIP masking according to the block's CPU mode.
     fn emit_advance_rip_by(&self, emit: &mut Emitter, delta: i64) {
         emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RIP_OFFSET);
         if delta >= i32::MIN as i64 && delta <= i32::MAX as i64 {
@@ -1385,6 +1431,7 @@ impl Translator {
             emit.mov_ri64(Reg::Rcx, delta as u64);
             emit.add_rr(OpSize::S64, Reg::Rax, Reg::Rcx);
         }
+        emit_mask_rip(emit, self.current_mode);
         emit.mov_mr(OpSize::S64, GPR_BASE, RIP_OFFSET, Reg::Rax);
     }
 }
@@ -1392,6 +1439,24 @@ impl Translator {
 // ════════════════════════════════════════════════════════════════════════
 // Free functions
 // ════════════════════════════════════════════════════════════════════════
+
+/// Emit RIP masking into RAX matching `Cpu::mask_rip()` for the given mode.
+/// Assumes the new RIP value is already in RAX.
+fn emit_mask_rip(emit: &mut Emitter, mode: CpuMode) {
+    match mode {
+        CpuMode::Real16 => {
+            // Real mode and 16-bit protected: RIP is 16-bit.
+            emit.and_ri(OpSize::S64, Reg::Rax, 0xFFFF);
+        }
+        CpuMode::Protected32 => {
+            // 32-bit protected: RIP is 32-bit. A 32-bit MOV zero-extends.
+            emit.mov_rr(OpSize::S32, Reg::Rax, Reg::Rax);
+        }
+        CpuMode::Long64 => {
+            // Long mode: full 64-bit RIP, no masking needed.
+        }
+    }
+}
 
 /// Emit a native ALU reg, reg instruction.
 fn emit_native_alu_rr(emit: &mut Emitter, op: AluOp, size: OpSize, dst: Reg, src: Reg) {

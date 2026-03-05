@@ -424,10 +424,12 @@ impl Cpu {
                     crate::memory::smc::DrainResult::Pages(n) => {
                         for i in 0..n {
                             self.decode_cache.invalidate_page(pages_buf[i]);
+                            self.jit_engine.invalidate_page(pages_buf[i]);
                         }
                     }
                     crate::memory::smc::DrainResult::Overflow => {
                         self.decode_cache.flush();
+                        self.jit_engine.flush();
                     }
                 }
             }
@@ -723,21 +725,34 @@ impl Cpu {
             func(self, memory, mmu, io, interrupts)
         };
 
-        // Update instruction count with the number of guest instructions.
-        self.instruction_count += inst_count;
-        self.mask_rip();
-
+        // On JIT_OK, all inst_count instructions ran natively (no per-instruction
+        // count updates inside the JIT block), so we add them all here.
+        // On JIT_EXIT_BLOCK, jit_interpret_one already incremented instruction_count
+        // for any interpreter-fallback instructions it executed. The natively
+        // executed instructions before the fallback are not counted individually
+        // inside the JIT block, so we still add inst_count to keep the count
+        // monotonically increasing (exact per-instruction granularity is not
+        // required for correctness, only for the instruction limit check).
+        //
+        // mask_rip() is NOT called here: every RIP update inside the JIT block
+        // now applies the correct mode mask via emit_advance_rip / emit_advance_rip_by,
+        // and jit_interpret_one calls cpu.mask_rip() after each interpreter step.
         match result {
-            JIT_OK => BlockExitReason::Continue,
+            JIT_OK => {
+                self.instruction_count += inst_count;
+                BlockExitReason::Continue
+            }
             JIT_EXIT_BLOCK => {
-                // The block signaled an early exit (HLT, page fault, etc.).
-                // The interpreter fallback in the JIT code already handled
-                // exception injection. Return to the main loop to re-check
-                // the new RIP.
+                // The block signaled an early exit (HLT, page fault, or interpreter
+                // fallback that returned JIT_EXIT_BLOCK). instruction_count was
+                // already updated by jit_interpret_one for the fallback instruction.
+                // Add the remaining native instructions (conservatively inst_count).
+                self.instruction_count += inst_count;
                 BlockExitReason::Continue
             }
             _ => {
-                // Unexpected return code — treat as exit.
+                // Unexpected return code — treat as continue.
+                self.instruction_count += inst_count;
                 BlockExitReason::Continue
             }
         }
