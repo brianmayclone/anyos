@@ -102,15 +102,19 @@ impl InterruptController {
     ///
     /// Returns the lowest-numbered (highest-priority) pending vector.
     pub fn pending_interrupt(&self, rflags: u64) -> Option<u8> {
-        // Maskable interrupts require IF=1 and no shadow.
-        if (rflags & flags::IF) == 0 || self.interrupt_shadow {
+        if self.interrupt_shadow {
             return None;
         }
+        let if_set = (rflags & flags::IF) != 0;
         // Scan words low-to-high for the lowest pending vector.
         for (word_idx, &word) in self.pending.iter().enumerate() {
             if word != 0 {
                 let bit = word.trailing_zeros() as u8;
-                return Some((word_idx as u8) * 64 + bit);
+                let vec = (word_idx as u8) * 64 + bit;
+                if if_set {
+                    return Some(vec);
+                }
+                return None;
             }
         }
         None
@@ -120,6 +124,25 @@ impl InterruptController {
     #[inline]
     pub fn acknowledge(&mut self, vector: u8) {
         self.clear_irq(vector);
+    }
+
+    /// Return one raw 64-bit pending-vector word for diagnostics.
+    ///
+    /// `idx` selects the word: 0 => vectors 0..63, 1 => 64..127,
+    /// 2 => 128..191, 3 => 192..255.
+    pub fn pending_word(&self, idx: usize) -> u64 {
+        self.pending.get(idx).copied().unwrap_or(0)
+    }
+
+    /// Return the lowest-numbered pending vector, ignoring IF/shadow state.
+    pub fn lowest_pending_vector(&self) -> Option<u8> {
+        for (word_idx, &word) in self.pending.iter().enumerate() {
+            if word != 0 {
+                let bit = word.trailing_zeros() as u8;
+                return Some((word_idx as u8) * 64 + bit);
+            }
+        }
+        None
     }
 
     /// Read an interrupt vector entry from the real-mode IVT.

@@ -28,6 +28,9 @@ use crate::interrupts::InterruptController;
 use crate::io::IoDispatch;
 use crate::memory::{AccessType, GuestMemory, MemoryBus, Mmu};
 use crate::registers::{GprIndex, SegReg};
+use core::sync::atomic::{AtomicU32, Ordering};
+
+static STI_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // ── Public entry point ──
 
@@ -512,7 +515,20 @@ fn exec_primary(
 
         // ── STI ──
         0xFB => {
+            if cpu.regs.segment(SegReg::Cs).selector >= 0x60 {
+                let n = STI_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+                if n < 32 {
+                    libsyscall::serial_print(format_args!(
+                        "[corevm] sti op@{:04X}:{:08X} IF(before)={}\n",
+                        cpu.regs.segment(SegReg::Cs).selector,
+                        cpu.regs.rip as u32,
+                        if (cpu.regs.rflags & crate::flags::IF) != 0 { 1 } else { 0 },
+                    ));
+                }
+            }
             cpu.regs.rflags |= crate::flags::IF;
+            // x86 defers maskable interrupts until after the next instruction.
+            interrupts.interrupt_shadow = true;
             cpu.regs.rip += inst.length as u64;
             Ok(())
         }
@@ -594,6 +610,16 @@ fn exec_secondary(
                     7 => match rm {
                         0 => system::exec_swapgs(cpu, inst),
                         1 => system::exec_rdtscp(cpu, inst),
+                        // AMD MONITORX (minimal emulation: no-op)
+                        2 => {
+                            cpu.regs.rip += inst.length as u64;
+                            Ok(())
+                        }
+                        // AMD MWAITX (minimal emulation: no-op)
+                        3 => {
+                            cpu.regs.rip += inst.length as u64;
+                            Ok(())
+                        }
                         _ => Err(VmError::UndefinedOpcode(op2)),
                     },
                     // XGETBV / XSETBV

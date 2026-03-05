@@ -13,8 +13,8 @@ use crate::registers::*;
 
 use super::{compute_effective_address, translate_and_read, translate_and_write};
 
-/// Synthetic TSC increment per RDTS(C/P) read.
-const TSC_STEP: u64 = 100_000;
+/// Synthetic TSC rate in ticks per retired guest instruction.
+const TSC_TICKS_PER_INST: u64 = 1;
 
 // ── Descriptor table operations ──
 
@@ -507,12 +507,12 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
 /// Returns the TSC value in EDX:EAX. We use the stored MSR_TSC value and
 /// increment it each time RDTSC is executed.
 pub fn exec_rdtsc(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
-    let tsc = cpu.regs.read_msr(MSR_TSC);
+    let tsc = cpu
+        .regs
+        .read_msr(MSR_TSC)
+        .wrapping_add(cpu.instruction_count.saturating_mul(TSC_TICKS_PER_INST));
     cpu.regs.write_gpr32(GprIndex::Rax as u8, tsc as u32);
     cpu.regs.write_gpr32(GprIndex::Rdx as u8, (tsc >> 32) as u32);
-
-    // Increment TSC for next read
-    cpu.regs.write_msr(MSR_TSC, tsc.wrapping_add(TSC_STEP));
 
     cpu.regs.rip += inst.length as u64;
     Ok(())
@@ -522,12 +522,13 @@ pub fn exec_rdtsc(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
 ///
 /// Returns TSC in EDX:EAX and TSC_AUX in ECX.
 pub fn exec_rdtscp(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
-    let tsc = cpu.regs.read_msr(MSR_TSC);
+    let tsc = cpu
+        .regs
+        .read_msr(MSR_TSC)
+        .wrapping_add(cpu.instruction_count.saturating_mul(TSC_TICKS_PER_INST));
     cpu.regs.write_gpr32(GprIndex::Rax as u8, tsc as u32);
     cpu.regs.write_gpr32(GprIndex::Rdx as u8, (tsc >> 32) as u32);
     cpu.regs.write_gpr32(GprIndex::Rcx as u8, 0);
-
-    cpu.regs.write_msr(MSR_TSC, tsc.wrapping_add(TSC_STEP));
     cpu.regs.rip += inst.length as u64;
     Ok(())
 }

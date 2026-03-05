@@ -19,6 +19,11 @@ use crate::registers::{
     RegisterFile, SegReg, CR0_PE, CR0_PG, EFER_LMA, EFER_LME, MSR_EFER,
 };
 use crate::sse_state::SseState;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+static EXT_IRQ_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
+static IF_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
+static LAST_IF_STATE: AtomicU32 = AtomicU32::new(2);
 
 /// CPU execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -389,8 +394,36 @@ impl Cpu {
             // Sync MMU state from control registers (fast-path: skips if unchanged).
             mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
 
+            // Trace IF transitions in early kernel bring-up.
+            let cur_if = if (self.regs.rflags & crate::flags::IF) != 0 { 1 } else { 0 };
+            let prev_if = LAST_IF_STATE.load(Ordering::Relaxed);
+            if cur_if != prev_if {
+                LAST_IF_STATE.store(cur_if, Ordering::Relaxed);
+                let n = IF_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+                if n < 64 {
+                    libsyscall::serial_print(format_args!(
+                        "[corevm] IF->{} CS={:04X} RIP={:08X}\n",
+                        cur_if,
+                        self.regs.seg[SegReg::Cs as usize].selector,
+                        self.regs.rip as u32,
+                    ));
+                }
+            }
+
             // Check pending interrupts (only if IF=1 and no interrupt shadow)
             if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {
+                if vector >= 0x20 {
+                    let n = EXT_IRQ_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if n < 32 {
+                        libsyscall::serial_print(format_args!(
+                            "[corevm] ext-irq deliver vec={} IF={} CS={:04X} RIP={:08X}\n",
+                            vector,
+                            if (self.regs.rflags & crate::flags::IF) != 0 { 1 } else { 0 },
+                            self.regs.seg[SegReg::Cs as usize].selector,
+                            self.regs.rip as u32,
+                        ));
+                    }
+                }
                 interrupts.acknowledge(vector);
                 if let Err(e) = self.deliver_interrupt(vector, false, None, memory, mmu, interrupts)
                 {

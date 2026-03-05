@@ -59,7 +59,6 @@ impl IoApic {
         for entry in redir_table.iter_mut() {
             *entry = 1 << 16; // masked
         }
-
         IoApic {
             reg_select: 0,
             id: 0,
@@ -121,6 +120,38 @@ impl IoApic {
 }
 
 impl IoApic {
+    /// Route an external IRQ pin through the redirection table.
+    ///
+    /// Returns `Some(vector)` when the entry is unmasked and uses fixed
+    /// delivery mode (0). Unsupported delivery modes are ignored for now.
+    pub fn route_irq(&mut self, irq: u8) -> Option<u8> {
+        let idx = irq as usize;
+        if idx >= NUM_REDIR_ENTRIES {
+            return None;
+        }
+        let entry = self.redir_table[idx];
+        // Bit 16: mask (1 = masked).
+        if (entry & (1 << 16)) != 0 {
+            return None;
+        }
+        // Bits 10:8: delivery mode (support fixed for now).
+        let delivery_mode = ((entry >> 8) & 0x7) as u8;
+        if delivery_mode != 0 {
+            return None;
+        }
+        Some((entry & 0xFF) as u8)
+    }
+
+    /// Return a raw redirection table entry for diagnostics.
+    pub fn redir_entry(&self, irq: u8) -> u64 {
+        let idx = irq as usize;
+        if idx < NUM_REDIR_ENTRIES {
+            self.redir_table[idx]
+        } else {
+            0
+        }
+    }
+
     /// Read the raw 32-bit value of an MMIO register by its base offset.
     fn read_mmio_register(&self, reg_base: u64) -> u32 {
         match reg_base {

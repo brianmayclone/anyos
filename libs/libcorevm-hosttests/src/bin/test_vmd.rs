@@ -13,7 +13,8 @@ use libcorevm::{
     corevm_create_ex, corevm_destroy, corevm_get_instruction_count, corevm_get_last_error,
     corevm_get_cr, corevm_get_gpr, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rflags,
     corevm_get_rip, corevm_get_segment_base, corevm_get_segment_selector, corevm_jit_cache_stats,
-    corevm_jit_enable, corevm_jit_stats, corevm_lapic_diag_state,
+    corevm_jit_enable, corevm_jit_stats, corevm_lapic_diag_state, corevm_irq_pending_word,
+    corevm_ioapic_redir_entry,
     corevm_pic_diag_state, corevm_read_linear_u8, corevm_read_phys_u8,
     corevm_ide_attach_slave, corevm_load_rom, corevm_ps2_key_press, corevm_ps2_key_release,
     corevm_pic_raise_irq, corevm_pit_advance, corevm_run, corevm_serial_take_output,
@@ -237,6 +238,10 @@ fn mode_name(mode: u32) -> &'static str {
 fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
     let rflags = corevm_get_rflags(handle);
     let pic = corevm_pic_diag_state(handle);
+    let irq_p0 = corevm_irq_pending_word(handle, 0);
+    let irq_p1 = corevm_irq_pending_word(handle, 1);
+    let ioapic_r0 = corevm_ioapic_redir_entry(handle, 0);
+    let ioapic_r1 = corevm_ioapic_redir_entry(handle, 1);
     let m_irr = (pic & 0xFF) as u8;
     let m_isr = ((pic >> 8) & 0xFF) as u8;
     let m_imr = ((pic >> 16) & 0xFF) as u8;
@@ -374,6 +379,26 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
                 eprintln!("{chunk}");
             }
         }
+        {
+            let base = 0xC08E_B7E0u64;
+            let mut chunk = String::new();
+            for i in 0..256u64 {
+                if i % 16 == 0 {
+                    if !chunk.is_empty() {
+                        eprintln!("{chunk}");
+                        chunk.clear();
+                    }
+                    chunk.push_str(&format!(
+                        "[test-vmd] kernhot {:08X}:",
+                        base.wrapping_add(i) as u32
+                    ));
+                }
+                chunk.push_str(&format!(" {:02X}", readb(base.wrapping_add(i))));
+            }
+            if !chunk.is_empty() {
+                eprintln!("{chunk}");
+            }
+        }
         let mut chain = String::from("[test-vmd] stack chain:");
         for i in 0..16u64 {
             let a = stack_linear.wrapping_add(i * 4);
@@ -386,7 +411,7 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         eprintln!("{chain}");
     }
     eprintln!(
-        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} JIFF={:08X} LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} JIFF={:08X} LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X}] IRQP[0={:016X} 1={:016X}] IOAPIC[r0={:016X} r1={:016X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
         mode_name(mode),
         cpl,
         cs,
@@ -415,6 +440,10 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         lapic_init,
         lapic_cur,
         lapic_div,
+        irq_p0,
+        irq_p1,
+        ioapic_r0,
+        ioapic_r1,
         stack_linear as u32,
         stack[0],
         stack[1],

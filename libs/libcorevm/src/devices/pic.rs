@@ -125,11 +125,7 @@ impl PicPair {
     /// Returns `None` if no interrupt is pending or all pending IRQs are
     /// masked or already in service.
     pub fn get_interrupt_vector(&self) -> Option<u8> {
-        // Some modern guests temporarily mask the legacy PIC very early while
-        // still depending on timer progress. Keep IRQ0 deliverable to avoid
-        // deadlock in that transition window.
-        let effective_master_imr = self.master.imr & !0x01;
-        let master_pending = self.master.irr & !effective_master_imr & !self.master.isr;
+        let master_pending = self.master.irr & !self.master.imr & !self.master.isr;
         if master_pending == 0 {
             return None;
         }

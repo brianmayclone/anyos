@@ -1137,16 +1137,7 @@ pub extern "C" fn corevm_ps2_key_release(handle: u64, scancode: u8) {
 /// Helper: raise IRQ 1 (keyboard) on the PIC and inject the resulting
 /// interrupt vector into the CPU.
 fn raise_keyboard_irq(vm: &mut VmInstance) {
-    if vm.pic_ptr.is_null() {
-        return;
-    }
-    let pic = unsafe { &mut *vm.pic_ptr };
-    pic.raise_irq(1);
-    if let Some(vector) = pic.get_interrupt_vector() {
-        let ack_irq = pic.irq_for_vector(vector).unwrap_or(1);
-        pic.acknowledge(ack_irq);
-        vm.engine.interrupts.raise_irq(vector);
-    }
+    inject_irq_line(vm, 1);
 }
 
 /// Inject a mouse movement/button event into the PS/2 controller.
@@ -1493,18 +1484,39 @@ pub extern "C" fn corevm_pit_advance(handle: u64, n: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn corevm_pic_raise_irq(handle: u64, irq: u8) {
     let vm = unsafe { vm_from_handle(handle) };
-    if vm.pic_ptr.is_null() {
-        return;
+    inject_irq_line(vm, irq);
+}
+
+/// Route one external IRQ line through available interrupt controllers.
+///
+/// We support both legacy PIC and IO-APIC routing because guests may switch
+/// from 8259 PIC to IO-APIC during early boot. Deliverable vectors from either
+/// path are queued into the CPU interrupt controller.
+fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
+    let mut delivered = false;
+
+    // Legacy 8259 PIC path.
+    if !vm.pic_ptr.is_null() {
+        let pic = unsafe { &mut *vm.pic_ptr };
+        pic.raise_irq(irq);
+        if let Some(vector) = pic.get_interrupt_vector() {
+            let ack_irq = pic.irq_for_vector(vector).unwrap_or(irq);
+            pic.acknowledge(ack_irq);
+            vm.engine.interrupts.raise_irq(vector);
+            delivered = true;
+        }
     }
-    let pic = unsafe { &mut *vm.pic_ptr };
-    pic.raise_irq(irq);
-    // Bridge: poll the PIC for the resulting vector and inject into the CPU.
-    // Acknowledge on the PIC (IRR→ISR) so the same IRQ isn't re-injected.
-    if let Some(vector) = pic.get_interrupt_vector() {
-        let ack_irq = pic.irq_for_vector(vector).unwrap_or(irq);
-        pic.acknowledge(ack_irq);
-        vm.engine.interrupts.raise_irq(vector);
+
+    // IO-APIC path (single-vCPU fixed-delivery subset).
+    if !vm.ioapic_ptr.is_null() {
+        let ioapic = unsafe { &mut *vm.ioapic_ptr };
+        if let Some(vector) = ioapic.route_irq(irq) {
+            vm.engine.interrupts.raise_irq(vector);
+            delivered = true;
+        }
     }
+
+    let _ = delivered;
 }
 
 /// Get the vector number of the highest-priority pending interrupt.
@@ -1594,6 +1606,32 @@ pub extern "C" fn corevm_lapic_diag_state(
         unsafe { *timer_divide_out = div; }
     }
     (svr as u64) | ((lvt_timer as u64) << 32)
+}
+
+/// Return one pending-interrupt bitmap word from the CPU interrupt controller.
+///
+/// `idx` selects the 64-bit word:
+/// - 0: vectors 0..63
+/// - 1: vectors 64..127
+/// - 2: vectors 128..191
+/// - 3: vectors 192..255
+#[no_mangle]
+pub extern "C" fn corevm_irq_pending_word(handle: u64, idx: u32) -> u64 {
+    let vm = unsafe { vm_from_handle(handle) };
+    vm.engine.interrupts.pending_word(idx as usize)
+}
+
+/// Return a raw IOAPIC redirection entry for a given IRQ line.
+///
+/// Returns 0 when IOAPIC is not present or `irq` is out of range.
+#[no_mangle]
+pub extern "C" fn corevm_ioapic_redir_entry(handle: u64, irq: u8) -> u64 {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ioapic_ptr.is_null() {
+        return 0;
+    }
+    let ioapic = unsafe { &*vm.ioapic_ptr };
+    ioapic.redir_entry(irq)
 }
 
 // ════════════════════════════════════════════════════════════════════════
