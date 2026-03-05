@@ -6,7 +6,7 @@
 use crate::cpu::Cpu;
 use crate::error::Result;
 use crate::flags::{self, OperandSize};
-use crate::instruction::DecodedInst;
+use crate::instruction::{DecodedInst, Operand};
 use crate::memory::{GuestMemory, Mmu};
 
 use super::{read_operand, write_operand};
@@ -631,14 +631,88 @@ pub fn exec_rcr(
 
 // ── Bit test operations ──
 
-/// Read the bit index from the source operand and compute the bit position.
+/// Read the destination value and compute the bit index for BT/BTS/BTR/BTC.
 ///
-/// For register sources, the bit index is masked to the operand size.
-/// For immediate sources, the immediate value is used directly.
-fn get_bit_index(cpu: &Cpu, inst: &DecodedInst, memory: &GuestMemory, mmu: &Mmu) -> Result<u32> {
+/// For **register** destinations the bit index is masked to the operand size
+/// (standard x86 behavior).
+///
+/// For **memory** destinations the full bit index is treated as a signed bit
+/// offset from the base address: the effective address is adjusted by
+/// `(bit_index / operand_bits) * operand_bytes` and only the remainder
+/// `bit_index % operand_bits` selects the bit within that word. This allows
+/// BT-family instructions to address bits across an arbitrarily large bitmap.
+/// Returns `(dst_value, bit_index_within_word, raw_source_value)`.
+fn bt_read_dst(
+    cpu: &Cpu,
+    inst: &DecodedInst,
+    memory: &GuestMemory,
+    mmu: &Mmu,
+) -> Result<(u64, u32, u64)> {
     let src = super::read_operand(cpu, inst, &inst.operands[1], memory, mmu)?;
     let bits = inst.operand_size.bits();
-    Ok((src as u32) % bits)
+
+    // For memory destinations with a *register* source, the full bit index
+    // is a signed bit offset from the base address (address adjustment).
+    // For immediate sources or register destinations, mask to operand size.
+    let is_reg_source = matches!(&inst.operands[1], Operand::Register(_));
+
+    match &inst.operands[0] {
+        Operand::Memory(mem_op) if is_reg_source => {
+            // Signed bit offset — sign-extend to the operand size, then adjust address.
+            let bit_offset = match bits {
+                16 => (src as i16) as i64,
+                32 => (src as i32) as i64,
+                64 => src as i64,
+                _ => src as i64,
+            };
+            let byte_size = (bits / 8) as i64;
+            // div_euclid gives the correct floored quotient for negative offsets.
+            let word_offset = bit_offset.div_euclid(bits as i64);
+            let bit_idx = bit_offset.rem_euclid(bits as i64) as u32;
+
+            let base_linear = super::compute_effective_address(cpu, mem_op, inst)?;
+            let adjusted = (base_linear as i64).wrapping_add(word_offset * byte_size) as u64;
+            let val = super::translate_and_read(cpu, adjusted, mem_op.size, mmu, memory)?;
+            Ok((val, bit_idx, src))
+        }
+        _ => {
+            // Register destination, or memory with immediate source: mask to operand size.
+            let dst_val = read_operand(cpu, inst, &inst.operands[0], memory, mmu)?;
+            let bit_idx = (src as u32) % bits;
+            Ok((dst_val, bit_idx, src))
+        }
+    }
+}
+
+/// Write back a modified value for BT-family memory operands, applying the
+/// same bit-offset address adjustment as [`bt_read_dst`].
+fn bt_write_dst(
+    cpu: &mut Cpu,
+    inst: &DecodedInst,
+    val: u64,
+    memory: &mut GuestMemory,
+    mmu: &Mmu,
+    bit_offset_raw: u64,
+) -> Result<()> {
+    let is_reg_source = matches!(&inst.operands[1], Operand::Register(_));
+    match &inst.operands[0] {
+        Operand::Memory(mem_op) if is_reg_source => {
+            let bits = inst.operand_size.bits();
+            let bit_offset = match bits {
+                16 => (bit_offset_raw as i16) as i64,
+                32 => (bit_offset_raw as i32) as i64,
+                64 => bit_offset_raw as i64,
+                _ => bit_offset_raw as i64,
+            };
+            let byte_size = (bits / 8) as i64;
+            let word_offset = bit_offset.div_euclid(bits as i64);
+
+            let base_linear = super::compute_effective_address(cpu, mem_op, inst)?;
+            let adjusted = (base_linear as i64).wrapping_add(word_offset * byte_size) as u64;
+            super::translate_and_write(cpu, adjusted, mem_op.size, val, mmu, memory)
+        }
+        _ => write_operand(cpu, inst, &inst.operands[0], val, memory, mmu),
+    }
 }
 
 /// BT: test bit at position. CF = selected bit.
@@ -648,8 +722,7 @@ pub fn exec_bt(
     memory: &mut GuestMemory,
     mmu: &Mmu,
 ) -> Result<()> {
-    let dst_val = read_operand(cpu, inst, &inst.operands[0], memory, mmu)?;
-    let bit_idx = get_bit_index(cpu, inst, memory, mmu)?;
+    let (dst_val, bit_idx, _) = bt_read_dst(cpu, inst, memory, mmu)?;
 
     if ((dst_val >> bit_idx) & 1) != 0 {
         cpu.regs.rflags |= flags::CF;
@@ -668,8 +741,7 @@ pub fn exec_bts(
     memory: &mut GuestMemory,
     mmu: &Mmu,
 ) -> Result<()> {
-    let dst_val = read_operand(cpu, inst, &inst.operands[0], memory, mmu)?;
-    let bit_idx = get_bit_index(cpu, inst, memory, mmu)?;
+    let (dst_val, bit_idx, src) = bt_read_dst(cpu, inst, memory, mmu)?;
 
     if ((dst_val >> bit_idx) & 1) != 0 {
         cpu.regs.rflags |= flags::CF;
@@ -678,7 +750,7 @@ pub fn exec_bts(
     }
 
     let result = dst_val | (1u64 << bit_idx);
-    write_operand(cpu, inst, &inst.operands[0], result, memory, mmu)?;
+    bt_write_dst(cpu, inst, result, memory, mmu, src)?;
 
     cpu.regs.rip += inst.length as u64;
     Ok(())
@@ -691,8 +763,7 @@ pub fn exec_btr(
     memory: &mut GuestMemory,
     mmu: &Mmu,
 ) -> Result<()> {
-    let dst_val = read_operand(cpu, inst, &inst.operands[0], memory, mmu)?;
-    let bit_idx = get_bit_index(cpu, inst, memory, mmu)?;
+    let (dst_val, bit_idx, src) = bt_read_dst(cpu, inst, memory, mmu)?;
 
     if ((dst_val >> bit_idx) & 1) != 0 {
         cpu.regs.rflags |= flags::CF;
@@ -701,7 +772,7 @@ pub fn exec_btr(
     }
 
     let result = dst_val & !(1u64 << bit_idx);
-    write_operand(cpu, inst, &inst.operands[0], result, memory, mmu)?;
+    bt_write_dst(cpu, inst, result, memory, mmu, src)?;
 
     cpu.regs.rip += inst.length as u64;
     Ok(())
@@ -714,8 +785,7 @@ pub fn exec_btc(
     memory: &mut GuestMemory,
     mmu: &Mmu,
 ) -> Result<()> {
-    let dst_val = read_operand(cpu, inst, &inst.operands[0], memory, mmu)?;
-    let bit_idx = get_bit_index(cpu, inst, memory, mmu)?;
+    let (dst_val, bit_idx, src) = bt_read_dst(cpu, inst, memory, mmu)?;
 
     if ((dst_val >> bit_idx) & 1) != 0 {
         cpu.regs.rflags |= flags::CF;
@@ -724,7 +794,7 @@ pub fn exec_btc(
     }
 
     let result = dst_val ^ (1u64 << bit_idx);
-    write_operand(cpu, inst, &inst.operands[0], result, memory, mmu)?;
+    bt_write_dst(cpu, inst, result, memory, mmu, src)?;
 
     cpu.regs.rip += inst.length as u64;
     Ok(())

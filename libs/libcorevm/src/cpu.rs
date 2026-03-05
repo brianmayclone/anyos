@@ -406,6 +406,21 @@ impl Cpu {
             ) {
                 Ok(addr) => addr,
                 Err(e) => {
+                    // Log fetch faults for debugging
+                    if self.regs.rip < 0x1000 || (self.regs.seg[SegReg::Cs as usize].selector >= 0x60 && self.instruction_count > 50_000_000) {
+                        libsyscall::serial_print(format_args!(
+                            "[corevm] FETCH FAULT at CS:EIP={:04X}:{:08X} fetch_addr={:08X} last_exec={:04X}:{:08X} prev={:04X}:{:08X} CR3={:08X}: {:?}\n",
+                            self.regs.seg[SegReg::Cs as usize].selector,
+                            self.regs.rip as u32,
+                            fetch_addr as u32,
+                            self.last_exec_cs,
+                            self.last_exec_rip as u32,
+                            self.prev_exec_cs,
+                            self.prev_exec_rip as u32,
+                            self.regs.cr3 as u32,
+                            e,
+                        ));
+                    }
                     if let Err(e2) =
                         self.inject_exception_from_error(&e, memory, mmu, interrupts)
                     {
@@ -587,6 +602,29 @@ impl Cpu {
                             inst.modrm_reg(),
                             self.regs.seg[SegReg::Cs as usize].base,
                             e
+                        ));
+                        libsyscall::serial_print(format_args!(
+                            "[corevm]  regs: EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESP={:08X} EBP={:08X} ESI={:08X} EDI={:08X}\n",
+                            self.regs.gpr[0] as u32, self.regs.gpr[3] as u32,
+                            self.regs.gpr[1] as u32, self.regs.gpr[2] as u32,
+                            self.regs.sp() as u32, self.regs.gpr[5] as u32,
+                            self.regs.gpr[6] as u32, self.regs.gpr[7] as u32,
+                        ));
+                        libsyscall::serial_print(format_args!(
+                            "[corevm]  CR0={:08X} CR2={:08X} CR3={:08X} CR4={:08X} EFLAGS={:08X} IDTR={:X}:{:04X} ic={}\n",
+                            self.regs.cr0 as u32, self.regs.cr2 as u32,
+                            self.regs.cr3 as u32, self.regs.cr4 as u32,
+                            self.regs.rflags as u32,
+                            self.regs.idtr.base, self.regs.idtr.limit,
+                            self.instruction_count,
+                        ));
+                        // Show the SS descriptor and stack content for debugging
+                        let ss = &self.regs.seg[SegReg::Ss as usize];
+                        libsyscall::serial_print(format_args!(
+                            "[corevm]  SS={:04X} (base={:X}) DS={:04X} (base={:X})\n",
+                            ss.selector, ss.base,
+                            self.regs.seg[SegReg::Ds as usize].selector,
+                            self.regs.seg[SegReg::Ds as usize].base,
                         ));
                     }
                     // Triple-fault: if the same RIP keeps faulting, the guest is stuck.
@@ -1005,6 +1043,15 @@ impl Cpu {
         }
         // Clear TF
         self.regs.rflags &= !TF;
+
+        // Log exception delivery for debugging
+        if self.consecutive_exception_count <= 3 {
+            libsyscall::serial_print(format_args!(
+                "[corevm]  -> deliver vec={} to CS={:04X}:{:08X} old_CS:EIP={:04X}:{:08X} old_ESP={:08X}\n",
+                vector, entry.selector, entry.offset as u32,
+                old_cs, old_eip, self.regs.sp() as u32,
+            ));
+        }
 
         // Load handler CS from GDT.
         self.load_segment_from_gdt(SegReg::Cs, entry.selector, &*memory, mmu)?;
