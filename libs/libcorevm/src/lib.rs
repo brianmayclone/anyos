@@ -901,6 +901,9 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     let pit = Box::into_raw(Box::new(devices::pit::Pit::new()));
     vm.pit_ptr = pit;
     vm.engine.io.register(0x40, 4, Box::new(IoProxy { ptr: pit }));
+    // Port 0x61 — system control/speaker gate tied to PIT channel 2.
+    let port61 = Box::new(devices::port61::Port61::new(pit));
+    vm.engine.io.register(0x61, 1, port61);
 
     // CMOS — RTC and NVRAM. Pass actual guest RAM size.
     let ram_bytes = vm.engine.memory.ram().size();
@@ -1140,7 +1143,8 @@ fn raise_keyboard_irq(vm: &mut VmInstance) {
     let pic = unsafe { &mut *vm.pic_ptr };
     pic.raise_irq(1);
     if let Some(vector) = pic.get_interrupt_vector() {
-        pic.acknowledge(1);
+        let ack_irq = pic.irq_for_vector(vector).unwrap_or(1);
+        pic.acknowledge(ack_irq);
         vm.engine.interrupts.raise_irq(vector);
     }
 }
@@ -1497,7 +1501,8 @@ pub extern "C" fn corevm_pic_raise_irq(handle: u64, irq: u8) {
     // Bridge: poll the PIC for the resulting vector and inject into the CPU.
     // Acknowledge on the PIC (IRR→ISR) so the same IRQ isn't re-injected.
     if let Some(vector) = pic.get_interrupt_vector() {
-        pic.acknowledge(irq);
+        let ack_irq = pic.irq_for_vector(vector).unwrap_or(irq);
+        pic.acknowledge(ack_irq);
         vm.engine.interrupts.raise_irq(vector);
     }
 }
@@ -1540,6 +1545,55 @@ pub extern "C" fn corevm_pic_diag_state(handle: u64) -> u64 {
         | ((pic.slave.irr as u64) << 24)
         | ((pic.slave.isr as u64) << 32)
         | ((pic.slave.imr as u64) << 40)
+}
+
+/// Return key LAPIC timer state for diagnostics.
+///
+/// Return value layout:
+/// - bits  0..31: SVR
+/// - bits 32..63: LVT Timer
+///
+/// Optional out-pointers receive:
+/// - `init_count_out`: Timer Initial Count register
+/// - `cur_count_out`: Timer Current Count register
+/// - `timer_divide_out`: Timer Divide Configuration register
+#[no_mangle]
+pub extern "C" fn corevm_lapic_diag_state(
+    handle: u64,
+    init_count_out: *mut u32,
+    cur_count_out: *mut u32,
+    timer_divide_out: *mut u32,
+) -> u64 {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.lapic_ptr.is_null() {
+        if !init_count_out.is_null() {
+            unsafe { *init_count_out = 0; }
+        }
+        if !cur_count_out.is_null() {
+            unsafe { *cur_count_out = 0; }
+        }
+        if !timer_divide_out.is_null() {
+            unsafe { *timer_divide_out = 0; }
+        }
+        return 0;
+    }
+    let lapic = unsafe { &mut *vm.lapic_ptr };
+    use crate::memory::mmio::MmioHandler;
+    let svr = lapic.read(0x0F0, 4).unwrap_or(0) as u32;
+    let lvt_timer = lapic.read(0x320, 4).unwrap_or(0) as u32;
+    let init = lapic.read(0x380, 4).unwrap_or(0) as u32;
+    let cur = lapic.read(0x390, 4).unwrap_or(0) as u32;
+    let div = lapic.read(0x3E0, 4).unwrap_or(0) as u32;
+    if !init_count_out.is_null() {
+        unsafe { *init_count_out = init; }
+    }
+    if !cur_count_out.is_null() {
+        unsafe { *cur_count_out = cur; }
+    }
+    if !timer_divide_out.is_null() {
+        unsafe { *timer_divide_out = div; }
+    }
+    (svr as u64) | ((lvt_timer as u64) << 32)
 }
 
 // ════════════════════════════════════════════════════════════════════════

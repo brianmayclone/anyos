@@ -125,7 +125,11 @@ impl PicPair {
     /// Returns `None` if no interrupt is pending or all pending IRQs are
     /// masked or already in service.
     pub fn get_interrupt_vector(&self) -> Option<u8> {
-        let master_pending = self.master.irr & !self.master.imr & !self.master.isr;
+        // Some modern guests temporarily mask the legacy PIC very early while
+        // still depending on timer progress. Keep IRQ0 deliverable to avoid
+        // deadlock in that transition window.
+        let effective_master_imr = self.master.imr & !0x01;
+        let master_pending = self.master.irr & !effective_master_imr & !self.master.isr;
         if master_pending == 0 {
             return None;
         }
@@ -143,6 +147,20 @@ impl PicPair {
         } else {
             Some(self.master.vector_offset + master_irq)
         }
+    }
+
+    /// Resolve a vector back to its PIC IRQ line (0-15), if it belongs
+    /// to the currently configured master/slave vector windows.
+    pub fn irq_for_vector(&self, vector: u8) -> Option<u8> {
+        let m_base = self.master.vector_offset;
+        if vector >= m_base && vector < m_base.saturating_add(8) {
+            return Some(vector - m_base);
+        }
+        let s_base = self.slave.vector_offset;
+        if vector >= s_base && vector < s_base.saturating_add(8) {
+            return Some(8 + (vector - s_base));
+        }
+        None
     }
 
     /// Acknowledge delivery of an interrupt to the CPU.

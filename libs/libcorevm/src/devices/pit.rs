@@ -281,7 +281,7 @@ impl IoHandler for Pit {
                 let access = (byte >> 4) & 0x03;
                 if access == 0 {
                     // Counter latch command: snapshot current count.
-                    self.channels[channel_idx].latch = self.channels[channel_idx].count;
+                    self.channels[channel_idx].latch = self.channels[channel_idx].current;
                     self.channels[channel_idx].latched = true;
                     self.channels[channel_idx].read_hi = false;
                 } else {

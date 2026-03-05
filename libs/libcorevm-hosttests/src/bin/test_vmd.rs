@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 use libcorevm::{
     corevm_create_ex, corevm_destroy, corevm_get_instruction_count, corevm_get_last_error,
-    corevm_get_gpr, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rflags, corevm_get_rip,
-    corevm_get_segment_selector, corevm_jit_cache_stats, corevm_jit_enable, corevm_jit_stats,
+    corevm_get_cr, corevm_get_gpr, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rflags,
+    corevm_get_rip, corevm_get_segment_base, corevm_get_segment_selector, corevm_jit_cache_stats,
+    corevm_jit_enable, corevm_jit_stats, corevm_lapic_diag_state,
     corevm_pic_diag_state, corevm_read_linear_u8, corevm_read_phys_u8,
     corevm_ide_attach_slave, corevm_load_rom, corevm_ps2_key_press, corevm_ps2_key_release,
     corevm_pic_raise_irq, corevm_pit_advance, corevm_run, corevm_serial_take_output,
@@ -31,6 +32,7 @@ impl Drop for VmHandle {
 }
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+static KERNEL_LOOP_DUMPED: AtomicBool = AtomicBool::new(false);
 const SIGINT: i32 = 2;
 
 unsafe extern "C" {
@@ -250,37 +252,183 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
     let si = corevm_get_gpr(handle, 6) as u32;
     let di = corevm_get_gpr(handle, 7) as u32;
     let ip16 = (rip as u16) as u64;
+    let ss = corevm_get_segment_selector(handle, 2);
+    let ss_base = corevm_get_segment_base(handle, 2);
+    let cs_base = corevm_get_segment_base(handle, 1);
+    let cr0 = corevm_get_cr(handle, 0);
+    let cr3 = corevm_get_cr(handle, 3);
+    let cpl = (cs & 0x3) as u8;
     let probe_addr = if mode == 0 {
         ((cs as u64) << 4).wrapping_add(ip16)
     } else {
         rip
     };
+    let readb = |a: u64| -> u8 {
+        if mode == 0 {
+            corevm_read_phys_u8(handle, a)
+        } else {
+            corevm_read_linear_u8(handle, a)
+        }
+    };
     let mut bytes = [0u8; 8];
     for (i, b) in bytes.iter_mut().enumerate() {
-        *b = if mode == 0 {
-            corevm_read_phys_u8(handle, probe_addr.wrapping_add(i as u64))
-        } else {
-            corevm_read_linear_u8(handle, probe_addr.wrapping_add(i as u64))
-        };
+        *b = readb(probe_addr.wrapping_add(i as u64));
+    }
+    let stack_linear = if mode == 0 {
+        ((ss as u64) << 4).wrapping_add((sp as u16) as u64)
+    } else {
+        ss_base.wrapping_add(sp as u64)
+    };
+    let mut stack = [0u32; 4];
+    for (i, w) in stack.iter_mut().enumerate() {
+        let a = stack_linear.wrapping_add((i * 4) as u64);
+        let b0 = readb(a) as u32;
+        let b1 = readb(a.wrapping_add(1)) as u32;
+        let b2 = readb(a.wrapping_add(2)) as u32;
+        let b3 = readb(a.wrapping_add(3)) as u32;
+        *w = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+    }
+    let ret = stack[1] as u64;
+    let mut ret_bytes = [0u8; 8];
+    for (i, b) in ret_bytes.iter_mut().enumerate() {
+        *b = readb(ret.wrapping_add(i as u64));
+    }
+    let jiffies = if mode == 1 {
+        let a = 0xC0B3_DC70u64;
+        (readb(a) as u32)
+            | ((readb(a.wrapping_add(1)) as u32) << 8)
+            | ((readb(a.wrapping_add(2)) as u32) << 16)
+            | ((readb(a.wrapping_add(3)) as u32) << 24)
+    } else {
+        0
+    };
+    let mut lapic_init = 0u32;
+    let mut lapic_cur = 0u32;
+    let mut lapic_div = 0u32;
+    let lapic = corevm_lapic_diag_state(
+        handle,
+        &mut lapic_init as *mut u32,
+        &mut lapic_cur as *mut u32,
+        &mut lapic_div as *mut u32,
+    );
+    let lapic_svr = (lapic & 0xFFFF_FFFF) as u32;
+    let lapic_lvt_timer = (lapic >> 32) as u32;
+    if mode == 1
+        && (rip & 0xFFFF_FFF0) == 0xC08D_F670
+        && !KERNEL_LOOP_DUMPED.swap(true, Ordering::SeqCst)
+    {
+        let base = 0xC08D_F650u64;
+        let mut line = String::new();
+        for i in 0..256u64 {
+            if i % 16 == 0 {
+                if !line.is_empty() {
+                    eprintln!("{line}");
+                    line.clear();
+                }
+                line.push_str(&format!(
+                    "[test-vmd] kernblk {:08X}:",
+                    base.wrapping_add(i) as u32
+                ));
+            }
+            line.push_str(&format!(" {:02X}", readb(base.wrapping_add(i))));
+        }
+        if !line.is_empty() {
+            eprintln!("{line}");
+        }
+        for base in [0xC010_2B20u64, 0xC010_2BC0u64] {
+            let mut chunk = String::new();
+            for i in 0..64u64 {
+                if i % 16 == 0 {
+                    if !chunk.is_empty() {
+                        eprintln!("{chunk}");
+                        chunk.clear();
+                    }
+                    chunk.push_str(&format!(
+                        "[test-vmd] kernref {:08X}:",
+                        base.wrapping_add(i) as u32
+                    ));
+                }
+                chunk.push_str(&format!(" {:02X}", readb(base.wrapping_add(i))));
+            }
+            if !chunk.is_empty() {
+                eprintln!("{chunk}");
+            }
+        }
+        {
+            let base = 0xC010_2AE0u64;
+            let mut chunk = String::new();
+            for i in 0..320u64 {
+                if i % 16 == 0 {
+                    if !chunk.is_empty() {
+                        eprintln!("{chunk}");
+                        chunk.clear();
+                    }
+                    chunk.push_str(&format!(
+                        "[test-vmd] kernbig {:08X}:",
+                        base.wrapping_add(i) as u32
+                    ));
+                }
+                chunk.push_str(&format!(" {:02X}", readb(base.wrapping_add(i))));
+            }
+            if !chunk.is_empty() {
+                eprintln!("{chunk}");
+            }
+        }
+        let mut chain = String::from("[test-vmd] stack chain:");
+        for i in 0..16u64 {
+            let a = stack_linear.wrapping_add(i * 4);
+            let v = (readb(a) as u32)
+                | ((readb(a.wrapping_add(1)) as u32) << 8)
+                | ((readb(a.wrapping_add(2)) as u32) << 16)
+                | ((readb(a.wrapping_add(3)) as u32) << 24);
+            chain.push_str(&format!(" {:08X}", v));
+        }
+        eprintln!("{chain}");
     }
     eprintln!(
-        "[test-vmd] cpu probe: mode={} cs:ip={:04X}:{:04X} addr={:08X} AX={:04X} BX={:04X} CX={:04X} DX={:04X} SI={:04X} DI={:04X} BP={:04X} SP={:04X} FLAGS={:04X} IF={} ZF={} CF={} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} JIFF={:08X} LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
         mode_name(mode),
+        cpl,
         cs,
         ip16 as u32,
+        cs_base as u32,
         probe_addr as u32,
-        ax as u16,
-        bx as u16,
-        cx as u16,
-        dx as u16,
-        si as u16,
-        di as u16,
-        bp as u16,
-        sp as u16,
+        ss,
+        ss_base as u32,
+        ax as u32,
+        bx as u32,
+        cx as u32,
+        dx as u32,
+        si as u32,
+        di as u32,
+        bp as u32,
+        sp as u32,
         (rflags & 0xFFFF) as u16,
         if (rflags & 0x0200) != 0 { 1 } else { 0 },
         if (rflags & 0x0040) != 0 { 1 } else { 0 },
         if (rflags & 0x0001) != 0 { 1 } else { 0 },
+        cr0 as u32,
+        cr3 as u32,
+        jiffies,
+        lapic_svr,
+        lapic_lvt_timer,
+        lapic_init,
+        lapic_cur,
+        lapic_div,
+        stack_linear as u32,
+        stack[0],
+        stack[1],
+        stack[2],
+        stack[3],
+        ret as u32,
+        ret_bytes[0],
+        ret_bytes[1],
+        ret_bytes[2],
+        ret_bytes[3],
+        ret_bytes[4],
+        ret_bytes[5],
+        ret_bytes[6],
+        ret_bytes[7],
         m_irr,
         m_isr,
         m_imr,

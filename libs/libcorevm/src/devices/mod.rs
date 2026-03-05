@@ -19,6 +19,7 @@
 
 pub mod pic;
 pub mod pit;
+pub mod port61;
 pub mod cmos;
 pub mod ps2;
 pub mod serial;
