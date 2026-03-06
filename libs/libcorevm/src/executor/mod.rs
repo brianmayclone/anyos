@@ -28,9 +28,6 @@ use crate::interrupts::InterruptController;
 use crate::io::IoDispatch;
 use crate::memory::{AccessType, GuestMemory, MemoryBus, Mmu};
 use crate::registers::{GprIndex, SegReg};
-use core::sync::atomic::{AtomicU32, Ordering};
-
-static STI_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // ── Public entry point ──
 
@@ -515,19 +512,7 @@ fn exec_primary(
 
         // ── STI ──
         0xFB => {
-            if cpu.regs.segment(SegReg::Cs).selector >= 0x60 {
-                let n = STI_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
-                if n < 32 {
-                    libsyscall::serial_print(format_args!(
-                        "[corevm] sti op@{:04X}:{:08X} IF(before)={}\n",
-                        cpu.regs.segment(SegReg::Cs).selector,
-                        cpu.regs.rip as u32,
-                        if (cpu.regs.rflags & crate::flags::IF) != 0 { 1 } else { 0 },
-                    ));
-                }
-            }
             cpu.regs.rflags |= crate::flags::IF;
-            // x86 defers maskable interrupts until after the next instruction.
             interrupts.interrupt_shadow = true;
             cpu.regs.rip += inst.length as u64;
             Ok(())
@@ -1049,6 +1034,7 @@ pub fn compute_effective_address(
 }
 
 /// Translate a linear address via the MMU and read a value of the given size.
+#[inline(always)]
 pub fn translate_and_read(
     cpu: &Cpu,
     linear: u64,
@@ -1058,14 +1044,15 @@ pub fn translate_and_read(
 ) -> Result<u64> {
     let phys = mmu.translate_linear(linear, cpu.regs.cr3, AccessType::Read, cpu.regs.cpl, memory)?;
     match size {
-        OperandSize::Byte => Ok(memory.read_u8(phys)? as u64),
-        OperandSize::Word => Ok(memory.read_u16(phys)? as u64),
-        OperandSize::Dword => Ok(memory.read_u32(phys)? as u64),
+        OperandSize::Byte => Ok(memory.fast_read_u8(phys) as u64),
+        OperandSize::Word => Ok(memory.fast_read_u16(phys) as u64),
+        OperandSize::Dword => Ok(memory.fast_read_u32(phys) as u64),
         OperandSize::Qword => Ok(memory.read_u64(phys)?),
     }
 }
 
 /// Translate a linear address via the MMU and write a value of the given size.
+#[inline(always)]
 pub fn translate_and_write(
     cpu: &Cpu,
     linear: u64,
@@ -1076,9 +1063,9 @@ pub fn translate_and_write(
 ) -> Result<()> {
     let phys = mmu.translate_linear(linear, cpu.regs.cr3, AccessType::Write, cpu.regs.cpl, memory)?;
     match size {
-        OperandSize::Byte => memory.write_u8(phys, val as u8),
-        OperandSize::Word => memory.write_u16(phys, val as u16),
-        OperandSize::Dword => memory.write_u32(phys, val as u32),
+        OperandSize::Byte => { memory.fast_write_u8(phys, val as u8); Ok(()) }
+        OperandSize::Word => { memory.fast_write_u16(phys, val as u16); Ok(()) }
+        OperandSize::Dword => { memory.fast_write_u32(phys, val as u32); Ok(()) }
         OperandSize::Qword => memory.write_u64(phys, val),
     }
 }

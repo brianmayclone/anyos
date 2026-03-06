@@ -19,13 +19,7 @@ use crate::registers::{
     RegisterFile, SegReg, CR0_PE, CR0_PG, EFER_LMA, EFER_LME, MSR_EFER,
 };
 use crate::sse_state::SseState;
-use core::sync::atomic::{AtomicU32, Ordering};
 
-static EXT_IRQ_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
-static IF_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
-static LAST_IF_STATE: AtomicU32 = AtomicU32::new(2);
-#[cfg(feature = "host_test")]
-static LOWMEM_JUMP_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// CPU execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -177,6 +171,22 @@ impl Cpu {
     /// In 32-bit protected mode (CS.D=1), RIP is limited to 32 bits.
     /// In long mode, RIP is used as-is.
     #[inline]
+    /// Return the RIP mask for the current mode (avoids match per instruction).
+    #[inline(always)]
+    pub fn rip_mask(&self) -> u64 {
+        match self.mode {
+            Mode::RealMode => 0xFFFF,
+            Mode::ProtectedMode => {
+                if self.regs.seg[SegReg::Cs as usize].big {
+                    0xFFFF_FFFF
+                } else {
+                    0xFFFF
+                }
+            }
+            Mode::LongMode => u64::MAX,
+        }
+    }
+
     pub fn mask_rip(&mut self) {
         match self.mode {
             Mode::RealMode => {
@@ -400,36 +410,8 @@ impl Cpu {
             // Sync MMU state from control registers (fast-path: skips if unchanged).
             mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
 
-            // Trace IF transitions in early kernel bring-up.
-            let cur_if = if (self.regs.rflags & crate::flags::IF) != 0 { 1 } else { 0 };
-            let prev_if = LAST_IF_STATE.load(Ordering::Relaxed);
-            if cur_if != prev_if {
-                LAST_IF_STATE.store(cur_if, Ordering::Relaxed);
-                let n = IF_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
-                if n < 64 {
-                    libsyscall::serial_print(format_args!(
-                        "[corevm] IF->{} CS={:04X} RIP={:08X}\n",
-                        cur_if,
-                        self.regs.seg[SegReg::Cs as usize].selector,
-                        self.regs.rip as u32,
-                    ));
-                }
-            }
-
             // Check pending interrupts (only if IF=1 and no interrupt shadow)
             if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {
-                if vector >= 0x20 {
-                    let n = EXT_IRQ_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-                    if n < 32 {
-                        libsyscall::serial_print(format_args!(
-                            "[corevm] ext-irq deliver vec={} IF={} CS={:04X} RIP={:08X}\n",
-                            vector,
-                            if (self.regs.rflags & crate::flags::IF) != 0 { 1 } else { 0 },
-                            self.regs.seg[SegReg::Cs as usize].selector,
-                            self.regs.rip as u32,
-                        ));
-                    }
-                }
                 interrupts.acknowledge(vector);
                 if let Err(e) = self.deliver_interrupt(vector, false, None, memory, mmu, interrupts)
                 {
@@ -509,12 +491,9 @@ impl Cpu {
             };
 
             if let Some(cached_block) = self.decode_cache.lookup(&block_key) {
-                let block_insts = cached_block.instructions.clone();
-                let block_exits_with_branch = cached_block.exits_with_branch;
-
                 if self.jit_engine.is_enabled() {
                     let jit_result = self.jit_execute_block(
-                        &block_key, &block_insts,
+                        &block_key, &cached_block.instructions,
                         memory, mmu, io, interrupts,
                     );
                     match jit_result {
@@ -525,8 +504,7 @@ impl Cpu {
 
                 let block_exit = self.execute_cached_block_chain(
                     block_key,
-                    block_insts,
-                    block_exits_with_branch,
+                    cached_block,
                     target,
                     memory,
                     mmu,
@@ -543,12 +521,12 @@ impl Cpu {
             if let Ok(new_block) = block::detect_basic_block(
                 &self.decoder, &*memory, phys_addr,
             ) {
-                let block_insts = new_block.instructions.clone();
-                let block_exits_with_branch = new_block.exits_with_branch;
+                self.decode_cache.insert(block_key, new_block);
+                let cached_block = self.decode_cache.lookup(&block_key).unwrap();
+
                 if self.jit_engine.is_enabled() {
-                    self.decode_cache.insert(block_key, new_block);
                     let jit_result = self.jit_execute_block(
-                        &block_key, &block_insts,
+                        &block_key, &cached_block.instructions,
                         memory, mmu, io, interrupts,
                     );
                     match jit_result {
@@ -557,11 +535,9 @@ impl Cpu {
                     }
                 }
 
-                self.decode_cache.insert(block_key, new_block);
                 let block_exit = self.execute_cached_block_chain(
                     block_key,
-                    block_insts,
-                    block_exits_with_branch,
+                    cached_block,
                     target,
                     memory,
                     mmu,
@@ -623,29 +599,6 @@ impl Cpu {
                 Ok(()) => {
                     self.instruction_count += 1;
                     self.mask_rip();
-                    #[cfg(feature = "host_test")]
-                    {
-                        if self.mode == Mode::RealMode
-                            && self.regs.seg[SegReg::Cs as usize].selector == 0
-                            && self.regs.rip < 0x100
-                            && (self.last_exec_cs != 0 || self.last_exec_rip >= 0x100)
-                        {
-                            let slot = LOWMEM_JUMP_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
-                            if slot < 8 {
-                                libsyscall::serial_print(format_args!(
-                                    "[corevm] lowmem jump: prev={:04X}:{:04X} opcode=0x{:04X} -> now={:04X}:{:04X} sp={:04X} ss={:04X} ds={:04X}\n",
-                                    self.last_exec_cs,
-                                    self.last_exec_rip as u16,
-                                    self.last_opcode,
-                                    self.regs.seg[SegReg::Cs as usize].selector,
-                                    self.regs.rip as u16,
-                                    self.regs.sp() as u16,
-                                    self.regs.seg[SegReg::Ss as usize].selector,
-                                    self.regs.seg[SegReg::Ds as usize].selector,
-                                ));
-                            }
-                        }
-                    }
                 }
                 Err(VmError::Halted) => {
                     self.instruction_count += 1;
@@ -737,8 +690,12 @@ impl Cpu {
     }
 
     /// Drain self-modifying-code dirty page markers and invalidate caches.
-    #[inline]
+    #[inline(always)]
     fn drain_smc_invalidations(&mut self) {
+        // Fast-path: check dirty count without draining.
+        if !crate::memory::smc::has_dirty() {
+            return;
+        }
         let mut pages_buf = [0u64; 256];
         let smc_result = crate::memory::smc::drain_to_buf(&mut pages_buf);
         match smc_result {
@@ -761,8 +718,7 @@ impl Cpu {
     fn execute_cached_block_chain(
         &mut self,
         mut block_key: BlockKey,
-        mut block_insts: alloc::vec::Vec<crate::instruction::DecodedInst>,
-        mut exits_with_branch: bool,
+        mut block: alloc::sync::Arc<crate::jit::block::BasicBlock>,
         target: u64,
         memory: &mut GuestMemory,
         mmu: &mut Mmu,
@@ -771,7 +727,7 @@ impl Cpu {
     ) -> BlockExitReason {
         loop {
             let block_exit = self.execute_cached_block(
-                &block_insts,
+                &block.instructions,
                 block_key.phys_addr,
                 memory,
                 mmu,
@@ -787,7 +743,7 @@ impl Cpu {
                 return BlockExitReason::Exit(ExitReason::InstructionLimit);
             }
 
-            if exits_with_branch {
+            if block.exits_with_branch {
                 return BlockExitReason::Continue;
             }
 
@@ -824,8 +780,7 @@ impl Cpu {
             let Some(next_block) = self.decode_cache.lookup(&next_key) else {
                 return BlockExitReason::Continue;
             };
-            block_insts = next_block.instructions.clone();
-            exits_with_branch = next_block.exits_with_branch;
+            block = next_block;
             block_key = next_key;
         }
     }
@@ -857,29 +812,6 @@ impl Cpu {
                 Ok(()) => {
                     self.instruction_count += 1;
                     self.mask_rip();
-                    #[cfg(feature = "host_test")]
-                    {
-                        if self.mode == Mode::RealMode
-                            && self.regs.seg[SegReg::Cs as usize].selector == 0
-                            && self.regs.rip < 0x100
-                            && (self.last_exec_cs != 0 || self.last_exec_rip >= 0x100)
-                        {
-                            let slot = LOWMEM_JUMP_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
-                            if slot < 8 {
-                                libsyscall::serial_print(format_args!(
-                                    "[corevm] lowmem jump: prev={:04X}:{:04X} opcode=0x{:04X} -> now={:04X}:{:04X} sp={:04X} ss={:04X} ds={:04X}\n",
-                                    self.last_exec_cs,
-                                    self.last_exec_rip as u16,
-                                    self.last_opcode,
-                                    self.regs.seg[SegReg::Cs as usize].selector,
-                                    self.regs.rip as u16,
-                                    self.regs.sp() as u16,
-                                    self.regs.seg[SegReg::Ss as usize].selector,
-                                    self.regs.seg[SegReg::Ds as usize].selector,
-                                ));
-                            }
-                        }
-                    }
                 }
                 Err(VmError::Halted) => {
                     self.instruction_count += 1;

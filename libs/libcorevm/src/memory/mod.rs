@@ -96,6 +96,12 @@ pub mod smc {
         Overflow,
     }
 
+    /// Quick check: are there any dirty pages pending?
+    #[inline(always)]
+    pub fn has_dirty() -> bool {
+        DIRTY_COUNT.load(Ordering::Relaxed) != 0
+    }
+
     /// Drain dirty pages into `buf`. Returns how many were copied, or Overflow.
     pub fn drain_to_buf(buf: &mut [u64; MAX_DIRTY]) -> DrainResult {
         let count = DIRTY_COUNT.swap(0, Ordering::Relaxed) as usize;
@@ -295,6 +301,104 @@ impl GuestMemory {
     /// Return the MMIO fast-reject bounds (diagnostic).
     pub fn mmio_bounds(&self) -> (u64, u64) {
         unsafe { &*self.mmio.get() }.bounds()
+    }
+
+    /// Direct RAM pointer and size for fast-path access.
+    #[inline(always)]
+    pub fn ram_ptr(&self) -> (*const u8, usize) {
+        (self.ram.as_slice().as_ptr(), self.ram.size())
+    }
+
+    /// Direct mutable RAM pointer and size for fast-path access.
+    #[inline(always)]
+    pub fn ram_mut_ptr(&mut self) -> (*mut u8, usize) {
+        (self.ram.as_mut_slice().as_mut_ptr(), self.ram.size())
+    }
+
+    /// Check if an address could be in an MMIO region (fast reject).
+    #[inline(always)]
+    fn is_possible_mmio(&self, addr: u64) -> bool {
+        let (min_base, max_end) = unsafe { &*self.mmio.get() }.bounds();
+        addr >= min_base && addr < max_end
+    }
+
+    /// Fast-path read u8: skip MMIO/ROM checks for plain RAM addresses.
+    #[inline(always)]
+    pub fn fast_read_u8(&self, addr: u64) -> u8 {
+        let a = addr as usize;
+        if a < self.ram.size() && !self.is_possible_mmio(addr) {
+            self.ram.as_slice()[a]
+        } else {
+            self.read_u8(addr).unwrap_or(0xFF)
+        }
+    }
+
+    /// Fast-path read u16: skip MMIO/ROM checks for plain RAM addresses.
+    #[inline(always)]
+    pub fn fast_read_u16(&self, addr: u64) -> u16 {
+        let a = addr as usize;
+        if a + 2 <= self.ram.size() && !self.is_possible_mmio(addr) {
+            let s = self.ram.as_slice();
+            u16::from_le_bytes([s[a], s[a + 1]])
+        } else {
+            self.read_u16(addr).unwrap_or(0xFFFF)
+        }
+    }
+
+    /// Fast-path read u32: skip MMIO/ROM checks for plain RAM addresses.
+    #[inline(always)]
+    pub fn fast_read_u32(&self, addr: u64) -> u32 {
+        let a = addr as usize;
+        if a + 4 <= self.ram.size() && !self.is_possible_mmio(addr) {
+            let s = self.ram.as_slice();
+            u32::from_le_bytes([s[a], s[a + 1], s[a + 2], s[a + 3]])
+        } else {
+            self.read_u32(addr).unwrap_or(0xFFFF_FFFF)
+        }
+    }
+
+    /// Fast-path write u8: skip MMIO/ROM checks for plain RAM addresses.
+    #[inline(always)]
+    pub fn fast_write_u8(&mut self, addr: u64, val: u8) {
+        let a = addr as usize;
+        if a < self.ram.size() && !self.is_possible_mmio(addr) {
+            self.ram.as_mut_slice()[a] = val;
+            smc::mark_page_dirty(addr);
+        } else {
+            let _ = self.write_u8(addr, val);
+        }
+    }
+
+    /// Fast-path write u16: skip MMIO/ROM checks for plain RAM addresses.
+    #[inline(always)]
+    pub fn fast_write_u16(&mut self, addr: u64, val: u16) {
+        let a = addr as usize;
+        if a + 2 <= self.ram.size() && !self.is_possible_mmio(addr) {
+            let bytes = val.to_le_bytes();
+            let s = self.ram.as_mut_slice();
+            s[a] = bytes[0];
+            s[a + 1] = bytes[1];
+            smc::mark_page_dirty(addr);
+        } else {
+            let _ = self.write_u16(addr, val);
+        }
+    }
+
+    /// Fast-path write u32: skip MMIO/ROM checks for plain RAM addresses.
+    #[inline(always)]
+    pub fn fast_write_u32(&mut self, addr: u64, val: u32) {
+        let a = addr as usize;
+        if a + 4 <= self.ram.size() && !self.is_possible_mmio(addr) {
+            let bytes = val.to_le_bytes();
+            let s = self.ram.as_mut_slice();
+            s[a] = bytes[0];
+            s[a + 1] = bytes[1];
+            s[a + 2] = bytes[2];
+            s[a + 3] = bytes[3];
+            smc::mark_page_dirty(addr);
+        } else {
+            let _ = self.write_u32(addr, val);
+        }
     }
 
     /// Map a read-only ROM at the given physical base address.

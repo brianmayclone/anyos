@@ -136,13 +136,6 @@ fn is_primary_terminator(inst: &DecodedInst) -> bool {
 
         // -- System / privileged instructions --
         0xF4 => true, // HLT
-        0xFA => true, // CLI  (changes interrupt state)
-        0xFB => true, // STI  (changes interrupt state)
-
-        // -- I/O instructions --
-        0xE4..=0xE7 => true, // IN AL/AX, imm8; OUT imm8, AL/AX
-        0xEC..=0xEF => true, // IN AL/AX, DX; OUT DX, AL/AX
-        0x6C..=0x6F => true, // INSB/INSW/OUTSB/OUTSW
 
         // -- Group FF: indirect JMP/CALL --
         0xFF => {

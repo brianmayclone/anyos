@@ -94,52 +94,94 @@ struct DecodeCursor<'m> {
     mem: &'m dyn MemoryBus,
     /// RIP at instruction start.
     start_rip: u64,
-    /// Current read position (absolute address).
-    pos: u64,
+    /// Current read offset within prefetch buffer.
+    offset: usize,
     /// CPU mode for this decode.
     mode: CpuMode,
     /// Accumulated instruction being built.
     inst: DecodedInst,
+    /// Prefetched instruction bytes (up to 15).
+    buf: [u8; MAX_INST_LEN],
+    /// Number of valid bytes in buf.
+    buf_len: usize,
 }
 
 impl<'m> DecodeCursor<'m> {
     fn new(mem: &'m dyn MemoryBus, rip: u64, mode: CpuMode) -> Self {
+        let mut buf = [0u8; MAX_INST_LEN];
+        // Prefetch up to 15 bytes. If read_bytes fails, fall back to
+        // fetching 0 bytes (fetch_u8 will report FetchFault).
+        let buf_len = if mem.read_bytes(rip, &mut buf).is_ok() {
+            MAX_INST_LEN
+        } else {
+            // Try fetching as many bytes as possible
+            let mut n = 0;
+            while n < MAX_INST_LEN {
+                match mem.read_u8(rip + n as u64) {
+                    Ok(b) => { buf[n] = b; n += 1; }
+                    Err(_) => break,
+                }
+            }
+            n
+        };
         DecodeCursor {
             mem,
             start_rip: rip,
-            pos: rip,
+            offset: 0,
             mode,
             inst: DecodedInst::empty(),
+            buf,
+            buf_len,
         }
     }
 
     // -- byte fetching helpers ------------------------------------------
 
     /// Read the next byte and advance the cursor, enforcing the 15-byte limit.
+    #[inline(always)]
     fn fetch_u8(&mut self) -> Result<u8> {
-        if (self.pos - self.start_rip) as usize >= MAX_INST_LEN {
+        if self.offset >= MAX_INST_LEN {
             return Err(VmError::GeneralProtection(0));
         }
-        let b = self.mem.read_u8(self.pos).map_err(|_| VmError::FetchFault(self.pos))?;
-        self.pos += 1;
+        if self.offset >= self.buf_len {
+            return Err(VmError::FetchFault(self.start_rip + self.offset as u64));
+        }
+        let b = self.buf[self.offset];
+        self.offset += 1;
         Ok(b)
     }
 
     /// Read a little-endian u16 (2 bytes).
+    #[inline(always)]
     fn fetch_u16(&mut self) -> Result<u16> {
-        let lo = self.fetch_u8()? as u16;
-        let hi = self.fetch_u8()? as u16;
-        Ok(lo | (hi << 8))
+        if self.offset + 2 <= self.buf_len && self.offset + 2 <= MAX_INST_LEN {
+            let lo = self.buf[self.offset] as u16;
+            let hi = self.buf[self.offset + 1] as u16;
+            self.offset += 2;
+            Ok(lo | (hi << 8))
+        } else {
+            let lo = self.fetch_u8()? as u16;
+            let hi = self.fetch_u8()? as u16;
+            Ok(lo | (hi << 8))
+        }
     }
 
     /// Read a little-endian u32 (4 bytes).
+    #[inline(always)]
     fn fetch_u32(&mut self) -> Result<u32> {
-        let lo = self.fetch_u16()? as u32;
-        let hi = self.fetch_u16()? as u32;
-        Ok(lo | (hi << 16))
+        if self.offset + 4 <= self.buf_len && self.offset + 4 <= MAX_INST_LEN {
+            let b = &self.buf[self.offset..self.offset + 4];
+            self.offset += 4;
+            Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        } else {
+            let lo = self.fetch_u16()? as u32;
+            let hi = self.fetch_u16()? as u32;
+            Ok(lo | (hi << 16))
+        }
     }
 
     /// Read a little-endian u64 (8 bytes).
+    #[inline(always)]
     fn fetch_u64(&mut self) -> Result<u64> {
         let lo = self.fetch_u32()? as u64;
         let hi = self.fetch_u32()? as u64;
@@ -176,8 +218,9 @@ impl<'m> DecodeCursor<'m> {
     }
 
     /// Bytes consumed so far.
+    #[inline(always)]
     fn bytes_consumed(&self) -> u8 {
-        (self.pos - self.start_rip) as u8
+        self.offset as u8
     }
 
     // -- main decode entry point ----------------------------------------
@@ -228,7 +271,7 @@ impl<'m> DecodeCursor<'m> {
 
                 // Not a prefix -- rewind one byte and exit the loop.
                 _ => {
-                    self.pos -= 1;
+                    self.offset -= 1;
                     break;
                 }
             }
