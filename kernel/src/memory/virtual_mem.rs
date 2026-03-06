@@ -1053,14 +1053,15 @@ pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
     let shm_frames = crate::ipc::shared_memory::collect_sorted_shm_frames();
 
     unsafe {
-        let old_cr3 = current_cr3();
-
-        // Save flags and disable interrupts — CRITICAL for SMP safety.
-        // Without cli, a timer interrupt during the CR3 switch causes the scheduler
-        // to save the wrong CR3, corrupting page tables of other processes.
+        // Save flags and disable interrupts FIRST — CRITICAL for SMP safety.
+        // We must read CR3 AFTER cli to prevent a timer interrupt between
+        // the read and the switch from causing the scheduler to save
+        // the wrong CR3, corrupting page tables of other processes.
         let rflags: u64;
         asm!("pushfq; pop {}", out(reg) rflags);
         asm!("cli");
+
+        let old_cr3 = current_cr3();
 
         // Switch to the target PML4 so recursive mapping works on it
         asm!("mov cr3, {}", in(reg) pml4_phys.as_u64());

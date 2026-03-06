@@ -573,6 +573,9 @@ pub fn sys_get_hostname(buf_ptr: u32, buf_len: u32) -> u32 {
     }
     let len = HOSTNAME_LEN.load(core::sync::atomic::Ordering::Relaxed);
     let copy_len = len.min(buf_len);
+    if !is_valid_user_ptr(buf_ptr as u64, copy_len as u64) {
+        return u32::MAX;
+    }
     let host = HOSTNAME.lock();
     let dst = buf_ptr as *mut u8;
     unsafe {
@@ -586,6 +589,9 @@ pub fn sys_get_hostname(buf_ptr: u32, buf_len: u32) -> u32 {
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_set_hostname(name_ptr: u32, name_len: u32) -> u32 {
     if name_ptr == 0 || name_len == 0 || name_len > 63 {
+        return u32::MAX;
+    }
+    if !is_valid_user_ptr(name_ptr as u64, name_len as u64) {
         return u32::MAX;
     }
     let src = name_ptr as *const u8;

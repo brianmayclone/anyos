@@ -598,10 +598,10 @@ impl Scheduler {
                 {
                     return Some(tid);
                 }
-                // Not eligible yet — re-enqueue and give up for this tick
+                // Not eligible yet — re-enqueue and try the next candidate
                 let pri = self.threads[idx].priority;
                 self.per_cpu[queue_cpu].run_queue.enqueue(tid, pri);
-                return None;
+                continue;
             }
             // Thread reaped — discard stale TID and try next
         }
@@ -666,7 +666,7 @@ pub fn per_cpu_idle_ticks(cpu: usize) -> u32 {
 /// preventing re-entrant scheduling that causes context corruption and deadlocks.
 pub fn schedule_tick() -> bool {
     let cpu_id = crate::arch::hal::cpu_id();
-    if cpu_id < MAX_CPUS && PER_CPU_IN_SCHEDULER[cpu_id].load(Ordering::Relaxed) {
+    if cpu_id < MAX_CPUS && PER_CPU_IN_SCHEDULER[cpu_id].load(Ordering::Acquire) {
         // Already in scheduler — just count the tick for timekeeping accuracy
         TOTAL_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
         PER_CPU_TOTAL[cpu_id].fetch_add(1, Ordering::Relaxed);
@@ -704,7 +704,7 @@ fn schedule_inner(from_timer: bool) {
 
     // Mark this CPU as inside the scheduler to prevent timer nesting.
     if cpu_id_early < MAX_CPUS {
-        PER_CPU_IN_SCHEDULER[cpu_id_early].store(true, Ordering::Relaxed);
+        PER_CPU_IN_SCHEDULER[cpu_id_early].store(true, Ordering::Release);
     }
 
     // Restore interrupts for voluntary path (needed for spin loop below)
@@ -764,7 +764,7 @@ fn schedule_inner(from_timer: bool) {
                 } else {
                     PER_CPU_CONTENDED_BUSY[cpu_id_early].fetch_add(1, Ordering::Relaxed);
                 }
-                PER_CPU_IN_SCHEDULER[cpu_id_early].store(false, Ordering::Relaxed);
+                PER_CPU_IN_SCHEDULER[cpu_id_early].store(false, Ordering::Release);
                 return;
             }
         }
@@ -793,7 +793,7 @@ fn schedule_inner(from_timer: bool) {
         let sched = match guard.as_mut() {
             Some(s) => s,
             None => {
-                PER_CPU_IN_SCHEDULER[cpu_id as usize].store(false, Ordering::Relaxed);
+                PER_CPU_IN_SCHEDULER[cpu_id as usize].store(false, Ordering::Release);
                 return;
             }
         };
@@ -1285,7 +1285,7 @@ fn schedule_inner(from_timer: bool) {
         // clear and the switch. This is CRITICAL because if the new thread is
         // starting for the first time (RIP = entry point, not inside schedule_inner),
         // it will never reach the post-switch cleanup code below.
-        PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Relaxed);
+        PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
 
         #[cfg(target_arch = "aarch64")]
         {
@@ -1306,7 +1306,7 @@ fn schedule_inner(from_timer: bool) {
     // After context_switch we may be on a different CPU, so re-read cpu_id.
     let cpu_id_exit = get_cpu_id();
     if cpu_id_exit < MAX_CPUS {
-        PER_CPU_IN_SCHEDULER[cpu_id_exit].store(false, Ordering::Relaxed);
+        PER_CPU_IN_SCHEDULER[cpu_id_exit].store(false, Ordering::Release);
     }
 
     // Re-enable interrupts ONLY for the voluntary path.  In the timer path

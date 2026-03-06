@@ -739,8 +739,8 @@ pub fn sys_thread_create(entry_rip: u32, user_rsp: u32, name_ptr: u32, name_len:
     let len = (name_len as usize).min(31);
     if name_ptr != 0 && len > 0 {
         let src = name_ptr as *const u8;
-        // Validate pointer is in user space
-        if (src as u64) < 0x0000_8000_0000_0000 {
+        // Validate pointer range is fully in user space
+        if is_valid_user_ptr(src as u64, len as u64) {
             unsafe {
                 core::ptr::copy_nonoverlapping(src, name_buf.as_mut_ptr(), len);
             }

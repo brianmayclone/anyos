@@ -67,7 +67,16 @@ pub(super) fn read_user_str_safe(ptr: u32) -> Option<&'static str> {
     let p = ptr as *const u8;
     let mut len = 0usize;
     unsafe {
-        while len < 4096 && *p.add(len) != 0 {
+        while len < 4096 {
+            // Validate each page boundary we cross
+            if len > 0 && ((ptr as u64 + len as u64) & 0xFFF) == 0 {
+                if !is_valid_user_ptr(ptr as u64 + len as u64, 1) {
+                    break;
+                }
+            }
+            if *p.add(len) == 0 {
+                break;
+            }
             len += 1;
         }
         Some(core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, len)))
@@ -82,7 +91,16 @@ pub(super) unsafe fn read_user_str(ptr: u32) -> &'static str {
     }
     let p = ptr as *const u8;
     let mut len = 0usize;
-    while len < 4096 && *p.add(len) != 0 {
+    while len < 4096 {
+        // Validate each page boundary we cross
+        if len > 0 && ((ptr as u64 + len as u64) & 0xFFF) == 0 {
+            if !is_valid_user_ptr(ptr as u64 + len as u64, 1) {
+                break;
+            }
+        }
+        if *p.add(len) == 0 {
+            break;
+        }
         len += 1;
     }
     core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, len))
