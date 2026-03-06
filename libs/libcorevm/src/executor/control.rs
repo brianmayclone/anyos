@@ -76,6 +76,25 @@ pub fn exec_jcc(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             Operand::Immediate(imm) => imm as i64,
             _ => return Err(VmError::UndefinedOpcode(inst.opcode as u8)),
         };
+        // Fast-path for tight busy-wait loops used by kernel delay code:
+        // `dec reg` ; `jnz -3`
+        if (inst.opcode as u8) == 0x75 && offset == -3 {
+            let next_rip = cpu.regs.rip.wrapping_add(inst.length as u64);
+            let target = next_rip.wrapping_add(offset as u64);
+            if target + 1 == cpu.regs.rip {
+                let dec_op = cpu.prev_opcode as u8;
+                if (0x48..=0x4F).contains(&dec_op) {
+                    let reg = dec_op - 0x48;
+                    // Collapse the loop to its terminal state (reg == 0),
+                    // preserving CF and forcing ZF=1 as at loop exit.
+                    cpu.regs.write_gpr32(reg, 0);
+                    cpu.regs.rflags &= !(flags::ZF | flags::SF | flags::OF | flags::PF | flags::AF);
+                    cpu.regs.rflags |= flags::ZF | flags::PF;
+                    cpu.regs.rip = next_rip;
+                    return Ok(());
+                }
+            }
+        }
         let target = next_rip.wrapping_add(offset as u64);
         cpu.regs.rip = mask_rip(cpu, target);
     } else {

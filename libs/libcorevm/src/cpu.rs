@@ -86,6 +86,8 @@ pub struct Cpu {
     pub last_exec_cs: u16,
     /// Opcode of the last decoded instruction (for diagnostics).
     pub last_opcode: u16,
+    /// Opcode of the instruction before `last_opcode`.
+    pub prev_opcode: u16,
     /// Physical address of the last decoded instruction.
     pub last_fetch_addr: u64,
     /// RIP of the instruction before the current one (for crash diagnostics).
@@ -120,6 +122,7 @@ impl Cpu {
             last_exec_rip: 0,
             last_exec_cs: 0,
             last_opcode: 0,
+            prev_opcode: 0,
             last_fetch_addr: 0,
             prev_exec_rip: 0,
             prev_exec_cs: 0,
@@ -144,6 +147,7 @@ impl Cpu {
         self.last_exec_rip = 0;
         self.last_exec_cs = 0;
         self.last_opcode = 0;
+        self.prev_opcode = 0;
         self.last_fetch_addr = 0;
         self.prev_exec_rip = 0;
         self.prev_exec_cs = 0;
@@ -609,6 +613,7 @@ impl Cpu {
                 }
             };
 
+            self.prev_opcode = self.last_opcode;
             self.last_opcode = inst.opcode;
 
             // Execute the decoded instruction
@@ -820,6 +825,7 @@ impl Cpu {
             self.last_exec_rip = self.regs.rip;
             self.last_exec_cs = self.regs.seg[SegReg::Cs as usize].selector;
             self.last_fetch_addr = inst_phys;
+            self.prev_opcode = self.last_opcode;
             self.last_opcode = inst.opcode;
 
             match crate::executor::execute(self, inst, memory, mmu, io, interrupts) {

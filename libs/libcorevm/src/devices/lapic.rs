@@ -33,6 +33,9 @@
 
 use crate::error::Result;
 use crate::memory::mmio::MmioHandler;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+static LAPIC_WRITE_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// LAPIC version: xAPIC, version 0x14 (20), max LVT entry 5.
 const LAPIC_VERSION: u32 = (5 << 16) | 0x14;
@@ -215,6 +218,15 @@ impl Lapic {
 
     /// Write a 32-bit value to a register by its 16-byte-aligned offset.
     fn write_register(&mut self, reg_base: u32, v: u32) {
+        if matches!(reg_base, 0x0F0 | 0x320 | 0x380 | 0x3E0)
+            && LAPIC_WRITE_LOG_COUNT.fetch_add(1, Ordering::Relaxed) < 64
+        {
+            libsyscall::serial_print(format_args!(
+                "[lapic] wr reg={:03X} val={:08X}\n",
+                reg_base,
+                v
+            ));
+        }
         match reg_base {
             // LAPIC ID: bits 31:24 are writable.
             0x020 => self.id = v & 0xFF00_0000,

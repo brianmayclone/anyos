@@ -610,13 +610,28 @@ fn exec_secondary(
                     7 => match rm {
                         0 => system::exec_swapgs(cpu, inst),
                         1 => system::exec_rdtscp(cpu, inst),
-                        // AMD MONITORX (minimal emulation: no-op)
+                        // Linux paravirt IRQ patch opcodes:
+                        // 0F 01 FA => irq disable (CLI-like)
                         2 => {
+                            cpu.regs.rflags &= !crate::flags::IF;
                             cpu.regs.rip += inst.length as u64;
                             Ok(())
                         }
-                        // AMD MWAITX (minimal emulation: no-op)
+                        // 0F 01 FB => irq enable (STI-like)
                         3 => {
+                            if cpu.regs.segment(SegReg::Cs).selector >= 0x60 {
+                                let n = STI_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+                                if n < 32 {
+                                    libsyscall::serial_print(format_args!(
+                                        "[corevm] 0F01FB@{:04X}:{:08X} IF(before)={}\n",
+                                        cpu.regs.segment(SegReg::Cs).selector,
+                                        cpu.regs.rip as u32,
+                                        if (cpu.regs.rflags & crate::flags::IF) != 0 { 1 } else { 0 },
+                                    ));
+                                }
+                            }
+                            cpu.regs.rflags |= crate::flags::IF;
+                            _interrupts.interrupt_shadow = true;
                             cpu.regs.rip += inst.length as u64;
                             Ok(())
                         }

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use libcorevm::{
     corevm_create_ex, corevm_destroy, corevm_get_instruction_count, corevm_get_last_error,
-    corevm_get_cr, corevm_get_gpr, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rflags,
+    corevm_get_cr, corevm_get_gpr, corevm_get_last_error_rip, corevm_get_mode, corevm_get_msr, corevm_get_rflags,
     corevm_get_rip, corevm_get_segment_base, corevm_get_segment_selector, corevm_jit_cache_stats,
     corevm_jit_enable, corevm_jit_stats, corevm_lapic_diag_state, corevm_irq_pending_word,
     corevm_ioapic_redir_entry,
@@ -34,6 +34,8 @@ impl Drop for VmHandle {
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 static KERNEL_LOOP_DUMPED: AtomicBool = AtomicBool::new(false);
+static KERNEL_SPIN2_DUMPED: AtomicBool = AtomicBool::new(false);
+static KERNEL_ENTRY2_DUMPED: AtomicBool = AtomicBool::new(false);
 const SIGINT: i32 = 2;
 
 unsafe extern "C" {
@@ -260,8 +262,12 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
     let ss = corevm_get_segment_selector(handle, 2);
     let ss_base = corevm_get_segment_base(handle, 2);
     let cs_base = corevm_get_segment_base(handle, 1);
+    let fs = corevm_get_segment_selector(handle, 4);
+    let fs_base = corevm_get_segment_base(handle, 4);
     let cr0 = corevm_get_cr(handle, 0);
     let cr3 = corevm_get_cr(handle, 3);
+    let apic_base_msr = corevm_get_msr(handle, 0x1B);
+    let efer_msr = corevm_get_msr(handle, 0xC000_0080);
     let cpl = (cs & 0x3) as u8;
     let probe_addr = if mode == 0 {
         ((cs as u64) << 4).wrapping_add(ip16)
@@ -307,6 +313,39 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
     } else {
         0
     };
+    let lpj_seed = if mode == 1 {
+        let a = 0xC0B2_3100u64;
+        (readb(a) as u32)
+            | ((readb(a.wrapping_add(1)) as u32) << 8)
+            | ((readb(a.wrapping_add(2)) as u32) << 16)
+            | ((readb(a.wrapping_add(3)) as u32) << 24)
+    } else {
+        0
+    };
+    let fs_cal = if mode == 1 {
+        let a = fs_base.wrapping_add(0xC0CC_7184u64);
+        (readb(a) as u32)
+            | ((readb(a.wrapping_add(1)) as u32) << 8)
+            | ((readb(a.wrapping_add(2)) as u32) << 16)
+            | ((readb(a.wrapping_add(3)) as u32) << 24)
+    } else {
+        0
+    };
+    let pv_ptr = if mode == 1 {
+        let a = 0xC0CE_9960u64;
+        (readb(a) as u32)
+            | ((readb(a.wrapping_add(1)) as u32) << 8)
+            | ((readb(a.wrapping_add(2)) as u32) << 16)
+            | ((readb(a.wrapping_add(3)) as u32) << 24)
+    } else {
+        0
+    };
+    let mut pv_bytes = [0u8; 4];
+    if mode == 1 && pv_ptr != 0 {
+        for (i, b) in pv_bytes.iter_mut().enumerate() {
+            *b = readb((pv_ptr as u64).wrapping_add(i as u64));
+        }
+    }
     let mut lapic_init = 0u32;
     let mut lapic_cur = 0u32;
     let mut lapic_div = 0u32;
@@ -410,8 +449,74 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         }
         eprintln!("{chain}");
     }
+    if mode == 1
+        && (rip & 0xFFFF_FFF0) == 0xC0C0_74F0
+        && !KERNEL_SPIN2_DUMPED.swap(true, Ordering::SeqCst)
+    {
+        let base = 0xC0C0_74C0u64;
+        let mut line = String::new();
+        for i in 0..192u64 {
+            if i % 16 == 0 {
+                if !line.is_empty() {
+                    eprintln!("{line}");
+                    line.clear();
+                }
+                line.push_str(&format!(
+                    "[test-vmd] spinblk {:08X}:",
+                    base.wrapping_add(i) as u32
+                ));
+            }
+            line.push_str(&format!(" {:02X}", readb(base.wrapping_add(i))));
+        }
+        if !line.is_empty() {
+            eprintln!("{line}");
+        }
+        // Dump the first 0x30 vectors from IDT to see whether #BP/#UD/#PF/IRQ0
+        // point to expected handlers.
+        let idtr_base = if mode == 1 {
+            let ptr = 0x0000_0000u64; // unused here; keep local scope explicit
+            let _ = ptr;
+            0
+        } else {
+            0
+        };
+        let _ = idtr_base;
+    }
+    if mode == 1
+        && (rip & 0xFFFF_FFF0) == 0xC0C1_B170
+        && !KERNEL_ENTRY2_DUMPED.swap(true, Ordering::SeqCst)
+    {
+        let base = 0xC0C1_B100u64;
+        let mut line = String::new();
+        for i in 0..256u64 {
+            if i % 16 == 0 {
+                if !line.is_empty() {
+                    eprintln!("{line}");
+                    line.clear();
+                }
+                line.push_str(&format!(
+                    "[test-vmd] ent2blk {:08X}:",
+                    base.wrapping_add(i) as u32
+                ));
+            }
+            line.push_str(&format!(" {:02X}", readb(base.wrapping_add(i))));
+        }
+        if !line.is_empty() {
+            eprintln!("{line}");
+        }
+        let mut chain = String::from("[test-vmd] ent2 stack chain:");
+        for i in 0..16u64 {
+            let a = stack_linear.wrapping_add(i * 4);
+            let v = (readb(a) as u32)
+                | ((readb(a.wrapping_add(1)) as u32) << 8)
+                | ((readb(a.wrapping_add(2)) as u32) << 16)
+                | ((readb(a.wrapping_add(3)) as u32) << 24);
+            chain.push_str(&format!(" {:08X}", v));
+        }
+        eprintln!("{chain}");
+    }
     eprintln!(
-        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} JIFF={:08X} LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X}] IRQP[0={:016X} 1={:016X}] IOAPIC[r0={:016X} r1={:016X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} fs={:04X} fs_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} APIC_BASE={:08X} EFER={:08X} JIFF={:08X} LPJ={:08X} FSCAL={:08X} PVOP={:08X}[{:02X} {:02X} {:02X} {:02X}] LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X}] IRQP[0={:016X} 1={:016X}] IOAPIC[r0={:016X} r1={:016X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
         mode_name(mode),
         cpl,
         cs,
@@ -420,6 +525,8 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         probe_addr as u32,
         ss,
         ss_base as u32,
+        fs,
+        fs_base as u32,
         ax as u32,
         bx as u32,
         cx as u32,
@@ -434,7 +541,16 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         if (rflags & 0x0001) != 0 { 1 } else { 0 },
         cr0 as u32,
         cr3 as u32,
+        apic_base_msr as u32,
+        efer_msr as u32,
         jiffies,
+        lpj_seed,
+        fs_cal,
+        pv_ptr,
+        pv_bytes[0],
+        pv_bytes[1],
+        pv_bytes[2],
+        pv_bytes[3],
         lapic_svr,
         lapic_lvt_timer,
         lapic_init,

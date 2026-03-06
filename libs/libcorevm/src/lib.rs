@@ -486,6 +486,13 @@ pub extern "C" fn corevm_get_cr(handle: u64, n: u8) -> u64 {
     }
 }
 
+/// Get one model-specific register value.
+#[no_mangle]
+pub extern "C" fn corevm_get_msr(handle: u64, idx: u32) -> u64 {
+    let vm = unsafe { vm_from_handle(handle) };
+    vm.engine.cpu.regs.read_msr(idx)
+}
+
 /// Write a control register (CR0, CR2, CR3, CR4, CR8).
 ///
 /// `n` selects the register: 0=CR0, 2=CR2, 3=CR3, 4=CR4, 8=CR8.
@@ -582,16 +589,58 @@ pub extern "C" fn corevm_get_vcpu_count(handle: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
     let vm = unsafe { vm_from_handle(handle) };
-    let before_ic = vm.engine.instruction_count();
-    let exit = vm.engine.run(max_instructions);
-    let after_ic = vm.engine.instruction_count();
-    let ran = after_ic.saturating_sub(before_ic);
+    const RUN_SLICE_INSTS: u64 = 2048;
+    const PIT_INSTS_PER_TICK: u64 = 64;
 
-    // Advance LAPIC timer using guest instruction progress and inject timer IRQs.
-    if ran > 0 && !vm.lapic_ptr.is_null() {
-        let lapic = unsafe { &mut *vm.lapic_ptr };
-        if let Some(vector) = lapic.advance(ran) {
-            vm.engine.interrupts.raise_irq(vector);
+    let mut exit = ExitReason::InstructionLimit;
+    let mut remaining = max_instructions;
+    let mut pit_inst_accum: u64 = 0;
+
+    loop {
+        let slice = if max_instructions == 0 {
+            max_instructions
+        } else {
+            remaining.min(RUN_SLICE_INSTS)
+        };
+
+        let before_ic = vm.engine.instruction_count();
+        exit = vm.engine.run(slice);
+        let after_ic = vm.engine.instruction_count();
+        let ran = after_ic.saturating_sub(before_ic);
+
+        // Advance LAPIC timer using guest instruction progress.
+        if ran > 0 && !vm.lapic_ptr.is_null() {
+            let lapic = unsafe { &mut *vm.lapic_ptr };
+            if let Some(vector) = lapic.advance(ran) {
+                vm.engine.interrupts.raise_irq(vector);
+            }
+        }
+
+        // Advance PIT continuously during run() so guests that poll PIT
+        // inside tight loops can observe timer progress within a batch.
+        if ran > 0 && !vm.pit_ptr.is_null() {
+            pit_inst_accum = pit_inst_accum.saturating_add(ran);
+            let pit_ticks = (pit_inst_accum / PIT_INSTS_PER_TICK) as u32;
+            pit_inst_accum %= PIT_INSTS_PER_TICK;
+            if pit_ticks > 0 {
+                let fires = unsafe { (*vm.pit_ptr).advance(pit_ticks) };
+                if fires > 0 {
+                    inject_irq_line(vm, 0);
+                }
+            }
+        }
+
+        if max_instructions == 0 {
+            break;
+        }
+        match exit {
+            ExitReason::InstructionLimit => {
+                remaining = remaining.saturating_sub(ran);
+                if remaining == 0 || ran == 0 {
+                    break;
+                }
+            }
+            _ => break,
         }
     }
 
@@ -1516,7 +1565,6 @@ fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
         }
     }
 
-    let _ = delivered;
 }
 
 /// Get the vector number of the highest-priority pending interrupt.
