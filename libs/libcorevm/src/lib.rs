@@ -971,6 +971,10 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     let cmos = Box::new(devices::cmos::Cmos::new(ram_bytes));
     vm.engine.io.register(0x70, 2, cmos);
 
+    // APM control/status — SeaBIOS uses 0xB2/0xB3 for SMI handshakes.
+    let apm = Box::new(devices::apm::ApmControl::new());
+    vm.engine.io.register(0xB2, 2, apm);
+
     // PS/2 — keyboard and mouse controller.
     let ps2 = Box::into_raw(Box::new(devices::ps2::Ps2Controller::new()));
     vm.ps2_ptr = ps2;

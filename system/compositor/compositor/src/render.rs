@@ -168,8 +168,10 @@ pub fn render_thread_entry() {
                     idle_count = 0;
                     let elapsed = sys::uptime_ms().wrapping_sub(t0);
                     let target = 16u32;
-                    if elapsed < target {
-                        process::sleep(target - elapsed);
+                    // Leave 2ms headroom — sleep() has scheduler overhead (~1-2ms),
+                    // so sleeping the full remaining time often overshoots the target.
+                    if elapsed + 2 < target {
+                        process::sleep(target - elapsed - 2);
                     }
                 }
             } else {

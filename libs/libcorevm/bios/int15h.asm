@@ -48,22 +48,37 @@ i15_e820:
     add eax, e820_table         ; ESI = &e820_table[entry_index]
     mov esi, eax
 
+    cmp ecx, 20
+    jb .e820_fail_pop
+
     push cx
+    cmp cx, 24
+    jb .e820_copy_20
+    mov cx, 24
+    jmp .e820_copy_ready
+.e820_copy_20:
     mov cx, 20
+.e820_copy_ready:
+    mov dx, cx
     push di
     cld
     rep movsb                   ; DS:SI (segment 0) → ES:DI
     pop di
+    cmp dx, 24
+    jne .e820_copy_done
+    mov dword [es:di + 20], 1   ; ACPI 3.x ext-attrs: entry enabled/valid
+.e820_copy_done:
     pop cx
 
     mov eax, 0x534D4150
+    mov edx, 0x534D4150
     inc ebx
     movzx ecx, word [e820_count]
     cmp ebx, ecx
     jl .e820_not_last
     xor ebx, ebx
 .e820_not_last:
-    mov ecx, 20
+    movzx ecx, dx
 
     pop ds
     pop esi

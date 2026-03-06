@@ -16,6 +16,7 @@
 //! - [`ioapic`] — I/O APIC interrupt routing
 //! - [`lapic`] — Local APIC per-CPU interrupt controller
 //! - [`acpi`] — ACPI Power Management timer and control registers
+//! - [`apm`] — APM control/status ports used by SeaBIOS SMI handshakes
 
 pub mod pic;
 pub mod pit;
@@ -32,3 +33,4 @@ pub mod debug_port;
 pub mod ioapic;
 pub mod lapic;
 pub mod acpi;
+pub mod apm;

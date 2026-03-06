@@ -33,6 +33,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 static STI_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "host_test")]
 static BOOTPARAM_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "host_test")]
+static BOOTPARAM_SCAN_DONE: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(feature = "host_test")]
 fn trace_bootparams_write(cpu: &Cpu, linear: u64, phys: u64, size: OperandSize, val: u64) {
@@ -80,6 +82,49 @@ fn trace_bootparams_write(cpu: &Cpu, linear: u64, phys: u64, size: OperandSize, 
     );
 }
 
+#[cfg(feature = "host_test")]
+fn scan_bootparam_candidates(memory: &GuestMemory) {
+    if BOOTPARAM_SCAN_DONE.fetch_add(1, Ordering::Relaxed) != 0 {
+        return;
+    }
+
+    let rd8 = |addr: u64| memory.read_u8(addr).unwrap_or(0);
+    let rd32 = |addr: u64| {
+        (rd8(addr) as u32)
+            | ((rd8(addr.wrapping_add(1)) as u32) << 8)
+            | ((rd8(addr.wrapping_add(2)) as u32) << 16)
+            | ((rd8(addr.wrapping_add(3)) as u32) << 24)
+    };
+
+    let mut found = 0u32;
+    for cand in (0x1000u64..0x20_0000u64).step_by(0x10) {
+        if rd32(cand.wrapping_add(0x202)) != 0x5372_6448 {
+            continue;
+        }
+        let count = rd8(cand.wrapping_add(0x1E8));
+        if !(1..=32).contains(&count) {
+            continue;
+        }
+        let first_base = rd32(cand.wrapping_add(0x2D0));
+        let first_len = rd32(cand.wrapping_add(0x2D8));
+        println!(
+            "[bootparams-scan] cand=0x{:08X} e820_entries={} first_base=0x{:08X} first_len=0x{:08X}",
+            cand as u32,
+            count,
+            first_base,
+            first_len,
+        );
+        found += 1;
+        if found >= 8 {
+            break;
+        }
+    }
+
+    if found == 0 {
+        println!("[bootparams-scan] no candidate with HdrS + plausible e820 count found");
+    }
+}
+
 // ── Public entry point ──
 
 /// Execute a single decoded instruction.
@@ -100,6 +145,10 @@ pub fn execute(
     io: &mut IoDispatch,
     interrupts: &mut InterruptController,
 ) -> Result<()> {
+    #[cfg(feature = "host_test")]
+    if cpu.mode == Mode::ProtectedMode && (cpu.regs.rip & 0xFFFF_FFF0) == 0xC08D_F670 {
+        scan_bootparam_candidates(memory);
+    }
     match inst.opcode_map {
         OpcodeMap::Primary => exec_primary(cpu, inst, memory, mmu, io, interrupts),
         OpcodeMap::Secondary => exec_secondary(cpu, inst, memory, mmu, io, interrupts),

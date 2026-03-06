@@ -33,8 +33,7 @@ pub fn exec_jmp_rel(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
     let next_rip = cpu.regs.rip.wrapping_add(inst.length as u64);
     let target = next_rip.wrapping_add(offset as u64);
 
-    // In 16-bit mode, mask to 16 bits; in 32-bit mode, mask to 32 bits
-    cpu.regs.rip = mask_rip(cpu, target);
+    cpu.regs.rip = mask_control_offset(cpu, control_offset_size(cpu, inst), target);
     Ok(())
 }
 
@@ -46,7 +45,7 @@ pub fn exec_jmp_rm(
     mmu: &Mmu,
 ) -> Result<()> {
     let target = read_operand(cpu, inst, &inst.operands[0], memory, mmu)?;
-    cpu.regs.rip = mask_rip(cpu, target);
+    cpu.regs.rip = mask_control_offset(cpu, control_offset_size(cpu, inst), target);
     Ok(())
 }
 
@@ -59,7 +58,7 @@ pub fn exec_jmp_far(
 ) -> Result<()> {
     let (segment, offset) = read_far_pointer(cpu, inst, memory, mmu)?;
     load_cs(cpu, segment, memory, mmu)?;
-    cpu.regs.rip = offset;
+    cpu.regs.rip = mask_control_offset(cpu, control_offset_size(cpu, inst), offset);
     Ok(())
 }
 
@@ -82,7 +81,7 @@ pub fn exec_jcc(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             _ => return Err(VmError::UndefinedOpcode(inst.opcode as u8)),
         };
         let target = next_rip.wrapping_add(offset as u64);
-        cpu.regs.rip = mask_rip(cpu, target);
+        cpu.regs.rip = mask_control_offset(cpu, control_offset_size(cpu, inst), target);
     } else {
         cpu.regs.rip = next_rip;
     }
@@ -111,7 +110,7 @@ pub fn exec_call_rel(
     push_val(cpu, next_rip, size, mmu, memory)?;
 
     let target = next_rip.wrapping_add(offset as u64);
-    cpu.regs.rip = mask_rip(cpu, target);
+    cpu.regs.rip = mask_control_offset(cpu, control_offset_size(cpu, inst), target);
     Ok(())
 }
 
@@ -127,7 +126,7 @@ pub fn exec_call_rm(
     let size = stack_operand_size(cpu, inst);
 
     push_val(cpu, next_rip, size, mmu, memory)?;
-    cpu.regs.rip = mask_rip(cpu, target);
+    cpu.regs.rip = mask_control_offset(cpu, control_offset_size(cpu, inst), target);
     Ok(())
 }
 
@@ -139,15 +138,21 @@ pub fn exec_call_far(
     mmu: &Mmu,
 ) -> Result<()> {
     let (new_seg, new_offset) = read_far_pointer(cpu, inst, memory, mmu)?;
-    let size = stack_operand_size(cpu, inst);
+    let offset_size = control_offset_size(cpu, inst);
+    let stack_size = stack_operand_size(cpu, inst);
     let old_cs = cpu.regs.segment(SegReg::Cs).selector as u64;
     let next_rip = cpu.regs.rip.wrapping_add(inst.length as u64);
 
-    push_val(cpu, old_cs, size, mmu, memory)?;
-    push_val(cpu, next_rip, size, mmu, memory)?;
+    if matches!(cpu.mode, Mode::RealMode) {
+        push_val(cpu, old_cs, OperandSize::Word, mmu, memory)?;
+        push_val(cpu, next_rip, offset_size, mmu, memory)?;
+    } else {
+        push_val(cpu, old_cs, stack_size, mmu, memory)?;
+        push_val(cpu, next_rip, stack_size, mmu, memory)?;
+    }
 
     load_cs(cpu, new_seg, memory, mmu)?;
-    cpu.regs.rip = new_offset;
+    cpu.regs.rip = mask_control_offset(cpu, offset_size, new_offset);
     Ok(())
 }
 
@@ -162,7 +167,7 @@ pub fn exec_ret_near(
 ) -> Result<()> {
     let size = stack_operand_size(cpu, inst);
     let rip = pop_val(cpu, size, mmu, memory)?;
-    cpu.regs.rip = mask_rip(cpu, rip);
+    cpu.regs.rip = mask_control_offset(cpu, control_offset_size(cpu, inst), rip);
     Ok(())
 }
 
@@ -181,7 +186,7 @@ pub fn exec_ret_near_imm(
     let sp = cpu.regs.sp().wrapping_add(imm);
     cpu.regs.set_sp(sp);
 
-    cpu.regs.rip = mask_rip(cpu, rip);
+    cpu.regs.rip = mask_control_offset(cpu, control_offset_size(cpu, inst), rip);
     Ok(())
 }
 
@@ -195,10 +200,15 @@ pub fn exec_ret_far(
     memory: &mut GuestMemory,
     mmu: &Mmu,
 ) -> Result<()> {
-    let size = stack_operand_size(cpu, inst);
+    let offset_size = control_offset_size(cpu, inst);
+    let stack_size = stack_operand_size(cpu, inst);
 
-    let rip = pop_val(cpu, size, mmu, memory)?;
-    let cs = pop_val(cpu, size, mmu, memory)? as u16;
+    let rip = pop_val(cpu, offset_size, mmu, memory)?;
+    let cs = if matches!(cpu.mode, Mode::RealMode) {
+        pop_val(cpu, OperandSize::Word, mmu, memory)? as u16
+    } else {
+        pop_val(cpu, stack_size, mmu, memory)? as u16
+    };
 
     // If opcode is 0xCA, add immediate to RSP
     if inst.opcode as u8 == 0xCA {
@@ -208,7 +218,7 @@ pub fn exec_ret_far(
     }
 
     load_cs(cpu, cs, memory, mmu)?;
-    cpu.regs.rip = mask_rip(cpu, rip);
+    cpu.regs.rip = mask_control_offset(cpu, offset_size, rip);
     Ok(())
 }
 
@@ -245,7 +255,7 @@ pub fn exec_loop(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             _ => return Err(VmError::UndefinedOpcode(op)),
         };
         let target = next_rip.wrapping_add(offset as u64);
-        cpu.regs.rip = mask_rip(cpu, target);
+        cpu.regs.rip = mask_control_offset(cpu, control_offset_size(cpu, inst), target);
     } else {
         cpu.regs.rip = next_rip;
     }
@@ -266,7 +276,7 @@ pub fn exec_jcxz(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             _ => return Err(VmError::UndefinedOpcode(inst.opcode as u8)),
         };
         let target = next_rip.wrapping_add(offset as u64);
-        cpu.regs.rip = mask_rip(cpu, target);
+        cpu.regs.rip = mask_control_offset(cpu, control_offset_size(cpu, inst), target);
     } else {
         cpu.regs.rip = next_rip;
     }
@@ -474,15 +484,28 @@ pub fn exec_iret(
 ) -> Result<()> {
     match cpu.mode {
         Mode::RealMode => {
-            let size = OperandSize::Word;
-            let ip = pop_val(cpu, size, mmu, memory)? as u16;
+            let size = if inst.prefix.operand_size_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Word
+            };
+            let ip = pop_val(cpu, size, mmu, memory)?;
             let cs = pop_val(cpu, size, mmu, memory)? as u16;
-            let flags16 = pop_val(cpu, size, mmu, memory)? as u16;
+            let flags_val = pop_val(cpu, size, mmu, memory)?;
 
             cpu.regs.load_segment_real(SegReg::Cs, cs);
-            cpu.regs.rip = ip as u64;
-            // Preserve upper bits of RFLAGS, replace low 16 bits
-            cpu.regs.rflags = (cpu.regs.rflags & !0xFFFF) | (flags16 as u64);
+            cpu.regs.rip = if size == OperandSize::Word {
+                ip & 0xFFFF
+            } else {
+                ip & 0xFFFF_FFFF
+            };
+            cpu.regs.rflags = if size == OperandSize::Word {
+                // Preserve upper bits of RFLAGS, replace low 16 bits.
+                (cpu.regs.rflags & !0xFFFF) | (flags_val & 0xFFFF)
+            } else {
+                // IRETD restores the low 32 bits of EFLAGS in real mode.
+                (cpu.regs.rflags & !0xFFFF_FFFF) | (flags_val & 0xFFFF_FFFF)
+            };
             cpu.regs.rflags |= flags::RFLAGS_FIXED;
         }
         Mode::ProtectedMode => {
@@ -557,17 +580,22 @@ pub fn exec_iret(
 
 // ── Helpers ──
 
-/// Mask RIP to the appropriate width for the current CPU mode.
-fn mask_rip(cpu: &Cpu, rip: u64) -> u64 {
+/// Determine the code offset width used by near/far control transfers.
+fn control_offset_size(cpu: &Cpu, inst: &DecodedInst) -> OperandSize {
     match cpu.mode {
-        Mode::RealMode => rip & 0xFFFF,
-        Mode::ProtectedMode => {
-            if cpu.regs.segment(SegReg::Cs).big {
-                rip & 0xFFFF_FFFF
-            } else {
-                rip & 0xFFFF
-            }
-        }
+        Mode::LongMode => OperandSize::Qword,
+        _ => inst.operand_size,
+    }
+}
+
+/// Mask a control-transfer target to the active IP/EIP width.
+fn mask_control_offset(cpu: &Cpu, size: OperandSize, rip: u64) -> u64 {
+    match cpu.mode {
+        Mode::RealMode | Mode::ProtectedMode => match size {
+            OperandSize::Word => rip & 0xFFFF,
+            OperandSize::Dword => rip & 0xFFFF_FFFF,
+            OperandSize::Byte | OperandSize::Qword => rip,
+        },
         Mode::LongMode => rip, // Full 64-bit
     }
 }

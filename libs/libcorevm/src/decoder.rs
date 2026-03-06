@@ -1148,8 +1148,20 @@ impl<'m> DecodeCursor<'m> {
                 Ok(())
             }
 
+            // -- CLTS --
+            0x06 => {
+                self.inst.operand_count = 0;
+                Ok(())
+            }
+
             // -- SYSRET --
             0x07 => {
+                self.inst.operand_count = 0;
+                Ok(())
+            }
+
+            // -- INVD / WBINVD --
+            0x08 | 0x09 => {
                 self.inst.operand_count = 0;
                 Ok(())
             }

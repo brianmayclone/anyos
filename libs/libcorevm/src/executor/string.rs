@@ -15,10 +15,53 @@ use crate::error::Result;
 use crate::flags::{self, OperandSize};
 use crate::instruction::{DecodedInst, RepPrefix};
 use crate::io::IoDispatch;
-use crate::memory::{GuestMemory, Mmu};
+use crate::memory::{AccessType, GuestMemory, Mmu};
 use crate::registers::{GprIndex, SegReg};
+#[cfg(feature = "host_test")]
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::{translate_and_read, translate_and_write};
+
+#[cfg(feature = "host_test")]
+static STRING_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(feature = "host_test")]
+fn trace_bootparam_copy(cpu: &Cpu, inst: &DecodedInst, memory: &GuestMemory, mmu: &Mmu) {
+    let s = src_linear(cpu, inst);
+    let d = dst_linear(cpu, inst);
+    let Ok(s_phys) = mmu.translate_linear(s, cpu.regs.cr3, AccessType::Read, cpu.regs.cpl, memory) else {
+        return;
+    };
+    let Ok(d_phys) = mmu.translate_linear(d, cpu.regs.cr3, AccessType::Write, cpu.regs.cpl, memory) else {
+        return;
+    };
+    let count = read_counter(cpu, inst);
+    let hits_src = (0x53CC..0x54CC).contains(&s_phys) || (0x14E00..0x15080).contains(&s_phys);
+    let hits_dst = (0x10000..0x10400).contains(&d_phys)
+        || (0x90000..0x90400).contains(&d_phys)
+        || d_phys < 0x10_0000;
+    if !hits_src && !hits_dst {
+        return;
+    }
+    let slot = STRING_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+    if slot >= 64 {
+        return;
+    }
+    println!(
+        "[string] cs={:04X} rip={:04X} op={:02X} rep={:?} cnt={:X} src={:08X}->{:08X} dst={:08X}->{:08X} size={} df={}",
+        cpu.regs.segment(SegReg::Cs).selector,
+        cpu.regs.rip as u16,
+        inst.opcode as u8,
+        inst.rep,
+        count,
+        s as u32,
+        s_phys as u32,
+        d as u32,
+        d_phys as u32,
+        string_element_size(inst).bytes(),
+        ((cpu.regs.rflags & flags::DF) != 0) as u8,
+    );
+}
 
 /// Determine the element size for string operations from the opcode.
 ///
@@ -113,6 +156,9 @@ pub fn exec_movs(
 ) -> Result<()> {
     let elem = string_element_size(inst);
     let delta = step(cpu, elem);
+
+    #[cfg(feature = "host_test")]
+    trace_bootparam_copy(cpu, inst, memory, mmu);
 
     if inst.rep == RepPrefix::Rep {
         loop {

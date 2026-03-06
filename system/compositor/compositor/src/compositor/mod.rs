@@ -389,15 +389,38 @@ impl Compositor {
         }
     }
 
-    /// Resize a layer (reallocates pixel buffer).
+    /// Resize a layer (reallocates pixel buffer, preserving old content).
     pub fn resize_layer(&mut self, id: u32, new_w: u32, new_h: u32) {
         if let Some(idx) = self.layer_index(id) {
+            let old_w = self.layers[idx].width;
+            let old_h = self.layers[idx].height;
+
+            if old_w == new_w && old_h == new_h {
+                return;
+            }
+
             let old_bounds = self.layers[idx].damage_bounds();
             self.damage.push(old_bounds);
 
+            // Preserve old content — copy existing pixels into the new buffer
+            // so the previous frame stays visible until the app redraws.
+            // Newly exposed regions (right/bottom) are filled with a dark
+            // background color to avoid transparent/black gaps.
+            let bg = 0xFF1E_1E1E_u32; // dark neutral background
+            let mut new_pixels = vec![bg; (new_w * new_h) as usize];
+            let copy_w = old_w.min(new_w) as usize;
+            let copy_h = old_h.min(new_h) as usize;
+            let old_pixels = &self.layers[idx].pixels;
+            for y in 0..copy_h {
+                let src_off = y * old_w as usize;
+                let dst_off = y * new_w as usize;
+                new_pixels[dst_off..dst_off + copy_w]
+                    .copy_from_slice(&old_pixels[src_off..src_off + copy_w]);
+            }
+
             self.layers[idx].width = new_w;
             self.layers[idx].height = new_h;
-            self.layers[idx].pixels = vec![0u32; (new_w * new_h) as usize];
+            self.layers[idx].pixels = new_pixels;
             self.layers[idx].shadow_cache = None;
             self.layers[idx].dirty = true;
         }
