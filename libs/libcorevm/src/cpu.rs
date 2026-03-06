@@ -24,6 +24,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 static EXT_IRQ_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
 static IF_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
 static LAST_IF_STATE: AtomicU32 = AtomicU32::new(2);
+#[cfg(feature = "host_test")]
+static LOWMEM_JUMP_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// CPU execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -621,6 +623,29 @@ impl Cpu {
                 Ok(()) => {
                     self.instruction_count += 1;
                     self.mask_rip();
+                    #[cfg(feature = "host_test")]
+                    {
+                        if self.mode == Mode::RealMode
+                            && self.regs.seg[SegReg::Cs as usize].selector == 0
+                            && self.regs.rip < 0x100
+                            && (self.last_exec_cs != 0 || self.last_exec_rip >= 0x100)
+                        {
+                            let slot = LOWMEM_JUMP_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+                            if slot < 8 {
+                                libsyscall::serial_print(format_args!(
+                                    "[corevm] lowmem jump: prev={:04X}:{:04X} opcode=0x{:04X} -> now={:04X}:{:04X} sp={:04X} ss={:04X} ds={:04X}\n",
+                                    self.last_exec_cs,
+                                    self.last_exec_rip as u16,
+                                    self.last_opcode,
+                                    self.regs.seg[SegReg::Cs as usize].selector,
+                                    self.regs.rip as u16,
+                                    self.regs.sp() as u16,
+                                    self.regs.seg[SegReg::Ss as usize].selector,
+                                    self.regs.seg[SegReg::Ds as usize].selector,
+                                ));
+                            }
+                        }
+                    }
                 }
                 Err(VmError::Halted) => {
                     self.instruction_count += 1;
@@ -832,6 +857,29 @@ impl Cpu {
                 Ok(()) => {
                     self.instruction_count += 1;
                     self.mask_rip();
+                    #[cfg(feature = "host_test")]
+                    {
+                        if self.mode == Mode::RealMode
+                            && self.regs.seg[SegReg::Cs as usize].selector == 0
+                            && self.regs.rip < 0x100
+                            && (self.last_exec_cs != 0 || self.last_exec_rip >= 0x100)
+                        {
+                            let slot = LOWMEM_JUMP_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+                            if slot < 8 {
+                                libsyscall::serial_print(format_args!(
+                                    "[corevm] lowmem jump: prev={:04X}:{:04X} opcode=0x{:04X} -> now={:04X}:{:04X} sp={:04X} ss={:04X} ds={:04X}\n",
+                                    self.last_exec_cs,
+                                    self.last_exec_rip as u16,
+                                    self.last_opcode,
+                                    self.regs.seg[SegReg::Cs as usize].selector,
+                                    self.regs.rip as u16,
+                                    self.regs.sp() as u16,
+                                    self.regs.seg[SegReg::Ss as usize].selector,
+                                    self.regs.seg[SegReg::Ds as usize].selector,
+                                ));
+                            }
+                        }
+                    }
                 }
                 Err(VmError::Halted) => {
                     self.instruction_count += 1;

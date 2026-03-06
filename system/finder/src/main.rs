@@ -2604,6 +2604,55 @@ fn main() {
 
     win.on_close(|_| { ui::quit(); });
 
+    // ── Menu bar ─────────────────────────────────────────────────────────
+    let mut mb = ui::MenuBarBuilder::new()
+        .menu(i18n::t("File"))
+            .item(2, i18n::t("Quit"), 0)
+        .end_menu()
+        .menu(i18n::t("Edit"))
+            .item(10, i18n::t("Cut"), 0)
+            .item(11, i18n::t("Copy"), 0)
+            .item(12, i18n::t("Paste"), 0)
+            .separator()
+            .item(13, i18n::t("Rename"), 0)
+            .item(14, i18n::t("Delete"), 0)
+        .end_menu()
+        .menu(i18n::t("Go"))
+            .item(20, i18n::t("Back"), 0)
+            .item(21, i18n::t("Forward"), 0)
+            .item(22, i18n::t("Up"), 0)
+            .separator()
+            .item(23, i18n::t("Refresh"), 0)
+        .end_menu()
+        .menu(i18n::t("View"))
+            .item(30, i18n::t("List"), 0)
+            .item(31, i18n::t("Icons"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = ui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            2 => ui::quit(),
+            10 => cut_selected(),
+            11 => copy_selected(),
+            12 => paste_entry(),
+            13 => {
+                let sel = app().grid.selected_row();
+                if sel != u32::MAX && (sel as usize) < app().entries.len() {
+                    start_rename(sel as usize);
+                }
+            }
+            14 => confirm_delete(),
+            20 => navigate_back(),
+            21 => navigate_forward(),
+            22 => navigate_up(),
+            23 => refresh_current(),
+            30 => set_view_mode(VIEW_LIST),
+            31 => set_view_mode(VIEW_ICONS),
+            _ => {}
+        }
+    });
+
     // ── Run ──────────────────────────────────────────────────────────────
     ui::run();
 }

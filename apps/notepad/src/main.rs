@@ -10,7 +10,7 @@ use alloc::string::String;
 use alloc::vec;
 use anyos_std::i18n;
 use libanyui_client as anyui;
-use anyui::IconType;
+use anyui::{IconType, Widget};
 
 anyos_std::entry!(main);
 
@@ -261,6 +261,61 @@ fn main() {
                 }
                 _ => {}
             }
+        }
+    });
+
+    // ── Menu bar ──
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu(i18n::t("File"))
+            .item(1, i18n::t("New"), 0)
+            .item(2, i18n::t("Open..."), 0)
+            .separator()
+            .item(3, i18n::t("Save"), 0)
+            .item(4, i18n::t("Save As..."), 0)
+            .separator()
+            .item(5, i18n::t("Quit"), 0)
+        .end_menu()
+        .menu(i18n::t("Edit"))
+            .item(10, i18n::t("Cut"), 0)
+            .item(11, i18n::t("Copy"), 0)
+            .item(12, i18n::t("Paste"), 0)
+            .separator()
+            .item(13, i18n::t("Select All"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = anyui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => { // New
+                let s = app();
+                s.editor.set_text_bytes(b"");
+                s.file_path = String::new();
+                s.modified = false;
+                update_title(s);
+                s.status_file.set_text(i18n::t("Untitled"));
+            }
+            2 => { // Open
+                if let Some(path) = anyui::FileDialog::open_file() {
+                    let s = app();
+                    if let Some(data) = read_file(&path) {
+                        s.editor.set_text_bytes(&data);
+                    } else {
+                        s.editor.set_text_bytes(b"");
+                    }
+                    s.file_path = path;
+                    s.modified = false;
+                    update_title(s);
+                    s.status_file.set_text(&display_filename(&s.file_path));
+                }
+            }
+            3 => save_current(),
+            4 => save_as(),
+            5 => anyui::quit(),
+            10 => { app().editor.cut(); }
+            11 => { app().editor.copy(); }
+            12 => { app().editor.paste(); }
+            13 => { app().editor.select_all(); }
+            _ => {}
         }
     });
 

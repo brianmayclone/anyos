@@ -16,7 +16,7 @@ use anyos_std::i18n;
 anyos_std::entry!(main);
 
 use libanyui_client as ui;
-use ui::{ColumnDef, ALIGN_RIGHT};
+use ui::{ColumnDef, ALIGN_RIGHT, Widget};
 
 use types::*;
 use data::*;
@@ -897,6 +897,30 @@ fn main() {
                 buf[p..p + 5].copy_from_slice(b"-bit)"); p += 5;
                 if let Ok(s) = core::str::from_utf8(&buf[..p]) { disp_res_label.set_text(s); }
             }
+        }
+    });
+
+    // ── Menu bar ──
+    let mut mb = ui::MenuBarBuilder::new()
+        .menu(i18n::t("File"))
+            .item(1, i18n::t("Quit"), 0)
+        .end_menu()
+        .menu(i18n::t("View"))
+            .item(10, i18n::t("Processes"), 0)
+            .item(11, i18n::t("Graphs"), 0)
+            .item(12, i18n::t("Disk"), 0)
+            .item(13, i18n::t("System"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = ui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(move |e| {
+        match e.item_id {
+            1 => ui::quit(),
+            10 => { seg.set_state(0); }
+            11 => { seg.set_state(1); }
+            12 => { seg.set_state(2); }
+            13 => { seg.set_state(3); }
+            _ => {}
         }
     });
 

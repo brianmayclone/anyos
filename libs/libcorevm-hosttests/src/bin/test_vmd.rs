@@ -39,6 +39,7 @@ static KERNEL_LOOP_DUMPED: AtomicBool = AtomicBool::new(false);
 static KERNEL_SPIN2_DUMPED: AtomicBool = AtomicBool::new(false);
 static KERNEL_ENTRY2_DUMPED: AtomicBool = AtomicBool::new(false);
 static CD_BOOT_DUMPED: AtomicBool = AtomicBool::new(false);
+static LOWMEM_STAGE_DUMPED: AtomicBool = AtomicBool::new(false);
 const SIGINT: i32 = 2;
 
 unsafe extern "C" {
@@ -702,6 +703,30 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
                     }
                     line.push_str(&format!(
                         "[test-vmd] bootmem {:08X}:",
+                        base.wrapping_add(i) as u32
+                    ));
+                }
+                line.push_str(&format!(
+                    " {:02X}",
+                    corevm_read_phys_u8(handle, base.wrapping_add(i))
+                ));
+            }
+            if !line.is_empty() {
+                eprintln!("{line}");
+            }
+        }
+    }
+    if mode == 0 && rip < 0x100 && !LOWMEM_STAGE_DUMPED.swap(true, Ordering::SeqCst) {
+        for base in [0x80A0u64, 0x9770u64, 0x97A0u64, 0xAAD0u64] {
+            let mut line = String::new();
+            for i in 0..64u64 {
+                if i % 16 == 0 {
+                    if !line.is_empty() {
+                        eprintln!("{line}");
+                        line.clear();
+                    }
+                    line.push_str(&format!(
+                        "[test-vmd] stagedump {:08X}:",
                         base.wrapping_add(i) as u32
                     ));
                 }
