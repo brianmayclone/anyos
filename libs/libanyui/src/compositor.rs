@@ -126,6 +126,8 @@ pub const EVT_WINDOW_CLOSE: u32 = 0x3007;
 pub const EVT_MOUSE_MOVE: u32 = 0x300A;
 pub const EVT_FRAME_ACK: u32 = 0x300B;
 pub const EVT_FOCUS_LOST: u32 = 0x300C;
+pub const EVT_STATUS_ICON_CLICK: u32 = 0x3009;
+pub const EVT_MENU_ITEM: u32 = 0x3008;
 
 // ── High-level wrappers ──────────────────────────────────────────────
 
@@ -375,4 +377,28 @@ pub fn blit_to_surface(
             );
         }
     }
+}
+
+// ── Tray icon ────────────────────────────────────────────────────────
+
+/// Register or update a 16×16 ARGB tray icon.
+pub fn add_status_icon(channel_id: u32, icon_id: u32, pixels: *const u32) {
+    (exports().add_status_icon)(channel_id, icon_id, pixels);
+}
+
+/// Remove a tray icon.
+pub fn remove_status_icon(channel_id: u32, icon_id: u32) {
+    (exports().remove_status_icon)(channel_id, icon_id);
+}
+
+// ── Menu bar ─────────────────────────────────────────────────────────
+
+/// Set a window's menu bar from a binary blob (MenuBarBuilder output).
+pub fn set_menu(channel_id: u32, window_id: u32, data: *const u8, len: u32) {
+    (exports().set_menu)(channel_id, window_id, data, len);
+}
+
+/// Update a menu item's flags (enable/disable/check).
+pub fn update_menu_item(channel_id: u32, window_id: u32, item_id: u32, new_flags: u32) {
+    (exports().update_menu_item)(channel_id, window_id, item_id, new_flags);
 }

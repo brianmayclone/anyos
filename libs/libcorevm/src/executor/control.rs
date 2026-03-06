@@ -8,7 +8,7 @@ use crate::error::{Result, VmError};
 use crate::flags::{self, OperandSize};
 use crate::instruction::{DecodedInst, Operand};
 use crate::interrupts::InterruptController;
-use crate::memory::{GuestMemory, Mmu};
+use crate::memory::{GuestMemory, MemoryBus, Mmu};
 use crate::registers::{GprIndex, SegReg};
 #[cfg(feature = "host_test")]
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -352,20 +352,48 @@ fn dispatch_software_interrupt(
     match cpu.mode {
         Mode::RealMode => {
             #[cfg(feature = "host_test")]
-            if vector == 0x15 {
-                let slot = INT15_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
-                if slot < 32 {
-                    println!(
-                        "[int15] cs={:04X} ip={:04X} AX={:04X} BX={:04X} CX={:04X} DX={:04X} ES={:04X} DI={:04X}",
-                        cpu.regs.segment(SegReg::Cs).selector,
-                        cpu.regs.rip as u16,
-                        cpu.regs.read_gpr16(GprIndex::Rax as u8),
-                        cpu.regs.read_gpr16(GprIndex::Rbx as u8),
-                        cpu.regs.read_gpr16(GprIndex::Rcx as u8),
-                        cpu.regs.read_gpr16(GprIndex::Rdx as u8),
-                        cpu.regs.segment(SegReg::Es).selector,
-                        cpu.regs.read_gpr16(GprIndex::Rdi as u8),
-                    );
+            {
+                if vector == 0x15 {
+                    let slot = INT15_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if slot < 32 {
+                        println!(
+                            "[int15] cs={:04X} ip={:04X} AX={:04X} BX={:04X} CX={:04X} DX={:04X} ES={:04X} DI={:04X}",
+                            cpu.regs.segment(SegReg::Cs).selector,
+                            cpu.regs.rip as u16,
+                            cpu.regs.read_gpr16(GprIndex::Rax as u8),
+                            cpu.regs.read_gpr16(GprIndex::Rbx as u8),
+                            cpu.regs.read_gpr16(GprIndex::Rcx as u8),
+                            cpu.regs.read_gpr16(GprIndex::Rdx as u8),
+                            cpu.regs.segment(SegReg::Es).selector,
+                            cpu.regs.read_gpr16(GprIndex::Rdi as u8),
+                        );
+                    }
+                } else if vector == 0x13 {
+                    let ax = cpu.regs.read_gpr16(GprIndex::Rax as u8);
+                    let dx = cpu.regs.read_gpr16(GprIndex::Rdx as u8);
+                    if (ax >> 8) == 0x42 && dx == 0x00E0 {
+                        let ds = cpu.regs.segment(SegReg::Ds).selector as u64;
+                        let si = cpu.regs.read_gpr16(GprIndex::Rsi as u8) as u64;
+                        let dap_phys = (ds << 4).wrapping_add(si);
+                        let rb = |off: u64| memory.read_u8(dap_phys.wrapping_add(off)).unwrap_or(0);
+                        let rw = |off: u64| memory.read_u16(dap_phys.wrapping_add(off)).unwrap_or(0);
+                        let rd = |off: u64| memory.read_u32(dap_phys.wrapping_add(off)).unwrap_or(0);
+                        println!(
+                            "[int13/42] cs={:04X} ip={:04X} AX={:04X} DX={:04X} DS:SI={:04X}:{:04X} dap[size={:02X} cnt={:04X} buf={:04X}:{:04X} lba={:08X}:{:08X}]",
+                            cpu.regs.segment(SegReg::Cs).selector,
+                            cpu.regs.rip as u16,
+                            ax,
+                            dx,
+                            ds as u16,
+                            si as u16,
+                            rb(0),
+                            rw(2),
+                            rw(6),
+                            rw(4),
+                            rd(12),
+                            rd(8),
+                        );
+                    }
                 }
             }
             // Real mode: push FLAGS (16-bit), CS, IP; load from IVT

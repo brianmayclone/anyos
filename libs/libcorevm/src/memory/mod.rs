@@ -459,8 +459,11 @@ impl MemoryBus for GuestMemory {
         if self.is_rom_addr(addr) {
             return Ok(());
         }
-        smc::mark_page_dirty(addr);
-        self.ram.write_u8(addr, val)
+        let result = self.ram.write_u8(addr, val);
+        if result.is_ok() {
+            smc::mark_page_dirty(addr);
+        }
+        result
     }
 
     fn write_u16(&mut self, addr: u64, val: u16) -> Result<()> {
@@ -470,8 +473,11 @@ impl MemoryBus for GuestMemory {
         if self.is_rom_addr(addr) {
             return Ok(());
         }
-        smc::mark_page_dirty(addr);
-        self.ram.write_u16(addr, val)
+        let result = self.ram.write_u16(addr, val);
+        if result.is_ok() {
+            smc::mark_page_dirty(addr);
+        }
+        result
     }
 
     fn write_u32(&mut self, addr: u64, val: u32) -> Result<()> {
@@ -481,8 +487,11 @@ impl MemoryBus for GuestMemory {
         if self.is_rom_addr(addr) {
             return Ok(());
         }
-        smc::mark_page_dirty(addr);
-        self.ram.write_u32(addr, val)
+        let result = self.ram.write_u32(addr, val);
+        if result.is_ok() {
+            smc::mark_page_dirty(addr);
+        }
+        result
     }
 
     fn write_u64(&mut self, addr: u64, val: u64) -> Result<()> {
@@ -492,8 +501,11 @@ impl MemoryBus for GuestMemory {
         if self.is_rom_addr(addr) {
             return Ok(());
         }
-        smc::mark_page_dirty(addr);
-        self.ram.write_u64(addr, val)
+        let result = self.ram.write_u64(addr, val);
+        if result.is_ok() {
+            smc::mark_page_dirty(addr);
+        }
+        result
     }
 
     fn read_bytes(&self, addr: u64, buf: &mut [u8]) -> Result<()> {

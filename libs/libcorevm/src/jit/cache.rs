@@ -64,19 +64,12 @@ impl DecodeCache {
     /// page (4 KiB aligned). Used for self-modifying code detection.
     pub fn invalidate_page(&mut self, page_phys: u64) {
         let page_start = page_phys & !0xFFF;
-        let page_end = page_start + 0x1000;
-        // Collect keys to remove (can't mutate during iteration).
-        let to_remove: Vec<BlockKey> = self
-            .blocks
-            .range(
-                BlockKey { phys_addr: page_start, mode: crate::decoder::CpuMode::Real16, cs_base: 0 }
-                    ..BlockKey { phys_addr: page_end, mode: crate::decoder::CpuMode::Real16, cs_base: 0 },
-            )
-            .map(|(k, _)| *k)
-            .collect();
-        for key in to_remove {
-            self.blocks.remove(&key);
-        }
+        let page_end = page_start.saturating_add(0x1000);
+        self.blocks.retain(|key, block| {
+            let block_start = key.phys_addr;
+            let block_end = block_start.saturating_add(block.byte_len as u64);
+            block_end <= page_start || block_start >= page_end
+        });
     }
 
     /// Flush the entire cache (e.g., on CR3 change or mode switch).

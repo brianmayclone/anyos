@@ -1,5 +1,6 @@
 use std::env;
 use std::collections::VecDeque;
+use std::ffi::CString;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -16,7 +17,8 @@ use libcorevm::{
     corevm_jit_enable, corevm_jit_stats, corevm_lapic_diag_state, corevm_irq_pending_word,
     corevm_ioapic_redir_entry,
     corevm_pic_diag_state, corevm_read_linear_u8, corevm_read_phys_u8,
-    corevm_ide_attach_slave, corevm_load_rom, corevm_ps2_key_press, corevm_ps2_key_release,
+    corevm_fw_cfg_add_file, corevm_ide_attach_slave, corevm_load_binary, corevm_load_rom,
+    corevm_ps2_key_press, corevm_ps2_key_release, corevm_set_rip,
     corevm_pic_raise_irq, corevm_pit_advance, corevm_run, corevm_serial_take_output,
     corevm_setup_ide, corevm_setup_pci_bus, corevm_setup_standard_devices, corevm_debug_take_output,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
@@ -36,6 +38,7 @@ static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 static KERNEL_LOOP_DUMPED: AtomicBool = AtomicBool::new(false);
 static KERNEL_SPIN2_DUMPED: AtomicBool = AtomicBool::new(false);
 static KERNEL_ENTRY2_DUMPED: AtomicBool = AtomicBool::new(false);
+static CD_BOOT_DUMPED: AtomicBool = AtomicBool::new(false);
 const SIGINT: i32 = 2;
 
 unsafe extern "C" {
@@ -47,8 +50,16 @@ extern "C" fn on_sigint(_sig: i32) {
 }
 
 #[derive(Clone, Debug)]
+enum BiosKind {
+    SeaBios,
+    CoreVm,
+}
+
+#[derive(Clone, Debug)]
 struct Config {
+    bios_kind: BiosKind,
     bios: PathBuf,
+    vgabios: PathBuf,
     bios_base: u64,
     iso: PathBuf,
     ram_mb: u32,
@@ -92,7 +103,14 @@ impl Drop for SttyGuard {
     }
 }
 
-fn default_bios_path() -> PathBuf {
+fn first_existing_path(candidates: &[&str]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.exists())
+}
+
+fn default_corevm_bios_path() -> PathBuf {
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("libcorevm")
@@ -105,6 +123,21 @@ fn default_bios_path() -> PathBuf {
     }
 }
 
+fn default_seabios_path() -> PathBuf {
+    first_existing_path(&[
+        "/mnt/c/Program Files/qemu/share/bios-256k.bin",
+        "/mnt/c/Program Files/qemu/share/bios.bin",
+    ])
+    .unwrap_or_else(default_corevm_bios_path)
+}
+
+fn default_vgabios_path() -> PathBuf {
+    first_existing_path(&[
+        "/mnt/c/Program Files/qemu/share/vgabios.bin",
+    ])
+    .unwrap_or_else(|| PathBuf::from("/mnt/c/Program Files/qemu/share/vgabios.bin"))
+}
+
 fn parse_u64(s: &str) -> Option<u64> {
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         u64::from_str_radix(hex, 16).ok()
@@ -115,8 +148,10 @@ fn parse_u64(s: &str) -> Option<u64> {
 
 fn parse_args() -> Result<Config, String> {
     let mut cfg = Config {
-        bios: default_bios_path(),
-        bios_base: 0xF0000,
+        bios_kind: BiosKind::SeaBios,
+        bios: default_seabios_path(),
+        vgabios: default_vgabios_path(),
+        bios_base: 0xC0000,
         iso: PathBuf::new(),
         ram_mb: 256,
         cores: 1,
@@ -134,9 +169,24 @@ fn parse_args() -> Result<Config, String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--bios" => cfg.bios = PathBuf::from(args.next().ok_or("missing value for --bios")?),
+            "--vgabios" => {
+                cfg.vgabios = PathBuf::from(args.next().ok_or("missing value for --vgabios")?)
+            }
             "--bios-base" => {
                 let val = args.next().ok_or("missing value for --bios-base")?;
                 cfg.bios_base = parse_u64(&val).ok_or("invalid --bios-base")?;
+            }
+            "--seabios" => {
+                cfg.bios_kind = BiosKind::SeaBios;
+                if cfg.bios == default_corevm_bios_path() {
+                    cfg.bios = default_seabios_path();
+                }
+                cfg.bios_base = 0xC0000;
+            }
+            "--corevm-bios" => {
+                cfg.bios_kind = BiosKind::CoreVm;
+                cfg.bios = default_corevm_bios_path();
+                cfg.bios_base = 0xF0000;
             }
             "--iso" => cfg.iso = PathBuf::from(args.next().ok_or("missing value for --iso")?),
             "--ram-mb" => {
@@ -203,7 +253,7 @@ fn parse_args() -> Result<Config, String> {
 
 fn usage(program: &str) {
     eprintln!(
-        "Usage: {program} --iso <path> [--bios <path>] [--bios-base <addr>] [--ram-mb <mb>] [--cores <n>] [--batch <n>] [--max-seconds <n>] [--max-instructions <n>] [--stdin-kbd] [--no-vga-text] [--plain] [--auto-enter-ms <ms>] [--jit]"
+        "Usage: {program} --iso <path> [--seabios|--corevm-bios] [--bios <path>] [--vgabios <path>] [--bios-base <addr>] [--ram-mb <mb>] [--cores <n>] [--batch <n>] [--max-seconds <n>] [--max-instructions <n>] [--stdin-kbd] [--no-vga-text] [--plain] [--auto-enter-ms <ms>] [--jit]"
     );
 }
 
@@ -268,6 +318,8 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
     let cr3 = corevm_get_cr(handle, 3);
     let apic_base_msr = corevm_get_msr(handle, 0x1B);
     let efer_msr = corevm_get_msr(handle, 0xC000_0080);
+    let last_err_rip = corevm_get_last_error_rip(handle);
+    let last_err = last_error(handle);
     let cpl = (cs & 0x3) as u8;
     let probe_addr = if mode == 0 {
         ((cs as u64) << 4).wrapping_add(ip16)
@@ -639,8 +691,32 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         }
         eprintln!("{chain}");
     }
+    if mode == 0 && rip <= 1 && dx == 0xE0 && !CD_BOOT_DUMPED.swap(true, Ordering::SeqCst) {
+        for base in [0x7C00u64, 0x7C40u64, 0x7C6Cu64, 0x7E00u64] {
+            let mut line = String::new();
+            for i in 0..64u64 {
+                if i % 16 == 0 {
+                    if !line.is_empty() {
+                        eprintln!("{line}");
+                        line.clear();
+                    }
+                    line.push_str(&format!(
+                        "[test-vmd] bootmem {:08X}:",
+                        base.wrapping_add(i) as u32
+                    ));
+                }
+                line.push_str(&format!(
+                    " {:02X}",
+                    corevm_read_phys_u8(handle, base.wrapping_add(i))
+                ));
+            }
+            if !line.is_empty() {
+                eprintln!("{line}");
+            }
+        }
+    }
     eprintln!(
-        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} fs={:04X} fs_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} APIC_BASE={:08X} EFER={:08X} JIFF={:08X} LPJ={:08X} FSCAL={:08X} MAXPFN={:08X} MAXBYTES={:08X} PVOP={:08X}[{:02X} {:02X} {:02X} {:02X}] INITRD_DST=[{:08X},{:08X}) LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X}] IRQP[0={:016X} 1={:016X}] IOAPIC[r0={:016X} r1={:016X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} fs={:04X} fs_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} APIC_BASE={:08X} EFER={:08X} JIFF={:08X} LPJ={:08X} FSCAL={:08X} MAXPFN={:08X} MAXBYTES={:08X} PVOP={:08X}[{:02X} {:02X} {:02X} {:02X}] INITRD_DST=[{:08X},{:08X}) LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X}] IRQP[0={:016X} 1={:016X}] IOAPIC[r0={:016X} r1={:016X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] ERR_RIP={:08X} ERR='{}' bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
         mode_name(mode),
         cpl,
         cs,
@@ -708,6 +784,8 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         s_irr,
         s_isr,
         s_imr,
+        last_err_rip as u32,
+        last_err,
         bytes[0],
         bytes[1],
         bytes[2],
@@ -735,6 +813,40 @@ fn ensure_exists(path: &Path, what: &str) -> Result<(), String> {
     } else {
         Err(format!("{what} not found: {}", path.display()))
     }
+}
+
+fn load_guest_bios(vm: u64, cfg: &Config, bios: &[u8], vgabios: Option<&[u8]>) -> Result<(), String> {
+    match cfg.bios_kind {
+        BiosKind::CoreVm => {
+            let rc = corevm_load_rom(vm, cfg.bios_base, bios.as_ptr(), bios.len() as u32);
+            if rc != 0 {
+                return Err(format!("corevm_load_rom failed (rc={rc})"));
+            }
+        }
+        BiosKind::SeaBios => {
+            let rc = corevm_load_binary(vm, cfg.bios_base, bios.as_ptr(), bios.len() as u32);
+            if rc != 0 {
+                return Err(format!("corevm_load_binary failed (rc={rc})"));
+            }
+            let rc = corevm_load_rom(vm, 0xFFFC_0000, bios.as_ptr(), bios.len() as u32);
+            if rc != 0 {
+                return Err(format!("corevm_load_rom overlay failed (rc={rc})"));
+            }
+            let vgabios = vgabios.ok_or("missing vgabios for SeaBIOS")?;
+            let name = CString::new("vgaroms/vgabios.bin").unwrap();
+            let rc = corevm_fw_cfg_add_file(
+                vm,
+                name.as_ptr() as *const u8,
+                vgabios.as_ptr(),
+                vgabios.len() as u32,
+            );
+            if rc != 0 {
+                return Err(format!("corevm_fw_cfg_add_file failed (rc={rc})"));
+            }
+            corevm_set_rip(vm, 0xFFF0);
+        }
+    }
+    Ok(())
 }
 
 const VGA_TEXT_ROWS: usize = 25;
@@ -1125,6 +1237,12 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(2);
     }
+    if matches!(cfg.bios_kind, BiosKind::SeaBios) {
+        if let Err(e) = ensure_exists(&cfg.vgabios, "vgabios") {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    }
     if let Err(e) = ensure_exists(&cfg.iso, "iso") {
         eprintln!("{e}");
         std::process::exit(2);
@@ -1137,6 +1255,14 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let vgabios = if matches!(cfg.bios_kind, BiosKind::SeaBios) {
+        Some(fs::read(&cfg.vgabios).unwrap_or_else(|e| {
+            eprintln!("failed to read vgabios {}: {e}", cfg.vgabios.display());
+            std::process::exit(2);
+        }))
+    } else {
+        None
+    };
     let iso = match fs::read(&cfg.iso) {
         Ok(i) => i,
         Err(e) => {
@@ -1146,7 +1272,8 @@ fn main() {
     };
 
     eprintln!(
-        "[test-vmd] bios={} ({} bytes) iso={} ({} bytes) ram={}MiB cores={} stdin_kbd={} vga_text={}",
+        "[test-vmd] bios_kind={:?} bios={} ({} bytes) iso={} ({} bytes) ram={}MiB cores={} stdin_kbd={} vga_text={}",
+        cfg.bios_kind,
         cfg.bios.display(),
         bios.len(),
         cfg.iso.display(),
@@ -1162,16 +1289,13 @@ fn main() {
         eprintln!("corevm_create_ex failed");
         std::process::exit(1);
     }
-
-    let rc = corevm_load_rom(vm.0, cfg.bios_base, bios.as_ptr(), bios.len() as u32);
-    if rc != 0 {
-        eprintln!("corevm_load_rom failed (rc={rc})");
-        std::process::exit(1);
-    }
-
     corevm_setup_standard_devices(vm.0);
     corevm_setup_pci_bus(vm.0);
     corevm_setup_ide(vm.0);
+    if let Err(e) = load_guest_bios(vm.0, &cfg, &bios, vgabios.as_deref()) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
     corevm_ide_attach_slave(vm.0, iso.as_ptr(), iso.len() as u32);
     if cfg.jit {
         corevm_jit_enable(vm.0, 1);

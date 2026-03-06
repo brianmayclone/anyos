@@ -345,6 +345,14 @@ struct AnyuiLib {
     // Modal dialog API
     set_modal: extern "C" fn(u32, u32),
     clear_modal: extern "C" fn(u32),
+    // Tray icon
+    add_status_icon_fn: extern "C" fn(u32, *const u32),
+    remove_status_icon_fn: extern "C" fn(u32),
+    on_tray_click_fn: extern "C" fn(u32, Callback, u64),
+    // Menu bar
+    set_menu_fn: extern "C" fn(u32, *const u8, u32),
+    update_menu_item_fn: extern "C" fn(u32, u32, u32),
+    on_menu_item_fn: extern "C" fn(u32, Callback, u64),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -587,6 +595,14 @@ pub fn init() -> bool {
             // Modal dialog API
             set_modal: resolve(&handle, "anyui_set_modal"),
             clear_modal: resolve(&handle, "anyui_clear_modal"),
+            // Tray icon
+            add_status_icon_fn: resolve(&handle, "anyui_add_status_icon"),
+            remove_status_icon_fn: resolve(&handle, "anyui_remove_status_icon"),
+            on_tray_click_fn: resolve(&handle, "anyui_on_tray_click"),
+            // Menu bar
+            set_menu_fn: resolve(&handle, "anyui_set_menu"),
+            update_menu_item_fn: resolve(&handle, "anyui_update_menu_item"),
+            on_menu_item_fn: resolve(&handle, "anyui_on_menu_item"),
             _handle: handle,
         };
         (lib.init)();

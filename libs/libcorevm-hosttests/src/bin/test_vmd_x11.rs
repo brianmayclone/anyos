@@ -1,5 +1,5 @@
 use std::env;
-use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void};
+use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void, CString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 use libcorevm::{
     corevm_create_ex, corevm_debug_take_output, corevm_destroy, corevm_get_last_error,
     corevm_get_instruction_count, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rip,
-    corevm_get_segment_selector, corevm_ide_attach_slave, corevm_jit_enable, corevm_jit_stats,
-    corevm_load_rom,
+    corevm_get_segment_selector, corevm_fw_cfg_add_file, corevm_ide_attach_slave,
+    corevm_jit_enable, corevm_jit_stats, corevm_load_binary, corevm_load_rom,
     corevm_pic_raise_irq, corevm_pit_advance, corevm_ps2_key_press, corevm_ps2_key_release,
-    corevm_run, corevm_serial_take_output, corevm_setup_ide, corevm_setup_pci_bus,
+    corevm_run, corevm_serial_take_output, corevm_set_rip, corevm_setup_ide, corevm_setup_pci_bus,
     corevm_setup_standard_devices, corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
 };
 
@@ -214,8 +214,16 @@ extern "C" fn on_sigint(_sig: i32) {
 }
 
 #[derive(Clone, Debug)]
+enum BiosKind {
+    SeaBios,
+    CoreVm,
+}
+
+#[derive(Clone, Debug)]
 struct Config {
+    bios_kind: BiosKind,
     bios: PathBuf,
+    vgabios: PathBuf,
     bios_base: u64,
     iso: PathBuf,
     ram_mb: u32,
@@ -225,7 +233,14 @@ struct Config {
     jit: bool,
 }
 
-fn default_bios_path() -> PathBuf {
+fn first_existing_path(candidates: &[&str]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.exists())
+}
+
+fn default_corevm_bios_path() -> PathBuf {
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("libcorevm")
@@ -238,6 +253,21 @@ fn default_bios_path() -> PathBuf {
     }
 }
 
+fn default_seabios_path() -> PathBuf {
+    first_existing_path(&[
+        "/mnt/c/Program Files/qemu/share/bios-256k.bin",
+        "/mnt/c/Program Files/qemu/share/bios.bin",
+    ])
+    .unwrap_or_else(default_corevm_bios_path)
+}
+
+fn default_vgabios_path() -> PathBuf {
+    first_existing_path(&[
+        "/mnt/c/Program Files/qemu/share/vgabios.bin",
+    ])
+    .unwrap_or_else(|| PathBuf::from("/mnt/c/Program Files/qemu/share/vgabios.bin"))
+}
+
 fn parse_u64(s: &str) -> Option<u64> {
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         u64::from_str_radix(hex, 16).ok()
@@ -248,8 +278,10 @@ fn parse_u64(s: &str) -> Option<u64> {
 
 fn parse_args() -> Result<Config, String> {
     let mut cfg = Config {
-        bios: default_bios_path(),
-        bios_base: 0xF0000,
+        bios_kind: BiosKind::SeaBios,
+        bios: default_seabios_path(),
+        vgabios: default_vgabios_path(),
+        bios_base: 0xC0000,
         iso: PathBuf::new(),
         ram_mb: 64,
         cores: 1,
@@ -261,9 +293,24 @@ fn parse_args() -> Result<Config, String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--bios" => cfg.bios = PathBuf::from(args.next().ok_or("missing value for --bios")?),
+            "--vgabios" => {
+                cfg.vgabios = PathBuf::from(args.next().ok_or("missing value for --vgabios")?)
+            }
             "--bios-base" => {
                 let v = args.next().ok_or("missing value for --bios-base")?;
                 cfg.bios_base = parse_u64(&v).ok_or("invalid --bios-base")?;
+            }
+            "--seabios" => {
+                cfg.bios_kind = BiosKind::SeaBios;
+                if cfg.bios == default_corevm_bios_path() {
+                    cfg.bios = default_seabios_path();
+                }
+                cfg.bios_base = 0xC0000;
+            }
+            "--corevm-bios" => {
+                cfg.bios_kind = BiosKind::CoreVm;
+                cfg.bios = default_corevm_bios_path();
+                cfg.bios_base = 0xF0000;
             }
             "--iso" => cfg.iso = PathBuf::from(args.next().ok_or("missing value for --iso")?),
             "--ram-mb" => {
@@ -309,7 +356,7 @@ fn parse_args() -> Result<Config, String> {
 }
 
 fn usage(program: &str) {
-    eprintln!("Usage: {program} --iso <path> [--bios <path>] [--bios-base <addr>] [--ram-mb <mb>] [--cores <n>] [--batch <n>] [--max-seconds <n>] [--jit]");
+    eprintln!("Usage: {program} --iso <path> [--seabios|--corevm-bios] [--bios <path>] [--vgabios <path>] [--bios-base <addr>] [--ram-mb <mb>] [--cores <n>] [--batch <n>] [--max-seconds <n>] [--jit]");
 }
 
 fn ensure_exists(path: &Path, what: &str) -> Result<(), String> {
@@ -318,6 +365,36 @@ fn ensure_exists(path: &Path, what: &str) -> Result<(), String> {
     } else {
         Err(format!("{what} not found: {}", path.display()))
     }
+}
+
+fn load_guest_bios(vm: u64, cfg: &Config, bios: &[u8], vgabios: Option<&[u8]>) -> Result<(), String> {
+    match cfg.bios_kind {
+        BiosKind::CoreVm => {
+            if corevm_load_rom(vm, cfg.bios_base, bios.as_ptr(), bios.len() as u32) != 0 {
+                return Err("corevm_load_rom failed".to_string());
+            }
+        }
+        BiosKind::SeaBios => {
+            if corevm_load_binary(vm, cfg.bios_base, bios.as_ptr(), bios.len() as u32) != 0 {
+                return Err("corevm_load_binary failed".to_string());
+            }
+            if corevm_load_rom(vm, 0xFFFC_0000, bios.as_ptr(), bios.len() as u32) != 0 {
+                return Err("corevm_load_rom overlay failed".to_string());
+            }
+            let vgabios = vgabios.ok_or("missing vgabios for SeaBIOS")?;
+            let name = CString::new("vgaroms/vgabios.bin").unwrap();
+            if corevm_fw_cfg_add_file(
+                vm,
+                name.as_ptr() as *const u8,
+                vgabios.as_ptr(),
+                vgabios.len() as u32,
+            ) != 0 {
+                return Err("corevm_fw_cfg_add_file failed".to_string());
+            }
+            corevm_set_rip(vm, 0xFFF0);
+        }
+    }
+    Ok(())
 }
 
 fn take_text_output(handle: u64) -> String {
@@ -625,6 +702,12 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(2);
     }
+    if matches!(cfg.bios_kind, BiosKind::SeaBios) {
+        if let Err(e) = ensure_exists(&cfg.vgabios, "vgabios") {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    }
     if let Err(e) = ensure_exists(&cfg.iso, "iso") {
         eprintln!("{e}");
         std::process::exit(2);
@@ -634,6 +717,14 @@ fn main() {
         eprintln!("failed to read bios {}: {e}", cfg.bios.display());
         std::process::exit(2);
     });
+    let vgabios = if matches!(cfg.bios_kind, BiosKind::SeaBios) {
+        Some(fs::read(&cfg.vgabios).unwrap_or_else(|e| {
+            eprintln!("failed to read vgabios {}: {e}", cfg.vgabios.display());
+            std::process::exit(2);
+        }))
+    } else {
+        None
+    };
     let iso = fs::read(&cfg.iso).unwrap_or_else(|e| {
         eprintln!("failed to read iso {}: {e}", cfg.iso.display());
         std::process::exit(2);
@@ -644,13 +735,13 @@ fn main() {
         eprintln!("corevm_create_ex failed");
         std::process::exit(1);
     }
-    if corevm_load_rom(vm.0, cfg.bios_base, bios.as_ptr(), bios.len() as u32) != 0 {
-        eprintln!("corevm_load_rom failed");
-        std::process::exit(1);
-    }
     corevm_setup_standard_devices(vm.0);
     corevm_setup_pci_bus(vm.0);
     corevm_setup_ide(vm.0);
+    if let Err(e) = load_guest_bios(vm.0, &cfg, &bios, vgabios.as_deref()) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
     corevm_ide_attach_slave(vm.0, iso.as_ptr(), iso.len() as u32);
     if cfg.jit {
         corevm_jit_enable(vm.0, 1);

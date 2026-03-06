@@ -178,3 +178,9 @@ EXPORTS
     anyui_splitview_set_resizable
     anyui_set_modal
     anyui_clear_modal
+    anyui_add_status_icon
+    anyui_remove_status_icon
+    anyui_on_tray_click
+    anyui_set_menu
+    anyui_update_menu_item
+    anyui_on_menu_item

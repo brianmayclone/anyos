@@ -231,6 +231,15 @@ pub(crate) struct AnyuiState {
     /// Stack of active modal contexts. Last entry = topmost modal.
     /// When non-empty, only the topmost modal's window receives input events.
     pub modal_stack: Vec<ModalEntry>,
+
+    // ── Tray icon callbacks ─────────────────────────────────────────
+    /// Registered tray icon click callbacks: (icon_id, callback, userdata).
+    pub tray_callbacks: Vec<(u32, Callback, u64)>,
+
+    // ── Menu item callbacks ─────────────────────────────────────────
+    /// Registered menu item callbacks: (window_control_id, callback, userdata).
+    /// Callback receives (item_id, EVT_MENU_ITEM, userdata).
+    pub menu_callbacks: Vec<(u32, Callback, u64)>,
 }
 
 /// Signal that at least one control needs repainting.
@@ -322,6 +331,8 @@ pub extern "C" fn anyui_init() -> u32 {
             on_window_opened: None,
             on_window_closed: None,
             modal_stack: Vec::new(),
+            tray_callbacks: Vec::new(),
+            menu_callbacks: Vec::new(),
         });
     }
     1
@@ -2930,6 +2941,76 @@ pub extern "C" fn anyui_focus_by_tid(tid: u32) {
     if channel_id == 0 { return; }
     let cmd: [u32; 5] = [0x100A, tid, 0, 0, 0]; // CMD_FOCUS_BY_TID
     syscall::evt_chan_emit(channel_id, &cmd);
+}
+
+// ── Tray icon management ────────────────────────────────────────────
+
+/// Register or update a 16×16 ARGB tray icon via the compositor.
+#[no_mangle]
+pub extern "C" fn anyui_add_status_icon(icon_id: u32, pixels: *const u32) {
+    let st = state();
+    compositor::add_status_icon(st.channel_id, icon_id, pixels);
+}
+
+/// Remove a tray icon from the compositor.
+#[no_mangle]
+pub extern "C" fn anyui_remove_status_icon(icon_id: u32) {
+    let st = state();
+    compositor::remove_status_icon(st.channel_id, icon_id);
+}
+
+/// Register a callback for tray icon clicks.
+/// Callback receives (icon_id, mouse_x, userdata).
+#[no_mangle]
+pub extern "C" fn anyui_on_tray_click(icon_id: u32, cb: Callback, userdata: u64) {
+    let st = state();
+    // Replace existing callback for this icon_id, or add new
+    if let Some(entry) = st.tray_callbacks.iter_mut().find(|e| e.0 == icon_id) {
+        entry.1 = cb;
+        entry.2 = userdata;
+    } else {
+        st.tray_callbacks.push((icon_id, cb, userdata));
+    }
+}
+
+// ── Menu bar management ─────────────────────────────────────────────
+
+/// Helper: find compositor window_id for a given control window_id.
+fn comp_window_id_for(st: &AnyuiState, win_ctrl_id: u32) -> Option<u32> {
+    st.windows.iter().position(|&w| w == win_ctrl_id)
+        .map(|i| st.comp_windows[i].window_id)
+}
+
+/// Set a window's menu bar from binary data (MenuBarBuilder output).
+/// `win_id` is the control window ID (from anyui_create_window).
+#[no_mangle]
+pub extern "C" fn anyui_set_menu(win_id: u32, menu_data: *const u8, menu_len: u32) {
+    let st = state();
+    if let Some(comp_wid) = comp_window_id_for(st, win_id) {
+        compositor::set_menu(st.channel_id, comp_wid, menu_data, menu_len);
+    }
+}
+
+/// Update a menu item's flags (enable/disable/check).
+#[no_mangle]
+pub extern "C" fn anyui_update_menu_item(win_id: u32, item_id: u32, new_flags: u32) {
+    let st = state();
+    if let Some(comp_wid) = comp_window_id_for(st, win_id) {
+        compositor::update_menu_item(st.channel_id, comp_wid, item_id, new_flags);
+    }
+}
+
+/// Register a callback for menu item clicks on a window.
+/// Callback receives (item_id, EVT_MENU_ITEM, userdata).
+#[no_mangle]
+pub extern "C" fn anyui_on_menu_item(win_id: u32, cb: Callback, userdata: u64) {
+    let st = state();
+    if let Some(entry) = st.menu_callbacks.iter_mut().find(|e| e.0 == win_id) {
+        entry.1 = cb;
+        entry.2 = userdata;
+    } else {
+        st.menu_callbacks.push((win_id, cb, userdata));
+    }
 }
 
 // ── Text measurement (for libwebview layout engine) ──────────────────

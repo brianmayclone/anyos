@@ -1194,7 +1194,9 @@ pub fn push_val(
     memory: &mut GuestMemory,
 ) -> Result<()> {
     let bytes = size.bytes() as u64;
-    let sp = cpu.regs.sp().wrapping_sub(bytes);
+    let addr_size = stack_address_size(cpu);
+    let sp = cpu.regs.sp() & addr_size.mask();
+    let sp = sp.wrapping_sub(bytes) & addr_size.mask();
 
     // Compute the linear address through SS
     let ss = cpu.regs.segment(SegReg::Ss);
@@ -1203,7 +1205,7 @@ pub fn push_val(
     translate_and_write(cpu, linear, size, val, mmu, memory)?;
 
     // Update SP (mask to address width)
-    match stack_address_size(cpu) {
+    match addr_size {
         OperandSize::Word => cpu.regs.write_gpr16(GprIndex::Rsp as u8, sp as u16),
         OperandSize::Dword => cpu.regs.write_gpr32(GprIndex::Rsp as u8, sp as u32),
         _ => cpu.regs.set_sp(sp),
@@ -1222,7 +1224,8 @@ pub fn pop_val(
     mmu: &Mmu,
     memory: &GuestMemory,
 ) -> Result<u64> {
-    let sp = cpu.regs.sp();
+    let addr_size = stack_address_size(cpu);
+    let sp = cpu.regs.sp() & addr_size.mask();
     let bytes = size.bytes() as u64;
 
     // Compute the linear address through SS
@@ -1232,8 +1235,8 @@ pub fn pop_val(
     let val = translate_and_read(cpu, linear, size, mmu, memory)?;
 
     // Update SP
-    let new_sp = sp.wrapping_add(bytes);
-    match stack_address_size(cpu) {
+    let new_sp = sp.wrapping_add(bytes) & addr_size.mask();
+    match addr_size {
         OperandSize::Word => cpu.regs.write_gpr16(GprIndex::Rsp as u8, new_sp as u16),
         OperandSize::Dword => cpu.regs.write_gpr32(GprIndex::Rsp as u8, new_sp as u32),
         _ => cpu.regs.set_sp(new_sp),

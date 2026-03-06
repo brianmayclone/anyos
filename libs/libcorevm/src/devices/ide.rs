@@ -1,281 +1,289 @@
 //! ATA/IDE disk controller emulation.
 //!
-//! Emulates a single-channel ATA controller with two drives (master + slave)
-//! attached. Supports PIO data transfers used by BIOS INT 13h and
-//! early Linux boot (before DMA drivers are loaded).
+//! Emulates a single primary IDE channel with two targets:
+//! - master: ATA hard disk
+//! - slave: ATAPI CD-ROM
 //!
-//! Each drive can be backed by either an in-memory `Vec<u8>` image or an
-//! open file descriptor for on-demand sector I/O (avoiding loading the
-//! entire disk image into RAM).
-//!
-//! # I/O Ports
-//!
-//! | Port Range | Description |
-//! |------------|-------------|
-//! | 0x1F0-0x1F7 | Primary ATA command block |
-//! | 0x3F6-0x3F7 | Primary ATA control block |
-//!
-//! # Supported Commands
-//!
-//! | Command | Code | Description |
-//! |---------|------|-------------|
-//! | IDENTIFY DEVICE | 0xEC | Return 512-byte device info |
-//! | READ SECTORS | 0x20 | PIO read (28-bit LBA) |
-//! | WRITE SECTORS | 0x30 | PIO write (28-bit LBA) |
-//! | READ SECTORS EXT | 0x24 | PIO read (48-bit LBA) |
-//! | WRITE SECTORS EXT | 0x34 | PIO write (48-bit LBA) |
-//! | SET FEATURES | 0xEF | Feature configuration |
-//! | FLUSH CACHE | 0xE7 | Flush write cache |
-//! | DEVICE RESET | 0x08 | Software reset |
+//! The ATA path is used for virtual disks, while ISO images are exposed as a
+//! packet-based ATAPI device so SeaBIOS can boot them through its normal
+//! El Torito code path.
 
+use alloc::vec;
 use alloc::vec::Vec;
 use crate::error::Result;
 use crate::io::IoHandler;
 use crate::syscall;
+#[cfg(feature = "host_test")]
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Log a line to the serial console for IDE debugging (disabled for performance).
+#[cfg(feature = "host_test")]
+static IDE_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
+
 macro_rules! ide_log {
-    ($($arg:tt)*) => {{}};
+    ($($arg:tt)*) => {{
+        #[cfg(feature = "host_test")]
+        {
+            if IDE_TRACE_COUNT.fetch_add(1, Ordering::Relaxed) < 256 {
+                println!("[ide] {}", format_args!($($arg)*));
+            }
+        }
+    }};
 }
 
-// ── ATA status register bits ──
+// ── ATA status register bits ──────────────────────────────────────────────
 
-/// BSY — drive is busy processing a command.
 const SR_BSY: u8 = 0x80;
-/// DRDY — drive is ready to accept commands.
 const SR_DRDY: u8 = 0x40;
-/// DF — device fault.
 const SR_DF: u8 = 0x20;
-/// DSC — drive seek complete.
 const SR_DSC: u8 = 0x10;
-/// DRQ — data request (ready to transfer data).
 const SR_DRQ: u8 = 0x08;
-/// ERR — error occurred (see error register).
 const SR_ERR: u8 = 0x01;
 
-// ── ATA error register bits ──
+// ── ATA error register bits ───────────────────────────────────────────────
 
-/// ABRT — command aborted.
 const ER_ABRT: u8 = 0x04;
 
-// ── ATA commands ──
+// ── ATA/ATAPI commands ────────────────────────────────────────────────────
 
-const CMD_IDENTIFY: u8 = 0xEC;
-const CMD_READ_SECTORS: u8 = 0x20;
-const CMD_WRITE_SECTORS: u8 = 0x30;
-const CMD_READ_SECTORS_EXT: u8 = 0x24;
-const CMD_WRITE_SECTORS_EXT: u8 = 0x34;
-const CMD_SET_FEATURES: u8 = 0xEF;
-const CMD_FLUSH_CACHE: u8 = 0xE7;
+const CMD_NOP: u8 = 0x00;
 const CMD_DEVICE_RESET: u8 = 0x08;
-const CMD_INIT_DRIVE_PARAMS: u8 = 0x91;
+const CMD_READ_SECTORS: u8 = 0x20;
+const CMD_READ_SECTORS_EXT: u8 = 0x24;
+const CMD_WRITE_SECTORS: u8 = 0x30;
+const CMD_WRITE_SECTORS_EXT: u8 = 0x34;
+const CMD_PACKET: u8 = 0xA0;
+const CMD_IDENTIFY_PACKET: u8 = 0xA1;
 const CMD_READ_MULTIPLE: u8 = 0xC4;
 const CMD_WRITE_MULTIPLE: u8 = 0xC5;
 const CMD_SET_MULTIPLE: u8 = 0xC6;
-const CMD_NOP: u8 = 0x00;
+const CMD_FLUSH_CACHE: u8 = 0xE7;
+const CMD_IDENTIFY: u8 = 0xEC;
+const CMD_SET_FEATURES: u8 = 0xEF;
+const CMD_INIT_DRIVE_PARAMS: u8 = 0x91;
 
-/// Sector size in bytes.
-const SECTOR_SIZE: usize = 512;
+// ── ATAPI packet opcodes ──────────────────────────────────────────────────
 
-// ── Per-drive state ──
+const PKT_TEST_UNIT_READY: u8 = 0x00;
+const PKT_REQUEST_SENSE: u8 = 0x03;
+const PKT_INQUIRY: u8 = 0x12;
+const PKT_MODE_SENSE_6: u8 = 0x1A;
+const PKT_START_STOP_UNIT: u8 = 0x1B;
+const PKT_PREVENT_ALLOW_MEDIUM_REMOVAL: u8 = 0x1E;
+const PKT_READ_FORMAT_CAPACITIES: u8 = 0x23;
+const PKT_READ_CAPACITY_10: u8 = 0x25;
+const PKT_READ_10: u8 = 0x28;
+const PKT_READ_TOC_PMA_ATIP: u8 = 0x43;
+const PKT_MODE_SENSE_10: u8 = 0x5A;
+const PKT_READ_12: u8 = 0xA8;
 
-/// State for a single ATA drive on the channel.
-///
-/// A drive can be backed by either an in-memory `Vec<u8>` or an open file
-/// descriptor. When `disk_fd >= 0`, sectors are read/written via syscalls
-/// (`lseek` + `read`/`write`), avoiding loading the entire image into RAM.
+const ATA_SECTOR_SIZE: usize = 512;
+const ATAPI_SECTOR_SIZE: usize = 2048;
+const ATAPI_PACKET_SIZE: usize = 12;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DriveKind {
+    AtaDisk,
+    AtapiCdrom,
+}
+
+impl DriveKind {
+    fn block_size(self) -> usize {
+        match self {
+            DriveKind::AtaDisk => ATA_SECTOR_SIZE,
+            DriveKind::AtapiCdrom => ATAPI_SECTOR_SIZE,
+        }
+    }
+
+    fn signature(self) -> (u8, u8, u8, u8) {
+        match self {
+            DriveKind::AtaDisk => (1, 1, 0x00, 0x00),
+            DriveKind::AtapiCdrom => (1, 1, 0x14, 0xEB),
+        }
+    }
+}
+
 struct DriveState {
-    /// Flat disk image data (used when `disk_fd < 0`).
     disk: Vec<u8>,
-    /// Open file descriptor for on-demand I/O, or -1 if in-memory.
     disk_fd: i32,
-    /// Total number of 512-byte sectors on this drive.
-    total_sectors: u64,
-    /// Whether this drive is present (has an image or valid fd).
+    total_blocks: u64,
     present: bool,
+    kind: DriveKind,
 }
 
 impl DriveState {
-    fn new() -> Self {
+    fn new(kind: DriveKind) -> Self {
         DriveState {
             disk: Vec::new(),
             disk_fd: -1,
-            total_sectors: 0,
+            total_blocks: 0,
             present: false,
+            kind,
         }
     }
 
-    /// Seek the file descriptor to `byte_offset`.
-    ///
-    /// The anyOS `lseek` takes an `i32` offset, limiting single seeks to
-    /// ~2 GB.  For larger offsets we chain SEEK_SET(0) + SEEK_CUR chunks.
+    fn block_size(&self) -> usize {
+        self.kind.block_size()
+    }
+
     fn seek_to(&self, byte_offset: u64) {
         let fd = self.disk_fd as u32;
-        // Start from the beginning.
-        syscall::lseek(fd, 0, 0); // SEEK_SET
+        syscall::lseek(fd, 0, 0);
         let mut remaining = byte_offset;
-        const MAX_CHUNK: u64 = 0x7FFF_FFFF; // i32::MAX
+        const MAX_CHUNK: u64 = 0x7FFF_FFFF;
         while remaining > MAX_CHUNK {
-            syscall::lseek(fd, MAX_CHUNK as i32, 1); // SEEK_CUR
+            syscall::lseek(fd, MAX_CHUNK as i32, 1);
             remaining -= MAX_CHUNK;
         }
         if remaining > 0 {
-            syscall::lseek(fd, remaining as i32, 1); // SEEK_CUR
+            syscall::lseek(fd, remaining as i32, 1);
         }
     }
 
-    /// Read one 512-byte sector into `buffer`.
-    fn read_sector(&self, lba: u64, buffer: &mut [u8; SECTOR_SIZE]) {
-        if lba >= self.total_sectors {
-            *buffer = [0u8; SECTOR_SIZE];
-            return;
-        }
+    fn read_at(&self, byte_offset: u64, buffer: &mut [u8]) {
         if self.disk_fd >= 0 {
-            // FD-backed: seek + read.
-            let byte_offset = lba * SECTOR_SIZE as u64;
             self.seek_to(byte_offset);
             let n = syscall::read(self.disk_fd as u32, buffer);
-            // Pad remainder with zeros if short read.
-            if (n as usize) < SECTOR_SIZE {
-                let start = if n == u32::MAX { 0 } else { n as usize };
-                buffer[start..].fill(0);
+            let read_len = if n == u32::MAX { 0 } else { (n as usize).min(buffer.len()) };
+            if read_len < buffer.len() {
+                buffer[read_len..].fill(0);
             }
+            return;
+        }
+
+        let start = byte_offset as usize;
+        let end = start.saturating_add(buffer.len());
+        if end <= self.disk.len() {
+            buffer.copy_from_slice(&self.disk[start..end]);
+        } else if start < self.disk.len() {
+            let available = self.disk.len() - start;
+            buffer[..available].copy_from_slice(&self.disk[start..]);
+            buffer[available..].fill(0);
         } else {
-            // In-memory.
-            let offset = (lba as usize) * SECTOR_SIZE;
-            if offset + SECTOR_SIZE <= self.disk.len() {
-                buffer.copy_from_slice(&self.disk[offset..offset + SECTOR_SIZE]);
-            } else {
-                *buffer = [0u8; SECTOR_SIZE];
-            }
+            buffer.fill(0);
         }
     }
 
-    /// Write one 512-byte sector from `buffer`.
-    fn write_sector(&mut self, lba: u64, buffer: &[u8; SECTOR_SIZE]) {
-        if lba >= self.total_sectors {
+    fn write_at(&mut self, byte_offset: u64, buffer: &[u8]) {
+        if self.kind != DriveKind::AtaDisk {
             return;
         }
         if self.disk_fd >= 0 {
-            // FD-backed: seek + write.
-            let byte_offset = lba * SECTOR_SIZE as u64;
             self.seek_to(byte_offset);
             syscall::write(self.disk_fd as u32, buffer);
-        } else {
-            // In-memory.
-            let offset = (lba as usize) * SECTOR_SIZE;
-            if offset + SECTOR_SIZE <= self.disk.len() {
-                self.disk[offset..offset + SECTOR_SIZE].copy_from_slice(buffer);
-            }
+            return;
+        }
+
+        let start = byte_offset as usize;
+        let end = start.saturating_add(buffer.len());
+        if end <= self.disk.len() {
+            self.disk[start..end].copy_from_slice(buffer);
         }
     }
 
-    /// Attach an in-memory disk image (flat sector dump).
-    fn attach_image(&mut self, mut image: Vec<u8>) {
-        // Close any previous FD.
+    fn read_block(&self, lba: u64, buffer: &mut [u8]) {
+        if lba >= self.total_blocks || buffer.len() != self.block_size() {
+            buffer.fill(0);
+            return;
+        }
+        self.read_at(lba * self.block_size() as u64, buffer);
+    }
+
+    fn write_block(&mut self, lba: u64, buffer: &[u8]) {
+        if lba >= self.total_blocks || buffer.len() != self.block_size() {
+            return;
+        }
+        self.write_at(lba * self.block_size() as u64, buffer);
+    }
+
+    fn attach_image(&mut self, mut image: Vec<u8>, kind: DriveKind) {
         if self.disk_fd >= 0 {
             syscall::close(self.disk_fd as u32);
             self.disk_fd = -1;
         }
-        let sectors = image.len() / SECTOR_SIZE;
-        image.truncate(sectors * SECTOR_SIZE);
-        self.total_sectors = sectors as u64;
+
+        let block_size = kind.block_size();
+        let blocks = image.len() / block_size;
+        image.truncate(blocks * block_size);
         self.disk = image;
+        self.total_blocks = blocks as u64;
         self.present = true;
+        self.kind = kind;
     }
 
-    /// Attach a file-descriptor-backed disk for on-demand I/O.
-    fn attach_fd(&mut self, fd: i32, size: u64) {
-        // Close any previous FD.
+    fn attach_fd(&mut self, fd: i32, size: u64, kind: DriveKind) {
         if self.disk_fd >= 0 {
             syscall::close(self.disk_fd as u32);
         }
-        // Free any in-memory image.
+
         self.disk = Vec::new();
         self.disk_fd = fd;
-        self.total_sectors = size / SECTOR_SIZE as u64;
+        self.total_blocks = size / kind.block_size() as u64;
         self.present = true;
+        self.kind = kind;
     }
 
-    /// Detach the drive and free resources.
     fn detach(&mut self) -> Vec<u8> {
         if self.disk_fd >= 0 {
             syscall::close(self.disk_fd as u32);
             self.disk_fd = -1;
         }
-        self.total_sectors = 0;
+        self.total_blocks = 0;
         self.present = false;
         core::mem::take(&mut self.disk)
     }
 }
 
-// ── IDE controller ──
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TransferMode {
+    None,
+    AtaRead,
+    AtaWrite,
+    AtapiPacket,
+    AtapiRead,
+}
 
-/// IDE/ATA disk controller with master and slave drives.
-///
-/// Both drives share the same I/O ports (0x1F0-0x1F7, 0x3F6-0x3F7).
-/// The guest selects between them via bit 4 of the drive/head register.
 pub struct Ide {
-    // ── Drives ──
-
-    /// Two drives: index 0 = master, index 1 = slave.
     drives: [DriveState; 2],
 
-    // ── Task file registers ──
-
-    /// Error register (read) / Features register (write).
     error: u8,
     features: u8,
-    /// Sector count register.
     sector_count: u8,
-    /// Sector number / LBA[7:0].
     sector_number: u8,
-    /// Cylinder low / LBA[15:8].
     cylinder_low: u8,
-    /// Cylinder high / LBA[23:16].
     cylinder_high: u8,
-    /// Drive/head register (LBA[27:24] in low nibble, bit 4 = drive select,
-    /// bit 6 = LBA mode).
     drive_head: u8,
-    /// Status register.
     status: u8,
-
-    // ── 48-bit LBA extension (HOB = High Order Byte) ──
 
     hob_sector_count: u8,
     hob_sector_number: u8,
     hob_cylinder_low: u8,
     hob_cylinder_high: u8,
-    /// Tracks which byte (0 or 1) of the HOB pair is being written.
     hob_toggle: bool,
 
-    // ── Control register ──
-
-    /// Device control register (port 0x3F6). Bit 1 = nIEN, bit 2 = SRST.
     device_control: u8,
 
-    // ── Data transfer state ──
-
-    /// 512-byte sector buffer for PIO transfers.
-    buffer: [u8; SECTOR_SIZE],
-    /// Current byte offset within the buffer (0..512).
+    buffer: Vec<u8>,
     buffer_offset: usize,
-    /// Number of sectors remaining in the current multi-sector transfer.
+    buffer_limit: usize,
+    transfer_mode: TransferMode,
     sectors_remaining: u32,
-    /// True if the current transfer is a write (guest→disk).
-    is_write: bool,
-    /// True if the drive raises IRQ 14 on command completion.
     irq_pending: bool,
-    /// Multiple sector count for READ/WRITE MULTIPLE.
     multiple_count: u8,
+    atapi_byte_count_limit: u16,
+    atapi_sense_key: u8,
+    atapi_asc: u8,
+    atapi_ascq: u8,
 }
 
 impl Ide {
-    /// Create a new IDE controller with no disks attached.
     pub fn new() -> Self {
-        Ide {
-            drives: [DriveState::new(), DriveState::new()],
-            error: 0,
+        let mut ide = Ide {
+            drives: [
+                DriveState::new(DriveKind::AtaDisk),
+                DriveState::new(DriveKind::AtapiCdrom),
+            ],
+            error: 0x01,
             features: 0,
             sector_count: 1,
             sector_number: 1,
@@ -289,84 +297,135 @@ impl Ide {
             hob_cylinder_high: 0,
             hob_toggle: false,
             device_control: 0,
-            buffer: [0u8; SECTOR_SIZE],
+            buffer: Vec::new(),
             buffer_offset: 0,
+            buffer_limit: 0,
+            transfer_mode: TransferMode::None,
             sectors_remaining: 0,
-            is_write: false,
             irq_pending: false,
             multiple_count: 1,
+            atapi_byte_count_limit: ATAPI_SECTOR_SIZE as u16,
+            atapi_sense_key: 0,
+            atapi_asc: 0,
+            atapi_ascq: 0,
+        };
+        ide.apply_selected_drive_signature();
+        ide
+    }
+
+    pub fn attach_disk(&mut self, image: Vec<u8>) {
+        self.drives[0].attach_image(image, DriveKind::AtaDisk);
+        if self.selected_drive() == 0 {
+            self.apply_selected_drive_signature();
+        }
+        self.status = SR_DRDY | SR_DSC;
+    }
+
+    pub fn attach_slave(&mut self, image: Vec<u8>) {
+        self.drives[1].attach_image(image, DriveKind::AtapiCdrom);
+        if self.selected_drive() == 1 {
+            self.apply_selected_drive_signature();
         }
     }
 
-    // ── Public drive management ──
-
-    /// Attach an in-memory disk image to the master drive (drive 0).
-    pub fn attach_disk(&mut self, image: Vec<u8>) {
-        self.drives[0].attach_image(image);
-        self.status = SR_DRDY | SR_DSC;
-    }
-
-    /// Attach an in-memory disk image to the slave drive (drive 1).
-    pub fn attach_slave(&mut self, image: Vec<u8>) {
-        self.drives[1].attach_image(image);
-    }
-
-    /// Attach a file-descriptor-backed disk to the master drive.
     pub fn attach_disk_fd(&mut self, fd: i32, size: u64) {
-        ide_log!("attach master fd={} size={} sectors={}", fd, size, size / SECTOR_SIZE as u64);
-        self.drives[0].attach_fd(fd, size);
+        ide_log!("attach master fd={} size={}", fd, size);
+        self.drives[0].attach_fd(fd, size, DriveKind::AtaDisk);
+        if self.selected_drive() == 0 {
+            self.apply_selected_drive_signature();
+        }
         self.status = SR_DRDY | SR_DSC;
     }
 
-    /// Attach a file-descriptor-backed disk to the slave drive.
     pub fn attach_slave_fd(&mut self, fd: i32, size: u64) {
-        ide_log!("attach slave fd={} size={} sectors={}", fd, size, size / SECTOR_SIZE as u64);
-        self.drives[1].attach_fd(fd, size);
+        ide_log!("attach slave cdrom fd={} size={}", fd, size);
+        self.drives[1].attach_fd(fd, size, DriveKind::AtapiCdrom);
+        if self.selected_drive() == 1 {
+            self.apply_selected_drive_signature();
+        }
     }
 
-    /// Detach the master disk image and return it.
     pub fn detach_disk(&mut self) -> Vec<u8> {
-        self.status = 0;
-        self.drives[0].detach()
+        let disk = self.drives[0].detach();
+        if self.selected_drive() == 0 {
+            self.apply_selected_drive_signature();
+        }
+        disk
     }
 
-    /// Detach the slave disk image and return it.
     pub fn detach_slave(&mut self) -> Vec<u8> {
-        self.drives[1].detach()
+        let disk = self.drives[1].detach();
+        if self.selected_drive() == 1 {
+            self.apply_selected_drive_signature();
+        }
+        disk
     }
 
-    /// Returns true if an IRQ is pending (and nIEN is not set).
     pub fn irq_raised(&self) -> bool {
         self.irq_pending && (self.device_control & 0x02) == 0
     }
 
-    /// Clear the pending IRQ (called after the PIC services it).
     pub fn clear_irq(&mut self) {
         self.irq_pending = false;
     }
 
-    /// Get total master disk size in bytes.
     pub fn disk_size(&self) -> u64 {
-        self.drives[0].total_sectors * SECTOR_SIZE as u64
+        self.drives[0].total_blocks * ATA_SECTOR_SIZE as u64
     }
 
-    // ── Internal helpers ──
-
-    /// Returns 0 (master) or 1 (slave) based on drive_head bit 4.
     fn selected_drive(&self) -> usize {
         if self.drive_head & 0x10 != 0 { 1 } else { 0 }
     }
 
-    /// Compute the 28-bit LBA from the current task file registers.
-    fn lba28(&self) -> u64 {
-        let lba = (self.sector_number as u64)
-            | ((self.cylinder_low as u64) << 8)
-            | ((self.cylinder_high as u64) << 16)
-            | (((self.drive_head & 0x0F) as u64) << 24);
-        lba
+    fn selected_drive_state(&self) -> &DriveState {
+        &self.drives[self.selected_drive()]
     }
 
-    /// Compute the 48-bit LBA from current + HOB registers.
+    fn selected_drive_state_mut(&mut self) -> &mut DriveState {
+        &mut self.drives[self.selected_drive()]
+    }
+
+    fn ensure_buffer_len(&mut self, len: usize) {
+        self.buffer.resize(len, 0);
+        self.buffer_limit = len;
+        self.buffer_offset = 0;
+    }
+
+    fn clear_transfer(&mut self) {
+        self.transfer_mode = TransferMode::None;
+        self.buffer_offset = 0;
+        self.buffer_limit = 0;
+    }
+
+    fn apply_selected_drive_signature(&mut self) {
+        let drv = self.selected_drive();
+        self.error = 0x01;
+        self.sector_count = 1;
+        self.sector_number = 1;
+        let (sc, sn, cl, ch) = if self.drives[drv].present {
+            self.drives[drv].kind.signature()
+        } else {
+            (1, 1, 0, 0)
+        };
+        self.sector_count = sc;
+        self.sector_number = sn;
+        self.cylinder_low = cl;
+        self.cylinder_high = ch;
+        self.hob_sector_count = 0;
+        self.hob_sector_number = 0;
+        self.hob_cylinder_low = 0;
+        self.hob_cylinder_high = 0;
+        self.atapi_byte_count_limit = ATAPI_SECTOR_SIZE as u16;
+        self.clear_transfer();
+    }
+
+    fn lba28(&self) -> u64 {
+        (self.sector_number as u64)
+            | ((self.cylinder_low as u64) << 8)
+            | ((self.cylinder_high as u64) << 16)
+            | (((self.drive_head & 0x0F) as u64) << 24)
+    }
+
     fn lba48(&self) -> u64 {
         let lo = (self.sector_number as u64)
             | ((self.cylinder_low as u64) << 8)
@@ -377,73 +436,178 @@ impl Ide {
         lo | (hi << 24)
     }
 
-    /// Read one sector from the selected drive into the buffer.
-    fn read_sector(&mut self, lba: u64) {
-        let drv = self.selected_drive();
-        self.drives[drv].read_sector(lba, &mut self.buffer);
-        self.buffer_offset = 0;
-    }
-
-    /// Write the buffer contents to the selected drive at the given LBA.
-    fn write_sector(&mut self, lba: u64) {
-        let drv = self.selected_drive();
-        self.drives[drv].write_sector(lba, &self.buffer);
-    }
-
-    /// Current LBA for the ongoing transfer, computed from the task file.
     fn current_lba(&self) -> u64 {
         if self.drive_head & 0x40 != 0 {
-            // LBA mode
             self.lba28()
         } else {
-            // CHS mode — convert to LBA (simplified: treat as LBA anyway)
             self.lba28()
         }
     }
 
-    /// Advance the LBA in the task file registers after one sector.
     fn advance_lba(&mut self) {
         let lba = self.current_lba() + 1;
         self.sector_number = (lba & 0xFF) as u8;
         self.cylinder_low = ((lba >> 8) & 0xFF) as u8;
         self.cylinder_high = ((lba >> 16) & 0xFF) as u8;
-        self.drive_head = (self.drive_head & 0xF0) | ((lba >> 24) & 0x0F) as u8;
+        self.drive_head = (self.drive_head & 0xF0) | (((lba >> 24) & 0x0F) as u8);
     }
 
-    /// Fill the identify buffer with drive information for the selected drive.
-    fn fill_identify(&mut self) {
-        let drv = self.selected_drive();
-        let total_sectors = self.drives[drv].total_sectors;
+    fn start_data_in(&mut self, data: &[u8], mode: TransferMode) {
+        self.buffer.clear();
+        self.buffer.extend_from_slice(data);
+        self.buffer_limit = self.buffer.len();
+        self.buffer_offset = 0;
+        self.transfer_mode = mode;
+        self.status = SR_DRDY | SR_DRQ | SR_DSC;
+        self.error = 0;
+        self.irq_pending = true;
+    }
 
-        self.buffer = [0u8; SECTOR_SIZE];
-        let w = |buf: &mut [u8; 512], idx: usize, val: u16| {
+    fn expose_buffer_data_in(&mut self, len: usize, mode: TransferMode) {
+        self.buffer_limit = len.min(self.buffer.len());
+        self.buffer_offset = 0;
+        self.transfer_mode = mode;
+        self.status = SR_DRDY | SR_DRQ | SR_DSC;
+        self.error = 0;
+        self.irq_pending = true;
+    }
+
+    fn start_ata_read(&mut self, lba: u64, count: u32) {
+        let drv = self.selected_drive();
+        let drive = &self.drives[drv];
+        if drive.kind != DriveKind::AtaDisk || lba >= drive.total_blocks {
+            self.abort_ata();
+            return;
+        }
+
+        self.ensure_buffer_len(ATA_SECTOR_SIZE);
+        self.drives[drv].read_block(lba, &mut self.buffer[..ATA_SECTOR_SIZE]);
+        self.transfer_mode = TransferMode::AtaRead;
+        self.sectors_remaining = count.saturating_sub(1);
+        self.status = SR_DRDY | SR_DRQ | SR_DSC;
+        self.error = 0;
+        self.irq_pending = true;
+    }
+
+    fn start_ata_write(&mut self, count: u32) {
+        if self.selected_drive_state().kind != DriveKind::AtaDisk {
+            self.abort_ata();
+            return;
+        }
+        self.ensure_buffer_len(ATA_SECTOR_SIZE);
+        self.transfer_mode = TransferMode::AtaWrite;
+        self.sectors_remaining = count;
+        self.status = SR_DRDY | SR_DRQ | SR_DSC;
+        self.error = 0;
+    }
+
+    fn finish_command_ok(&mut self) {
+        self.clear_transfer();
+        self.status = SR_DRDY | SR_DSC;
+        self.error = 0;
+        self.irq_pending = true;
+    }
+
+    fn abort_ata(&mut self) {
+        self.clear_transfer();
+        self.status = SR_DRDY | SR_ERR;
+        self.error = ER_ABRT;
+        self.irq_pending = true;
+    }
+
+    fn set_atapi_sense(&mut self, key: u8, asc: u8, ascq: u8) {
+        self.atapi_sense_key = key;
+        self.atapi_asc = asc;
+        self.atapi_ascq = ascq;
+    }
+
+    fn finish_atapi_command(&mut self) {
+        self.clear_transfer();
+        self.status = SR_DRDY | SR_DSC;
+        self.error = 0;
+        self.sector_count = 0x03;
+        self.cylinder_low = 0;
+        self.cylinder_high = 0;
+        self.irq_pending = true;
+    }
+
+    fn abort_atapi(&mut self, key: u8, asc: u8, ascq: u8) {
+        self.set_atapi_sense(key, asc, ascq);
+        self.clear_transfer();
+        self.status = SR_DRDY | SR_ERR;
+        self.error = ER_ABRT;
+        self.sector_count = 0x03;
+        self.cylinder_low = 0;
+        self.cylinder_high = 0;
+        self.irq_pending = true;
+    }
+
+    fn start_atapi_packet_phase(&mut self) {
+        self.atapi_byte_count_limit =
+            u16::from(self.cylinder_low) | (u16::from(self.cylinder_high) << 8);
+        if self.atapi_byte_count_limit == 0 {
+            self.atapi_byte_count_limit = ATAPI_SECTOR_SIZE as u16;
+        }
+        self.ensure_buffer_len(ATAPI_PACKET_SIZE);
+        self.transfer_mode = TransferMode::AtapiPacket;
+        self.status = SR_DRDY | SR_DRQ | SR_DSC;
+        self.error = 0;
+        self.sector_count = 0x01;
+        self.irq_pending = true;
+    }
+
+    fn start_atapi_data_in(&mut self, data: Vec<u8>) {
+        if data.is_empty() {
+            self.finish_atapi_command();
+            return;
+        }
+        self.buffer = data;
+        self.buffer_offset = 0;
+        self.transfer_mode = TransferMode::AtapiRead;
+        self.prepare_atapi_data_chunk();
+        ide_log!(
+            "ATAPI data-in total_len={} byte_count_limit={}",
+            self.buffer.len(),
+            self.atapi_byte_count_limit
+        );
+    }
+
+    fn prepare_atapi_data_chunk(&mut self) {
+        let max_bytes = usize::from(self.atapi_byte_count_limit.max(1));
+        let remaining = self.buffer.len().saturating_sub(self.buffer_offset);
+        let chunk_len = remaining.min(max_bytes);
+        self.buffer_limit = self.buffer_offset + chunk_len;
+        self.status = SR_DRDY | SR_DRQ | SR_DSC;
+        self.error = 0;
+        self.sector_count = 0x02;
+        self.cylinder_low = (chunk_len & 0xFF) as u8;
+        self.cylinder_high = ((chunk_len >> 8) & 0xFF) as u8;
+        self.irq_pending = true;
+    }
+
+    fn fill_identify_ata(&mut self) {
+        let total_blocks = self.selected_drive_state().total_blocks;
+        self.ensure_buffer_len(ATA_SECTOR_SIZE);
+        self.buffer.fill(0);
+        let w = |buf: &mut [u8], idx: usize, val: u16| {
             let off = idx * 2;
             buf[off] = val as u8;
             buf[off + 1] = (val >> 8) as u8;
         };
 
-        // Word 0: General config — fixed disk, not removable.
         w(&mut self.buffer, 0, 0x0040);
+        let cyls = (total_blocks / (16 * 63)).min(16383) as u16;
+        w(&mut self.buffer, 1, cyls);
+        w(&mut self.buffer, 3, 16);
+        w(&mut self.buffer, 6, 63);
 
-        // Words 1, 3, 6: Legacy CHS geometry.
-        let cyls = (total_sectors / (16 * 63)).min(16383) as u16;
-        w(&mut self.buffer, 1, cyls);         // cylinders
-        w(&mut self.buffer, 3, 16);           // heads
-        w(&mut self.buffer, 6, 63);           // sectors per track
-
-        // Words 10-19: Serial number (ASCII, swapped bytes).
-        let serial = if drv == 0 {
-            b"COREVM00000000000001"
-        } else {
-            b"COREVM00000000000002"
-        };
+        let serial = b"COREVM00000000000001";
         for i in 0..10 {
             let hi = serial[i * 2];
             let lo = serial[i * 2 + 1];
             w(&mut self.buffer, 10 + i, ((hi as u16) << 8) | lo as u16);
         }
 
-        // Words 23-26: Firmware revision.
         let fw = b"1.0     ";
         for i in 0..4 {
             let hi = fw[i * 2];
@@ -451,236 +615,397 @@ impl Ide {
             w(&mut self.buffer, 23 + i, ((hi as u16) << 8) | lo as u16);
         }
 
-        // Words 27-46: Model number.
-        let model = if drv == 0 {
-            b"CoreVM Virtual Disk                     "
-        } else {
-            b"CoreVM Virtual CD-ROM                   "
-        };
+        let model = b"CoreVM Virtual Disk                     ";
         for i in 0..20 {
             let hi = model[i * 2];
             let lo = model[i * 2 + 1];
             w(&mut self.buffer, 27 + i, ((hi as u16) << 8) | lo as u16);
         }
 
-        // Word 47: Max sectors per READ/WRITE MULTIPLE.
-        w(&mut self.buffer, 47, 0x8010); // max 16 sectors
-
-        // Word 49: Capabilities — LBA supported, DMA not supported.
-        w(&mut self.buffer, 49, 0x0200); // LBA supported
-
-        // Word 53: Fields validity — words 54-58, 64-70, 88 valid.
+        w(&mut self.buffer, 47, 0x8010);
+        w(&mut self.buffer, 49, 0x0200);
         w(&mut self.buffer, 53, 0x0007);
-
-        // Words 54-56: Current CHS (same as logical).
         w(&mut self.buffer, 54, cyls);
         w(&mut self.buffer, 55, 16);
         w(&mut self.buffer, 56, 63);
 
-        // Words 57-58: Current capacity in sectors (CHS).
         let chs_sectors = (cyls as u32) * 16 * 63;
         w(&mut self.buffer, 57, chs_sectors as u16);
         w(&mut self.buffer, 58, (chs_sectors >> 16) as u16);
 
-        // Words 60-61: Total addressable sectors (28-bit LBA).
-        let lba28_max = total_sectors.min(0x0FFF_FFFF) as u32;
+        let lba28_max = total_blocks.min(0x0FFF_FFFF) as u32;
         w(&mut self.buffer, 60, lba28_max as u16);
         w(&mut self.buffer, 61, (lba28_max >> 16) as u16);
-
-        // Word 80: ATA major version — ATA-6.
         w(&mut self.buffer, 80, 0x0040);
-
-        // Word 83: Command set support — 48-bit LBA supported.
         w(&mut self.buffer, 83, 0x0400);
-
-        // Word 86: Command set enabled — 48-bit LBA enabled.
         w(&mut self.buffer, 86, 0x0400);
-
-        // Words 100-103: 48-bit total sectors.
-        w(&mut self.buffer, 100, total_sectors as u16);
-        w(&mut self.buffer, 101, (total_sectors >> 16) as u16);
-        w(&mut self.buffer, 102, (total_sectors >> 32) as u16);
-        w(&mut self.buffer, 103, (total_sectors >> 48) as u16);
-
-        self.buffer_offset = 0;
+        w(&mut self.buffer, 100, total_blocks as u16);
+        w(&mut self.buffer, 101, (total_blocks >> 16) as u16);
+        w(&mut self.buffer, 102, (total_blocks >> 32) as u16);
+        w(&mut self.buffer, 103, (total_blocks >> 48) as u16);
     }
 
-    /// Execute a command written to the command register.
-    fn execute_command(&mut self, cmd: u8) {
-        let drv = self.selected_drive();
-        ide_log!("cmd=0x{:02X} drv={} present={} dh=0x{:02X}",
-                 cmd, drv, self.drives[drv].present, self.drive_head);
-        if !self.drives[drv].present {
-            // Selected drive not present — abort.
-            ide_log!("  -> ABORT: drive {} not present", drv);
-            self.status = SR_DRDY | SR_ERR;
-            self.error = ER_ABRT;
-            return;
+    fn fill_identify_packet(&mut self) {
+        self.ensure_buffer_len(ATA_SECTOR_SIZE);
+        self.buffer.fill(0);
+        let w = |buf: &mut [u8], idx: usize, val: u16| {
+            let off = idx * 2;
+            buf[off] = val as u8;
+            buf[off + 1] = (val >> 8) as u8;
+        };
+
+        w(&mut self.buffer, 0, 0x8580);
+        w(&mut self.buffer, 49, 0x0200);
+        w(&mut self.buffer, 80, 0x003E);
+        w(&mut self.buffer, 82, 0x4000);
+        w(&mut self.buffer, 83, 0x4000);
+
+        let serial = b"COREVMCD000000000001";
+        for i in 0..10 {
+            let hi = serial[i * 2];
+            let lo = serial[i * 2 + 1];
+            w(&mut self.buffer, 10 + i, ((hi as u16) << 8) | lo as u16);
         }
 
+        let fw = b"1.0     ";
+        for i in 0..4 {
+            let hi = fw[i * 2];
+            let lo = fw[i * 2 + 1];
+            w(&mut self.buffer, 23 + i, ((hi as u16) << 8) | lo as u16);
+        }
+
+        let model = b"CoreVM Virtual CD-ROM                   ";
+        for i in 0..20 {
+            let hi = model[i * 2];
+            let lo = model[i * 2 + 1];
+            w(&mut self.buffer, 27 + i, ((hi as u16) << 8) | lo as u16);
+        }
+    }
+
+    fn fill_atapi_inquiry(&self) -> Vec<u8> {
+        let mut data = vec![0u8; 36];
+        data[0] = 0x05;
+        data[1] = 0x80;
+        data[2] = 0x00;
+        data[3] = 0x21;
+        data[4] = 31;
+        data[8..16].copy_from_slice(b"COREVM  ");
+        data[16..32].copy_from_slice(b"VIRTUAL CD-ROM  ");
+        data[32..36].copy_from_slice(b"1.0 ");
+        data
+    }
+
+    fn fill_atapi_request_sense(&mut self) -> Vec<u8> {
+        let mut data = vec![0u8; 18];
+        data[0] = 0x70;
+        data[2] = self.atapi_sense_key;
+        data[7] = 10;
+        data[12] = self.atapi_asc;
+        data[13] = self.atapi_ascq;
+        self.set_atapi_sense(0, 0, 0);
+        data
+    }
+
+    fn fill_atapi_read_capacity(&self) -> Vec<u8> {
+        let mut data = vec![0u8; 8];
+        let blocks = self.drives[self.selected_drive()].total_blocks;
+        let last_lba = if blocks == 0 { 0 } else { (blocks - 1).min(u32::MAX as u64) as u32 };
+        data[0..4].copy_from_slice(&last_lba.to_be_bytes());
+        data[4..8].copy_from_slice(&(ATAPI_SECTOR_SIZE as u32).to_be_bytes());
+        data
+    }
+
+    fn fill_atapi_read_format_capacities(&self) -> Vec<u8> {
+        let mut data = vec![0u8; 12];
+        let blocks = self.drives[self.selected_drive()].total_blocks.min(u32::MAX as u64) as u32;
+        data[3] = 8;
+        data[4..8].copy_from_slice(&blocks.to_be_bytes());
+        data[8] = 0x02;
+        data[9..12].copy_from_slice(&(ATAPI_SECTOR_SIZE as u32).to_be_bytes()[1..4]);
+        data
+    }
+
+    fn mode_data_6(&self) -> Vec<u8> {
+        let mut data = vec![0u8; 4];
+        data[0] = 3;
+        data[2] = 0x80;
+        data
+    }
+
+    fn mode_data_10(&self) -> Vec<u8> {
+        let mut data = vec![0u8; 8];
+        data[1] = 6;
+        data[3] = 0x80;
+        data
+    }
+
+    fn msf_from_lba(lba: u32) -> [u8; 4] {
+        let mut abs = lba + 150;
+        let minutes = abs / (75 * 60);
+        abs %= 75 * 60;
+        let seconds = abs / 75;
+        let frames = abs % 75;
+        [0, minutes as u8, seconds as u8, frames as u8]
+    }
+
+    fn fill_atapi_read_toc(&self, packet: &[u8]) -> Vec<u8> {
+        let msf = packet[1] & 0x02 != 0;
+        let mut data = vec![0u8; 20];
+        data[1] = 18;
+        data[2] = 1;
+        data[3] = 1;
+        data[5] = 0x14;
+        data[6] = 1;
+        data[13] = 0x16;
+        data[14] = 0xAA;
+
+        if msf {
+            data[8..12].copy_from_slice(&Self::msf_from_lba(0));
+            let lead_out = self.drives[self.selected_drive()].total_blocks.min(u32::MAX as u64) as u32;
+            data[16..20].copy_from_slice(&Self::msf_from_lba(lead_out));
+        } else {
+            let lead_out = self.drives[self.selected_drive()].total_blocks.min(u32::MAX as u64) as u32;
+            data[8..12].copy_from_slice(&0u32.to_be_bytes());
+            data[16..20].copy_from_slice(&lead_out.to_be_bytes());
+        }
+
+        data
+    }
+
+    fn read_atapi_blocks(&mut self, lba: u32, blocks: u32) -> Option<Vec<u8>> {
+        let drv = self.selected_drive();
+        let drive = &self.drives[drv];
+        let end = (lba as u64).checked_add(blocks as u64)?;
+        if end > drive.total_blocks {
+            return None;
+        }
+
+        let len = blocks as usize * ATAPI_SECTOR_SIZE;
+        let mut data = vec![0u8; len];
+        if len == 0 {
+            return Some(data);
+        }
+
+        for block in 0..blocks {
+            let start = block as usize * ATAPI_SECTOR_SIZE;
+            let end = start + ATAPI_SECTOR_SIZE;
+            self.drives[drv].read_block((lba + block) as u64, &mut data[start..end]);
+        }
+        Some(data)
+    }
+
+    fn allocation_len(packet: &[u8]) -> usize {
+        match packet[0] {
+            PKT_INQUIRY | PKT_REQUEST_SENSE | PKT_MODE_SENSE_6 => packet[4] as usize,
+            PKT_MODE_SENSE_10 | PKT_READ_TOC_PMA_ATIP => {
+                u16::from_be_bytes([packet[7], packet[8]]) as usize
+            }
+            _ => usize::MAX,
+        }
+    }
+
+    fn start_atapi_response(&mut self, packet: &[u8], mut data: Vec<u8>) {
+        let alloc_len = Self::allocation_len(packet);
+        if alloc_len != usize::MAX && data.len() > alloc_len {
+            data.truncate(alloc_len);
+        }
+        self.start_atapi_data_in(data);
+    }
+
+    fn execute_atapi_packet(&mut self) {
+        let packet = self.buffer[..ATAPI_PACKET_SIZE].to_vec();
+        ide_log!(
+            "ATAPI packet op=0x{:02X} bytes={:02X?}",
+            packet[0],
+            &packet[..ATAPI_PACKET_SIZE]
+        );
+
+        match packet[0] {
+            PKT_TEST_UNIT_READY
+            | PKT_START_STOP_UNIT
+            | PKT_PREVENT_ALLOW_MEDIUM_REMOVAL => self.finish_atapi_command(),
+            PKT_REQUEST_SENSE => {
+                let data = self.fill_atapi_request_sense();
+                self.start_atapi_response(&packet, data);
+            }
+            PKT_INQUIRY => {
+                let data = self.fill_atapi_inquiry();
+                self.start_atapi_response(&packet, data);
+            }
+            PKT_MODE_SENSE_6 => {
+                let data = self.mode_data_6();
+                self.start_atapi_response(&packet, data);
+            }
+            PKT_MODE_SENSE_10 => {
+                let data = self.mode_data_10();
+                self.start_atapi_response(&packet, data);
+            }
+            PKT_READ_CAPACITY_10 => {
+                let data = self.fill_atapi_read_capacity();
+                self.start_atapi_response(&packet, data);
+            }
+            PKT_READ_FORMAT_CAPACITIES => {
+                let data = self.fill_atapi_read_format_capacities();
+                self.start_atapi_response(&packet, data);
+            }
+            PKT_READ_TOC_PMA_ATIP => {
+                let data = self.fill_atapi_read_toc(&packet);
+                self.start_atapi_response(&packet, data);
+            }
+            PKT_READ_10 => {
+                let lba = u32::from_be_bytes([packet[2], packet[3], packet[4], packet[5]]);
+                let blocks = u16::from_be_bytes([packet[7], packet[8]]) as u32;
+                ide_log!("READ(10) lba={} blocks={}", lba, blocks);
+                match self.read_atapi_blocks(lba, blocks) {
+                    Some(data) => self.start_atapi_data_in(data),
+                    None => {
+                        ide_log!("READ(10) beyond end: lba={} blocks={} total={}", lba, blocks, self.drives[self.selected_drive()].total_blocks);
+                        self.abort_atapi(0x05, 0x21, 0x00)
+                    }
+                }
+            }
+            PKT_READ_12 => {
+                let lba = u32::from_be_bytes([packet[2], packet[3], packet[4], packet[5]]);
+                let blocks = u32::from_be_bytes([packet[6], packet[7], packet[8], packet[9]]);
+                ide_log!("READ(12) lba={} blocks={}", lba, blocks);
+                match self.read_atapi_blocks(lba, blocks) {
+                    Some(data) => self.start_atapi_data_in(data),
+                    None => {
+                        ide_log!("READ(12) beyond end: lba={} blocks={} total={}", lba, blocks, self.drives[self.selected_drive()].total_blocks);
+                        self.abort_atapi(0x05, 0x21, 0x00)
+                    }
+                }
+            }
+            _ => self.abort_atapi(0x05, 0x20, 0x00),
+        }
+    }
+
+    fn execute_ata_command(&mut self, cmd: u8) {
         match cmd {
             CMD_IDENTIFY => {
-                self.fill_identify();
-                self.status = SR_DRDY | SR_DRQ | SR_DSC;
-                self.error = 0;
-                self.irq_pending = true;
+                self.fill_identify_ata();
+                self.expose_buffer_data_in(ATA_SECTOR_SIZE, TransferMode::AtaRead);
             }
-
-            CMD_READ_SECTORS => {
-                let count = if self.sector_count == 0 { 256u32 } else { self.sector_count as u32 };
-                let lba = self.lba28();
-                self.start_read(lba, count);
+            CMD_READ_SECTORS | CMD_READ_MULTIPLE => {
+                let count = if self.sector_count == 0 { 256 } else { self.sector_count as u32 };
+                self.start_ata_read(self.lba28(), count);
             }
-
             CMD_READ_SECTORS_EXT => {
-                let c = ((self.hob_sector_count as u32) << 8) | self.sector_count as u32;
-                let count = if c == 0 { 65536u32 } else { c };
-                let lba = self.lba48();
-                self.start_read(lba, count);
+                let count = ((self.hob_sector_count as u32) << 8) | self.sector_count as u32;
+                let count = if count == 0 { 65536 } else { count };
+                self.start_ata_read(self.lba48(), count);
             }
-
-            CMD_WRITE_SECTORS => {
-                let count = if self.sector_count == 0 { 256u32 } else { self.sector_count as u32 };
-                self.sectors_remaining = count;
-                self.is_write = true;
-                self.buffer_offset = 0;
-                self.status = SR_DRDY | SR_DRQ | SR_DSC;
-                self.error = 0;
+            CMD_WRITE_SECTORS | CMD_WRITE_MULTIPLE => {
+                let count = if self.sector_count == 0 { 256 } else { self.sector_count as u32 };
+                self.start_ata_write(count);
             }
-
             CMD_WRITE_SECTORS_EXT => {
-                let c = ((self.hob_sector_count as u32) << 8) | self.sector_count as u32;
-                let count = if c == 0 { 65536u32 } else { c };
-                self.sectors_remaining = count;
-                self.is_write = true;
-                self.buffer_offset = 0;
-                self.status = SR_DRDY | SR_DRQ | SR_DSC;
-                self.error = 0;
+                let count = ((self.hob_sector_count as u32) << 8) | self.sector_count as u32;
+                let count = if count == 0 { 65536 } else { count };
+                self.start_ata_write(count);
             }
-
-            CMD_READ_MULTIPLE => {
-                let count = if self.sector_count == 0 { 256u32 } else { self.sector_count as u32 };
-                let lba = self.lba28();
-                self.start_read(lba, count);
-            }
-
-            CMD_WRITE_MULTIPLE => {
-                let count = if self.sector_count == 0 { 256u32 } else { self.sector_count as u32 };
-                self.sectors_remaining = count;
-                self.is_write = true;
-                self.buffer_offset = 0;
-                self.status = SR_DRDY | SR_DRQ | SR_DSC;
-                self.error = 0;
-            }
-
             CMD_SET_MULTIPLE => {
                 if self.sector_count > 0 && self.sector_count <= 128 {
                     self.multiple_count = self.sector_count;
-                    self.status = SR_DRDY | SR_DSC;
-                    self.error = 0;
+                    self.finish_command_ok();
                 } else {
-                    self.status = SR_DRDY | SR_ERR;
-                    self.error = ER_ABRT;
+                    self.abort_ata();
                 }
-                self.irq_pending = true;
             }
-
-            CMD_SET_FEATURES | CMD_INIT_DRIVE_PARAMS | CMD_NOP => {
-                // Accept and do nothing meaningful.
-                self.status = SR_DRDY | SR_DSC;
-                self.error = 0;
-                self.irq_pending = true;
+            CMD_SET_FEATURES | CMD_INIT_DRIVE_PARAMS | CMD_NOP | CMD_FLUSH_CACHE => {
+                self.finish_command_ok();
             }
-
-            CMD_FLUSH_CACHE => {
-                // No write-back cache to flush.
-                self.status = SR_DRDY | SR_DSC;
-                self.error = 0;
-                self.irq_pending = true;
-            }
-
             CMD_DEVICE_RESET => {
-                self.status = SR_DRDY | SR_DSC;
-                self.error = 0x01; // Diagnostic code: no error
-                self.sector_count = 1;
-                self.sector_number = 1;
-                self.cylinder_low = 0;
-                self.cylinder_high = 0;
-                self.drive_head = 0;
-                self.irq_pending = true;
+                self.apply_selected_drive_signature();
+                self.finish_command_ok();
             }
-
-            _ => {
-                // Unknown command — abort.
-                self.status = SR_DRDY | SR_ERR;
-                self.error = ER_ABRT;
-                self.irq_pending = true;
-            }
+            _ => self.abort_ata(),
         }
     }
 
-    /// Begin a PIO read transfer.
-    fn start_read(&mut self, lba: u64, count: u32) {
+    fn execute_atapi_command(&mut self, cmd: u8) {
+        match cmd {
+            CMD_IDENTIFY_PACKET => {
+                self.fill_identify_packet();
+                self.expose_buffer_data_in(ATA_SECTOR_SIZE, TransferMode::AtapiRead);
+                self.sector_count = 0x02;
+                self.cylinder_low = ATA_SECTOR_SIZE as u8;
+                self.cylinder_high = (ATA_SECTOR_SIZE >> 8) as u8;
+            }
+            CMD_PACKET => self.start_atapi_packet_phase(),
+            CMD_SET_FEATURES | CMD_NOP | CMD_FLUSH_CACHE => self.finish_atapi_command(),
+            CMD_DEVICE_RESET => {
+                self.apply_selected_drive_signature();
+                self.finish_atapi_command();
+            }
+            CMD_IDENTIFY => self.abort_atapi(0x05, 0x20, 0x00),
+            _ => self.abort_atapi(0x05, 0x20, 0x00),
+        }
+    }
+
+    fn execute_command(&mut self, cmd: u8) {
         let drv = self.selected_drive();
-        ide_log!("  read: drv={} lba={} cnt={} total_sec={}",
-                 drv, lba, count, self.drives[drv].total_sectors);
-        if lba >= self.drives[drv].total_sectors {
-            ide_log!("  -> ABORT: lba {} >= total {}", lba, self.drives[drv].total_sectors);
-            self.status = SR_DRDY | SR_ERR;
-            self.error = ER_ABRT;
-            self.irq_pending = true;
+        ide_log!("cmd=0x{:02X} drv={} present={} dh=0x{:02X}", cmd, drv, self.drives[drv].present, self.drive_head);
+
+        if !self.drives[drv].present {
+            self.abort_ata();
             return;
         }
-        self.sectors_remaining = count;
-        self.is_write = false;
-        self.read_sector(lba);
-        self.sectors_remaining -= 1;
-        self.status = SR_DRDY | SR_DRQ | SR_DSC;
-        self.error = 0;
-        self.irq_pending = true;
-    }
 
-    /// Advance transfer state after consuming one byte from the data buffer.
-    fn finish_data_read_byte(&mut self) {
-        // End of sector?
-        if self.buffer_offset >= SECTOR_SIZE {
-            if self.sectors_remaining > 0 {
-                // Load next sector.
-                self.advance_lba();
-                let lba = self.current_lba();
-                self.read_sector(lba);
-                self.sectors_remaining -= 1;
-                self.irq_pending = true;
-            } else {
-                // Transfer complete.
-                self.status = SR_DRDY | SR_DSC;
-                self.buffer_offset = 0;
-                self.irq_pending = true;
-            }
+        self.hob_toggle = false;
+        match self.drives[drv].kind {
+            DriveKind::AtaDisk => self.execute_ata_command(cmd),
+            DriveKind::AtapiCdrom => self.execute_atapi_command(cmd),
         }
     }
 
-    /// Handle an 8-bit read from the data register (port 0x1F0).
+    fn finish_data_read_byte(&mut self) {
+        if self.buffer_offset < self.buffer_limit {
+            return;
+        }
+
+        match self.transfer_mode {
+            TransferMode::AtaRead => {
+                if self.sectors_remaining > 0 {
+                    self.advance_lba();
+                    let lba = self.current_lba();
+                    let drv = self.selected_drive();
+                    self.drives[drv].read_block(lba, &mut self.buffer[..ATA_SECTOR_SIZE]);
+                    self.buffer_offset = 0;
+                    self.buffer_limit = ATA_SECTOR_SIZE;
+                    self.sectors_remaining -= 1;
+                    self.irq_pending = true;
+                } else {
+                    self.finish_command_ok();
+                }
+            }
+            TransferMode::AtapiRead => {
+                if self.buffer_offset < self.buffer.len() {
+                    self.prepare_atapi_data_chunk();
+                } else {
+                    self.finish_atapi_command();
+                }
+            }
+            _ => self.finish_command_ok(),
+        }
+    }
+
     fn read_data_byte(&mut self) -> u8 {
-        if self.status & SR_DRQ == 0 {
+        if self.status & SR_DRQ == 0 || self.buffer_offset >= self.buffer_limit {
             return 0xFF;
         }
-
-        let off = self.buffer_offset;
-        let byte = if off < SECTOR_SIZE { self.buffer[off] } else { 0 };
+        let byte = self.buffer[self.buffer_offset];
         self.buffer_offset += 1;
         self.finish_data_read_byte();
         byte
     }
 
-    /// Handle a 16-bit read from the data register (port 0x1F0).
     fn read_data_word(&mut self) -> u16 {
         let lo = self.read_data_byte() as u16;
         let hi = self.read_data_byte() as u16;
         lo | (hi << 8)
     }
 
-    /// Handle a 32-bit read from the data register (port 0x1F0).
     fn read_data_dword(&mut self) -> u32 {
         let b0 = self.read_data_byte() as u32;
         let b1 = self.read_data_byte() as u32;
@@ -689,51 +1014,52 @@ impl Ide {
         b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
     }
 
-    /// Advance transfer state after producing one byte into the data buffer.
     fn finish_data_write_byte(&mut self) {
-        // End of sector?
-        if self.buffer_offset >= SECTOR_SIZE {
-            // Write this sector to disk.
-            let lba = self.current_lba();
-            self.write_sector(lba);
-            self.sectors_remaining -= 1;
-
-            if self.sectors_remaining > 0 {
-                // Prepare for next sector.
-                self.advance_lba();
-                self.buffer_offset = 0;
-                self.irq_pending = true;
-            } else {
-                // Transfer complete.
-                self.status = SR_DRDY | SR_DSC;
-                self.is_write = false;
-                self.buffer_offset = 0;
-                self.irq_pending = true;
-            }
-        }
-    }
-
-    /// Handle an 8-bit write to the data register (port 0x1F0).
-    fn write_data_byte(&mut self, val: u8) {
-        if self.status & SR_DRQ == 0 || !self.is_write {
+        if self.buffer_offset < self.buffer_limit {
             return;
         }
 
-        let off = self.buffer_offset;
-        if off < SECTOR_SIZE {
-            self.buffer[off] = val;
+        match self.transfer_mode {
+            TransferMode::AtaWrite => {
+                let lba = self.current_lba();
+                let drv = self.selected_drive();
+                let sector = &self.buffer[..ATA_SECTOR_SIZE];
+                self.drives[drv].write_block(lba, sector);
+                self.sectors_remaining = self.sectors_remaining.saturating_sub(1);
+                if self.sectors_remaining > 0 {
+                    self.advance_lba();
+                    self.buffer[..ATA_SECTOR_SIZE].fill(0);
+                    self.buffer_offset = 0;
+                    self.buffer_limit = ATA_SECTOR_SIZE;
+                    self.irq_pending = true;
+                } else {
+                    self.finish_command_ok();
+                }
+            }
+            TransferMode::AtapiPacket => self.execute_atapi_packet(),
+            _ => {}
+        }
+    }
+
+    fn write_data_byte(&mut self, val: u8) {
+        if self.status & SR_DRQ == 0 {
+            return;
+        }
+        if !matches!(self.transfer_mode, TransferMode::AtaWrite | TransferMode::AtapiPacket) {
+            return;
+        }
+        if self.buffer_offset < self.buffer_limit {
+            self.buffer[self.buffer_offset] = val;
         }
         self.buffer_offset += 1;
         self.finish_data_write_byte();
     }
 
-    /// Handle a 16-bit write to the data register (port 0x1F0).
     fn write_data_word(&mut self, val: u16) {
         self.write_data_byte(val as u8);
         self.write_data_byte((val >> 8) as u8);
     }
 
-    /// Handle a 32-bit write to the data register (port 0x1F0).
     fn write_data_dword(&mut self, val: u32) {
         self.write_data_byte(val as u8);
         self.write_data_byte((val >> 8) as u8);
@@ -745,34 +1071,22 @@ impl Ide {
 impl IoHandler for Ide {
     fn read(&mut self, port: u16, size: u8) -> Result<u32> {
         match port {
-            // Data register — 16-bit PIO reads.
-            0x1F0 => {
-                match size {
-                    1 => Ok(self.read_data_byte() as u32),
-                    2 => Ok(self.read_data_word() as u32),
-                    _ => Ok(self.read_data_dword()),
-                }
-            }
-            // Error register (read).
+            0x1F0 => match size {
+                1 => Ok(self.read_data_byte() as u32),
+                2 => Ok(self.read_data_word() as u32),
+                _ => Ok(self.read_data_dword()),
+            },
             0x1F1 => Ok(self.error as u32),
-            // Sector count.
             0x1F2 => Ok(self.sector_count as u32),
-            // Sector number / LBA low.
             0x1F3 => Ok(self.sector_number as u32),
-            // Cylinder low / LBA mid.
             0x1F4 => Ok(self.cylinder_low as u32),
-            // Cylinder high / LBA high.
             0x1F5 => Ok(self.cylinder_high as u32),
-            // Drive/head.
             0x1F6 => Ok(self.drive_head as u32),
-            // Status register — reading clears pending IRQ.
             0x1F7 => {
                 self.irq_pending = false;
                 Ok(self.status as u32)
             }
-            // Alternate status (port 0x3F6) — does NOT clear IRQ.
             0x3F6 => Ok(self.status as u32),
-            // Drive address register (legacy, mostly unused).
             0x3F7 => Ok(0xFF),
             _ => Ok(0xFF),
         }
@@ -781,19 +1095,12 @@ impl IoHandler for Ide {
     fn write(&mut self, port: u16, size: u8, val: u32) -> Result<()> {
         let v = val as u8;
         match port {
-            // Data register — 16-bit PIO writes.
-            0x1F0 => {
-                match size {
-                    1 => self.write_data_byte(val as u8),
-                    2 => self.write_data_word(val as u16),
-                    _ => self.write_data_dword(val),
-                }
-            }
-            // Features register (write).
-            0x1F1 => {
-                self.features = v;
-            }
-            // Sector count — with HOB toggling for 48-bit mode.
+            0x1F0 => match size {
+                1 => self.write_data_byte(val as u8),
+                2 => self.write_data_word(val as u16),
+                _ => self.write_data_dword(val),
+            },
+            0x1F1 => self.features = v,
             0x1F2 => {
                 if self.hob_toggle {
                     self.hob_sector_count = v;
@@ -801,7 +1108,6 @@ impl IoHandler for Ide {
                     self.sector_count = v;
                 }
             }
-            // Sector number / LBA[7:0].
             0x1F3 => {
                 if self.hob_toggle {
                     self.hob_sector_number = v;
@@ -809,7 +1115,6 @@ impl IoHandler for Ide {
                     self.sector_number = v;
                 }
             }
-            // Cylinder low / LBA[15:8].
             0x1F4 => {
                 if self.hob_toggle {
                     self.hob_cylinder_low = v;
@@ -817,7 +1122,6 @@ impl IoHandler for Ide {
                     self.cylinder_low = v;
                 }
             }
-            // Cylinder high / LBA[23:16].
             0x1F5 => {
                 if self.hob_toggle {
                     self.hob_cylinder_high = v;
@@ -825,39 +1129,29 @@ impl IoHandler for Ide {
                     self.cylinder_high = v;
                 }
             }
-            // Drive/head register.
             0x1F6 => {
                 self.drive_head = v;
-                // Reset HOB toggle on drive/head write.
                 self.hob_toggle = false;
+                self.apply_selected_drive_signature();
+                self.status = if self.selected_drive_state().present {
+                    SR_DRDY | SR_DSC
+                } else {
+                    SR_DSC
+                };
             }
-            // Command register — execute command.
-            0x1F7 => {
-                self.hob_toggle = false;
-                self.execute_command(v);
-            }
-            // Device control register (port 0x3F6).
+            0x1F7 => self.execute_command(v),
             0x3F6 => {
                 let old = self.device_control;
                 self.device_control = v;
-                // SRST (bit 2): rising edge triggers software reset.
                 if v & 0x04 != 0 && old & 0x04 == 0 {
                     self.status = SR_BSY;
                 }
-                // SRST clear: complete reset.
                 if v & 0x04 == 0 && old & 0x04 != 0 {
                     self.status = SR_DRDY | SR_DSC;
-                    self.error = 0x01;
-                    self.sector_count = 1;
-                    self.sector_number = 1;
-                    self.cylinder_low = 0;
-                    self.cylinder_high = 0;
-                    self.drive_head = 0;
+                    self.apply_selected_drive_signature();
+                    self.irq_pending = false;
                 }
-                // Bit 7 = HOB (high order byte) — allows reading back HOB registers.
-                if v & 0x80 != 0 {
-                    self.hob_toggle = true;
-                }
+                self.hob_toggle = v & 0x80 != 0;
             }
             _ => {}
         }

@@ -1050,6 +1050,25 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     lpc_bridge.set_subsystem(0x1AF4, 0x1100);
     bus.add_device(lpc_bridge);
 
+    // Legacy IDE controller at 0:1F.1.
+    // SeaBIOS only registers ATA/ATAPI boot devices when it sees a PCI IDE
+    // controller. We expose the primary channel in compatibility mode so the
+    // controller uses the fixed ISA ports backed by `devices::ide::Ide`.
+    let mut ide_pci = devices::bus::PciDevice::new(
+        0x8086,  // Vendor ID: Intel
+        0x2920,  // Device ID: ICH9 SATA/IDE compatibility function
+        0x01,    // Class: Mass storage
+        0x01,    // Subclass: IDE controller
+        0x80,    // Prog IF: bus-master IDE, compatibility mode channels
+    );
+    ide_pci.bus = 0;
+    ide_pci.device = 31;
+    ide_pci.function = 1;
+    ide_pci.set_bar(4, 0xC000, 0x10, false);
+    ide_pci.set_interrupt(14, 1);
+    ide_pci.set_subsystem(0x1AF4, 0x1100);
+    bus.add_device(ide_pci);
+
     // VGA device at 0:2.0 — SeaBIOS scans PCI to detect display hardware.
     let mut vga_pci = devices::bus::PciDevice::new(
         0x1234,  // Vendor ID: QEMU standard VGA
@@ -1123,7 +1142,7 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     let count = vm.engine.memory.mmio_region_count();
     let (lo, hi) = vm.engine.memory.mmio_bounds();
     vm_log!("MMIO setup: {} regions, bounds=[0x{:X}, 0x{:X})", count, lo, hi);
-    vm_log!("PCI bus: 3 devices (Q35 MCH 0:0.0, ICH9 LPC 0:1F.0, VGA 0:2.0)");
+    vm_log!("PCI bus: 4 devices (Q35 MCH 0:0.0, ICH9 LPC 0:1F.0, IDE 0:1F.1, VGA 0:2.0)");
 }
 
 /// Register a PCI bus at the standard configuration ports (0xCF8-0xCFF).

@@ -188,7 +188,7 @@ impl JitEngine {
     /// returns `None` and the interpreter fallback is used instead.
     pub fn invalidate_page(&mut self, page_phys: u64) {
         let page_base = page_phys & !0xFFF;
-        let page_end  = page_base + 0x1000;
+        let page_end = page_base.saturating_add(0x1000);
         self.compiled.retain(|key, _| {
             key.phys_addr < page_base || key.phys_addr >= page_end
         });

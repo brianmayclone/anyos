@@ -116,6 +116,25 @@ pub fn run_once() -> u32 {
         }
     }
 
+    // ── Phase 1.05: Dispatch tray icon click events ───────────────
+    // EVT_STATUS_ICON_CLICK uses icon_id in ev[1], not a window_id,
+    // so it would be filtered out by the per-window loop below.
+    for ev in all_events.iter_mut() {
+        if ev[0] == compositor::EVT_STATUS_ICON_CLICK {
+            let icon_id = ev[1];
+            let mouse_x = ev[2];
+            if let Some(&(_, cb, ud)) = st.tray_callbacks.iter().find(|e| e.0 == icon_id) {
+                pending_cbs.push(PendingCallback {
+                    id: icon_id,
+                    event_type: compositor::EVT_STATUS_ICON_CLICK,
+                    cb,
+                    userdata: ud,
+                });
+            }
+            ev[0] = 0; // consume
+        }
+    }
+
     // ── Phase 1.1: Process popup events (before per-window dispatch) ──
     // Context menu popups are separate compositor windows. Their events must
     // be handled before normal window events to ensure dismiss-on-outside-click.
@@ -1000,6 +1019,19 @@ pub fn run_once() -> u32 {
                     // Clear back-pressure so we can present the next frame.
                     if wi < st.comp_windows.len() {
                         st.comp_windows[wi].frame_presented = false;
+                    }
+                }
+
+                compositor::EVT_MENU_ITEM => {
+                    // ev[2] = menu_index, ev[3] = item_id
+                    let item_id = ev[3];
+                    if let Some(&(_, cb, ud)) = st.menu_callbacks.iter().find(|e| e.0 == win_id) {
+                        pending_cbs.push(PendingCallback {
+                            id: item_id,
+                            event_type: compositor::EVT_MENU_ITEM,
+                            cb,
+                            userdata: ud,
+                        });
                     }
                 }
 

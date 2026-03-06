@@ -27,6 +27,8 @@ mod texteditor;
 mod treeview;
 mod dropdown;
 mod autocompletatextbox;
+mod trayicon;
+mod menubar;
 
 // ── Container controls (can have children) ──
 mod expander;
@@ -108,3 +110,6 @@ pub use autocompletatextbox::AutoCompleteTextField;
 
 pub use messagebox::{MessageBox, MessageBoxType};
 pub use filedialog::FileDialog;
+pub use trayicon::TrayIcon;
+pub use menubar::{MenuBar, MenuBarBuilder, MenuBuilder, MenuItemEvent,
+    MENU_FLAG_DISABLED, MENU_FLAG_SEPARATOR, MENU_FLAG_CHECKED};
