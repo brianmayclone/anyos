@@ -563,6 +563,20 @@ fn main() {
 
     win.add(&toolbar);
 
+    // ── Menu bar ──
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu(i18n::t("File"))
+            .item(1, i18n::t("Quit"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = anyui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => anyui::quit(),
+            _ => {}
+        }
+    });
+
     // Content area (DOCK_FILL)
     let content = anyui::View::new();
     content.set_dock(anyui::DOCK_FILL);

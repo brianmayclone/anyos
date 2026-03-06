@@ -146,6 +146,47 @@ fn main() {
         });
     }
 
+    // ── Menu bar ──
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu(anyos_std::i18n::t("File"))
+            .item(1, anyos_std::i18n::t("Quit"), 0)
+        .end_menu()
+        .menu(anyos_std::i18n::t("Playback"))
+            .item(10, anyos_std::i18n::t("Play/Pause"), 0)
+            .item(11, anyos_std::i18n::t("Stop"), 0)
+            .separator()
+            .item(12, anyos_std::i18n::t("Loop"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = anyui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => anyui::quit(),
+            10 => {
+                let a = app();
+                if a.playing {
+                    a.pause_elapsed = anyos_std::sys::uptime().wrapping_sub(a.start_tick);
+                    a.playing = false;
+                    a.lbl_status.set_text(">");
+                } else {
+                    a.start_tick = anyos_std::sys::uptime().wrapping_sub(a.pause_elapsed);
+                    a.playing = true;
+                    a.lbl_status.set_text("||");
+                }
+            }
+            11 => {
+                let a = app();
+                a.playing = false;
+                a.current_frame = 0;
+                a.pause_elapsed = 0;
+                a.lbl_status.set_text(">");
+                a.needs_redraw = true;
+            }
+            12 => { app().looping = !app().looping; }
+            _ => {}
+        }
+    });
+
     // Keyboard events
     win.on_key_down(|ke| {
         match ke.keycode {

@@ -119,6 +119,30 @@ fn main() {
         });
     }
 
+    // ── Menu bar ──
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu(anyos_std::i18n::t("File"))
+            .item(1, anyos_std::i18n::t("Quit"), 0)
+        .end_menu()
+        .menu(anyos_std::i18n::t("View"))
+            .item(10, anyos_std::i18n::t("Scroll Up"), 0)
+            .item(11, anyos_std::i18n::t("Scroll Down"), 0)
+            .item(12, anyos_std::i18n::t("Scroll Left"), 0)
+            .item(13, anyos_std::i18n::t("Scroll Right"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = anyui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => anyui::quit(),
+            10 => { app().scroll_y -= 32; clamp_scroll(); app().needs_redraw = true; }
+            11 => { app().scroll_y += 32; clamp_scroll(); app().needs_redraw = true; }
+            12 => { app().scroll_x -= 32; clamp_scroll(); app().needs_redraw = true; }
+            13 => { app().scroll_x += 32; clamp_scroll(); app().needs_redraw = true; }
+            _ => {}
+        }
+    });
+
     // Mouse events for panning
     app().canvas.on_mouse_down(|x, y, _btn| {
         let a = app();

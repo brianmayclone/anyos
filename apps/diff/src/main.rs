@@ -6,6 +6,7 @@ use anyos_std::Vec;
 use anyos_std::i18n;
 use libanyui_client as anyui;
 use anyui::IconType;
+use anyui::Widget;
 
 anyos_std::entry!(main);
 
@@ -2780,6 +2781,35 @@ fn main() {
     let stats_label = toolbar.add_label("0A 0D 0C");
 
     win.add(&toolbar);
+
+    // ── Menu bar ──
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu(i18n::t("File"))
+            .item(1, i18n::t("Open Left"), 0)
+            .item(2, i18n::t("Open Right"), 0)
+            .separator()
+            .item(3, i18n::t("Quit"), 0)
+        .end_menu()
+        .menu(i18n::t("Navigate"))
+            .item(10, i18n::t("Previous Hunk"), 0)
+            .item(11, i18n::t("Next Hunk"), 0)
+            .item(12, i18n::t("First Hunk"), 0)
+            .item(13, i18n::t("Last Hunk"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = anyui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => open_left(),
+            2 => open_right(),
+            3 => anyui::quit(),
+            10 => navigate_prev(),
+            11 => navigate_next(),
+            12 => { let s = app(); if !s.hunks.is_empty() { navigate_to_hunk(0); } }
+            13 => { let s = app(); if !s.hunks.is_empty() { let last = s.hunks.len() - 1; navigate_to_hunk(last); } }
+            _ => {}
+        }
+    });
 
     // ── Status bar (add DOCK_BOTTOM first — goes to very bottom) ──
     let status_bar = anyui::View::new();

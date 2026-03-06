@@ -11,13 +11,10 @@ use libcorevm::{
     corevm_get_instruction_count, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rip,
     corevm_get_segment_selector, corevm_fw_cfg_add_file, corevm_ide_attach_slave,
     corevm_jit_enable, corevm_jit_stats, corevm_load_binary, corevm_load_rom,
-    corevm_pic_raise_irq, corevm_pit_advance, corevm_ps2_key_press, corevm_ps2_key_release,
+    corevm_ps2_key_press, corevm_ps2_key_release,
     corevm_run, corevm_serial_take_output, corevm_set_rip, corevm_setup_ide, corevm_setup_pci_bus,
     corevm_setup_standard_devices, corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
 };
-
-const PIT_TICKS_PER_MS: u32 = 1193;
-const PIT_MAX_ADVANCE_MS: u64 = 10;
 
 const KEY_PRESS: c_int = 2;
 const KEY_RELEASE: c_int = 3;
@@ -427,24 +424,6 @@ fn last_error(handle: u64) -> String {
     }
 }
 
-fn advance_pit_realtime(vm_handle: u64, last_pit_tick: &mut Instant) {
-    let now = Instant::now();
-    let elapsed_ms = now
-        .duration_since(*last_pit_tick)
-        .as_millis()
-        .min(PIT_MAX_ADVANCE_MS as u128) as u64;
-    let ticks = if elapsed_ms > 0 {
-        (elapsed_ms as u32) * PIT_TICKS_PER_MS
-    } else {
-        PIT_TICKS_PER_MS
-    };
-    let fires = corevm_pit_advance(vm_handle, ticks);
-    if fires > 0 {
-        corevm_pic_raise_irq(vm_handle, 0);
-    }
-    *last_pit_tick = now;
-}
-
 fn color16(idx: u8) -> c_ulong {
     let (r, g, b) = match idx & 0x0F {
         0x0 => (0x00, 0x00, 0x00),
@@ -796,7 +775,6 @@ fn main() {
     };
 
     let start = Instant::now();
-    let mut last_pit_tick = Instant::now();
     let max_duration = Duration::from_secs(cfg.max_seconds);
     let mut last_render = Instant::now() - RENDER_MIN_INTERVAL;
     let mut last_overlay_update = Instant::now() - OVERLAY_UPDATE_INTERVAL;
@@ -808,7 +786,6 @@ fn main() {
     let mut need_redraw = true;
 
     while !STOP_REQUESTED.load(Ordering::SeqCst) {
-        advance_pit_realtime(vm.0, &mut last_pit_tick);
         run_calls = run_calls.saturating_add(1);
         let exit_code = corevm_run(vm.0, cfg.batch);
 
@@ -1001,7 +978,6 @@ fn main() {
         match exit_code {
             0 => {
                 thread::sleep(Duration::from_micros(500));
-                advance_pit_realtime(vm.0, &mut last_pit_tick);
             }
             1 => {
                 let err = last_error(vm.0);

@@ -5,6 +5,7 @@ use anyos_std::String;
 use anyos_std::Vec;
 use anyos_std::i18n;
 use libanyui_client as anyui;
+use anyui::Widget;
 
 anyos_std::entry!(main);
 
@@ -1483,6 +1484,40 @@ fn main() {
             active: 0,
         });
     }
+
+    // ── Menu bar ──
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu(i18n::t("File"))
+            .item(1, i18n::t("Open..."), 0)
+            .item(2, i18n::t("Close Tab"), 0)
+            .separator()
+            .item(3, i18n::t("Quit"), 0)
+        .end_menu()
+        .menu(i18n::t("View"))
+            .item(10, i18n::t("Toggle Source"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = anyui::MenuBar::set(app().win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => {
+                if let Some(path) = anyui::FileDialog::open_file() {
+                    open_file(&path);
+                }
+            }
+            2 => {
+                let idx = app().active;
+                close_tab(idx);
+            }
+            3 => {
+                anyui::quit();
+            }
+            10 => {
+                toggle_source();
+            }
+            _ => {}
+        }
+    });
 
     // ── Wire events ──
     btn_open.on_click(|_| {

@@ -5,6 +5,7 @@ use anyos_std::String;
 use anyos_std::Vec;
 use anyos_std::i18n;
 use libanyui_client as anyui;
+use anyui::Widget;
 
 anyos_std::entry!(main);
 
@@ -594,6 +595,20 @@ fn main() {
     let tc = anyui::theme::colors();
     let win = anyui::Window::new(i18n::t("Clipboard Manager"), -1, -1, 600, 400);
 
+    // ── Menu bar ──
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu(i18n::t("File"))
+            .item(1, i18n::t("Quit"), 0)
+        .end_menu()
+        .menu(i18n::t("Edit"))
+            .item(10, i18n::t("Paste Selected"), 0)
+            .item(11, i18n::t("Delete Selected"), 0)
+            .separator()
+            .item(12, i18n::t("Clear History"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = anyui::MenuBar::set(win.id(), menu_data);
+
     // ── Toolbar ──
     let toolbar = anyui::Toolbar::new();
     toolbar.set_dock(anyui::DOCK_TOP);
@@ -789,6 +804,17 @@ fn main() {
             3 => clear_all(),
             5 => toggle_add_panel(),
             6 => copy_file_to_clipboard(),
+            _ => {}
+        }
+    });
+
+    // Menu bar
+    menu.on_item(move |e| {
+        match e.item_id {
+            1 => { save_history(app()); anyui::quit(); },
+            10 => copy_to_clipboard(),
+            11 => delete_selected(),
+            12 => clear_all(),
             _ => {}
         }
     });

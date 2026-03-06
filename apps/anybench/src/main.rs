@@ -275,6 +275,24 @@ fn build_ui() {
     let win = anyui::Window::new("anyBench", -1, -1, 640, 520);
     win.set_color(colors.window_bg);
 
+    // ── Menu bar ──
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu(i18n::t("File"))
+            .item(1, i18n::t("Quit"), 0)
+        .end_menu()
+        .menu(i18n::t("Benchmark"))
+            .item(10, i18n::t("Run All"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menubar = anyui::MenuBar::set(win.id(), menu_data);
+    menubar.on_item(|e| {
+        match e.item_id {
+            1 => anyui::quit(),
+            10 => start_benchmark(BenchMode::All),
+            _ => {}
+        }
+    });
+
     let num_cpus = anyos_std::sys::sysinfo(2, &mut [0u8; 4]);
     let num_cpus = if num_cpus == 0 { 1 } else { num_cpus };
 

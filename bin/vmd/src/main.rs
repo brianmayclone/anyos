@@ -65,12 +65,6 @@ const E1000_MMIO_BASE: u64 = 0xD000_0000;
 /// batches at 1193 ticks/batch for the 65536-tick period).
 const BATCH_SIZE: u64 = 50_000;
 
-/// PIT ticks per millisecond (1,193,182 Hz / 1000 ≈ 1193).
-const PIT_TICKS_PER_MS: u32 = 1193;
-
-/// Maximum wall-clock ms to advance PIT in one call (caps catch-up bursts).
-const PIT_MAX_ADVANCE_MS: u32 = 10;
-
 /// SHM state constants (written to offset 16).
 const STATE_STOPPED: u32 = 0;
 const STATE_RUNNING: u32 = 1;
@@ -93,8 +87,6 @@ struct VmInstance {
     bios_type: String,
     /// Whether JIT acceleration is enabled.
     jit_enabled: bool,
-    /// Last wall-clock ms when PIT was advanced (for real-time timer).
-    last_pit_ms: u32,
     /// Batch counter for periodic diagnostics.
     batch_count: u64,
 }
@@ -524,7 +516,6 @@ fn cmd_create(uuid: &str) {
         name: config.name.clone(),
         bios_type: config.bios_type.clone(),
         jit_enabled: config.jit_enabled,
-        last_pit_ms: sys::uptime_ms(),
         batch_count: 0,
     };
 
@@ -684,11 +675,10 @@ fn cmd_start() {
         );
 
         inst.running = true;
-        inst.last_pit_ms = sys::uptime_ms();
         update_shm_state(inst, STATE_RUNNING);
         send_status("state 0 running");
         anyos_std::println!("[vmd] VM '{}' started (uptime_ms={}, batch={})",
-            inst.name, inst.last_pit_ms, BATCH_SIZE);
+            inst.name, sys::uptime_ms(), BATCH_SIZE);
     }
 }
 
@@ -790,28 +780,6 @@ fn dispatch_command(line: &str) {
 
 // ── VM execution ───────────────────────────────────────────────────────
 
-/// Advance PIT based on real elapsed wall-clock time.
-///
-/// Uses `uptime_ms()` to measure elapsed time since the last call and
-/// advances the PIT by the corresponding number of ticks in a single
-/// bulk FFI call.
-fn advance_pit_realtime(inst: &mut VmInstance) {
-    let now = sys::uptime_ms();
-    let elapsed = now.wrapping_sub(inst.last_pit_ms).min(PIT_MAX_ADVANCE_MS);
-    if elapsed == 0 {
-        return;
-    }
-    let ticks = elapsed * PIT_TICKS_PER_MS;
-
-    // Bulk-advance: one FFI call instead of thousands.
-    let fires = inst.handle.pit_advance(ticks);
-    if fires > 0 {
-        inst.handle.pic_raise_irq(0);
-    }
-
-    inst.last_pit_ms = now;
-}
-
 /// Run one execution batch for the active VM.
 /// Returns true if the VM is still running after this batch.
 fn run_vm_batch() -> bool {
@@ -821,18 +789,14 @@ fn run_vm_batch() -> bool {
         _ => return false,
     };
 
-    // Advance PIT based on real wall-clock time.
-    advance_pit_realtime(inst);
-
     // Execute instructions.
     let exit = inst.handle.run(BATCH_SIZE);
 
     match exit {
         ExitReason::Halted => {
-            // HLT pauses until the next interrupt. Sleep briefly to let
-            // wall-clock time elapse, then advance PIT based on real time.
+            // HLT pauses until the next interrupt. Sleep briefly so the
+            // host loop does not busy-spin.
             anyos_std::process::sleep_us(500);
-            advance_pit_realtime(inst);
             // Drain serial and debug port output (SeaBIOS debug messages).
             let serial_out = inst.handle.serial_take_output_vec();
             if !serial_out.is_empty() {
@@ -1028,8 +992,7 @@ fn parse_i16(s: &str) -> i16 {
 // ── Entry point ────────────────────────────────────────────────────────
 
 fn main() {
-    anyos_std::println!("[vmd] starting... (PIT: wall-clock, {}t/ms, cap={}ms)",
-        PIT_TICKS_PER_MS, PIT_MAX_ADVANCE_MS);
+    anyos_std::println!("[vmd] starting... (PIT: internal guest-timed)");
 
     // Initialize libcorevm.
     anyos_std::println!("[vmd] loading libcorevm.so...");

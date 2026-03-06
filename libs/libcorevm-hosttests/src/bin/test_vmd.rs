@@ -19,7 +19,7 @@ use libcorevm::{
     corevm_pic_diag_state, corevm_read_linear_u8, corevm_read_phys_u8,
     corevm_fw_cfg_add_file, corevm_ide_attach_slave, corevm_load_binary, corevm_load_rom,
     corevm_ps2_key_press, corevm_ps2_key_release, corevm_set_rip,
-    corevm_pic_raise_irq, corevm_pit_advance, corevm_run, corevm_serial_take_output,
+    corevm_run, corevm_serial_take_output,
     corevm_setup_ide, corevm_setup_pci_bus, corevm_setup_standard_devices, corevm_debug_take_output,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
 };
@@ -878,9 +878,6 @@ const VGA_TEXT_ROWS: usize = 25;
 const VGA_TEXT_COLS: usize = 80;
 const UI_LOG_TAIL: usize = 16;
 const FB_RAMP: &[u8] = b" .:-=+*#%@";
-const PIT_TICKS_PER_MS: u32 = 1193;
-const PIT_MAX_ADVANCE_MS: u64 = 10;
-
 #[derive(Default)]
 struct DisplayState {
     text_cells: Vec<u16>,
@@ -1160,24 +1157,6 @@ fn render_ui(lines: &[String], prev_lines: &mut Vec<String>) {
     }
 }
 
-fn advance_pit_realtime(vm_handle: u64, last_pit_tick: &mut Instant) {
-    let now = Instant::now();
-    let elapsed_ms = now
-        .duration_since(*last_pit_tick)
-        .as_millis()
-        .min(PIT_MAX_ADVANCE_MS as u128) as u64;
-    let ticks = if elapsed_ms > 0 {
-        (elapsed_ms as u32) * PIT_TICKS_PER_MS
-    } else {
-        PIT_TICKS_PER_MS
-    };
-    let fires = corevm_pit_advance(vm_handle, ticks);
-    if fires > 0 {
-        corevm_pic_raise_irq(vm_handle, 0);
-    }
-    *last_pit_tick = now;
-}
-
 fn scancode_for_ascii(ch: u8) -> Option<(bool, u8)> {
     let lower = ch.to_ascii_lowercase();
     let shift = ch.is_ascii_uppercase();
@@ -1356,7 +1335,6 @@ fn main() {
     let mut log_pending = String::new();
     let mut last_render = Instant::now();
     let mut prev_ui_lines: Vec<String> = Vec::new();
-    let mut last_pit_tick = Instant::now();
     let mut last_auto_enter = Instant::now();
     let mut saw_booting_kernel = false;
     let _raw_guard = if cfg.stdin_keyboard {
@@ -1382,7 +1360,6 @@ fn main() {
             inject_ascii_key(vm.0, ch);
         }
 
-        advance_pit_realtime(vm.0, &mut last_pit_tick);
         let exit_code = corevm_run(vm.0, cfg.batch);
 
         let text = take_text_output(vm.0);
@@ -1454,7 +1431,6 @@ fn main() {
         match exit_code {
             0 => {
                 thread::sleep(Duration::from_micros(500));
-                advance_pit_realtime(vm.0, &mut last_pit_tick);
             }
             1 => {
                 let err = last_error(vm.0);

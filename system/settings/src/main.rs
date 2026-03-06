@@ -196,6 +196,20 @@ fn main() {
         });
     }
 
+    // ── Menu bar ─────────────────────────────────────────────────
+    let mut mb = ui::MenuBarBuilder::new()
+        .menu(t("File"))
+            .item(1, t("Quit"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = ui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => ui::quit(),
+            _ => {}
+        }
+    });
+
     // Build the first page (Dashboard)
     build_page(0);
 

@@ -18,6 +18,7 @@ use anyos_std::vec;
 
 use libanyui_client as anyui;
 use libanyui_client::IconType;
+use libanyui_client::Widget;
 
 use crate::mail::message::*;
 use crate::mail::rfc2822::EmailAddress;
@@ -415,6 +416,40 @@ fn main() {
             loading_more: false,
         });
     }
+
+    // ── Menu bar ─────────────────────────────────────────────────────────
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu("File")
+            .item(1, "Check Mail", 0)
+            .separator()
+            .item(2, "Quit", 0)
+        .end_menu()
+        .menu("Message")
+            .item(10, "Compose", 0)
+            .item(11, "Reply", 0)
+            .item(12, "Forward", 0)
+            .separator()
+            .item(13, "Delete", 0)
+        .end_menu()
+        .menu("Tools")
+            .item(20, "Account Settings", 0)
+            .item(21, "Address Book", 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu_bar = anyui::MenuBar::set(win.id(), menu_data);
+    menu_bar.on_item(|e| {
+        match e.item_id {
+            1  => on_get_mail(),
+            2  => anyui::quit(),
+            10 => open_compose(ComposeMode::New),
+            11 => open_compose(ComposeMode::Reply),
+            12 => open_compose(ComposeMode::Forward),
+            13 => on_delete(),
+            20 => open_account_setup(),
+            21 => open_contacts(),
+            _  => {}
+        }
+    });
 
     // ── Populate folder tree ───────────────────────────────────────────
     populate_folder_tree();

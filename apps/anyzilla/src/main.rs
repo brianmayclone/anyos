@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use anyos_std::{net, fs, env};
 use anyos_std::json::Value;
 use libanyui_client as anyui;
-use anyui::IconType;
+use anyui::{IconType, Widget};
 
 anyos_std::entry!(main);
 
@@ -2139,6 +2139,55 @@ fn main() {
     btn_sort_date.set_tooltip("Nach Datum sortieren");
 
     win.add(&toolbar);
+
+    // ── Menu Bar ─────────────────────────────────────────────────────────────
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu("File")
+            .item(1, "Site Manager", 0)
+            .separator()
+            .item(2, "Quit", 0)
+        .end_menu()
+        .menu("Server")
+            .item(10, "Connect", 0)
+            .item(11, "Disconnect", 0)
+            .separator()
+            .item(12, "Refresh", 0)
+        .end_menu()
+        .menu("Transfer")
+            .item(20, "Upload", 0)
+            .item(21, "Download", 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = anyui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => { show_site_manager(); }
+            2 => { anyui::quit(); }
+            10 => { show_connect_dialog(); }
+            11 => {
+                if WORKER_BUSY.load(Ordering::Relaxed) { return; }
+                WORKER_CMD.store(CMD_DISCONNECT, Ordering::Release);
+                spawn_worker();
+                let a = app();
+                a.remote_files = Vec::new();
+                let empty: Vec<FileEntry> = Vec::new();
+                populate_grid(&a.remote_grid, &empty);
+                a.remote_path_label.set_text("Remote: (nicht verbunden)");
+                set_connected_state(false);
+                update_status();
+            }
+            12 => {
+                refresh_local();
+                if !WORKER_BUSY.load(Ordering::Relaxed) && app().is_connected {
+                    WORKER_CMD.store(CMD_LIST, Ordering::Release);
+                    spawn_worker();
+                }
+            }
+            20 => { do_upload(); }
+            21 => { do_download(); }
+            _ => {}
+        }
+    });
 
     // ── Quick Connect Bar ────────────────────────────────────────────────────
     let qc_bar = anyui::View::new();

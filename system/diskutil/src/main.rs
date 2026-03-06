@@ -183,6 +183,17 @@ fn main() {
 
     let win = ui::Window::new(i18n::t("Disk Utility"), -1, -1, WIN_W, WIN_H);
 
+    // ── Menu bar ──
+
+    let mut mb = ui::MenuBarBuilder::new()
+        .menu(i18n::t("File"))
+            .item(1, i18n::t("Refresh"), 0)
+            .separator()
+            .item(2, i18n::t("Quit"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = ui::MenuBar::set(win.id(), menu_data);
+
     // ── Header (DOCK_TOP) ──
 
     let header = ui::View::new();
@@ -385,6 +396,35 @@ fn main() {
             sys::partition_rescan(disk_id as u32);
             PARTS = Some(load_partitions(disk_id as u32));
             update_ui(&disk_label, &info_label, &canvas, &grid, bar_w, BAR_H, disks, DISK_IDX, PARTS.as_ref().unwrap());
+        }
+    });
+
+    menu.on_item(move |e| {
+        match e.item_id {
+            1 => {
+                // Refresh
+                unsafe {
+                    let new_disks = load_disks();
+                    if DISK_IDX >= new_disks.len() {
+                        DISK_IDX = 0;
+                    }
+                    if !new_disks.is_empty() {
+                        let disk_id = new_disks[DISK_IDX].disk_id;
+                        sys::partition_rescan(disk_id as u32);
+                        PARTS = Some(load_partitions(disk_id as u32));
+                    } else {
+                        PARTS = Some(Vec::new());
+                    }
+                    DISKS = Some(new_disks);
+                    let disks = DISKS.as_ref().unwrap();
+                    update_ui(&disk_label, &info_label, &canvas, &grid, bar_w, BAR_H, disks, DISK_IDX, PARTS.as_ref().unwrap());
+                }
+            }
+            2 => {
+                // Quit
+                anyos_std::process::exit(0);
+            }
+            _ => {}
         }
     });
 

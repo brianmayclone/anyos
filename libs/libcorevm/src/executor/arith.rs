@@ -42,13 +42,14 @@ pub fn exec_adc(
 ) -> Result<()> {
     let dst_val = read_operand(cpu, inst, &inst.operands[0], memory, mmu)?;
     let src_val = read_operand(cpu, inst, &inst.operands[1], memory, mmu)?;
-    let carry = if (cpu.regs.rflags & flags::CF) != 0 { 1u64 } else { 0u64 };
+    let carry_in = (cpu.regs.rflags & flags::CF) != 0;
+    let carry = if carry_in { 1u64 } else { 0u64 };
     let size = inst.operand_size;
     let result = dst_val.wrapping_add(src_val).wrapping_add(carry) & size.mask();
 
     write_operand(cpu, inst, &inst.operands[0], result, memory, mmu)?;
 
-    let f = flags::flags_add(dst_val, src_val.wrapping_add(carry), result, size);
+    let f = flags::flags_adc(dst_val, src_val, carry_in, result, size);
     flags::update_flags(&mut cpu.regs.rflags, f);
 
     cpu.regs.rip += inst.length as u64;
@@ -85,13 +86,14 @@ pub fn exec_sbb(
 ) -> Result<()> {
     let dst_val = read_operand(cpu, inst, &inst.operands[0], memory, mmu)?;
     let src_val = read_operand(cpu, inst, &inst.operands[1], memory, mmu)?;
-    let borrow = if (cpu.regs.rflags & flags::CF) != 0 { 1u64 } else { 0u64 };
+    let borrow_in = (cpu.regs.rflags & flags::CF) != 0;
+    let borrow = if borrow_in { 1u64 } else { 0u64 };
     let size = inst.operand_size;
     let result = dst_val.wrapping_sub(src_val).wrapping_sub(borrow) & size.mask();
 
     write_operand(cpu, inst, &inst.operands[0], result, memory, mmu)?;
 
-    let f = flags::flags_sub(dst_val, src_val.wrapping_add(borrow), result, size);
+    let f = flags::flags_sbb(dst_val, src_val, borrow_in, result, size);
     flags::update_flags(&mut cpu.regs.rflags, f);
 
     cpu.regs.rip += inst.length as u64;

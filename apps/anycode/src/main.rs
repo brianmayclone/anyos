@@ -183,6 +183,129 @@ fn main() {
         });
     }
 
+    // ── Menu bar ──
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu(anyos_std::i18n::t("File"))
+            .item(1, anyos_std::i18n::t("New"), 0)
+            .item(2, anyos_std::i18n::t("Open Folder..."), 0)
+            .separator()
+            .item(3, anyos_std::i18n::t("Save"), 0)
+            .item(4, anyos_std::i18n::t("Save All"), 0)
+            .separator()
+            .item(5, anyos_std::i18n::t("Quit"), 0)
+        .end_menu()
+        .menu(anyos_std::i18n::t("Edit"))
+            .item(10, anyos_std::i18n::t("Cut"), 0)
+            .item(11, anyos_std::i18n::t("Copy"), 0)
+            .item(12, anyos_std::i18n::t("Paste"), 0)
+            .separator()
+            .item(13, anyos_std::i18n::t("Select All"), 0)
+        .end_menu()
+        .menu(anyos_std::i18n::t("View"))
+            .item(20, anyos_std::i18n::t("Explorer"), 0)
+            .item(21, anyos_std::i18n::t("Git"), 0)
+        .end_menu()
+        .menu(anyos_std::i18n::t("Build"))
+            .item(30, anyos_std::i18n::t("Build"), 0)
+            .item(31, anyos_std::i18n::t("Run"), 0)
+            .item(32, anyos_std::i18n::t("Stop"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = anyui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => { // New
+                let s = app();
+                let (_idx, ref p) = s.file_mgr.add_untitled(&s.config.temp_dir);
+                s.editor_view.create_editor(p, None, &s.config);
+                let count = s.file_mgr.count();
+                s.editor_view.set_active(count - 1);
+                s.file_mgr.set_active(count - 1);
+                s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+                update_status();
+            }
+            2 => { // Open Folder
+                if let Some(folder) = anyui::FileDialog::open_folder() {
+                    let s = app();
+                    s.sidebar.populate(&folder);
+                    s.current_project = Some(project::Project::open(&folder));
+                    s.git_state.is_repo = git::is_git_repo(&folder);
+                    if s.git_state.is_repo {
+                        trigger_git_refresh();
+                    }
+                    s.status.set_branch("");
+                    s.output.start_shell(&folder);
+                    update_status();
+                }
+            }
+            3 => { // Save
+                let s = app();
+                save_current(s);
+                s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+            }
+            4 => { // Save All
+                let s = app();
+                save_all(s);
+                s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+            }
+            5 => anyui::quit(),
+            10 => {} // Cut — handled by editor
+            11 => {} // Copy — handled by editor
+            12 => {} // Paste — handled by editor
+            13 => {} // Select All — handled by editor
+            20 => switch_sidebar_view(0),
+            21 => switch_sidebar_view(1),
+            30 => { // Build
+                let s = app();
+                if let Some(ref proj) = s.current_project {
+                    s.output.clear();
+                    let active_file = s.file_mgr.active_file().map(|f| f.path.as_str()).unwrap_or("");
+                    let (cmd, args) = if let Some(ca) = s.build_rules.build_command(active_file, &proj.root, &s.config) {
+                        ca
+                    } else {
+                        build::build_command(proj.build_type, &s.config)
+                    };
+                    let msg = format!("$ {}", path::basename(&cmd));
+                    s.output.append_line(&msg);
+                    anyos_std::fs::chdir(&proj.root);
+                    s.build_process = build::BuildProcess::spawn(&cmd, &args);
+                    if s.build_process.is_some() {
+                        start_build_timer();
+                    }
+                }
+            }
+            31 => { // Run
+                let s = app();
+                if let Some(ref proj) = s.current_project {
+                    s.output.clear();
+                    let active_file = s.file_mgr.active_file().map(|f| f.path.as_str()).unwrap_or("");
+                    let (cmd, args) = if let Some(ca) = s.build_rules.run_command(active_file, &proj.root, &s.config) {
+                        ca
+                    } else {
+                        build::run_command(proj.build_type, &s.config)
+                    };
+                    let msg = format!("$ {}", path::basename(&cmd));
+                    s.output.append_line(&msg);
+                    anyos_std::fs::chdir(&proj.root);
+                    s.build_process = build::BuildProcess::spawn(&cmd, &args);
+                    if s.build_process.is_some() {
+                        start_build_timer();
+                    }
+                }
+            }
+            32 => { // Stop
+                let s = app();
+                if let Some(ref mut proc) = s.build_process {
+                    proc.kill();
+                    s.output.append_line("\n[Process killed]");
+                }
+                s.build_process = None;
+                stop_build_timer();
+            }
+            _ => {}
+        }
+    });
+
     // ── Initial git panel state ──
     {
         let s = app();

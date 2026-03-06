@@ -9,6 +9,7 @@
 use anyos_std::{Vec, vec};
 use anyos_std::i18n;
 use libanyui_client as ui;
+use ui::Widget;
 
 anyos_std::entry!(main);
 
@@ -246,6 +247,49 @@ fn main() {
     }
 
     highlight_active_tool(0);
+
+    // ── Menu bar ──
+    let mut mb = ui::MenuBarBuilder::new()
+        .menu(i18n::t("File"))
+            .item(1, i18n::t("New"), 0)
+            .item(2, i18n::t("Open..."), 0)
+            .item(3, i18n::t("Save..."), 0)
+            .separator()
+            .item(4, i18n::t("Quit"), 0)
+        .end_menu()
+        .menu(i18n::t("Edit"))
+            .item(10, i18n::t("Clear Canvas"), 0)
+        .end_menu()
+        .menu(i18n::t("Tools"))
+            .item(20, i18n::t("Pencil"), 0)
+            .item(21, i18n::t("Brush"), 0)
+            .item(22, i18n::t("Eraser"), 0)
+            .item(23, i18n::t("Line"), 0)
+            .item(24, i18n::t("Rect"), 0)
+            .item(25, i18n::t("Ellipse"), 0)
+            .item(26, i18n::t("Fill"), 0)
+            .item(27, i18n::t("Picker"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = ui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => { app().canvas.clear(0xFFFFFFFF); }
+            2 => { open_file(); }
+            3 => { save_file(); }
+            4 => ui::quit(),
+            10 => { app().canvas.clear(0xFFFFFFFF); }
+            20 => { app().tool = Tool::Pencil; app().status_tool.set_text(tool_name(0)); highlight_active_tool(0); }
+            21 => { app().tool = Tool::Brush; app().status_tool.set_text(tool_name(1)); highlight_active_tool(1); }
+            22 => { app().tool = Tool::Eraser; app().status_tool.set_text(tool_name(2)); highlight_active_tool(2); }
+            23 => { app().tool = Tool::Line; app().status_tool.set_text(tool_name(3)); highlight_active_tool(3); }
+            24 => { app().tool = Tool::Rect; app().status_tool.set_text(tool_name(4)); highlight_active_tool(4); }
+            25 => { app().tool = Tool::Ellipse; app().status_tool.set_text(tool_name(5)); highlight_active_tool(5); }
+            26 => { app().tool = Tool::Fill; app().status_tool.set_text(tool_name(6)); highlight_active_tool(6); }
+            27 => { app().tool = Tool::Picker; app().status_tool.set_text(tool_name(7)); highlight_active_tool(7); }
+            _ => {}
+        }
+    });
 
     // ── Register callbacks ───────────────────────────────────────────
 

@@ -1158,3 +1158,92 @@ impl IoHandler for Ide {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_cd_image(blocks: u32) -> Vec<u8> {
+        let mut image = vec![0u8; blocks as usize * ATAPI_SECTOR_SIZE];
+        for block in 0..blocks as usize {
+            for offset in 0..ATAPI_SECTOR_SIZE {
+                image[block * ATAPI_SECTOR_SIZE + offset] =
+                    ((block as u32).wrapping_mul(17).wrapping_add(offset as u32)) as u8;
+            }
+        }
+        image
+    }
+
+    fn issue_atapi_read_10(ide: &mut Ide, lba: u32, blocks: u16, byte_count_limit: u16) {
+        ide.attach_slave(build_cd_image(128));
+        ide.write(0x1F6, 1, 0xB0).unwrap();
+        ide.write(0x1F4, 1, (byte_count_limit & 0xFF) as u32).unwrap();
+        ide.write(0x1F5, 1, (byte_count_limit >> 8) as u32).unwrap();
+        ide.write(0x1F7, 1, CMD_PACKET as u32).unwrap();
+
+        let packet = [
+            PKT_READ_10,
+            0,
+            (lba >> 24) as u8,
+            (lba >> 16) as u8,
+            (lba >> 8) as u8,
+            lba as u8,
+            0,
+            (blocks >> 8) as u8,
+            blocks as u8,
+            0,
+            0,
+            0,
+        ];
+        for chunk in packet.chunks_exact(2) {
+            let word = u16::from_le_bytes([chunk[0], chunk[1]]);
+            ide.write(0x1F0, 2, word as u32).unwrap();
+        }
+    }
+
+    fn read_atapi_data_chunks(ide: &mut Ide) -> Vec<u8> {
+        let mut data = Vec::new();
+        loop {
+            let status = ide.read(0x1F7, 1).unwrap() as u8;
+            if status & SR_DRQ == 0 {
+                break;
+            }
+
+            let chunk_len = ide.read(0x1F4, 1).unwrap() as usize
+                | ((ide.read(0x1F5, 1).unwrap() as usize) << 8);
+            assert!(chunk_len > 0);
+
+            for _ in 0..(chunk_len / 2) {
+                let word = ide.read(0x1F0, 2).unwrap() as u16;
+                data.extend_from_slice(&word.to_le_bytes());
+            }
+            if (chunk_len & 1) != 0 {
+                data.push(ide.read(0x1F0, 1).unwrap() as u8);
+            }
+        }
+        data
+    }
+
+    fn expected_cd_bytes(lba: u32, blocks: u16) -> Vec<u8> {
+        let image = build_cd_image(128);
+        let start = lba as usize * ATAPI_SECTOR_SIZE;
+        let end = start + blocks as usize * ATAPI_SECTOR_SIZE;
+        image[start..end].to_vec()
+    }
+
+    #[test]
+    fn atapi_read_10_preserves_multiblock_data_across_chunks() {
+        let mut ide = Ide::new();
+        issue_atapi_read_10(&mut ide, 47, 11, ATAPI_SECTOR_SIZE as u16);
+        let data = read_atapi_data_chunks(&mut ide);
+        assert_eq!(data, expected_cd_bytes(47, 11));
+    }
+
+    #[test]
+    fn atapi_read_10_preserves_data_with_smaller_chunk_limit() {
+        let mut ide = Ide::new();
+        issue_atapi_read_10(&mut ide, 13, 4, 512);
+        let data = read_atapi_data_chunks(&mut ide);
+        assert_eq!(data, expected_cd_bytes(13, 4));
+    }
+}

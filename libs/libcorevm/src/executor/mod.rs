@@ -31,99 +31,6 @@ use crate::registers::{GprIndex, SegReg};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 static STI_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
-#[cfg(feature = "host_test")]
-static BOOTPARAM_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
-#[cfg(feature = "host_test")]
-static BOOTPARAM_SCAN_DONE: AtomicU32 = AtomicU32::new(0);
-
-#[cfg(feature = "host_test")]
-fn trace_bootparams_write(cpu: &Cpu, linear: u64, phys: u64, size: OperandSize, val: u64) {
-    const BASES: &[u64] = &[0x0001_0000, 0x0009_0000];
-    const OFF_SETUP_HDR: u64 = 0x1F1;
-    const OFF_HDRS_SIG: u64 = 0x202;
-    const OFF_E820_COUNT: u64 = 0x1E8;
-    const OFF_E820_TABLE: u64 = 0x2D0;
-    const E820_TABLE_SIZE: u64 = 8 * 24;
-    const HEADER_WINDOW: u64 = 0x30;
-
-    let end = phys.wrapping_add(size.bytes() as u64);
-    let interesting = BASES.iter().any(|base| {
-        let hits_hdr = phys < (*base + OFF_HDRS_SIG + 4) && end > (*base + OFF_SETUP_HDR);
-        let hits_count = phys < (*base + OFF_E820_COUNT + 4) && end > (*base + OFF_E820_COUNT);
-        let hits_e820 = phys < (*base + OFF_E820_TABLE + E820_TABLE_SIZE)
-            && end > (*base + OFF_E820_TABLE);
-        let hits_setup_window = phys < (*base + OFF_SETUP_HDR + HEADER_WINDOW)
-            && end > (*base + OFF_SETUP_HDR);
-        hits_hdr || hits_count || hits_e820 || hits_setup_window
-    });
-    if !interesting {
-        return;
-    }
-    if cpu.regs.segment(SegReg::Cs).selector == 0xF000 && cpu.regs.rip == 0x0000_1922 {
-        return;
-    }
-    if val == 0 {
-        return;
-    }
-
-    let slot = BOOTPARAM_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
-    if slot >= 160 {
-        return;
-    }
-
-    println!(
-        "[bootparams] rip={:08X} cs={:04X} lin={:08X} phys={:08X} size={} val={:016X}",
-        cpu.regs.rip as u32,
-        cpu.regs.segment(SegReg::Cs).selector,
-        linear as u32,
-        phys as u32,
-        size.bytes(),
-        val
-    );
-}
-
-#[cfg(feature = "host_test")]
-fn scan_bootparam_candidates(memory: &GuestMemory) {
-    if BOOTPARAM_SCAN_DONE.fetch_add(1, Ordering::Relaxed) != 0 {
-        return;
-    }
-
-    let rd8 = |addr: u64| memory.read_u8(addr).unwrap_or(0);
-    let rd32 = |addr: u64| {
-        (rd8(addr) as u32)
-            | ((rd8(addr.wrapping_add(1)) as u32) << 8)
-            | ((rd8(addr.wrapping_add(2)) as u32) << 16)
-            | ((rd8(addr.wrapping_add(3)) as u32) << 24)
-    };
-
-    let mut found = 0u32;
-    for cand in (0x1000u64..0x20_0000u64).step_by(0x10) {
-        if rd32(cand.wrapping_add(0x202)) != 0x5372_6448 {
-            continue;
-        }
-        let count = rd8(cand.wrapping_add(0x1E8));
-        if !(1..=32).contains(&count) {
-            continue;
-        }
-        let first_base = rd32(cand.wrapping_add(0x2D0));
-        let first_len = rd32(cand.wrapping_add(0x2D8));
-        println!(
-            "[bootparams-scan] cand=0x{:08X} e820_entries={} first_base=0x{:08X} first_len=0x{:08X}",
-            cand as u32,
-            count,
-            first_base,
-            first_len,
-        );
-        found += 1;
-        if found >= 8 {
-            break;
-        }
-    }
-
-    if found == 0 {
-        println!("[bootparams-scan] no candidate with HdrS + plausible e820 count found");
-    }
-}
 
 // ── Public entry point ──
 
@@ -145,10 +52,6 @@ pub fn execute(
     io: &mut IoDispatch,
     interrupts: &mut InterruptController,
 ) -> Result<()> {
-    #[cfg(feature = "host_test")]
-    if cpu.mode == Mode::ProtectedMode && (cpu.regs.rip & 0xFFFF_FFF0) == 0xC08D_F670 {
-        scan_bootparam_candidates(memory);
-    }
     match inst.opcode_map {
         OpcodeMap::Primary => exec_primary(cpu, inst, memory, mmu, io, interrupts),
         OpcodeMap::Secondary => exec_secondary(cpu, inst, memory, mmu, io, interrupts),
@@ -1172,8 +1075,6 @@ pub fn translate_and_write(
     memory: &mut GuestMemory,
 ) -> Result<()> {
     let phys = mmu.translate_linear(linear, cpu.regs.cr3, AccessType::Write, cpu.regs.cpl, memory)?;
-    #[cfg(feature = "host_test")]
-    trace_bootparams_write(cpu, linear, phys, size, val);
     match size {
         OperandSize::Byte => memory.write_u8(phys, val as u8),
         OperandSize::Word => memory.write_u16(phys, val as u16),

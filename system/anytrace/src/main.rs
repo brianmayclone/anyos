@@ -220,6 +220,47 @@ fn main() {
         s.output_panel.log("anyTrace started.");
     }
 
+    // ── Menu bar ──
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu("File")
+            .item(1, "Quit", 0)
+        .end_menu()
+        .menu("Debug")
+            .item(10, "Attach", 0)
+            .item(11, "Detach", 0)
+            .separator()
+            .item(12, "Continue", 0)
+            .item(13, "Step Over", 0)
+            .item(14, "Step Into", 0)
+            .item(15, "Break", 0)
+        .end_menu()
+        .menu("View")
+            .item(20, "Registers", 0)
+            .item(21, "Stack", 0)
+            .item(22, "Memory", 0)
+            .item(23, "Disassembly", 0)
+            .item(24, "Timeline", 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = anyui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(move |e| {
+        match e.item_id {
+            1 => anyui::quit(),
+            10 => on_attach(),
+            11 => on_detach(),
+            12 => on_resume(),
+            13 => on_step_into(),  // Step Over (same as step into for now)
+            14 => on_step_into(),
+            15 => on_suspend(),
+            20 => { /* Registers tab — could switch top_tabs in the future */ }
+            21 => { /* Stack tab */ }
+            22 => { /* Memory tab */ }
+            23 => { /* Disassembly tab */ }
+            24 => { /* Timeline tab */ }
+            _ => {}
+        }
+    });
+
     // ════════════════════════════════════════════════════════════════
     //  Event wiring
     // ════════════════════════════════════════════════════════════════

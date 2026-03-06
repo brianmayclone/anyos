@@ -202,6 +202,73 @@ pub fn flags_sub(op1: u64, op2: u64, result: u64, size: OperandSize) -> u64 {
     f
 }
 
+/// Compute flags for ADC operation with an explicit carry-in bit.
+#[inline]
+pub fn flags_adc(op1: u64, op2: u64, carry_in: bool, result: u64, size: OperandSize) -> u64 {
+    let mask = size.mask();
+    let sign = size.sign_bit();
+    let carry = u128::from(carry_in);
+    let a = (op1 & mask) as u128;
+    let b = (op2 & mask) as u128;
+    let res = result & mask;
+    let res_u128 = res as u128;
+    let b_eff = ((b + carry) & (mask as u128)) as u64;
+
+    let mut f = 0u64;
+    if a + b + carry > mask as u128 {
+        f |= CF;
+    }
+    if parity(res) {
+        f |= PF;
+    }
+    if ((a & 0xF) + (b & 0xF) + carry) > 0xF {
+        f |= AF;
+    }
+    if res == 0 {
+        f |= ZF;
+    }
+    if (res & sign) != 0 {
+        f |= SF;
+    }
+    if ((!(op1 ^ b_eff) & ((op1 & mask) ^ res_u128 as u64)) & sign) != 0 {
+        f |= OF;
+    }
+    f
+}
+
+/// Compute flags for SBB operation with an explicit borrow-in bit.
+#[inline]
+pub fn flags_sbb(op1: u64, op2: u64, borrow_in: bool, result: u64, size: OperandSize) -> u64 {
+    let mask = size.mask();
+    let sign = size.sign_bit();
+    let borrow = u128::from(borrow_in);
+    let a = (op1 & mask) as u128;
+    let b = (op2 & mask) as u128;
+    let res = result & mask;
+    let b_eff = ((b + borrow) & (mask as u128)) as u64;
+
+    let mut f = 0u64;
+    if a < b + borrow {
+        f |= CF;
+    }
+    if parity(res) {
+        f |= PF;
+    }
+    if (a & 0xF) < ((b & 0xF) + borrow) {
+        f |= AF;
+    }
+    if res == 0 {
+        f |= ZF;
+    }
+    if (res & sign) != 0 {
+        f |= SF;
+    }
+    if ((((op1 & mask) ^ b_eff) & ((op1 & mask) ^ res)) & sign) != 0 {
+        f |= OF;
+    }
+    f
+}
+
 /// Compute flags for logic operations (AND/OR/XOR/TEST).
 ///
 /// CF and OF are always cleared. AF is undefined (we clear it).
@@ -356,4 +423,25 @@ pub fn eval_cc(cc: u8, rflags: u64) -> bool {
     };
     // Odd condition codes are the negation of even ones
     if (cc & 1) != 0 { !result } else { result }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{flags_adc, flags_sbb, OperandSize, CF, PF, ZF};
+
+    #[test]
+    fn adc_preserves_carry_out_when_rhs_plus_carry_wraps() {
+        let flags = flags_adc(0xFFFF_FFFF, 0x0000_0000, true, 0x0000_0000, OperandSize::Dword);
+        assert_ne!(flags & CF, 0);
+        assert_ne!(flags & ZF, 0);
+        assert_ne!(flags & PF, 0);
+    }
+
+    #[test]
+    fn sbb_preserves_borrow_out_when_rhs_plus_borrow_wraps() {
+        let flags = flags_sbb(0x0000_0000, 0xFFFF_FFFF, true, 0x0000_0000, OperandSize::Dword);
+        assert_ne!(flags & CF, 0);
+        assert_ne!(flags & ZF, 0);
+        assert_ne!(flags & PF, 0);
+    }
 }

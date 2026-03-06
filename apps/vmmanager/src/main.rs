@@ -2564,6 +2564,34 @@ fn main() {
 
     win.add(&toolbar);
 
+    // ── Menu bar ───────────────────────────────────────────────────
+
+    let mut mb = anyui::MenuBarBuilder::new()
+        .menu("File")
+            .item(1, "New VM", 0)
+            .separator()
+            .item(2, "Quit", 0)
+        .end_menu()
+        .menu("VM")
+            .item(10, "Start", 0)
+            .item(11, "Stop", 0)
+            .separator()
+            .item(12, "Settings", 0)
+        .end_menu();
+    let menu_data = mb.build();
+
+    let menu_bar = anyui::MenuBar::set(win.id(), menu_data);
+    menu_bar.on_item(|e| {
+        match e.item_id {
+            1  => create_new_vm(),
+            2  => anyui::quit(),
+            10 => start_selected_vm(),
+            11 => stop_selected_vm(),
+            12 => open_settings_dialog(),
+            _  => {}
+        }
+    });
+
     // ── Status bar (DOCK_BOTTOM) ───────────────────────────────────
 
     let status_bar = anyui::View::new();

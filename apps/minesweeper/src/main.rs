@@ -8,6 +8,7 @@
 
 use anyos_std::i18n;
 use libanyui_client as ui;
+use ui::Widget;
 
 anyos_std::entry!(main);
 
@@ -260,6 +261,23 @@ fn main() {
             timer_label,
         });
     }
+
+    // ── Menu bar ──────────────────────────────────────────────────────
+    let mut mb = ui::MenuBarBuilder::new()
+        .menu(i18n::t("Game"))
+            .item(1, i18n::t("New Game"), 0)
+            .separator()
+            .item(2, i18n::t("Quit"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = ui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => new_game(),
+            2 => ui::quit(),
+            _ => {}
+        }
+    });
 
     game().render();
 

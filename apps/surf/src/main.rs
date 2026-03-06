@@ -694,6 +694,44 @@ fn main() {
     // Initialize background network worker queues.
     net_worker::init();
 
+    // ── Menu bar ──
+    let mut mb = ui_lib::MenuBarBuilder::new()
+        .menu(i18n::t("File"))
+            .item(1, i18n::t("New Tab"), 0)
+            .item(2, i18n::t("Close Tab"), 0)
+            .separator()
+            .item(3, i18n::t("Quit"), 0)
+        .end_menu()
+        .menu(i18n::t("Edit"))
+            .item(10, i18n::t("Cut"), 0)
+            .item(11, i18n::t("Copy"), 0)
+            .item(12, i18n::t("Paste"), 0)
+        .end_menu()
+        .menu(i18n::t("View"))
+            .item(20, i18n::t("Reload"), 0)
+            .separator()
+            .item(21, i18n::t("DevTools Console"), 0)
+        .end_menu()
+        .menu(i18n::t("Navigate"))
+            .item(30, i18n::t("Back"), 0)
+            .item(31, i18n::t("Forward"), 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = ui_lib::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => ui::add_tab(),
+            2 => { let st = state(); ui::close_tab(st.active_tab); }
+            3 => ui_lib::quit(),
+            10 | 11 | 12 => {} // handled by focused control
+            20 => tab::reload(),
+            21 => ui::toggle_devtools(),
+            30 => tab::go_back(),
+            31 => tab::go_forward(),
+            _ => {}
+        }
+    });
+
     // ── Button callbacks ─────────────────────────────────────────────────────
     let st = state();
     st.btn_back.on_click(|_| { tab::go_back(); });

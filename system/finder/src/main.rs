@@ -2386,6 +2386,7 @@ fn main() {
     grid.set_row_height(26);
     grid.set_header_height(28);
     grid.set_selection_mode(ui::SELECTION_MULTI);
+    grid.set_margin(4, 4, 0, 0);
 
     // Context menu — attached to grid AND added to parent panel (required!)
     let ctx_menu = ui::ContextMenu::new("Open|Copy Path");
@@ -2404,6 +2405,7 @@ fn main() {
     let icon_flow = ui::FlowPanel::new();
     icon_flow.set_dock(ui::DOCK_FILL);
     icon_flow.set_color(tc.window_bg);
+    icon_flow.set_padding(8, 8, 8, 8);
     icon_scroll.add(&icon_flow);
 
     content_panel.add(&icon_scroll);
