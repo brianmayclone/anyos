@@ -68,6 +68,150 @@ struct FreeBlock {
 static mut HEAP_FREE_LIST: *mut FreeBlock = core::ptr::null_mut();
 static mut HEAP_INITIALIZED: bool = false;
 
+// --- Per-CPU free list cache ---
+// Each CPU maintains a local free list that can be accessed without the global
+// lock (interrupts are disabled). This eliminates contention on the global
+// heap lock for the common case where a CPU's local cache has a suitable block.
+
+const PERCPU_MAX_CPUS: usize = 16;
+/// Maximum bytes cached per CPU before flushing half back to the global list.
+const PERCPU_CACHE_MAX: usize = 256 * 1024; // 256 KiB
+
+/// Per-CPU free list head and cached byte count.
+/// Accessed ONLY with interrupts disabled (no lock needed — single CPU).
+struct PerCpuCache {
+    free_list: *mut FreeBlock,
+    cached_bytes: usize,
+}
+
+impl PerCpuCache {
+    const fn new() -> Self {
+        PerCpuCache {
+            free_list: core::ptr::null_mut(),
+            cached_bytes: 0,
+        }
+    }
+}
+
+static mut PERCPU_CACHES: [PerCpuCache; PERCPU_MAX_CPUS] = {
+    const INIT: PerCpuCache = PerCpuCache::new();
+    [INIT; PERCPU_MAX_CPUS]
+};
+
+/// Try to allocate from the per-CPU local free list (lock-free, IF=0).
+/// Returns null if no suitable block found locally.
+unsafe fn percpu_alloc(cpu: usize, size: usize) -> *mut u8 {
+    if cpu >= PERCPU_MAX_CPUS {
+        return core::ptr::null_mut();
+    }
+    let cache = &mut PERCPU_CACHES[cpu];
+    let mut prev: *mut FreeBlock = core::ptr::null_mut();
+    let mut current = cache.free_list;
+
+    while !current.is_null() {
+        let block_size = (*current).size;
+        if block_size >= size {
+            if block_size >= size + core::mem::size_of::<FreeBlock>() + 8 {
+                // Split
+                let new_block = (current as *mut u8).add(size) as *mut FreeBlock;
+                (*new_block).size = block_size - size;
+                (*new_block).next = (*current).next;
+                if prev.is_null() {
+                    cache.free_list = new_block;
+                } else {
+                    (*prev).next = new_block;
+                }
+                cache.cached_bytes -= size;
+            } else {
+                // Use entire block
+                if prev.is_null() {
+                    cache.free_list = (*current).next;
+                } else {
+                    (*prev).next = (*current).next;
+                }
+                cache.cached_bytes -= block_size;
+            }
+            return current as *mut u8;
+        }
+        prev = current;
+        current = (*current).next;
+    }
+    core::ptr::null_mut()
+}
+
+/// Add a freed block to the per-CPU local cache. If the cache exceeds
+/// PERCPU_CACHE_MAX, flush half of it back to the global free list.
+/// Caller must hold IF=0 (interrupts disabled).
+unsafe fn percpu_dealloc(cpu: usize, ptr: *mut u8, size: usize) {
+    if cpu >= PERCPU_MAX_CPUS {
+        // Fallback: insert directly into global list (caller holds global lock)
+        dealloc_inner(ptr, core::alloc::Layout::from_size_align_unchecked(size, 16));
+        return;
+    }
+    let cache = &mut PERCPU_CACHES[cpu];
+    let block = ptr as *mut FreeBlock;
+    (*block).size = size;
+    (*block).next = cache.free_list;
+    cache.free_list = block;
+    cache.cached_bytes += size;
+
+    // Flush half back to global if over threshold
+    if cache.cached_bytes > PERCPU_CACHE_MAX {
+        percpu_flush_half(cpu);
+    }
+}
+
+/// Move roughly half the per-CPU cache blocks to the global free list.
+/// MUST be called with the global heap lock held.
+unsafe fn percpu_flush_half(cpu: usize) {
+    let cache = &mut PERCPU_CACHES[cpu];
+    let target = cache.cached_bytes / 2;
+    let mut flushed = 0usize;
+
+    while !cache.free_list.is_null() && flushed < target {
+        let block = cache.free_list;
+        cache.free_list = (*block).next;
+        let bsize = (*block).size;
+        cache.cached_bytes -= bsize;
+        flushed += bsize;
+
+        // Insert into global free list (sorted by address)
+        let mut prev: *mut FreeBlock = core::ptr::null_mut();
+        let mut cur = HEAP_FREE_LIST;
+        while !cur.is_null() && (cur as usize) < (block as usize) {
+            prev = cur;
+            cur = (*cur).next;
+        }
+        (*block).next = cur;
+        if prev.is_null() {
+            HEAP_FREE_LIST = block;
+        } else {
+            (*prev).next = block;
+        }
+        // Coalesce with neighbors
+        if !prev.is_null() && (prev as *mut u8).add((*prev).size) == block as *mut u8 {
+            (*prev).size += (*block).size;
+            (*prev).next = (*block).next;
+            // Check prev+next
+            if !(*prev).next.is_null()
+                && (prev as *mut u8).add((*prev).size) == (*prev).next as *mut u8
+            {
+                let next = (*prev).next;
+                (*prev).size += (*next).size;
+                (*prev).next = (*next).next;
+            }
+        } else {
+            if !(*block).next.is_null()
+                && (block as *mut u8).add((*block).size) == (*block).next as *mut u8
+            {
+                let next = (*block).next;
+                (*block).size += (*next).size;
+                (*block).next = (*next).next;
+            }
+        }
+    }
+}
+
 impl LockedHeap {
     const fn new() -> Self {
         LockedHeap {
@@ -128,6 +272,19 @@ unsafe impl GlobalAlloc for LockedHeap {
             return core::ptr::null_mut();
         }
 
+        let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(16));
+
+        // Fast path: try per-CPU cache first (no global lock needed)
+        let flags = crate::arch::hal::save_and_disable_interrupts();
+        let cpu = crate::arch::hal::cpu_id();
+        let result = percpu_alloc(cpu, size);
+        if !result.is_null() {
+            crate::arch::hal::restore_interrupt_state(flags);
+            return result;
+        }
+        crate::arch::hal::restore_interrupt_state(flags);
+
+        // Slow path: acquire global lock
         let flags = self.acquire();
         let mut result = alloc_inner(layout);
 
@@ -144,6 +301,41 @@ unsafe impl GlobalAlloc for LockedHeap {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(16));
+
+        // Validate: pointer must be within heap bounds
+        if !is_in_heap(ptr as usize) {
+            return; // Leak instead of corrupting
+        }
+
+        // Fast path: add to per-CPU cache (no global lock)
+        let flags = crate::arch::hal::save_and_disable_interrupts();
+        let cpu = crate::arch::hal::cpu_id();
+        if cpu < PERCPU_MAX_CPUS {
+            let cache = &mut PERCPU_CACHES[cpu];
+            let block = ptr as *mut FreeBlock;
+            (*block).size = size;
+            (*block).next = cache.free_list;
+            cache.free_list = block;
+            cache.cached_bytes += size;
+
+            if cache.cached_bytes > PERCPU_CACHE_MAX {
+                // Need global lock to flush back
+                crate::arch::hal::restore_interrupt_state(flags);
+                let flags = self.acquire();
+                let cpu = crate::arch::hal::cpu_id();
+                if cpu < PERCPU_MAX_CPUS {
+                    percpu_flush_half(cpu);
+                }
+                self.release(flags);
+            } else {
+                crate::arch::hal::restore_interrupt_state(flags);
+            }
+            return;
+        }
+        crate::arch::hal::restore_interrupt_state(flags);
+
+        // Fallback: global dealloc
         let flags = self.acquire();
         dealloc_inner(ptr, layout);
         self.release(flags);

@@ -37,9 +37,12 @@ pub struct CpuFeatures {
     pub rdrand: bool,
     pub pcid: bool,
     pub mwait: bool,
+    pub vmx: bool,
     // Extended leaf 0x80000001 EDX
     pub nx: bool,
     pub syscall: bool,
+    // Extended leaf 0x80000001 ECX
+    pub svm: bool,
     // Leaf 7 EBX
     pub avx2: bool,
     pub erms: bool,
@@ -72,8 +75,10 @@ impl CpuFeatures {
             rdrand: false,
             pcid: false,
             mwait: false,
+            vmx: false,
             nx: false,
             syscall: false,
+            svm: false,
             avx2: false,
             erms: false,
             fsgsbase: false,
@@ -141,13 +146,15 @@ pub fn detect() {
     f.rdrand = ecx & (1 << 30) != 0;
     f.pcid = ecx & (1 << 17) != 0;
     f.mwait = ecx & (1 << 3) != 0;
+    f.vmx = ecx & (1 << 5) != 0;
 
-    // Extended leaf 0x80000001: NX, SYSCALL
+    // Extended leaf 0x80000001: NX, SYSCALL, SVM
     let max_ext = cpuid(0x80000000, 0).0;
     if max_ext >= 0x80000001 {
-        let (_eax, _ebx, _ecx, edx) = cpuid(0x80000001, 0);
+        let (_eax, _ebx, ecx_ext, edx) = cpuid(0x80000001, 0);
         f.nx = edx & (1 << 20) != 0;
         f.syscall = edx & (1 << 11) != 0;
+        f.svm = ecx_ext & (1 << 2) != 0;
     }
 
     // Extended leaves 0x80000002-4: brand string (3 × 16 = 48 bytes)
@@ -221,6 +228,10 @@ pub fn detect() {
     crate::serial_println!(
         "  ERMS={} FSGSBASE={} BMI1={} BMI2={} SMEP={}",
         f.erms, f.fsgsbase, f.bmi1, f.bmi2, f.smep
+    );
+    crate::serial_println!(
+        "  VMX(VT-x)={} SVM(AMD-V)={}",
+        f.vmx, f.svm
     );
 
     // Assert mandatory features for x86_64

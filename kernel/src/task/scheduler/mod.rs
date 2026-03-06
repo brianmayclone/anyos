@@ -107,6 +107,11 @@ fn clamp_priority(priority: u8, context: &str) -> u8 {
 
 static SCHEDULER: Spinlock<Option<Scheduler>> = Spinlock::new(None);
 
+/// TID → index hash cache. 256 slots, open-addressing with modulo hash.
+/// Only accessed under the SCHEDULER lock — no synchronization needed.
+const TID_CACHE_SIZE: usize = 256;
+static mut TID_INDEX_CACHE: [(u32, usize); TID_CACHE_SIZE] = [(0, 0); TID_CACHE_SIZE];
+
 // =============================================================================
 // Per-CPU atomics (lock-free, read by ISR/panic handlers)
 // =============================================================================
@@ -394,10 +399,34 @@ impl Scheduler {
         sched
     }
 
-    /// Find a thread's index in the threads Vec by TID. O(n) linear scan.
+    /// Find a thread's index in the threads Vec by TID.
+    /// O(1) via hash cache, O(n) fallback on miss/collision.
     #[inline]
     fn find_idx(&self, tid: u32) -> Option<usize> {
-        self.threads.iter().position(|t| t.tid == tid)
+        // Fast path: check hash cache (safe: only accessed under SCHEDULER lock)
+        let slot = (tid as usize) % TID_CACHE_SIZE;
+        let (cached_tid, cached_idx) = unsafe { TID_INDEX_CACHE[slot] };
+        if cached_tid == tid && cached_idx < self.threads.len()
+            && self.threads[cached_idx].tid == tid
+        {
+            return Some(cached_idx);
+        }
+        // Slow path: linear scan + populate cache
+        if let Some(idx) = self.threads.iter().position(|t| t.tid == tid) {
+            unsafe { TID_INDEX_CACHE[slot] = (tid, idx); }
+            return Some(idx);
+        }
+        None
+    }
+
+    /// Invalidate all TID cache entries (called after swap_remove in reap).
+    #[inline]
+    fn invalidate_tid_cache(&mut self) {
+        unsafe {
+            for slot in TID_INDEX_CACHE.iter_mut() {
+                *slot = (0, 0);
+            }
+        }
     }
 
     /// Get index of the current thread on the given CPU.
@@ -554,6 +583,8 @@ impl Scheduler {
                             }
                         }
                     }
+                    // Invalidate TID→index cache (indices shifted by swap_remove)
+                    self.invalidate_tid_cache();
                     if reap_count < 8 {
                         reaped[reap_count] = Some(thread);
                         reap_count += 1;
