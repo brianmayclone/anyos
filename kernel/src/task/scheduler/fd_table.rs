@@ -85,7 +85,7 @@ pub fn current_fd_set_nonblock(fd: u32, nonblock: bool) {
 pub fn set_thread_fd_table(tid: u32, table: FdTable) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.fd_table = table;
     }

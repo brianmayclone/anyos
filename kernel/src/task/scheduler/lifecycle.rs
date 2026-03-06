@@ -20,7 +20,7 @@ pub fn exit_current(code: u32) {
     let mut guard = SCHEDULER.lock();
     {
         let cpu_id = get_cpu_id();
-        let sched = guard.as_mut().expect("Scheduler not initialized");
+        let sched = match guard.as_mut() { Some(s) => s, None => return };
         tid = sched.per_cpu[cpu_id].current_tid.unwrap_or(0);
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
             if let Some(idx) = sched.current_idx(cpu_id) {
@@ -313,7 +313,7 @@ pub fn kill_thread(tid: u32) -> u32 {
     let mut guard = SCHEDULER.lock();
     {
         let cpu_id = get_cpu_id();
-        let sched = guard.as_mut().expect("Scheduler not initialized");
+        let sched = match guard.as_mut() { Some(s) => s, None => return u32::MAX };
 
         let target_idx = match sched.find_idx(tid) {
             Some(idx) => idx,

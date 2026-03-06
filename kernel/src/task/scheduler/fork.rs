@@ -60,7 +60,7 @@ pub fn current_thread_fork_snapshot() -> Option<ForkSnapshot> {
 /// Set the FPU state on a thread (for fork child).
 pub fn set_thread_fpu_state(tid: u32, data: &[u8; crate::task::thread::FPU_STATE_SIZE]) {
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.fpu_state.data = *data;
     }
@@ -69,7 +69,7 @@ pub fn set_thread_fpu_state(tid: u32, data: &[u8; crate::task::thread::FPU_STATE
 /// Set mmap_next on a thread (for fork child).
 pub fn set_thread_mmap_next(tid: u32, val: u32) {
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.mmap_next = val;
     }
@@ -78,7 +78,7 @@ pub fn set_thread_mmap_next(tid: u32, val: u32) {
 /// Set user_pages count on a thread (for fork child).
 pub fn set_thread_user_pages(tid: u32, val: u32) {
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.user_pages = val;
     }
@@ -93,7 +93,7 @@ pub fn exec_update_thread(
     user_pages: u32,
 ) {
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.page_directory = Some(new_pd);
         #[cfg(target_arch = "x86_64")]

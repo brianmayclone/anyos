@@ -14,7 +14,7 @@ pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
         let thread = Box::new(Thread::new(entry, priority, name));
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SPAWN);
         let mut sched = SCHEDULER.lock();
-        let sched = sched.as_mut().expect("Scheduler not initialized");
+        let sched = match sched.as_mut() { Some(s) => s, None => return 0 };
         sched.add_thread(thread)
     };
     // Debug output OUTSIDE the lock — serial I/O takes ~3ms at 115200 baud
@@ -34,7 +34,7 @@ pub fn spawn_blocked(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
         let thread = Box::new(Thread::new(entry, priority, name));
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SPAWN_BLOCKED);
         let mut sched = SCHEDULER.lock();
-        let sched = sched.as_mut().expect("Scheduler not initialized");
+        let sched = match sched.as_mut() { Some(s) => s, None => return 0 };
         sched.add_thread_blocked(thread)
     };
     // Debug output OUTSIDE the lock (serial I/O is slow).
@@ -80,7 +80,7 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
     {
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_CREATE_THREAD);
         let mut guard = SCHEDULER.lock();
-        let sched = guard.as_mut().expect("Scheduler not initialized");
+        let sched = match guard.as_mut() { Some(s) => s, None => return 0 };
         if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
             thread.page_directory = Some(pd);
             thread.pcid = parent_pcid; // Same address space = same PCID

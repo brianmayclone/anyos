@@ -564,13 +564,19 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     let (actual_base, load_bias) = if link_base == 0 {
         // Base-0 .so: allocate dynamically in DLIB range
         let total_vsize = if has_rw {
-            rw_vaddr + rw_memsz // vaddrs are 0-relative
+            match rw_vaddr.checked_add(rw_memsz) {
+                Some(v) => v,
+                None => {
+                    crate::serial_println!("  dload: rw_vaddr+rw_memsz overflow");
+                    return None;
+                }
+            }
         } else {
             (ro_filesz + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
         };
         let aligned_size = (total_vsize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let b = NEXT_DYNAMIC_BASE.fetch_add(aligned_size, Ordering::SeqCst);
-        if b + aligned_size > 0x0800_0000 {
+        if b.checked_add(aligned_size).map_or(true, |end| end > 0x0800_0000) {
             crate::serial_println!("  dload: address space exhausted");
             return None;
         }

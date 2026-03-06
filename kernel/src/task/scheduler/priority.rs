@@ -45,7 +45,7 @@ pub fn try_wake_thread(tid: u32) -> bool {
 pub fn set_thread_critical(tid: u32) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.critical = true;
         crate::serial_println!("  Thread '{}' (TID={}) marked as critical", thread.name_str(), tid);
@@ -57,7 +57,7 @@ pub fn current_thread_capabilities() -> crate::task::capabilities::CapSet {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
-    let sched = guard.as_ref().expect("Scheduler not initialized");
+    let sched = match guard.as_ref() { Some(s) => s, None => return 0 };
     if let Some(idx) = sched.current_idx(cpu_id) {
         return sched.threads[idx].capabilities;
     }
@@ -68,7 +68,7 @@ pub fn current_thread_capabilities() -> crate::task::capabilities::CapSet {
 pub fn set_thread_capabilities(tid: u32, caps: crate::task::capabilities::CapSet) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.capabilities = caps;
     }
@@ -79,7 +79,7 @@ pub fn current_thread_uid() -> u16 {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
-    let sched = guard.as_ref().expect("Scheduler not initialized");
+    let sched = match guard.as_ref() { Some(s) => s, None => return 0 };
     if let Some(idx) = sched.current_idx(cpu_id) {
         return sched.threads[idx].uid;
     }
@@ -90,7 +90,7 @@ pub fn current_thread_uid() -> u16 {
 pub fn current_thread_gid() -> u16 {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
-    let sched = guard.as_ref().expect("Scheduler not initialized");
+    let sched = match guard.as_ref() { Some(s) => s, None => return 0 };
     if let Some(idx) = sched.current_idx(cpu_id) {
         return sched.threads[idx].gid;
     }
@@ -100,7 +100,7 @@ pub fn current_thread_gid() -> u16 {
 /// Set the user and group IDs for a specific thread.
 pub fn set_thread_identity(tid: u32, uid: u16, gid: u16) {
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.uid = uid;
         thread.gid = gid;
@@ -111,7 +111,7 @@ pub fn set_thread_identity(tid: u32, uid: u16, gid: u16) {
 /// Used by SYS_AUTHENTICATE to propagate identity to all threads in a process.
 pub fn set_process_identity(tid: u32, uid: u16, gid: u16) {
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     // Find the page directory of the target thread
     let pd = {
         let thread = match sched.threads.iter().find(|t| t.tid == tid) {

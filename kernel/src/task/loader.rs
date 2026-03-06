@@ -424,7 +424,11 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
 
         // Allocate pages for this segment
         let page_start = vaddr & !0xFFF;
-        let page_end = (vaddr + memsz + PAGE_SIZE - 1) & !0xFFF;
+        let seg_total = match vaddr.checked_add(memsz).and_then(|v| v.checked_add(PAGE_SIZE - 1)) {
+            Some(v) => v,
+            None => return Err("ELF64 segment vaddr+memsz overflow"),
+        };
+        let page_end = seg_total & !0xFFF;
         let num_pages = (page_end - page_start) / PAGE_SIZE;
 
         // Derive PTE flags from ELF p_flags:
@@ -448,7 +452,10 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
             }
         }
 
-        let seg_end = vaddr + memsz;
+        let seg_end = match vaddr.checked_add(memsz) {
+            Some(v) => v,
+            None => return Err("ELF64 segment vaddr+memsz overflow"),
+        };
         if seg_end > max_vaddr_end {
             max_vaddr_end = seg_end;
         }
@@ -497,11 +504,14 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
 
             // Zero all allocated pages first
             let page_start = (vaddr & !0xFFF) as usize;
-            let page_end = (vaddr as usize + memsz + 0xFFF) & !0xFFF;
+            let page_end = match (vaddr as usize).checked_add(memsz).and_then(|v| v.checked_add(0xFFF)) {
+                Some(v) => v & !0xFFF,
+                None => continue,
+            };
             core::ptr::write_bytes(page_start as *mut u8, 0, page_end - page_start);
 
             // Copy file data over the zeroed pages
-            if filesz > 0 && offset + filesz <= data.len() {
+            if filesz > 0 && offset.checked_add(filesz).map_or(false, |end| end <= data.len()) {
                 core::ptr::copy_nonoverlapping(
                     data.as_ptr().add(offset),
                     vaddr as *mut u8,
@@ -569,7 +579,11 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
         }
 
         let page_start = vaddr & !0xFFF;
-        let page_end = (vaddr + memsz + PAGE_SIZE - 1) & !0xFFF;
+        let seg_total = match vaddr.checked_add(memsz).and_then(|v| v.checked_add(PAGE_SIZE - 1)) {
+            Some(v) => v,
+            None => return Err("ELF32 segment vaddr+memsz overflow"),
+        };
+        let page_end = seg_total & !0xFFF;
         let num_pages = (page_end - page_start) / PAGE_SIZE;
 
         // Derive PTE flags from ELF p_flags (same logic as ELF64 above).
@@ -590,7 +604,10 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
             }
         }
 
-        let seg_end = vaddr + memsz;
+        let seg_end = match vaddr.checked_add(memsz) {
+            Some(v) => v,
+            None => return Err("ELF32 segment vaddr+memsz overflow"),
+        };
         if seg_end > max_vaddr_end {
             max_vaddr_end = seg_end;
         }
@@ -634,10 +651,13 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
             let offset = phdr.p_offset as usize;
 
             let page_start = (vaddr & !0xFFF) as usize;
-            let page_end = (vaddr as usize + memsz + 0xFFF) & !0xFFF;
+            let page_end = match (vaddr as usize).checked_add(memsz).and_then(|v| v.checked_add(0xFFF)) {
+                Some(v) => v & !0xFFF,
+                None => continue,
+            };
             core::ptr::write_bytes(page_start as *mut u8, 0, page_end - page_start);
 
-            if filesz > 0 && offset + filesz <= data.len() {
+            if filesz > 0 && offset.checked_add(filesz).map_or(false, |end| end <= data.len()) {
                 core::ptr::copy_nonoverlapping(
                     data.as_ptr().add(offset),
                     vaddr as *mut u8,

@@ -10,7 +10,7 @@ use crate::task::thread::ThreadState;
 pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.page_directory = Some(pd);
         #[cfg(target_arch = "x86_64")]
@@ -33,7 +33,7 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
 /// Set the architecture mode for a thread.
 pub fn set_thread_arch_mode(tid: u32, mode: crate::task::thread::ArchMode) {
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.arch_mode = mode;
     }
@@ -188,7 +188,7 @@ pub fn set_current_thread_mmap_next(val: u32) {
 pub fn set_thread_args(tid: u32, args: &str) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_ARGS);
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         let bytes = args.as_bytes();
         let len = bytes.len().min(255);
@@ -218,7 +218,7 @@ pub fn current_thread_args(buf: &mut [u8]) -> usize {
 pub fn set_thread_cwd(tid: u32, cwd: &str) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_CWD);
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         let bytes = cwd.as_bytes();
         let len = bytes.len().min(511);
@@ -248,7 +248,7 @@ pub fn current_thread_cwd(buf: &mut [u8]) -> usize {
 pub fn set_thread_stdout_pipe(tid: u32, pipe_id: u32) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_PIPE);
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.stdout_pipe = pipe_id;
     }
@@ -271,7 +271,7 @@ pub fn current_thread_stdout_pipe() -> u32 {
 pub fn set_thread_stdin_pipe(tid: u32, pipe_id: u32) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_PIPE);
     let mut guard = SCHEDULER.lock();
-    let sched = guard.as_mut().expect("Scheduler not initialized");
+    let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.stdin_pipe = pipe_id;
     }

@@ -5,6 +5,25 @@
 //! steal work from the busiest CPU. Lazy FPU/SSE/AVX switching via CR0.TS avoids
 //! saving/restoring XSAVE state (832 bytes with AVX) on every context switch —
 //! only threads that actually use FPU/SSE/AVX pay the cost.
+//!
+//! # Lock Hierarchy (acquire in this order — NEVER reverse)
+//!
+//! 1. `SCHEDULER`           — global scheduler state, thread list, run queues
+//! 2. `DEFERRED_PD_DESTROY` — deferred page directory destruction queue
+//! 3. `SHARED_REGIONS`      — IPC shared memory regions (ipc/shared_memory.rs)
+//! 4. `VMA_REGISTRY`        — per-process virtual memory area tracking
+//! 5. `VFS`                 — virtual filesystem layer
+//! 6. `ALLOCATOR`           — physical frame allocator
+//! 7. `HEAP_ALLOCATOR`      — kernel heap (acquired implicitly by alloc/dealloc)
+//!
+//! **Rules:**
+//! - NEVER allocate (Box, Vec, etc.) while holding SCHEDULER — this acquires
+//!   HEAP_ALLOCATOR, and under contention the spin can take 100+ ms.
+//! - NEVER call `schedule()` while holding any lock above SCHEDULER.
+//! - IRQ handlers must use `deferred_wake()` (lock-free) instead of
+//!   `wake_thread()` to avoid acquiring SCHEDULER in interrupt context.
+//! - `destroy_user_page_directory` acquires ALLOCATOR; call it OUTSIDE
+//!   SCHEDULER (use deferred_pd_destroy queue).
 
 // --- Submodules ---
 mod run_queue;
@@ -187,10 +206,12 @@ static mut SCRATCH_FPU: [AlignedFpuBuf; MAX_CPUS] = {
 // the SCHEDULER lock.  This avoids blocking `SCHEDULER.lock()` in IRQ context,
 // which can cause RSP corruption when the IRQ handler stalls on a contended lock.
 
-/// Up to 4 deferred-wake TIDs (0 = empty slot).
-static DEFERRED_WAKE_TIDS: [AtomicU32; 4] = {
+/// Up to 16 deferred-wake TIDs (0 = empty slot).
+/// 4 slots were insufficient under heavy IRQ load (keyboard + mouse + network
+/// + timer can all fire within one tick), causing lost wakes.
+static DEFERRED_WAKE_TIDS: [AtomicU32; 16] = {
     const INIT: AtomicU32 = AtomicU32::new(0);
-    [INIT; 4]
+    [INIT; 16]
 };
 
 /// Enqueue a TID for deferred wake (called from IRQ context, lock-free).
@@ -934,7 +955,15 @@ fn schedule_inner(from_timer: bool) {
 
         // --- Cache commonly-used indices (eliminates 10+ redundant find_idx calls) ---
         let idle_tid = sched.idle_tid[cpu_id];
-        let idle_idx = sched.find_idx(idle_tid).expect("idle thread missing");
+        let idle_idx = match sched.find_idx(idle_tid) {
+            Some(i) => i,
+            None => {
+                crate::serial_println!("FATAL: idle thread TID {} missing on CPU {}", idle_tid, cpu_id);
+                drop(guard);
+                PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
+                return;
+            }
+        };
         let outgoing_tid = sched.per_cpu[cpu_id].current_tid;
         let outgoing_is_idle = outgoing_tid == Some(idle_tid);
         let outgoing_idx = if outgoing_is_idle {
@@ -973,7 +1002,7 @@ fn schedule_inner(from_timer: bool) {
                     sched.threads[idx].last_cpu = cpu_id;
                     let pri = sched.threads[idx].priority;
                     sched.per_cpu[cpu_id].run_queue.enqueue(
-                        outgoing_tid.unwrap(), pri);
+                        outgoing_tid.unwrap_or(0), pri);
                 }
             }
         }
@@ -1031,7 +1060,7 @@ fn schedule_inner(from_timer: bool) {
                         None
                     } else if let Some(prev_idx) = outgoing_idx {
                         // Use cached outgoing_idx (same thread, avoids redundant find_idx)
-                        let prev_tid = outgoing_tid.unwrap();
+                        let prev_tid = outgoing_tid.unwrap_or(0);
                         let old_ctx = &mut sched.threads[prev_idx].context as *mut CpuContext;
                         let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
                         let old_fpu = sched.threads[prev_idx].fpu_state.data.as_mut_ptr();
