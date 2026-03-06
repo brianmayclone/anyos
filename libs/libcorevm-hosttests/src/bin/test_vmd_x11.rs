@@ -10,7 +10,7 @@ use libcorevm::{
     corevm_create_ex, corevm_debug_take_output, corevm_destroy, corevm_get_last_error,
     corevm_get_instruction_count, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rip,
     corevm_get_segment_selector, corevm_fw_cfg_add_file, corevm_ide_attach_slave,
-    corevm_jit_enable, corevm_jit_stats, corevm_load_binary, corevm_load_rom,
+    corevm_cache_stats, corevm_jit_enable, corevm_jit_stats, corevm_load_binary, corevm_load_rom,
     corevm_ps2_key_press, corevm_ps2_key_release,
     corevm_run, corevm_serial_take_output, corevm_set_rip, corevm_setup_ide, corevm_setup_pci_bus,
     corevm_setup_standard_devices, corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
@@ -781,13 +781,25 @@ fn main() {
     let mut run_calls: u64 = 0;
     let mut last_ic: u64 = 0;
     let mut last_calls: u64 = 0;
-    let mut diag_lines = vec![String::new(); 3];
+    let mut diag_lines = vec![String::new(); 4];
+    let mut last_cache_hits: u64 = 0;
+    let mut last_cache_misses: u64 = 0;
     let mut last_text_hash: u64 = 0;
     let mut need_redraw = true;
+    let mut exit_halted: u64 = 0;
+    let mut exit_exception: u64 = 0;
+    let mut exit_limit: u64 = 0;
+    let mut exit_other: u64 = 0;
 
     while !STOP_REQUESTED.load(Ordering::SeqCst) {
         run_calls = run_calls.saturating_add(1);
         let exit_code = corevm_run(vm.0, cfg.batch);
+        match exit_code {
+            0 => exit_halted += 1,
+            1 => exit_exception += 1,
+            2 => exit_limit += 1,
+            _ => exit_other += 1,
+        }
 
         let text = take_text_output(vm.0);
         if !text.is_empty() {
@@ -861,11 +873,22 @@ fn main() {
                 rip as u32
             );
             diag_lines[1] = format!("IPC={:.1} MIPS={:.2} ic={}", ipc, mips, ic);
-            diag_lines[2] = if cfg.jit {
+            let mut ch = 0u64;
+            let mut cm = 0u64;
+            let mut ce = 0u64;
+            corevm_cache_stats(vm.0, &mut ch, &mut cm, &mut ce);
+            let dch = ch.saturating_sub(last_cache_hits);
+            let dcm = cm.saturating_sub(last_cache_misses);
+            let hit_rate = if dch + dcm > 0 { dch as f64 / (dch + dcm) as f64 * 100.0 } else { 0.0 };
+            last_cache_hits = ch;
+            last_cache_misses = cm;
+            diag_lines[2] = format!("cache: {:.1}% hit ({}/{}) entries={}", hit_rate, dch, dcm, ce);
+            diag_lines[3] = if cfg.jit {
                 format!("JIT b={} n={} f={}", jit_blocks, jit_native, jit_fallback)
             } else {
                 "JIT off".to_string()
             };
+            // eprintln!("[diag] {} | {} | {} | {} | exits: hlt={} exc={} lim={} oth={}", diag_lines[0], diag_lines[1], diag_lines[2], diag_lines[3], exit_halted, exit_exception, exit_limit, exit_other);
             last_ic = ic;
             last_calls = run_calls;
             last_overlay_update = now;

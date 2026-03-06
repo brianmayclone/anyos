@@ -303,6 +303,12 @@ struct VmInstance {
     debug_port_ptr: *mut devices::debug_port::DebugPort,
     /// True once an external runner starts driving PIT ticks explicitly.
     pit_is_externally_clocked: bool,
+    /// TSC frequency in Hz (calibrated at startup, host_test only).
+    #[cfg(feature = "host_test")]
+    tsc_freq: u64,
+    /// Remainder TSC ticks from last PIT advancement (host_test only).
+    #[cfg(feature = "host_test")]
+    pit_tsc_remainder: u64,
 }
 
 impl Drop for VmInstance {
@@ -381,10 +387,36 @@ pub extern "C" fn corevm_create_ex(ram_size_mb: u32, vcpu_count: u32) -> u64 {
         fw_cfg_ptr: ptr::null_mut(),
         debug_port_ptr: ptr::null_mut(),
         pit_is_externally_clocked: false,
+        #[cfg(feature = "host_test")]
+        tsc_freq: calibrate_tsc_freq(),
+        #[cfg(feature = "host_test")]
+        pit_tsc_remainder: 0,
     });
     let h = Box::into_raw(instance) as u64;
     vm_log!("VM created (handle=0x{:X})", h);
     h
+}
+
+/// Read the CPU timestamp counter.
+#[cfg(feature = "host_test")]
+#[inline(always)]
+fn rdtsc() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    unsafe { core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nostack, nomem)); }
+    (hi as u64) << 32 | lo as u64
+}
+
+/// Calibrate TSC frequency by measuring rdtsc over a short sleep.
+#[cfg(feature = "host_test")]
+fn calibrate_tsc_freq() -> u64 {
+    let t0 = rdtsc();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let t1 = rdtsc();
+    let elapsed = t1.wrapping_sub(t0);
+    let freq = elapsed * 100; // 10ms -> 1s
+    vm_log!("TSC freq calibrated: {} Hz ({:.2} GHz)", freq, freq as f64 / 1e9);
+    freq
 }
 
 /// Destroy a VM instance and free all associated resources.
@@ -596,14 +628,27 @@ pub extern "C" fn corevm_get_vcpu_count(handle: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
     let vm = unsafe { vm_from_handle(handle) };
-    const RUN_SLICE_INSTS: u64 = 2048;
-    const PIT_INSTS_PER_TICK: u64 = 64;
+    const RUN_SLICE_INSTS: u64 = 4096;
 
     let mut exit = ExitReason::InstructionLimit;
     let mut remaining = max_instructions;
+
+    // Wall-clock PIT: use rdtsc to advance PIT at real 1.193182 MHz rate.
+    // This decouples timer behavior from emulation speed.
+    #[cfg(feature = "host_test")]
+    let pit_t0 = rdtsc();
+    #[cfg(feature = "host_test")]
+    let mut pit_tsc_accum: u64 = 0;
+
+    // Instruction-based fallback for no_std (anyOS kernel).
+    #[cfg(not(feature = "host_test"))]
     let mut pit_inst_accum: u64 = 0;
+    #[cfg(not(feature = "host_test"))]
+    const PIT_INSTS_PER_TICK: u64 = 64;
 
     loop {
+        route_deliverable_pic_irq(vm);
+
         let slice = if max_instructions == 0 {
             max_instructions
         } else {
@@ -623,16 +668,39 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
             }
         }
 
-        // Advance PIT continuously during run() so guests that poll PIT
-        // inside tight loops can observe timer progress within a batch.
+        // Advance PIT using wall-clock time (host_test) or instruction count (no_std).
         if ran > 0 && !vm.pit_ptr.is_null() && !vm.pit_is_externally_clocked {
-            pit_inst_accum = pit_inst_accum.saturating_add(ran);
-            let pit_ticks = (pit_inst_accum / PIT_INSTS_PER_TICK) as u32;
-            pit_inst_accum %= PIT_INSTS_PER_TICK;
-            if pit_ticks > 0 {
-                let fires = unsafe { (*vm.pit_ptr).advance(pit_ticks) };
-                if fires > 0 {
-                    inject_irq_line(vm, 0);
+            #[cfg(feature = "host_test")]
+            {
+                let now = rdtsc();
+                let elapsed_tsc = now.wrapping_sub(pit_t0).saturating_sub(pit_tsc_accum);
+                // Convert TSC ticks to PIT ticks: PIT runs at 1193182 Hz.
+                // tsc_freq is cycles/second. pit_ticks = elapsed * 1193182 / tsc_freq.
+                // Use a fixed estimate: modern CPUs ~3 GHz. We calibrate via TSC_FREQ.
+                let tsc_freq = vm.tsc_freq;
+                if tsc_freq > 0 {
+                    let pit_ticks = (elapsed_tsc as u128 * 1_193_182 / tsc_freq as u128) as u32;
+                    if pit_ticks > 0 {
+                        pit_tsc_accum = pit_tsc_accum.wrapping_add(
+                            (pit_ticks as u128 * tsc_freq as u128 / 1_193_182) as u64
+                        );
+                        let fires = unsafe { (*vm.pit_ptr).advance(pit_ticks) };
+                        if fires > 0 {
+                            inject_irq_line(vm, 0);
+                        }
+                    }
+                }
+            }
+            #[cfg(not(feature = "host_test"))]
+            {
+                pit_inst_accum = pit_inst_accum.saturating_add(ran);
+                let pit_ticks = (pit_inst_accum / PIT_INSTS_PER_TICK) as u32;
+                pit_inst_accum %= PIT_INSTS_PER_TICK;
+                if pit_ticks > 0 {
+                    let fires = unsafe { (*vm.pit_ptr).advance(pit_ticks) };
+                    if fires > 0 {
+                        inject_irq_line(vm, 0);
+                    }
                 }
             }
         }
@@ -640,6 +708,16 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
         // The ACPI PM timer must be free-running even when the guest polls it.
         if ran > 0 && !vm.acpi_pm_ptr.is_null() {
             unsafe { (*vm.acpi_pm_ptr).advance(ran) };
+        }
+
+        // Check for keyboard controller system reset (0xFE to port 0x64).
+        if !vm.ps2_ptr.is_null() {
+            let ps2 = unsafe { &mut *vm.ps2_ptr };
+            if ps2.reset_requested {
+                // Don't clear — let corevm_run exit handler detect it.
+                exit = ExitReason::StopRequested;
+                break;
+            }
         }
 
         if max_instructions == 0 {
@@ -686,8 +764,15 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
             3
         }
         ExitReason::StopRequested => {
-            vm_log!("VM stop requested");
-            4
+            // Check if this was triggered by PS/2 system reset.
+            if !vm.ps2_ptr.is_null() && unsafe { (*vm.ps2_ptr).reset_requested } {
+                unsafe { (*vm.ps2_ptr).reset_requested = false };
+                vm_log!("PS/2 system reset requested");
+                5
+            } else {
+                vm_log!("VM stop requested");
+                4
+            }
         }
     }
 }
@@ -1580,17 +1665,16 @@ pub extern "C" fn corevm_pic_raise_irq(handle: u64, irq: u8) {
 /// from 8259 PIC to IO-APIC during early boot. Deliverable vectors from either
 /// path are queued into the CPU interrupt controller.
 fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
-    let mut delivered = false;
-
     // Legacy 8259 PIC path.
     if !vm.pic_ptr.is_null() {
         let pic = unsafe { &mut *vm.pic_ptr };
         pic.raise_irq(irq);
+        // Immediately check if the PIC has a deliverable vector and queue it.
+        // The CPU run loop will deliver it when IF=1 (via pending_interrupt).
         if let Some(vector) = pic.get_interrupt_vector() {
             let ack_irq = pic.irq_for_vector(vector).unwrap_or(irq);
             pic.acknowledge(ack_irq);
             vm.engine.interrupts.raise_irq(vector);
-            delivered = true;
         }
     }
 
@@ -1599,10 +1683,27 @@ fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
         let ioapic = unsafe { &mut *vm.ioapic_ptr };
         if let Some(vector) = ioapic.route_irq(irq) {
             vm.engine.interrupts.raise_irq(vector);
-            delivered = true;
         }
     }
+}
 
+fn route_deliverable_pic_irq(vm: &mut VmInstance) {
+    if vm.pic_ptr.is_null() {
+        return;
+    }
+    if vm.engine.interrupts.interrupt_shadow {
+        return;
+    }
+    if (vm.engine.cpu.regs.rflags & flags::IF) == 0 {
+        return;
+    }
+
+    let pic = unsafe { &mut *vm.pic_ptr };
+    if let Some(vector) = pic.get_interrupt_vector() {
+        let ack_irq = pic.irq_for_vector(vector).unwrap_or(0);
+        pic.acknowledge(ack_irq);
+        vm.engine.interrupts.raise_irq(vector);
+    }
 }
 
 /// Get the vector number of the highest-priority pending interrupt.
@@ -1940,5 +2041,29 @@ pub extern "C" fn corevm_jit_stats(
     }
     if !code_buffer_used.is_null() {
         unsafe { *code_buffer_used = jit.code_buffer_used() as u32 };
+    }
+}
+
+/// Query decode-cache statistics.
+///
+/// Writes cache hits, misses, and current entry count to the provided
+/// output pointers. Any pointer may be null (skipped).
+#[no_mangle]
+pub extern "C" fn corevm_cache_stats(
+    handle: u64,
+    hits: *mut u64,
+    misses: *mut u64,
+    entries: *mut u64,
+) {
+    let vm = unsafe { vm_from_handle(handle) };
+    let cache = &vm.engine.cpu.decode_cache;
+    if !hits.is_null() {
+        unsafe { *hits = cache.hits() };
+    }
+    if !misses.is_null() {
+        unsafe { *misses = cache.misses() };
+    }
+    if !entries.is_null() {
+        unsafe { *entries = cache.len() as u64 };
     }
 }

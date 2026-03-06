@@ -19,7 +19,7 @@ use libcorevm::{
     corevm_pic_diag_state, corevm_read_linear_u8, corevm_read_phys_u8,
     corevm_fw_cfg_add_file, corevm_ide_attach_slave, corevm_load_binary, corevm_load_rom,
     corevm_ps2_key_press, corevm_ps2_key_release, corevm_set_rip,
-    corevm_run, corevm_serial_take_output,
+    corevm_reset, corevm_run, corevm_serial_take_output,
     corevm_setup_ide, corevm_setup_pci_bus, corevm_setup_standard_devices, corevm_debug_take_output,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
 };
@@ -1435,8 +1435,8 @@ fn main() {
             1 => {
                 let err = last_error(vm.0);
                 let rip = corevm_get_last_error_rip(vm.0);
-                eprintln!("[test-vmd] exception at rip=0x{rip:X}: {err}");
-                std::process::exit(1);
+                eprintln!("[test-vmd] fatal exception at rip=0x{rip:X}: {err}");
+                break;
             }
             2 => {}
             3 => {
@@ -1446,6 +1446,10 @@ fn main() {
             4 => {
                 eprintln!("[test-vmd] stop-requested exit");
                 break;
+            }
+            5 => {
+                eprintln!("[test-vmd] PS/2 system reset — resetting VM");
+                corevm_reset(vm.0);
             }
             _ => {
                 eprintln!("[test-vmd] unexpected exit code {exit_code}");

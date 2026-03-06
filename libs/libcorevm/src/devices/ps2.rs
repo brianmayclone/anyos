@@ -52,6 +52,8 @@ pub struct Ps2Controller {
     /// Whether the keyboard is expecting a parameter byte for a
     /// multi-byte device command (e.g., 0xED set LEDs, 0xF0 scancode set).
     kbd_expecting_param: Option<u8>,
+    /// Set when the guest sends the system reset command (0xFE to port 0x64).
+    pub reset_requested: bool,
 }
 
 /// Status register bit masks.
@@ -74,6 +76,7 @@ impl Ps2Controller {
             keyboard_buffer: VecDeque::new(),
             write_to_mouse: false,
             kbd_expecting_param: None,
+            reset_requested: false,
         }
     }
 
@@ -368,6 +371,10 @@ impl IoHandler for Ps2Controller {
                     0xD4 => {
                         // Next byte written to port 0x60 goes to the mouse.
                         self.expecting_data = Some(0xD4);
+                    }
+                    0xFE => {
+                        // System reset — pulse CPU reset line.
+                        self.reset_requested = true;
                     }
                     _ => {
                         // Unknown controller command — ignore.
