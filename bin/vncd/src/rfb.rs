@@ -22,6 +22,7 @@
 //! `CMD_INJECT_KEY`.  Mouse events go via `CMD_INJECT_POINTER`.
 
 use anyos_std::net;
+use anyos_std::ipc;
 use anyos_std::process;
 use anyos_std::sys;
 use anyos_std::println;
@@ -1077,6 +1078,12 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     // Adaptive frame interval: fast when active, slow when idle.
     let mut consecutive_clean: u32 = 0;
 
+    // Clipboard state: subscribe to compositor channel for clipboard polling.
+    let sub_id = ipc::evt_chan_subscribe(comp_chan, 0);
+    let mut last_clipboard: anyos_std::Vec<u8> = anyos_std::Vec::new();
+    let mut last_clipboard_check: u32 = 0;
+    const CLIPBOARD_POLL_MS: u32 = 500;
+
     // Direct framebuffer access: after the first capture_screen call maps
     // the GPU framebuffer at 0x30000000, we read directly from that mapped
     // memory — no syscall, no 3 MB kernel→user copy per frame.
@@ -1169,17 +1176,27 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                     input::inject_pointer(comp_chan, x, y, buttons);
                     consecutive_clean = 0;
                 }
-                // ClientCutText (type 6): ignore.
+                // ClientCutText (type 6): forward to compositor clipboard.
                 6 => {
                     let mut cut_hdr = [0u8; 7];
                     if !recv_exact(sock, &mut cut_hdr) { net::tcp_close(sock); return; }
                     let text_len = from_be32(&cut_hdr[3..7]) as usize;
-                    let mut discard = [0u8; 64];
-                    let mut remaining = text_len;
-                    while remaining > 0 {
-                        let chunk = remaining.min(64);
-                        if !recv_exact(sock, &mut discard[..chunk]) { net::tcp_close(sock); return; }
-                        remaining -= chunk;
+                    if text_len == 0 {
+                        // Empty clipboard — nothing to do.
+                    } else if text_len > 65536 {
+                        // Too large — discard to prevent memory exhaustion.
+                        let mut discard = [0u8; 64];
+                        let mut remaining = text_len;
+                        while remaining > 0 {
+                            let chunk = remaining.min(64);
+                            if !recv_exact(sock, &mut discard[..chunk]) { net::tcp_close(sock); return; }
+                            remaining -= chunk;
+                        }
+                    } else {
+                        let mut text_buf: anyos_std::Vec<u8> = anyos_std::Vec::with_capacity(text_len);
+                        text_buf.resize(text_len, 0u8);
+                        if !recv_exact(sock, &mut text_buf) { net::tcp_close(sock); return; }
+                        crate::clipboard::set_compositor_clipboard(comp_chan, &text_buf);
                     }
                 }
                 _ => {
@@ -1264,7 +1281,32 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
             }
         }
 
-        // ── Phase C: sleep based on activity level ───────────────────────────
+        // ── Phase C: check for clipboard changes → send ServerCutText ──────
+        let clip_now = sys::uptime_ms();
+        if clip_now.wrapping_sub(last_clipboard_check) >= CLIPBOARD_POLL_MS {
+            last_clipboard_check = clip_now;
+            let mut clip_buf = [0u8; 4096];
+            let clip_len = crate::clipboard::get_compositor_clipboard(comp_chan, sub_id, &mut clip_buf);
+            if clip_len > 0 {
+                let clip_data = &clip_buf[..clip_len];
+                if clip_data != last_clipboard.as_slice() {
+                    last_clipboard.clear();
+                    last_clipboard.extend_from_slice(clip_data);
+                    // ServerCutText: type(1) + padding(3) + length(4) + text
+                    let mut msg: anyos_std::Vec<u8> = anyos_std::Vec::with_capacity(8 + clip_len);
+                    msg.push(3u8); // type = ServerCutText
+                    msg.push(0); msg.push(0); msg.push(0); // padding
+                    let len_bytes = (clip_len as u32).to_be_bytes();
+                    msg.extend_from_slice(&len_bytes);
+                    msg.extend_from_slice(clip_data);
+                    if !send_all(sock, &msg) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ── Phase D: sleep based on activity level ───────────────────────────
         // Active: short sleep to keep latency low while not busy-spinning.
         // Idle:   sleep the full idle interval — nothing is changing on screen.
         if consecutive_clean > IDLE_THRESHOLD {
@@ -1274,5 +1316,6 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
         }
     }
 
+    ipc::evt_chan_unsubscribe(comp_chan, sub_id);
     net::tcp_close(sock);
 }

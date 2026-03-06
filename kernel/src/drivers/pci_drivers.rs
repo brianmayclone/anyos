@@ -98,6 +98,17 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
         factory: |pci| crate::drivers::gpu::virtio_gpu::probe(pci),
         specificity: 2,
     },
+    // VirtIO Serial/Console (transitional + modern)
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1003 },
+        factory: |pci| crate::drivers::virtio::serial::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1043 },
+        factory: |pci| crate::drivers::virtio::serial::probe(pci),
+        specificity: 2,
+    },
     PciDriverEntry {
         match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x100E },
         factory: |pci| crate::drivers::network::e1000::probe(pci),

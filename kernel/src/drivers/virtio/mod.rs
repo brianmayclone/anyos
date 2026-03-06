@@ -3,6 +3,7 @@
 //! Provides PCI capability discovery, BAR mapping, device initialization,
 //! and notification for VirtIO devices over PCI modern transport (capabilities-based).
 
+pub mod serial;
 pub mod virtqueue;
 
 use crate::drivers::pci::{self, PciDevice};
