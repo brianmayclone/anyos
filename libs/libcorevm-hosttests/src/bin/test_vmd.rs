@@ -340,6 +340,33 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
     } else {
         0
     };
+    let max_pfn_mapped = if mode == 1 {
+        let a = 0xC0CE_1860u64;
+        (readb(a) as u32)
+            | ((readb(a.wrapping_add(1)) as u32) << 8)
+            | ((readb(a.wrapping_add(2)) as u32) << 16)
+            | ((readb(a.wrapping_add(3)) as u32) << 24)
+    } else {
+        0
+    };
+    let relocated_initrd_start = if mode == 1 {
+        let a = 0xC0CD_F054u64;
+        (readb(a) as u32)
+            | ((readb(a.wrapping_add(1)) as u32) << 8)
+            | ((readb(a.wrapping_add(2)) as u32) << 16)
+            | ((readb(a.wrapping_add(3)) as u32) << 24)
+    } else {
+        0
+    };
+    let relocated_initrd_end = if mode == 1 {
+        let a = 0xC0CD_F058u64;
+        (readb(a) as u32)
+            | ((readb(a.wrapping_add(1)) as u32) << 8)
+            | ((readb(a.wrapping_add(2)) as u32) << 16)
+            | ((readb(a.wrapping_add(3)) as u32) << 24)
+    } else {
+        0
+    };
     let mut pv_bytes = [0u8; 4];
     if mode == 1 && pv_ptr != 0 {
         for (i, b) in pv_bytes.iter_mut().enumerate() {
@@ -357,10 +384,81 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
     );
     let lapic_svr = (lapic & 0xFFFF_FFFF) as u32;
     let lapic_lvt_timer = (lapic >> 32) as u32;
+    let scan_boot_params = |hint: u64| -> Option<u64> {
+        let rd32_phys = |base: u64| -> u32 {
+            (corevm_read_phys_u8(handle, base) as u32)
+                | ((corevm_read_phys_u8(handle, base.wrapping_add(1)) as u32) << 8)
+                | ((corevm_read_phys_u8(handle, base.wrapping_add(2)) as u32) << 16)
+                | ((corevm_read_phys_u8(handle, base.wrapping_add(3)) as u32) << 24)
+        };
+        let is_boot_params = |base: u64| -> bool {
+            rd32_phys(base.wrapping_add(0x202)) == 0x5372_6448
+        };
+        if hint != 0 && hint < 0x10_0000 && is_boot_params(hint) {
+            return Some(hint);
+        }
+        for cand in (0x1000u64..0x10_0000u64).step_by(0x10) {
+            if is_boot_params(cand) {
+                return Some(cand);
+            }
+        }
+        None
+    };
     if mode == 1
         && (rip & 0xFFFF_FFF0) == 0xC08D_F670
         && !KERNEL_LOOP_DUMPED.swap(true, Ordering::SeqCst)
     {
+        let boot_params = scan_boot_params(0x0009_0000).unwrap_or(0x0009_0000);
+        let e820_entries = corevm_read_phys_u8(handle, boot_params.wrapping_add(0x1E8));
+        eprintln!(
+            "[test-vmd] zeropage@0x{:08X} e820_entries={}",
+            boot_params as u32,
+            e820_entries
+        );
+        if e820_entries == 0 {
+            let rd32 = |base: u64, off: u64| -> u32 {
+                (corevm_read_phys_u8(handle, base.wrapping_add(off)) as u32)
+                    | ((corevm_read_phys_u8(handle, base.wrapping_add(off + 1)) as u32) << 8)
+                    | ((corevm_read_phys_u8(handle, base.wrapping_add(off + 2)) as u32) << 16)
+                    | ((corevm_read_phys_u8(handle, base.wrapping_add(off + 3)) as u32) << 24)
+            };
+            for cand in (0x1000u64..0x10_0000u64).step_by(0x10) {
+                let count = corevm_read_phys_u8(handle, cand.wrapping_add(0x1E8));
+                if !(1..=8).contains(&count) {
+                    continue;
+                }
+                if rd32(cand, 0x2D0) == 0
+                    && rd32(cand, 0x2D4) == 0
+                    && rd32(cand, 0x2D8) == 0x0009_FC00
+                    && rd32(cand, 0x2DC) == 0
+                    && rd32(cand, 0x2E0) == 1
+                {
+                    eprintln!(
+                        "[test-vmd] zeropage candidate @0x{:08X} e820_entries={}",
+                        cand as u32,
+                        count
+                    );
+                    break;
+                }
+            }
+        }
+        for idx in 0..usize::from(e820_entries.min(8)) {
+            let base = boot_params.wrapping_add(0x2D0).wrapping_add((idx as u64) * 20);
+            let rd32 = |off: u64| -> u32 {
+                (corevm_read_phys_u8(handle, base.wrapping_add(off)) as u32)
+                    | ((corevm_read_phys_u8(handle, base.wrapping_add(off + 1)) as u32) << 8)
+                    | ((corevm_read_phys_u8(handle, base.wrapping_add(off + 2)) as u32) << 16)
+                    | ((corevm_read_phys_u8(handle, base.wrapping_add(off + 3)) as u32) << 24)
+            };
+            eprintln!(
+                "[test-vmd] zp_e820[{idx}] base={:08X}:{:08X} len={:08X}:{:08X} type={:08X}",
+                rd32(4),
+                rd32(0),
+                rd32(12),
+                rd32(8),
+                rd32(16)
+            );
+        }
         let base = 0xC08D_F650u64;
         let mut line = String::new();
         for i in 0..256u64 {
@@ -483,10 +581,10 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         let _ = idtr_base;
     }
     if mode == 1
-        && (rip & 0xFFFF_FFF0) == 0xC0C1_B170
+        && rip >= 0xC000_0000
         && !KERNEL_ENTRY2_DUMPED.swap(true, Ordering::SeqCst)
     {
-        let base = 0xC0C1_B100u64;
+        let base = (rip & !0xFF) as u64;
         let mut line = String::new();
         for i in 0..256u64 {
             if i % 16 == 0 {
@@ -504,6 +602,32 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         if !line.is_empty() {
             eprintln!("{line}");
         }
+        let boot_params = scan_boot_params(si as u64).unwrap_or(si as u64);
+        if boot_params != 0 && boot_params < 0x20_0000 {
+            let e820_entries = corevm_read_phys_u8(handle, boot_params.wrapping_add(0x1E8));
+            eprintln!(
+                "[test-vmd] boot_params=0x{:08X} e820_entries={}",
+                boot_params as u32,
+                e820_entries
+            );
+            for idx in 0..usize::from(e820_entries.min(8)) {
+                let base = boot_params.wrapping_add(0x2D0).wrapping_add((idx as u64) * 20);
+                let rd32 = |off: u64| -> u32 {
+                    (corevm_read_phys_u8(handle, base.wrapping_add(off)) as u32)
+                        | ((corevm_read_phys_u8(handle, base.wrapping_add(off + 1)) as u32) << 8)
+                        | ((corevm_read_phys_u8(handle, base.wrapping_add(off + 2)) as u32) << 16)
+                        | ((corevm_read_phys_u8(handle, base.wrapping_add(off + 3)) as u32) << 24)
+                };
+                eprintln!(
+                    "[test-vmd] e820[{idx}] base={:08X}:{:08X} len={:08X}:{:08X} type={:08X}",
+                    rd32(4),
+                    rd32(0),
+                    rd32(12),
+                    rd32(8),
+                    rd32(16)
+                );
+            }
+        }
         let mut chain = String::from("[test-vmd] ent2 stack chain:");
         for i in 0..16u64 {
             let a = stack_linear.wrapping_add(i * 4);
@@ -516,7 +640,7 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         eprintln!("{chain}");
     }
     eprintln!(
-        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} fs={:04X} fs_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} APIC_BASE={:08X} EFER={:08X} JIFF={:08X} LPJ={:08X} FSCAL={:08X} PVOP={:08X}[{:02X} {:02X} {:02X} {:02X}] LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X}] IRQP[0={:016X} 1={:016X}] IOAPIC[r0={:016X} r1={:016X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} fs={:04X} fs_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} APIC_BASE={:08X} EFER={:08X} JIFF={:08X} LPJ={:08X} FSCAL={:08X} MAXPFN={:08X} MAXBYTES={:08X} PVOP={:08X}[{:02X} {:02X} {:02X} {:02X}] INITRD_DST=[{:08X},{:08X}) LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X}] IRQP[0={:016X} 1={:016X}] IOAPIC[r0={:016X} r1={:016X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
         mode_name(mode),
         cpl,
         cs,
@@ -546,11 +670,15 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         jiffies,
         lpj_seed,
         fs_cal,
+        max_pfn_mapped,
+        max_pfn_mapped << 12,
         pv_ptr,
         pv_bytes[0],
         pv_bytes[1],
         pv_bytes[2],
         pv_bytes[3],
+        relocated_initrd_start,
+        relocated_initrd_end,
         lapic_svr,
         lapic_lvt_timer,
         lapic_init,
@@ -1128,6 +1256,12 @@ fn main() {
             last_auto_enter = Instant::now();
         }
         update_display_state(vm.0, &mut display);
+        let mode = corevm_get_mode(vm.0);
+        let cs = corevm_get_segment_selector(vm.0, 1);
+        let rip = corevm_get_rip(vm.0);
+        if mode == 1 && rip >= 0xC000_0000 && !KERNEL_ENTRY2_DUMPED.load(Ordering::SeqCst) {
+            dump_cpu_probe(vm.0, mode, cs, rip);
+        }
         if !interactive_ui {
             let meta = if display.in_text_mode {
                 format!("text cells={}", display.text_cells.len())
@@ -1143,9 +1277,6 @@ fn main() {
                 last_display_meta = meta;
                 last_display_sig = sig;
             } else if last_plain_diag.elapsed() >= Duration::from_secs(5) {
-                let mode = corevm_get_mode(vm.0);
-                let cs = corevm_get_segment_selector(vm.0, 1);
-                let rip = corevm_get_rip(vm.0);
                 eprintln!(
                     "[test-vmd] display steady: {} sig=0x{:016X} ic={} mode={} cs={:04X} rip={:08X}",
                     last_display_meta,

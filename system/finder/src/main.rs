@@ -735,7 +735,7 @@ fn open_entry(idx: usize) {
     if entry_type == TYPE_DIR {
         if is_app {
             let full_path = build_full_path(&s.cwd, &name);
-            process::spawn(&full_path, "");
+            process::launch_app(&full_path, "");
             return;
         }
         let new_path = build_full_path(&s.cwd, &name);
@@ -749,7 +749,7 @@ fn open_entry(idx: usize) {
         if !ext.is_empty() {
             if let Some(app_path) = s.mimetypes.app_for_ext(ext) {
                 let args = anyos_std::format!("\"{}\" {}", app_path, full_path);
-                process::spawn(app_path, &args);
+                process::launch_app(app_path, &args);
                 return;
             }
         }
@@ -1644,7 +1644,7 @@ fn show_open_with(idx: usize) {
 
             // Launch the app
             let args = anyos_std::format!("{} {}", app_path, full_path_ok);
-            process::spawn(app_path, &args);
+            process::launch_app(app_path, &args);
         }
         win.destroy();
     });
@@ -1656,7 +1656,7 @@ fn show_open_with(idx: usize) {
         if e.index != u32::MAX && (e.index as usize) < apps_dbl.len() {
             let app_path = apps_dbl[e.index as usize].bundle_path.as_str();
             let args = anyos_std::format!("{} {}", app_path, full_path_dbl);
-            process::spawn(app_path, &args);
+            process::launch_app(app_path, &args);
         }
         win.destroy();
     });

@@ -1,8 +1,6 @@
 //! Desktop manager — coordinates window management, menubar, wallpaper, cursor, and input.
 
-pub mod crash_dialog;
 pub mod cursors;
-pub mod desktop_icons;
 pub mod drawing;
 pub mod input;
 pub mod ipc;
@@ -136,8 +134,6 @@ pub struct Desktop {
     pub(crate) clipboard_data: Vec<u8>,
     /// Clipboard format: 0 = text/plain, 1 = text/uri-list.
     pub(crate) clipboard_format: u32,
-    /// Active crash dialogs (internal windows showing crash info).
-    pub(crate) crash_dialogs: Vec<crash_dialog::CrashDialog>,
     /// Volume HUD overlay (centered-bottom).
     pub(crate) volume_hud: volume_hud::VolumeHud,
     /// Cascading auto-placement state for new windows.
@@ -163,8 +159,6 @@ pub struct Desktop {
     pub(crate) logo_w: u32,
     pub(crate) logo_h: u32,
 
-    /// Desktop drive icons manager (macOS-style mounted volume icons).
-    pub(crate) desktop_icons: desktop_icons::DesktopIconManager,
     /// Cached clean wallpaper pixels (without icons), to avoid reloading from disk.
     pub(crate) wallpaper_pixel_cache: Vec<u32>,
     /// Double-click detection: timestamp of last click (uptime_ms).
@@ -227,7 +221,6 @@ impl Desktop {
             wallpaper_path_len: 0,
             clipboard_data: Vec::new(),
             clipboard_format: 0,
-            crash_dialogs: Vec::new(),
             volume_hud: volume_hud::VolumeHud::new(),
             cascade_x: 120,
             cascade_y: menubar_height() as i32 + 50,
@@ -238,7 +231,6 @@ impl Desktop {
             logo_black: Vec::new(),
             logo_w: 0,
             logo_h: 0,
-            desktop_icons: desktop_icons::DesktopIconManager::new(),
             wallpaper_pixel_cache: Vec::new(),
             last_click_time: 0,
             last_click_x: 0,
@@ -283,8 +275,7 @@ impl Desktop {
         self.prev_cursor_y = self.mouse_y;
     }
 
-    /// Draw the initial desktop (background + menubar). Desktop icons are
-    /// initialized separately after login via `init_desktop_icons()`.
+    /// Draw the initial desktop (background + menubar).
     pub fn init(&mut self) {
         self.load_menu_logos();
         self.load_user_wallpaper();
@@ -292,38 +283,7 @@ impl Desktop {
         self.compositor.damage_all();
     }
 
-    /// Initialize desktop drive icons. Call once after login succeeds.
-    pub fn init_desktop_icons(&mut self) {
-        let sw = self.screen_width;
-        self.desktop_icons.init(sw);
-        self.render_desktop_icons();
-        self.compositor.damage_all();
-    }
-
-    /// Render desktop icons onto the background layer.
-    pub(crate) fn render_desktop_icons(&mut self) {
-        let sw = self.screen_width;
-        let sh = self.screen_height;
-        let bg_id = self.bg_layer_id;
-        if let Some(bg_pixels) = self.compositor.layer_pixels(bg_id) {
-            self.desktop_icons.render_icons(bg_pixels, sw, sh);
-        }
-        self.compositor.mark_layer_dirty(bg_id);
-    }
-
-    /// Poll mounts and update desktop icons. Returns true if icons changed.
-    pub fn poll_desktop_icons(&mut self) -> bool {
-        let sw = self.screen_width;
-        if self.desktop_icons.poll_mounts(sw) {
-            // Mounts changed — reload wallpaper region and re-render icons
-            self.reload_wallpaper_and_icons();
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Reload wallpaper then render icons on top (used after icon changes).
+    /// Reload wallpaper (used after wallpaper changes or resolution change).
     pub(crate) fn reload_wallpaper_and_icons(&mut self) {
         // Restore clean wallpaper from in-memory cache (no disk I/O!)
         if !self.wallpaper_pixel_cache.is_empty() {
@@ -334,8 +294,6 @@ impl Desktop {
         } else {
             self.draw_gradient_background();
         }
-        // Re-render icons on fresh wallpaper
-        self.render_desktop_icons();
         self.compositor.damage_all();
     }
 
@@ -586,8 +544,6 @@ impl Desktop {
         path_buf[..len].copy_from_slice(&path.as_bytes()[..len]);
         let path_str = core::str::from_utf8(&path_buf[..len]).unwrap_or("");
         if self.load_wallpaper(path_str) {
-            // Re-render desktop icons on top of the fresh wallpaper
-            self.render_desktop_icons();
             self.compositor.damage_all();
         }
     }
@@ -817,8 +773,6 @@ impl Desktop {
             None => new_w * 4,
         };
 
-        self.desktop_icons.reposition_for_width(self.screen_width, new_w);
-
         self.screen_width = new_w;
         self.screen_height = new_h;
 
@@ -922,75 +876,14 @@ impl Desktop {
         self.focused_window
     }
 
-    // ── Crash Dialogs ──────────────────────────────────────────────────
-
-    /// Show a crash dialog for a terminated thread.
-    /// `report_buf` contains the raw CrashReport bytes from the kernel.
-    pub fn show_crash_dialog(&mut self, tid: u32, _exit_code: u32, report_buf: &[u8]) {
-        let report = unsafe {
-            &*(report_buf.as_ptr() as *const crash_dialog::CrashReport)
-        };
-
-        let content_h = crash_dialog::CrashDialog::from_report(0, report).content_height();
-        let flags = WIN_FLAG_NO_MINIMIZE | WIN_FLAG_NO_MAXIMIZE | WIN_FLAG_ALWAYS_ON_TOP;
-
-        // Center on screen
-        let x = (self.screen_width as i32 - 420) / 2;
-        let y = (self.screen_height as i32 - (content_h + title_bar_height()) as i32) / 2;
-
-        let win_id = self.create_window("Application Crashed", x, y, 420, content_h, flags, 0);
-
-        let dialog = crash_dialog::CrashDialog::from_report(win_id, report);
-
-        // Render the dialog content
-        let layer_id = self.windows.iter().find(|w| w.id == win_id).map(|w| w.layer_id).unwrap_or(0);
-        let full_h = content_h + title_bar_height();
-        if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
-            dialog.render(pixels, 420, full_h);
+    /// Emit EVT_FOCUS_CHANGED broadcast so the Shell can update the menu bar.
+    pub(crate) fn emit_focus_changed(&mut self, tid: u32, win_id: u32) {
+        if self.tray_ipc_events.len() < 256 {
+            self.tray_ipc_events.push((
+                None, // broadcast
+                [crate::ipc_protocol::EVT_FOCUS_CHANGED, tid, win_id, 0, 0],
+            ));
         }
-        self.compositor.mark_layer_dirty(layer_id);
-
-        self.crash_dialogs.push(dialog);
-    }
-
-    /// Check if a window click is on a crash dialog and handle it.
-    /// Returns true if the click was consumed by a crash dialog.
-    pub fn handle_crash_dialog_click(&mut self, window_id: u32, wx: i32, wy: i32) -> bool {
-        let dialog_idx = match self.crash_dialogs.iter().position(|d| d.window_id == window_id) {
-            Some(i) => i,
-            None => return false,
-        };
-
-        let action = self.crash_dialogs[dialog_idx].handle_click(wx, wy);
-        match action {
-            crash_dialog::CrashDialogAction::Dismiss => {
-                self.crash_dialogs.remove(dialog_idx);
-                self.destroy_window(window_id);
-            }
-            crash_dialog::CrashDialogAction::ToggleDetails => {
-                let new_h = self.crash_dialogs[dialog_idx].content_height();
-                // Resize the window
-                if let Some(win) = self.windows.iter_mut().find(|w| w.id == window_id) {
-                    win.content_height = new_h;
-                    let full_h = new_h + title_bar_height();
-                    let layer_id = win.layer_id;
-                    let cw = win.content_width;
-                    self.compositor.resize_layer(layer_id, cw, full_h);
-
-                    // Re-render chrome + dialog content
-                    if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
-                        window::pre_render_chrome_ex(
-                            pixels, cw, full_h, "Application Crashed", true,
-                            WIN_FLAG_NO_MINIMIZE | WIN_FLAG_NO_MAXIMIZE,
-                        );
-                        self.crash_dialogs[dialog_idx].render(pixels, cw, full_h);
-                    }
-                    self.compositor.mark_layer_dirty(layer_id);
-                }
-            }
-            crash_dialog::CrashDialogAction::None => {}
-        }
-        true
     }
 }
 

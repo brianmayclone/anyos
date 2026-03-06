@@ -51,6 +51,7 @@ i15_e820:
     push cx
     mov cx, 20
     push di
+    cld
     rep movsb                   ; DS:SI (segment 0) → ES:DI
     pop di
     pop cx
@@ -104,10 +105,12 @@ i15_e801:
     jbe .below_16
 
     mov cx, 15360
-    mov ax, cx
     sub eax, 0x1000000
     shr eax, 16
-    jmp .set
+    mov bx, ax
+    mov dx, ax
+    mov ax, cx
+    jmp .done
 
 .below_16:
     sub eax, 0x100000
@@ -116,11 +119,6 @@ i15_e801:
     xor bx, bx
     xor dx, dx
     jmp .done
-
-.set:
-    mov bx, ax
-    mov dx, ax
-    mov ax, cx
 
 .done:
     pop esi

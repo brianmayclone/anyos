@@ -290,6 +290,7 @@ struct VmInstance {
     // Null when the corresponding device has not been set up.
     pic_ptr: *mut devices::pic::PicPair,
     pit_ptr: *mut devices::pit::Pit,
+    acpi_pm_ptr: *mut devices::acpi::AcpiPm,
     ps2_ptr: *mut devices::ps2::Ps2Controller,
     serial_ptr: *mut devices::serial::Serial,
     svga_ptr: *mut devices::svga::Svga,
@@ -300,6 +301,8 @@ struct VmInstance {
     ide_ptr: *mut devices::ide::Ide,
     fw_cfg_ptr: *mut devices::fw_cfg::FwCfg,
     debug_port_ptr: *mut devices::debug_port::DebugPort,
+    /// True once an external runner starts driving PIT ticks explicitly.
+    pit_is_externally_clocked: bool,
 }
 
 impl Drop for VmInstance {
@@ -309,6 +312,7 @@ impl Drop for VmInstance {
         unsafe {
             if !self.pic_ptr.is_null() { let _ = Box::from_raw(self.pic_ptr); }
             if !self.pit_ptr.is_null() { let _ = Box::from_raw(self.pit_ptr); }
+            if !self.acpi_pm_ptr.is_null() { let _ = Box::from_raw(self.acpi_pm_ptr); }
             if !self.ps2_ptr.is_null() { let _ = Box::from_raw(self.ps2_ptr); }
             if !self.serial_ptr.is_null() { let _ = Box::from_raw(self.serial_ptr); }
             if !self.svga_ptr.is_null() { let _ = Box::from_raw(self.svga_ptr); }
@@ -365,6 +369,7 @@ pub extern "C" fn corevm_create_ex(ram_size_mb: u32, vcpu_count: u32) -> u64 {
         last_error_rip: 0,
         pic_ptr: ptr::null_mut(),
         pit_ptr: ptr::null_mut(),
+        acpi_pm_ptr: ptr::null_mut(),
         ps2_ptr: ptr::null_mut(),
         serial_ptr: ptr::null_mut(),
         svga_ptr: ptr::null_mut(),
@@ -375,6 +380,7 @@ pub extern "C" fn corevm_create_ex(ram_size_mb: u32, vcpu_count: u32) -> u64 {
         ide_ptr: ptr::null_mut(),
         fw_cfg_ptr: ptr::null_mut(),
         debug_port_ptr: ptr::null_mut(),
+        pit_is_externally_clocked: false,
     });
     let h = Box::into_raw(instance) as u64;
     vm_log!("VM created (handle=0x{:X})", h);
@@ -406,6 +412,7 @@ pub extern "C" fn corevm_reset(handle: u64) {
     vm.engine.reset();
     vm.last_error = None;
     vm.last_error_rip = 0;
+    vm.pit_is_externally_clocked = false;
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -618,7 +625,7 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
 
         // Advance PIT continuously during run() so guests that poll PIT
         // inside tight loops can observe timer progress within a batch.
-        if ran > 0 && !vm.pit_ptr.is_null() {
+        if ran > 0 && !vm.pit_ptr.is_null() && !vm.pit_is_externally_clocked {
             pit_inst_accum = pit_inst_accum.saturating_add(ran);
             let pit_ticks = (pit_inst_accum / PIT_INSTS_PER_TICK) as u32;
             pit_inst_accum %= PIT_INSTS_PER_TICK;
@@ -628,6 +635,11 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
                     inject_irq_line(vm, 0);
                 }
             }
+        }
+
+        // The ACPI PM timer must be free-running even when the guest polls it.
+        if ran > 0 && !vm.acpi_pm_ptr.is_null() {
+            unsafe { (*vm.acpi_pm_ptr).advance(ran) };
         }
 
         if max_instructions == 0 {
@@ -1087,6 +1099,7 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     // ACPI PM — Power Management timer and control registers.
     // ICH9 PMBASE = 0xB000; PM Timer at 0xB008 used by SeaBIOS for all delays.
     let acpi_pm = Box::into_raw(Box::new(devices::acpi::AcpiPm::new()));
+    vm.acpi_pm_ptr = acpi_pm;
     vm.engine.io.register(0xB000, 0x40, Box::new(IoProxy { ptr: acpi_pm }));
 
     // fw_cfg — QEMU firmware configuration interface.
@@ -1501,6 +1514,7 @@ pub extern "C" fn corevm_pit_tick(handle: u64) -> u32 {
     if vm.pit_ptr.is_null() {
         return 0;
     }
+    vm.pit_is_externally_clocked = true;
     let fired = unsafe { (*vm.pit_ptr).tick() };
     if fired { 1 } else { 0 }
 }
@@ -1516,6 +1530,7 @@ pub extern "C" fn corevm_pit_advance(handle: u64, n: u32) -> u32 {
     if vm.pit_ptr.is_null() {
         return 0;
     }
+    vm.pit_is_externally_clocked = true;
     unsafe { (*vm.pit_ptr).advance(n) }
 }
 

@@ -503,6 +503,7 @@ impl Desktop {
         if let Some(idx) = self.windows.iter().position(|w| w.id == target_id) {
             self.windows[idx].focused = true;
             self.focused_window = Some(target_id);
+            let owner_tid = self.windows[idx].owner_tid;
             let layer_id = self.windows[idx].layer_id;
             self.compositor.set_focused_layer(Some(layer_id));
             self.compositor.raise_layer(layer_id);
@@ -519,6 +520,9 @@ impl Desktop {
                     0, 0, self.screen_width, menubar_height() + 1,
                 ));
             }
+
+            // Broadcast focus change for Shell
+            self.emit_focus_changed(owner_tid, target_id);
         }
     }
 
@@ -538,6 +542,7 @@ impl Desktop {
         if let Some(idx) = self.windows.iter().position(|w| w.id == id) {
             self.windows[idx].focused = true;
             self.focused_window = Some(id);
+            let owner_tid = self.windows[idx].owner_tid;
             let layer_id = self.windows[idx].layer_id;
             self.compositor.set_focused_layer(Some(layer_id));
             self.compositor.raise_layer(layer_id);
@@ -554,6 +559,8 @@ impl Desktop {
                     0, 0, self.screen_width, menubar_height() + 1,
                 ));
             }
+
+            self.emit_focus_changed(owner_tid, id);
         }
     }
 

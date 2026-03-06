@@ -89,6 +89,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_PERM_LIST, "perm_list"),
     (SYS_PERM_DELETE, "perm_delete"),
     (SYS_PERM_PENDING_INFO, "perm_pending_info"),
+    (SYS_REGISTER_SESSIONHOST, "register_sessionhost"),
     (SYS_GPU_VRAM_SIZE, "gpu_vram_size"),
     (SYS_VRAM_MAP, "vram_map"),
     (SYS_GPU_REGISTER_BACKBUFFER, "gpu_register_backbuffer"),

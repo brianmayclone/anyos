@@ -274,6 +274,10 @@ pub const EVT_WINDOW_OPENED: u32 = 0x0060;
 /// Emitted when a process with windows exits.
 pub const EVT_WINDOW_CLOSED: u32 = 0x0061;
 
+/// Focus changed (broadcast): [EVT, focused_tid, focused_win_id, 0, 0]
+/// Emitted when the focused window changes. Used by Shell to update the menu bar.
+pub const EVT_FOCUS_CHANGED: u32 = 0x0062;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Pack up to 12 ASCII characters into 3 u32 words.

@@ -10,8 +10,13 @@ use crate::instruction::{DecodedInst, Operand};
 use crate::interrupts::InterruptController;
 use crate::memory::{GuestMemory, Mmu};
 use crate::registers::{GprIndex, SegReg};
+#[cfg(feature = "host_test")]
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::{pop_val, push_val, read_operand, stack_operand_size};
+
+#[cfg(feature = "host_test")]
+static INT15_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // ── JMP ──
 
@@ -76,25 +81,6 @@ pub fn exec_jcc(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             Operand::Immediate(imm) => imm as i64,
             _ => return Err(VmError::UndefinedOpcode(inst.opcode as u8)),
         };
-        // Fast-path for tight busy-wait loops used by kernel delay code:
-        // `dec reg` ; `jnz -3`
-        if (inst.opcode as u8) == 0x75 && offset == -3 {
-            let next_rip = cpu.regs.rip.wrapping_add(inst.length as u64);
-            let target = next_rip.wrapping_add(offset as u64);
-            if target + 1 == cpu.regs.rip {
-                let dec_op = cpu.prev_opcode as u8;
-                if (0x48..=0x4F).contains(&dec_op) {
-                    let reg = dec_op - 0x48;
-                    // Collapse the loop to its terminal state (reg == 0),
-                    // preserving CF and forcing ZF=1 as at loop exit.
-                    cpu.regs.write_gpr32(reg, 0);
-                    cpu.regs.rflags &= !(flags::ZF | flags::SF | flags::OF | flags::PF | flags::AF);
-                    cpu.regs.rflags |= flags::ZF | flags::PF;
-                    cpu.regs.rip = next_rip;
-                    return Ok(());
-                }
-            }
-        }
         let target = next_rip.wrapping_add(offset as u64);
         cpu.regs.rip = mask_rip(cpu, target);
     } else {
@@ -355,6 +341,23 @@ fn dispatch_software_interrupt(
 
     match cpu.mode {
         Mode::RealMode => {
+            #[cfg(feature = "host_test")]
+            if vector == 0x15 {
+                let slot = INT15_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+                if slot < 32 {
+                    println!(
+                        "[int15] cs={:04X} ip={:04X} AX={:04X} BX={:04X} CX={:04X} DX={:04X} ES={:04X} DI={:04X}",
+                        cpu.regs.segment(SegReg::Cs).selector,
+                        cpu.regs.rip as u16,
+                        cpu.regs.read_gpr16(GprIndex::Rax as u8),
+                        cpu.regs.read_gpr16(GprIndex::Rbx as u8),
+                        cpu.regs.read_gpr16(GprIndex::Rcx as u8),
+                        cpu.regs.read_gpr16(GprIndex::Rdx as u8),
+                        cpu.regs.segment(SegReg::Es).selector,
+                        cpu.regs.read_gpr16(GprIndex::Rdi as u8),
+                    );
+                }
+            }
             // Real mode: push FLAGS (16-bit), CS, IP; load from IVT
             let rflags16 = cpu.regs.rflags as u16;
             let cs = cpu.regs.segment(SegReg::Cs).selector;

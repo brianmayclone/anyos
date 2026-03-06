@@ -208,6 +208,7 @@ pub(crate) const SYS_PERM_STORE: u32 = 251;
 pub(crate) const SYS_PERM_LIST: u32 = 252;
 pub(crate) const SYS_PERM_DELETE: u32 = 253;
 pub(crate) const SYS_PERM_PENDING_INFO: u32 = 254;
+pub(crate) const SYS_REGISTER_SESSIONHOST: u32 = 255;
 
 // Crash info
 pub(crate) const SYS_GET_CRASH_INFO: u32 = 260;

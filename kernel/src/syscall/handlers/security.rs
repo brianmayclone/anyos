@@ -417,3 +417,40 @@ pub fn sys_perm_pending_info(buf_ptr: u32, buf_size: u32) -> u32 {
     dst.copy_from_slice(&kernel_buf[..copy]);
     copy as u32
 }
+
+// =========================================================================
+// Sessionhost registration
+// =========================================================================
+
+use core::sync::atomic::{AtomicU32, Ordering};
+
+/// The TID of the registered Sessionhost process.
+/// Only the Sessionhost may spawn `.app` bundles.
+static SESSIONHOST_TID: AtomicU32 = AtomicU32::new(0);
+
+/// SYS_REGISTER_SESSIONHOST (255): Register calling process as the session host.
+/// First caller wins. Returns 0 on success, u32::MAX if already registered.
+pub fn sys_register_sessionhost() -> u32 {
+    let tid = crate::task::scheduler::current_tid();
+    if SESSIONHOST_TID.compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        crate::serial_println!("[OK] Sessionhost registered (TID={})", tid);
+        0
+    } else {
+        u32::MAX
+    }
+}
+
+/// Check if the given TID is the registered Sessionhost (or a thread in the same process).
+pub fn is_sessionhost(tid: u32) -> bool {
+    let sh_tid = SESSIONHOST_TID.load(Ordering::SeqCst);
+    if sh_tid == 0 {
+        return false;
+    }
+    if tid == sh_tid {
+        return true;
+    }
+    // Check if caller shares the same page directory (sibling thread)
+    let sh_pd = crate::task::scheduler::thread_page_directory(sh_tid);
+    let caller_pd = crate::task::scheduler::thread_page_directory(tid);
+    sh_pd.is_some() && sh_pd == caller_pd
+}

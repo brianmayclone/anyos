@@ -631,7 +631,7 @@ fn add_paragraph(panel: &anyui::StackPanel, text: &str) {
         tag.set_padding(20, 0, 16, 2);
         let url = link.url.clone();
         tag.on_click(move |_| {
-            anyos_std::process::spawn("/Applications/Surf.app", &url);
+            anyos_std::process::launch_app("/Applications/Surf.app", &url);
         });
         panel.add(&tag);
     }

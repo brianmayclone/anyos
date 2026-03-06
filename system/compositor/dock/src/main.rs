@@ -559,8 +559,8 @@ fn handle_dock_click(lx: i32, ly: i32) {
         item.tid = 0;
     }
 
-    let tid = process::spawn(&item.bin_path, "");
-    if tid != 0 {
+    let tid = process::launch_app(&item.bin_path, "");
+    if tid != 0 && tid != u32::MAX {
         item.tid = tid;
         item.running = true;
         if a.has_gpu {
@@ -655,8 +655,8 @@ fn action_quit(idx: usize) {
 fn action_open(idx: usize) {
     let a = app();
     if let Some(item) = a.items.get_mut(idx) {
-        let tid = process::spawn(&item.bin_path, "");
-        if tid != 0 {
+        let tid = process::launch_app(&item.bin_path, "");
+        if tid != 0 && tid != u32::MAX {
             item.tid = tid;
             item.running = true;
             if a.has_gpu {

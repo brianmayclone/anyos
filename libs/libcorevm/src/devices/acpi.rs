@@ -18,9 +18,12 @@
 use crate::error::Result;
 use crate::io::IoHandler;
 
-/// ACPI Power Management timer frequency: 3.579545 MHz.
-/// Each read advances the counter by this many ticks to simulate elapsed time.
-const PM_TIMER_TICKS_PER_READ: u32 = 357;
+/// Approximate guest instructions per PM timer tick.
+///
+/// The PM timer runs at 3.579545 MHz. On the current host-test workloads we
+/// see early Linux execute at roughly 35 MIPS, so a 10:1 ratio yields a
+/// workable free-running timer without depending on host wall-clock APIs.
+const PM_TIMER_INSTS_PER_TICK: u64 = 10;
 
 /// ACPI Power Management I/O device.
 ///
@@ -42,10 +45,10 @@ pub struct AcpiPm {
     /// Bit 13 = SLP_EN (triggers sleep), Bits 12:10 = SLP_TYP.
     pm1_control: u16,
     /// PM Timer counter (offset 0x08, 32-bit read-only).
-    ///
-    /// Incremented on each read to simulate a free-running clock.
     /// SeaBIOS only cares that it changes between reads.
     timer_count: u32,
+    /// Fractional guest instruction credits toward the next PM timer tick.
+    instruction_credit: u64,
 }
 
 impl AcpiPm {
@@ -56,6 +59,28 @@ impl AcpiPm {
             pm1_enable: 0,
             pm1_control: 0,
             timer_count: 0,
+            instruction_credit: 0,
+        }
+    }
+
+    /// Advance the free-running PM timer by guest execution progress.
+    pub fn advance(&mut self, guest_instructions: u64) {
+        self.instruction_credit = self.instruction_credit.saturating_add(guest_instructions);
+        if self.instruction_credit < PM_TIMER_INSTS_PER_TICK {
+            return;
+        }
+
+        let ticks = (self.instruction_credit / PM_TIMER_INSTS_PER_TICK) as u32;
+        self.instruction_credit %= PM_TIMER_INSTS_PER_TICK;
+
+        let prev = self.timer_count;
+        self.timer_count = self.timer_count.wrapping_add(ticks);
+
+        // PM1_STS.TMR_STS reflects a 24-bit PM timer overflow on ICH-style PM.
+        let prev_24 = prev & 0x00FF_FFFF;
+        let cur_24 = self.timer_count & 0x00FF_FFFF;
+        if cur_24 < prev_24 {
+            self.pm1_status |= 1;
         }
     }
 }
@@ -77,11 +102,10 @@ impl IoHandler for AcpiPm {
             0x02 => self.pm1_enable as u32,
             // PM1a Control Register.
             0x04 => self.pm1_control as u32,
-            // PM Timer — advance counter on each read to simulate time passing.
-            0x08 => {
-                let v = self.timer_count;
-                self.timer_count = self.timer_count.wrapping_add(PM_TIMER_TICKS_PER_READ);
-                v
+            // PM Timer — free-running 32-bit counter with byte/word subaccesses.
+            0x08..=0x0B => {
+                let shift = ((offset - 0x08) * 8) as u32;
+                self.timer_count >> shift
             }
             _ => 0,
         };

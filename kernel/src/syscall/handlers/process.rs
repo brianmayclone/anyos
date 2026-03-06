@@ -440,6 +440,22 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
         raw_name
     };
 
+    // ── .app bundles may only be spawned by the Sessionhost ──
+    if path.ends_with(".app") {
+        let caller_tid = crate::task::scheduler::current_tid();
+        // Allow: Sessionhost, init (tid 1), and the compositor (system services)
+        let is_allowed = caller_tid == 1
+            || super::is_sessionhost(caller_tid)
+            || super::is_compositor();
+        if !is_allowed {
+            crate::serial_println!(
+                "sys_spawn: DENIED .app spawn from TID {} (not sessionhost) path='{}'",
+                caller_tid, path
+            );
+            return u32::MAX;
+        }
+    }
+
     // ── Runtime permission check for .app bundles ──
     if path.ends_with(".app") {
         if let Some(config) = crate::task::app_config::parse_info_conf(path) {

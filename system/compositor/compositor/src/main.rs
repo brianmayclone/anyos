@@ -188,7 +188,6 @@ fn main() {
     if !login_pending {
         acquire_lock();
         let desktop = unsafe { desktop_ref() };
-        desktop.init_desktop_icons();
         release_lock();
 
         let dock_tid = process::spawn("/System/compositor/dock", "");
@@ -352,7 +351,7 @@ fn management_loop(
             // on_process_exit again — that's harmless (no windows left for tid).
             desktop.on_process_exit(*login_tid);
             desktop.set_menubar_visible(true);
-            desktop.init_desktop_icons(); // calls damage_all()
+            desktop.compositor.damage_all();
             release_lock();
             signal_render();
 
@@ -390,16 +389,7 @@ fn management_loop(
         if had_sys { mgmt_sys += 1; }
         if event_count == 0 && !had_ipc && !had_sys { mgmt_idle += 1; }
 
-        // Poll desktop icons for mount changes (only after login, every ~3s)
-        let had_mounts = if !*login_pending && *dock_spawned {
-            acquire_lock();
-            let desktop = unsafe { desktop_ref() };
-            let changed = desktop.poll_desktop_icons();
-            release_lock();
-            changed
-        } else {
-            false
-        };
+        let had_mounts = false;
 
         // Signal render thread ONLY when actual work was processed.
         // Previously this was unconditional, causing the render thread to wake
@@ -732,16 +722,6 @@ fn handle_system_events(compositor_channel: u32, sys_sub: u32) -> bool {
             let exit_code = sys_buf[2];
             desktop.on_process_exit(exited_tid);
 
-            // Check if this was a crash (signal > 128 indicates a fatal signal)
-            if exit_code > 128 && exit_code < 256 {
-                // Query crash info from kernel
-                let mut crash_buf = [0u8; core::mem::size_of::<desktop::crash_dialog::CrashReport>()];
-                let bytes = anyos_std::sys::get_crash_info(exited_tid, &mut crash_buf);
-                if bytes > 0 {
-                    desktop.show_crash_dialog(exited_tid, exit_code, &crash_buf);
-                }
-            }
-
             release_lock();
             ipc::evt_chan_emit(compositor_channel, &[
                 ipc_protocol::EVT_WINDOW_CLOSED,
@@ -822,13 +802,9 @@ fn perform_logout(
         desktop.app_subs.clear();
         desktop.menu_bar = crate::menu::MenuBar::new();
         desktop.focused_window = None;
-        desktop.crash_dialogs.clear();
         desktop.tray_ipc_events.clear();
         desktop.clipboard_data.clear();
-        desktop.desktop_icons.icons.clear();
-        desktop.desktop_icons.selected_icon = None;
 
-        // Hide menubar and clear desktop icons for login screen
         desktop.set_menubar_visible(false);
         desktop.reload_wallpaper_and_icons();
         desktop.compositor.damage_all();

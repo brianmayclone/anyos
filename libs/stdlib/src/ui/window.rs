@@ -649,6 +649,16 @@ pub fn focus(_window_id: u32) -> u32 {
     0
 }
 
+/// Get the compositor event channel ID and subscription ID.
+/// Returns (channel_id, sub_id), or (0, 0) if not initialized.
+pub fn compositor_channel() -> (u32, u32) {
+    if !ensure_init() {
+        return (0, 0);
+    }
+    let st = state();
+    (st.channel_id, st.sub_id)
+}
+
 /// Get screen dimensions. Returns (width, height).
 pub fn screen_size() -> (u32, u32) {
     let mut w: u32 = 0;

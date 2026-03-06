@@ -31,6 +31,54 @@ use crate::registers::{GprIndex, SegReg};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 static STI_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "host_test")]
+static BOOTPARAM_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(feature = "host_test")]
+fn trace_bootparams_write(cpu: &Cpu, linear: u64, phys: u64, size: OperandSize, val: u64) {
+    const BASES: &[u64] = &[0x0001_0000, 0x0009_0000];
+    const OFF_SETUP_HDR: u64 = 0x1F1;
+    const OFF_HDRS_SIG: u64 = 0x202;
+    const OFF_E820_COUNT: u64 = 0x1E8;
+    const OFF_E820_TABLE: u64 = 0x2D0;
+    const E820_TABLE_SIZE: u64 = 8 * 24;
+    const HEADER_WINDOW: u64 = 0x30;
+
+    let end = phys.wrapping_add(size.bytes() as u64);
+    let interesting = BASES.iter().any(|base| {
+        let hits_hdr = phys < (*base + OFF_HDRS_SIG + 4) && end > (*base + OFF_SETUP_HDR);
+        let hits_count = phys < (*base + OFF_E820_COUNT + 4) && end > (*base + OFF_E820_COUNT);
+        let hits_e820 = phys < (*base + OFF_E820_TABLE + E820_TABLE_SIZE)
+            && end > (*base + OFF_E820_TABLE);
+        let hits_setup_window = phys < (*base + OFF_SETUP_HDR + HEADER_WINDOW)
+            && end > (*base + OFF_SETUP_HDR);
+        hits_hdr || hits_count || hits_e820 || hits_setup_window
+    });
+    if !interesting {
+        return;
+    }
+    if cpu.regs.segment(SegReg::Cs).selector == 0xF000 && cpu.regs.rip == 0x0000_1922 {
+        return;
+    }
+    if val == 0 {
+        return;
+    }
+
+    let slot = BOOTPARAM_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+    if slot >= 160 {
+        return;
+    }
+
+    println!(
+        "[bootparams] rip={:08X} cs={:04X} lin={:08X} phys={:08X} size={} val={:016X}",
+        cpu.regs.rip as u32,
+        cpu.regs.segment(SegReg::Cs).selector,
+        linear as u32,
+        phys as u32,
+        size.bytes(),
+        val
+    );
+}
 
 // ── Public entry point ──
 
@@ -610,28 +658,13 @@ fn exec_secondary(
                     7 => match rm {
                         0 => system::exec_swapgs(cpu, inst),
                         1 => system::exec_rdtscp(cpu, inst),
-                        // Linux paravirt IRQ patch opcodes:
-                        // 0F 01 FA => irq disable (CLI-like)
+                        // AMD MONITORX: treat as a no-op monitor registration.
                         2 => {
-                            cpu.regs.rflags &= !crate::flags::IF;
                             cpu.regs.rip += inst.length as u64;
                             Ok(())
                         }
-                        // 0F 01 FB => irq enable (STI-like)
+                        // AMD MWAITX: behave like a completed wait.
                         3 => {
-                            if cpu.regs.segment(SegReg::Cs).selector >= 0x60 {
-                                let n = STI_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
-                                if n < 32 {
-                                    libsyscall::serial_print(format_args!(
-                                        "[corevm] 0F01FB@{:04X}:{:08X} IF(before)={}\n",
-                                        cpu.regs.segment(SegReg::Cs).selector,
-                                        cpu.regs.rip as u32,
-                                        if (cpu.regs.rflags & crate::flags::IF) != 0 { 1 } else { 0 },
-                                    ));
-                                }
-                            }
-                            cpu.regs.rflags |= crate::flags::IF;
-                            _interrupts.interrupt_shadow = true;
                             cpu.regs.rip += inst.length as u64;
                             Ok(())
                         }
@@ -1090,6 +1123,8 @@ pub fn translate_and_write(
     memory: &mut GuestMemory,
 ) -> Result<()> {
     let phys = mmu.translate_linear(linear, cpu.regs.cr3, AccessType::Write, cpu.regs.cpl, memory)?;
+    #[cfg(feature = "host_test")]
+    trace_bootparams_write(cpu, linear, phys, size, val);
     match size {
         OperandSize::Byte => memory.write_u8(phys, val as u8),
         OperandSize::Word => memory.write_u16(phys, val as u16),

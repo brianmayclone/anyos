@@ -628,6 +628,96 @@ add_app(anymail     ${CMAKE_SOURCE_DIR}/apps/anymail       "anyMail")
 add_app(anyzilla    ${CMAKE_SOURCE_DIR}/apps/anyzilla      "anyzilla")
 
 # ============================================================
+# Session host, Desktop shell, Crash dialog
+# ============================================================
+
+# Sessionhost (standalone workspace, kernel target)
+set(SESSIONHOST_SRC_DIR ${CMAKE_SOURCE_DIR}/system/sessionhost)
+set(SESSIONHOST_ELF "${CMAKE_BINARY_DIR}/kernel/${KERNEL_TARGET_TRIPLE}/release/sessionhost.elf")
+add_custom_command(
+  OUTPUT ${SESSIONHOST_ELF}
+  COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+    ${CARGO_EXECUTABLE} build --release --quiet
+    --manifest-path ${SESSIONHOST_SRC_DIR}/Cargo.toml
+    --target ${KERNEL_TARGET_JSON}
+    --target-dir ${CMAKE_BINARY_DIR}/kernel
+  DEPENDS
+    ${SESSIONHOST_SRC_DIR}/Cargo.toml
+    ${SESSIONHOST_SRC_DIR}/build.rs
+    ${SESSIONHOST_SRC_DIR}/src/main.rs
+    ${STDLIB_DEPS}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Building system program: sessionhost"
+)
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/Sessionhost
+  COMMAND ${ANYELF_EXECUTABLE} bin
+    ${SESSIONHOST_ELF}
+    ${SYSROOT_DIR}/System/Sessionhost
+  DEPENDS ${SESSIONHOST_ELF} ${ANYELF_EXECUTABLE}
+  COMMENT "Converting sessionhost ELF to flat binary"
+)
+list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/Sessionhost)
+
+# Desktop shell (standalone workspace, kernel target)
+set(DESKTOPD_SRC_DIR ${CMAKE_SOURCE_DIR}/system/desktopd)
+set(DESKTOPD_ELF "${CMAKE_BINARY_DIR}/kernel/${KERNEL_TARGET_TRIPLE}/release/desktopd.elf")
+add_custom_command(
+  OUTPUT ${DESKTOPD_ELF}
+  COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+    ${CARGO_EXECUTABLE} build --release --quiet
+    --manifest-path ${DESKTOPD_SRC_DIR}/Cargo.toml
+    --target ${KERNEL_TARGET_JSON}
+    --target-dir ${CMAKE_BINARY_DIR}/kernel
+  DEPENDS
+    ${DESKTOPD_SRC_DIR}/Cargo.toml
+    ${DESKTOPD_SRC_DIR}/build.rs
+    ${DESKTOPD_SRC_DIR}/src/main.rs
+    ${DESKTOPD_SRC_DIR}/src/ipc.rs
+    ${STDLIB_DEPS}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Building system program: desktopd"
+)
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/Desktop
+  COMMAND ${ANYELF_EXECUTABLE} bin
+    ${DESKTOPD_ELF}
+    ${SYSROOT_DIR}/System/Desktop
+  DEPENDS ${DESKTOPD_ELF} ${ANYELF_EXECUTABLE}
+  COMMENT "Converting desktopd ELF to flat binary"
+)
+list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/Desktop)
+
+# CrashDialog (standalone workspace, kernel target, .app bundle)
+set(CRASHDIALOG_SRC_DIR ${CMAKE_SOURCE_DIR}/system/crashdialog)
+set(CRASHDIALOG_ELF "${CMAKE_BINARY_DIR}/kernel/${KERNEL_TARGET_TRIPLE}/release/crashdialog.elf")
+add_custom_command(
+  OUTPUT ${CRASHDIALOG_ELF}
+  COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+    ${CARGO_EXECUTABLE} build --release --quiet
+    --manifest-path ${CRASHDIALOG_SRC_DIR}/Cargo.toml
+    --target ${KERNEL_TARGET_JSON}
+    --target-dir ${CMAKE_BINARY_DIR}/kernel
+  DEPENDS
+    ${CRASHDIALOG_SRC_DIR}/Cargo.toml
+    ${CRASHDIALOG_SRC_DIR}/build.rs
+    ${CRASHDIALOG_SRC_DIR}/src/main.rs
+    ${STDLIB_DEPS}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Building system program: crashdialog"
+)
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/CrashDialog.app/CrashDialog
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/CrashDialog.app
+  COMMAND ${ANYELF_EXECUTABLE} bin
+    ${CRASHDIALOG_ELF}
+    ${SYSROOT_DIR}/System/CrashDialog.app/CrashDialog
+  DEPENDS ${CRASHDIALOG_ELF} ${ANYELF_EXECUTABLE}
+  COMMENT "Converting crashdialog ELF to flat binary"
+)
+list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/CrashDialog.app/CrashDialog)
+
+# ============================================================
 # Compositor and Dock
 # ============================================================
 # Compositor (special output path: /System/compositor/compositor)

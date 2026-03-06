@@ -141,32 +141,80 @@ pub fn exec(path: &str, args: &str) -> u32 {
 
 /// Spawn a new process. Returns TID or u32::MAX on error.
 ///
-/// For `.app` bundles that require sensitive permissions and have not been
-/// approved by the user yet, this automatically launches the PermissionDialog,
-/// waits for the user's decision, and retries the spawn.
+/// This is the raw spawn — no permission dialog handling.
+/// For `.app` bundles that need permission approval, use [`launch_app`]
+/// which routes through the Sessionhost.
 pub fn spawn(path: &str, args: &str) -> u32 {
-    let tid = spawn_piped(path, args, 0);
-    if tid == crate::permissions::PERM_NEEDED {
-        // Read pending info stored by the kernel
-        let mut buf = [0u8; 512];
-        let len = crate::permissions::perm_pending_info(&mut buf);
-        if len == 0 {
-            return u32::MAX;
-        }
-        // Build dialog args: pass the raw pending info as the argument
-        let info = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
-        let dialog_tid = spawn_piped("/System/permdialog", info, 0);
-        if dialog_tid == u32::MAX || dialog_tid == crate::permissions::PERM_NEEDED {
-            return u32::MAX;
-        }
-        let exit_code = waitpid(dialog_tid);
-        if exit_code != 0 {
-            return u32::MAX; // User cancelled or dialog error
-        }
-        // Retry the original spawn — permissions should now be stored
-        return spawn_piped(path, args, 0);
+    spawn_piped(path, args, 0)
+}
+
+/// Launch a `.app` bundle via the Sessionhost process.
+///
+/// The Sessionhost handles permission checks and shows the PermissionDialog
+/// if needed. Returns the spawned TID, or u32::MAX on failure/denial.
+///
+/// For non-app binaries, use [`spawn`] directly.
+pub fn launch_app(path: &str, args: &str) -> u32 {
+    use crate::ipc;
+
+    // Open the sessionhost channel
+    let chan = ipc::evt_chan_create("sessionhost");
+    let sub = ipc::evt_chan_subscribe(chan, 0);
+
+    // Write "path\x1Fargs" into shared memory
+    let total_len = path.len() + 1 + args.len() + 1; // +1 separator, +1 null
+    let shm_size = if total_len < 512 { 512 } else { total_len as u32 };
+    let shm_id = ipc::shm_create(shm_size);
+    if shm_id == 0 {
+        ipc::evt_chan_unsubscribe(chan, sub);
+        return u32::MAX;
     }
-    tid
+    let addr = ipc::shm_map(shm_id);
+    if addr == 0 {
+        ipc::shm_destroy(shm_id);
+        ipc::evt_chan_unsubscribe(chan, sub);
+        return u32::MAX;
+    }
+
+    let dst = addr as *mut u8;
+    let mut pos = 0usize;
+    for &b in path.as_bytes() {
+        unsafe { dst.add(pos).write_volatile(b); }
+        pos += 1;
+    }
+    if !args.is_empty() {
+        unsafe { dst.add(pos).write_volatile(0x1F); }
+        pos += 1;
+        for &b in args.as_bytes() {
+            unsafe { dst.add(pos).write_volatile(b); }
+            pos += 1;
+        }
+    }
+    unsafe { dst.add(pos).write_volatile(0); }
+
+    ipc::shm_unmap(shm_id);
+
+    // Send CMD_LAUNCH_APP: [cmd, our_sub_id, shm_id, 0, 0]
+    const CMD_LAUNCH_APP: u32 = 0x5001;
+    const EVT_LAUNCH_RESULT: u32 = 0x5002;
+    let request = [CMD_LAUNCH_APP, sub, shm_id, 0, 0];
+    ipc::evt_chan_emit(chan, &request);
+
+    // Wait for response (with timeout)
+    let mut evt = [0u32; 5];
+    for _ in 0..600 {
+        // 600 * 50ms = 30s timeout
+        if ipc::evt_chan_poll(chan, sub, &mut evt) {
+            if evt[0] == EVT_LAUNCH_RESULT {
+                ipc::evt_chan_unsubscribe(chan, sub);
+                return evt[1];
+            }
+        }
+        sleep(50);
+    }
+
+    ipc::evt_chan_unsubscribe(chan, sub);
+    u32::MAX
 }
 
 /// Spawn a new process with stdout redirected to a pipe.

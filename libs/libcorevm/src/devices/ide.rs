@@ -640,20 +640,8 @@ impl Ide {
         self.irq_pending = true;
     }
 
-    /// Handle a 16-bit read from the data register (port 0x1F0).
-    fn read_data_word(&mut self) -> u16 {
-        if self.status & SR_DRQ == 0 {
-            return 0xFFFF;
-        }
-
-        let off = self.buffer_offset;
-        let word = if off + 1 < SECTOR_SIZE {
-            (self.buffer[off] as u16) | ((self.buffer[off + 1] as u16) << 8)
-        } else {
-            0
-        };
-        self.buffer_offset += 2;
-
+    /// Advance transfer state after consuming one byte from the data buffer.
+    fn finish_data_read_byte(&mut self) {
         // End of sector?
         if self.buffer_offset >= SECTOR_SIZE {
             if self.sectors_remaining > 0 {
@@ -670,23 +658,39 @@ impl Ide {
                 self.irq_pending = true;
             }
         }
-
-        word
     }
 
-    /// Handle a 16-bit write to the data register (port 0x1F0).
-    fn write_data_word(&mut self, val: u16) {
-        if self.status & SR_DRQ == 0 || !self.is_write {
-            return;
+    /// Handle an 8-bit read from the data register (port 0x1F0).
+    fn read_data_byte(&mut self) -> u8 {
+        if self.status & SR_DRQ == 0 {
+            return 0xFF;
         }
 
         let off = self.buffer_offset;
-        if off + 1 < SECTOR_SIZE {
-            self.buffer[off] = val as u8;
-            self.buffer[off + 1] = (val >> 8) as u8;
-        }
-        self.buffer_offset += 2;
+        let byte = if off < SECTOR_SIZE { self.buffer[off] } else { 0 };
+        self.buffer_offset += 1;
+        self.finish_data_read_byte();
+        byte
+    }
 
+    /// Handle a 16-bit read from the data register (port 0x1F0).
+    fn read_data_word(&mut self) -> u16 {
+        let lo = self.read_data_byte() as u16;
+        let hi = self.read_data_byte() as u16;
+        lo | (hi << 8)
+    }
+
+    /// Handle a 32-bit read from the data register (port 0x1F0).
+    fn read_data_dword(&mut self) -> u32 {
+        let b0 = self.read_data_byte() as u32;
+        let b1 = self.read_data_byte() as u32;
+        let b2 = self.read_data_byte() as u32;
+        let b3 = self.read_data_byte() as u32;
+        b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+    }
+
+    /// Advance transfer state after producing one byte into the data buffer.
+    fn finish_data_write_byte(&mut self) {
         // End of sector?
         if self.buffer_offset >= SECTOR_SIZE {
             // Write this sector to disk.
@@ -708,6 +712,34 @@ impl Ide {
             }
         }
     }
+
+    /// Handle an 8-bit write to the data register (port 0x1F0).
+    fn write_data_byte(&mut self, val: u8) {
+        if self.status & SR_DRQ == 0 || !self.is_write {
+            return;
+        }
+
+        let off = self.buffer_offset;
+        if off < SECTOR_SIZE {
+            self.buffer[off] = val;
+        }
+        self.buffer_offset += 1;
+        self.finish_data_write_byte();
+    }
+
+    /// Handle a 16-bit write to the data register (port 0x1F0).
+    fn write_data_word(&mut self, val: u16) {
+        self.write_data_byte(val as u8);
+        self.write_data_byte((val >> 8) as u8);
+    }
+
+    /// Handle a 32-bit write to the data register (port 0x1F0).
+    fn write_data_dword(&mut self, val: u32) {
+        self.write_data_byte(val as u8);
+        self.write_data_byte((val >> 8) as u8);
+        self.write_data_byte((val >> 16) as u8);
+        self.write_data_byte((val >> 24) as u8);
+    }
 }
 
 impl IoHandler for Ide {
@@ -715,12 +747,10 @@ impl IoHandler for Ide {
         match port {
             // Data register — 16-bit PIO reads.
             0x1F0 => {
-                if size >= 2 {
-                    Ok(self.read_data_word() as u32)
-                } else {
-                    // 8-bit read from data port — return low byte.
-                    let w = self.read_data_word();
-                    Ok((w & 0xFF) as u32)
+                match size {
+                    1 => Ok(self.read_data_byte() as u32),
+                    2 => Ok(self.read_data_word() as u32),
+                    _ => Ok(self.read_data_dword()),
                 }
             }
             // Error register (read).
@@ -748,12 +778,16 @@ impl IoHandler for Ide {
         }
     }
 
-    fn write(&mut self, port: u16, _size: u8, val: u32) -> Result<()> {
+    fn write(&mut self, port: u16, size: u8, val: u32) -> Result<()> {
         let v = val as u8;
         match port {
             // Data register — 16-bit PIO writes.
             0x1F0 => {
-                self.write_data_word(val as u16);
+                match size {
+                    1 => self.write_data_byte(val as u8),
+                    2 => self.write_data_word(val as u16),
+                    _ => self.write_data_dword(val),
+                }
             }
             // Features register (write).
             0x1F1 => {

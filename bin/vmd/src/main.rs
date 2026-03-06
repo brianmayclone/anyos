@@ -794,19 +794,14 @@ fn dispatch_command(line: &str) {
 ///
 /// Uses `uptime_ms()` to measure elapsed time since the last call and
 /// advances the PIT by the corresponding number of ticks in a single
-/// bulk FFI call.  Always advances at least 1 ms worth of ticks to
-/// guarantee progress even when batches execute in sub-millisecond time.
+/// bulk FFI call.
 fn advance_pit_realtime(inst: &mut VmInstance) {
     let now = sys::uptime_ms();
     let elapsed = now.wrapping_sub(inst.last_pit_ms).min(PIT_MAX_ADVANCE_MS);
-
-    // At least 1 ms worth of ticks per call — ensures PIT makes progress
-    // even when uptime_ms() resolution is too coarse to detect < 1 ms.
-    let ticks = if elapsed > 0 {
-        elapsed * PIT_TICKS_PER_MS
-    } else {
-        PIT_TICKS_PER_MS
-    };
+    if elapsed == 0 {
+        return;
+    }
+    let ticks = elapsed * PIT_TICKS_PER_MS;
 
     // Bulk-advance: one FFI call instead of thousands.
     let fires = inst.handle.pit_advance(ticks);

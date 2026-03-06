@@ -448,6 +448,26 @@ int13h_handler:
     mov byte [cs:ide_drive_sel], 0xE0  ; Master
     push bx
     pop es                          ; ES = caller's DS
+    mov ax, [es:si + 4]
+    cmp ax, 0xFFFF
+    jne .ext_read_hdd_seg
+    mov ax, [es:si + 6]
+    cmp ax, 0xFFFF
+    jne .ext_read_hdd_seg
+    cmp byte [es:si + 0], 0x18
+    jb .ext_read_hdd_seg
+    movzx ecx, word [es:si + 2]    ; Sector count (512-byte sectors)
+    mov eax, [es:si + 8]           ; LBA (512-byte sector units)
+    mov edi, [es:si + 16]          ; Flat destination address (low dword)
+    mov edx, [es:si + 20]          ; High dword must be zero
+    test edx, edx
+    jnz .ext_read_fail_pop
+    xor bx, bx
+    mov es, bx                      ; ES = 0 for flat ES:EDI addressing
+    call ide_read_sectors_flat
+    jc .ext_read_fail_pop
+    jmp .ext_read_ok
+.ext_read_hdd_seg:
     movzx ecx, word [es:si + 2]    ; Sector count (512-byte sectors)
     mov di, [es:si + 4]            ; Buffer offset
     mov bx, [es:si + 6]            ; Buffer segment
@@ -464,6 +484,28 @@ int13h_handler:
     mov byte [cs:ide_drive_sel], 0xF0  ; Slave
     push bx
     pop es                          ; ES = caller's DS
+    mov ax, [es:si + 4]
+    cmp ax, 0xFFFF
+    jne .ext_read_cd_seg
+    mov ax, [es:si + 6]
+    cmp ax, 0xFFFF
+    jne .ext_read_cd_seg
+    cmp byte [es:si + 0], 0x18
+    jb .ext_read_cd_seg
+    movzx ecx, word [es:si + 2]    ; Sector count (2048-byte CD sectors)
+    shl ecx, 2                     ; × 4 → 512-byte ATA sectors
+    mov eax, [es:si + 8]           ; LBA (2048-byte CD sector units)
+    shl eax, 2                     ; × 4 → ATA LBA (512-byte units)
+    mov edi, [es:si + 16]          ; Flat destination address (low dword)
+    mov edx, [es:si + 20]          ; High dword must be zero
+    test edx, edx
+    jnz .ext_read_fail_pop
+    xor bx, bx
+    mov es, bx                      ; ES = 0 for flat ES:EDI addressing
+    call ide_read_sectors_flat
+    jc .ext_read_fail_pop
+    jmp .ext_read_ok
+.ext_read_cd_seg:
     movzx ecx, word [es:si + 2]    ; Sector count (2048-byte CD sectors)
     shl ecx, 2                     ; × 4 → 512-byte ATA sectors
     mov di, [es:si + 4]            ; Buffer offset
@@ -965,6 +1007,126 @@ ide_read_sectors:
     ret
 
 .read_error:
+    pop edi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+; ide_read_sectors_flat — Read sectors from IDE using PIO LBA28.
+;   Input:  EAX = start LBA, ECX = sector count, ES = 0, EDI = flat buffer
+;           cs:ide_drive_sel = 0xE0 (master) or 0xF0 (slave)
+;   Output: CF set on error
+; ---------------------------------------------------------------------------
+ide_read_sectors_flat:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    push edi
+
+.read_loop_flat:
+    test ecx, ecx
+    jz .read_done_flat
+
+    ; Select drive/LBA bits 24-27.
+    push eax
+    mov edx, eax
+    shr edx, 24
+    and dl, 0x0F
+    or dl, [cs:ide_drive_sel]
+    mov al, dl
+    mov dx, IDE_DRIVE_HEAD
+    out dx, al
+    pop eax
+
+    ; Sector count = 1.
+    push eax
+    mov dx, IDE_SEC_COUNT
+    mov al, 1
+    out dx, al
+    pop eax
+
+    ; LBA low byte.
+    push eax
+    mov dx, IDE_LBA_LO
+    out dx, al
+    pop eax
+
+    ; LBA mid byte.
+    push eax
+    shr eax, 8
+    mov dx, IDE_LBA_MID
+    out dx, al
+    pop eax
+
+    ; LBA high byte.
+    push eax
+    shr eax, 16
+    mov dx, IDE_LBA_HI
+    out dx, al
+    pop eax
+
+    ; Send READ SECTORS command.
+    push eax
+    mov dx, IDE_CMD
+    mov al, IDE_CMD_READ_SECTORS
+    out dx, al
+
+    ; Wait for DRQ.
+    mov dx, IDE_STATUS
+    push cx
+    mov cx, 0xFFFF
+.read_wait_flat:
+    in al, dx
+    test al, IDE_SR_BSY
+    jnz .read_wait_cont_flat
+    test al, IDE_SR_DRQ
+    jnz .read_ready_flat
+    test al, IDE_SR_ERR
+    jnz .read_err_flat
+.read_wait_cont_flat:
+    dec cx
+    jnz .read_wait_flat
+    pop cx
+    pop eax
+    jmp .read_error_flat
+
+.read_err_flat:
+    pop cx
+    pop eax
+    jmp .read_error_flat
+
+.read_ready_flat:
+    pop cx
+
+    ; Read 256 words (512 bytes) to flat ES:EDI.
+    push ecx
+    push dx
+    mov dx, IDE_DATA
+    mov ecx, 256
+    a32 rep insw
+    pop dx
+    pop ecx
+
+    pop eax
+    inc eax
+    dec ecx
+    jmp .read_loop_flat
+
+.read_done_flat:
+    pop edi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    clc
+    ret
+
+.read_error_flat:
     pop edi
     pop edx
     pop ecx

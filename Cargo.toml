@@ -12,6 +12,10 @@ exclude = [
   "libs/*",
   # Dock uses kernel target (x86_64-anyos.json), built separately
   "system/compositor/dock",
+  # Standalone system programs (own workspace, kernel target, built separately)
+  "system/sessionhost",
+  "system/desktopd",
+  "system/crashdialog",
   # UEFI bootloader uses x86_64-unknown-uefi target, built separately
   "bootloader/uefi",
   # Non-Rust directories (C programs, placeholder stubs)

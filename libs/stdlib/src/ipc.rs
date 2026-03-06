@@ -137,6 +137,14 @@ pub fn shm_destroy(shm_id: u32) -> u32 {
     syscall1(SYS_SHM_DESTROY, shm_id as u64)
 }
 
+// ─── Session Host ──────────────────────────────────────────────────
+
+/// Register calling process as the session host. Returns 0 on success.
+/// Only the session host may spawn `.app` bundles.
+pub fn register_sessionhost() -> u32 {
+    syscall0(SYS_REGISTER_SESSIONHOST)
+}
+
 // ─── Compositor-Privileged ──────────────────────────────────────────
 
 /// Register calling process as the compositor. Returns 0 on success.
