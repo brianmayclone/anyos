@@ -2,7 +2,10 @@ use eframe::egui;
 
 mod config;
 mod platform;
+mod sidebar;
+mod statusbar;
 mod theme;
+mod toolbar;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
