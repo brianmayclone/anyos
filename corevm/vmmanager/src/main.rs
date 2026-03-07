@@ -2,10 +2,14 @@ use eframe::egui;
 
 mod app;
 mod config;
+mod dialogs;
+mod display;
+mod input;
 mod platform;
 mod sidebar;
 mod statusbar;
 mod theme;
+mod settings;
 mod toolbar;
 
 fn main() -> eframe::Result {
