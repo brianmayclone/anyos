@@ -388,7 +388,8 @@ impl Cpu {
         // CS.D only affects the decoder's default operand/address size.
         let pe = self.regs.cr0 & CR0_PE != 0;
         let lma = self.regs.read_msr(MSR_EFER) & EFER_LMA != 0;
-        self.mode = if pe && pg && lma {
+        let cs_long = self.regs.seg[SegReg::Cs as usize].long_mode;
+        self.mode = if pe && pg && lma && cs_long {
             Mode::LongMode
         } else if pe {
             Mode::ProtectedMode
@@ -397,6 +398,26 @@ impl Cpu {
         };
 
         // Sync MMU state will be done by the caller (VmEngine.run updates Mmu)
+
+        #[cfg(feature = "host_test")]
+        {
+            let old_lma_was = !lma; // just detect transitions
+            if lma && !cs_long {
+                // Compatibility sub-mode: LMA=1 but CS.L=0
+                // This is normal during Protected→Long mode transition
+                // (between MOV CR0 and the far JMP that loads a 64-bit CS)
+                eprintln!(
+                    "[corevm] MODE: Compatibility sub-mode (LMA=1, CS.L=0) cpu.mode={:?} decoder={:?} CR0={:08X} RIP={:08X} ESP={:08X}",
+                    self.mode, self.decoder.mode(), self.regs.cr0 as u32, self.regs.rip as u32, self.regs.sp() as u32,
+                );
+            }
+            if lma && cs_long && self.mode == Mode::LongMode {
+                eprintln!(
+                    "[corevm] MODE: Full Long Mode activated (CS.L=1) RIP={:016X} RSP={:016X} CS={:04X}",
+                    self.regs.rip, self.regs.sp(), self.regs.seg[SegReg::Cs as usize].selector,
+                );
+            }
+        }
     }
 
     /// Read a segment descriptor from the GDT given a selector.
