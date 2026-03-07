@@ -31,6 +31,22 @@ pub struct Player {
 }
 
 impl Player {
+    /// Create a placeholder player (no physics body). Used before physics_init.
+    pub fn new_uninit() -> Self {
+        Self {
+            body_id: u32::MAX,
+            yaw: 0.0,
+            pitch: 0.0,
+            selected_block: block::STONE,
+            forward: false,
+            backward: false,
+            left: false,
+            right: false,
+            jump: false,
+            descend: false,
+        }
+    }
+
     pub fn new(x: f32, y: f32, z: f32) -> Self {
         let body_id = physics::create_player(x, y, z, PLAYER_WIDTH, PLAYER_HEIGHT);
         Self {

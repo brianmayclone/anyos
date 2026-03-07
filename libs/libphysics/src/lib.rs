@@ -130,10 +130,7 @@ fn move_body(body: &mut Body, dx: f32, dy: f32, dz: f32) {
 pub extern "C" fn physics_init(query: extern "C" fn(i32, i32, i32) -> bool) {
     unsafe {
         WORLD_QUERY = Some(query);
-        if !INITIALIZED.load(Ordering::Relaxed) {
-            BODIES = Vec::new();
-            INITIALIZED.store(true, Ordering::Relaxed);
-        }
+        INITIALIZED.store(true, Ordering::Relaxed);
     }
 }
 

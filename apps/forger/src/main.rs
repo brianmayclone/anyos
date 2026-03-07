@@ -71,6 +71,7 @@ fn main() {
 
     gl::init();
     gl::gl_init(fb_w, fb_h);
+    gl::set_hw_backend(false);
     gl::enable(gl::GL_DEPTH_TEST);
     gl::depth_func(gl::GL_LESS);
     gl::enable(gl::GL_BLEND);
@@ -103,7 +104,7 @@ fn main() {
     fps_label.set_font_size(14);
     window.add(&fps_label);
 
-    // Store state before physics_init (world_query needs STATE)
+    // Store state with a dummy player first so world_query can access STATE.world
     unsafe {
         STATE = Some(GameState {
             canvas,
@@ -112,7 +113,7 @@ fn main() {
             fb_h,
             world,
             renderer,
-            player: Player::new(0.0, spawn_y, 0.0),
+            player: Player::new_uninit(),
             fps_frame_count: 0,
             fps_last_ms: anyos_std::sys::uptime_ms(),
             fps_display: 0,
@@ -123,7 +124,16 @@ fn main() {
         });
     }
 
+    // Now physics_init can use world_query which reads STATE.world
     physics::physics_init(world_query);
+
+    // Create the actual player body (after physics is initialized)
+    unsafe {
+        let s = STATE.as_mut().unwrap();
+        s.player = Player::new(0.0, spawn_y, 0.0);
+        // Start in fly mode so player doesn't fall while chunks load
+        physics::set_flying(s.player.body_id, true);
+    }
 
     // Keyboard handler
     let window_ref = unsafe { &STATE.as_ref().unwrap().window };
@@ -136,6 +146,7 @@ fn main() {
             k if k == b'a' as u32 || k == b'A' as u32 => s.player.left = true,
             k if k == b'd' as u32 || k == b'D' as u32 => s.player.right = true,
             k if k == b' ' as u32 => s.player.jump = true,
+            k if k == b'c' as u32 || k == b'C' as u32 => s.player.descend = true,
             k if k == b'f' as u32 || k == b'F' as u32 => s.player.toggle_fly(),
             k if k == b'1' as u32 => s.player.scroll_block(-1),
             k if k == b'2' as u32 => s.player.scroll_block(1),
@@ -204,7 +215,7 @@ fn game_tick() {
     // Physics/player update
     s.player.update(1.0 / 60.0);
 
-    // Clear movement flags (will be re-set by continuous key_down events)
+    // Clear movement flags (re-set by key repeat events)
     s.player.forward = false;
     s.player.backward = false;
     s.player.left = false;
