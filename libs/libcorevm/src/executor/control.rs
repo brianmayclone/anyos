@@ -289,7 +289,7 @@ pub fn exec_int(
     cpu: &mut Cpu,
     inst: &DecodedInst,
     memory: &mut GuestMemory,
-    mmu: &Mmu,
+    mmu: &mut Mmu,
     interrupts: &mut InterruptController,
 ) -> Result<()> {
     let vector = inst.immediate as u8;
@@ -301,7 +301,7 @@ pub fn exec_int3(
     cpu: &mut Cpu,
     inst: &DecodedInst,
     memory: &mut GuestMemory,
-    mmu: &Mmu,
+    mmu: &mut Mmu,
     interrupts: &mut InterruptController,
 ) -> Result<()> {
     dispatch_software_interrupt(cpu, inst, 3, memory, mmu, interrupts)
@@ -314,7 +314,7 @@ pub fn exec_into(
     cpu: &mut Cpu,
     inst: &DecodedInst,
     memory: &mut GuestMemory,
-    mmu: &Mmu,
+    mmu: &mut Mmu,
     interrupts: &mut InterruptController,
 ) -> Result<()> {
     if matches!(cpu.mode, Mode::LongMode) {
@@ -339,7 +339,7 @@ fn dispatch_software_interrupt(
     inst: &DecodedInst,
     vector: u8,
     memory: &mut GuestMemory,
-    mmu: &Mmu,
+    mmu: &mut Mmu,
     interrupts: &mut InterruptController,
 ) -> Result<()> {
     let next_rip = cpu.regs.rip.wrapping_add(inst.length as u64);
@@ -363,6 +363,18 @@ fn dispatch_software_interrupt(
             cpu.regs.rip = off as u64;
         }
         Mode::ProtectedMode => {
+            // In V86 mode, software INTs trap to the monitor if IOPL < 3.
+            if (cpu.regs.rflags & flags::VM) != 0 {
+                let iopl = ((cpu.regs.rflags & flags::IOPL_MASK) >> flags::IOPL_SHIFT) as u8;
+                if iopl < 3 {
+                    return Err(VmError::GeneralProtection(0));
+                }
+                // IOPL=3: deliver through IDT with full V86 frame.
+                cpu.regs.rip = next_rip;
+                cpu.deliver_interrupt(vector, false, None, memory, mmu, interrupts)?;
+                return Ok(());
+            }
+
             let entry = interrupts.read_idt_entry_protected(
                 vector,
                 cpu.regs.idtr.base,
@@ -487,6 +499,27 @@ pub fn exec_iret(
             cpu.regs.rflags |= flags::RFLAGS_FIXED;
         }
         Mode::ProtectedMode => {
+            // IRET while in V86 mode: behave like real-mode IRET.
+            if (cpu.regs.rflags & flags::VM) != 0 {
+                let iopl = ((cpu.regs.rflags & flags::IOPL_MASK) >> flags::IOPL_SHIFT) as u8;
+                if iopl < 3 {
+                    return Err(VmError::GeneralProtection(0));
+                }
+                // V86 IRET with IOPL=3: pop IP, CS, FLAGS (16-bit).
+                let ip = pop_val(cpu, OperandSize::Word, mmu, memory)?;
+                let cs = pop_val(cpu, OperandSize::Word, mmu, memory)? as u16;
+                let flags_val = pop_val(cpu, OperandSize::Word, mmu, memory)?;
+
+                cpu.regs.load_segment_real(SegReg::Cs, cs);
+                cpu.regs.rip = ip & 0xFFFF;
+                // Restore lower 16 bits of FLAGS but preserve VM, IOPL.
+                let preserve = flags::VM | flags::IOPL_MASK;
+                let new_flags = (cpu.regs.rflags & !(0xFFFF & !preserve))
+                    | (flags_val & (0xFFFF & !preserve));
+                cpu.regs.rflags = new_flags | flags::RFLAGS_FIXED;
+                return Ok(());
+            }
+
             let size = stack_operand_size(cpu, inst);
             let is_16 = size == OperandSize::Word;
             let ip = pop_val(cpu, size, mmu, memory)?;
@@ -496,39 +529,63 @@ pub fn exec_iret(
             let new_cpl = (cs & 0x3) as u8;
             let old_flags = cpu.regs.rflags;
 
-            cpu.load_segment_from_gdt(SegReg::Cs, cs, memory, mmu)?;
-            cpu.update_mode();
-            cpu.regs.rip = if is_16 { ip & 0xFFFF } else { ip & 0xFFFF_FFFF };
+            // V86 return: when CPL=0, 32-bit operand, and popped EFLAGS has VM=1,
+            // switch to Virtual 8086 mode. Pop ESP, SS, ES, DS, FS, GS and load
+            // all segments as real-mode segments.
+            if old_cpl == 0 && !is_16 && (flags_val & flags::VM) != 0 {
+                let new_esp = pop_val(cpu, size, mmu, memory)?;
+                let new_ss = pop_val(cpu, size, mmu, memory)? as u16;
+                let new_es = pop_val(cpu, size, mmu, memory)? as u16;
+                let new_ds = pop_val(cpu, size, mmu, memory)? as u16;
+                let new_fs = pop_val(cpu, size, mmu, memory)? as u16;
+                let new_gs = pop_val(cpu, size, mmu, memory)? as u16;
 
-            // Restore EFLAGS (preserve IOPL and IF based on CPL)
-            let mut new_flags = if is_16 {
-                (cpu.regs.rflags & !0xFFFF) | (flags_val & 0xFFFF)
+                cpu.regs.rip = ip & 0xFFFF;
+                cpu.regs.rflags = (flags_val & 0xFFFF_FFFF) | flags::RFLAGS_FIXED;
+                cpu.regs.set_sp(new_esp & 0xFFFF);
+                cpu.regs.load_segment_real(SegReg::Cs, cs);
+                cpu.regs.load_segment_real(SegReg::Ss, new_ss);
+                cpu.regs.load_segment_real(SegReg::Es, new_es);
+                cpu.regs.load_segment_real(SegReg::Ds, new_ds);
+                cpu.regs.load_segment_real(SegReg::Fs, new_fs);
+                cpu.regs.load_segment_real(SegReg::Gs, new_gs);
+                cpu.regs.cpl = 3;
+                cpu.mode = Mode::ProtectedMode; // still PM, but VM flag set
+                cpu.update_mode();
             } else {
-                flags_val & 0xFFFF_FFFF
-            };
-            new_flags |= flags::RFLAGS_FIXED;
-            if new_cpl > 0 {
-                // The target privilege level controls whether IF/IOPL can change.
-                new_flags = (new_flags & !flags::IOPL_MASK) | (old_flags & flags::IOPL_MASK);
-                let iopl = ((old_flags & flags::IOPL_MASK) >> flags::IOPL_SHIFT) as u8;
-                if new_cpl > iopl {
-                    new_flags = (new_flags & !flags::IF) | (old_flags & flags::IF);
-                }
-            }
-            cpu.regs.rflags = new_flags;
+                cpu.load_segment_from_gdt(SegReg::Cs, cs, memory, mmu)?;
+                cpu.update_mode();
+                cpu.regs.rip = if is_16 { ip & 0xFFFF } else { ip & 0xFFFF_FFFF };
 
-            // Outer-privilege return pops ESP and SS.
-            if new_cpl > old_cpl {
-                let sp = pop_val(cpu, size, mmu, memory)?;
-                let ss = pop_val(cpu, size, mmu, memory)? as u16;
-                if is_16 {
-                    cpu.regs.set_sp(sp & 0xFFFF);
+                // Restore EFLAGS (preserve IOPL and IF based on CPL)
+                let mut new_flags = if is_16 {
+                    (cpu.regs.rflags & !0xFFFF) | (flags_val & 0xFFFF)
                 } else {
-                    cpu.regs.set_sp(sp & 0xFFFF_FFFF);
+                    flags_val & 0xFFFF_FFFF
+                };
+                new_flags |= flags::RFLAGS_FIXED;
+                if new_cpl > 0 {
+                    new_flags = (new_flags & !flags::IOPL_MASK) | (old_flags & flags::IOPL_MASK);
+                    let iopl = ((old_flags & flags::IOPL_MASK) >> flags::IOPL_SHIFT) as u8;
+                    if new_cpl > iopl {
+                        new_flags = (new_flags & !flags::IF) | (old_flags & flags::IF);
+                    }
                 }
-                cpu.load_segment_from_gdt(SegReg::Ss, ss, memory, mmu)?;
+                cpu.regs.rflags = new_flags;
+
+                // Outer-privilege return pops ESP and SS.
+                if new_cpl > old_cpl {
+                    let sp = pop_val(cpu, size, mmu, memory)?;
+                    let ss = pop_val(cpu, size, mmu, memory)? as u16;
+                    if is_16 {
+                        cpu.regs.set_sp(sp & 0xFFFF);
+                    } else {
+                        cpu.regs.set_sp(sp & 0xFFFF_FFFF);
+                    }
+                    cpu.load_segment_from_gdt(SegReg::Ss, ss, memory, mmu)?;
+                }
+                cpu.regs.cpl = new_cpl;
             }
-            cpu.regs.cpl = new_cpl;
         }
         Mode::LongMode => {
             let size = OperandSize::Qword;

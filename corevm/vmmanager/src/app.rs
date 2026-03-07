@@ -7,10 +7,11 @@ use eframe::egui;
 use crate::config::VmConfig;
 use crate::dialogs::{AboutDialog, CreateDiskDialog, CreateVmDialog, SnapshotsDialog};
 use crate::display::DisplayWidget;
+use crate::filebrowser::FileBrowserDialog;
 use crate::input::{self, MouseCapture};
 use crate::platform;
 use crate::settings::SettingsDialog;
-use crate::sidebar::{self, SidebarLayout, VmState};
+use crate::sidebar::{self, SidebarAction, SidebarLayout, SidebarState, VmState};
 use crate::statusbar::{self, VmMetrics};
 use crate::theme;
 use crate::toolbar::{self, ToolbarAction};
@@ -71,6 +72,14 @@ impl VmEntry {
     }
 }
 
+/// Identifies which field a file dialog is picking for
+#[derive(Clone, Debug)]
+pub enum FilePickTarget {
+    SettingsDisk,
+    SettingsIso,
+    CreateDiskPath,
+}
+
 pub struct CoreVmApp {
     pub vms: Vec<VmEntry>,
     pub layout: SidebarLayout,
@@ -83,15 +92,17 @@ pub struct CoreVmApp {
     pub about_dialog: Option<AboutDialog>,
     pub snapshots_dialog: Option<SnapshotsDialog>,
     pub error_message: Option<String>,
+    pub file_browser: Option<FileBrowserDialog>,
+    pub file_pick_target: Option<FilePickTarget>,
+    pub sidebar_state: SidebarState,
 }
 
 impl CoreVmApp {
     pub fn new() -> Self {
         platform::ensure_dirs();
 
-        let layout = SidebarLayout::load(&platform::layout_dir().join("layout.conf"));
+        let mut layout = SidebarLayout::load(&platform::layout_dir().join("layout.conf"));
 
-        // Load all VM configs from config dir
         let mut vms = Vec::new();
         if let Ok(entries) = std::fs::read_dir(platform::config_dir()) {
             for entry in entries.flatten() {
@@ -103,6 +114,10 @@ impl CoreVmApp {
                 }
             }
         }
+
+        // Ensure all loaded VMs appear in the layout
+        let all_uuids: Vec<String> = vms.iter().map(|v| v.config.uuid.clone()).collect();
+        layout.ensure_all_vms(&all_uuids);
 
         Self {
             vms,
@@ -116,20 +131,20 @@ impl CoreVmApp {
             about_dialog: None,
             snapshots_dialog: None,
             error_message: None,
+            file_browser: None,
+            file_pick_target: None,
+            sidebar_state: SidebarState::default(),
         }
     }
 
-    /// Get a map of uuid -> name for sidebar
     fn vm_names(&self) -> HashMap<String, String> {
         self.vms.iter().map(|v| (v.config.uuid.clone(), v.config.name.clone())).collect()
     }
 
-    /// Get a map of uuid -> state for sidebar
     fn vm_states(&self) -> HashMap<String, VmState> {
         self.vms.iter().map(|v| (v.config.uuid.clone(), v.state)).collect()
     }
 
-    /// Find VM entry by UUID
     pub fn find_vm(&self, uuid: &str) -> Option<&VmEntry> {
         self.vms.iter().find(|v| v.config.uuid == uuid)
     }
@@ -138,7 +153,6 @@ impl CoreVmApp {
         self.vms.iter_mut().find(|v| v.config.uuid == uuid)
     }
 
-    /// Handle toolbar action
     fn handle_toolbar_action(&mut self, action: ToolbarAction) {
         match action {
             ToolbarAction::Start => {
@@ -181,23 +195,25 @@ impl CoreVmApp {
         }
     }
 
-    /// Get metrics for selected VM
     fn selected_metrics(&self) -> Option<VmMetrics> {
         let uuid = self.selected_vm.as_ref()?;
         let vm = self.find_vm(uuid)?;
-        if vm.state != VmState::Running {
-            return None;
-        }
+        if vm.state != VmState::Running { return None; }
+
+        let (mips, total_insn) = if let Some(ref ctl) = vm.control {
+            let mips_bits = ctl.mips.load(std::sync::atomic::Ordering::Relaxed);
+            let mips = f64::from_bits(mips_bits);
+            let total = ctl.total_instructions.load(std::sync::atomic::Ordering::Relaxed);
+            (mips, total)
+        } else {
+            (0.0, 0)
+        };
+
         Some(VmMetrics {
             state_label: "Running",
-            mips: vm.mips,
-            ipc: vm.ipc,
-            cpu_mode: match vm.cpu_mode {
-                0 => "Real Mode",
-                1 => "Protected Mode",
-                2 => "Long Mode",
-                _ => "Unknown",
-            },
+            mips,
+            ipc: 0.0,
+            cpu_mode: "N/A",
             jit_blocks: 0,
             jit_hit_rate: 0.0,
         })
@@ -208,10 +224,9 @@ impl eframe::App for CoreVmApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         theme::apply_theme(ctx);
 
-        // Collect deferred actions to avoid borrow conflicts
         let mut deferred_action: Option<ToolbarAction> = None;
 
-        // Menu bar (top-most)
+        // Menu bar
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -278,18 +293,67 @@ impl eframe::App for CoreVmApp {
             });
         });
 
-        // Status bar (bottom, must be before CentralPanel)
+        // Status bar
         let metrics = self.selected_metrics();
         statusbar::render_statusbar(ctx, metrics.as_ref(), self.selected_vm.is_some());
 
-        // Sidebar (left)
+        // Sidebar
         let names = self.vm_names();
         let states = self.vm_states();
-        sidebar::render_sidebar(ctx, &mut self.layout, &names, &states, &mut self.selected_vm);
+        let sidebar_actions = sidebar::render_sidebar(
+            ctx, &mut self.layout, &names, &states,
+            &mut self.selected_vm, &mut self.sidebar_state,
+        );
 
-        // Toolbar + Central content
+        // Handle sidebar actions
+        for action in sidebar_actions {
+            match action {
+                SidebarAction::MoveVm { vm_uuid, target_folder } => {
+                    self.layout.move_vm(&vm_uuid, target_folder);
+                    let _ = self.layout.save(&platform::layout_dir().join("layout.conf"));
+                }
+                SidebarAction::CreateFolder => {
+                    // Handled inline in sidebar
+                }
+                SidebarAction::RenameFolder(_) => {
+                    // Handled inline in sidebar
+                }
+                SidebarAction::DeleteFolder(idx) => {
+                    if idx < self.layout.folders.len() {
+                        let orphans: Vec<String> = self.layout.folders[idx].vm_uuids.drain(..).collect();
+                        self.layout.folders.remove(idx);
+                        // Move orphaned VMs to first folder
+                        if !self.layout.folders.is_empty() {
+                            self.layout.folders[0].vm_uuids.extend(orphans);
+                        } else {
+                            self.layout.root_vms.extend(orphans);
+                        }
+                        let _ = self.layout.save(&platform::layout_dir().join("layout.conf"));
+                    }
+                }
+                SidebarAction::DeleteVm(uuid) => {
+                    // Only allow deleting stopped VMs
+                    let is_stopped = self.find_vm(&uuid)
+                        .map_or(true, |v| v.state == VmState::Stopped);
+                    if is_stopped {
+                        self.layout.remove_vm(&uuid);
+                        // Remove config file
+                        let config_path = platform::config_dir().join(format!("{}.conf", uuid));
+                        let _ = std::fs::remove_file(&config_path);
+                        self.vms.retain(|v| v.config.uuid != uuid);
+                        if self.selected_vm.as_deref() == Some(&uuid) {
+                            self.selected_vm = None;
+                        }
+                        let _ = self.layout.save(&platform::layout_dir().join("layout.conf"));
+                    } else {
+                        self.error_message = Some("Cannot delete a running VM. Stop it first.".into());
+                    }
+                }
+            }
+        }
+
+        // Central panel
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Toolbar at top
             let (vm_selected, vm_running, vm_paused) = if let Some(uuid) = &self.selected_vm {
                 if let Some(vm) = self.find_vm(uuid) {
                     (true, vm.state == VmState::Running, vm.state == VmState::Paused)
@@ -305,22 +369,18 @@ impl eframe::App for CoreVmApp {
             }
             ui.separator();
 
-            // Main content area
             if let Some(uuid) = &self.selected_vm.clone() {
                 if let Some(vm) = self.find_vm(uuid) {
                     if vm.state == VmState::Running || vm.state == VmState::Paused {
-                        // Display framebuffer
                         let fb = vm.framebuffer.clone();
                         let vm_handle = vm.vm_handle;
                         if let Ok(fb_data) = fb.lock() {
                             self.display.show(ui, ctx, &fb_data);
                         }
-                        // Handle keyboard input
                         if let Some(handle) = vm_handle {
                             input::handle_keyboard_events(ctx, handle);
                         }
                     } else {
-                        // Summary panel
                         render_summary(ui, vm, &mut deferred_action);
                     }
                 }
@@ -336,11 +396,50 @@ impl eframe::App for CoreVmApp {
             self.handle_toolbar_action(action);
         }
 
-        // Show dialogs
+        // ── File browser dialog ──
+        let mut file_picked: Option<String> = None;
+        if let Some(ref mut browser) = self.file_browser {
+            if !browser.show(ctx) {
+                file_picked = browser.picked.take();
+            }
+        }
+        if let Some(path) = file_picked {
+            match &self.file_pick_target {
+                Some(FilePickTarget::SettingsDisk) => {
+                    if let Some(ref mut dlg) = self.settings_dialog {
+                        dlg.set_disk_image(path);
+                    }
+                }
+                Some(FilePickTarget::SettingsIso) => {
+                    if let Some(ref mut dlg) = self.settings_dialog {
+                        dlg.set_iso_image(path);
+                    }
+                }
+                Some(FilePickTarget::CreateDiskPath) => {
+                    if let Some(ref mut dlg) = self.create_disk_dialog {
+                        dlg.set_path(path);
+                    }
+                }
+                None => {}
+            }
+            self.file_pick_target = None;
+            self.file_browser = None;
+        }
+        // Clean up closed browser
+        if self.file_browser.as_ref().map_or(false, |b| !b.open) {
+            self.file_browser = None;
+            self.file_pick_target = None;
+        }
+
+        // ── Dialogs ──
 
         // Settings dialog
+        let mut browse_target: Option<FilePickTarget> = None;
         if let Some(ref mut dialog) = self.settings_dialog {
-            if !dialog.show(ctx) {
+            if let Some(target) = dialog.show_with_browse(ctx) {
+                browse_target = Some(target);
+            }
+            if !dialog.is_open() {
                 if dialog.saved {
                     let config = dialog.config().clone();
                     if let Some(uuid) = &self.selected_vm.clone() {
@@ -353,6 +452,18 @@ impl eframe::App for CoreVmApp {
                 self.settings_dialog = None;
             }
         }
+        if let Some(target) = browse_target {
+            self.file_pick_target = Some(target.clone());
+            match &target {
+                FilePickTarget::SettingsDisk => {
+                    self.file_browser = Some(FileBrowserDialog::new_open("Select Disk Image", &["img", "raw", "qcow2"]));
+                }
+                FilePickTarget::SettingsIso => {
+                    self.file_browser = Some(FileBrowserDialog::new_open("Select ISO Image", &["iso"]));
+                }
+                _ => {}
+            }
+        }
 
         // Create VM dialog
         if let Some(ref mut dialog) = self.create_vm_dialog {
@@ -360,7 +471,7 @@ impl eframe::App for CoreVmApp {
                 if let Some(config) = dialog.created.take() {
                     let uuid = config.uuid.clone();
                     let _ = config.save(&platform::config_dir());
-                    self.layout.root_vms.push(uuid.clone());
+                    self.layout.add_vm(uuid.clone());
                     let _ = self.layout.save(&platform::layout_dir().join("layout.conf"));
                     self.vms.push(VmEntry::new(config));
                     self.selected_vm = Some(uuid);
@@ -370,10 +481,18 @@ impl eframe::App for CoreVmApp {
         }
 
         // Create Disk dialog
+        let mut disk_browse = false;
         if let Some(ref mut dialog) = self.create_disk_dialog {
-            if !dialog.show(ctx) {
+            if dialog.show_with_browse(ctx) {
+                disk_browse = true;
+            }
+            if !dialog.is_open() {
                 self.create_disk_dialog = None;
             }
+        }
+        if disk_browse {
+            self.file_pick_target = Some(FilePickTarget::CreateDiskPath);
+            self.file_browser = Some(FileBrowserDialog::new_save("Save Disk Image", &["img", "raw"]));
         }
 
         // About dialog
@@ -390,95 +509,182 @@ impl eframe::App for CoreVmApp {
             }
         }
 
-        // Error toast
+        // Error dialog
         if let Some(msg) = self.error_message.clone() {
             let mut dismiss = false;
             egui::Window::new("Error")
                 .collapsible(false)
                 .resizable(false)
+                .min_width(350.0)
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_pos(ctx.screen_rect().center())
                 .show(ctx, |ui| {
-                    ui.colored_label(egui::Color32::from_rgb(244, 67, 54), &msg);
-                    if ui.button("OK").clicked() {
-                        dismiss = true;
-                    }
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("⚠").size(20.0).color(theme::ERROR_RED));
+                        ui.add_space(4.0);
+                        ui.label(&msg);
+                    });
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(egui::Button::new("OK").fill(theme::ACCENT_BLUE).min_size(egui::vec2(80.0, 28.0))).clicked() {
+                                dismiss = true;
+                            }
+                        });
+                    });
                 });
             if dismiss {
                 self.error_message = None;
             }
         }
 
-        // Request repaint for live updates when VM is running
-        if self.selected_vm.as_ref()
-            .and_then(|u| self.find_vm(u))
-            .map_or(false, |v| v.state == VmState::Running)
-        {
+        // Check if any running VM thread has exited
+        for vm in &mut self.vms {
+            if vm.state == VmState::Running {
+                if let Some(ref ctl) = vm.control {
+                    if ctl.exited.load(std::sync::atomic::Ordering::Relaxed) {
+                        let reason = ctl.exit_reason.load(std::sync::atomic::Ordering::Relaxed);
+                        vm.state = VmState::Stopped;
+                        self.error_message = Some(format!(
+                            "VM '{}' stopped unexpectedly (exit reason: {})",
+                            vm.config.name, reason
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Repaint when VM running
+        if self.vms.iter().any(|v| v.state == VmState::Running) {
             ctx.request_repaint();
         }
     }
 }
 
-/// Summary panel showing VM details with state-colored status
 fn render_summary(ui: &mut egui::Ui, vm: &VmEntry, deferred_action: &mut Option<ToolbarAction>) {
-    ui.vertical(|ui| {
-        ui.add_space(20.0);
-        ui.heading(&vm.config.name);
+    let available = ui.available_size();
+
+    // --- Dark "screen" placeholder (VMware-style) ---
+    let screen_aspect = 4.0 / 3.0;
+    let max_screen_h = (available.y - 120.0).max(200.0);
+    let max_screen_w = (available.x - 40.0).max(300.0);
+    let (screen_w, screen_h) = if max_screen_w / max_screen_h > screen_aspect {
+        (max_screen_h * screen_aspect, max_screen_h)
+    } else {
+        (max_screen_w, max_screen_w / screen_aspect)
+    };
+
+    ui.vertical_centered(|ui| {
         ui.add_space(10.0);
 
+        // Dark screen rectangle
+        let (rect, _response) = ui.allocate_exact_size(
+            egui::vec2(screen_w, screen_h),
+            egui::Sense::hover(),
+        );
+
+        let painter = ui.painter_at(rect);
+
+        // Screen background — dark gradient
+        painter.rect_filled(rect, 4.0, egui::Color32::from_rgb(18, 18, 22));
+
+        // Subtle border
+        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 65)));
+
+        // VM name centered in screen
+        painter.text(
+            rect.center() - egui::vec2(0.0, 30.0),
+            egui::Align2::CENTER_CENTER,
+            &vm.config.name,
+            egui::FontId::proportional(24.0),
+            egui::Color32::from_rgb(120, 120, 130),
+        );
+
+        // State label
         let (state_label, state_color) = match vm.state {
             VmState::Running => ("Running", egui::Color32::from_rgb(76, 175, 80)),
             VmState::Paused => ("Paused", egui::Color32::from_rgb(255, 165, 0)),
-            VmState::Stopped => ("Stopped", egui::Color32::from_rgb(128, 128, 128)),
+            VmState::Stopped => ("Powered Off", egui::Color32::from_rgb(100, 100, 110)),
         };
+        painter.text(
+            rect.center() + egui::vec2(0.0, 10.0),
+            egui::Align2::CENTER_CENTER,
+            state_label,
+            egui::FontId::proportional(14.0),
+            state_color,
+        );
 
-        egui::Grid::new("vm_summary")
-            .num_columns(2)
-            .spacing([20.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("Status:");
-                ui.colored_label(state_color, state_label);
-                ui.end_row();
-
-                ui.label("RAM:");
-                ui.label(format!("{} MB", vm.config.ram_mb));
-                ui.end_row();
-
-                ui.label("CPU Cores:");
-                ui.label(format!("{}", vm.config.cpu_cores));
-                ui.end_row();
-
-                ui.label("BIOS:");
-                ui.label(format!("{:?}", vm.config.bios_type));
-                ui.end_row();
-
-                ui.label("JIT:");
-                ui.label(if vm.config.jit_enabled { "Enabled" } else { "Disabled" });
-                ui.end_row();
-
-                ui.label("Disk:");
-                ui.label(if vm.config.disk_image.is_empty() { "None" } else { &vm.config.disk_image });
-                ui.end_row();
-
-                ui.label("ISO:");
-                ui.label(if vm.config.iso_image.is_empty() { "None" } else { &vm.config.iso_image });
-                ui.end_row();
-
-                ui.label("Boot Order:");
-                ui.label(format!("{:?}", vm.config.boot_order));
-                ui.end_row();
-
-                ui.label("Network:");
-                ui.label(if vm.config.net_enabled {
-                    format!("{:?}", vm.config.net_mode)
-                } else {
-                    "Disabled".into()
-                });
-                ui.end_row();
-            });
-
-        ui.add_space(20.0);
-
+        // Small power icon hint
         if vm.state == VmState::Stopped {
-            if ui.add(egui::Button::new("▶ Start VM").min_size(egui::vec2(120.0, 40.0))).clicked() {
+            painter.text(
+                rect.center() + egui::vec2(0.0, 40.0),
+                egui::Align2::CENTER_CENTER,
+                "Click ▶ Start to power on this virtual machine",
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_rgb(80, 80, 90),
+            );
+        }
+
+        ui.add_space(8.0);
+
+        // --- Info bar below screen ---
+        ui.horizontal(|ui| {
+            let info_style = egui::Color32::from_rgb(170, 170, 180);
+            let dim_style = egui::Color32::from_rgb(100, 100, 110);
+
+            ui.colored_label(dim_style, "RAM:");
+            ui.colored_label(info_style, format!("{} MB", vm.config.ram_mb));
+            ui.add_space(12.0);
+
+            ui.colored_label(dim_style, "CPUs:");
+            ui.colored_label(info_style, format!("{}", vm.config.cpu_cores));
+            ui.add_space(12.0);
+
+            ui.colored_label(dim_style, "BIOS:");
+            ui.colored_label(info_style, format!("{:?}", vm.config.bios_type));
+            ui.add_space(12.0);
+
+            if vm.config.jit_enabled {
+                ui.colored_label(info_style, "JIT");
+                ui.add_space(12.0);
+            }
+
+            if !vm.config.disk_image.is_empty() {
+                ui.colored_label(dim_style, "Disk:");
+                let disk_name = std::path::Path::new(&vm.config.disk_image)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| vm.config.disk_image.clone());
+                ui.colored_label(info_style, disk_name);
+                ui.add_space(12.0);
+            }
+
+            if !vm.config.iso_image.is_empty() {
+                ui.colored_label(dim_style, "ISO:");
+                let iso_name = std::path::Path::new(&vm.config.iso_image)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| vm.config.iso_image.clone());
+                ui.colored_label(info_style, iso_name);
+            }
+        });
+
+        ui.add_space(8.0);
+
+        // Start button
+        if vm.state == VmState::Stopped {
+            if ui.add(
+                egui::Button::new(
+                    egui::RichText::new("▶  Power On").size(16.0).color(egui::Color32::WHITE),
+                )
+                .fill(theme::ACCENT_BLUE)
+                .min_size(egui::vec2(160.0, 40.0)),
+            )
+            .clicked()
+            {
                 *deferred_action = Some(ToolbarAction::Start);
             }
         }

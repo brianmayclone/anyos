@@ -35,11 +35,27 @@ pub fn bios_search_paths() -> Vec<PathBuf> {
         paths.push(d.to_path_buf());
     }
 
+    // Bundled BIOS in assets/bios/ next to the vmmanager crate
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    paths.push(manifest_dir.join("assets/bios"));
+
+    // Project source tree: libs/libcorevm/bios/ relative to the vmmanager crate
+    // vmmanager is at corevm/vmmanager, project root is ../../
+    if let Some(project_root) = manifest_dir.parent().and_then(|p| p.parent()) {
+        paths.push(project_root.join("libs/libcorevm/bios"));
+        paths.push(project_root.join("build"));
+    }
+
     #[cfg(target_os = "linux")]
     {
         paths.push(PathBuf::from("/usr/share/corevm/bios"));
         paths.push(PathBuf::from("/usr/local/share/corevm/bios"));
     }
+
+    // SeaBIOS from qemu (WSL/Linux)
+    paths.push(PathBuf::from("/mnt/c/Program Files/qemu/share"));
+    paths.push(PathBuf::from("/usr/share/seabios"));
+    paths.push(PathBuf::from("/usr/share/qemu"));
 
     paths
 }

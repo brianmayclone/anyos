@@ -9,10 +9,16 @@ use crate::display;
 use crate::platform;
 use crate::sidebar::VmState;
 
-/// Shared control flags for the VM thread
+use std::sync::atomic::AtomicU64;
+
+/// Shared control flags and metrics for the VM thread
 pub struct VmControl {
     pub stop: AtomicBool,
     pub pause: AtomicBool,
+    pub exited: AtomicBool,
+    pub exit_reason: AtomicU64,
+    pub total_instructions: AtomicU64,
+    pub mips: AtomicU64, // stored as f64 bits
 }
 
 /// Start a VM. Sets up libcorevm, spawns execution thread.
@@ -59,6 +65,10 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     let control = Arc::new(VmControl {
         stop: AtomicBool::new(false),
         pause: AtomicBool::new(false),
+        exited: AtomicBool::new(false),
+        exit_reason: AtomicU64::new(0),
+        total_instructions: AtomicU64::new(0),
+        mips: AtomicU64::new(0),
     });
 
     let fb = entry.framebuffer.clone();
@@ -110,6 +120,29 @@ pub fn resume_vm(entry: &mut VmEntry) {
     entry.state = VmState::Running;
 }
 
+/// Run a batch of instructions, polling IDE IRQs every small quantum.
+/// This matches test_vmd's `run_batch_with_irq_poll` approach.
+fn run_batch_with_irq_poll(handle: u64, batch: u64) -> u32 {
+    const IDE_IRQ_POLL_QUANTUM: u64 = 1_024;
+    let mut remaining = batch.max(1);
+    let mut exit_code = 2;
+
+    while remaining > 0 {
+        let chunk = remaining.min(IDE_IRQ_POLL_QUANTUM);
+        exit_code = libcorevm::corevm_run(handle, chunk);
+        if libcorevm::corevm_ide_irq_raised(handle) != 0 {
+            libcorevm::corevm_pic_raise_irq(handle, 14);
+            libcorevm::corevm_ide_clear_irq(handle);
+        }
+        if exit_code != 2 {
+            break;
+        }
+        remaining -= chunk;
+    }
+
+    exit_code
+}
+
 /// The main VM execution loop (runs in dedicated thread)
 fn vm_run_loop(
     handle: u64,
@@ -119,6 +152,9 @@ fn vm_run_loop(
     let batch_size: u64 = 500_000;
     let mut last_fb_update = Instant::now();
     let fb_interval = Duration::from_millis(16); // ~60fps
+    let mut last_metrics = Instant::now();
+    let mut instructions_since_last: u64 = 0;
+    let mut total: u64 = 0;
 
     loop {
         if control.stop.load(Ordering::Relaxed) {
@@ -130,17 +166,13 @@ fn vm_run_loop(
             continue;
         }
 
-        // Run a batch of instructions
-        let exit_reason = libcorevm::corevm_run(handle, batch_size);
-
-        // Poll IDE IRQ
-        if libcorevm::corevm_ide_irq_raised(handle) != 0 {
-            libcorevm::corevm_pic_raise_irq(handle, 14);
-            libcorevm::corevm_ide_clear_irq(handle);
-        }
-
-        // Tick PIT timer
-        libcorevm::corevm_pit_tick(handle);
+        // Run a batch with frequent IDE IRQ polling (every 1024 instructions).
+        // Do NOT call corevm_pit_tick — corevm_run handles PIT internally
+        // via wall-clock time. Calling pit_tick sets pit_is_externally_clocked
+        // which disables the automatic PIT.
+        let exit_reason = run_batch_with_irq_poll(handle, batch_size);
+        instructions_since_last += batch_size;
+        total += batch_size;
 
         // Update framebuffer at ~60fps
         if last_fb_update.elapsed() >= fb_interval {
@@ -148,15 +180,45 @@ fn vm_run_loop(
             last_fb_update = Instant::now();
         }
 
-        // exit_reason: 0 = ok, 1 = HLT, >=2 = fatal
-        if exit_reason >= 2 {
-            update_framebuffer(handle, &fb);
-            break;
+        // Update metrics every 500ms
+        let metrics_elapsed = last_metrics.elapsed();
+        if metrics_elapsed >= Duration::from_millis(500) {
+            let secs = metrics_elapsed.as_secs_f64();
+            let mips_val = (instructions_since_last as f64) / secs / 1_000_000.0;
+            control.mips.store(mips_val.to_bits(), Ordering::Relaxed);
+            control.total_instructions.store(total, Ordering::Relaxed);
+            instructions_since_last = 0;
+            last_metrics = Instant::now();
         }
 
-        if exit_reason == 1 {
-            // HLT: sleep briefly, interrupts might wake it
-            thread::sleep(Duration::from_millis(1));
+        match exit_reason {
+            2 => {
+                // InstructionLimit — normal, batch completed, continue
+            }
+            0 => {
+                // HLT — sleep briefly, interrupts might wake it
+                thread::sleep(Duration::from_millis(1));
+            }
+            1 => {
+                // Exception — fatal, stop VM
+                update_framebuffer(handle, &fb);
+                control.exit_reason.store(exit_reason as u64, Ordering::Relaxed);
+                control.exited.store(true, Ordering::Relaxed);
+                break;
+            }
+            4 => {
+                // StopRequested — clean shutdown
+                update_framebuffer(handle, &fb);
+                control.exited.store(true, Ordering::Relaxed);
+                break;
+            }
+            _ => {
+                // Breakpoint, PS2Reset, etc.
+                update_framebuffer(handle, &fb);
+                control.exit_reason.store(exit_reason as u64, Ordering::Relaxed);
+                control.exited.store(true, Ordering::Relaxed);
+                break;
+            }
         }
     }
 }

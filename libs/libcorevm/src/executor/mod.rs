@@ -57,7 +57,7 @@ pub fn execute(
     cpu: &mut Cpu,
     inst: &DecodedInst,
     memory: &mut GuestMemory,
-    mmu: &Mmu,
+    mmu: &mut Mmu,
     io: &mut IoDispatch,
     interrupts: &mut InterruptController,
 ) -> Result<()> {
@@ -79,7 +79,7 @@ fn exec_primary(
     cpu: &mut Cpu,
     inst: &DecodedInst,
     memory: &mut GuestMemory,
-    mmu: &Mmu,
+    mmu: &mut Mmu,
     io: &mut IoDispatch,
     interrupts: &mut InterruptController,
 ) -> Result<()> {

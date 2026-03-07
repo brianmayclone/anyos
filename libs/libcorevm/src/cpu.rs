@@ -621,9 +621,136 @@ impl Cpu {
                 crate::debugger::enter_prompt(self, memory, mmu, phys_addr, "breakpoint");
             }
 
+            // ── Hang detection trap: detect `jmp $` (EB FE) spin loops ──
+            #[cfg(feature = "host_test")]
+            if self.prev_exec_rip == self.regs.rip && self.regs.rip >= 0x80000000 {
+                use crate::memory::MemoryBus;
+                let _chk_p = mmu.translate_linear(self.regs.rip, self.regs.cr3, crate::memory::AccessType::Read, 0, memory).unwrap_or(0);
+                let _b0 = memory.read_u8(_chk_p).unwrap_or(0);
+                let _b1 = memory.read_u8(_chk_p + 1).unwrap_or(0);
+            if _b0 == 0xEB && _b1 == 0xFE {
+                fn trl2(mmu: &Mmu, cr3: u64, va: u64, mem: &GuestMemory) -> u64 {
+                    mmu.translate_linear(va, cr3, crate::memory::AccessType::Read, 0, mem).unwrap_or(0)
+                }
+                fn rd32h(mmu: &Mmu, cr3: u64, va: u64, mem: &GuestMemory) -> u32 {
+                    mem.read_u32(trl2(mmu, cr3, va, mem)).unwrap_or(0)
+                }
+                let cr3 = self.regs.cr3;
+                eprintln!("[HANG-TRAP] RIP={:08X} EAX={:08X} ECX={:08X} EDX={:08X} ESP={:08X} EBP={:08X} CR2={:08X}",
+                    self.regs.rip as u32, self.regs.gpr[0] as u32, self.regs.gpr[1] as u32,
+                    self.regs.gpr[2] as u32, self.regs.sp() as u32, self.regs.gpr[5] as u32, self.regs.cr2 as u32);
+                // Walk EBP chain
+                let mut ebp = self.regs.gpr[5];
+                for frame in 0..15u32 {
+                    let next = rd32h(mmu, cr3, ebp, memory) as u64;
+                    let ret = rd32h(mmu, cr3, ebp + 4, memory);
+                    let a0 = rd32h(mmu, cr3, ebp + 8, memory);
+                    let a1 = rd32h(mmu, cr3, ebp + 12, memory);
+                    let a2 = rd32h(mmu, cr3, ebp + 16, memory);
+                    let a3 = rd32h(mmu, cr3, ebp + 20, memory);
+                    let a4 = rd32h(mmu, cr3, ebp + 24, memory);
+                    eprintln!("[HANG-TRAP] frame{}: EBP={:08X} RET={:08X} args: {:08X} {:08X} {:08X} {:08X} {:08X}",
+                        frame, ebp as u32, ret, a0, a1, a2, a3, a4);
+                    if next == 0 || next < 0x80000000 { break; }
+                    ebp = next;
+                }
+                // PE checksum verification of ntdll.dll mapped at VA 0x34000
+                fn rd8h(mmu: &Mmu, cr3: u64, va: u64, mem: &GuestMemory) -> u8 {
+                    mem.read_u8(trl2(mmu, cr3, va, mem)).unwrap_or(0)
+                }
+                fn rd16h(mmu: &Mmu, cr3: u64, va: u64, mem: &GuestMemory) -> u16 {
+                    mem.read_u16(trl2(mmu, cr3, va, mem)).unwrap_or(0)
+                }
+                let base_va = 0x34000u64;
+                // Check MZ header
+                let mz = rd16h(mmu, cr3, base_va, memory);
+                eprintln!("[HANG-TRAP] PE check: MZ={:04X}", mz);
+                if mz == 0x5A4D {
+                    let pe_off = rd32h(mmu, cr3, base_va + 0x3C, memory) as u64;
+                    let pe_sig = rd32h(mmu, cr3, base_va + pe_off, memory);
+                    eprintln!("[HANG-TRAP] PE sig={:08X} at offset {:X}", pe_sig, pe_off);
+                    if pe_sig == 0x4550 {
+                        // OptionalHeader starts at pe_off + 24
+                        let opt_off = pe_off + 24;
+                        let size_of_image = rd32h(mmu, cr3, base_va + opt_off + 56, memory);
+                        let checksum_off = opt_off + 64;
+                        let stored_checksum = rd32h(mmu, cr3, base_va + checksum_off, memory);
+                        let size_of_headers = rd32h(mmu, cr3, base_va + opt_off + 60, memory);
+                        eprintln!("[HANG-TRAP] SizeOfImage={:X} SizeOfHeaders={:X} StoredChecksum={:08X}",
+                            size_of_image, size_of_headers, stored_checksum);
+
+                        // Compute checksum over mapped image (NOT file image)
+                        // Windows computes it over the mapped image in memory
+                        let mut sum: u32 = 0;
+                        let checksum_va = base_va + checksum_off;
+                        let img_size = size_of_image as u64;
+                        for i in (0..img_size).step_by(2) {
+                            let va = base_va + i;
+                            // Skip the 4-byte checksum field
+                            if va >= checksum_va && va < checksum_va + 4 { continue; }
+                            let w = rd16h(mmu, cr3, va, memory) as u32;
+                            sum += w;
+                            sum = (sum >> 16) + (sum & 0xFFFF);
+                        }
+                        sum = (sum >> 16) + (sum & 0xFFFF);
+                        sum += img_size as u32;
+                        eprintln!("[HANG-TRAP] ComputedChecksum={:08X}", sum);
+
+                        // Dump first 256 bytes of the image
+                        eprint!("[HANG-TRAP] First 64 bytes: ");
+                        for i in 0..64u64 {
+                            eprint!("{:02X} ", rd8h(mmu, cr3, base_va + i, memory));
+                        }
+                        eprintln!();
+
+                        // Compare with ISO: find ntdll.dll on the ISO
+                        // Dump section headers
+                        let num_sections = rd16h(mmu, cr3, base_va + pe_off + 6, memory);
+                        let opt_size = rd16h(mmu, cr3, base_va + pe_off + 20, memory);
+                        let sec_start = pe_off + 24 + opt_size as u64;
+                        eprintln!("[HANG-TRAP] Sections: {} at offset {:X}", num_sections, sec_start);
+                        for s in 0..num_sections.min(8) {
+                            let so = sec_start + s as u64 * 40;
+                            let vsize = rd32h(mmu, cr3, base_va + so + 8, memory);
+                            let vaddr = rd32h(mmu, cr3, base_va + so + 12, memory);
+                            let rawsz = rd32h(mmu, cr3, base_va + so + 16, memory);
+                            let rawptr = rd32h(mmu, cr3, base_va + so + 20, memory);
+                            let mut name = [0u8; 8];
+                            for k in 0..8 { name[k] = rd8h(mmu, cr3, base_va + so + k as u64, memory); }
+                            eprintln!("[HANG-TRAP]  sec{}: name={} VA={:08X} VS={:08X} Raw={:08X} RS={:08X}",
+                                s, core::str::from_utf8(&name).unwrap_or("?"), vaddr, vsize, rawptr, rawsz);
+                        }
+                    }
+                }
+                eprintln!("[HANG-TRAP] Last non-PF exceptions:");
+                let n = self.exc_ring_nopf.len();
+                for i in 0..n.min(8) {
+                    let idx = (self.exc_ring_nopf_idx + n - 1 - i) % n;
+                    let (rip, vec, ec, cr2_v) = self.exc_ring_nopf[idx];
+                    if rip == 0 && vec == 0 { continue; }
+                    eprintln!("[HANG-TRAP]  [{}] vec={} err={:08X} RIP={:08X} CR2={:08X}", i, vec, ec, rip as u32, cr2_v as u32);
+                }
+            } // inner: EB FE check
+            } // outer: prev_exec_rip == rip
+
             // ── Bugcheck halt trap ──
             #[cfg(feature = "host_test")]
-            if self.regs.rip == 0x8019C6D1 && self.prev_exec_rip != 0x8019C6D1 {
+            if false {
+                use crate::memory::MemoryBus;
+                fn trl(mmu: &Mmu, cr3: u64, va: u64, mem: &GuestMemory) -> u64 {
+                    mmu.translate_linear(va, cr3, crate::memory::AccessType::Read, 0, mem).unwrap_or(0)
+                }
+                fn rd8(mmu: &Mmu, cr3: u64, va: u64, mem: &GuestMemory) -> u8 {
+                    mem.read_u8(trl(mmu, cr3, va, mem)).unwrap_or(0)
+                }
+                fn rd16(mmu: &Mmu, cr3: u64, va: u64, mem: &GuestMemory) -> u16 {
+                    mem.read_u16(trl(mmu, cr3, va, mem)).unwrap_or(0)
+                }
+                fn rd32(mmu: &Mmu, cr3: u64, va: u64, mem: &GuestMemory) -> u32 {
+                    mem.read_u32(trl(mmu, cr3, va, mem)).unwrap_or(0)
+                }
+
+                let cr3 = self.regs.cr3;
                 eprintln!("[BUGCHECK-TRAP] First hit! ic={} from prev_rip={:08X}", self.instruction_count, self.prev_exec_rip);
                 eprintln!("[BUGCHECK-TRAP] EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X}",
                     self.regs.gpr[0] as u32, self.regs.gpr[3] as u32,
@@ -631,15 +758,121 @@ impl Cpu {
                 eprintln!("[BUGCHECK-TRAP] ESP={:08X} EBP={:08X} ESI={:08X} EDI={:08X}",
                     self.regs.gpr[4] as u32, self.regs.gpr[5] as u32,
                     self.regs.gpr[6] as u32, self.regs.gpr[7] as u32);
+
+                // Walk EBP chain to find KeBugCheckEx args (0x4C, C0000221, ...)
+                // We scan each frame's args looking for the pattern.
+                let mut bugcheck_code = 0u32;
+                let mut param1 = 0u32;
+                let mut param2 = 0u32;
+                let mut param3 = 0u32;
+                {
+                    let mut ebp_scan = self.regs.gpr[5];
+                    for _ in 0..15u32 {
+                        let a0 = rd32(mmu, cr3, ebp_scan + 8, memory);
+                        let a1 = rd32(mmu, cr3, ebp_scan + 12, memory);
+                        let a2 = rd32(mmu, cr3, ebp_scan + 16, memory);
+                        let a3 = rd32(mmu, cr3, ebp_scan + 20, memory);
+                        if a0 == 0x4C && a1 == 0xC0000221 {
+                            bugcheck_code = a0;
+                            param1 = a1;
+                            param2 = a2;
+                            param3 = a3;
+                            break;
+                        }
+                        let next = rd32(mmu, cr3, ebp_scan, memory) as u64;
+                        if next == 0 || next < 0x80000000 { break; }
+                        ebp_scan = next;
+                    }
+                }
+                eprintln!("[BUGCHECK-TRAP] BugCheck={:08X} P1={:08X} P2={:08X} P3={:08X}", bugcheck_code, param1, param2, param3);
+
+                if bugcheck_code == 0x4C && param1 == 0xC0000221 {
+                    // param2 = UNICODE_STRING ptr: { Length: u16, MaxLen: u16, Buffer: *u16 }
+                    let ustr_addr = param2 as u64;
+                    eprintln!("[BUGCHECK-TRAP] UNICODE_STRING @ {:08X}:", param2);
+                    eprint!("[BUGCHECK-TRAP]  struct bytes: ");
+                    for k in 0..8usize {
+                        eprint!("{:02X} ", rd8(mmu, cr3, ustr_addr + k as u64, memory));
+                    }
+                    eprintln!();
+                    let ustr_len = rd16(mmu, cr3, ustr_addr, memory) as usize;
+                    let ustr_buf_ptr = rd32(mmu, cr3, ustr_addr + 4, memory) as u64;
+                    eprintln!("[BUGCHECK-TRAP]  len={} buf_ptr={:08X}", ustr_len, ustr_buf_ptr as u32);
+
+                    // Decode the buffer as UTF-16LE
+                    let mut dll_name = alloc::string::String::new();
+                    if ustr_buf_ptr > 0 && ustr_len > 0 && ustr_len < 1024 {
+                        eprint!("[BUGCHECK-TRAP]  raw buf: ");
+                        for k in 0..ustr_len.min(80) {
+                            eprint!("{:02X} ", rd8(mmu, cr3, ustr_buf_ptr + k as u64, memory));
+                        }
+                        eprintln!();
+                        for i in 0..(ustr_len / 2) {
+                            let lo = rd8(mmu, cr3, ustr_buf_ptr + i as u64 * 2, memory);
+                            let _hi = rd8(mmu, cr3, ustr_buf_ptr + i as u64 * 2 + 1, memory);
+                            if lo == 0 { break; }
+                            dll_name.push(lo as char);
+                        }
+                    }
+                    eprintln!("[BUGCHECK-TRAP] DLL name: \"{}\"", dll_name);
+
+                    // Try 808ED918 from frame9 as a potential UNICODE_STRING
+                    let f9_ptr = 0x808ED918u64;
+                    let f9_len = rd16(mmu, cr3, f9_ptr, memory) as usize;
+                    let f9_buf = rd32(mmu, cr3, f9_ptr + 4, memory) as u64;
+                    eprintln!("[BUGCHECK-TRAP] 808ED918: len={} buf={:08X}", f9_len, f9_buf as u32);
+                    if f9_buf > 0 && f9_len > 0 && f9_len < 256 {
+                        let mut name = alloc::string::String::new();
+                        for i in 0..(f9_len / 2) {
+                            let lo = rd8(mmu, cr3, f9_buf + i as u64 * 2, memory);
+                            if lo == 0 { break; }
+                            name.push(lo as char);
+                        }
+                        eprintln!("[BUGCHECK-TRAP]  808ED918 string: \"{}\"", name);
+                    }
+
+                    // The real problem: look at the VA range 0x40000 where the write fault happened.
+                    // The crash log showed a write fault at VA=0x40000. This is the address where
+                    // Windows is mapping the DLL. Let's dump the page table entries for that range.
+                    eprintln!("[BUGCHECK-TRAP] Page table analysis for low VA range:");
+                    for page_va in [0x34000u64, 0x38000, 0x3C000, 0x40000, 0x44000, 0x48000, 0x80000, 0xE0000, 0xE7000, 0xE8000, 0xEC000] {
+                        match mmu.translate_linear(page_va, cr3, crate::memory::AccessType::Read, 0, memory) {
+                            Ok(phys) => {
+                                let b0 = memory.read_u8(phys).unwrap_or(0);
+                                let b1 = memory.read_u8(phys + 1).unwrap_or(0);
+                                eprintln!("[BUGCHECK-TRAP]  VA {:08X} -> PA {:08X} (first bytes: {:02X} {:02X})", page_va, phys, b0, b1);
+                            }
+                            Err(e) => {
+                                eprintln!("[BUGCHECK-TRAP]  VA {:08X} -> FAULT {:?}", page_va, e);
+                            }
+                        }
+                    }
+
+                    // Check the area at 0x40000 more carefully - dump PDE and PTE raw values
+                    eprintln!("[BUGCHECK-TRAP] Raw page table walk for VA 0x40000:");
+                    let pde_idx = 0x40000u64 >> 22;
+                    let pde_addr = (cr3 & 0xFFFFF000) + pde_idx * 4;
+                    let pde = memory.read_u32(pde_addr).unwrap_or(0);
+                    eprintln!("[BUGCHECK-TRAP]  CR3={:08X} PDE[{}]@{:08X} = {:08X}", cr3 as u32, pde_idx, pde_addr, pde);
+                    if (pde & 1) != 0 {
+                        let pt_base = pde & 0xFFFFF000;
+                        let pte_idx = (0x40000u64 >> 12) & 0x3FF;
+                        let pte_addr = pt_base as u64 + pte_idx * 4;
+                        let pte = memory.read_u32(pte_addr).unwrap_or(0);
+                        eprintln!("[BUGCHECK-TRAP]  PT@{:08X} PTE[{}]@{:08X} = {:08X} (P={} RW={} US={} A={} D={})",
+                            pt_base, pte_idx, pte_addr, pte,
+                            pte & 1, (pte >> 1) & 1, (pte >> 2) & 1, (pte >> 5) & 1, (pte >> 6) & 1);
+                    }
+                }
+
                 // Walk EBP chain
                 let mut ebp = self.regs.gpr[5];
                 for frame in 0..12u32 {
-                    let tr = |va: u64| -> u64 { mmu.translate_linear(va, self.regs.cr3, crate::memory::AccessType::Read, 0, memory).unwrap_or(0) };
-                    let next = memory.read_u32(tr(ebp)).unwrap_or(0) as u64;
-                    let ret = memory.read_u32(tr(ebp + 4)).unwrap_or(0);
+                    let next = rd32(mmu, cr3, ebp, memory) as u64;
+                    let ret = rd32(mmu, cr3, ebp + 4, memory);
                     eprint!("[BUGCHECK-TRAP] frame{}: EBP={:08X} RET={:08X} args:", frame, ebp as u32, ret);
                     for a in 0..6u64 {
-                        let val = memory.read_u32(tr(ebp + 8 + a * 4)).unwrap_or(0);
+                        let val = rd32(mmu, cr3, ebp + 8 + a * 4, memory);
                         eprint!(" {:08X}", val);
                     }
                     eprintln!();
@@ -1687,14 +1920,28 @@ impl Cpu {
         let old_ss = self.regs.seg[SegReg::Ss as usize].selector;
         let old_esp = self.regs.sp() as u32;
         let old_cpl = self.regs.cpl;
+        let from_v86 = (self.regs.rflags & crate::flags::VM) != 0;
+
+        // Save V86 segment registers before they get clobbered by stack switch.
+        let old_gs = self.regs.seg[SegReg::Gs as usize].selector;
+        let old_fs = self.regs.seg[SegReg::Fs as usize].selector;
+        let old_ds = self.regs.seg[SegReg::Ds as usize].selector;
+        let old_es = self.regs.seg[SegReg::Es as usize].selector;
 
         // Determine target CPL from target code segment descriptor.
         let target_cs_desc = self.read_gdt_descriptor(entry.selector, memory, mmu)?;
         let target_cpl = target_cs_desc.dpl;
 
+        // V86 mode interrupts always switch to ring 0 via TSS, and clear VM.
         // Inter-privilege interrupt entry: switch stack via TSS ring stack.
-        if target_cpl < old_cpl {
-            let (new_ss, new_esp) = self.read_tss_ring_stack32(target_cpl, memory, mmu)?;
+        if from_v86 || target_cpl < old_cpl {
+            let ring = if from_v86 { 0 } else { target_cpl };
+            let (new_ss, new_esp) = self.read_tss_ring_stack32(ring, memory, mmu)?;
+
+            // Clear VM flag before switching stack context.
+            if from_v86 {
+                self.regs.rflags &= !crate::flags::VM;
+            }
 
             self.load_segment_from_gdt(SegReg::Ss, new_ss, memory, mmu)?;
             self.regs.set_sp(new_esp as u64);
@@ -1707,8 +1954,41 @@ impl Cpu {
             crate::interrupts::GateType::Interrupt16 | crate::interrupts::GateType::Trap16
         );
 
-        // Push old SS:ESP only on privilege-level change.
-        if target_cpl < old_cpl {
+        // Helper macro to push a 32-bit value onto the new stack.
+        macro_rules! push32 {
+            ($val:expr) => {{
+                let esp = self.regs.sp().wrapping_sub(4);
+                self.regs.set_sp(esp);
+                let phys = mmu.translate_linear(
+                    ss_base + esp,
+                    self.regs.cr3,
+                    AccessType::Write,
+                    self.regs.cpl,
+                    &*memory,
+                )?;
+                memory.write_u32(phys, $val)?;
+            }};
+        }
+
+        // V86 interrupt frame: push GS, FS, DS, ES first, then SS:ESP.
+        if from_v86 {
+            push32!(old_gs as u32);
+            push32!(old_fs as u32);
+            push32!(old_ds as u32);
+            push32!(old_es as u32);
+            // Null out the data segment registers.
+            // Null out the data segment registers (selector=0, not present).
+            for seg in [SegReg::Gs, SegReg::Fs, SegReg::Ds, SegReg::Es] {
+                let d = &mut self.regs.seg[seg as usize];
+                d.selector = 0;
+                d.base = 0;
+                d.limit = 0;
+                d.present = false;
+            }
+        }
+
+        // Push old SS:ESP on privilege-level change or V86 exit.
+        if from_v86 || target_cpl < old_cpl {
             if gate_is_16 {
                 let esp = self.regs.sp().wrapping_sub(2);
                 self.regs.set_sp(esp);
@@ -1732,27 +2012,8 @@ impl Cpu {
                 )?;
                 memory.write_u16(phys, old_esp as u16)?;
             } else {
-                let esp = self.regs.sp().wrapping_sub(4);
-                self.regs.set_sp(esp);
-                let phys = mmu.translate_linear(
-                    ss_base + esp,
-                    self.regs.cr3,
-                    AccessType::Write,
-                    self.regs.cpl,
-                    &*memory,
-                )?;
-                memory.write_u32(phys, old_ss as u32)?;
-
-                let esp = self.regs.sp().wrapping_sub(4);
-                self.regs.set_sp(esp);
-                let phys = mmu.translate_linear(
-                    ss_base + esp,
-                    self.regs.cr3,
-                    AccessType::Write,
-                    self.regs.cpl,
-                    &*memory,
-                )?;
-                memory.write_u32(phys, old_esp)?;
+                push32!(old_ss as u32);
+                push32!(old_esp);
             }
         }
 
