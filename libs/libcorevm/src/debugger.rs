@@ -971,12 +971,28 @@ fn read_line_stdin() -> Option<String> {
     }
 }
 
+#[cfg(unix)]
 extern "C" {
     fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
 }
 
+#[cfg(unix)]
 unsafe fn libc_read(fd: i32, buf: *mut u8, count: usize) -> isize {
     unsafe { read(fd, buf, count) }
+}
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn GetStdHandle(nStdHandle: u32) -> *mut core::ffi::c_void;
+    fn ReadFile(h: *mut core::ffi::c_void, buf: *mut u8, len: u32, read: *mut u32, ovl: *mut core::ffi::c_void) -> i32;
+}
+
+#[cfg(windows)]
+unsafe fn libc_read(_fd: i32, buf: *mut u8, count: usize) -> isize {
+    let h = unsafe { GetStdHandle(0xFFFF_FFF6u32) }; // STD_INPUT_HANDLE
+    let mut n: u32 = 0;
+    let ok = unsafe { ReadFile(h, buf, count as u32, &mut n, core::ptr::null_mut()) };
+    if ok == 0 { -1 } else { n as isize }
 }
 
 // ── Number parsing ───────────────────────────────────────────────────

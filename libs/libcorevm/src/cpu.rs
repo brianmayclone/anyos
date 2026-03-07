@@ -665,26 +665,72 @@ impl Cpu {
                 // Check MZ header
                 let mz = rd16h(mmu, cr3, base_va, memory);
                 eprintln!("[HANG-TRAP] PE check: MZ={:04X}", mz);
-                // Scan physical RAM for MZ headers (PE images)
-                let ram_size = memory.ram_size();
-                let mut mz_count = 0u32;
-                for pa in (0u64..ram_size as u64).step_by(0x1000) {
-                    let b0 = memory.read_u8(pa).unwrap_or(0);
-                    let b1 = memory.read_u8(pa + 1).unwrap_or(0);
-                    if b0 == 0x4D && b1 == 0x5A {
-                        // Check PE signature
-                        let pe_off = memory.read_u32(pa + 0x3C).unwrap_or(0) as u64;
-                        let pe_sig = if pe_off < 0x1000 { memory.read_u32(pa + pe_off).unwrap_or(0) } else { 0 };
-                        if pe_sig == 0x00004550 {
-                            let opt_off = pe_off + 24;
-                            let img_size = memory.read_u32(pa + opt_off + 56).unwrap_or(0);
-                            mz_count += 1;
-                            // Only log large PEs (>64KB) or first 10
-                            if img_size >= 0x10000 || mz_count <= 10 {
-                                eprintln!("[HANG-TRAP] PE at PA {:08X} pe_off={:X} img_size={:X}", pa, pe_off, img_size);
+                // Scan physical RAM for large PE images (ntdll-sized) — only once
+                use core::sync::atomic::{AtomicBool, Ordering as AtOrd};
+                static PE_SCANNED: AtomicBool = AtomicBool::new(false);
+                if !PE_SCANNED.swap(true, AtOrd::Relaxed) {
+                    let ram_size = memory.ram_size();
+                    for pa in (0u64..ram_size as u64).step_by(0x1000) {
+                        let b0 = memory.read_u8(pa).unwrap_or(0);
+                        let b1 = memory.read_u8(pa + 1).unwrap_or(0);
+                        if b0 == 0x4D && b1 == 0x5A {
+                            let pe_off = memory.read_u32(pa + 0x3C).unwrap_or(0) as u64;
+                            let pe_sig = if pe_off < 0x1000 { memory.read_u32(pa + pe_off).unwrap_or(0) } else { 0 };
+                            if pe_sig == 0x00004550 {
+                                let opt_off = pe_off + 24;
+                                let img_size = memory.read_u32(pa + opt_off + 56).unwrap_or(0);
+                                if img_size >= 0x10000 {
+                                    eprintln!("[HANG-TRAP] PE at PA {:08X} pe_off={:X} img_size={:X}", pa, pe_off, img_size);
+                                }
                             }
                         }
                     }
+                    // Dump page directory for user-space VA 0x34000
+                    let pd_base = cr3 & 0xFFFFF000;
+                    let pde = memory.read_u32(pd_base).unwrap_or(0);
+                    eprintln!("[HANG-TRAP] CR3={:08X} PDE[0]={:08X}", cr3, pde);
+                    if pde & 1 != 0 {
+                        let pt_base = (pde & 0xFFFFF000) as u64;
+                        for pt_idx in 0x30u64..=0x45 {
+                            let pte = memory.read_u32(pt_base + pt_idx * 4).unwrap_or(0);
+                            if pte & 1 != 0 {
+                                let pa = (pte & 0xFFFFF000) as u64;
+                                let b0 = memory.read_u8(pa).unwrap_or(0);
+                                let b1 = memory.read_u8(pa + 1).unwrap_or(0);
+                                eprintln!("[HANG-TRAP] PTE[{:03X}] VA {:05X} = {:08X} PA {:08X} [{:02X} {:02X}]",
+                                    pt_idx, pt_idx << 12, pte, pa, b0, b1);
+                            }
+                        }
+                    } else {
+                        eprintln!("[HANG-TRAP] PDE[0] not present!");
+                    }
+                }
+                // Verify physical ntdll checksum at known PAs
+                if !PE_SCANNED.load(AtOrd::Relaxed) { /* already scanned above */ }
+                for &ntdll_pa in &[0xC9C000u64, 0x2039000, 0x0FF30000, 0xFF30000] {
+                    let nm = memory.read_u16(ntdll_pa).unwrap_or(0);
+                    if nm != 0x5A4D { continue; }
+                    let pe_o = memory.read_u32(ntdll_pa + 0x3C).unwrap_or(0) as u64;
+                    if pe_o >= 0x1000 { continue; }
+                    let ps = memory.read_u32(ntdll_pa + pe_o).unwrap_or(0);
+                    if ps != 0x4550 { continue; }
+                    let oo = pe_o + 24;
+                    let isz = memory.read_u32(ntdll_pa + oo + 56).unwrap_or(0);
+                    if isz < 0xC0000 || isz > 0x100000 { continue; } // filter to ntdll-sized
+                    let stored = memory.read_u32(ntdll_pa + oo + 64).unwrap_or(0);
+                    let cs_off = oo + 64;
+                    let mut s: u32 = 0;
+                    for i in (0..isz as u64).step_by(2) {
+                        if i >= cs_off && i < cs_off + 4 { continue; }
+                        let w = memory.read_u16(ntdll_pa + i).unwrap_or(0) as u32;
+                        s = s.wrapping_add(w);
+                        s = (s >> 16) + (s & 0xFFFF);
+                    }
+                    s = (s >> 16) + (s & 0xFFFF);
+                    s += isz;
+                    eprintln!("[HANG-TRAP] ntdll@PA{:X} isz={:X} checksum: computed={:08X} stored={:08X} {}",
+                        ntdll_pa, isz, s, stored, if s == stored { "OK" } else { "MISMATCH" });
+                    // don't break — check all copies
                 }
                 if mz == 0x5A4D {
                     let pe_off = rd32h(mmu, cr3, base_va + 0x3C, memory) as u64;
