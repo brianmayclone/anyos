@@ -66,12 +66,58 @@ pub mod smc {
     /// same page (very common with REP STOS/MOVS).
     static LAST_DIRTY_PAGE: AtomicU64 = AtomicU64::new(u64::MAX);
 
+    /// Bitmap of pages that contain decoded/JIT-compiled code.
+    /// Covers 256 MB (65536 pages × 4 KB). Writes to pages outside this range
+    /// or not in the bitmap skip the dirty tracking entirely.
+    const CODE_BITMAP_PAGES: usize = 65536;
+    static mut CODE_BITMAP: [u8; CODE_BITMAP_PAGES / 8] = [0; CODE_BITMAP_PAGES / 8];
+
+    /// Mark a page as containing code (called when decode cache or JIT inserts a block).
+    pub fn mark_code_page(phys_page: u64) {
+        let page_idx = (phys_page >> 12) as usize;
+        if page_idx < CODE_BITMAP_PAGES {
+            unsafe {
+                CODE_BITMAP[page_idx / 8] |= 1 << (page_idx & 7);
+            }
+        }
+    }
+
+    /// Unmark a code page (called when all blocks on that page are invalidated).
+    pub fn unmark_code_page(phys_page: u64) {
+        let page_idx = (phys_page >> 12) as usize;
+        if page_idx < CODE_BITMAP_PAGES {
+            unsafe {
+                CODE_BITMAP[page_idx / 8] &= !(1 << (page_idx & 7));
+            }
+        }
+    }
+
+    /// Check if a page contains code.
+    #[inline(always)]
+    fn is_code_page(page: u64) -> bool {
+        let page_idx = (page >> 12) as usize;
+        if page_idx >= CODE_BITMAP_PAGES {
+            return false;
+        }
+        unsafe { (CODE_BITMAP[page_idx / 8] >> (page_idx & 7)) & 1 != 0 }
+    }
+
+    /// Clear the entire code bitmap (called on full cache flush).
+    pub fn clear_code_bitmap() {
+        unsafe { CODE_BITMAP.fill(0); }
+    }
+
     /// Record a write to physical address `phys`. Called from memory write paths.
     #[inline]
     pub fn mark_page_dirty(phys: u64) {
         let page = phys & !0xFFF;
         // Fast path: skip if same page as last write.
         if LAST_DIRTY_PAGE.load(Ordering::Relaxed) == page {
+            return;
+        }
+        // Skip if this page doesn't contain any compiled code.
+        if !is_code_page(page) {
+            LAST_DIRTY_PAGE.store(page, Ordering::Relaxed);
             return;
         }
         LAST_DIRTY_PAGE.store(page, Ordering::Relaxed);
@@ -260,6 +306,7 @@ impl GuestMemory {
     fn mmio_mut(&self) -> &mut MmioDispatch {
         unsafe { &mut *self.mmio.get() }
     }
+
 
     /// Copy `data` into guest RAM starting at `offset`.
     ///

@@ -64,7 +64,10 @@ pub extern "C" fn jit_mem_read(
         memory,
     ) {
         Ok(p) => p,
-        Err(_) => return 0, // Page fault — caller must check separately
+        Err(_) => {
+            cpu.jit_fault = true;
+            return 0;
+        }
     };
 
     match size {
@@ -213,6 +216,33 @@ pub extern "C" fn jit_interpret_one(
             cpu.instruction_count += 1;
             // Mirror the interpreter's mask_rip() call so RIP stays within
             // the correct width for the current mode (16-bit real/protected).
+            cpu.mask_rip();
+            JIT_OK
+        }
+        Err(VmError::Halted) => {
+            cpu.instruction_count += 1;
+            cpu.mask_rip();
+            JIT_EXIT_BLOCK
+        }
+        Err(_) => JIT_EXIT_BLOCK,
+    }
+}
+
+/// Execute a single pre-decoded instruction via the executor.
+/// No address translation, no re-decode.
+#[no_mangle]
+pub extern "C" fn helper_execute_one(
+    inst: *const crate::instruction::DecodedInst,
+    cpu: &mut Cpu,
+    memory: &mut GuestMemory,
+    mmu: &mut Mmu,
+    io: &mut IoDispatch,
+    interrupts: &mut InterruptController,
+) -> JitResult {
+    let inst = unsafe { &*inst };
+    match crate::executor::execute(cpu, inst, memory, mmu, io, interrupts) {
+        Ok(()) => {
+            cpu.instruction_count += 1;
             cpu.mask_rip();
             JIT_OK
         }

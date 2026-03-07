@@ -10,7 +10,7 @@ use libcorevm::{
     corevm_create_ex, corevm_debug_take_output, corevm_destroy, corevm_get_last_error,
     corevm_get_instruction_count, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rip,
     corevm_get_segment_selector, corevm_fw_cfg_add_file, corevm_ide_attach_slave,
-    corevm_cache_stats, corevm_jit_enable, corevm_jit_stats, corevm_load_binary, corevm_load_rom,
+    corevm_cache_stats, corevm_jit_enable, corevm_jit_stats, corevm_jit_helper_top, corevm_load_binary, corevm_load_rom,
     corevm_ps2_key_press, corevm_ps2_key_release,
     corevm_run, corevm_serial_take_output, corevm_set_rip, corevm_setup_ide, corevm_setup_pci_bus,
     corevm_setup_standard_devices, corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
@@ -889,6 +889,14 @@ fn main() {
                 "JIT off".to_string()
             };
             // eprintln!("[diag] {} | {} | {} | {} | exits: hlt={} exc={} lim={} oth={}", diag_lines[0], diag_lines[1], diag_lines[2], diag_lines[3], exit_halted, exit_exception, exit_limit, exit_other);
+            if cfg.jit {
+                let mut helper_buf = [0u8; 2048];
+                let len = corevm_jit_helper_top(vm.0, helper_buf.as_mut_ptr(), helper_buf.len() as u32);
+                if len > 0 {
+                    let s = std::str::from_utf8(&helper_buf[..len as usize]).unwrap_or("");
+                    eprintln!("[JIT helper top]\n{}", s);
+                }
+            }
             last_ic = ic;
             last_calls = run_calls;
             last_overlay_update = now;

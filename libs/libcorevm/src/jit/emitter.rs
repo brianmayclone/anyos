@@ -506,7 +506,7 @@ impl Emitter {
     pub fn test_rr(&mut self, size: OpSize, a: Reg, b: Reg) {
         self.maybe_size_prefix(size);
         self.maybe_rex_rr(size, b, a);
-        self.emit(0x85);
+        if size == OpSize::S8 { self.emit(0x84); } else { self.emit(0x85); }
         self.modrm_rr(b, a);
     }
 

@@ -2044,6 +2044,79 @@ pub extern "C" fn corevm_jit_stats(
     }
 }
 
+/// Dump the top 20 opcodes using helper fallback to the provided buffer.
+/// Returns the number of bytes written (0 if buffer too small).
+/// Format: one line per opcode "0xKKKK: COUNT\n"
+#[no_mangle]
+pub extern "C" fn corevm_jit_helper_top(
+    handle: u64,
+    buf: *mut u8,
+    buf_len: u32,
+) -> u32 {
+    let vm = unsafe { vm_from_handle(handle) };
+    let jit = &vm.engine.cpu.jit_engine;
+    let top = jit.top_helper_opcodes(30);
+
+    let mut out = alloc::vec::Vec::new();
+
+    // Summary stats
+    let native = jit.native_count();
+    let helper = jit.fallback_count();
+    let total = native + helper;
+    let pct = if total > 0 { native * 100 / total } else { 0 };
+    let blocks = jit.blocks_compiled();
+    let avg_block = if blocks > 0 { total / blocks } else { 0 };
+    let header = alloc::format!(
+        "native={} helper={} ({}% native) blocks={} avg_inst/block={}\n",
+        native, helper, pct, blocks, avg_block,
+    );
+    out.extend_from_slice(header.as_bytes());
+
+    // Per-section timing stats
+    let cpu = &vm.engine.cpu;
+    let loops = cpu.perf_loop_count;
+    if loops > 0 {
+        let total = cpu.perf_tsc_total;
+        let pct = |v: u64| -> u64 { if total > 0 { v * 100 / total } else { 0 } };
+        let avg = |v: u64| -> u64 { v / loops };
+        let timing = alloc::format!(
+            "loops={} | intr={}% xlat={}% smc={}% decode={}% jit={}% | avg/loop: intr={} xlat={} smc={} decode={} jit={}\n",
+            loops,
+            pct(cpu.perf_tsc_interrupt),
+            pct(cpu.perf_tsc_translate),
+            pct(cpu.perf_tsc_smc),
+            pct(cpu.perf_tsc_decode),
+            pct(cpu.perf_tsc_jit_exec),
+            avg(cpu.perf_tsc_interrupt),
+            avg(cpu.perf_tsc_translate),
+            avg(cpu.perf_tsc_smc),
+            avg(cpu.perf_tsc_decode),
+            avg(cpu.perf_tsc_jit_exec),
+        );
+        out.extend_from_slice(timing.as_bytes());
+    }
+
+    for (key, count) in &top {
+        let map = key >> 8;
+        let op = key & 0xFF;
+        let prefix = match map {
+            0 => alloc::format!("0x{:02X}", op),
+            1 => alloc::format!("0F {:02X}", op),
+            _ => alloc::format!("ESC {:02X}", op),
+        };
+        let line = alloc::format!("{}: {}\n", prefix, count);
+        out.extend_from_slice(line.as_bytes());
+    }
+
+    if out.len() > buf_len as usize || buf.is_null() {
+        return 0;
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(out.as_ptr(), buf, out.len());
+    }
+    out.len() as u32
+}
+
 /// Query decode-cache statistics.
 ///
 /// Writes cache hits, misses, and current entry count to the provided

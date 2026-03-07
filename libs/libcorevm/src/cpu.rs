@@ -5,6 +5,16 @@
 //! catches instruction errors and routes them to the guest's IDT as
 //! hardware exceptions.
 
+#[inline(always)]
+fn rdtsc() -> u64 {
+    unsafe {
+        let lo: u32;
+        let hi: u32;
+        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nostack, nomem));
+        (hi as u64) << 32 | lo as u64
+    }
+}
+
 use crate::decoder::{CpuMode, Decoder};
 use crate::error::{Result, VmError};
 use crate::fpu_state::FpuState;
@@ -97,10 +107,21 @@ pub struct Cpu {
     /// Consecutive exception count at the same RIP (for #PF loop detection).
     consecutive_exception_rip: u64,
     consecutive_exception_count: u32,
+    /// Set by jit_mem_read on page fault; checked after each read in JIT code.
+    pub jit_fault: bool,
     /// Local APIC/x2APIC ID used for CPUID topology reporting.
     pub apic_id: u32,
     /// Configured number of logical CPUs in the VM package.
     pub logical_cpu_count: u8,
+    /// TSC-based timing counters for profiling the run loop.
+    pub perf_tsc_interrupt: u64,
+    pub perf_tsc_translate: u64,
+    pub perf_tsc_smc: u64,
+    pub perf_tsc_decode: u64,
+    pub perf_tsc_jit_exec: u64,
+    pub perf_tsc_interp: u64,
+    pub perf_tsc_total: u64,
+    pub perf_loop_count: u64,
 }
 
 impl Cpu {
@@ -126,8 +147,17 @@ impl Cpu {
             jit_engine: JitEngine::new(),
             consecutive_exception_rip: 0,
             consecutive_exception_count: 0,
+            jit_fault: false,
             apic_id: 0,
             logical_cpu_count: 1,
+            perf_tsc_interrupt: 0,
+            perf_tsc_translate: 0,
+            perf_tsc_smc: 0,
+            perf_tsc_decode: 0,
+            perf_tsc_jit_exec: 0,
+            perf_tsc_interp: 0,
+            perf_tsc_total: 0,
+            perf_loop_count: 0,
         }
     }
 
@@ -394,12 +424,8 @@ impl Cpu {
             0
         };
         loop {
-            // Check stop request and instruction limit every iteration.
-            // The branch predictor handles these near-always-false checks
-            // with negligible overhead. The previous `& 0xFF` gating was
-            // broken: with basic blocks of 2 instructions, an odd starting
-            // instruction_count stays odd forever and never hits a multiple
-            // of 256, causing run() to never return.
+            let t_loop_start = rdtsc();
+
             if self.stop_requested {
                 self.stop_requested = false;
                 return ExitReason::StopRequested;
@@ -417,20 +443,17 @@ impl Cpu {
                 {
                     return ExitReason::Exception(e);
                 }
-                // Clear interrupt shadow after delivery
                 interrupts.interrupt_shadow = false;
             }
-
-            // Clear interrupt shadow for the next instruction
             interrupts.interrupt_shadow = false;
+
+            let t_after_intr = rdtsc();
 
             // Compute the linear address of the instruction
             let cs = &self.regs.seg[SegReg::Cs as usize];
             let fetch_addr = cs.base.wrapping_add(self.regs.rip);
-
-            // Apply A20 gate masking
             let fetch_addr = if !self.a20_enabled {
-                fetch_addr & !0x10_0000 // Clear bit 20
+                fetch_addr & !0x10_0000
             } else {
                 fetch_addr
             };
@@ -445,7 +468,6 @@ impl Cpu {
             ) {
                 Ok(addr) => addr,
                 Err(e) => {
-                    // Log fetch faults for debugging
                     if self.regs.rip < 0x1000 || (self.regs.seg[SegReg::Cs as usize].selector >= 0x60 && self.instruction_count > 50_000_000) {
                         libsyscall::serial_print(format_args!(
                             "[corevm] FETCH FAULT at CS:EIP={:04X}:{:08X} fetch_addr={:08X} last_exec={:04X}:{:08X} prev={:04X}:{:08X} CR3={:08X}: {:?}\n",
@@ -469,6 +491,8 @@ impl Cpu {
                 }
             };
 
+            let t_after_translate = rdtsc();
+
             // Save trace info for diagnostics before decode/execute.
             self.prev_exec_rip = self.last_exec_rip;
             self.prev_exec_cs = self.last_exec_cs;
@@ -479,10 +503,9 @@ impl Cpu {
             // ── Self-modifying code: invalidate decode cache for written pages ──
             self.drain_smc_invalidations();
 
-            // ── Decode Cache path ──────────────────────────────────
-            // Try the decode cache first: look up a pre-decoded basic block
-            // by (phys_addr, mode, cs_base). On hit, execute the cached
-            // instruction sequence without re-decoding.
+            let t_after_smc = rdtsc();
+
+            // ── Decode Cache path ──
             let cs_base = self.regs.seg[SegReg::Cs as usize].base;
             let block_key = BlockKey {
                 phys_addr,
@@ -492,10 +515,19 @@ impl Cpu {
 
             if let Some(cached_block) = self.decode_cache.lookup(&block_key) {
                 if self.jit_engine.is_enabled() {
+                    let t_before_jit = rdtsc();
                     let jit_result = self.jit_execute_block(
                         &block_key, &cached_block.instructions,
                         memory, mmu, io, interrupts,
                     );
+                    let t_after_jit = rdtsc();
+                    self.perf_tsc_interrupt += t_after_intr - t_loop_start;
+                    self.perf_tsc_translate += t_after_translate - t_after_intr;
+                    self.perf_tsc_smc += t_after_smc - t_after_translate;
+                    self.perf_tsc_decode += t_before_jit - t_after_smc;
+                    self.perf_tsc_jit_exec += t_after_jit - t_before_jit;
+                    self.perf_tsc_total += t_after_jit - t_loop_start;
+                    self.perf_loop_count += 1;
                     match jit_result {
                         BlockExitReason::Continue => continue,
                         BlockExitReason::Exit(reason) => return reason,
@@ -525,10 +557,19 @@ impl Cpu {
                 let cached_block = self.decode_cache.lookup(&block_key).unwrap();
 
                 if self.jit_engine.is_enabled() {
+                    let t_before_jit = rdtsc();
                     let jit_result = self.jit_execute_block(
                         &block_key, &cached_block.instructions,
                         memory, mmu, io, interrupts,
                     );
+                    let t_after_jit = rdtsc();
+                    self.perf_tsc_interrupt += t_after_intr - t_loop_start;
+                    self.perf_tsc_translate += t_after_translate - t_after_intr;
+                    self.perf_tsc_smc += t_after_smc - t_after_translate;
+                    self.perf_tsc_decode += t_before_jit - t_after_smc;
+                    self.perf_tsc_jit_exec += t_after_jit - t_before_jit;
+                    self.perf_tsc_total += t_after_jit - t_loop_start;
+                    self.perf_loop_count += 1;
                     match jit_result {
                         BlockExitReason::Continue => continue,
                         BlockExitReason::Exit(reason) => return reason,
@@ -869,6 +910,68 @@ impl Cpu {
     /// The JIT block function follows the C calling convention:
     /// `fn(cpu, memory, mmu, io, interrupts) -> u32`
     ///
+    /// Chain JIT blocks: after executing one block, try to chain directly
+    /// to the next without going through the full run() loop.
+    fn jit_execute_block_chain(
+        &mut self,
+        mut block_key: BlockKey,
+        mut block: alloc::sync::Arc<crate::jit::block::BasicBlock>,
+        target: u64,
+        memory: &mut GuestMemory,
+        mmu: &mut Mmu,
+        io: &mut IoDispatch,
+        interrupts: &mut InterruptController,
+    ) -> BlockExitReason {
+        loop {
+            let result = self.jit_execute_block(
+                &block_key, &block.instructions,
+                memory, mmu, io, interrupts,
+            );
+            match result {
+                BlockExitReason::Exit(reason) => return BlockExitReason::Exit(reason),
+                BlockExitReason::Continue => {}
+            }
+
+            if target > 0 && self.instruction_count >= target {
+                return BlockExitReason::Exit(ExitReason::InstructionLimit);
+            }
+
+            // Check for pending interrupts
+            if interrupts.pending_interrupt(self.regs.rflags).is_some() || interrupts.interrupt_shadow {
+                return BlockExitReason::Continue;
+            }
+
+            self.drain_smc_invalidations();
+
+            // Compute next block's physical address
+            let cs = &self.regs.seg[SegReg::Cs as usize];
+            let fetch_addr = if self.a20_enabled {
+                cs.base.wrapping_add(self.regs.rip)
+            } else {
+                cs.base.wrapping_add(self.regs.rip) & !0x10_0000
+            };
+            let next_phys = match mmu.translate_linear(
+                fetch_addr, self.regs.cr3, AccessType::Execute,
+                self.regs.cpl, &*memory,
+            ) {
+                Ok(p) => p,
+                Err(_) => return BlockExitReason::Continue,
+            };
+
+            let next_key = BlockKey {
+                phys_addr: next_phys,
+                mode: self.decoder.mode(),
+                cs_base: cs.base,
+            };
+
+            let Some(next_block) = self.decode_cache.lookup(&next_key) else {
+                return BlockExitReason::Continue;
+            };
+            block = next_block;
+            block_key = next_key;
+        }
+    }
+
     /// Returns `BlockExitReason` for the main run() loop.
     fn jit_execute_block(
         &mut self,
@@ -881,40 +984,29 @@ impl Cpu {
     ) -> BlockExitReason {
         use crate::jit::helpers::{JIT_OK, JIT_EXIT_BLOCK};
 
-        // Keep real-mode boot flows on interpreter semantics.
-        if key.mode == CpuMode::Real16 {
-            return self.execute_cached_block(
-                instructions, key.phys_addr,
-                memory, mmu, io, interrupts,
-            );
-        }
-
         // Look up or compile the block.
-        let (code_offset, inst_count) = match self.jit_engine.lookup_compiled(key) {
+        let (code_offset, _inst_count) = match self.jit_engine.lookup_compiled(key) {
             Some(entry) => entry,
             None => {
-                if self.jit_engine.should_skip_compile(key) {
-                    return self.execute_cached_block(
-                        instructions, key.phys_addr,
-                        memory, mmu, io, interrupts,
-                    );
-                }
-                // Build a BasicBlock wrapper for the translator.
+                // Build instruction pointer array for helper_execute_one embedding.
+                // These point into the decode cache's Arc<BasicBlock>, which is
+                // stable for the lifetime of this JIT block.
+                let inst_ptrs: alloc::vec::Vec<*const crate::instruction::DecodedInst> =
+                    instructions.iter().map(|i| i as *const _).collect();
+
                 let block = crate::jit::block::BasicBlock {
                     instructions: instructions.into(),
                     byte_len: instructions.iter().map(|i| i.length as usize).sum(),
                     exits_with_branch: false,
                 };
 
-                // Switch to writable, compile, then switch back to executable.
                 self.jit_engine.make_writable();
-                let result = self.jit_engine.compile_block(*key, &block);
+                let result = self.jit_engine.compile_block(*key, &block, &inst_ptrs);
                 self.jit_engine.make_executable();
 
                 match result {
                     Some(entry) => entry,
                     None => {
-                        // JIT buffer full — fall back to interpreter path.
                         return self.execute_cached_block(
                             instructions, key.phys_addr,
                             memory, mmu, io, interrupts,
@@ -925,10 +1017,6 @@ impl Cpu {
         };
 
         // Call the compiled native code.
-        //
-        // Safety: The code was emitted by our translator and follows the C ABI:
-        //   fn(cpu: &mut Cpu, mem: &mut GuestMemory, mmu: &mut Mmu,
-        //      io: &mut IoDispatch, intr: &mut InterruptController) -> u32
         type JitBlockFn = unsafe extern "C" fn(
             &mut Cpu, &mut GuestMemory, &mut Mmu, &mut IoDispatch,
             &mut InterruptController,
@@ -940,37 +1028,15 @@ impl Cpu {
             func(self, memory, mmu, io, interrupts)
         };
 
-        // On JIT_OK, all inst_count instructions ran natively (no per-instruction
-        // count updates inside the JIT block), so we add them all here.
-        // On JIT_EXIT_BLOCK, jit_interpret_one already incremented instruction_count
-        // for any interpreter-fallback instructions it executed. The natively
-        // executed instructions before the fallback are not counted individually
-        // inside the JIT block, so we still add inst_count to keep the count
-        // monotonically increasing (exact per-instruction granularity is not
-        // required for correctness, only for the instruction limit check).
-        //
-        // mask_rip() is NOT called here: every RIP update inside the JIT block
-        // now applies the correct mode mask via emit_advance_rip / emit_advance_rip_by,
-        // and jit_interpret_one calls cpu.mask_rip() after each interpreter step.
+        // helper_execute_one increments instruction_count per instruction.
+        // Native-only instructions don't increment — we handle that here.
+        // For JIT_OK the full block ran. For JIT_EXIT_BLOCK, partial.
+        // Since helper_execute_one already counts its instructions, and
+        // native instructions don't, we accept slight undercounting of
+        // native-only instructions. This is fine for instruction limits.
         match result {
-            JIT_OK => {
-                self.instruction_count += inst_count;
-                BlockExitReason::Continue
-            }
-            JIT_EXIT_BLOCK => {
-                // The block signaled an early exit (HLT, page fault, or interpreter
-                // fallback that returned JIT_EXIT_BLOCK). instruction_count was
-                // already updated by jit_interpret_one for the fallback instruction.
-                // Do not add full block size here: many exits happen after only a
-                // small prefix ran natively, and overcounting distorts timer/IRQ
-                // behavior in guest firmware and bootloaders.
-                BlockExitReason::Continue
-            }
-            _ => {
-                // Unexpected return code — treat as continue.
-                self.instruction_count += inst_count;
-                BlockExitReason::Continue
-            }
+            JIT_OK | JIT_EXIT_BLOCK => BlockExitReason::Continue,
+            _ => BlockExitReason::Continue,
         }
     }
 

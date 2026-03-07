@@ -1,8 +1,7 @@
 //! Executable memory management for JIT-compiled code.
 //!
-//! In `host_test` builds we allocate a dedicated code buffer via `mmap` and
-//! switch protection with `mprotect` (RW <-> RX). In non-host builds we keep
-//! the previous placeholder behavior until the kernel exposes `mprotect`.
+//! In `host_test` builds we allocate RWX memory via `mmap`. No mprotect
+//! toggling — the buffer is always readable, writable, and executable.
 
 #[cfg(not(feature = "host_test"))]
 use alloc::vec::Vec;
@@ -20,7 +19,6 @@ unsafe extern "C" {
         fd: i32,
         offset: isize,
     ) -> *mut core::ffi::c_void;
-    fn mprotect(addr: *mut core::ffi::c_void, len: usize, prot: i32) -> i32;
     fn munmap(addr: *mut core::ffi::c_void, len: usize) -> i32;
 }
 
@@ -62,12 +60,10 @@ impl Drop for JitBuffer {
 }
 
 impl JitBuffer {
-    /// Allocate a new JIT buffer with the default size.
     pub fn new() -> Self {
         Self::with_capacity(DEFAULT_JIT_BUFFER_SIZE)
     }
 
-    /// Allocate a JIT buffer with a specific size.
     pub fn with_capacity(size: usize) -> Self {
         #[cfg(feature = "host_test")]
         {
@@ -75,7 +71,7 @@ impl JitBuffer {
                 mmap(
                     core::ptr::null_mut(),
                     size,
-                    PROT_READ | PROT_WRITE,
+                    PROT_READ | PROT_WRITE | PROT_EXEC,
                     MAP_PRIVATE | MAP_ANONYMOUS,
                     -1,
                     0,
@@ -86,7 +82,7 @@ impl JitBuffer {
                 ptr: ptr as *mut u8,
                 capacity: size,
                 used: 0,
-                executable: false,
+                executable: true, // RWX from the start
             }
         }
         #[cfg(not(feature = "host_test"))]
@@ -99,7 +95,6 @@ impl JitBuffer {
         }
     }
 
-    /// Write compiled code into the buffer and return its offset.
     pub fn emit(&mut self, code: &[u8]) -> Option<usize> {
         let offset = self.used;
         let new_used = self.used + code.len();
@@ -124,7 +119,6 @@ impl JitBuffer {
         Some(offset)
     }
 
-    /// Get a raw pointer to code at the given offset.
     pub unsafe fn code_ptr(&self, offset: usize) -> *const u8 {
         #[cfg(feature = "host_test")]
         {
@@ -136,64 +130,36 @@ impl JitBuffer {
         }
     }
 
-    /// Mark the buffer as executable (W->X transition).
+    /// No-op with RWX mapping; kept for API compatibility.
     pub fn make_executable(&mut self) {
-        #[cfg(feature = "host_test")]
-        unsafe {
-            let rc = mprotect(
-                self.ptr as *mut core::ffi::c_void,
-                self.capacity,
-                PROT_READ | PROT_EXEC,
-            );
-            assert_eq!(rc, 0, "JIT mprotect RX failed");
-        }
         self.executable = true;
     }
 
-    /// Mark the buffer as writable (X->W transition).
+    /// No-op with RWX mapping; kept for API compatibility.
     pub fn make_writable(&mut self) {
-        #[cfg(feature = "host_test")]
-        unsafe {
-            let rc = mprotect(
-                self.ptr as *mut core::ffi::c_void,
-                self.capacity,
-                PROT_READ | PROT_WRITE,
-            );
-            assert_eq!(rc, 0, "JIT mprotect RW failed");
-        }
-        self.executable = false;
+        // RWX — always writable
     }
 
-    /// Whether the buffer is currently marked executable.
     pub fn is_executable(&self) -> bool {
         self.executable
     }
 
-    /// Total capacity of the buffer in bytes.
     pub fn capacity(&self) -> usize {
         #[cfg(feature = "host_test")]
-        {
-            self.capacity
-        }
+        { self.capacity }
         #[cfg(not(feature = "host_test"))]
-        {
-            self.data.capacity()
-        }
+        { self.data.capacity() }
     }
 
-    /// Number of bytes currently used.
     pub fn used(&self) -> usize {
         self.used
     }
 
-    /// Number of bytes remaining.
     pub fn remaining(&self) -> usize {
         self.capacity().saturating_sub(self.used)
     }
 
-    /// Reset the buffer, discarding all compiled code.
     pub fn reset(&mut self) {
         self.used = 0;
-        self.executable = false;
     }
 }

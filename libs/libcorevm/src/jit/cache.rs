@@ -5,7 +5,7 @@
 //! capacity limit, the oldest half of entries are evicted (simple bulk
 //! eviction avoids per-access LRU overhead).
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use super::block::{BasicBlock, BlockKey};
@@ -17,6 +17,9 @@ const DEFAULT_MAX_ENTRIES: usize = 16384;
 pub struct DecodeCache {
     /// Cached blocks, keyed by (phys_addr, mode, cs_base).
     blocks: BTreeMap<BlockKey, Arc<BasicBlock>>,
+    /// Set of 4K-aligned physical pages that contain at least one cached block.
+    /// Used to fast-reject SMC invalidation for non-code pages.
+    code_pages: BTreeSet<u64>,
     /// Maximum number of entries before eviction.
     max_entries: usize,
     /// Cache hit counter (diagnostics).
@@ -30,6 +33,7 @@ impl DecodeCache {
     pub fn new() -> Self {
         DecodeCache {
             blocks: BTreeMap::new(),
+            code_pages: BTreeSet::new(),
             max_entries: DEFAULT_MAX_ENTRIES,
             hits: 0,
             misses: 0,
@@ -57,6 +61,16 @@ impl DecodeCache {
         if self.blocks.len() >= self.max_entries {
             self.evict();
         }
+        // Track which pages contain code blocks
+        let page = key.phys_addr & !0xFFF;
+        self.code_pages.insert(page);
+        crate::memory::smc::mark_code_page(page);
+        // Also track the end page if the block spans a page boundary
+        let end_page = (key.phys_addr + block.byte_len as u64 - 1) & !0xFFF;
+        if end_page != page {
+            self.code_pages.insert(end_page);
+            crate::memory::smc::mark_code_page(end_page);
+        }
         self.blocks.insert(key, Arc::new(block));
     }
 
@@ -64,17 +78,34 @@ impl DecodeCache {
     /// page (4 KiB aligned). Used for self-modifying code detection.
     pub fn invalidate_page(&mut self, page_phys: u64) {
         let page_start = page_phys & !0xFFF;
+        // Fast reject: if this page has no code blocks, skip the scan
+        if !self.code_pages.contains(&page_start) {
+            return;
+        }
         let page_end = page_start.saturating_add(0x1000);
         self.blocks.retain(|key, block| {
             let block_start = key.phys_addr;
             let block_end = block_start.saturating_add(block.byte_len as u64);
             block_end <= page_start || block_start >= page_end
         });
+        // Remove from local code_pages if no blocks remain on this page.
+        // Don't touch the global SMC bitmap — keep it conservative.
+        let still_has = self.blocks.iter().any(|(key, block)| {
+            let s = key.phys_addr;
+            let e = s + block.byte_len as u64;
+            (s < page_end) && (e > page_start)
+        });
+        if !still_has {
+            self.code_pages.remove(&page_start);
+        }
     }
 
     /// Flush the entire cache (e.g., on CR3 change or mode switch).
     pub fn flush(&mut self) {
         self.blocks.clear();
+        self.code_pages.clear();
+        // Don't unmark the global SMC bitmap — the JIT engine may still
+        // have compiled blocks on these pages. The bitmap is conservative.
     }
 
     /// Return the number of cached blocks.
@@ -101,6 +132,16 @@ impl DecodeCache {
         let keys: Vec<BlockKey> = self.blocks.keys().take(half).copied().collect();
         for key in keys {
             self.blocks.remove(&key);
+        }
+        // Rebuild code_pages from remaining blocks
+        self.code_pages.clear();
+        for (key, block) in &self.blocks {
+            let page = key.phys_addr & !0xFFF;
+            self.code_pages.insert(page);
+            let end_page = (key.phys_addr + block.byte_len as u64 - 1) & !0xFFF;
+            if end_page != page {
+                self.code_pages.insert(end_page);
+            }
         }
     }
 }
