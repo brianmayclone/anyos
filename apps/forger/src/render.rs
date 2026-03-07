@@ -14,20 +14,17 @@ type Mat4 = [f32; 16];
 // Shaders
 // ---------------------------------------------------------------------------
 
-const VS_BLOCK: &str = r#"
-attribute vec3 aPosition;
+const VS_BLOCK: &str =
+"attribute vec3 aPosition;
 attribute vec2 aTexCoord;
 attribute vec3 aNormal;
 attribute float aLight;
-
 uniform mat4 uMVP;
 uniform vec3 uSunDir;
 uniform float uAmbient;
-
 varying vec2 vTexCoord;
 varying float vLighting;
 varying float vDist;
-
 void main() {
     gl_Position = uMVP * vec4(aPosition, 1.0);
     vTexCoord = aTexCoord;
@@ -35,61 +32,50 @@ void main() {
     vLighting = aLight * (uAmbient + (1.0 - uAmbient) * sun);
     vDist = gl_Position.w;
 }
-"#;
+";
 
-const FS_BLOCK: &str = r#"
-precision mediump float;
-
-varying vec2 vTexCoord;
+const FS_BLOCK: &str =
+"varying vec2 vTexCoord;
 varying float vLighting;
 varying float vDist;
-
 uniform sampler2D uTexture;
 uniform vec3 uFogColor;
 uniform float uFogStart;
 uniform float uFogEnd;
-
 void main() {
     vec4 tex = texture2D(uTexture, vTexCoord);
     if (tex.a < 0.1) discard;
     vec3 color = tex.rgb * vLighting;
-    float fog = smoothstep(uFogStart, uFogEnd, vDist);
+    float t = clamp((vDist - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
+    float fog = t * t * (3.0 - 2.0 * t);
     color = mix(color, uFogColor, fog);
     gl_FragColor = vec4(color, tex.a);
 }
-"#;
+";
 
-const VS_SKY: &str = r#"
-attribute vec2 aPosition;
+const VS_SKY: &str =
+"attribute vec2 aPosition;
 varying vec2 vPos;
-
 void main() {
     vPos = aPosition;
     gl_Position = vec4(aPosition, 0.999, 1.0);
 }
-"#;
+";
 
-const FS_SKY: &str = r#"
-precision mediump float;
-
-varying vec2 vPos;
-
+const FS_SKY: &str =
+"varying vec2 vPos;
 uniform vec3 uSkyTop;
 uniform vec3 uSkyHorizon;
 uniform vec3 uSunDir;
-
 void main() {
     float t = clamp(vPos.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 color = mix(uSkyHorizon, uSkyTop, t);
-
-    // Sun glow
     vec3 dir = normalize(vec3(vPos, 1.0));
     float sun = pow(max(dot(dir, uSunDir), 0.0), 64.0);
-    color += vec3(1.0, 0.9, 0.7) * sun;
-
+    color = color + vec3(1.0, 0.9, 0.7) * sun;
     gl_FragColor = vec4(color, 1.0);
 }
-"#;
+";
 
 // ---------------------------------------------------------------------------
 // Renderer
@@ -379,15 +365,26 @@ fn compile_program(vs_src: &str, fs_src: &str) -> u32 {
     let vs = gl::create_shader(gl::GL_VERTEX_SHADER);
     gl::shader_source(vs, vs_src);
     gl::compile_shader(vs);
+    if !gl::get_shader_compile_status(vs) {
+        let log = gl::get_shader_info_log(vs);
+        anyos_std::println!("forger: VS compile FAILED: {}", log);
+    }
 
     let fs = gl::create_shader(gl::GL_FRAGMENT_SHADER);
     gl::shader_source(fs, fs_src);
     gl::compile_shader(fs);
+    if !gl::get_shader_compile_status(fs) {
+        let log = gl::get_shader_info_log(fs);
+        anyos_std::println!("forger: FS compile FAILED: {}", log);
+    }
 
     let program = gl::create_program();
     gl::attach_shader(program, vs);
     gl::attach_shader(program, fs);
     gl::link_program(program);
+    if !gl::get_program_link_status(program) {
+        anyos_std::println!("forger: program link FAILED");
+    }
 
     program
 }
