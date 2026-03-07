@@ -44,6 +44,8 @@ pub mod fpu_state;
 pub mod sse_state;
 pub mod devices;
 pub mod jit;
+#[cfg(feature = "host_test")]
+pub mod debugger;
 
 /// Syscall wrappers for the allocator, panic handler, debug output, and
 /// file I/O (used by the IDE controller for on-demand disk access).
@@ -698,6 +700,11 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
                         let fires = unsafe { (*vm.pit_ptr).advance(pit_ticks) };
                         if fires > 0 {
                             inject_irq_line(vm, 0);
+                            static PIT_FIRES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                            let f = PIT_FIRES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if f < 5 {
+                                eprintln!("[pit-fire] fires={} pit_ticks={} ic={}", f, pit_ticks, after_ic);
+                            }
                         }
                     }
                 }
@@ -2216,4 +2223,25 @@ pub extern "C" fn corevm_cache_stats(
     if !entries.is_null() {
         unsafe { *entries = cache.len() as u64 };
     }
+}
+
+// ── Debugger FFI ─────────────────────────────────────────────────────
+
+/// Enable the built-in interactive debugger.
+///
+/// Once enabled, the debugger can break on breakpoints, watchpoints,
+/// exception conditions, or Ctrl-C. The interactive prompt reads
+/// commands from stdin.
+#[cfg(feature = "host_test")]
+#[no_mangle]
+pub extern "C" fn corevm_debugger_enable() {
+    crate::debugger::enable();
+}
+
+/// Request the debugger to break before the next instruction.
+/// Typically called from a Ctrl-C signal handler.
+#[cfg(feature = "host_test")]
+#[no_mangle]
+pub extern "C" fn corevm_debugger_break() {
+    crate::debugger::request_break();
 }

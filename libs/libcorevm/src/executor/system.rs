@@ -222,7 +222,7 @@ pub fn exec_ltr(
 /// Opcode 0F 22: MOV CRn, r64 (write control register)
 ///
 /// After writing CR0, calls `cpu.update_mode()` to recalculate the CPU mode.
-pub fn exec_mov_cr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
+pub fn exec_mov_cr(cpu: &mut Cpu, inst: &DecodedInst, mmu: &Mmu) -> Result<()> {
     let op = inst.opcode as u8;
 
     if op == 0x20 {
@@ -251,6 +251,7 @@ pub fn exec_mov_cr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             2 => cpu.regs.cr2 = val,
             3 => {
                 cpu.regs.cr3 = val;
+                mmu.flush_tlb();
             }
             4 => cpu.regs.cr4 = val,
             8 => cpu.regs.cr8 = val,

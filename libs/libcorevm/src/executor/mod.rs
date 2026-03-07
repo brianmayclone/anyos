@@ -637,7 +637,7 @@ fn exec_secondary(
         }
 
         // ── MOV r, CRn / MOV CRn, r ──
-        0x20 | 0x22 => system::exec_mov_cr(cpu, inst),
+        0x20 | 0x22 => system::exec_mov_cr(cpu, inst, mmu),
 
         // ── MOV r, DRn / MOV DRn, r ──
         0x21 | 0x23 => system::exec_mov_dr(cpu, inst),

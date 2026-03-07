@@ -22,6 +22,7 @@ use libcorevm::{
     corevm_reset, corevm_run, corevm_serial_take_output,
     corevm_setup_ide, corevm_setup_pci_bus, corevm_setup_standard_devices, corevm_debug_take_output,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
+    corevm_debugger_enable, corevm_debugger_break,
 };
 
 struct VmHandle(u64);
@@ -46,7 +47,14 @@ unsafe extern "C" {
     fn signal(sig: i32, handler: usize) -> usize;
 }
 
+static DEBUGGER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 extern "C" fn on_sigint(_sig: i32) {
+    if DEBUGGER_ACTIVE.load(Ordering::SeqCst) {
+        // In debugger mode, Ctrl-C breaks into debugger instead of stopping
+        corevm_debugger_break();
+        return;
+    }
     STOP_REQUESTED.store(true, Ordering::SeqCst);
 }
 
@@ -73,6 +81,7 @@ struct Config {
     plain: bool,
     auto_enter_ms: u64,
     jit: bool,
+    debugger: bool,
 }
 
 struct SttyGuard {
@@ -164,6 +173,7 @@ fn parse_args() -> Result<Config, String> {
         plain: false,
         auto_enter_ms: 0,
         jit: false,
+        debugger: false,
     };
 
     let mut args = env::args().skip(1);
@@ -239,6 +249,7 @@ fn parse_args() -> Result<Config, String> {
                     .map_err(|_| "invalid --auto-enter-ms")?;
             }
             "--jit" => cfg.jit = true,
+            "--debugger" | "--dbg" => cfg.debugger = true,
             "--help" | "-h" => {
                 return Err(String::new());
             }
@@ -1303,6 +1314,10 @@ fn main() {
     corevm_ide_attach_slave(vm.0, iso.as_ptr(), iso.len() as u32);
     if cfg.jit {
         corevm_jit_enable(vm.0, 1);
+    }
+    if cfg.debugger {
+        corevm_debugger_enable();
+        DEBUGGER_ACTIVE.store(true, Ordering::SeqCst);
     }
 
     let (kbd_tx, kbd_rx) = mpsc::channel::<u8>();

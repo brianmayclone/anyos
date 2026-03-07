@@ -528,6 +528,12 @@ impl Cpu {
 
             let t_after_smc = rdtsc();
 
+            // ── Debugger hook (before decode cache) ──
+            #[cfg(feature = "host_test")]
+            if crate::debugger::should_break(self, phys_addr) {
+                crate::debugger::enter_prompt(self, memory, mmu, phys_addr, "breakpoint");
+            }
+
             // ── Decode Cache path ──
             let cs_base = self.regs.seg[SegReg::Cs as usize].base;
             let block_key = BlockKey {
@@ -848,22 +854,21 @@ impl Cpu {
                     return BlockExitReason::Exit(ExitReason::Breakpoint);
                 }
                 Err(ref e) => {
-                    use crate::memory::MemoryBus;
-                    let b0 = memory.read_u8(inst_phys).unwrap_or(0xFF);
-                    let b1 = memory.read_u8(inst_phys + 1).unwrap_or(0xFF);
-                    let b2 = memory.read_u8(inst_phys + 2).unwrap_or(0xFF);
-                    let b3 = memory.read_u8(inst_phys + 3).unwrap_or(0xFF);
-                    libsyscall::serial_print(format_args!(
-                        "[corevm] exec error at CS:IP={:04X}:{:X} phys={:X} opcode=0x{:04X} bytes=[{:02X} {:02X} {:02X} {:02X}] modrm_reg={} CS.base={:X}: {:?}\n",
-                        self.regs.seg[SegReg::Cs as usize].selector,
-                        self.last_exec_rip,
-                        inst_phys,
-                        inst.opcode,
-                        b0, b1, b2, b3,
-                        inst.modrm_reg(),
-                        self.regs.seg[SegReg::Cs as usize].base,
-                        e
-                    ));
+                    // Detect infinite exception loops (same check as fallback path).
+                    if self.last_exec_rip == self.consecutive_exception_rip {
+                        self.consecutive_exception_count += 1;
+                    } else {
+                        self.consecutive_exception_rip = self.last_exec_rip;
+                        self.consecutive_exception_count = 1;
+                    }
+                    if self.consecutive_exception_count > 20 {
+                        #[cfg(feature = "host_test")]
+                        eprintln!("[corevm] exception loop: CS:IP={:04X}:{:X} ({} repeats) CR2={:X} ESP={:X}",
+                            self.regs.seg[SegReg::Cs as usize].selector,
+                            self.last_exec_rip, self.consecutive_exception_count,
+                            self.regs.cr2, self.regs.sp());
+                        return BlockExitReason::Exit(ExitReason::Exception(VmError::DoubleFault));
+                    }
                     if let Err(e2) =
                         self.inject_exception_from_error(e, memory, mmu, interrupts)
                     {
@@ -1169,6 +1174,14 @@ impl Cpu {
             self.regs.cr2 = addr;
         }
 
+        // ── Debugger hook: exception breakpoints ──
+        #[cfg(feature = "host_test")]
+        if crate::debugger::on_exception(vector, error_code, cr2_val.unwrap_or(0), self) {
+            crate::debugger::enter_prompt(self, memory, &*mmu, 0,
+                &alloc::format!("exception #{} err={:?} CR2={:#010x}",
+                    vector, error_code, cr2_val.unwrap_or(0)));
+        }
+
         // Double fault detection: if we're already handling an exception and
         // another contributory exception occurs, deliver #DF (vector 8) instead.
         // Only #PF, #GP, #SS, #NP, #TS, #DF, #AC are contributory; others nest normally.
@@ -1225,22 +1238,75 @@ impl Cpu {
                         eprintln!("[corevm]   Instr @ {:#010x} phys={:#010x}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
                             orig_rip, phys, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
                     }
-                    // Dump page table for the stack address to see why it's unmapped
-                    let stack_addr = orig_esp as u32;
+                    // Full stack dump to see interrupt frames
+                    {
+                        let stack_va = orig_esp as u64;
+                        let cr3v = self.regs.cr3;
+                        if let Ok(stack_phys) = mmu.translate_linear(stack_va, cr3v, crate::memory::AccessType::Read, 0, &*memory) {
+                            eprintln!("[corevm]   Stack dump at ESP={:#010x}:", stack_va);
+                            for i in 0..20 {
+                                let off = i as u64 * 4;
+                                if let Ok(val) = memory.read_u32(stack_phys + off) {
+                                    eprintln!("[corevm]     +{:02x}: {:#010x}", off, val);
+                                }
+                            }
+                        }
+                    }
+                    // Check page table mapping for handler and stack
+                    {
+                        let cr3v = self.regs.cr3;
+                        let pd_base = (cr3v & 0xFFFFF000) as u64;
+                        // PDE[514] covers 0x80800000-0x80BFFFFF
+                        let pde = memory.read_u32(pd_base + 514 * 4).unwrap_or(0);
+                        let pt_base = (pde as u64) & 0xFFFFF000;
+                        // PTE[4] = VA 0x80804xxx (stack), PTE[13] = VA 0x8080Dxxx (handler)
+                        let pte4 = memory.read_u32(pt_base + 4 * 4).unwrap_or(0);
+                        let pte13 = memory.read_u32(pt_base + 13 * 4).unwrap_or(0);
+                        eprintln!("[corevm]   PDE[514]={:#010x} PT @ {:#010x}", pde, pt_base);
+                        eprintln!("[corevm]   PTE[4](stack 0x80804)={:#010x}  PTE[13](handler 0x8080D)={:#010x}", pte4, pte13);
+                        // Also dump handler code from PTE[13]'s physical page
+                        let handler_phys_page = (pte13 as u64) & 0xFFFFF000;
+                        let handler_offset = 0xD867u64 & 0xFFF; // offset within page
+                        let handler_phys = handler_phys_page + handler_offset;
+                        let mut s = alloc::string::String::new();
+                        for i in 0..16 {
+                            if let Ok(b) = memory.read_u8(handler_phys + i) {
+                                use core::fmt::Write;
+                                let _ = write!(s, "{:02x} ", b);
+                            }
+                        }
+                        eprintln!("[corevm]   Handler actual phys={:#010x}: {}", handler_phys, s);
+                    }
+                    // Dump IDT entry for the faulting vector
+                    let idtr_base = self.regs.idtr.base;
+                    let idt_entry_addr = idtr_base + vector as u64 * 8;
+                    if let Ok(idt_phys) = mmu.translate_linear(idt_entry_addr, self.regs.cr3, crate::memory::AccessType::Read, 0, &*memory) {
+                        let lo = memory.read_u32(idt_phys).unwrap_or(0);
+                        let hi = memory.read_u32(idt_phys + 4).unwrap_or(0);
+                        let handler = (lo & 0xFFFF) | (hi & 0xFFFF0000);
+                        let sel = (lo >> 16) & 0xFFFF;
+                        let typ = (hi >> 8) & 0x1F;
+                        eprintln!("[corevm]   IDT[{}]: handler={:#010x} sel={:#06x} type={:#x}",
+                            vector, handler, sel, typ);
+                    }
+                    // Walk page table for both orig_esp and the failed push address
                     let cr3 = self.regs.cr3 as u32;
                     let pd_base = cr3 & 0xFFFFF000;
-                    let pd_idx = stack_addr >> 22;
-                    let pde_phys = pd_base as u64 + pd_idx as u64 * 4;
-                    if let Ok(pde) = memory.read_u32(pde_phys) {
-                        eprintln!("[corevm]   Stack PT walk for {:#010x}: PD[{}] @ {:#010x} = {:#010x}",
-                            stack_addr, pd_idx, pde_phys, pde);
-                        if pde & 1 != 0 {
-                            let pt_base = pde & 0xFFFFF000;
-                            let pt_idx = (stack_addr >> 12) & 0x3FF;
-                            let pte_phys = pt_base as u64 + pt_idx as u64 * 4;
-                            if let Ok(pte) = memory.read_u32(pte_phys) {
-                                eprintln!("[corevm]   PT[{}] @ {:#010x} = {:#010x}",
-                                    pt_idx, pte_phys, pte);
+                    for &walk_addr in &[orig_esp as u32, self.regs.sp() as u32] {
+                        let pd_idx = walk_addr >> 22;
+                        let pde_phys = pd_base as u64 + pd_idx as u64 * 4;
+                        if let Ok(pde) = memory.read_u32(pde_phys) {
+                            eprintln!("[corevm]   PT walk {:#010x}: PD[{}]={:#010x}", walk_addr, pd_idx, pde);
+                            if pde & 1 != 0 {
+                                let pt_base = pde & 0xFFFFF000;
+                                let pt_idx = (walk_addr >> 12) & 0x3FF;
+                                let pte_phys = pt_base as u64 + pt_idx as u64 * 4;
+                                if let Ok(pte) = memory.read_u32(pte_phys) {
+                                    eprintln!("[corevm]   PTE[{}]={:#010x} flags={}", pt_idx, pte,
+                                        if pte & 1 == 0 { "NOT_PRESENT" }
+                                        else if pte & 2 == 0 { "READ_ONLY" }
+                                        else { "RW" });
+                                }
                             }
                         }
                     }
