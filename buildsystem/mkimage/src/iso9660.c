@@ -97,19 +97,23 @@ static void iso_dec_datetime_now(uint8_t *out)
 {
     time_t     t  = time(NULL);
     struct tm *tm = localtime(&t);
-    char       buf[17];
-
-    /* 16 ASCII characters: YYYYMMDDHHMMSSCC */
-    snprintf(buf, sizeof(buf), "%04d%02d%02d%02d%02d%02d%02d",
-             tm->tm_year + 1900,
-             tm->tm_mon + 1,
-             tm->tm_mday,
-             tm->tm_hour,
-             tm->tm_min,
-             tm->tm_sec,
-             0 /* centiseconds */);
-
-    memcpy(out, buf, 16);
+    /* 16 ASCII characters: YYYYMMDDHHMMSSCC + null */
+    out[0]  = '0' + (uint8_t)((tm->tm_year + 1900) / 1000);
+    out[1]  = '0' + (uint8_t)(((tm->tm_year + 1900) / 100) % 10);
+    out[2]  = '0' + (uint8_t)(((tm->tm_year + 1900) / 10) % 10);
+    out[3]  = '0' + (uint8_t)((tm->tm_year + 1900) % 10);
+    out[4]  = '0' + (uint8_t)((tm->tm_mon + 1) / 10);
+    out[5]  = '0' + (uint8_t)((tm->tm_mon + 1) % 10);
+    out[6]  = '0' + (uint8_t)(tm->tm_mday / 10);
+    out[7]  = '0' + (uint8_t)(tm->tm_mday % 10);
+    out[8]  = '0' + (uint8_t)(tm->tm_hour / 10);
+    out[9]  = '0' + (uint8_t)(tm->tm_hour % 10);
+    out[10] = '0' + (uint8_t)(tm->tm_min / 10);
+    out[11] = '0' + (uint8_t)(tm->tm_min % 10);
+    out[12] = '0' + (uint8_t)(tm->tm_sec / 10);
+    out[13] = '0' + (uint8_t)(tm->tm_sec % 10);
+    out[14] = '0';  /* centiseconds */
+    out[15] = '0';
     out[16] = 0;  /* GMT offset */
 }
 
@@ -212,7 +216,8 @@ static void collect_sysroot(const char *host_path, const char *iso_path,
 
     /* First pass: gather names into a temporary list for sorting */
 #define MAX_ENTRIES 1024
-    char enames[MAX_ENTRIES][256];
+    char (*enames)[256] = (char (*)[256])malloc(MAX_ENTRIES * 256);
+    if (!enames) { closedir(dp); fatal("collect_sysroot: out of memory"); }
     int  nent = 0;
 
     while ((ent = readdir(dp)) != NULL) {
@@ -300,6 +305,7 @@ static void collect_sysroot(const char *host_path, const char *iso_path,
             }
         }
     }
+    free(enames);
 #undef MAX_ENTRIES
 }
 
@@ -538,7 +544,8 @@ void create_iso_image(const Args *args)
      * We need a sorted array of directory paths for stable LBA assignment
      * and path table generation.  Build a separate index array and sort it.
      */
-    char sorted_dirs[MAX_ISO_DIRS][256];
+    char (*sorted_dirs)[256] = (char (*)[256])malloc(MAX_ISO_DIRS * 256);
+    if (!sorted_dirs) fatal("create_iso_image: out of memory");
     int  nsorted = ndirs;
     {
         int i;
@@ -585,7 +592,8 @@ void create_iso_image(const Args *args)
     /* ── Assign LBAs to files (sorted by path, mirrors Python) ──────────── */
     {
         /* Sort file paths */
-        char sorted_fpaths[MAX_ISO_FILES][256];
+        char (*sorted_fpaths)[256] = (char (*)[256])malloc(MAX_ISO_FILES * 256);
+        if (!sorted_fpaths) fatal("create_iso_image: out of memory");
         int i;
         for (i = 0; i < nfiles; i++)
             strncpy(sorted_fpaths[i], files[i].path, 255);
@@ -606,6 +614,7 @@ void create_iso_image(const Args *args)
             }
         }
         next_lba = cur_lba;
+        free(sorted_fpaths);
     }
 
     uint32_t total_sectors = next_lba;
@@ -771,13 +780,12 @@ void create_iso_image(const Args *args)
 #define DIR_NUM_FOR(iso_path_) \
     dir_num_for((iso_path_), sorted_dirs, dir_numbers, nsorted)
 
-    uint8_t path_table_l[ISO_BLOCK_SIZE];
-    uint8_t path_table_m[ISO_BLOCK_SIZE];
+    size_t  pt_buf_size = (size_t)ISO_BLOCK_SIZE * 16;  /* 32 KiB, enough for many dirs */
+    uint8_t *path_table_l = (uint8_t *)calloc(1, pt_buf_size);
+    uint8_t *path_table_m = (uint8_t *)calloc(1, pt_buf_size);
+    if (!path_table_l || !path_table_m) fatal("create_iso_image: out of memory");
     size_t  pt_l_len = 0;
     size_t  pt_m_len = 0;
-
-    memset(path_table_l, 0, sizeof(path_table_l));
-    memset(path_table_m, 0, sizeof(path_table_m));
 
     {
         int i;
@@ -1059,6 +1067,9 @@ void create_iso_image(const Args *args)
         for (i = 0; i < nfiles; i++)
             if (files[i].data) free(files[i].data);
     }
+    free(path_table_l);
+    free(path_table_m);
+    free(sorted_dirs);
     free(dirs);
     free(files);
     free(image);

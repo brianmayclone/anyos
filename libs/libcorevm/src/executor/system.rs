@@ -373,17 +373,15 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             let ebx_val = (8u32 << 8) | ((logical_cpus & 0xFF) << 16) | (apic_id << 24);
             // ECX feature flags:
             // SSE3(0), SSSE3(9), CMPXCHG16B(13), SSE4.1(19), SSE4.2(20),
-            // POPCNT(23), XSAVE(26), OSXSAVE(27)
-            let mut ecx_val = (1 << 0)
+            // POPCNT(23)
+            // NOTE: XSAVE(26)/OSXSAVE(27) intentionally NOT advertised —
+            // XSAVE/XRSTOR are not implemented; guests use FXSAVE/FXRSTOR.
+            let ecx_val = (1 << 0)
                 | (1 << 9)
                 | (1 << 13)
                 | (1 << 19)
                 | (1 << 20)
-                | (1 << 23)
-                | (1 << 26);
-            if (cpu.regs.cr4 & CR4_OSXSAVE) != 0 {
-                ecx_val |= 1 << 27;
-            }
+                | (1 << 23);
             // EDX feature flags:
             // FPU(0), VME(1), DE(2), PSE(3), TSC(4), MSR(5), PAE(6),
             // MCE(7), CX8(8), APIC(9), PGE(13), MCA(14), CMOV(15),
@@ -446,18 +444,8 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             (0, 1 << 3, 0, 0)
         }
 
-        // Leaf D, subleaf 0: XSAVE features and area size for enabled XCR0 bits.
-        (0x0D, 0) => {
-            // Support x87 (bit0) and SSE (bit1) in XCR0.
-            let supported: u64 = 0x3;
-            let xcr0 = cpu.regs.xcr0 & supported;
-            // Legacy region (512) + XSAVE header (64) when any state enabled.
-            let xsave_size = if xcr0 == 0 { 0 } else { 576 };
-            (supported as u32, xsave_size, (supported >> 32) as u32, 0)
-        }
-
-        // Leaf D, subleaf 1: XSAVEOPT etc. (not supported).
-        (0x0D, 1) => (0, 0, 0, 0),
+        // Leaf D: XSAVE not supported — return zeros.
+        (0x0D, _) => (0, 0, 0, 0),
 
         // Leaf 0x80000000: max extended leaf
         (0x8000_0000, _) => (0x8000_0008, 0, 0, 0),

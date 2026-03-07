@@ -1079,6 +1079,11 @@ pub fn translate_and_read(
     mmu: &Mmu,
     memory: &GuestMemory,
 ) -> Result<u64> {
+    let nbytes = size.bytes() as usize;
+    // Check if the access crosses a 4K page boundary.
+    if nbytes > 1 && ((linear & 0xFFF) + nbytes as u64) > 0x1000 {
+        return translate_and_read_cross_page(cpu, linear, nbytes, mmu, memory);
+    }
     let phys = mmu.translate_linear(linear, cpu.regs.cr3, AccessType::Read, cpu.regs.cpl, memory)?;
     match size {
         OperandSize::Byte => Ok(memory.fast_read_u8(phys) as u64),
@@ -1086,6 +1091,24 @@ pub fn translate_and_read(
         OperandSize::Dword => Ok(memory.fast_read_u32(phys) as u64),
         OperandSize::Qword => Ok(memory.read_u64(phys)?),
     }
+}
+
+/// Read that spans a page boundary: translate each page separately and
+/// combine the bytes in little-endian order.
+fn translate_and_read_cross_page(
+    cpu: &Cpu,
+    linear: u64,
+    nbytes: usize,
+    mmu: &Mmu,
+    memory: &GuestMemory,
+) -> Result<u64> {
+    let mut buf = [0u8; 8];
+    for i in 0..nbytes {
+        let addr = linear.wrapping_add(i as u64);
+        let phys = mmu.translate_linear(addr, cpu.regs.cr3, AccessType::Read, cpu.regs.cpl, memory)?;
+        buf[i] = memory.fast_read_u8(phys);
+    }
+    Ok(u64::from_le_bytes(buf))
 }
 
 /// Translate a linear address via the MMU and write a value of the given size.
@@ -1098,6 +1121,11 @@ pub fn translate_and_write(
     mmu: &Mmu,
     memory: &mut GuestMemory,
 ) -> Result<()> {
+    let nbytes = size.bytes() as usize;
+    // Check if the access crosses a 4K page boundary.
+    if nbytes > 1 && ((linear & 0xFFF) + nbytes as u64) > 0x1000 {
+        return translate_and_write_cross_page(cpu, linear, nbytes, val, mmu, memory);
+    }
     let phys = mmu.translate_linear(linear, cpu.regs.cr3, AccessType::Write, cpu.regs.cpl, memory)?;
     match size {
         OperandSize::Byte => { memory.fast_write_u8(phys, val as u8); Ok(()) }
@@ -1105,6 +1133,25 @@ pub fn translate_and_write(
         OperandSize::Dword => { memory.fast_write_u32(phys, val as u32); Ok(()) }
         OperandSize::Qword => memory.write_u64(phys, val),
     }
+}
+
+/// Write that spans a page boundary: translate each page separately and
+/// write each byte individually.
+fn translate_and_write_cross_page(
+    cpu: &Cpu,
+    linear: u64,
+    nbytes: usize,
+    val: u64,
+    mmu: &Mmu,
+    memory: &mut GuestMemory,
+) -> Result<()> {
+    let bytes = val.to_le_bytes();
+    for i in 0..nbytes {
+        let addr = linear.wrapping_add(i as u64);
+        let phys = mmu.translate_linear(addr, cpu.regs.cr3, AccessType::Write, cpu.regs.cpl, memory)?;
+        memory.fast_write_u8(phys, bytes[i]);
+    }
+    Ok(())
 }
 
 /// Push a value onto the guest stack.

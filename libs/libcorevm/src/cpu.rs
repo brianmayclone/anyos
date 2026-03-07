@@ -6,7 +6,7 @@
 //! hardware exceptions.
 
 #[inline(always)]
-fn rdtsc() -> u64 {
+pub(crate) fn rdtsc() -> u64 {
     unsafe {
         let lo: u32;
         let hi: u32;
@@ -132,6 +132,9 @@ pub struct Cpu {
     /// Each entry: (rip, vector, error_code, cr2).
     pub exc_ring: [(u64, u8, u32, u64); 32],
     pub exc_ring_idx: usize,
+    /// Ring buffer for non-#PF exceptions only (vec != 14).
+    pub exc_ring_nopf: [(u64, u8, u32, u64); 32],
+    pub exc_ring_nopf_idx: usize,
     /// TSC-based timing counters for profiling the run loop.
     pub perf_tsc_interrupt: u64,
     pub perf_tsc_translate: u64,
@@ -170,6 +173,8 @@ impl Cpu {
             consecutive_exception_cr2_page: u64::MAX,
             consecutive_exception_count: 0,
             exc_ring: [(0, 0, 0, 0); 32],
+            exc_ring_nopf: [(0, 0, 0, 0); 32],
+            exc_ring_nopf_idx: 0,
             exc_ring_idx: 0,
             jit_fault: false,
             smc_pending: false,
@@ -275,6 +280,44 @@ impl Cpu {
             }
             Mode::LongMode => u64::MAX,
         }
+    }
+
+    /// Decode an instruction that straddles a page boundary by building a
+    /// combined buffer from two physical pages.
+    fn decode_cross_page(
+        &self,
+        fetch_addr: u64,
+        phys_addr: u64,
+        memory: &GuestMemory,
+        mmu: &Mmu,
+    ) -> Result<crate::instruction::DecodedInst> {
+        use crate::decoder::MAX_INST_LEN;
+
+        let mut buf = [0u8; MAX_INST_LEN];
+        let bytes_in_page = (0x1000 - (phys_addr & 0xFFF)) as usize;
+
+        // Read bytes from the first (current) physical page.
+        for i in 0..bytes_in_page {
+            buf[i] = memory.read_u8(phys_addr + i as u64).unwrap_or(0xFF);
+        }
+
+        // Translate the next virtual page to get its physical address.
+        let next_virt_page = (fetch_addr & !0xFFF) + 0x1000;
+        let next_phys = mmu.translate_linear(
+            next_virt_page,
+            self.regs.cr3,
+            AccessType::Execute,
+            self.regs.cpl,
+            &*memory,
+        )?;
+
+        // Read remaining bytes from the second physical page.
+        let remaining = MAX_INST_LEN - bytes_in_page;
+        for i in 0..remaining {
+            buf[bytes_in_page + i] = memory.read_u8(next_phys + i as u64).unwrap_or(0xFF);
+        }
+
+        self.decoder.decode_from_buf(&buf, MAX_INST_LEN, phys_addr)
     }
 
     pub fn mask_rip(&mut self) {
@@ -578,6 +621,33 @@ impl Cpu {
                 crate::debugger::enter_prompt(self, memory, mmu, phys_addr, "breakpoint");
             }
 
+            // ── Bugcheck halt trap ──
+            #[cfg(feature = "host_test")]
+            if self.regs.rip == 0x8019C6D1 && self.prev_exec_rip != 0x8019C6D1 {
+                eprintln!("[BUGCHECK-TRAP] First hit! ic={} from prev_rip={:08X}", self.instruction_count, self.prev_exec_rip);
+                eprintln!("[BUGCHECK-TRAP] EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X}",
+                    self.regs.gpr[0] as u32, self.regs.gpr[3] as u32,
+                    self.regs.gpr[1] as u32, self.regs.gpr[2] as u32);
+                eprintln!("[BUGCHECK-TRAP] ESP={:08X} EBP={:08X} ESI={:08X} EDI={:08X}",
+                    self.regs.gpr[4] as u32, self.regs.gpr[5] as u32,
+                    self.regs.gpr[6] as u32, self.regs.gpr[7] as u32);
+                // Walk EBP chain
+                let mut ebp = self.regs.gpr[5];
+                for frame in 0..12u32 {
+                    let tr = |va: u64| -> u64 { mmu.translate_linear(va, self.regs.cr3, crate::memory::AccessType::Read, 0, memory).unwrap_or(0) };
+                    let next = memory.read_u32(tr(ebp)).unwrap_or(0) as u64;
+                    let ret = memory.read_u32(tr(ebp + 4)).unwrap_or(0);
+                    eprint!("[BUGCHECK-TRAP] frame{}: EBP={:08X} RET={:08X} args:", frame, ebp as u32, ret);
+                    for a in 0..6u64 {
+                        let val = memory.read_u32(tr(ebp + 8 + a * 4)).unwrap_or(0);
+                        eprint!(" {:08X}", val);
+                    }
+                    eprintln!();
+                    if next == 0 || next < 0x80000000 { break; }
+                    ebp = next;
+                }
+            }
+
 
 
             // ── Decode Cache path ──
@@ -631,16 +701,38 @@ impl Cpu {
             let inst = match self.decoder.decode(&*memory, phys_addr) {
                 Ok(inst) => inst,
                 Err(VmError::FetchFault(_addr)) => {
-                    let pf = VmError::PageFault {
-                        address: fetch_addr,
-                        error_code: 0x10, // instruction fetch
-                    };
-                    if let Err(e2) =
-                        self.inject_exception_from_error(&pf, memory, mmu, interrupts)
-                    {
-                        return ExitReason::Exception(e2);
+                    // The instruction may straddle a page boundary.  Build a
+                    // cross-page decode buffer using MMU translation for each
+                    // byte so that the second page is correctly resolved.
+                    let page_off = (phys_addr & 0xFFF) as usize;
+                    if page_off > 0x1000 - crate::decoder::MAX_INST_LEN {
+                        match self.decode_cross_page(fetch_addr, phys_addr, memory, mmu) {
+                            Ok(inst) => inst,
+                            Err(_) => {
+                                let pf = VmError::PageFault {
+                                    address: fetch_addr + (0x1000 - (fetch_addr & 0xFFF)),
+                                    error_code: 0x10,
+                                };
+                                if let Err(e2) =
+                                    self.inject_exception_from_error(&pf, memory, mmu, interrupts)
+                                {
+                                    return ExitReason::Exception(e2);
+                                }
+                                continue;
+                            }
+                        }
+                    } else {
+                        let pf = VmError::PageFault {
+                            address: fetch_addr,
+                            error_code: 0x10, // instruction fetch
+                        };
+                        if let Err(e2) =
+                            self.inject_exception_from_error(&pf, memory, mmu, interrupts)
+                        {
+                            return ExitReason::Exception(e2);
+                        }
+                        continue;
                     }
-                    continue;
                 }
                 Err(ref _decode_err) => {
                     // Log the raw bytes at the faulting IP for diagnostics.
@@ -1234,7 +1326,19 @@ impl Cpu {
             VmError::Breakpoint => (3, None, None),
             VmError::Overflow => (4, None, None),
             VmError::BoundRange => (5, None, None),
-            VmError::UndefinedOpcode(_) => (6, None, None),
+            VmError::UndefinedOpcode(op) => {
+                #[cfg(feature = "host_test")]
+                {
+                    let rip = self.regs.rip;
+                    let phys = mmu.translate_linear(rip, self.regs.cr3, crate::memory::AccessType::Read, 0, memory).unwrap_or(rip);
+                    let mut bytes = [0u8; 16];
+                    for i in 0..16u64 {
+                        bytes[i as usize] = memory.read_u8(phys.wrapping_add(i)).unwrap_or(0xFF);
+                    }
+                    eprintln!("[#UD] RIP={:08X} op=0x{:02X} bytes={:02X?}", rip, op, bytes);
+                }
+                (6, None, None)
+            }
             VmError::DoubleFault => (8, Some(0u32), None),
             VmError::InvalidTss(ec) => (10, Some(*ec), None),
             VmError::SegmentNotPresent(ec) => (11, Some(*ec), None),
@@ -1261,6 +1365,16 @@ impl Cpu {
                 cr2_val.unwrap_or(0),
             );
             self.exc_ring_idx += 1;
+            if vector != 14 {
+                let nidx = self.exc_ring_nopf_idx % self.exc_ring_nopf.len();
+                self.exc_ring_nopf[nidx] = (
+                    self.regs.rip,
+                    vector,
+                    error_code.unwrap_or(0),
+                    cr2_val.unwrap_or(0),
+                );
+                self.exc_ring_nopf_idx += 1;
+            }
         }
 
         if let Some(addr) = cr2_val {

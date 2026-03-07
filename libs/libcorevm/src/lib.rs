@@ -842,6 +842,10 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
             }
         }
 
+        // Drain LAPIC EOIs before injecting new timer IRQs so that
+        // level-triggered IOAPIC entries have their remote-IRR cleared.
+        drain_lapic_eois(vm);
+
         // Advance PIT using wall-clock time (host_test) or instruction count (no_std).
         if ran > 0 && !vm.pit_ptr.is_null() && !vm.pit_is_externally_clocked {
             #[cfg(feature = "host_test")]
@@ -1108,6 +1112,25 @@ pub extern "C" fn corevm_dump_exception_ring(handle: u64) {
                 i, rip, vec, ec, cr2
             ));
         }
+    }
+    // Also dump non-#PF exception ring
+    let nring = &vm.engine.cpu.exc_ring_nopf;
+    let nidx = vm.engine.cpu.exc_ring_nopf_idx;
+    let nlen = nring.len();
+    let ncount = if nidx < nlen { nidx } else { nlen };
+    let nstart = if nidx < nlen { 0 } else { nidx % nlen };
+    #[cfg(feature = "host_test")]
+    {
+        eprintln!("[exc-ring-nopf] last {} non-#PF exceptions:", ncount);
+        for i in 0..ncount {
+            let j = (nstart + i) % nlen;
+            let (rip, vec, ec, cr2) = nring[j];
+            eprintln!("  [{}] RIP={:08X} vec={} ec={:X} cr2={:08X}", i, rip, vec, ec, cr2);
+        }
+    }
+    #[cfg(not(feature = "host_test"))]
+    {
+        let _ = (nring, ncount, nstart);
     }
 }
 
@@ -1518,7 +1541,10 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     // SeaBIOS probes LAPIC Version (0xFEE00030) to detect APIC support.
     // Without this, SeaBIOS reports "No apic" and may skip APIC-dependent init.
     let mut lapic_obj = devices::lapic::Lapic::new();
+    #[cfg(feature = "host_test")]
     lapic_obj.set_host_tsc_freq(vm.tsc_freq);
+    #[cfg(not(feature = "host_test"))]
+    lapic_obj.set_host_tsc_freq(2_000_000_000); // 2 GHz default for non-host_test
     let lapic = Box::into_raw(Box::new(lapic_obj));
     vm.lapic_ptr = lapic;
     vm.engine.memory.add_mmio(0xFEE00000, 0x1000, Box::new(MmioProxy { ptr: lapic }));

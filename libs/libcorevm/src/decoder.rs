@@ -79,6 +79,15 @@ impl Decoder {
         let mut cur = DecodeCursor::new(memory, rip, self.mode);
         cur.decode_instruction()
     }
+
+    /// Decode a single instruction from a pre-built byte buffer.
+    ///
+    /// Used when the caller has already fetched instruction bytes (e.g.
+    /// spanning two physical pages for a page-straddling instruction).
+    pub fn decode_from_buf(&self, buf: &[u8; MAX_INST_LEN], buf_len: usize, rip: u64) -> Result<DecodedInst> {
+        let mut cur = DecodeCursor::from_buf(buf, buf_len, rip, self.mode);
+        cur.decode_instruction()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -86,12 +95,11 @@ impl Decoder {
 // ---------------------------------------------------------------------------
 
 /// Maximum x86 instruction length in bytes (hardware-enforced).
-const MAX_INST_LEN: usize = 15;
+pub const MAX_INST_LEN: usize = 15;
 
 /// Internal cursor that tracks position within the instruction byte stream
 /// and accumulates decoded fields.
-struct DecodeCursor<'m> {
-    mem: &'m dyn MemoryBus,
+struct DecodeCursor {
     /// RIP at instruction start.
     start_rip: u64,
     /// Current read offset within prefetch buffer.
@@ -106,17 +114,33 @@ struct DecodeCursor<'m> {
     buf_len: usize,
 }
 
-impl<'m> DecodeCursor<'m> {
-    fn new(mem: &'m dyn MemoryBus, rip: u64, mode: CpuMode) -> Self {
+impl DecodeCursor {
+    fn new(mem: &dyn MemoryBus, rip: u64, mode: CpuMode) -> Self {
         let mut buf = [0u8; MAX_INST_LEN];
-        // Prefetch up to 15 bytes. If read_bytes fails, fall back to
-        // fetching 0 bytes (fetch_u8 will report FetchFault).
-        let buf_len = if mem.read_bytes(rip, &mut buf).is_ok() {
-            MAX_INST_LEN
+        // Limit prefetch to current 4K page — rip is a physical address and
+        // the next physical page may not correspond to the next virtual page.
+        let bytes_left_in_page = (0x1000 - (rip & 0xFFF)) as usize;
+        let max_fetch = if bytes_left_in_page < MAX_INST_LEN {
+            bytes_left_in_page
         } else {
-            // Try fetching as many bytes as possible
+            MAX_INST_LEN
+        };
+        let buf_len = if max_fetch >= MAX_INST_LEN {
+            if mem.read_bytes(rip, &mut buf).is_ok() {
+                MAX_INST_LEN
+            } else {
+                let mut n = 0;
+                while n < max_fetch {
+                    match mem.read_u8(rip + n as u64) {
+                        Ok(b) => { buf[n] = b; n += 1; }
+                        Err(_) => break,
+                    }
+                }
+                n
+            }
+        } else {
             let mut n = 0;
-            while n < MAX_INST_LEN {
+            while n < max_fetch {
                 match mem.read_u8(rip + n as u64) {
                     Ok(b) => { buf[n] = b; n += 1; }
                     Err(_) => break,
@@ -125,12 +149,23 @@ impl<'m> DecodeCursor<'m> {
             n
         };
         DecodeCursor {
-            mem,
             start_rip: rip,
             offset: 0,
             mode,
             inst: DecodedInst::empty(),
             buf,
+            buf_len,
+        }
+    }
+
+    /// Create a cursor from a pre-built byte buffer (for cross-page decoding).
+    fn from_buf(buf: &[u8; MAX_INST_LEN], buf_len: usize, rip: u64, mode: CpuMode) -> Self {
+        DecodeCursor {
+            start_rip: rip,
+            offset: 0,
+            mode,
+            inst: DecodedInst::empty(),
+            buf: *buf,
             buf_len,
         }
     }
@@ -1396,7 +1431,7 @@ impl<'m> DecodeCursor<'m> {
             0x10 | 0x12 | 0x16 | 0x28 | 0x54 | 0x55 | 0x56 | 0x57 | 0x6E | 0x6F
             | 0x70 | 0x74 | 0x75 | 0x76 | 0xEF => self.decode_modrm_xmm_rm(OperandSize::Qword),
             0x60..=0x6D => self.decode_modrm_xmm_rm(OperandSize::Qword),
-            0x11 | 0x13 | 0x17 | 0x29 | 0x7F | 0xD6 => self.decode_modrm_rm_xmm(OperandSize::Qword),
+            0x11 | 0x13 | 0x17 | 0x29 | 0x2B | 0x7F | 0xD6 => self.decode_modrm_rm_xmm(OperandSize::Qword),
 
             // -- MOVD/MOVQ variant split by F3 prefix --
             // F3 0F 7E = MOVQ xmm, xmm/m64 (xmm <- r/m)

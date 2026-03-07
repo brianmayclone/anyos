@@ -56,6 +56,7 @@ pub fn detect_basic_block(
     let mut instructions = Vec::new();
     let mut offset: u64 = 0;
     let mut exits_with_branch = false;
+    let page_end = (phys_addr | 0xFFF) + 1; // first byte of next 4K page
 
     loop {
         if instructions.len() >= MAX_BLOCK_INSTRUCTIONS {
@@ -80,6 +81,12 @@ pub fn detect_basic_block(
 
         if is_terminator {
             exits_with_branch = true;
+            break;
+        }
+
+        // Stop the block at a page boundary — the next virtual page may map
+        // to a different physical page, so continuing would decode wrong bytes.
+        if phys_addr + offset >= page_end {
             break;
         }
     }

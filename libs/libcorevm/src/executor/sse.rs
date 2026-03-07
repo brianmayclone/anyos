@@ -55,8 +55,8 @@ pub fn exec_sse(
             Ok(())
         }
 
-        // ── MOVUPS/MOVAPS/MOVUPD/MOVAPD xmm/m128, xmm (store) ──
-        0x11 | 0x29 => {
+        // ── MOVUPS/MOVAPS/MOVUPD/MOVAPD/MOVNTPS/MOVNTPD xmm/m128, xmm (store) ──
+        0x11 | 0x29 | 0x2B => {
             let src_idx = xmm_src_index(inst)?;
             let src = cpu.sse.xmm[src_idx];
             write_xmm_or_mem128(cpu, inst, &inst.operands[0], src.lo, src.hi, memory, mmu)?;

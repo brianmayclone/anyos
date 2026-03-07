@@ -332,6 +332,7 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
     let ioapic_r0 = corevm_ioapic_redir_entry(handle, 0);
     let ioapic_r1 = corevm_ioapic_redir_entry(handle, 1);
     let ioapic_r8 = corevm_ioapic_redir_entry(handle, 8);
+    let ioapic_r14 = corevm_ioapic_redir_entry(handle, 14);
     let m_irr = (pic & 0xFF) as u8;
     let m_isr = ((pic >> 8) & 0xFF) as u8;
     let m_imr = ((pic >> 16) & 0xFF) as u8;
@@ -833,7 +834,7 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         }
     }
     eprintln!(
-        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} fs={:04X} fs_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} APIC_BASE={:08X} EFER={:08X} JIFF={:08X} LPJ={:08X} FSCAL={:08X} MAXPFN={:08X} MAXBYTES={:08X} PVOP={:08X}[{:02X} {:02X} {:02X} {:02X}] INITRD_DST=[{:08X},{:08X}) LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X} tpr={:08X} ppr={:08X} isr6={:08X} isr7={:08X} irr6={:08X} irr7={:08X} tmr6={:08X} tmr7={:08X}] IRQP[0={:016X} 1={:016X}] IOAPIC[r0={:016X} r1={:016X} r8={:016X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] ERR_RIP={:08X} ERR='{}' bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} fs={:04X} fs_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} APIC_BASE={:08X} EFER={:08X} JIFF={:08X} LPJ={:08X} FSCAL={:08X} MAXPFN={:08X} MAXBYTES={:08X} PVOP={:08X}[{:02X} {:02X} {:02X} {:02X}] INITRD_DST=[{:08X},{:08X}) LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X} tpr={:08X} ppr={:08X} isr6={:08X} isr7={:08X} irr6={:08X} irr7={:08X} tmr6={:08X} tmr7={:08X}] IRQP[0={:016X} 1={:016X}] IOAPIC[r0={:016X} r1={:016X} r8={:016X} r14={:016X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] ERR_RIP={:08X} ERR='{}' bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
         mode_name(mode),
         cpl,
         cs,
@@ -890,6 +891,7 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         ioapic_r0,
         ioapic_r1,
         ioapic_r8,
+        ioapic_r14,
         stack_linear as u32,
         stack[0],
         stack[1],
@@ -1536,7 +1538,35 @@ fn main() {
                     }
                     eprintln!();
                     // Dump bytes at last #UD and #GP addresses from exception ring
-                    for dump_addr in [0x8019B90Bu64, 0x8019BDA1u64, rip] {
+                    // Dump stack at EBP chain
+                    let mut ebp = corevm_get_gpr(vm.0, 5); // EBP
+                    for frame in 0..8 {
+                        let ret_addr_loc = ebp.wrapping_add(4);
+                        let ret_b0 = corevm_read_linear_u8(vm.0, ret_addr_loc) as u32;
+                        let ret_b1 = corevm_read_linear_u8(vm.0, ret_addr_loc + 1) as u32;
+                        let ret_b2 = corevm_read_linear_u8(vm.0, ret_addr_loc + 2) as u32;
+                        let ret_b3 = corevm_read_linear_u8(vm.0, ret_addr_loc + 3) as u32;
+                        let ret = ret_b0 | (ret_b1 << 8) | (ret_b2 << 16) | (ret_b3 << 24);
+                        let next_b0 = corevm_read_linear_u8(vm.0, ebp) as u64;
+                        let next_b1 = corevm_read_linear_u8(vm.0, ebp + 1) as u64;
+                        let next_b2 = corevm_read_linear_u8(vm.0, ebp + 2) as u64;
+                        let next_b3 = corevm_read_linear_u8(vm.0, ebp + 3) as u64;
+                        let next_ebp = next_b0 | (next_b1 << 8) | (next_b2 << 16) | (next_b3 << 24);
+                        // Dump 8 dwords of args after ret addr
+                        eprint!("[frame{}] EBP={:08X} RET={:08X} args:", frame, ebp, ret);
+                        for a in 0..8u64 {
+                            let addr = ebp.wrapping_add(8 + a * 4);
+                            let ab0 = corevm_read_linear_u8(vm.0, addr) as u32;
+                            let ab1 = corevm_read_linear_u8(vm.0, addr + 1) as u32;
+                            let ab2 = corevm_read_linear_u8(vm.0, addr + 2) as u32;
+                            let ab3 = corevm_read_linear_u8(vm.0, addr + 3) as u32;
+                            eprint!(" {:08X}", ab0 | (ab1 << 8) | (ab2 << 16) | (ab3 << 24));
+                        }
+                        eprintln!();
+                        if next_ebp == 0 || next_ebp < 0x80000000 { break; }
+                        ebp = next_ebp;
+                    }
+                    for dump_addr in [0x8019B90Bu64, 0x8019BDA1u64, 0x80806F9Eu64, rip] {
                         eprint!("[bsod-code] {:08X}:", dump_addr);
                         for j in 0..16u64 {
                             let b = corevm_read_linear_u8(vm.0, dump_addr + j);

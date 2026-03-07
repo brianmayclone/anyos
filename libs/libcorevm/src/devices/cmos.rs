@@ -158,6 +158,8 @@ impl Cmos {
             return false;
         }
 
+        // Consume all accumulated intervals (avoid IRQ starvation when
+        // advance() is called infrequently relative to the periodic rate).
         self.periodic_tick_credit %= interval;
         if !self.periodic_irq_enabled() {
             return false;

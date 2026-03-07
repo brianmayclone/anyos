@@ -387,7 +387,7 @@ impl Lapic {
             #[cfg(feature = "host_test")]
             { unsafe { core::arch::x86_64::_rdtsc() as u64 } }
             #[cfg(not(feature = "host_test"))]
-            { crate::rdtsc() }
+            { crate::cpu::rdtsc() }
         };
         let elapsed_tsc = now.wrapping_sub(self.timer_start_tsc);
         if elapsed_tsc == 0 {
@@ -547,7 +547,7 @@ impl Lapic {
                     #[cfg(feature = "host_test")]
                     { self.timer_start_tsc = unsafe { core::arch::x86_64::_rdtsc() as u64 }; }
                     #[cfg(not(feature = "host_test"))]
-                    { self.timer_start_tsc = crate::rdtsc(); }
+                    { self.timer_start_tsc = crate::cpu::rdtsc(); }
                 }
             }
             0x3E0 => {

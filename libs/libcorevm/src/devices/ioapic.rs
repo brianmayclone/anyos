@@ -114,6 +114,14 @@ impl IoApic {
                         // High 32 bits (preserve low 32).
                         *entry = (*entry & 0x00000000_FFFFFFFF) | ((val as u64) << 32);
                     }
+                    #[cfg(feature = "host_test")]
+                    {
+                        let masked = (*entry >> 16) & 1;
+                        let vec = *entry & 0xFF;
+                        let dm = (*entry >> 8) & 7;
+                        eprintln!("[ioapic] write pin={} reg=0x{:02X} val=0x{:08X} -> entry=0x{:016X} masked={} vec=0x{:02X} dm={}",
+                            entry_index, index, val, *entry, masked, vec, dm);
+                    }
                 }
             }
             _ => {}
@@ -132,9 +140,11 @@ impl IoApic {
         if (entry & (1 << 16)) != 0 {
             return None;
         }
-        // Bits 10:8: delivery mode (support fixed for now).
+        // Bits 10:8: delivery mode.
+        // 0 = Fixed, 1 = Lowest Priority — both deliver to vector.
+        // For single-CPU, lowest priority behaves like fixed.
         let delivery_mode = ((entry >> 8) & 0x7) as u8;
-        if delivery_mode != 0 {
+        if delivery_mode > 1 {
             return None;
         }
         let vector = (entry & 0xFF) as u8;
