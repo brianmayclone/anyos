@@ -12,8 +12,7 @@ mod body;
 use aabb::AABB;
 use body::Body;
 
-#[global_allocator]
-static ALLOCATOR: libheap::Allocator = libheap::Allocator;
+libheap::dll_allocator!(libsyscall::sbrk, libsyscall::mmap, libsyscall::munmap);
 
 static mut BODIES: Vec<Body> = Vec::new();
 static mut WORLD_QUERY: Option<extern "C" fn(i32, i32, i32) -> bool> = None;
