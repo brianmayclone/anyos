@@ -50,6 +50,8 @@ pub enum VmError {
     InstructionLimitExceeded,
     /// Guest memory allocation failed.
     OutOfMemory,
+    /// Triple fault — CPU shutdown (reset).
+    Shutdown,
 }
 
 impl VmError {
@@ -117,6 +119,7 @@ impl fmt::Display for VmError {
             VmError::FetchFault(addr) => write!(f, "fetch fault at 0x{:016X}", addr),
             VmError::InstructionLimitExceeded => write!(f, "instruction limit exceeded"),
             VmError::OutOfMemory => write!(f, "out of guest memory"),
+            VmError::Shutdown => write!(f, "triple fault — CPU shutdown"),
         }
     }
 }

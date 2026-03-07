@@ -124,10 +124,14 @@ impl VmEngine {
         let count = vcpu_count.max(1);
         let mut cpu = Cpu::new();
         cpu.configure_topology(0, count);
+        let memory = GuestMemory::new(ram_size);
+        let mut mmu = Mmu::new();
+        let (ram_p, ram_s) = memory.ram_ptr();
+        mmu.set_ram_ptr(ram_p as *mut u8, ram_s);
         VmEngine {
             cpu,
-            memory: GuestMemory::new(ram_size),
-            mmu: Mmu::new(),
+            memory,
+            mmu,
             interrupts: InterruptController::new(),
             io: IoDispatch::new(),
             vcpu_count: count,
@@ -170,6 +174,8 @@ impl VmEngine {
         self.cpu.reset();
         self.cpu.configure_topology(0, self.vcpu_count);
         self.mmu = Mmu::new();
+        let (ram_p, ram_s) = self.memory.ram_ptr();
+        self.mmu.set_ram_ptr(ram_p as *mut u8, ram_s);
         self.interrupts = InterruptController::new();
         // Memory and I/O handlers are preserved across reset
     }
@@ -739,20 +745,86 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
             0
         }
         ExitReason::Exception(ref err) => {
-            let rip = vm.engine.cpu.regs.rip;
-            let orig_rip = vm.engine.cpu.last_exec_rip;
-            let orig_cs = vm.engine.cpu.last_exec_cs;
-            let orig_opcode = vm.engine.cpu.last_opcode;
-            let orig_phys = vm.engine.cpu.last_fetch_addr;
+            let cpu = &vm.engine.cpu;
+            let orig_rip = cpu.last_exec_rip;
+            let orig_cs = cpu.last_exec_cs;
+            let orig_opcode = cpu.last_opcode;
+            let orig_phys = cpu.last_fetch_addr;
+
+            // Print detailed diagnostics in host_test mode
+            #[cfg(feature = "host_test")]
+            {
+                eprintln!("[corevm] EXCEPTION: {}", err);
+                eprintln!("  CS:IP={:04X}:{:08X} phys={:08X} opcode=0x{:04X} mode={:?}",
+                    orig_cs, orig_rip, orig_phys, orig_opcode, cpu.mode);
+                eprintln!("  EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X}",
+                    cpu.regs.gpr[0] as u32, cpu.regs.gpr[3] as u32,
+                    cpu.regs.gpr[1] as u32, cpu.regs.gpr[2] as u32);
+                eprintln!("  ESP={:08X} EBP={:08X} ESI={:08X} EDI={:08X}",
+                    cpu.regs.sp() as u32, cpu.regs.gpr[5] as u32,
+                    cpu.regs.gpr[6] as u32, cpu.regs.gpr[7] as u32);
+                eprintln!("  CR0={:08X} CR2={:08X} CR3={:08X} CR4={:08X}",
+                    cpu.regs.cr0 as u32, cpu.regs.cr2 as u32,
+                    cpu.regs.cr3 as u32, cpu.regs.cr4 as u32);
+                eprintln!("  EFLAGS={:08X} IDTR={:X}:{:04X} ic={}",
+                    cpu.regs.rflags as u32,
+                    cpu.regs.idtr.base, cpu.regs.idtr.limit,
+                    vm.engine.instruction_count());
+                eprintln!("  SS={:04X} DS={:04X} ES={:04X} FS={:04X} GS={:04X}",
+                    cpu.regs.seg[crate::registers::SegReg::Ss as usize].selector,
+                    cpu.regs.seg[crate::registers::SegReg::Ds as usize].selector,
+                    cpu.regs.seg[crate::registers::SegReg::Es as usize].selector,
+                    cpu.regs.seg[crate::registers::SegReg::Fs as usize].selector,
+                    cpu.regs.seg[crate::registers::SegReg::Gs as usize].selector);
+                eprintln!("  prev CS:IP={:04X}:{:08X}", cpu.prev_exec_cs, cpu.prev_exec_rip);
+
+                // Dump page table entries for the faulting address
+                if let VmError::PageFault { address, .. } = err {
+                    let cr3 = cpu.regs.cr3;
+                    let linear = *address;
+                    use crate::memory::MemoryBus;
+                    let mem = &vm.engine.memory;
+                    // 2-level paging (CR4.PAE=0)
+                    if cpu.regs.cr4 & 0x20 == 0 {
+                        let pd_base = cr3 & 0xFFFFF000;
+                        let pd_idx = (linear >> 22) & 0x3FF;
+                        let pde_addr = pd_base + pd_idx * 4;
+                        let pde = mem.read_u32(pde_addr).unwrap_or(0xDEAD);
+                        eprintln!("  PAGE TABLE WALK for 0x{:08X}:", linear);
+                        eprintln!("    PD[{}] @ 0x{:08X} = 0x{:08X}", pd_idx, pde_addr, pde);
+                        if pde & 1 != 0 && pde & 0x80 == 0 {
+                            let pt_base = (pde as u64) & 0xFFFFF000;
+                            let pt_idx = (linear >> 12) & 0x3FF;
+                            let pte_addr = pt_base + pt_idx * 4;
+                            let pte = mem.read_u32(pte_addr).unwrap_or(0xDEAD);
+                            eprintln!("    PT[{}] @ 0x{:08X} = 0x{:08X}", pt_idx, pte_addr, pte);
+                        }
+                    }
+                    // Also dump for ESP if different from fault address
+                    let esp = cpu.regs.sp();
+                    if esp != linear {
+                        let pd_idx = (esp >> 22) & 0x3FF;
+                        let pd_base = cr3 & 0xFFFFF000;
+                        let pde_addr = pd_base + pd_idx * 4;
+                        let pde = mem.read_u32(pde_addr).unwrap_or(0xDEAD);
+                        eprintln!("  PAGE TABLE WALK for ESP=0x{:08X}:", esp);
+                        eprintln!("    PD[{}] @ 0x{:08X} = 0x{:08X}", pd_idx, pde_addr, pde);
+                        if pde & 1 != 0 && pde & 0x80 == 0 {
+                            let pt_base = (pde as u64) & 0xFFFFF000;
+                            let pt_idx = (esp >> 12) & 0x3FF;
+                            let pte_addr = pt_base + pt_idx * 4;
+                            let pte = mem.read_u32(pte_addr).unwrap_or(0xDEAD);
+                            eprintln!("    PT[{}] @ 0x{:08X} = 0x{:08X}", pt_idx, pte_addr, pte);
+                        }
+                    }
+                }
+            }
+
             vm_log!("VM exception: {}", err);
-            vm_log!("  current RIP=0x{:X}, mode={:?}", rip, vm.engine.cpu.mode);
+            vm_log!("  current RIP=0x{:X}, mode={:?}", cpu.regs.rip, cpu.mode);
             vm_log!(
                 "  last instruction: CS=0x{:04X} IP=0x{:X} phys=0x{:X} opcode=0x{:04X}",
                 orig_cs, orig_rip, orig_phys, orig_opcode
-            );
-            vm_log!(
-                "  instructions executed: {}",
-                vm.engine.instruction_count()
             );
             vm.last_error = Some(*err);
             vm.last_error_rip = orig_rip;

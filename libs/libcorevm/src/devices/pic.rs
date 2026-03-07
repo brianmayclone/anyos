@@ -125,6 +125,10 @@ impl PicPair {
     /// Returns `None` if no interrupt is pending or all pending IRQs are
     /// masked or already in service.
     pub fn get_interrupt_vector(&self) -> Option<u8> {
+        // Don't deliver interrupts while either PIC is mid-initialization.
+        if self.master.icw_step > 0 || self.slave.icw_step > 0 {
+            return None;
+        }
         let master_pending = self.master.irr & !self.master.imr & !self.master.isr;
         if master_pending == 0 {
             return None;
@@ -194,7 +198,8 @@ impl PicPair {
             // ICW1: bit 4 set starts initialization sequence.
             pic.icw[0] = val;
             pic.icw_step = 1;
-            pic.imr = 0;
+            // ICW1 does NOT clear the IMR on real 8259A hardware.
+            // The IMR is only modified by OCW1 (data port writes).
             pic.isr = 0;
             pic.irr = 0;
             pic.read_isr = false;

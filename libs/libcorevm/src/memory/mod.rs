@@ -720,6 +720,10 @@ pub struct Mmu {
     tlb_cr3: UnsafeCell<[u64; 256]>,
     /// Direct-mapped TLB payload: physical page number.
     tlb_phys_page: UnsafeCell<[u64; 256]>,
+    /// Raw pointer to guest RAM for setting PTE Accessed/Dirty bits.
+    ram_ptr: *mut u8,
+    /// Size of guest RAM in bytes.
+    ram_size: usize,
 }
 
 impl Mmu {
@@ -740,7 +744,16 @@ impl Mmu {
             tlb_linear_page: UnsafeCell::new([0; 256]),
             tlb_cr3: UnsafeCell::new([0; 256]),
             tlb_phys_page: UnsafeCell::new([0; 256]),
+            ram_ptr: core::ptr::null_mut(),
+            ram_size: 0,
         }
+    }
+
+    /// Set the RAM pointer for PTE Accessed/Dirty bit updates.
+    /// Must be called after guest memory is allocated.
+    pub fn set_ram_ptr(&mut self, ptr: *mut u8, size: usize) {
+        self.ram_ptr = ptr;
+        self.ram_size = size;
     }
 
     /// Flush the internal linear→physical translation cache.
@@ -851,7 +864,7 @@ impl Mmu {
             }
         }
 
-        let translated = walk_page_tables(linear, cr3, access, cpl, self, mem)?;
+        let translated = walk_page_tables(linear, cr3, access, cpl, self, mem, self.ram_ptr, self.ram_size)?;
         let phys_page = translated >> 12;
 
         unsafe {

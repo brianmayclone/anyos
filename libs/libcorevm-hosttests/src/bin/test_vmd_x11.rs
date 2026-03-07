@@ -909,6 +909,10 @@ fn main() {
                     thread::sleep(Duration::from_micros(200));
                 }
                 1 => {
+                    let serial = take_text_output(vm.0);
+                    if !serial.is_empty() {
+                        eprintln!("{serial}");
+                    }
                     let err = last_error(vm.0);
                     let rip = corevm_get_last_error_rip(vm.0);
                     eprintln!("\n[test-vmd-x11] exception at rip=0x{rip:X}: {err}");
@@ -1011,6 +1015,10 @@ fn main() {
                 thread::sleep(Duration::from_micros(500));
             }
             1 => {
+                let serial = take_text_output(vm.0);
+                if !serial.is_empty() {
+                    eprintln!("{serial}");
+                }
                 let err = last_error(vm.0);
                 let rip = corevm_get_last_error_rip(vm.0);
                 eprintln!("\n[test-vmd-x11] exception at rip=0x{rip:X}: {err}");

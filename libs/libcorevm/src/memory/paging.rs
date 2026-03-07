@@ -53,13 +53,82 @@ pub fn walk_page_tables(
     cpl: u8,
     mmu: &Mmu,
     mem: &dyn MemoryBus,
+    ram: *mut u8,
+    ram_size: usize,
 ) -> Result<u64> {
     if mmu.long_mode {
-        walk_4level(linear, cr3, access, cpl, mmu, mem)
+        walk_4level(linear, cr3, access, cpl, mmu, mem, ram, ram_size)
     } else if mmu.pae {
-        walk_pae(linear, cr3, access, cpl, mmu, mem)
+        walk_pae(linear, cr3, access, cpl, mmu, mem, ram, ram_size)
     } else {
-        walk_2level(linear, cr3, access, cpl, mmu, mem)
+        walk_2level(linear, cr3, access, cpl, mmu, mem, ram, ram_size)
+    }
+}
+
+// ── Accessed/Dirty bit helpers ──
+//
+// Real x86 hardware sets the Accessed bit (bit 5) on every PTE/PDE it
+// traverses, and the Dirty bit (bit 6) on the final PTE for writes.
+// Operating systems (especially Windows) rely on these bits for virtual
+// memory management (page replacement, copy-on-write, working set trimming).
+//
+// Page table entries always reside in flat guest RAM, so we write the
+// bits directly via a raw pointer. The emulator is single-threaded.
+
+const PTE_A: u64 = 1 << 5;
+const PTE_D: u64 = 1 << 6;
+
+/// Set the Accessed bit on a 32-bit PTE at `pte_addr` in guest RAM.
+#[inline]
+unsafe fn set_accessed_32(ram: *mut u8, ram_size: usize, pte_addr: u64, pte: u32) {
+    if (pte & (1 << 5)) == 0 {
+        raw_or_u32(ram, ram_size, pte_addr, 1 << 5);
+    }
+}
+
+/// Set Accessed + Dirty bits on a 32-bit PTE.
+#[inline]
+unsafe fn set_accessed_dirty_32(ram: *mut u8, ram_size: usize, pte_addr: u64, pte: u32) {
+    let needed = (1u32 << 5) | (1u32 << 6);
+    if (pte & needed) != needed {
+        raw_or_u32(ram, ram_size, pte_addr, needed);
+    }
+}
+
+/// Set the Accessed bit on a 64-bit PTE.
+#[inline]
+unsafe fn set_accessed_64(ram: *mut u8, ram_size: usize, pte_addr: u64, pte: u64) {
+    if (pte & PTE_A) == 0 {
+        raw_or_u64(ram, ram_size, pte_addr, PTE_A);
+    }
+}
+
+/// Set Accessed + Dirty bits on a 64-bit PTE.
+#[inline]
+unsafe fn set_accessed_dirty_64(ram: *mut u8, ram_size: usize, pte_addr: u64, pte: u64) {
+    let needed = PTE_A | PTE_D;
+    if (pte & needed) != needed {
+        raw_or_u64(ram, ram_size, pte_addr, needed);
+    }
+}
+
+/// OR bits into a 32-bit value in guest RAM.
+#[inline]
+unsafe fn raw_or_u32(ram: *mut u8, ram_size: usize, addr: u64, bits: u32) {
+    let off = addr as usize;
+    if off + 4 <= ram_size {
+        let ptr = ram.add(off) as *mut u32;
+        ptr.write_unaligned(ptr.read_unaligned() | bits);
+    }
+}
+
+/// OR bits into a 64-bit value in guest RAM.
+#[inline]
+unsafe fn raw_or_u64(ram: *mut u8, ram_size: usize, addr: u64, bits: u64) {
+    let off = addr as usize;
+    if off + 8 <= ram_size {
+        let ptr = ram.add(off) as *mut u64;
+        ptr.write_unaligned(ptr.read_unaligned() | bits);
     }
 }
 
@@ -152,34 +221,55 @@ fn walk_2level(
     cpl: u8,
     mmu: &Mmu,
     mem: &dyn MemoryBus,
+    ram: *mut u8,
+    ram_size: usize,
 ) -> Result<u64> {
     let linear32 = linear as u32;
+    let is_write = matches!(access, AccessType::Write);
 
     // PD index: bits [31:22].
     let pd_index = (linear32 >> 22) as u64;
     let pd_base = cr3 & 0xFFFFF000;
     let pde_addr = pd_base + pd_index * 4;
-    let pde = mem.read_u32(pde_addr)? as u64;
+    let pde_raw = mem.read_u32(pde_addr)?;
+    let pde = pde_raw as u64;
 
     check_pte(pde, access, cpl, linear, mmu.wp, mmu.nxe)?;
 
     // PSE 4 MiB huge page: PDE.PS=1 and CR4.PSE=1.
     if mmu.pse && (pde & PTE_PS) != 0 {
-        // Physical address: PDE[31:22] || linear[21:0].
-        // Bits [21:13] of the PDE are reserved in classic PSE (contribute to
-        // the physical address in PSE-36, which we ignore for simplicity).
+        unsafe {
+            if is_write {
+                set_accessed_dirty_32(ram, ram_size, pde_addr, pde_raw);
+            } else {
+                set_accessed_32(ram, ram_size, pde_addr, pde_raw);
+            }
+        }
         let page_base = (pde & 0xFFC00000) as u64;
         let page_offset = (linear32 & 0x003FFFFF) as u64;
         return Ok(page_base | page_offset);
     }
 
+    // Set Accessed on PDE (directory entries only get Accessed, not Dirty).
+    unsafe { set_accessed_32(ram, ram_size, pde_addr, pde_raw); }
+
     // PT index: bits [21:12].
     let pt_index = ((linear32 >> 12) & 0x3FF) as u64;
     let pt_base = pde & 0xFFFFF000;
     let pte_addr = pt_base + pt_index * 4;
-    let pte = mem.read_u32(pte_addr)? as u64;
+    let pte_raw = mem.read_u32(pte_addr)?;
+    let pte = pte_raw as u64;
 
     check_pte(pte, access, cpl, linear, mmu.wp, mmu.nxe)?;
+
+    // Set Accessed (+ Dirty for writes) on the final PTE.
+    unsafe {
+        if is_write {
+            set_accessed_dirty_32(ram, ram_size, pte_addr, pte_raw);
+        } else {
+            set_accessed_32(ram, ram_size, pte_addr, pte_raw);
+        }
+    }
 
     // Physical address: PTE[31:12] || linear[11:0].
     let page_base = pte & 0xFFFFF000;
@@ -202,8 +292,11 @@ fn walk_pae(
     cpl: u8,
     mmu: &Mmu,
     mem: &dyn MemoryBus,
+    ram: *mut u8,
+    ram_size: usize,
 ) -> Result<u64> {
     let linear32 = linear as u32;
+    let is_write = matches!(access, AccessType::Write);
 
     // PDPT index: bits [31:30] (2 bits -> 4 entries).
     let pdpt_index = (linear32 >> 30) as u64;
@@ -218,6 +311,7 @@ fn walk_pae(
             error_code: access.to_pf_error_code(cpl, false),
         });
     }
+    // PAE PDPTEs do not have Accessed/Dirty bits per Intel spec.
 
     // PD index: bits [29:21] (9 bits -> 512 entries).
     let pd_index = ((linear32 >> 21) & 0x1FF) as u64;
@@ -229,10 +323,20 @@ fn walk_pae(
 
     // 2 MiB huge page: PDE.PS=1.
     if (pde & PTE_PS) != 0 {
+        unsafe {
+            if is_write {
+                set_accessed_dirty_64(ram, ram_size, pde_addr, pde);
+            } else {
+                set_accessed_64(ram, ram_size, pde_addr, pde);
+            }
+        }
         let page_base = pde & 0x000FFFFF_FFE00000;
         let page_offset = (linear32 & 0x001FFFFF) as u64;
         return Ok(page_base | page_offset);
     }
+
+    // Set Accessed on PDE.
+    unsafe { set_accessed_64(ram, ram_size, pde_addr, pde); }
 
     // PT index: bits [20:12] (9 bits -> 512 entries).
     let pt_index = ((linear32 >> 12) & 0x1FF) as u64;
@@ -241,6 +345,15 @@ fn walk_pae(
     let pte = mem.read_u64(pte_addr)?;
 
     check_pte(pte, access, cpl, linear, mmu.wp, mmu.nxe)?;
+
+    // Set Accessed (+ Dirty for writes) on final PTE.
+    unsafe {
+        if is_write {
+            set_accessed_dirty_64(ram, ram_size, pte_addr, pte);
+        } else {
+            set_accessed_64(ram, ram_size, pte_addr, pte);
+        }
+    }
 
     // Physical address: PTE[51:12] || linear[11:0].
     let page_base = pte & 0x000FFFFF_FFFFF000;
@@ -270,7 +383,11 @@ fn walk_4level(
     cpl: u8,
     mmu: &Mmu,
     mem: &dyn MemoryBus,
+    ram: *mut u8,
+    ram_size: usize,
 ) -> Result<u64> {
+    let is_write = matches!(access, AccessType::Write);
+
     // ── PML4 ──
     let pml4_index = (linear >> 39) & 0x1FF;
     let pml4_base = cr3 & 0x000FFFFF_FFFFF000;
@@ -278,6 +395,7 @@ fn walk_4level(
     let pml4e = mem.read_u64(pml4e_addr)?;
 
     check_pte(pml4e, access, cpl, linear, mmu.wp, mmu.nxe)?;
+    unsafe { set_accessed_64(ram, ram_size, pml4e_addr, pml4e); }
 
     // ── PDPT ──
     let pdpt_index = (linear >> 30) & 0x1FF;
@@ -289,10 +407,19 @@ fn walk_4level(
 
     // 1 GiB huge page: PDPTE.PS=1.
     if (pdpte & PTE_PS) != 0 {
+        unsafe {
+            if is_write {
+                set_accessed_dirty_64(ram, ram_size, pdpte_addr, pdpte);
+            } else {
+                set_accessed_64(ram, ram_size, pdpte_addr, pdpte);
+            }
+        }
         let page_base = pdpte & 0x000FFFFF_C0000000;
         let page_offset = linear & 0x3FFFFFFF;
         return Ok(page_base | page_offset);
     }
+
+    unsafe { set_accessed_64(ram, ram_size, pdpte_addr, pdpte); }
 
     // ── PD ──
     let pd_index = (linear >> 21) & 0x1FF;
@@ -304,10 +431,19 @@ fn walk_4level(
 
     // 2 MiB huge page: PDE.PS=1.
     if (pde & PTE_PS) != 0 {
+        unsafe {
+            if is_write {
+                set_accessed_dirty_64(ram, ram_size, pde_addr, pde);
+            } else {
+                set_accessed_64(ram, ram_size, pde_addr, pde);
+            }
+        }
         let page_base = pde & 0x000FFFFF_FFE00000;
         let page_offset = linear & 0x1FFFFF;
         return Ok(page_base | page_offset);
     }
+
+    unsafe { set_accessed_64(ram, ram_size, pde_addr, pde); }
 
     // ── PT ──
     let pt_index = (linear >> 12) & 0x1FF;
@@ -316,6 +452,15 @@ fn walk_4level(
     let pte = mem.read_u64(pte_addr)?;
 
     check_pte(pte, access, cpl, linear, mmu.wp, mmu.nxe)?;
+
+    // Set Accessed (+ Dirty for writes) on final PTE.
+    unsafe {
+        if is_write {
+            set_accessed_dirty_64(ram, ram_size, pte_addr, pte);
+        } else {
+            set_accessed_64(ram, ram_size, pte_addr, pte);
+        }
+    }
 
     // Physical address: PTE[51:12] || linear[11:0].
     let page_base = pte & 0x000FFFFF_FFFFF000;

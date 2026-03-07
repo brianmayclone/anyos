@@ -63,6 +63,8 @@ pub struct InterruptController {
     /// If a second exception occurs while this is `true`, the controller
     /// raises `#DF` (vector 8) instead.
     pub handling_exception: bool,
+    /// Set while delivering a double fault; used to detect triple faults.
+    pub handling_double_fault: bool,
 }
 
 impl InterruptController {
@@ -72,6 +74,7 @@ impl InterruptController {
             pending: [0u64; 4],
             interrupt_shadow: false,
             handling_exception: false,
+            handling_double_fault: false,
         }
     }
 
