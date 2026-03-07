@@ -219,7 +219,9 @@ fn lower_stmt(ctx: &mut LowerCtx, stmt: &Stmt) -> Result<(), String> {
             }
             lower_stmt(ctx, inc)?;
         }
-        Stmt::Discard => {} // Fragment-only, Phase 3
+        Stmt::Discard => {
+            ctx.insts.push(Inst::Discard);
+        }
     }
     Ok(())
 }

@@ -669,5 +669,10 @@ fn emit_inst(ctx: &mut CompileCtx, inst: &Inst, program: &ir::Program, is_vertex
             let (st, sn) = ir_src(*src, const_map);
             ctx.emit_mov(D3DSPR_TEXCRDOUT, *idx, st, sn);
         }
+
+        Inst::Discard => {
+            // DX9 SM2.0: texkill — discard if any component of src is < 0
+            // Not implemented for DX9 backend yet; ignore.
+        }
     }
 }

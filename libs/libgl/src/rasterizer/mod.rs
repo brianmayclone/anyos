@@ -135,6 +135,7 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
                 frag_color: vs_exec.frag_color.as_mut_ptr(),
                 point_size: &mut vs_exec.point_size,
                 tex_sample: tex_sample_addr,
+                discarded: 0,
             };
             unsafe { jit(&mut jit_ctx); }
         } else {
@@ -314,6 +315,7 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
                 frag_color: vs_exec.frag_color.as_mut_ptr(),
                 point_size: &mut vs_exec.point_size,
                 tex_sample: tex_sample_addr,
+                discarded: 0,
             };
             unsafe { jit(&mut jit_ctx); }
         } else {

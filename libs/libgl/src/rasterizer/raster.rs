@@ -246,6 +246,7 @@ pub fn rasterize_triangle(
 
                     // Run fragment shader — JIT path or interpreter fallback
                     fs_exec.frag_color = [0.0, 0.0, 0.0, 1.0];
+                    fs_exec.discarded = false;
                     if let Some(jit) = fs_jit {
                         let mut jit_ctx = JitContext {
                             regs: fs_exec.regs.as_mut_ptr() as *mut f32,
@@ -257,11 +258,19 @@ pub fn rasterize_triangle(
                             frag_color: fs_exec.frag_color.as_mut_ptr(),
                             point_size: core::ptr::null_mut(),
                             tex_sample: tex_sample_addr,
+                            discarded: 0,
                         };
                         unsafe { jit(&mut jit_ctx); }
+                        if jit_ctx.discarded != 0 {
+                            continue;
+                        }
                     } else {
                         fs_exec.execute(fs_ir, &[], uniforms, Some(&varying_buf[..nv]), tex_sample);
+                        if fs_exec.discarded {
+                            continue;
+                        }
                     }
+
                     let fc = fs_exec.frag_color;
 
                     // Convert fragment color [r,g,b,a] to ARGB u32

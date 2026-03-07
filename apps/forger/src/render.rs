@@ -44,6 +44,7 @@ uniform float uFogStart;
 uniform float uFogEnd;
 void main() {
     vec4 tex = texture2D(uTexture, vTexCoord);
+    if (tex.a < 0.1) discard;
     vec3 color = tex.rgb * vLighting;
     float t = clamp((vDist - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
     float fog = t * t * (3.0 - 2.0 * t);

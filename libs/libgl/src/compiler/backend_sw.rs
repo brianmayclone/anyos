@@ -42,6 +42,8 @@ pub struct ShaderExec {
     pub varyings: [[f32; 4]; MAX_VARYINGS],
     /// Number of active varyings.
     pub num_varyings: usize,
+    /// Set to true when a `discard` statement is executed (fragment shader).
+    pub discarded: bool,
 }
 
 impl ShaderExec {
@@ -55,6 +57,7 @@ impl ShaderExec {
             point_size: 1.0,
             varyings: [[0.0f32; 4]; MAX_VARYINGS],
             num_varyings,
+            discarded: false,
         }
     }
 
@@ -74,6 +77,7 @@ impl ShaderExec {
     #[inline(always)]
     pub fn reset_fragment(&mut self) {
         self.frag_color = [0.0, 0.0, 0.0, 1.0];
+        self.discarded = false;
     }
 
     /// Execute a compiled program.
@@ -88,6 +92,9 @@ impl ShaderExec {
     ) {
         for inst in &program.instructions {
             self.exec_inst(inst, attributes, uniforms, varying_in, tex_sample);
+            if self.discarded {
+                return;
+            }
         }
     }
 
@@ -385,6 +392,9 @@ impl ShaderExec {
                 if (*idx as usize) < attributes.len() {
                     self.regs[*dst as usize] = attributes[*idx as usize];
                 }
+            }
+            Inst::Discard => {
+                self.discarded = true;
             }
         }
     }

@@ -64,6 +64,8 @@ pub struct JitContext {
     pub point_size: *mut f32,
     /// Texture sampler function pointer (as usize for C ABI).
     pub tex_sample: usize,
+    /// Set to 1 by JIT code when `discard` is executed.
+    pub discarded: u32,
 }
 
 /// Type of the JIT-compiled function.
@@ -94,6 +96,7 @@ const CTX_POSITION: i32 = 40;
 const CTX_FRAG_COLOR: i32 = 48;
 const CTX_POINT_SIZE: i32 = 56;
 const CTX_TEX_SAMPLE: i32 = 64;
+const CTX_DISCARDED: i32 = 72;
 
 // ── x86_64 instruction encoding helpers ──────────────────────────────────
 
@@ -966,6 +969,20 @@ fn emit_instruction(e: &mut Emitter, inst: &Inst, const_regs: &[Option<[f32; 4]>
             let off = (*idx as i32) * 16;
             e.movups_load(XMM0, R13, off);
             e.movups_store(RBX, reg_off(*dst), XMM0);
+        }
+        Inst::Discard => {
+            // mov dword [rbp + CTX_DISCARDED], 1
+            e.emit_bytes(&[0xC7, 0x45, CTX_DISCARDED as u8]);
+            e.emit_i32(1);
+            // Emit inline epilogue (same as end of function) to return early
+            e.add_rsp_imm8(8);
+            e.pop_r64(R15);
+            e.pop_r64(R14);
+            e.pop_r64(R13);
+            e.pop_r64(R12);
+            e.pop_r64(RBX);
+            e.pop_r64(RBP);
+            e.ret();
         }
     }
 }

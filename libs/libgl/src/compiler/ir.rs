@@ -149,4 +149,7 @@ pub enum Inst {
 
     /// Load an attribute by index.
     LoadAttribute(Reg, u32),
+
+    /// Discard the current fragment (fragment shader only).
+    Discard,
 }
