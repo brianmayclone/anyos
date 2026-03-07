@@ -503,6 +503,109 @@ pub fn exec_sse(
             Ok(())
         }
 
+        // ── PMOVMSKB (66 0F D7) ── extract byte sign bits to GPR
+        0xD7 if has_66 => {
+            let src_idx = match &inst.operands[1] {
+                Operand::Register(RegOperand::Xmm(idx)) => *idx as usize,
+                _ => return Err(VmError::UndefinedOpcode(op2)),
+            };
+            let x = cpu.sse.xmm[src_idx];
+            let mut mask = 0u32;
+            for i in 0..8 { mask |= (((x.lo >> (i * 8 + 7)) & 1) as u32) << i; }
+            for i in 0..8 { mask |= (((x.hi >> (i * 8 + 7)) & 1) as u32) << (i + 8); }
+            write_operand(cpu, inst, &inst.operands[0], mask as u64, memory, mmu)?;
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+
+        // ── MOVMSKPS (0F 50) ── extract float sign bits to GPR
+        0x50 if !has_66 && !has_f2 && !has_f3 => {
+            let src_idx = match &inst.operands[1] {
+                Operand::Register(RegOperand::Xmm(idx)) => *idx as usize,
+                _ => return Err(VmError::UndefinedOpcode(op2)),
+            };
+            let x = cpu.sse.xmm[src_idx];
+            let mask = (((x.lo >> 31) & 1) | (((x.lo >> 63) & 1) << 1)
+                | (((x.hi >> 31) & 1) << 2) | (((x.hi >> 63) & 1) << 3)) as u32;
+            write_operand(cpu, inst, &inst.operands[0], mask as u64, memory, mmu)?;
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+
+        // ── MOVMSKPD (66 0F 50) ── extract double sign bits to GPR
+        0x50 if has_66 => {
+            let src_idx = match &inst.operands[1] {
+                Operand::Register(RegOperand::Xmm(idx)) => *idx as usize,
+                _ => return Err(VmError::UndefinedOpcode(op2)),
+            };
+            let x = cpu.sse.xmm[src_idx];
+            let mask = (((x.lo >> 63) & 1) | (((x.hi >> 63) & 1) << 1)) as u32;
+            write_operand(cpu, inst, &inst.operands[0], mask as u64, memory, mmu)?;
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+
+        // ── POR (66 0F EB) ── packed bitwise OR
+        0xEB if has_66 => {
+            let dst_idx = xmm_dst_index(inst)?;
+            let (src_lo, src_hi) = read_xmm_or_mem128(cpu, inst, &inst.operands[1], memory, mmu)?;
+            cpu.sse.xmm[dst_idx].lo |= src_lo;
+            cpu.sse.xmm[dst_idx].hi |= src_hi;
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+
+        // ── PAND (66 0F DB) ── packed bitwise AND
+        0xDB if has_66 => {
+            let dst_idx = xmm_dst_index(inst)?;
+            let (src_lo, src_hi) = read_xmm_or_mem128(cpu, inst, &inst.operands[1], memory, mmu)?;
+            cpu.sse.xmm[dst_idx].lo &= src_lo;
+            cpu.sse.xmm[dst_idx].hi &= src_hi;
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+
+        // ── PANDN (66 0F DF) ── packed bitwise AND-NOT
+        0xDF if has_66 => {
+            let dst_idx = xmm_dst_index(inst)?;
+            let (src_lo, src_hi) = read_xmm_or_mem128(cpu, inst, &inst.operands[1], memory, mmu)?;
+            cpu.sse.xmm[dst_idx].lo = !cpu.sse.xmm[dst_idx].lo & src_lo;
+            cpu.sse.xmm[dst_idx].hi = !cpu.sse.xmm[dst_idx].hi & src_hi;
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+
+        // ── PSRLDQ (66 0F 73 /3 imm8) ── byte shift right
+        // ── PSLLDQ (66 0F 73 /7 imm8) ── byte shift left
+        0x73 if has_66 => {
+            let dst_idx = xmm_dst_index(inst)?;
+            let imm = match &inst.operands[1] {
+                Operand::Immediate(v) => (*v as u8).min(16),
+                _ => 0,
+            };
+            let x = cpu.sse.xmm[dst_idx];
+            let mut bytes = [0u8; 16];
+            bytes[..8].copy_from_slice(&x.lo.to_le_bytes());
+            bytes[8..].copy_from_slice(&x.hi.to_le_bytes());
+            let modrm_reg = (inst.modrm.unwrap_or(0) >> 3) & 7;
+            let mut result = [0u8; 16];
+            if modrm_reg == 3 { // PSRLDQ
+                let shift = imm as usize;
+                for i in 0..16 {
+                    result[i] = if i + shift < 16 { bytes[i + shift] } else { 0 };
+                }
+            } else if modrm_reg == 7 { // PSLLDQ
+                let shift = imm as usize;
+                for i in 0..16 {
+                    result[i] = if i >= shift { bytes[i - shift] } else { 0 };
+                }
+            }
+            cpu.sse.xmm[dst_idx].lo = u64::from_le_bytes(result[..8].try_into().unwrap());
+            cpu.sse.xmm[dst_idx].hi = u64::from_le_bytes(result[8..].try_into().unwrap());
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+
         // ── Everything else: #UD ──
         _ => Err(VmError::UndefinedOpcode(op2)),
     }

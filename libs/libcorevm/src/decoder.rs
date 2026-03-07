@@ -1429,7 +1429,15 @@ impl DecodeCursor {
 
             // -- SSE/SSE2 2-operand forms (xmm,r/m and r/m,xmm) --
             0x10 | 0x12 | 0x16 | 0x28 | 0x54 | 0x55 | 0x56 | 0x57 | 0x6E | 0x6F
-            | 0x70 | 0x74 | 0x75 | 0x76 | 0xEF => self.decode_modrm_xmm_rm(OperandSize::Qword),
+            | 0x74 | 0x75 | 0x76 | 0xEF => self.decode_modrm_xmm_rm(OperandSize::Qword),
+            // PSHUFD/PSHUFLW/PSHUFHW: xmm, xmm/m128, imm8
+            0x70 => {
+                self.decode_modrm_xmm_rm(OperandSize::Qword)?;
+                let imm = self.fetch_u8()? as u64;
+                self.set_operand(2, Operand::Immediate(imm));
+                self.inst.operand_count = 3;
+                Ok(())
+            }
             0x60..=0x6D => self.decode_modrm_xmm_rm(OperandSize::Qword),
             0x11 | 0x13 | 0x17 | 0x29 | 0x2B | 0x7F | 0xD6 => self.decode_modrm_rm_xmm(OperandSize::Qword),
 
