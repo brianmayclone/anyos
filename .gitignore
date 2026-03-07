@@ -7,6 +7,7 @@ buildsystem/build/
 !kernel/src/graphics/font_8x16.bin
 !stdlib/src/ui/font_8x16.bin
 !config.h
+!corevm/vmmanager/assets/bios/*.bin
 *.o
 *.a
 *.elf

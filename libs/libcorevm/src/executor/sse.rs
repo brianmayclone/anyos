@@ -255,23 +255,250 @@ pub fn exec_sse(
             Ok(())
         }
 
-        // ── PCMPEQB/W/D (66 0F 74/75/76) ──
-        // Simplified: advance RIP (stub)
-        0x74 | 0x75 | 0x76 if has_66 => {
+        // ── PCMPEQB (66 0F 74) ──
+        0x74 if has_66 => {
+            let dst_idx = xmm_dst_index(inst)?;
+            let (src_lo, src_hi) = read_xmm_or_mem128(cpu, inst, &inst.operands[1], memory, mmu)?;
+            let d = cpu.sse.xmm[dst_idx];
+            let mut rlo = 0u64;
+            let mut rhi = 0u64;
+            for i in 0..8 {
+                let db = ((d.lo >> (i * 8)) & 0xFF) as u8;
+                let sb = ((src_lo >> (i * 8)) & 0xFF) as u8;
+                if db == sb { rlo |= 0xFFu64 << (i * 8); }
+            }
+            for i in 0..8 {
+                let db = ((d.hi >> (i * 8)) & 0xFF) as u8;
+                let sb = ((src_hi >> (i * 8)) & 0xFF) as u8;
+                if db == sb { rhi |= 0xFFu64 << (i * 8); }
+            }
+            cpu.sse.xmm[dst_idx] = Xmm { lo: rlo, hi: rhi };
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+        // ── PCMPEQW (66 0F 75) ──
+        0x75 if has_66 => {
+            let dst_idx = xmm_dst_index(inst)?;
+            let (src_lo, src_hi) = read_xmm_or_mem128(cpu, inst, &inst.operands[1], memory, mmu)?;
+            let d = cpu.sse.xmm[dst_idx];
+            let mut rlo = 0u64;
+            let mut rhi = 0u64;
+            for i in 0..4 {
+                let dw = ((d.lo >> (i * 16)) & 0xFFFF) as u16;
+                let sw = ((src_lo >> (i * 16)) & 0xFFFF) as u16;
+                if dw == sw { rlo |= 0xFFFFu64 << (i * 16); }
+            }
+            for i in 0..4 {
+                let dw = ((d.hi >> (i * 16)) & 0xFFFF) as u16;
+                let sw = ((src_hi >> (i * 16)) & 0xFFFF) as u16;
+                if dw == sw { rhi |= 0xFFFFu64 << (i * 16); }
+            }
+            cpu.sse.xmm[dst_idx] = Xmm { lo: rlo, hi: rhi };
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+        // ── PCMPEQD (66 0F 76) ──
+        0x76 if has_66 => {
+            let dst_idx = xmm_dst_index(inst)?;
+            let (src_lo, src_hi) = read_xmm_or_mem128(cpu, inst, &inst.operands[1], memory, mmu)?;
+            let d = cpu.sse.xmm[dst_idx];
+            let mut rlo = 0u64;
+            let mut rhi = 0u64;
+            for i in 0..2 {
+                let dd = ((d.lo >> (i * 32)) & 0xFFFF_FFFF) as u32;
+                let sd = ((src_lo >> (i * 32)) & 0xFFFF_FFFF) as u32;
+                if dd == sd { rlo |= 0xFFFF_FFFFu64 << (i * 32); }
+            }
+            for i in 0..2 {
+                let dd = ((d.hi >> (i * 32)) & 0xFFFF_FFFF) as u32;
+                let sd = ((src_hi >> (i * 32)) & 0xFFFF_FFFF) as u32;
+                if dd == sd { rhi |= 0xFFFF_FFFFu64 << (i * 32); }
+            }
+            cpu.sse.xmm[dst_idx] = Xmm { lo: rlo, hi: rhi };
             cpu.regs.rip += inst.length as u64;
             Ok(())
         }
 
         // ── PSHUFD (66 0F 70), PSHUFLW (F2 0F 70), PSHUFHW (F3 0F 70) ──
-        // Simplified: advance RIP (stub)
         0x70 => {
+            let (src_lo, src_hi) = read_xmm_or_mem128(cpu, inst, &inst.operands[1], memory, mmu)?;
+            let dst_idx = xmm_dst_index(inst)?;
+            // imm8 is in operands[2]
+            let imm = match &inst.operands[2] {
+                Operand::Immediate(v) => *v as u8,
+                _ => 0,
+            };
+            if has_66 {
+                // PSHUFD: shuffle 32-bit dwords
+                let dwords = [
+                    (src_lo & 0xFFFF_FFFF) as u32,
+                    ((src_lo >> 32) & 0xFFFF_FFFF) as u32,
+                    (src_hi & 0xFFFF_FFFF) as u32,
+                    ((src_hi >> 32) & 0xFFFF_FFFF) as u32,
+                ];
+                let r0 = dwords[(imm & 3) as usize] as u64;
+                let r1 = dwords[((imm >> 2) & 3) as usize] as u64;
+                let r2 = dwords[((imm >> 4) & 3) as usize] as u64;
+                let r3 = dwords[((imm >> 6) & 3) as usize] as u64;
+                cpu.sse.xmm[dst_idx] = Xmm { lo: r0 | (r1 << 32), hi: r2 | (r3 << 32) };
+            } else if has_f2 {
+                // PSHUFLW: shuffle low 4 words, high 64 bits unchanged
+                let words = [
+                    (src_lo & 0xFFFF) as u16,
+                    ((src_lo >> 16) & 0xFFFF) as u16,
+                    ((src_lo >> 32) & 0xFFFF) as u16,
+                    ((src_lo >> 48) & 0xFFFF) as u16,
+                ];
+                let r0 = words[(imm & 3) as usize] as u64;
+                let r1 = words[((imm >> 2) & 3) as usize] as u64;
+                let r2 = words[((imm >> 4) & 3) as usize] as u64;
+                let r3 = words[((imm >> 6) & 3) as usize] as u64;
+                cpu.sse.xmm[dst_idx] = Xmm { lo: r0 | (r1 << 16) | (r2 << 32) | (r3 << 48), hi: src_hi };
+            } else if has_f3 {
+                // PSHUFHW: shuffle high 4 words, low 64 bits unchanged
+                let words = [
+                    (src_hi & 0xFFFF) as u16,
+                    ((src_hi >> 16) & 0xFFFF) as u16,
+                    ((src_hi >> 32) & 0xFFFF) as u16,
+                    ((src_hi >> 48) & 0xFFFF) as u16,
+                ];
+                let r0 = words[(imm & 3) as usize] as u64;
+                let r1 = words[((imm >> 2) & 3) as usize] as u64;
+                let r2 = words[((imm >> 4) & 3) as usize] as u64;
+                let r3 = words[((imm >> 6) & 3) as usize] as u64;
+                cpu.sse.xmm[dst_idx] = Xmm { lo: src_lo, hi: r0 | (r1 << 16) | (r2 << 32) | (r3 << 48) };
+            } else {
+                // PSHUFW (MMX, no prefix) — treat as no-op for now
+            }
             cpu.regs.rip += inst.length as u64;
             Ok(())
         }
 
         // ── PUNPCKLBW..PUNPCKHQDQ (66 0F 60-6D) ──
-        // Simplified stub
         0x60..=0x6D if has_66 => {
+            let dst_idx = xmm_dst_index(inst)?;
+            let (src_lo, src_hi) = read_xmm_or_mem128(cpu, inst, &inst.operands[1], memory, mmu)?;
+            let d = cpu.sse.xmm[dst_idx];
+            let result = match op2 {
+                0x60 => { // PUNPCKLBW: interleave low bytes
+                    let mut lo = 0u64; let mut hi = 0u64;
+                    for i in 0..8u32 {
+                        let db = (d.lo >> (i * 8)) & 0xFF;
+                        let sb = (src_lo >> (i * 8)) & 0xFF;
+                        let pos = i * 16;
+                        if pos < 64 { lo |= (db | (sb << 8)) << pos; }
+                        else { hi |= (db | (sb << 8)) << (pos - 64); }
+                    }
+                    Xmm { lo, hi }
+                }
+                0x61 => { // PUNPCKLWD: interleave low words
+                    let mut lo = 0u64; let mut hi = 0u64;
+                    for i in 0..4u32 {
+                        let dw = (d.lo >> (i * 16)) & 0xFFFF;
+                        let sw = (src_lo >> (i * 16)) & 0xFFFF;
+                        let pos = i * 32;
+                        if pos < 64 { lo |= (dw | (sw << 16)) << pos; }
+                        else { hi |= (dw | (sw << 16)) << (pos - 64); }
+                    }
+                    Xmm { lo, hi }
+                }
+                0x62 => { // PUNPCKLDQ: interleave low dwords
+                    let d0 = d.lo & 0xFFFF_FFFF;
+                    let d1 = (d.lo >> 32) & 0xFFFF_FFFF;
+                    let s0 = src_lo & 0xFFFF_FFFF;
+                    let s1 = (src_lo >> 32) & 0xFFFF_FFFF;
+                    Xmm { lo: d0 | (s0 << 32), hi: d1 | (s1 << 32) }
+                }
+                0x63 => { // PACKSSWB
+                    // Simplified: just advance RIP for now
+                    cpu.sse.xmm[dst_idx] // no change
+                }
+                0x64 => { // PCMPGTB: packed compare greater than bytes
+                    let mut rlo = 0u64; let mut rhi = 0u64;
+                    for i in 0..8 {
+                        let db = ((d.lo >> (i * 8)) & 0xFF) as i8;
+                        let sb = ((src_lo >> (i * 8)) & 0xFF) as i8;
+                        if db > sb { rlo |= 0xFFu64 << (i * 8); }
+                    }
+                    for i in 0..8 {
+                        let db = ((d.hi >> (i * 8)) & 0xFF) as i8;
+                        let sb = ((src_hi >> (i * 8)) & 0xFF) as i8;
+                        if db > sb { rhi |= 0xFFu64 << (i * 8); }
+                    }
+                    Xmm { lo: rlo, hi: rhi }
+                }
+                0x65 => { // PCMPGTW: packed compare greater than words
+                    let mut rlo = 0u64; let mut rhi = 0u64;
+                    for i in 0..4 {
+                        let dw = ((d.lo >> (i * 16)) & 0xFFFF) as i16;
+                        let sw = ((src_lo >> (i * 16)) & 0xFFFF) as i16;
+                        if dw > sw { rlo |= 0xFFFFu64 << (i * 16); }
+                    }
+                    for i in 0..4 {
+                        let dw = ((d.hi >> (i * 16)) & 0xFFFF) as i16;
+                        let sw = ((src_hi >> (i * 16)) & 0xFFFF) as i16;
+                        if dw > sw { rhi |= 0xFFFFu64 << (i * 16); }
+                    }
+                    Xmm { lo: rlo, hi: rhi }
+                }
+                0x66 => { // PCMPGTD: packed compare greater than dwords
+                    let mut rlo = 0u64; let mut rhi = 0u64;
+                    for i in 0..2 {
+                        let dd = ((d.lo >> (i * 32)) & 0xFFFF_FFFF) as i32;
+                        let sd = ((src_lo >> (i * 32)) & 0xFFFF_FFFF) as i32;
+                        if dd > sd { rlo |= 0xFFFF_FFFFu64 << (i * 32); }
+                    }
+                    for i in 0..2 {
+                        let dd = ((d.hi >> (i * 32)) & 0xFFFF_FFFF) as i32;
+                        let sd = ((src_hi >> (i * 32)) & 0xFFFF_FFFF) as i32;
+                        if dd > sd { rhi |= 0xFFFF_FFFFu64 << (i * 32); }
+                    }
+                    Xmm { lo: rlo, hi: rhi }
+                }
+                0x67 => { // PACKUSWB
+                    cpu.sse.xmm[dst_idx] // stub
+                }
+                0x68 => { // PUNPCKHBW: interleave high bytes
+                    let mut lo = 0u64; let mut hi = 0u64;
+                    for i in 0..8u32 {
+                        let db = (d.hi >> (i * 8)) & 0xFF;
+                        let sb = (src_hi >> (i * 8)) & 0xFF;
+                        let pos = i * 16;
+                        if pos < 64 { lo |= (db | (sb << 8)) << pos; }
+                        else { hi |= (db | (sb << 8)) << (pos - 64); }
+                    }
+                    Xmm { lo, hi }
+                }
+                0x69 => { // PUNPCKHWD: interleave high words
+                    let mut lo = 0u64; let mut hi = 0u64;
+                    for i in 0..4u32 {
+                        let dw = (d.hi >> (i * 16)) & 0xFFFF;
+                        let sw = (src_hi >> (i * 16)) & 0xFFFF;
+                        let pos = i * 32;
+                        if pos < 64 { lo |= (dw | (sw << 16)) << pos; }
+                        else { hi |= (dw | (sw << 16)) << (pos - 64); }
+                    }
+                    Xmm { lo, hi }
+                }
+                0x6A => { // PUNPCKHDQ: interleave high dwords
+                    let d0 = d.hi & 0xFFFF_FFFF;
+                    let d1 = (d.hi >> 32) & 0xFFFF_FFFF;
+                    let s0 = src_hi & 0xFFFF_FFFF;
+                    let s1 = (src_hi >> 32) & 0xFFFF_FFFF;
+                    Xmm { lo: d0 | (s0 << 32), hi: d1 | (s1 << 32) }
+                }
+                0x6B => { // PACKSSDW
+                    cpu.sse.xmm[dst_idx] // stub
+                }
+                0x6C => { // PUNPCKLQDQ: interleave low qwords
+                    Xmm { lo: d.lo, hi: src_lo }
+                }
+                0x6D => { // PUNPCKHQDQ: interleave high qwords
+                    Xmm { lo: d.hi, hi: src_hi }
+                }
+                _ => unreachable!(),
+            };
+            cpu.sse.xmm[dst_idx] = result;
             cpu.regs.rip += inst.length as u64;
             Ok(())
         }
