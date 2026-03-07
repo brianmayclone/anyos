@@ -57,6 +57,9 @@ const FLAGS_TMP: Reg = Reg::R11;
 
 const INTR_REG: Reg = Reg::Rbp;
 
+// ── Cpu field offset for instruction_count ──
+const INST_COUNT_OFF: i32 = core::mem::offset_of!(crate::cpu::Cpu, instruction_count) as i32;
+
 // ── Segment descriptor layout ──
 const SEG_ARRAY_OFFSET: i32 = 144;
 const SEG_DESC_SIZE: i32 = 32;
@@ -121,8 +124,15 @@ impl Translator {
 
         // No prologue — the dispatcher already set up context registers.
 
+        let mut pending_native_count: u32 = 0;
+
         for (i, inst) in block.instructions.iter().enumerate() {
             if !self.try_translate_native(&mut emit, inst, &mut state) {
+                // Flush pending native instruction count before helper call
+                if pending_native_count > 0 {
+                    Self::emit_bump_inst_count(&mut emit, pending_native_count);
+                    pending_native_count = 0;
+                }
                 // Flush lazy flags before helper call (helper reads RFLAGS).
                 self.flush_lazy_flags(&mut emit, &mut state);
                 self.emit_helper_call(&mut emit, inst, inst_ptrs[i]);
@@ -135,7 +145,13 @@ impl Translator {
                 *self.helper_opcode_counts.entry(key).or_insert(0) += 1;
             } else {
                 self.native_count += 1;
+                pending_native_count += 1;
             }
+        }
+
+        // Flush remaining native instruction count
+        if pending_native_count > 0 {
+            Self::emit_bump_inst_count(&mut emit, pending_native_count);
         }
 
         // Flush any remaining dirty flags, then jump back to dispatcher.
@@ -153,6 +169,13 @@ impl Translator {
     // ════════════════════════════════════════════════════════════════════
     // Prologue / Epilogue
     // ════════════════════════════════════════════════════════════════════
+
+    /// Emit `add qword [cpu + instruction_count], n` using a temp register.
+    fn emit_bump_inst_count(emit: &mut Emitter, n: u32) {
+        emit.mov_rm(OpSize::S64, Reg::Rax, CPU_PTR, INST_COUNT_OFF);
+        emit.add_ri(OpSize::S64, Reg::Rax, n as i32);
+        emit.mov_mr(OpSize::S64, CPU_PTR, INST_COUNT_OFF, Reg::Rax);
+    }
 
     /// Jump back to the dispatcher loop. Replaces the old restore-and-ret
     /// sequence — blocks no longer have their own prologue/epilogue.
@@ -1997,7 +2020,10 @@ fn is_control_flow_instruction(inst: &DecodedInst) -> bool {
                 0xE0..=0xE3 => true,    // LOOP/JCXZ
                 0xE8 => true,           // CALL rel
                 0xE9 | 0xEA | 0xEB => true, // JMP
+                0xE4..=0xE7 => true,    // IN/OUT imm8
+                0xEC..=0xEF => true,    // IN/OUT DX
                 0xF4 => true,           // HLT
+                0xFA | 0xFB => true,    // CLI, STI
                 0xFF => {
                     let reg = inst.modrm_reg() & 7;
                     matches!(reg, 2 | 3 | 4 | 5) // CALL/JMP indirect

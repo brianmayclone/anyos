@@ -28,6 +28,15 @@ pub const ENTRY_MODE_CS_OFF: i32 = 16;
 const DEFAULT_TABLE_SIZE: usize = 16384; // power of 2
 const MAX_PROBES: usize = 4;
 
+/// Multiplicative hash for physical addresses.
+/// Spreads sequential addresses across the table.
+#[inline]
+fn hash_phys(phys: u64, mask: usize) -> usize {
+    // Fibonacci hashing: multiply by golden ratio constant, take high bits
+    let h = phys.wrapping_mul(0x9E3779B97F4A7C15);
+    (h >> 48) as usize & mask
+}
+
 pub struct JitLookupTable {
     entries: Vec<BlockEntry>,
     table_size: usize,
@@ -65,7 +74,7 @@ impl JitLookupTable {
         debug_assert!(phys_addr != 0, "phys_addr 0 is reserved for empty slots");
         let mask = self.table_size - 1;
         let mode_cs = Self::make_mode_cs(mode, cs_base);
-        let mut idx = (phys_addr as usize) & mask;
+        let mut idx = hash_phys(phys_addr, mask);
 
         for _ in 0..MAX_PROBES {
             let entry = &mut self.entries[idx];

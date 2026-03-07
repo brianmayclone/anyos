@@ -110,6 +110,8 @@ pub struct Cpu {
     pub jit_fault: bool,
     /// Set when SMC dirty pages are detected; dispatcher checks this to exit.
     pub smc_pending: bool,
+    /// Set by helper_execute_one when HLT is executed; dispatcher exits with EXIT_HALT.
+    pub jit_halted: bool,
     /// Physical address that caused a JIT hashtable miss.
     pub pending_compile_phys: u64,
     /// CpuMode at the time of hashtable miss.
@@ -159,6 +161,7 @@ impl Cpu {
             consecutive_exception_count: 0,
             jit_fault: false,
             smc_pending: false,
+            jit_halted: false,
             pending_compile_phys: 0,
             pending_compile_mode: 0,
             pending_compile_cs_base: 0,
@@ -615,21 +618,6 @@ impl Cpu {
             self.prev_opcode = self.last_opcode;
             self.last_opcode = inst.opcode;
 
-            // Trace stack near page table region
-            #[cfg(feature = "host_test")]
-            {
-                let esp = self.regs.sp() as u32;
-                if esp >= 0x0004E000 && esp <= 0x00050100 && self.mode == Mode::ProtectedMode {
-                    static LOGGED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                    let count = LOGGED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                    if count < 20 || (esp <= 0x0004F010 && count < 100) {
-                        eprintln!("[corevm] ESP={:#010x} CS:IP={:#06x}:{:#010x} opcode={:#06x} EBP={:#010x}",
-                            esp, self.regs.seg[SegReg::Cs as usize].selector, self.regs.rip, inst.opcode,
-                            self.regs.gpr[5] as u32);
-                    }
-                }
-            }
-
             // Execute the decoded instruction
             match crate::executor::execute(self, &inst, memory, mmu, io, interrupts) {
                 Ok(()) => {
@@ -940,9 +928,20 @@ impl Cpu {
                 )
             };
 
+            #[cfg(feature = "host_test")]
+            {
+                static JIT_LOOP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+                let n = JIT_LOOP.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                if n % 100_000 == 0 && n <= 500_000 {
+                    let cs = self.regs.seg[crate::registers::SegReg::Cs as usize].selector;
+                    eprintln!("[jit-loop] n={} reason={} ic={} target={} cs:rip={:04x}:{:04x}",
+                        n, reason, self.instruction_count, target, cs, self.regs.rip as u16);
+                }
+            }
+
             match reason {
                 EXIT_NEEDS_COMPILE => {
-                    self.jit_compile_pending(memory, mmu);
+                    self.jit_compile_pending(memory, mmu, io, interrupts);
                 }
                 EXIT_INTERRUPT => {
                     if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {
@@ -966,13 +965,16 @@ impl Cpu {
                     self.stop_requested = false;
                     return ExitReason::StopRequested;
                 }
-                EXIT_HALT => return ExitReason::Halted,
+                EXIT_HALT => {
+                    self.jit_halted = false;
+                    return ExitReason::Halted;
+                }
                 _ => return ExitReason::Halted,
             }
         }
     }
 
-    fn jit_compile_pending(&mut self, memory: &GuestMemory, _mmu: &Mmu) {
+    fn jit_compile_pending(&mut self, memory: &mut GuestMemory, mmu: &mut Mmu, io: &mut IoDispatch, interrupts: &mut InterruptController) {
         use crate::jit::block::{BasicBlock, BlockKey, detect_basic_block};
         use crate::decoder::CpuMode;
 
@@ -992,9 +994,15 @@ impl Cpu {
             self.decode_cache.insert(key, new_block);
             match self.decode_cache.lookup(&key) {
                 Some(b) => b,
-                None => return,
+                None => {
+                    // Fallback: interpret one instruction to make progress
+                    self.interpret_one(memory, mmu, io, interrupts);
+                    return;
+                }
             }
         } else {
+            // Cannot decode block — interpret one instruction to avoid stuck loop
+            self.interpret_one(memory, mmu, io, interrupts);
             return;
         };
 
@@ -1016,13 +1024,52 @@ impl Cpu {
         self.jit_session.buffer.make_writable();
         if let Some(code_offset) = self.jit_session.buffer.emit(&compiled.code) {
             let code_ptr = unsafe { self.jit_session.buffer.code_ptr(code_offset) };
-            self.jit_session.lookup.insert(phys, mode as u8, cs_base, code_ptr as u64);
-            let page = phys & !0xFFF;
-            self.jit_session.code_pages.insert(page);
-            crate::memory::smc::mark_code_page(page);
-            self.jit_session.blocks_compiled += 1;
+            if self.jit_session.lookup.insert(phys, mode as u8, cs_base, code_ptr as u64) {
+                let page = phys & !0xFFF;
+                self.jit_session.code_pages.insert(page);
+                crate::memory::smc::mark_code_page(page);
+                self.jit_session.blocks_compiled += 1;
+            } else {
+                // Hashtable full at this bucket — interpret to make progress
+                self.jit_session.buffer.make_executable();
+                self.interpret_one(memory, mmu, io, interrupts);
+                return;
+            }
+        } else {
+            // Buffer full — interpret to make progress
+            self.interpret_one(memory, mmu, io, interrupts);
+            return;
         }
         self.jit_session.buffer.make_executable();
+    }
+
+    /// Interpret a single instruction at the current CS:RIP (fallback for JIT).
+    fn interpret_one(
+        &mut self,
+        memory: &mut GuestMemory,
+        mmu: &mut Mmu,
+        io: &mut IoDispatch,
+        interrupts: &mut InterruptController,
+    ) {
+        let cs_base = self.regs.seg[SegReg::Cs as usize].base;
+        let linear = cs_base.wrapping_add(self.regs.rip);
+        let phys = match mmu.translate_linear(
+            linear, self.regs.cr3, AccessType::Execute, self.regs.cpl, memory,
+        ) {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let inst = match self.decoder.decode(&*memory, phys) {
+            Ok(i) => i,
+            Err(_) => return,
+        };
+        match crate::executor::execute(self, &inst, memory, mmu, io, interrupts) {
+            Ok(()) | Err(VmError::Halted) => {
+                self.instruction_count += 1;
+                self.mask_rip();
+            }
+            Err(_) => {}
+        }
     }
 
 
@@ -1094,42 +1141,6 @@ impl Cpu {
             }
         }
 
-
-
-        // Trace the first #PF on kernel MMIO VAs + preceding #PFs
-        #[cfg(feature = "host_test")]
-        if let VmError::PageFault { address, error_code } = error {
-            let va = *address;
-            if self.instruction_count > 1_000_000_000 && self.mode == Mode::ProtectedMode {
-                static PF_SEQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                let c = PF_SEQ.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                if c < 20 {
-                    // Full register + code dump via PT walk
-                    let cr3 = self.regs.cr3 & 0xFFFF_F000;
-                    let rip32 = self.regs.rip as u32;
-                    let pde = memory.read_u32(cr3 + ((rip32 >> 22) * 4) as u64).unwrap_or(0);
-                    let mut code_str = alloc::string::String::new();
-                    if pde & 1 != 0 {
-                        let pt = (pde & 0xFFFFF000) as u64;
-                        let pte = memory.read_u32(pt + (((rip32 >> 12) & 0x3FF) * 4) as u64).unwrap_or(0);
-                        if pte & 1 != 0 {
-                            let phys = ((pte & 0xFFFFF000) as u64) | ((rip32 & 0xFFF) as u64);
-                            for i in 0..16u64 {
-                                let b = memory.read_u8(phys + i).unwrap_or(0xFF);
-                                use core::fmt::Write;
-                                let _ = write!(code_str, "{:02x} ", b);
-                            }
-                        }
-                    }
-                    eprintln!("[corevm] #PF #{} VA={:#010x} err={:#x} IP={:#010x} ESP={:#010x} EAX={:#010x} EBX={:#010x} ECX={:#010x} EDX={:#010x} ESI={:#010x} EDI={:#010x} EBP={:#010x} code=[{}]",
-                        c, va, error_code, self.regs.rip, self.regs.sp(),
-                        self.regs.gpr[0] as u32, self.regs.gpr[3] as u32,
-                        self.regs.gpr[1] as u32, self.regs.gpr[2] as u32,
-                        self.regs.gpr[6] as u32, self.regs.gpr[7] as u32,
-                        self.regs.gpr[5] as u32, code_str);
-                }
-            }
-        }
 
         let (vector, error_code, cr2_val) = match error {
             VmError::DivideByZero => (0, None, None),
@@ -1411,12 +1422,7 @@ impl Cpu {
         // Inter-privilege interrupt entry: switch stack via TSS ring stack.
         if target_cpl < old_cpl {
             let (new_ss, new_esp) = self.read_tss_ring_stack32(target_cpl, memory, mmu)?;
-            #[cfg(feature = "host_test")]
-            if (new_esp as u32) >= 0x0004E000 && (new_esp as u32) <= 0x00055000 {
-                eprintln!("[corevm] RING SWITCH: vec={} TSS ESP0={:#010x} SS0={:#06x} old_cpl={} target_cpl={} at CS:IP={:#06x}:{:#010x}",
-                    vector, new_esp, new_ss, old_cpl, target_cpl,
-                    self.regs.seg[SegReg::Cs as usize].selector, self.regs.rip);
-            }
+
             self.load_segment_from_gdt(SegReg::Ss, new_ss, memory, mmu)?;
             self.regs.set_sp(new_esp as u64);
             self.regs.cpl = target_cpl;

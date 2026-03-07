@@ -15,7 +15,7 @@ use crate::memory::MemoryBus;
 ///
 /// Limits memory usage per block and ensures the interpreter regains control
 /// periodically (for interrupt checks, stop requests, etc.).
-const MAX_BLOCK_INSTRUCTIONS: usize = 64;
+const MAX_BLOCK_INSTRUCTIONS: usize = 16;
 
 /// Composite key identifying a unique basic block.
 ///
@@ -133,6 +133,13 @@ fn is_primary_terminator(inst: &DecodedInst) -> bool {
         0xCC => true, // INT 3
         0xCD => true, // INT imm8
         0xCE => true, // INTO
+
+        // -- I/O instructions (must terminate so interrupts can be delivered) --
+        0xE4..=0xE7 => true, // IN/OUT imm8
+        0xEC..=0xEF => true, // IN/OUT DX
+
+        // -- Interrupt flag changes (must terminate for timely interrupt delivery) --
+        0xFA | 0xFB => true, // CLI, STI
 
         // -- System / privileged instructions --
         0xF4 => true, // HLT

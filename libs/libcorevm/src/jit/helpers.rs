@@ -214,14 +214,13 @@ pub extern "C" fn jit_interpret_one(
     match crate::executor::execute(cpu, &inst, memory, mmu, io, interrupts) {
         Ok(()) => {
             cpu.instruction_count += 1;
-            // Mirror the interpreter's mask_rip() call so RIP stays within
-            // the correct width for the current mode (16-bit real/protected).
             cpu.mask_rip();
             JIT_OK
         }
         Err(VmError::Halted) => {
             cpu.instruction_count += 1;
             cpu.mask_rip();
+            cpu.jit_halted = true;
             JIT_EXIT_BLOCK
         }
         Err(_) => JIT_EXIT_BLOCK,
@@ -249,6 +248,7 @@ pub extern "C" fn helper_execute_one(
         Err(VmError::Halted) => {
             cpu.instruction_count += 1;
             cpu.mask_rip();
+            cpu.jit_halted = true;
             JIT_EXIT_BLOCK
         }
         Err(_) => JIT_EXIT_BLOCK,
@@ -286,16 +286,19 @@ pub extern "C" fn jit_mmu_translate(
 
 /// Check if there is a pending interrupt that should be delivered.
 /// Returns 1 if yes (dispatcher should exit), 0 if no.
+/// Also clears interrupt_shadow unconditionally (mirrors the interpreter loop).
 #[no_mangle]
 pub extern "C" fn jit_check_interrupt(
-    interrupts: &InterruptController,
+    interrupts: &mut InterruptController,
     rflags: u64,
 ) -> u32 {
-    if interrupts.pending_interrupt(rflags).is_some() {
+    let result = if interrupts.pending_interrupt(rflags).is_some() {
         1
     } else {
         0
-    }
+    };
+    interrupts.interrupt_shadow = false;
+    result
 }
 
 /// Return the current CPU decode mode as a u8.

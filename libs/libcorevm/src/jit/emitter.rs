@@ -157,6 +157,13 @@ impl Emitter {
         self.code.push(byte);
     }
 
+    /// Emit raw bytes directly. Use sparingly for instructions not yet
+    /// wrapped as dedicated methods.
+    #[inline]
+    pub fn emit_raw(&mut self, bytes: &[u8]) {
+        self.code.extend_from_slice(bytes);
+    }
+
     #[inline]
     fn emit_u32_le(&mut self, val: u32) {
         self.code.extend_from_slice(&val.to_le_bytes());

@@ -666,6 +666,11 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
         let after_ic = vm.engine.instruction_count();
         let ran = after_ic.saturating_sub(before_ic);
 
+        #[cfg(feature = "host_test")]
+        {
+        }
+
+
         // Advance LAPIC timer using guest instruction progress.
         if ran > 0 && !vm.lapic_ptr.is_null() {
             let lapic = unsafe { &mut *vm.lapic_ptr };

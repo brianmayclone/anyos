@@ -150,6 +150,7 @@ impl JitSession {
         let inst_count_off = core::mem::offset_of!(crate::cpu::Cpu, instruction_count) as i32;
         let jit_fault_off = core::mem::offset_of!(crate::cpu::Cpu, jit_fault) as i32;
         let smc_off = core::mem::offset_of!(crate::cpu::Cpu, smc_pending) as i32;
+        let halted_off = core::mem::offset_of!(crate::cpu::Cpu, jit_halted) as i32;
         let regs_off = core::mem::offset_of!(crate::cpu::Cpu, regs) as i32;
         let a20_off = core::mem::offset_of!(crate::cpu::Cpu, a20_enabled) as i32;
         let pending_phys_off =
@@ -177,10 +178,10 @@ impl JitSession {
         let exit_fault = e.new_label();
         let exit_smc = e.new_label();
         let exit_interrupt = e.new_label();
+        let exit_halt = e.new_label();
         let exit_compile = e.new_label();
         let dispatch_exit = e.new_label();
         let no_intr = e.new_label();
-        let probe1 = e.new_label();
         let no_a20_mask = e.new_label();
 
         // ── 1. Entry: save callee-saved registers ──
@@ -190,8 +191,9 @@ impl JitSession {
         e.push(Reg::R14);
         e.push(Reg::R15);
         e.push(Reg::Rbp);
-        // sub rsp, 16 for alignment + local storage
-        e.sub_ri(OpSize::S64, Reg::Rsp, 16);
+        // sub rsp, 24 for alignment + local storage
+        // 6 pushes (48) + return addr (8) = 56 bytes. sub 24 → 80 bytes, RSP % 16 == 0.
+        e.sub_ri(OpSize::S64, Reg::Rsp, 24);
 
         // Save target instruction count at [rsp+0]
         e.mov_mr(OpSize::S64, Reg::Rsp, 0, Reg::R9);
@@ -229,6 +231,11 @@ impl JitSession {
         e.movzx_rm8(OpSize::S32, Reg::Rax, CPU, smc_off);
         e.test_rr(OpSize::S32, Reg::Rax, Reg::Rax);
         e.jcc_label(Cc::Ne, exit_smc);
+
+        // 2d2. Check jit_halted
+        e.movzx_rm8(OpSize::S32, Reg::Rax, CPU, halted_off);
+        e.test_rr(OpSize::S32, Reg::Rax, Reg::Rax);
+        e.jcc_label(Cc::Ne, exit_halt);
 
         // 2e. Check interrupts: if IF set and interrupt pending, exit
         e.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RFLAGS_OFF);
@@ -273,11 +280,28 @@ impl JitSession {
         // rax = phys_addr. Save it in r11 for later.
         e.mov_rr(OpSize::S64, Reg::R11, Reg::Rax);
 
-        // 2h. Hashtable lookup
-        // hash = (phys >> 2) & mask
+        // 2h. Hashtable lookup — Fibonacci hash
+        // hash = ((phys * 0x9E3779B97F4A7C15) >> 48) & mask
+        // Use mul: mov rcx, golden; mul rcx → rdx:rax, then shr rdx:rax
+        // But mul clobbers rax/rdx. rax = phys (need to keep in r11).
+        // r11 already has phys from the mov above.
+        // Use: mov rcx, golden; mov rax, r11; mul rcx → rdx = high, rax = low
+        // We want bits 48..63 of the 64-bit product = (result >> 48).
+        // Since mul gives 128-bit result and we want bits 48-63 of the LOW 64 bits:
+        //   shr rax, 48 gives bits 48-63 of low word. But that's only 16 bits.
+        //   Actually we want the full product's bits 48-63.
+        //   For Fibonacci hashing: h = (phys * golden) >> 48, where * is mod 2^64.
+        //   So: mov rcx, golden; imul rax, r11, <can't do 64-bit imm>
+        //   Instead: mov rax, golden; imul rax, r11 (2-op form: rax = rax * r11)
+        //   Then shr rax, 48; and eax, mask; mov rcx, rax
+        // Need imul_rr. Let's emit it manually: 0x48 0x0F 0xAF 0xC3 for imul rax, r11
+        e.mov_ri64(Reg::Rax, 0x9E3779B97F4A7C15u64);
+        // imul rax, r11 → REX.W 0F AF ModRM(rax, r11)
+        // REX = 0x49 (W=1, B=1 for r11), opcode 0x0F 0xAF, ModRM = 0xC3 (reg=rax(0), rm=r11(3))
+        e.emit_raw(&[0x49, 0x0F, 0xAF, 0xC3]);
+        e.shr_ri(OpSize::S64, Reg::Rax, 48);
+        e.and_ri(OpSize::S64, Reg::Rax, mask as i32);
         e.mov_rr(OpSize::S64, Reg::Rcx, Reg::Rax);
-        e.shr_ri(OpSize::S64, Reg::Rcx, 2);
-        e.and_ri(OpSize::S64, Reg::Rcx, mask as i32);
 
         // Compute entry pointer: entries_ptr + rcx * 24
         // rcx * 24 = rcx * 3 * 8: lea rcx, [rcx + rcx*2] then shl 3
@@ -306,27 +330,34 @@ impl JitSession {
         e.pop(Reg::R11);
         e.pop(Reg::Rcx);
 
-        // Probe slot 0: rcx = &entry[hash]
-        // Compare entry.phys_addr with r11 (phys)
-        e.cmp_rm(OpSize::S64, Reg::R11, Reg::Rcx, ENTRY_PHYS_OFF);
-        e.jcc_label(Cc::Ne, probe1);
-        // phys matches, compare mode_cs
-        e.cmp_rm(OpSize::S64, Reg::Rax, Reg::Rcx, ENTRY_MODE_CS_OFF);
-        e.jcc_label(Cc::Ne, probe1);
-        // Hit! Jump to entry.code_ptr
-        e.mov_rm(OpSize::S64, Reg::Rdx, Reg::Rcx, ENTRY_CODE_OFF);
-        e.jmp_reg(Reg::Rdx);
-
-        // Probe slot 1
-        e.bind_label(probe1);
-        e.add_ri(OpSize::S64, Reg::Rcx, ENTRY_SIZE as i32);
-        e.cmp_rm(OpSize::S64, Reg::R11, Reg::Rcx, ENTRY_PHYS_OFF);
-        e.jcc_label(Cc::Ne, exit_compile);
-        e.cmp_rm(OpSize::S64, Reg::Rax, Reg::Rcx, ENTRY_MODE_CS_OFF);
-        e.jcc_label(Cc::Ne, exit_compile);
-        // Hit on probe 1
-        e.mov_rm(OpSize::S64, Reg::Rdx, Reg::Rcx, ENTRY_CODE_OFF);
-        e.jmp_reg(Reg::Rdx);
+        // Probe slots 0-3 (matching MAX_PROBES=4 in insert)
+        // rcx = &entries[hash], r11 = phys, rax = mode_cs
+        for i in 0..4 {
+            let miss_label = if i < 3 {
+                let next = e.new_label();
+                // Compare phys_addr
+                e.cmp_rm(OpSize::S64, Reg::R11, Reg::Rcx, ENTRY_PHYS_OFF);
+                e.jcc_label(Cc::Ne, next);
+                e.cmp_rm(OpSize::S64, Reg::Rax, Reg::Rcx, ENTRY_MODE_CS_OFF);
+                e.jcc_label(Cc::Ne, next);
+                // Hit!
+                e.mov_rm(OpSize::S64, Reg::Rdx, Reg::Rcx, ENTRY_CODE_OFF);
+                e.jmp_reg(Reg::Rdx);
+                e.bind_label(next);
+                e.add_ri(OpSize::S64, Reg::Rcx, ENTRY_SIZE as i32);
+                next
+            } else {
+                // Last probe — miss goes to exit_compile
+                e.cmp_rm(OpSize::S64, Reg::R11, Reg::Rcx, ENTRY_PHYS_OFF);
+                e.jcc_label(Cc::Ne, exit_compile);
+                e.cmp_rm(OpSize::S64, Reg::Rax, Reg::Rcx, ENTRY_MODE_CS_OFF);
+                e.jcc_label(Cc::Ne, exit_compile);
+                // Hit on last probe!
+                e.mov_rm(OpSize::S64, Reg::Rdx, Reg::Rcx, ENTRY_CODE_OFF);
+                e.jmp_reg(Reg::Rdx);
+                exit_compile // unused but needed for type
+            };
+        }
 
         // ── 3. Exit paths ──
 
@@ -358,13 +389,17 @@ impl JitSession {
         e.mov_ri32(Reg::Rax, EXIT_SMC);
         e.jmp_label(dispatch_exit);
 
+        e.bind_label(exit_halt);
+        e.mov_ri32(Reg::Rax, EXIT_HALT);
+        e.jmp_label(dispatch_exit);
+
         e.bind_label(exit_interrupt);
         e.mov_ri32(Reg::Rax, EXIT_INTERRUPT);
         e.jmp_label(dispatch_exit);
 
         // ── 4. dispatch_exit: epilogue ──
         e.bind_label(dispatch_exit);
-        e.add_ri(OpSize::S64, Reg::Rsp, 16);
+        e.add_ri(OpSize::S64, Reg::Rsp, 24);
         e.pop(Reg::Rbp);
         e.pop(Reg::R15);
         e.pop(Reg::R14);
