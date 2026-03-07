@@ -2,16 +2,20 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use crate::vm::VmControl;
-
 use eframe::egui;
 
 use crate::config::VmConfig;
+use crate::dialogs::{AboutDialog, CreateDiskDialog, CreateVmDialog, SnapshotsDialog};
+use crate::display::DisplayWidget;
+use crate::input::{self, MouseCapture};
 use crate::platform;
+use crate::settings::SettingsDialog;
 use crate::sidebar::{self, SidebarLayout, VmState};
 use crate::statusbar::{self, VmMetrics};
-use crate::toolbar::{self, ToolbarAction};
 use crate::theme;
+use crate::toolbar::{self, ToolbarAction};
+use crate::vm;
+use crate::vm::VmControl;
 
 /// Shared framebuffer data between VM thread and UI
 pub struct FrameBufferData {
@@ -71,11 +75,14 @@ pub struct CoreVmApp {
     pub vms: Vec<VmEntry>,
     pub layout: SidebarLayout,
     pub selected_vm: Option<String>,  // UUID
-    pub show_settings: bool,
-    pub show_create_vm: bool,
-    pub show_create_disk: bool,
-    pub show_about: bool,
-    pub show_snapshots: bool,
+    pub display: DisplayWidget,
+    pub mouse_capture: MouseCapture,
+    pub settings_dialog: Option<SettingsDialog>,
+    pub create_vm_dialog: Option<CreateVmDialog>,
+    pub create_disk_dialog: Option<CreateDiskDialog>,
+    pub about_dialog: Option<AboutDialog>,
+    pub snapshots_dialog: Option<SnapshotsDialog>,
+    pub error_message: Option<String>,
 }
 
 impl CoreVmApp {
@@ -101,11 +108,14 @@ impl CoreVmApp {
             vms,
             layout,
             selected_vm: None,
-            show_settings: false,
-            show_create_vm: false,
-            show_create_disk: false,
-            show_about: false,
-            show_snapshots: false,
+            display: DisplayWidget::new(),
+            mouse_capture: MouseCapture::default(),
+            settings_dialog: None,
+            create_vm_dialog: None,
+            create_disk_dialog: None,
+            about_dialog: None,
+            snapshots_dialog: None,
+            error_message: None,
         }
     }
 
@@ -131,10 +141,43 @@ impl CoreVmApp {
     /// Handle toolbar action
     fn handle_toolbar_action(&mut self, action: ToolbarAction) {
         match action {
-            ToolbarAction::Settings => self.show_settings = true,
-            ToolbarAction::Snapshot => self.show_snapshots = true,
-            // Start/Stop/Pause will be handled when vm.rs is implemented
-            _ => {}
+            ToolbarAction::Start => {
+                if let Some(uuid) = self.selected_vm.clone() {
+                    if let Some(entry) = self.find_vm_mut(&uuid) {
+                        if let Err(e) = vm::start_vm(entry) {
+                            self.error_message = Some(format!("Failed to start VM: {}", e));
+                        }
+                    }
+                }
+            }
+            ToolbarAction::Stop => {
+                if let Some(uuid) = self.selected_vm.clone() {
+                    if let Some(entry) = self.find_vm_mut(&uuid) {
+                        vm::stop_vm(entry);
+                    }
+                }
+            }
+            ToolbarAction::Pause => {
+                if let Some(uuid) = self.selected_vm.clone() {
+                    if let Some(entry) = self.find_vm_mut(&uuid) {
+                        if entry.state == VmState::Running {
+                            vm::pause_vm(entry);
+                        } else if entry.state == VmState::Paused {
+                            vm::resume_vm(entry);
+                        }
+                    }
+                }
+            }
+            ToolbarAction::Settings => {
+                if let Some(uuid) = self.selected_vm.clone() {
+                    if let Some(entry) = self.find_vm(&uuid) {
+                        self.settings_dialog = Some(SettingsDialog::new(&entry.config));
+                    }
+                }
+            }
+            ToolbarAction::Snapshot => {
+                self.snapshots_dialog = Some(SnapshotsDialog::new());
+            }
         }
     }
 
@@ -165,6 +208,76 @@ impl eframe::App for CoreVmApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         theme::apply_theme(ctx);
 
+        // Collect deferred actions to avoid borrow conflicts
+        let mut deferred_action: Option<ToolbarAction> = None;
+
+        // Menu bar (top-most)
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("New VM...").clicked() {
+                        self.create_vm_dialog = Some(CreateVmDialog::new());
+                        ui.close_menu();
+                    }
+                    if ui.button("Create Disk...").clicked() {
+                        self.create_disk_dialog = Some(CreateDiskDialog::new());
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Open Config Directory").clicked() {
+                        let dir = platform::config_dir();
+                        #[cfg(target_os = "linux")]
+                        { let _ = std::process::Command::new("xdg-open").arg(&dir).spawn(); }
+                        #[cfg(target_os = "windows")]
+                        { let _ = std::process::Command::new("explorer").arg(&dir).spawn(); }
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Quit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
+                ui.menu_button("VM", |ui| {
+                    let has_sel = self.selected_vm.is_some();
+                    let is_running = self.selected_vm.as_ref()
+                        .and_then(|u| self.find_vm(u))
+                        .map_or(false, |v| v.state == VmState::Running);
+                    let is_paused = self.selected_vm.as_ref()
+                        .and_then(|u| self.find_vm(u))
+                        .map_or(false, |v| v.state == VmState::Paused);
+                    let is_stopped = self.selected_vm.as_ref()
+                        .and_then(|u| self.find_vm(u))
+                        .map_or(true, |v| v.state == VmState::Stopped);
+
+                    if ui.add_enabled(has_sel && is_stopped, egui::Button::new("Start")).clicked() {
+                        deferred_action = Some(ToolbarAction::Start);
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(has_sel && (is_running || is_paused), egui::Button::new("Pause / Resume")).clicked() {
+                        deferred_action = Some(ToolbarAction::Pause);
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(has_sel && !is_stopped, egui::Button::new("Stop")).clicked() {
+                        deferred_action = Some(ToolbarAction::Stop);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.add_enabled(has_sel && is_stopped, egui::Button::new("Settings...")).clicked() {
+                        deferred_action = Some(ToolbarAction::Settings);
+                        ui.close_menu();
+                    }
+                });
+
+                ui.menu_button("Help", |ui| {
+                    if ui.button("About CoreVM...").clicked() {
+                        self.about_dialog = Some(AboutDialog::new());
+                        ui.close_menu();
+                    }
+                });
+            });
+        });
+
         // Status bar (bottom, must be before CentralPanel)
         let metrics = self.selected_metrics();
         statusbar::render_statusbar(ctx, metrics.as_ref(), self.selected_vm.is_some());
@@ -188,21 +301,27 @@ impl eframe::App for CoreVmApp {
             };
 
             if let Some(action) = toolbar::render_toolbar(ui, vm_selected, vm_running, vm_paused) {
-                self.handle_toolbar_action(action);
+                deferred_action = Some(action);
             }
             ui.separator();
 
             // Main content area
             if let Some(uuid) = &self.selected_vm.clone() {
                 if let Some(vm) = self.find_vm(uuid) {
-                    if vm.state == VmState::Running {
-                        // Display framebuffer (placeholder until display.rs)
-                        ui.centered_and_justified(|ui| {
-                            ui.label("VM Display — framebuffer will render here");
-                        });
+                    if vm.state == VmState::Running || vm.state == VmState::Paused {
+                        // Display framebuffer
+                        let fb = vm.framebuffer.clone();
+                        let vm_handle = vm.vm_handle;
+                        if let Ok(fb_data) = fb.lock() {
+                            self.display.show(ui, ctx, &fb_data);
+                        }
+                        // Handle keyboard input
+                        if let Some(handle) = vm_handle {
+                            input::handle_keyboard_events(ctx, handle);
+                        }
                     } else {
-                        // Summary panel (placeholder until Task 15)
-                        render_summary(ui, vm);
+                        // Summary panel
+                        render_summary(ui, vm, &mut deferred_action);
                     }
                 }
             } else {
@@ -211,6 +330,82 @@ impl eframe::App for CoreVmApp {
                 });
             }
         });
+
+        // Process deferred action
+        if let Some(action) = deferred_action {
+            self.handle_toolbar_action(action);
+        }
+
+        // Show dialogs
+
+        // Settings dialog
+        if let Some(ref mut dialog) = self.settings_dialog {
+            if !dialog.show(ctx) {
+                if dialog.saved {
+                    let config = dialog.config().clone();
+                    if let Some(uuid) = &self.selected_vm.clone() {
+                        if let Some(entry) = self.find_vm_mut(uuid) {
+                            entry.config = config.clone();
+                            let _ = config.save(&platform::config_dir());
+                        }
+                    }
+                }
+                self.settings_dialog = None;
+            }
+        }
+
+        // Create VM dialog
+        if let Some(ref mut dialog) = self.create_vm_dialog {
+            if !dialog.show(ctx) {
+                if let Some(config) = dialog.created.take() {
+                    let uuid = config.uuid.clone();
+                    let _ = config.save(&platform::config_dir());
+                    self.layout.root_vms.push(uuid.clone());
+                    let _ = self.layout.save(&platform::layout_dir().join("layout.conf"));
+                    self.vms.push(VmEntry::new(config));
+                    self.selected_vm = Some(uuid);
+                }
+                self.create_vm_dialog = None;
+            }
+        }
+
+        // Create Disk dialog
+        if let Some(ref mut dialog) = self.create_disk_dialog {
+            if !dialog.show(ctx) {
+                self.create_disk_dialog = None;
+            }
+        }
+
+        // About dialog
+        if let Some(ref mut dialog) = self.about_dialog {
+            if !dialog.show(ctx) {
+                self.about_dialog = None;
+            }
+        }
+
+        // Snapshots dialog
+        if let Some(ref mut dialog) = self.snapshots_dialog {
+            if !dialog.show(ctx) {
+                self.snapshots_dialog = None;
+            }
+        }
+
+        // Error toast
+        if let Some(msg) = self.error_message.clone() {
+            let mut dismiss = false;
+            egui::Window::new("Error")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.colored_label(egui::Color32::from_rgb(244, 67, 54), &msg);
+                    if ui.button("OK").clicked() {
+                        dismiss = true;
+                    }
+                });
+            if dismiss {
+                self.error_message = None;
+            }
+        }
 
         // Request repaint for live updates when VM is running
         if self.selected_vm.as_ref()
@@ -222,19 +417,25 @@ impl eframe::App for CoreVmApp {
     }
 }
 
-/// Simple summary panel showing VM details
-fn render_summary(ui: &mut egui::Ui, vm: &VmEntry) {
+/// Summary panel showing VM details with state-colored status
+fn render_summary(ui: &mut egui::Ui, vm: &VmEntry, deferred_action: &mut Option<ToolbarAction>) {
     ui.vertical(|ui| {
         ui.add_space(20.0);
         ui.heading(&vm.config.name);
         ui.add_space(10.0);
+
+        let (state_label, state_color) = match vm.state {
+            VmState::Running => ("Running", egui::Color32::from_rgb(76, 175, 80)),
+            VmState::Paused => ("Paused", egui::Color32::from_rgb(255, 165, 0)),
+            VmState::Stopped => ("Stopped", egui::Color32::from_rgb(128, 128, 128)),
+        };
 
         egui::Grid::new("vm_summary")
             .num_columns(2)
             .spacing([20.0, 8.0])
             .show(ui, |ui| {
                 ui.label("Status:");
-                ui.colored_label(egui::Color32::from_rgb(76, 175, 80), "Stopped");
+                ui.colored_label(state_color, state_label);
                 ui.end_row();
 
                 ui.label("RAM:");
@@ -273,5 +474,13 @@ fn render_summary(ui: &mut egui::Ui, vm: &VmEntry) {
                 });
                 ui.end_row();
             });
+
+        ui.add_space(20.0);
+
+        if vm.state == VmState::Stopped {
+            if ui.add(egui::Button::new("▶ Start VM").min_size(egui::vec2(120.0, 40.0))).clicked() {
+                *deferred_action = Some(ToolbarAction::Start);
+            }
+        }
     });
 }
