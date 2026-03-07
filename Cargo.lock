@@ -417,6 +417,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "forger"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libgl_client",
+ "libphysics_client",
+]
+
+[[package]]
 name = "free"
 version = "0.1.0"
 dependencies = [
@@ -647,6 +658,14 @@ name = "libjs"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+]
+
+[[package]]
+name = "libphysics_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
 ]
 
 [[package]]

@@ -1,0 +1,12 @@
+LIBRARY libphysics
+EXPORTS
+    physics_init
+    physics_create_player
+    physics_set_velocity
+    physics_get_position
+    physics_get_velocity
+    physics_is_on_ground
+    physics_set_flying
+    physics_is_flying
+    physics_set_gravity
+    physics_step
