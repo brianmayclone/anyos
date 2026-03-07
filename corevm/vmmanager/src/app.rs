@@ -95,6 +95,9 @@ pub struct CoreVmApp {
     pub file_browser: Option<FileBrowserDialog>,
     pub file_pick_target: Option<FilePickTarget>,
     pub sidebar_state: SidebarState,
+    pub display_focused: bool,
+    pub last_key_label: Option<String>,
+    pub last_key_time: std::time::Instant,
 }
 
 impl CoreVmApp {
@@ -134,6 +137,9 @@ impl CoreVmApp {
             file_browser: None,
             file_pick_target: None,
             sidebar_state: SidebarState::default(),
+            display_focused: false,
+            last_key_label: None,
+            last_key_time: std::time::Instant::now(),
         }
     }
 
@@ -224,6 +230,26 @@ impl eframe::App for CoreVmApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         theme::apply_theme(ctx);
 
+        // Intercept keyboard events BEFORE egui widgets consume Enter/Tab/etc.
+        // Use display_focused from the previous frame (updated at end of this frame).
+        if self.display_focused {
+            if let Some(uuid) = &self.selected_vm {
+                if let Some(vm) = self.vms.iter().find(|v| &v.config.uuid == uuid) {
+                    if let Some(handle) = vm.vm_handle {
+                        if let Some(label) = input::handle_keyboard_events(ctx, handle, true) {
+                            self.last_key_label = Some(label);
+                            self.last_key_time = std::time::Instant::now();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Expire last key display after 5 seconds
+        if self.last_key_label.is_some() && self.last_key_time.elapsed().as_secs() >= 5 {
+            self.last_key_label = None;
+        }
+
         let mut deferred_action: Option<ToolbarAction> = None;
 
         // Menu bar
@@ -295,7 +321,7 @@ impl eframe::App for CoreVmApp {
 
         // Status bar
         let metrics = self.selected_metrics();
-        statusbar::render_statusbar(ctx, metrics.as_ref(), self.selected_vm.is_some());
+        statusbar::render_statusbar(ctx, metrics.as_ref(), self.selected_vm.is_some(), self.last_key_label.as_deref());
 
         // Sidebar
         let names = self.vm_names();
@@ -311,6 +337,9 @@ impl eframe::App for CoreVmApp {
                 SidebarAction::MoveVm { vm_uuid, target_folder } => {
                     self.layout.move_vm(&vm_uuid, target_folder);
                     let _ = self.layout.save(&platform::layout_dir().join("layout.conf"));
+                }
+                SidebarAction::CreateVm => {
+                    self.create_vm_dialog = Some(CreateVmDialog::new());
                 }
                 SidebarAction::CreateFolder => {
                     // Handled inline in sidebar
@@ -370,21 +399,27 @@ impl eframe::App for CoreVmApp {
             ui.separator();
 
             if let Some(uuid) = &self.selected_vm.clone() {
-                if let Some(vm) = self.find_vm(uuid) {
-                    if vm.state == VmState::Running || vm.state == VmState::Paused {
-                        let fb = vm.framebuffer.clone();
-                        let vm_handle = vm.vm_handle;
-                        if let Ok(fb_data) = fb.lock() {
-                            self.display.show(ui, ctx, &fb_data);
-                        }
-                        if let Some(handle) = vm_handle {
-                            input::handle_keyboard_events(ctx, handle);
-                        }
+                // Extract state and data from vm without holding borrow on self
+                let vm_info = self.find_vm(uuid).map(|vm| {
+                    (vm.state, vm.framebuffer.clone())
+                });
+                if let Some((state, fb)) = vm_info {
+                    if state == VmState::Running || state == VmState::Paused {
+                        let display_focused = if let Ok(fb_data) = fb.lock() {
+                            self.display.show(ui, ctx, &fb_data)
+                        } else {
+                            false
+                        };
+                        self.display_focused = display_focused;
                     } else {
-                        render_summary(ui, vm, &mut deferred_action);
+                        self.display_focused = false;
+                        if let Some(vm) = self.find_vm(uuid) {
+                            render_summary(ui, vm, &mut deferred_action);
+                        }
                     }
                 }
             } else {
+                self.display_focused = false;
                 ui.centered_and_justified(|ui| {
                     ui.heading("Select or create a VM to get started");
                 });
@@ -592,7 +627,7 @@ fn render_summary(ui: &mut egui::Ui, vm: &VmEntry, deferred_action: &mut Option<
         painter.rect_filled(rect, 4.0, egui::Color32::from_rgb(18, 18, 22));
 
         // Subtle border
-        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 65)));
+        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 65)), egui::StrokeKind::Outside);
 
         // VM name centered in screen
         painter.text(

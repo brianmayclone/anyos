@@ -120,10 +120,12 @@ pub fn resume_vm(entry: &mut VmEntry) {
     entry.state = VmState::Running;
 }
 
-/// Run a batch of instructions, polling IDE IRQs every small quantum.
-/// This matches test_vmd's `run_batch_with_irq_poll` approach.
+/// Run a batch of instructions, polling IDE IRQs between sub-batches.
+/// The IDE poll quantum must be large enough that the wall-clock overhead
+/// between corevm_run calls does not dominate — the PIT timer inside
+/// corevm_run only measures time *within* each call.
 fn run_batch_with_irq_poll(handle: u64, batch: u64) -> u32 {
-    const IDE_IRQ_POLL_QUANTUM: u64 = 1_024;
+    const IDE_IRQ_POLL_QUANTUM: u64 = 500_000;
     let mut remaining = batch.max(1);
     let mut exit_code = 2;
 

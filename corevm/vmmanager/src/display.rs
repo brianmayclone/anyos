@@ -432,8 +432,11 @@ impl DisplayWidget {
     }
 
     /// Render the display, filling available space while maintaining aspect ratio.
-    pub fn show(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, fb: &FrameBufferData) {
+    /// Returns true if the display area has focus (for keyboard capture).
+    pub fn show(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, fb: &FrameBufferData) -> bool {
         self.update_texture(ctx, fb);
+
+        let display_id = egui::Id::new("vm_display_area");
 
         if let Some(ref texture) = self.texture {
             let available = ui.available_size();
@@ -449,14 +452,37 @@ impl DisplayWidget {
                 };
 
                 let size = egui::vec2(disp_w, disp_h);
-                ui.centered_and_justified(|ui| {
-                    ui.image(egui::load::SizedTexture::new(texture.id(), size));
-                });
+
+                // Allocate interactive area for the display
+                let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+
+                // Draw the texture
+                if ui.is_rect_visible(rect) {
+                    ui.painter().image(
+                        texture.id(),
+                        rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+
+                // Click to focus
+                if response.clicked() {
+                    ui.memory_mut(|m| m.request_focus(display_id));
+                }
+
+                // Auto-focus when VM is running
+                if !ui.memory(|m| m.has_focus(display_id)) {
+                    ui.memory_mut(|m| m.request_focus(display_id));
+                }
+
+                return ui.memory(|m| m.has_focus(display_id));
             }
         } else {
             ui.centered_and_justified(|ui| {
                 ui.label("No display");
             });
         }
+        false
     }
 }

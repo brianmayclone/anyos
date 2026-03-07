@@ -30,6 +30,7 @@ pub fn render_statusbar(
     ctx: &egui::Context,
     metrics: Option<&VmMetrics>,
     vm_selected: bool,
+    last_key: Option<&str>,
 ) {
     let statusbar_bg = Color32::from_rgb(0, 122, 204);
 
@@ -66,6 +67,15 @@ pub fn render_statusbar(
                             ui.label("No VM selected");
                         }
                     }
+                }
+
+                if let Some(key_str) = last_key {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("Key: {}", key_str))
+                                .color(Color32::from_rgb(200, 230, 255)),
+                        );
+                    });
                 }
             });
         });

@@ -21,6 +21,8 @@ pub struct FolderEntry {
 pub enum SidebarAction {
     /// A VM is being dragged to a folder (vm_uuid, target_folder_index or None for root)
     MoveVm { vm_uuid: String, target_folder: Option<usize> },
+    /// Request to create a new VM
+    CreateVm,
     /// Request to create a new folder
     CreateFolder,
     /// Request to rename a folder
@@ -156,22 +158,24 @@ impl SidebarLayout {
 
     /// Ensure all known VM UUIDs are in the layout somewhere; orphans go to first folder
     pub fn ensure_all_vms(&mut self, all_uuids: &[String]) {
-        let mut known: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut known: std::collections::HashSet<String> = std::collections::HashSet::new();
         for folder in &self.folders {
             for u in &folder.vm_uuids {
-                known.insert(u.as_str());
+                known.insert(u.clone());
             }
         }
         for u in &self.root_vms {
-            known.insert(u.as_str());
+            known.insert(u.clone());
         }
-        for uuid in all_uuids {
-            if !known.contains(uuid.as_str()) {
-                if !self.folders.is_empty() {
-                    self.folders[0].vm_uuids.push(uuid.clone());
-                } else {
-                    self.root_vms.push(uuid.clone());
-                }
+        let orphans: Vec<String> = all_uuids.iter()
+            .filter(|u| !known.contains(u.as_str()))
+            .cloned()
+            .collect();
+        for uuid in orphans {
+            if !self.folders.is_empty() {
+                self.folders[0].vm_uuids.push(uuid);
+            } else {
+                self.root_vms.push(uuid);
             }
         }
     }
@@ -296,7 +300,7 @@ pub fn render_sidebar(
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
 
-            // Header with + button
+            // Header with + buttons
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new("Virtual Machines")
@@ -304,9 +308,12 @@ pub fn render_sidebar(
                         .color(Color32::WHITE),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("+").on_hover_text("New folder").clicked() {
+                    if ui.small_button("\u{1F4C1}+").on_hover_text("New folder").clicked() {
                         sidebar_state.show_new_folder = true;
                         sidebar_state.new_folder_name = "New Folder".to_string();
+                    }
+                    if ui.small_button("+").on_hover_text("New VM").clicked() {
+                        actions.push(SidebarAction::CreateVm);
                     }
                 });
             });

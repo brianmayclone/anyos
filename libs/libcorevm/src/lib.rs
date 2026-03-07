@@ -322,9 +322,16 @@ struct VmInstance {
     /// TSC frequency in Hz (calibrated at startup, host_test only).
     #[cfg(feature = "host_test")]
     tsc_freq: u64,
-    /// Remainder TSC ticks from last PIT advancement (host_test only).
+    /// Last TSC timestamp for wall-clock timer advancement (host_test only).
+    /// Persists across corevm_run calls so inter-call time is not lost.
     #[cfg(feature = "host_test")]
-    pit_tsc_remainder: u64,
+    timer_tsc_last: u64,
+    /// Accumulated TSC ticks already converted to PIT ticks (host_test only).
+    #[cfg(feature = "host_test")]
+    pit_tsc_accum: u64,
+    /// Accumulated TSC ticks already converted to CMOS RTC ticks (host_test only).
+    #[cfg(feature = "host_test")]
+    cmos_tsc_accum: u64,
 }
 
 impl Drop for VmInstance {
@@ -492,7 +499,9 @@ pub extern "C" fn corevm_create_ex(ram_size_mb: u32, vcpu_count: u32) -> u64 {
         #[cfg(feature = "host_test")]
         tsc_freq: calibrate_tsc_freq(),
         #[cfg(feature = "host_test")]
-        pit_tsc_remainder: 0,
+        timer_tsc_last: 0,
+        pit_tsc_accum: 0,
+        cmos_tsc_accum: 0,
     });
     let h = Box::into_raw(instance) as u64;
     vm_log!("VM created (handle=0x{:X})", h);
@@ -547,6 +556,12 @@ pub extern "C" fn corevm_reset(handle: u64) {
     vm.last_error = None;
     vm.last_error_rip = 0;
     vm.pit_is_externally_clocked = false;
+    #[cfg(feature = "host_test")]
+    {
+        vm.timer_tsc_last = 0;
+        vm.pit_tsc_accum = 0;
+        vm.cmos_tsc_accum = 0;
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -737,12 +752,11 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
     let mut remaining = max_instructions;
 
     // Wall-clock timers: use rdtsc to advance PIT and LAPIC at realistic rates.
+    // Initialize timer_tsc_last on first call (lazy init).
     #[cfg(feature = "host_test")]
-    let timer_t0 = rdtsc();
-    #[cfg(feature = "host_test")]
-    let mut pit_tsc_accum: u64 = 0;
-    #[cfg(feature = "host_test")]
-    let mut cmos_tsc_accum: u64 = 0;
+    if vm.timer_tsc_last == 0 {
+        vm.timer_tsc_last = rdtsc();
+    }
 
     // Instruction-based fallback for no_std (anyOS kernel).
     #[cfg(not(feature = "host_test"))]
@@ -847,30 +861,30 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
         drain_lapic_eois(vm);
 
         // Advance PIT using wall-clock time (host_test) or instruction count (no_std).
-        if ran > 0 && !vm.pit_ptr.is_null() && !vm.pit_is_externally_clocked {
+        if !vm.pit_ptr.is_null() && !vm.pit_is_externally_clocked {
             #[cfg(feature = "host_test")]
             {
                 let now = rdtsc();
-                let elapsed_tsc = now.wrapping_sub(timer_t0).saturating_sub(pit_tsc_accum);
-                // Convert TSC ticks to PIT ticks: PIT runs at 1193182 Hz.
-                // tsc_freq is cycles/second. pit_ticks = elapsed * 1193182 / tsc_freq.
-                // Use a fixed estimate: modern CPUs ~3 GHz. We calibrate via TSC_FREQ.
+                let elapsed_tsc = now.wrapping_sub(vm.timer_tsc_last);
                 let tsc_freq = vm.tsc_freq;
-                if tsc_freq > 0 {
-                    let pit_ticks = (elapsed_tsc as u128 * 1_193_182 / tsc_freq as u128) as u32;
+                if tsc_freq > 0 && elapsed_tsc > 0 {
+                    // Combine with remainder from previous iteration.
+                    let total_tsc = vm.pit_tsc_accum + elapsed_tsc;
+                    let pit_ticks = (total_tsc as u128 * 1_193_182 / tsc_freq as u128) as u32;
                     if pit_ticks > 0 {
-                        pit_tsc_accum = pit_tsc_accum.wrapping_add(
-                            (pit_ticks as u128 * tsc_freq as u128 / 1_193_182) as u64
-                        );
+                        // Store remainder: total - ticks_consumed_in_tsc
+                        vm.pit_tsc_accum = total_tsc - (pit_ticks as u128 * tsc_freq as u128 / 1_193_182) as u64;
                         let fires = unsafe { (*vm.pit_ptr).advance(pit_ticks) };
                         if fires > 0 {
                             inject_irq_line(vm, 0);
                         }
+                    } else {
+                        vm.pit_tsc_accum = total_tsc;
                     }
                 }
             }
             #[cfg(not(feature = "host_test"))]
-            {
+            if ran > 0 {
                 pit_inst_accum = pit_inst_accum.saturating_add(ran);
                 let pit_ticks = (pit_inst_accum / PIT_INSTS_PER_TICK) as u32;
                 pit_inst_accum %= PIT_INSTS_PER_TICK;
@@ -884,27 +898,28 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
         }
 
         // Advance RTC periodic source (IRQ8) for guests that use CMOS periodic interrupts.
-        if ran > 0 && !vm.cmos_ptr.is_null() {
+        if !vm.cmos_ptr.is_null() {
             #[cfg(feature = "host_test")]
             {
                 let now = rdtsc();
-                let elapsed_tsc = now.wrapping_sub(timer_t0).saturating_sub(cmos_tsc_accum);
+                let elapsed_tsc = now.wrapping_sub(vm.timer_tsc_last);
                 let tsc_freq = vm.tsc_freq;
-                if tsc_freq > 0 {
-                    let rtc_ticks = (elapsed_tsc as u128 * 32_768u128 / tsc_freq as u128) as u64;
+                if tsc_freq > 0 && elapsed_tsc > 0 {
+                    let total_tsc = vm.cmos_tsc_accum + elapsed_tsc;
+                    let rtc_ticks = (total_tsc as u128 * 32_768u128 / tsc_freq as u128) as u64;
                     if rtc_ticks > 0 {
-                        cmos_tsc_accum = cmos_tsc_accum.wrapping_add(
-                            (rtc_ticks as u128 * tsc_freq as u128 / 32_768u128) as u64
-                        );
+                        vm.cmos_tsc_accum = total_tsc - (rtc_ticks as u128 * tsc_freq as u128 / 32_768u128) as u64;
                         let fired = unsafe { (*vm.cmos_ptr).advance(rtc_ticks) };
                         if fired {
                             inject_irq_line(vm, 8);
                         }
+                    } else {
+                        vm.cmos_tsc_accum = total_tsc;
                     }
                 }
             }
             #[cfg(not(feature = "host_test"))]
-            {
+            if ran > 0 {
                 cmos_inst_accum = cmos_inst_accum.saturating_add(ran);
                 let rtc_ticks = cmos_inst_accum / CMOS_INSTS_PER_TICK;
                 cmos_inst_accum %= CMOS_INSTS_PER_TICK;
@@ -916,6 +931,10 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
                 }
             }
         }
+
+        // Update wall-clock reference point for next iteration / next corevm_run call.
+        #[cfg(feature = "host_test")]
+        { vm.timer_tsc_last = rdtsc(); }
 
         // The ACPI PM timer must be free-running even when the guest polls it.
         if ran > 0 && !vm.acpi_pm_ptr.is_null() {
