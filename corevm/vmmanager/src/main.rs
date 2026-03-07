@@ -11,6 +11,7 @@ mod statusbar;
 mod theme;
 mod settings;
 mod toolbar;
+mod vm;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

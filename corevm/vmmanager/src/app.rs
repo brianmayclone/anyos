@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use crate::vm::VmControl;
+
 use eframe::egui;
 
 use crate::config::VmConfig;
@@ -39,6 +41,7 @@ pub struct VmEntry {
     pub config: VmConfig,
     pub state: VmState,
     pub vm_handle: Option<u64>,
+    pub control: Option<Arc<VmControl>>,
     pub framebuffer: Arc<Mutex<FrameBufferData>>,
     pub vm_thread: Option<JoinHandle<()>>,
     pub instruction_count: u64,
@@ -53,6 +56,7 @@ impl VmEntry {
             config,
             state: VmState::Stopped,
             vm_handle: None,
+            control: None,
             framebuffer: Arc::new(Mutex::new(FrameBufferData::default())),
             vm_thread: None,
             instruction_count: 0,
