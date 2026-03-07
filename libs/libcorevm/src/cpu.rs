@@ -534,6 +534,8 @@ impl Cpu {
                 crate::debugger::enter_prompt(self, memory, mmu, phys_addr, "breakpoint");
             }
 
+
+
             // ── Decode Cache path ──
             let cs_base = self.regs.seg[SegReg::Cs as usize].base;
             let block_key = BlockKey {

@@ -61,13 +61,14 @@ impl SegReg {
 /// When a segment register is loaded (MOV, far JMP/CALL, IRET, etc.),
 /// the CPU reads the GDT/LDT entry and caches the descriptor here.
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 pub struct SegmentDescriptor {
-    /// Visible selector value.
-    pub selector: u16,
     /// Base address (decoded from descriptor).
     pub base: u64,
     /// Segment limit (in bytes, accounting for granularity).
     pub limit: u32,
+    /// Visible selector value.
+    pub selector: u16,
     /// Raw access byte from the descriptor.
     pub access: u8,
     /// Flags nibble (G, D/B, L, AVL).

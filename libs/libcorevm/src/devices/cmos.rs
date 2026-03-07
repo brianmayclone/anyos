@@ -34,6 +34,10 @@ pub struct Cmos {
     pub data: [u8; 128],
     /// NMI disable flag (bit 7 of port 0x70).
     pub nmi_disabled: bool,
+    /// Counter for simulating the RTC Update-In-Progress (UIP) cycle.
+    /// Incremented on each read of status register A; UIP bit toggles
+    /// to simulate the once-per-second update cycle.
+    uip_counter: u32,
 }
 
 impl Cmos {
@@ -97,6 +101,7 @@ impl Cmos {
             index: 0,
             data,
             nmi_disabled: false,
+            uip_counter: 0,
         }
     }
 }
@@ -111,7 +116,43 @@ impl IoHandler for Cmos {
         let val = match port {
             0x71 => {
                 let idx = (self.index & 0x7F) as usize;
-                let v = self.data[idx];
+                let mut v = self.data[idx];
+                if idx == 0x0A {
+                    // Simulate UIP (Update In Progress) toggle in Status Register A.
+                    // Real MC146818 sets bit 7 for ~244µs once per second during the
+                    // time update. The Windows HAL polls this in a tight loop to
+                    // calibrate timing. Toggle UIP every 512 reads to simulate the
+                    // update cycle boundary.
+                    let prev_phase = (self.uip_counter / 512) & 1;
+                    self.uip_counter = self.uip_counter.wrapping_add(1);
+                    let new_phase = (self.uip_counter / 512) & 1;
+                    if new_phase != 0 {
+                        v |= 0x80; // UIP set
+                    } else {
+                        v &= !0x80; // UIP clear
+                    }
+                    // When UIP transitions from set→clear, advance the seconds counter
+                    // (simulating that the RTC update completed).
+                    if prev_phase != 0 && new_phase == 0 {
+                        let is_binary = (self.data[0x0B] & 0x04) != 0;
+                        if is_binary {
+                            self.data[0x00] = self.data[0x00].wrapping_add(1);
+                            if self.data[0x00] >= 60 { self.data[0x00] = 0; }
+                        } else {
+                            // BCD increment
+                            let mut sec = self.data[0x00];
+                            let lo = sec & 0x0F;
+                            let hi = sec >> 4;
+                            let s = hi * 10 + lo + 1;
+                            if s >= 60 {
+                                sec = 0;
+                            } else {
+                                sec = ((s / 10) << 4) | (s % 10);
+                            }
+                            self.data[0x00] = sec;
+                        }
+                    }
+                }
                 // Reading status register C clears all interrupt flags.
                 if idx == 0x0C {
                     self.data[0x0C] = 0x00;

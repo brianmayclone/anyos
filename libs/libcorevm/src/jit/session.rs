@@ -50,9 +50,21 @@ const GPR_BASE: Reg = Reg::R15;
 
 // ── RegisterFile layout (repr(C)) ────────────────────────────────────────
 
-const RIP_OFF: i32 = 128;
-const RFLAGS_OFF: i32 = 136;
-const CS_BASE_OFF: i32 = 144 + 1 * 32 + 0; // seg[1].base = 176
+const RIP_OFF: i32 = {
+    use crate::registers::RegisterFile;
+    core::mem::offset_of!(RegisterFile, rip) as i32
+};
+const RFLAGS_OFF: i32 = {
+    use crate::registers::RegisterFile;
+    core::mem::offset_of!(RegisterFile, rflags) as i32
+};
+const CS_BASE_OFF: i32 = {
+    use crate::registers::{RegisterFile, SegmentDescriptor};
+    // seg[1] = CS, then .base within SegmentDescriptor
+    (core::mem::offset_of!(RegisterFile, seg) as i32)
+        + (core::mem::size_of::<SegmentDescriptor>() as i32)
+        + (core::mem::offset_of!(SegmentDescriptor, base) as i32)
+};
 
 // ── JitSession ───────────────────────────────────────────────────────────
 

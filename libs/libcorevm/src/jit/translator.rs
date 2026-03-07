@@ -38,9 +38,9 @@ const _: () = {
 };
 
 // ── RegisterFile field offsets (#[repr(C)]) ──
-const GPR_OFFSET: i32 = 0;
-const RIP_OFFSET: i32 = 128;
-const RFLAGS_OFFSET: i32 = 136;
+const GPR_OFFSET: i32 = core::mem::offset_of!(crate::registers::RegisterFile, gpr) as i32;
+const RIP_OFFSET: i32 = core::mem::offset_of!(crate::registers::RegisterFile, rip) as i32;
+const RFLAGS_OFFSET: i32 = core::mem::offset_of!(crate::registers::RegisterFile, rflags) as i32;
 
 const ARITH_MASK: i32 = 0x8D5;
 const NOT_ARITH_MASK: i32 = !0x8D5;

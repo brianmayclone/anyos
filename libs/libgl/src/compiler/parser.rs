@@ -178,6 +178,15 @@ impl<'a> Parser<'a> {
         Ok(stmts)
     }
 
+    /// Parse either a `{ … }` block or a single statement (for braceless if/else/for).
+    fn parse_block_or_stmt(&mut self) -> Result<Vec<Stmt>, String> {
+        if matches!(self.peek(), Some(Token::LBrace)) {
+            self.parse_block()
+        } else {
+            Ok(vec![self.parse_stmt()?])
+        }
+    }
+
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
         // Return
         if matches!(self.peek(), Some(Token::Return)) {
@@ -260,10 +269,10 @@ impl<'a> Parser<'a> {
         self.expect(&Token::LParen)?;
         let cond = self.parse_expr()?;
         self.expect(&Token::RParen)?;
-        let then_block = self.parse_block()?;
+        let then_block = self.parse_block_or_stmt()?;
         let else_block = if matches!(self.peek(), Some(Token::Else)) {
             self.advance();
-            Some(self.parse_block()?)
+            Some(self.parse_block_or_stmt()?)
         } else {
             None
         };
