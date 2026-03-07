@@ -1,0 +1,23 @@
+1 ICON "..\\assets\\icons\\Icon.ico"
+
+1 VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904E4"
+    BEGIN
+      VALUE "ProductName", "CoreVM Manager"
+      VALUE "FileDescription", "Cross-platform x86 Virtual Machine Manager"
+      VALUE "FileVersion", "0.1.0"
+      VALUE "ProductVersion", "0.1.0"
+      VALUE "CompanyName", "CoreVM"
+      VALUE "LegalCopyright", "Copyright (c) 2026 CoreVM"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 0x04E4
+  END
+END
