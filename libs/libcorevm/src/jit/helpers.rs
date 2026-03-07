@@ -254,3 +254,53 @@ pub extern "C" fn helper_execute_one(
         Err(_) => JIT_EXIT_BLOCK,
     }
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// Dispatcher Helpers
+// ════════════════════════════════════════════════════════════════════════
+
+/// Translate a linear address to physical via the MMU.
+/// Returns the physical address on success, or u64::MAX on fault.
+/// Used by the JIT dispatcher to resolve CS:RIP before block lookup.
+#[no_mangle]
+pub extern "C" fn jit_mmu_translate(
+    cpu: &mut Cpu,
+    mmu: &Mmu,
+    memory: &GuestMemory,
+    linear: u64,
+) -> u64 {
+    match mmu.translate_linear(
+        linear,
+        cpu.regs.cr3,
+        AccessType::Execute,
+        cpu.regs.cpl,
+        memory,
+    ) {
+        Ok(phys) => phys,
+        Err(_) => {
+            cpu.jit_fault = true;
+            u64::MAX
+        }
+    }
+}
+
+/// Check if there is a pending interrupt that should be delivered.
+/// Returns 1 if yes (dispatcher should exit), 0 if no.
+#[no_mangle]
+pub extern "C" fn jit_check_interrupt(
+    interrupts: &InterruptController,
+    rflags: u64,
+) -> u32 {
+    if interrupts.pending_interrupt(rflags).is_some() {
+        1
+    } else {
+        0
+    }
+}
+
+/// Return the current CPU decode mode as a u8.
+/// 0 = Real16, 1 = Protected32, 2 = Long64.
+#[no_mangle]
+pub extern "C" fn jit_get_cpu_mode(cpu: &Cpu) -> u8 {
+    cpu.decoder.mode() as u8
+}

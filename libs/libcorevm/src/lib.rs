@@ -2064,7 +2064,7 @@ pub extern "C" fn corevm_jit_cache_stats(
 pub extern "C" fn corevm_jit_flush_cache(handle: u64) {
     let vm = unsafe { vm_from_handle(handle) };
     vm.engine.cpu.decode_cache.flush();
-    vm.engine.cpu.jit_engine.flush();
+    vm.engine.cpu.jit_session.flush();
 }
 
 /// Enable or disable the JIT engine.
@@ -2079,7 +2079,7 @@ pub extern "C" fn corevm_jit_flush_cache(handle: u64) {
 #[no_mangle]
 pub extern "C" fn corevm_jit_enable(handle: u64, enable: u32) {
     let vm = unsafe { vm_from_handle(handle) };
-    vm.engine.cpu.jit_engine.set_enabled(enable != 0);
+    vm.engine.cpu.jit_session.set_enabled(enable != 0);
     if enable != 0 {
         vm_log!("JIT engine enabled");
     } else {
@@ -2101,7 +2101,7 @@ pub extern "C" fn corevm_jit_stats(
     code_buffer_used: *mut u32,
 ) {
     let vm = unsafe { vm_from_handle(handle) };
-    let jit = &vm.engine.cpu.jit_engine;
+    let jit = &vm.engine.cpu.jit_session;
     if !blocks_compiled.is_null() {
         unsafe { *blocks_compiled = jit.blocks_compiled() };
     }
@@ -2112,7 +2112,7 @@ pub extern "C" fn corevm_jit_stats(
         unsafe { *fallback_count = jit.fallback_count() };
     }
     if !code_buffer_used.is_null() {
-        unsafe { *code_buffer_used = jit.code_buffer_used() as u32 };
+        unsafe { *code_buffer_used = jit.buffer.used() as u32 };
     }
 }
 
@@ -2126,7 +2126,7 @@ pub extern "C" fn corevm_jit_helper_top(
     buf_len: u32,
 ) -> u32 {
     let vm = unsafe { vm_from_handle(handle) };
-    let jit = &vm.engine.cpu.jit_engine;
+    let jit = &vm.engine.cpu.jit_session;
     let top = jit.top_helper_opcodes(30);
 
     let mut out = alloc::vec::Vec::new();

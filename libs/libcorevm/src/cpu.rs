@@ -22,7 +22,6 @@ use crate::interrupts::InterruptController;
 use crate::io::IoDispatch;
 use crate::jit::block::{self, BlockKey};
 use crate::jit::cache::DecodeCache;
-use crate::jit::JitEngine;
 use crate::memory::{AccessType, GuestMemory, MemoryBus, Mmu};
 use crate::registers::SegmentDescriptor;
 use crate::registers::{
@@ -83,7 +82,7 @@ pub struct Cpu {
     /// Number of instructions executed since last reset.
     pub instruction_count: u64,
     /// If true, stop at the next instruction boundary.
-    stop_requested: bool,
+    pub stop_requested: bool,
     /// A20 gate enabled (address line 20 masking for real-mode compat).
     pub a20_enabled: bool,
     /// RIP at the start of the last successfully decoded instruction.
@@ -102,13 +101,21 @@ pub struct Cpu {
     pub prev_exec_cs: u16,
     /// Decode cache for pre-decoded basic blocks (JIT Phase 1).
     pub decode_cache: DecodeCache,
-    /// JIT engine for native code compilation and execution (Phase 2+3).
-    pub jit_engine: JitEngine,
+    /// JIT session for native code compilation and execution (Phase 2+3).
+    pub jit_session: crate::jit::session::JitSession,
     /// Consecutive exception count at the same RIP (for #PF loop detection).
     consecutive_exception_rip: u64,
     consecutive_exception_count: u32,
     /// Set by jit_mem_read on page fault; checked after each read in JIT code.
     pub jit_fault: bool,
+    /// Set when SMC dirty pages are detected; dispatcher checks this to exit.
+    pub smc_pending: bool,
+    /// Physical address that caused a JIT hashtable miss.
+    pub pending_compile_phys: u64,
+    /// CpuMode at the time of hashtable miss.
+    pub pending_compile_mode: u8,
+    /// CS base at the time of hashtable miss.
+    pub pending_compile_cs_base: u64,
     /// True when delivering a hardware interrupt with vector < 32 (BIOS PIC range).
     /// Used to skip Task Gate handling that would incorrectly trigger #DF.
     is_hw_interrupt: bool,
@@ -147,10 +154,14 @@ impl Cpu {
             prev_exec_rip: 0,
             prev_exec_cs: 0,
             decode_cache: DecodeCache::new(),
-            jit_engine: JitEngine::new(),
+            jit_session: crate::jit::session::JitSession::new(),
             consecutive_exception_rip: 0,
             consecutive_exception_count: 0,
             jit_fault: false,
+            smc_pending: false,
+            pending_compile_phys: 0,
+            pending_compile_mode: 0,
+            pending_compile_cs_base: 0,
             is_hw_interrupt: false,
             apic_id: 0,
             logical_cpu_count: 1,
@@ -182,7 +193,7 @@ impl Cpu {
         self.prev_exec_rip = 0;
         self.prev_exec_cs = 0;
         self.decode_cache.flush();
-        self.jit_engine.flush();
+        self.jit_session.flush();
         self.consecutive_exception_rip = 0;
         self.consecutive_exception_count = 0;
         self.apic_id = 0;
@@ -427,6 +438,11 @@ impl Cpu {
         } else {
             0
         };
+
+        if self.jit_session.is_enabled() {
+            return self.run_jit_session(memory, mmu, io, interrupts, target);
+        }
+
         loop {
             let t_loop_start = rdtsc();
 
@@ -518,26 +534,6 @@ impl Cpu {
             };
 
             if let Some(cached_block) = self.decode_cache.lookup(&block_key) {
-                if self.jit_engine.is_enabled() {
-                    let t_before_jit = rdtsc();
-                    let jit_result = self.jit_execute_block_chain(
-                        block_key, cached_block,
-                        target, memory, mmu, io, interrupts,
-                    );
-                    let t_after_jit = rdtsc();
-                    self.perf_tsc_interrupt += t_after_intr - t_loop_start;
-                    self.perf_tsc_translate += t_after_translate - t_after_intr;
-                    self.perf_tsc_smc += t_after_smc - t_after_translate;
-                    self.perf_tsc_decode += t_before_jit - t_after_smc;
-                    self.perf_tsc_jit_exec += t_after_jit - t_before_jit;
-                    self.perf_tsc_total += t_after_jit - t_loop_start;
-                    self.perf_loop_count += 1;
-                    match jit_result {
-                        BlockExitReason::Continue => continue,
-                        BlockExitReason::Exit(reason) => return reason,
-                    }
-                }
-
                 let block_exit = self.execute_cached_block_chain(
                     block_key,
                     cached_block,
@@ -559,26 +555,6 @@ impl Cpu {
             ) {
                 self.decode_cache.insert(block_key, new_block);
                 let cached_block = self.decode_cache.lookup(&block_key).unwrap();
-
-                if self.jit_engine.is_enabled() {
-                    let t_before_jit = rdtsc();
-                    let jit_result = self.jit_execute_block_chain(
-                        block_key, cached_block,
-                        target, memory, mmu, io, interrupts,
-                    );
-                    let t_after_jit = rdtsc();
-                    self.perf_tsc_interrupt += t_after_intr - t_loop_start;
-                    self.perf_tsc_translate += t_after_translate - t_after_intr;
-                    self.perf_tsc_smc += t_after_smc - t_after_translate;
-                    self.perf_tsc_decode += t_before_jit - t_after_smc;
-                    self.perf_tsc_jit_exec += t_after_jit - t_before_jit;
-                    self.perf_tsc_total += t_after_jit - t_loop_start;
-                    self.perf_loop_count += 1;
-                    match jit_result {
-                        BlockExitReason::Continue => continue,
-                        BlockExitReason::Exit(reason) => return reason,
-                    }
-                }
 
                 let block_exit = self.execute_cached_block_chain(
                     block_key,
@@ -763,12 +739,14 @@ impl Cpu {
             crate::memory::smc::DrainResult::Pages(n) => {
                 for page in pages_buf.iter().take(n) {
                     self.decode_cache.invalidate_page(*page);
-                    self.jit_engine.invalidate_page(*page);
+                    self.jit_session.invalidate_page(*page);
                 }
+                self.smc_pending = true;
             }
             crate::memory::smc::DrainResult::Overflow => {
                 self.decode_cache.flush();
-                self.jit_engine.flush();
+                self.jit_session.flush();
+                self.smc_pending = true;
             }
         }
     }
@@ -931,150 +909,122 @@ impl Cpu {
     ///
     /// Chain JIT blocks: after executing one block, try to chain directly
     /// to the next without going through the full run() loop.
-    fn jit_execute_block_chain(
+    fn run_jit_session(
         &mut self,
-        mut block_key: BlockKey,
-        mut block: alloc::sync::Arc<crate::jit::block::BasicBlock>,
+        memory: &mut GuestMemory,
+        mmu: &mut Mmu,
+        io: &mut IoDispatch,
+        interrupts: &mut InterruptController,
         target: u64,
-        memory: &mut GuestMemory,
-        mmu: &mut Mmu,
-        io: &mut IoDispatch,
-        interrupts: &mut InterruptController,
-    ) -> BlockExitReason {
+    ) -> ExitReason {
+        use crate::jit::session::*;
+
+        // Ensure dispatcher is emitted
+        if self.jit_session.dispatch_loop_offset == 0 {
+            self.jit_session.emit_dispatcher();
+            self.jit_session.buffer.make_executable();
+        }
+
         loop {
-            let exits_with_branch = block.exits_with_branch;
+            mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
 
-            let result = self.jit_execute_block(
-                &block_key, &block.instructions,
-                memory, mmu, io, interrupts,
-            );
-            match result {
-                BlockExitReason::Exit(reason) => return BlockExitReason::Exit(reason),
-                BlockExitReason::Continue => {}
-            }
-
-            // A JIT fault (page fault in memory helper) means we must return
-            // to the outer loop so the exception can be injected properly.
-            if self.jit_fault {
-                self.jit_fault = false;
-                return BlockExitReason::Continue;
-            }
-
-            if target > 0 && self.instruction_count >= target {
-                return BlockExitReason::Exit(ExitReason::InstructionLimit);
-            }
-
-            // Block ended with a branch — return to outer loop so interrupts
-            // are checked and the new CS:RIP is fully resolved. This matches
-            // the interpreter chain's behavior and is critical for I/O-heavy
-            // workloads (ATAPI, DMA) that depend on timely interrupt delivery.
-            if exits_with_branch {
-                return BlockExitReason::Continue;
-            }
-
-            // Give pending interrupts a chance before chaining further blocks.
-            if interrupts.pending_interrupt(self.regs.rflags).is_some() || interrupts.interrupt_shadow {
-                return BlockExitReason::Continue;
-            }
-
-            self.drain_smc_invalidations();
-
-            // Compute next block's physical address
-            let cs = &self.regs.seg[SegReg::Cs as usize];
-            let fetch_addr = if self.a20_enabled {
-                cs.base.wrapping_add(self.regs.rip)
-            } else {
-                cs.base.wrapping_add(self.regs.rip) & !0x10_0000
-            };
-            let next_phys = match mmu.translate_linear(
-                fetch_addr, self.regs.cr3, AccessType::Execute,
-                self.regs.cpl, &*memory,
-            ) {
-                Ok(p) => p,
-                Err(_) => return BlockExitReason::Continue,
+            let reason = unsafe {
+                let func = self.jit_session.dispatcher_fn();
+                func(
+                    self as *mut Cpu as *mut u8,
+                    memory as *mut GuestMemory as *mut u8,
+                    mmu as *mut Mmu as *mut u8,
+                    io as *mut IoDispatch as *mut u8,
+                    interrupts as *mut InterruptController as *mut u8,
+                    target,
+                )
             };
 
-            let next_key = BlockKey {
-                phys_addr: next_phys,
-                mode: self.decoder.mode(),
-                cs_base: cs.base,
-            };
-
-            let Some(next_block) = self.decode_cache.lookup(&next_key) else {
-                return BlockExitReason::Continue;
-            };
-            block = next_block;
-            block_key = next_key;
-        }
-    }
-
-    /// Returns `BlockExitReason` for the main run() loop.
-    fn jit_execute_block(
-        &mut self,
-        key: &BlockKey,
-        instructions: &[crate::instruction::DecodedInst],
-        memory: &mut GuestMemory,
-        mmu: &mut Mmu,
-        io: &mut IoDispatch,
-        interrupts: &mut InterruptController,
-    ) -> BlockExitReason {
-        use crate::jit::helpers::{JIT_OK, JIT_EXIT_BLOCK};
-
-        // Look up or compile the block.
-        let (code_offset, _inst_count) = match self.jit_engine.lookup_compiled(key) {
-            Some(entry) => entry,
-            None => {
-                // Build instruction pointer array for helper_execute_one embedding.
-                // These point into the decode cache's Arc<BasicBlock>, which is
-                // stable for the lifetime of this JIT block.
-                let inst_ptrs: alloc::vec::Vec<*const crate::instruction::DecodedInst> =
-                    instructions.iter().map(|i| i as *const _).collect();
-
-                let block = crate::jit::block::BasicBlock {
-                    instructions: instructions.into(),
-                    byte_len: instructions.iter().map(|i| i.length as usize).sum(),
-                    exits_with_branch: false,
-                };
-
-                self.jit_engine.make_writable();
-                let result = self.jit_engine.compile_block(*key, &block, &inst_ptrs);
-                self.jit_engine.make_executable();
-
-                match result {
-                    Some(entry) => entry,
-                    None => {
-                        return self.execute_cached_block(
-                            instructions, key.phys_addr,
-                            memory, mmu, io, interrupts,
-                        );
-                    }
+            match reason {
+                EXIT_NEEDS_COMPILE => {
+                    self.jit_compile_pending(memory, mmu);
                 }
+                EXIT_INTERRUPT => {
+                    if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {
+                        interrupts.acknowledge(vector);
+                        if let Err(e) = self.deliver_interrupt_hw(vector, memory, mmu, interrupts) {
+                            return ExitReason::Exception(e);
+                        }
+                    }
+                    interrupts.interrupt_shadow = false;
+                }
+                EXIT_SMC => {
+                    self.smc_pending = false;
+                    self.drain_smc_invalidations();
+                }
+                EXIT_FAULT => {
+                    self.jit_fault = false;
+                    // Fall through — will re-enter dispatcher which recomputes phys addr
+                }
+                EXIT_LIMIT => return ExitReason::InstructionLimit,
+                EXIT_STOP => {
+                    self.stop_requested = false;
+                    return ExitReason::StopRequested;
+                }
+                EXIT_HALT => return ExitReason::Halted,
+                _ => return ExitReason::Halted,
             }
-        };
-
-        // Call the compiled native code.
-        type JitBlockFn = unsafe extern "C" fn(
-            &mut Cpu, &mut GuestMemory, &mut Mmu, &mut IoDispatch,
-            &mut InterruptController,
-        ) -> u32;
-
-        let result = unsafe {
-            let ptr = self.jit_engine.code_ptr(code_offset);
-            let func: JitBlockFn = core::mem::transmute(ptr);
-            func(self, memory, mmu, io, interrupts)
-        };
-
-        // helper_execute_one increments instruction_count per instruction.
-        // Native-only instructions don't increment — we handle that here.
-        // For JIT_OK the full block ran. For JIT_EXIT_BLOCK, partial.
-        // Since helper_execute_one already counts its instructions, and
-        // native instructions don't, we accept slight undercounting of
-        // native-only instructions. This is fine for instruction limits.
-        match result {
-            JIT_OK | JIT_EXIT_BLOCK => BlockExitReason::Continue,
-            _ => BlockExitReason::Continue,
         }
     }
+
+    fn jit_compile_pending(&mut self, memory: &GuestMemory, _mmu: &Mmu) {
+        use crate::jit::block::{BasicBlock, BlockKey, detect_basic_block};
+        use crate::decoder::CpuMode;
+
+        let phys = self.pending_compile_phys;
+        let mode = match self.pending_compile_mode {
+            0 => CpuMode::Real16,
+            1 => CpuMode::Protected32,
+            _ => CpuMode::Long64,
+        };
+        let cs_base = self.pending_compile_cs_base;
+        let key = BlockKey { phys_addr: phys, mode, cs_base };
+
+        // Get or detect basic block
+        let block = if let Some(cached) = self.decode_cache.lookup(&key) {
+            cached
+        } else if let Ok(new_block) = detect_basic_block(&self.decoder, &*memory, phys) {
+            self.decode_cache.insert(key, new_block);
+            match self.decode_cache.lookup(&key) {
+                Some(b) => b,
+                None => return,
+            }
+        } else {
+            return;
+        };
+
+        let inst_ptrs: alloc::vec::Vec<*const crate::instruction::DecodedInst> =
+            block.instructions.iter().map(|i| i as *const _).collect();
+
+        let bb = BasicBlock {
+            instructions: block.instructions.clone(),
+            byte_len: block.byte_len,
+            exits_with_branch: block.exits_with_branch,
+        };
+
+        let dispatch_loop_addr = self.jit_session.dispatch_loop_ptr();
+
+        let compiled = self.jit_session.translator.translate_block(
+            &bb, &inst_ptrs, phys, mode, dispatch_loop_addr,
+        );
+
+        self.jit_session.buffer.make_writable();
+        if let Some(code_offset) = self.jit_session.buffer.emit(&compiled.code) {
+            let code_ptr = unsafe { self.jit_session.buffer.code_ptr(code_offset) };
+            self.jit_session.lookup.insert(phys, mode as u8, cs_base, code_ptr as u64);
+            let page = phys & !0xFFF;
+            self.jit_session.code_pages.insert(page);
+            crate::memory::smc::mark_code_page(page);
+            self.jit_session.blocks_compiled += 1;
+        }
+        self.jit_session.buffer.make_executable();
+    }
+
 
     /// Inject an exception derived from a VmError into the guest.
     fn inject_exception_from_error(

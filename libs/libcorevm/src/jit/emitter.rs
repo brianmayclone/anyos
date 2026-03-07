@@ -129,6 +129,11 @@ impl Emitter {
         self.labels[label.0 as usize] = Some(self.code.len());
     }
 
+    /// Return the bound offset of a label. Panics if the label is not yet defined.
+    pub fn label_offset(&self, label: Label) -> usize {
+        self.labels[label.0 as usize].expect("JIT emitter: label not yet bound")
+    }
+
     /// Finalize: resolve all forward label references and return raw code.
     ///
     /// Panics if any label referenced by a fixup has not been defined.
@@ -502,6 +507,22 @@ impl Emitter {
         self.alu_rr(0x39, size, a, b);
     }
 
+    /// `CMP reg, [base + disp]` (register compared with memory).
+    pub fn cmp_rm(&mut self, size: OpSize, reg: Reg, base: Reg, disp: i32) {
+        self.maybe_size_prefix(size);
+        match size {
+            OpSize::S8 => {
+                self.maybe_rex_rm(OpSize::S8, reg, base);
+                self.emit(0x3A);
+            }
+            _ => {
+                self.maybe_rex_rm(size, reg, base);
+                self.emit(0x3B);
+            }
+        }
+        self.modrm_mem(reg, base, disp);
+    }
+
     /// `TEST a, b`.
     pub fn test_rr(&mut self, size: OpSize, a: Reg, b: Reg) {
         self.maybe_size_prefix(size);
@@ -789,6 +810,16 @@ impl Emitter {
         self.mov_ri64(Reg::Rax, addr);
         // call rax
         self.call_reg(Reg::Rax);
+    }
+
+    /// `JMP abs` — jump to an absolute 64-bit address.
+    ///
+    /// Emits: `mov rax, imm64; jmp rax` (10 + 2 = 12 bytes).
+    pub fn jmp_abs(&mut self, addr: u64) {
+        // mov rax, addr
+        self.mov_ri64(Reg::Rax, addr);
+        // jmp rax
+        self.jmp_reg(Reg::Rax);
     }
 
     /// `RET`.

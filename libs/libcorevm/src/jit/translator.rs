@@ -18,8 +18,7 @@
 //! | R9, R10       | Temporary operand registers                |
 //! | R11           | Temporary (captured RFLAGS / scratch)      |
 //! | RAX           | Temporary / helper return value            |
-//! | RBP           | Frame pointer                              |
-//! | `[RBP-8]`    | Saved `InterruptController*`               |
+//! | RBP           | `InterruptController*` pointer             |
 
 use alloc::vec::Vec;
 use crate::decoder::CpuMode;
@@ -56,7 +55,7 @@ const TEMP1: Reg = Reg::R9;
 const TEMP2: Reg = Reg::R10;
 const FLAGS_TMP: Reg = Reg::R11;
 
-const INTR_STACK_OFF: i32 = -8;
+const INTR_REG: Reg = Reg::Rbp;
 
 // ── Segment descriptor layout ──
 const SEG_ARRAY_OFFSET: i32 = 144;
@@ -81,6 +80,7 @@ pub struct Translator {
     pub native_count: u64,
     pub helper_count: u64,
     current_mode: CpuMode,
+    dispatch_loop_addr: u64,
     /// Per-opcode helper fallback counters: [opcode_map << 8 | opcode] → count.
     /// Primary opcodes: 0x0000..0x00FF, Secondary (0F): 0x0100..0x01FF.
     pub helper_opcode_counts: alloc::collections::BTreeMap<u16, u64>,
@@ -97,6 +97,7 @@ impl Translator {
             native_count: 0,
             helper_count: 0,
             current_mode: CpuMode::Real16,
+            dispatch_loop_addr: 0,
             helper_opcode_counts: alloc::collections::BTreeMap::new(),
         }
     }
@@ -111,12 +112,14 @@ impl Translator {
         inst_ptrs: &[*const DecodedInst],
         entry_phys: u64,
         mode: CpuMode,
+        dispatch_loop_addr: u64,
     ) -> CompiledBlock {
         self.current_mode = mode;
+        self.dispatch_loop_addr = dispatch_loop_addr;
         let mut emit = Emitter::new();
         let mut state = BlockState { flags_dirty: false };
 
-        self.emit_prologue(&mut emit);
+        // No prologue — the dispatcher already set up context registers.
 
         for (i, inst) in block.instructions.iter().enumerate() {
             if !self.try_translate_native(&mut emit, inst, &mut state) {
@@ -135,9 +138,10 @@ impl Translator {
             }
         }
 
-        // Flush any remaining dirty flags before epilogue.
+        // Flush any remaining dirty flags, then jump back to dispatcher.
         self.flush_lazy_flags(&mut emit, &mut state);
-        self.emit_epilogue(&mut emit);
+        emit.xor_rr(OpSize::S32, Reg::Rax, Reg::Rax); // return JIT_OK (0)
+        self.emit_exit_to_dispatcher(&mut emit, dispatch_loop_addr);
 
         CompiledBlock {
             code: emit.finalize(),
@@ -150,45 +154,10 @@ impl Translator {
     // Prologue / Epilogue
     // ════════════════════════════════════════════════════════════════════
 
-    fn emit_prologue(&self, emit: &mut Emitter) {
-        emit.push(Reg::Rbx);
-        emit.push(Reg::R12);
-        emit.push(Reg::R13);
-        emit.push(Reg::R14);
-        emit.push(Reg::R15);
-        emit.push(Reg::Rbp);
-        emit.mov_rr(OpSize::S64, Reg::Rbp, Reg::Rsp);
-
-        // Save InterruptController* (5th arg = R8) at [RBP - 8].
-        emit.push(Reg::R8);
-
-        // Copy context pointers to callee-saved registers.
-        emit.mov_rr(OpSize::S64, CPU_PTR, Reg::Rdi);  // RBX = cpu
-        emit.mov_rr(OpSize::S64, MEM_PTR, Reg::Rsi);  // R12 = memory
-        emit.mov_rr(OpSize::S64, MMU_PTR, Reg::Rdx);  // R13 = mmu
-        emit.mov_rr(OpSize::S64, IO_PTR, Reg::Rcx);   // R14 = io
-
-        // Call jit_get_gpr_ptr(cpu) to get GPR base pointer.
-        emit.mov_rr(OpSize::S64, Reg::Rdi, CPU_PTR);
-        let helper = helpers::jit_get_gpr_ptr as *const () as usize as u64;
-        emit.call_abs(helper);
-        emit.mov_rr(OpSize::S64, GPR_BASE, Reg::Rax); // R15 = gpr base
-    }
-
-    fn emit_epilogue(&self, emit: &mut Emitter) {
-        emit.xor_rr(OpSize::S32, Reg::Rax, Reg::Rax); // return JIT_OK (0)
-        self.emit_restore_and_ret(emit);
-    }
-
-    fn emit_restore_and_ret(&self, emit: &mut Emitter) {
-        emit.mov_rr(OpSize::S64, Reg::Rsp, Reg::Rbp);
-        emit.pop(Reg::Rbp);
-        emit.pop(Reg::R15);
-        emit.pop(Reg::R14);
-        emit.pop(Reg::R13);
-        emit.pop(Reg::R12);
-        emit.pop(Reg::Rbx);
-        emit.ret();
+    /// Jump back to the dispatcher loop. Replaces the old restore-and-ret
+    /// sequence — blocks no longer have their own prologue/epilogue.
+    fn emit_exit_to_dispatcher(&self, emit: &mut Emitter, dispatch_loop_addr: u64) {
+        emit.jmp_abs(dispatch_loop_addr);
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -225,7 +194,7 @@ impl Translator {
         emit.mov_rr(OpSize::S64, Reg::Rdx, MEM_PTR);
         emit.mov_rr(OpSize::S64, Reg::Rcx, MMU_PTR);
         emit.mov_rr(OpSize::S64, Reg::R8, IO_PTR);
-        emit.mov_rm(OpSize::S64, TEMP1, Reg::Rbp, INTR_STACK_OFF); // R9 = interrupts
+        emit.mov_rr(OpSize::S64, Reg::R9, INTR_REG); // R9 = interrupts (RBP)
         let helper_addr = helpers::helper_execute_one as *const () as usize as u64;
         emit.call_abs(helper_addr);
 
@@ -234,7 +203,7 @@ impl Translator {
             // helper_execute_one already updated RIP.
             // Return JIT_EXIT_BLOCK so dispatcher re-enters at new RIP.
             emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-            self.emit_restore_and_ret(emit);
+            self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
         } else {
             // Non-control-flow: check if helper requested exit.
             let ok = emit.new_label();
@@ -242,7 +211,7 @@ impl Translator {
             emit.jcc_label(Cc::E, ok);
             // Exit block on error.
             emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-            self.emit_restore_and_ret(emit);
+            self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
             emit.bind_label(ok);
         }
     }
@@ -501,7 +470,7 @@ impl Translator {
                 emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
                 emit.jcc_label(Cc::Ne, ok);
                 emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-                self.emit_restore_and_ret(emit);
+                self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
                 emit.bind_label(ok);
             } else {
                 emit.pop(Reg::Rax); // discard linear
@@ -632,7 +601,7 @@ impl Translator {
                 emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
                 emit.jcc_label(Cc::Ne, ok);
                 emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-                self.emit_restore_and_ret(emit);
+                self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
                 emit.bind_label(ok);
             } else {
                 // CMP: no write-back, just clean up stack
@@ -761,7 +730,7 @@ impl Translator {
             emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
             emit.jcc_label(Cc::Ne, ok);
             emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-            self.emit_restore_and_ret(emit);
+            self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
             emit.bind_label(ok);
         }
 
@@ -827,7 +796,7 @@ impl Translator {
             emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
             emit.jcc_label(Cc::Ne, ok);
             emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-            self.emit_restore_and_ret(emit);
+            self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
             emit.bind_label(ok);
 
             self.emit_advance_rip(emit, inst.length);
@@ -1099,7 +1068,7 @@ impl Translator {
         emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
         emit.jcc_label(Cc::Ne, ok);
         emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-        self.emit_restore_and_ret(emit);
+        self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
         emit.bind_label(ok);
 
         self.emit_advance_rip(emit, inst.length);
@@ -1190,7 +1159,7 @@ impl Translator {
         emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
         emit.jcc_label(Cc::Ne, ok);
         emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-        self.emit_restore_and_ret(emit);
+        self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
         emit.bind_label(ok);
 
         let delta = inst.length as i64 + rel;
@@ -1322,7 +1291,7 @@ impl Translator {
             emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
             emit.jcc_label(Cc::Ne, ok);
             emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-            self.emit_restore_and_ret(emit);
+            self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
             emit.bind_label(ok);
             self.emit_advance_rip(emit, inst.length);
             true
@@ -1440,7 +1409,7 @@ impl Translator {
                 emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
                 emit.jcc_label(Cc::Ne, ok);
                 emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-                self.emit_restore_and_ret(emit);
+                self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
                 emit.bind_label(ok);
             } else {
                 // CMP: no write-back, just clean up stack
@@ -1527,7 +1496,7 @@ impl Translator {
                 emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
                 emit.jcc_label(Cc::Ne, ok);
                 emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-                self.emit_restore_and_ret(emit);
+                self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
                 emit.bind_label(ok);
             } else {
                 emit.pop(Reg::Rax); // discard linear
@@ -1632,7 +1601,7 @@ impl Translator {
         emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
         emit.jcc_label(Cc::Ne, ok);
         emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-        self.emit_restore_and_ret(emit);
+        self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
         emit.bind_label(ok);
         self.emit_advance_rip(emit, inst.length);
         true
@@ -1716,7 +1685,7 @@ impl Translator {
         emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
         emit.jcc_label(Cc::Ne, ok);
         emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-        self.emit_restore_and_ret(emit);
+        self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
         emit.bind_label(ok);
 
         self.emit_advance_rip(emit, inst.length);
@@ -1806,7 +1775,7 @@ impl Translator {
             emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
             emit.jcc_label(Cc::Ne, ok);
             emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-            self.emit_restore_and_ret(emit);
+            self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
             emit.bind_label(ok);
             self.emit_advance_rip(emit, inst.length);
             true
@@ -1841,7 +1810,7 @@ impl Translator {
         emit.jcc_label(Cc::E, ok);
         emit.mov_mi32(OpSize::S8, CPU_PTR, fault_offset, 0);
         emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
-        self.emit_restore_and_ret(emit);
+        self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
         emit.bind_label(ok);
     }
 
