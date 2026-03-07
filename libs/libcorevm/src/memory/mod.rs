@@ -350,6 +350,12 @@ impl GuestMemory {
         unsafe { &*self.mmio.get() }.bounds()
     }
 
+    /// Total RAM size in bytes.
+    #[inline(always)]
+    pub fn ram_size(&self) -> usize {
+        self.ram.size()
+    }
+
     /// Direct RAM pointer and size for fast-path access.
     #[inline(always)]
     pub fn ram_ptr(&self) -> (*const u8, usize) {

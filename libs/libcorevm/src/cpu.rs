@@ -1084,58 +1084,99 @@ impl Cpu {
         mmu: &mut Mmu,
         interrupts: &mut InterruptController,
     ) -> Result<()> {
-        // Fix up APIC page fault: if the guest page-faults on the Local APIC
-        // virtual address (0xFFFE0xxx) and paging is enabled with 2-level page
-        // tables, write the PTE to map VA 0xFFFE0000 → PA 0xFEE00000 (the APIC
-        // MMIO base). This handles the chicken-and-egg problem where Windows'
-        // HAL IRQL functions read the APIC TPR before the HAL has mapped it.
-        // Fix up APIC page fault: Windows HAL reads the APIC TPR at a fixed
-        // virtual address (typically 0xFFFE0080) before the HAL has mapped it,
-        // causing an infinite #PF recursion.  Detect this and write the PTE to
-        // map the APIC page, then re-execute the faulting instruction.
+        // Fix up MMIO page faults: Windows HAL accesses LAPIC and I/O APIC
+        // MMIO regions before the HAL's mapping code has run, causing infinite
+        // #PF recursion (MmAccessFault crashes because MmPfnDatabase is NULL).
+        // Detect these and write the PDE/PTE to create the mapping, then
+        // re-execute the faulting instruction.
         if let VmError::PageFault { address, .. } = error {
             let va = *address;
-            let apic_base = self.regs.read_msr(0x1B) & 0xFFFF_F000; // IA32_APIC_BASE
-            if apic_base != 0
-                && va >= 0xFFFE_0000 && va < 0xFFFE_1000
-                && self.mode == Mode::ProtectedMode
+            if self.mode == Mode::ProtectedMode
                 && (self.regs.cr0 & CR0_PG) != 0
                 && !mmu.pae
             {
-                let cr3 = self.regs.cr3 & 0xFFFF_F000;
-                let pde_idx = (va >> 22) & 0x3FF;
-                let pde_addr = cr3 + pde_idx * 4;
-                let pde = memory.read_u32(pde_addr).unwrap_or(0);
-                if pde & 1 != 0 {
-                    let pt_base = (pde as u64) & 0xFFFF_F000;
-                    let pte_idx = (va >> 12) & 0x3FF;
-                    let pte_addr = pt_base + pte_idx * 4;
-                    let pte = memory.read_u32(pte_addr).unwrap_or(0);
-                    if pte & 1 == 0 {
-                        // Map VA → APIC MMIO with write-through + cache-disable
-                        let new_pte = (apic_base as u32) | 0x1B; // P|RW|PWT|PCD
-                        memory.fast_write_u32(pte_addr, new_pte);
-                        mmu.flush_tlb();
-                        return Ok(());
+                // Determine if this VA should map to a known MMIO physical address.
+                let mmio_phys: Option<u64> = if va >= 0xFFFE_0000 && va < 0xFFFE_1000 {
+                    // Local APIC: VA 0xFFFE0xxx → APIC base from MSR
+                    let apic_base = self.regs.read_msr(0x1B) & 0xFFFF_F000;
+                    if apic_base != 0 { Some(apic_base) } else { None }
+                } else {
+                    None
+                };
+
+                if let Some(phys) = mmio_phys {
+                    let cr3 = self.regs.cr3 & 0xFFFF_F000;
+                    let pde_idx = (va >> 22) & 0x3FF;
+                    let pde_addr = cr3 + pde_idx * 4;
+                    let mut pde = memory.read_u32(pde_addr).unwrap_or(0);
+
+                    // If PDE is not present, allocate a page table page.
+                    if pde & 1 == 0 {
+                        // Use a scratch page from end of RAM for the page table.
+                        // Each PDE index gets its own page to avoid conflicts.
+                        let ram_size = memory.ram_size() as u64;
+                        let pt_page = (ram_size & 0xFFFF_F000) - 0x1000 * (1024 - pde_idx);
+                        if pt_page < ram_size {
+                            // Zero the page table page
+                            for i in 0..1024 {
+                                memory.fast_write_u32(pt_page + i * 4, 0);
+                            }
+                            // Write PDE: present + read/write + user
+                            pde = (pt_page as u32) | 0x23;
+                            memory.fast_write_u32(pde_addr, pde);
+                        }
+                    }
+
+                    if pde & 1 != 0 {
+                        let pt_base = (pde as u64) & 0xFFFF_F000;
+                        let pte_idx = (va >> 12) & 0x3FF;
+                        let pte_addr = pt_base + pte_idx * 4;
+                        let pte = memory.read_u32(pte_addr).unwrap_or(0);
+                        if pte & 1 == 0 {
+                            // Map VA → MMIO with P|RW|PWT|PCD
+                            let new_pte = (phys as u32) | 0x1B;
+                            memory.fast_write_u32(pte_addr, new_pte);
+                            mmu.flush_tlb();
+                            return Ok(());
+                        }
                     }
                 }
             }
         }
 
-        // Trace #PF on high VAs (MMIO area) to find I/O APIC mapping attempts
+
+
+        // Trace the first #PF on kernel MMIO VAs + preceding #PFs
         #[cfg(feature = "host_test")]
         if let VmError::PageFault { address, error_code } = error {
             let va = *address;
-            if self.mode == Mode::ProtectedMode && va >= 0xFEC0_0000 && va < 0xFFFF_0000 {
-                static PF_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                let c = PF_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                if c < 30 {
+            if self.instruction_count > 1_000_000_000 && self.mode == Mode::ProtectedMode {
+                static PF_SEQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                let c = PF_SEQ.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                if c < 20 {
+                    // Full register + code dump via PT walk
                     let cr3 = self.regs.cr3 & 0xFFFF_F000;
-                    let va32 = va as u32;
-                    let pde_idx = va32 >> 22;
-                    let pde = memory.read_u32(cr3 + (pde_idx * 4) as u64).unwrap_or(0);
-                    eprintln!("[corevm] #PF(MMIO) #{} VA={:#010x} err={:#x} IP={:#010x} ESP={:#010x} PDE[{}]={:#010x} ic={}",
-                        c, va, error_code, self.regs.rip, self.regs.sp(), pde_idx, pde, self.instruction_count);
+                    let rip32 = self.regs.rip as u32;
+                    let pde = memory.read_u32(cr3 + ((rip32 >> 22) * 4) as u64).unwrap_or(0);
+                    let mut code_str = alloc::string::String::new();
+                    if pde & 1 != 0 {
+                        let pt = (pde & 0xFFFFF000) as u64;
+                        let pte = memory.read_u32(pt + (((rip32 >> 12) & 0x3FF) * 4) as u64).unwrap_or(0);
+                        if pte & 1 != 0 {
+                            let phys = ((pte & 0xFFFFF000) as u64) | ((rip32 & 0xFFF) as u64);
+                            for i in 0..16u64 {
+                                let b = memory.read_u8(phys + i).unwrap_or(0xFF);
+                                use core::fmt::Write;
+                                let _ = write!(code_str, "{:02x} ", b);
+                            }
+                        }
+                    }
+                    eprintln!("[corevm] #PF #{} VA={:#010x} err={:#x} IP={:#010x} ESP={:#010x} EAX={:#010x} EBX={:#010x} ECX={:#010x} EDX={:#010x} ESI={:#010x} EDI={:#010x} EBP={:#010x} code=[{}]",
+                        c, va, error_code, self.regs.rip, self.regs.sp(),
+                        self.regs.gpr[0] as u32, self.regs.gpr[3] as u32,
+                        self.regs.gpr[1] as u32, self.regs.gpr[2] as u32,
+                        self.regs.gpr[6] as u32, self.regs.gpr[7] as u32,
+                        self.regs.gpr[5] as u32, code_str);
                 }
             }
         }
