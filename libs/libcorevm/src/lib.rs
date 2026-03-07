@@ -91,6 +91,13 @@ pub use flags::OperandSize;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ptr;
+#[cfg(feature = "host_test")]
+use core::sync::atomic::{AtomicU32, Ordering};
+
+#[cfg(feature = "host_test")]
+static IRQ_TRACE_BUDGET: AtomicU32 = AtomicU32::new(96);
+#[cfg(feature = "host_test")]
+static LAPIC_RUN_TRACE_BUDGET: AtomicU32 = AtomicU32::new(32);
 
 // ── VmEngine (unchanged convenience wrapper) ──
 
@@ -298,6 +305,7 @@ struct VmInstance {
     // Null when the corresponding device has not been set up.
     pic_ptr: *mut devices::pic::PicPair,
     pit_ptr: *mut devices::pit::Pit,
+    cmos_ptr: *mut devices::cmos::Cmos,
     acpi_pm_ptr: *mut devices::acpi::AcpiPm,
     ps2_ptr: *mut devices::ps2::Ps2Controller,
     serial_ptr: *mut devices::serial::Serial,
@@ -326,6 +334,7 @@ impl Drop for VmInstance {
         unsafe {
             if !self.pic_ptr.is_null() { let _ = Box::from_raw(self.pic_ptr); }
             if !self.pit_ptr.is_null() { let _ = Box::from_raw(self.pit_ptr); }
+            if !self.cmos_ptr.is_null() { let _ = Box::from_raw(self.cmos_ptr); }
             if !self.acpi_pm_ptr.is_null() { let _ = Box::from_raw(self.acpi_pm_ptr); }
             if !self.ps2_ptr.is_null() { let _ = Box::from_raw(self.ps2_ptr); }
             if !self.serial_ptr.is_null() { let _ = Box::from_raw(self.serial_ptr); }
@@ -350,6 +359,90 @@ impl Drop for VmInstance {
 #[inline]
 unsafe fn vm_from_handle(handle: u64) -> &'static mut VmInstance {
     &mut *(handle as *mut VmInstance)
+}
+
+#[derive(Clone, Copy)]
+struct ExternalIrqContext {
+    pic_ptr: *mut devices::pic::PicPair,
+    lapic_ptr: *mut devices::lapic::Lapic,
+    ioapic_ptr: *mut devices::ioapic::IoApic,
+}
+
+static mut EXTERNAL_IRQ_CONTEXT: ExternalIrqContext = ExternalIrqContext {
+    pic_ptr: ptr::null_mut(),
+    lapic_ptr: ptr::null_mut(),
+    ioapic_ptr: ptr::null_mut(),
+};
+
+#[inline]
+fn drain_lapic_eois_raw(
+    lapic_ptr: *mut devices::lapic::Lapic,
+    ioapic_ptr: *mut devices::ioapic::IoApic,
+) {
+    if lapic_ptr.is_null() || ioapic_ptr.is_null() {
+        return;
+    }
+    let lapic = unsafe { &mut *lapic_ptr };
+    let ioapic = unsafe { &mut *ioapic_ptr };
+    while let Some(vector) = lapic.take_eoi_vector() {
+        ioapic.eoi_vector(vector);
+    }
+}
+
+#[inline]
+fn drain_lapic_eois(vm: &mut VmInstance) {
+    drain_lapic_eois_raw(vm.lapic_ptr, vm.ioapic_ptr);
+}
+
+#[inline]
+fn set_external_irq_context(vm: &VmInstance) {
+    unsafe {
+        EXTERNAL_IRQ_CONTEXT = ExternalIrqContext {
+            pic_ptr: vm.pic_ptr,
+            lapic_ptr: vm.lapic_ptr,
+            ioapic_ptr: vm.ioapic_ptr,
+        };
+    }
+}
+
+#[inline]
+fn clear_external_irq_context() {
+    unsafe {
+        EXTERNAL_IRQ_CONTEXT = ExternalIrqContext {
+            pic_ptr: ptr::null_mut(),
+            lapic_ptr: ptr::null_mut(),
+            ioapic_ptr: ptr::null_mut(),
+        };
+    }
+}
+
+pub(crate) fn poll_external_irqs(
+    interrupts: &mut InterruptController,
+    rflags: u64,
+) {
+    let ctx = unsafe { EXTERNAL_IRQ_CONTEXT };
+    drain_lapic_eois_raw(ctx.lapic_ptr, ctx.ioapic_ptr);
+
+    if interrupts.interrupt_shadow || (rflags & flags::IF) == 0 {
+        return;
+    }
+
+    if !ctx.lapic_ptr.is_null() && interrupts.lowest_pending_vector().is_none() {
+        let lapic = unsafe { &mut *ctx.lapic_ptr };
+        if let Some(vector) = lapic.next_deliverable_vector() {
+            lapic.accept_vector(vector);
+            interrupts.raise_irq(vector);
+        }
+    }
+
+    if !ctx.pic_ptr.is_null() {
+        let pic = unsafe { &mut *ctx.pic_ptr };
+        if let Some(vector) = pic.get_interrupt_vector() {
+            let ack_irq = pic.irq_for_vector(vector).unwrap_or(0);
+            pic.acknowledge(ack_irq);
+            interrupts.raise_irq(vector);
+        }
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -383,6 +476,7 @@ pub extern "C" fn corevm_create_ex(ram_size_mb: u32, vcpu_count: u32) -> u64 {
         last_error_rip: 0,
         pic_ptr: ptr::null_mut(),
         pit_ptr: ptr::null_mut(),
+        cmos_ptr: ptr::null_mut(),
         acpi_pm_ptr: ptr::null_mut(),
         ps2_ptr: ptr::null_mut(),
         serial_ptr: ptr::null_mut(),
@@ -636,6 +730,7 @@ pub extern "C" fn corevm_get_vcpu_count(handle: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
     let vm = unsafe { vm_from_handle(handle) };
+    set_external_irq_context(vm);
     const RUN_SLICE_INSTS: u64 = 4096;
 
     let mut exit = ExitReason::InstructionLimit;
@@ -647,27 +742,58 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
     #[cfg(feature = "host_test")]
     let mut pit_tsc_accum: u64 = 0;
     #[cfg(feature = "host_test")]
-    let mut lapic_tsc_accum: u64 = 0;
+    let mut cmos_tsc_accum: u64 = 0;
 
     // Instruction-based fallback for no_std (anyOS kernel).
     #[cfg(not(feature = "host_test"))]
     let mut pit_inst_accum: u64 = 0;
     #[cfg(not(feature = "host_test"))]
+    let mut cmos_inst_accum: u64 = 0;
+    #[cfg(not(feature = "host_test"))]
     const PIT_INSTS_PER_TICK: u64 = 64;
+    #[cfg(not(feature = "host_test"))]
+    const CMOS_INSTS_PER_TICK: u64 = 762; // ~25 MIPS / 32.768 kHz
 
     loop {
+        drain_lapic_eois(vm);
+        route_deliverable_lapic_irq(vm);
         route_deliverable_pic_irq(vm);
 
-        let slice = if max_instructions == 0 {
+        let mut slice = if max_instructions == 0 {
             max_instructions
         } else {
             remaining.min(RUN_SLICE_INSTS)
         };
+        if slice > 1
+            && (pic_has_latched_irq(vm) || lapic_has_latched_irq(vm))
+            && vm.engine.interrupts.lowest_pending_vector().is_none()
+            && ((vm.engine.cpu.regs.rflags & flags::IF) == 0
+                || vm.engine.interrupts.interrupt_shadow)
+        {
+            // Real-mode BIOS code often enables IF only briefly while polling
+            // the BDA timer. Re-check PIC routing at instruction granularity
+            // while a legacy IRQ is latched so those short IF windows are not
+            // missed.
+            slice = 1;
+        }
+        if slice > 1024
+            && (lapic_timer_running(vm) || cmos_periodic_irq_armed(vm) || pit_timer_running(vm))
+            && vm.engine.interrupts.lowest_pending_vector().is_none()
+            && ((vm.engine.cpu.regs.rflags & flags::IF) == 0
+                || vm.engine.interrupts.interrupt_shadow)
+        {
+            // Modern guests open very short IF windows while spinning. Advance
+            // timer-backed IRQ sources frequently enough that those windows are
+            // not skipped by coarse host slices in the interpreter.
+            slice = 1024;
+        }
 
         let before_ic = vm.engine.instruction_count();
         exit = vm.engine.run(slice);
         let after_ic = vm.engine.instruction_count();
         let ran = after_ic.saturating_sub(before_ic);
+
+        drain_lapic_eois(vm);
 
         #[cfg(feature = "host_test")]
         {
@@ -679,27 +805,29 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
             let lapic = unsafe { &mut *vm.lapic_ptr };
             #[cfg(feature = "host_test")]
             {
-                // Wall-clock based: convert TSC elapsed to APIC bus ticks.
-                // APIC bus frequency ~100 MHz.
-                const APIC_BUS_FREQ: u64 = 100_000_000;
-                let now = rdtsc();
-                let elapsed_tsc = now.wrapping_sub(timer_t0).saturating_sub(lapic_tsc_accum);
-                let tsc_freq = vm.tsc_freq;
-                if tsc_freq > 0 {
-                    let bus_ticks = (elapsed_tsc as u128 * APIC_BUS_FREQ as u128 / tsc_freq as u128) as u64;
-                    if bus_ticks > 0 {
-                        lapic_tsc_accum = lapic_tsc_accum.wrapping_add(
-                            (bus_ticks as u128 * tsc_freq as u128 / APIC_BUS_FREQ as u128) as u64
+                // In interpreter mode, tie LAPIC time to emulated progress.
+                // This keeps timer IRQ generation and current_count consistent.
+                let bus_ticks = ran.saturating_mul(4);
+                if LAPIC_RUN_TRACE_BUDGET
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1))
+                    .is_ok()
+                {
+                    let (_svr, lvt_timer, init_count, cur_count, _div) = lapic.diag_state();
+                    if init_count != 0 || (lvt_timer & 0xFF) == 0xFD {
+                        eprintln!(
+                            "[lapic-run] ic={} ran={} bus_ticks={} lvt={:08X} init={:08X} cur={:08X}",
+                            vm.engine.instruction_count(),
+                            ran,
+                            bus_ticks,
+                            lvt_timer,
+                            init_count,
+                            cur_count
                         );
-                        if let Some(vector) = lapic.advance(bus_ticks) {
-                            vm.engine.interrupts.raise_irq(vector);
-                            static LAPIC_FIRES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                            let f = LAPIC_FIRES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if f < 10 {
-                                eprintln!("[lapic-fire] vec={} bus_ticks={} ic={}", vector, bus_ticks, after_ic);
-                            }
-                        }
                     }
+                }
+                if let Some(vector) = lapic.advance(bus_ticks) {
+                    lapic.raise_vector(vector, false);
+                    route_deliverable_lapic_irq(vm);
                 }
             }
             #[cfg(not(feature = "host_test"))]
@@ -708,7 +836,8 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
                 // Scale: bus_ticks = instructions * 4 (rough 100M/25M ratio).
                 let bus_ticks = ran * 4;
                 if let Some(vector) = lapic.advance(bus_ticks) {
-                    vm.engine.interrupts.raise_irq(vector);
+                    lapic.raise_vector(vector, false);
+                    route_deliverable_lapic_irq(vm);
                 }
             }
         }
@@ -732,11 +861,6 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
                         let fires = unsafe { (*vm.pit_ptr).advance(pit_ticks) };
                         if fires > 0 {
                             inject_irq_line(vm, 0);
-                            static PIT_FIRES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                            let f = PIT_FIRES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if f < 5 {
-                                eprintln!("[pit-fire] fires={} pit_ticks={} ic={}", f, pit_ticks, after_ic);
-                            }
                         }
                     }
                 }
@@ -750,6 +874,40 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
                     let fires = unsafe { (*vm.pit_ptr).advance(pit_ticks) };
                     if fires > 0 {
                         inject_irq_line(vm, 0);
+                    }
+                }
+            }
+        }
+
+        // Advance RTC periodic source (IRQ8) for guests that use CMOS periodic interrupts.
+        if ran > 0 && !vm.cmos_ptr.is_null() {
+            #[cfg(feature = "host_test")]
+            {
+                let now = rdtsc();
+                let elapsed_tsc = now.wrapping_sub(timer_t0).saturating_sub(cmos_tsc_accum);
+                let tsc_freq = vm.tsc_freq;
+                if tsc_freq > 0 {
+                    let rtc_ticks = (elapsed_tsc as u128 * 32_768u128 / tsc_freq as u128) as u64;
+                    if rtc_ticks > 0 {
+                        cmos_tsc_accum = cmos_tsc_accum.wrapping_add(
+                            (rtc_ticks as u128 * tsc_freq as u128 / 32_768u128) as u64
+                        );
+                        let fired = unsafe { (*vm.cmos_ptr).advance(rtc_ticks) };
+                        if fired {
+                            inject_irq_line(vm, 8);
+                        }
+                    }
+                }
+            }
+            #[cfg(not(feature = "host_test"))]
+            {
+                cmos_inst_accum = cmos_inst_accum.saturating_add(ran);
+                let rtc_ticks = cmos_inst_accum / CMOS_INSTS_PER_TICK;
+                cmos_inst_accum %= CMOS_INSTS_PER_TICK;
+                if rtc_ticks > 0 {
+                    let fired = unsafe { (*vm.cmos_ptr).advance(rtc_ticks) };
+                    if fired {
+                        inject_irq_line(vm, 8);
                     }
                 }
             }
@@ -783,6 +941,8 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
             _ => break,
         }
     }
+
+    clear_external_irq_context();
 
     match exit {
         ExitReason::Halted => {
@@ -1201,8 +1361,9 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
 
     // CMOS — RTC and NVRAM. Pass actual guest RAM size.
     let ram_bytes = vm.engine.memory.ram().size();
-    let cmos = Box::new(devices::cmos::Cmos::new(ram_bytes));
-    vm.engine.io.register(0x70, 2, cmos);
+    let cmos = Box::into_raw(Box::new(devices::cmos::Cmos::new(ram_bytes)));
+    vm.cmos_ptr = cmos;
+    vm.engine.io.register(0x70, 2, Box::new(IoProxy { ptr: cmos }));
 
     // APM control/status — SeaBIOS uses 0xB2/0xB3 for SMI handshakes.
     let apm = Box::new(devices::apm::ApmControl::new());
@@ -1226,6 +1387,14 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     // Bochs VBE ports (0x1CE index, 0x1CF data) — used by VGA BIOS to detect hardware.
     vm.engine.io.register(0x1CE, 2, Box::new(IoProxy { ptr: svga }));
     vm.engine.memory.add_mmio(0xA0000, 0x20000, Box::new(MmioProxy { ptr: svga }));
+    // SeaVGABIOS reports the linear framebuffer at 0xE0000000. Map that
+    // aperture as MMIO as well so protected-mode guests can use the same
+    // LFB address the VGA BIOS advertises.
+    vm.engine.memory.add_mmio(0xE0000000, 0x01000000, Box::new(MmioProxy { ptr: svga }));
+    // SeaBIOS still tends to allocate the PCI BAR for stdvga at 0xFD000000.
+    // Keep that aperture live as an alias too so VBE and PCI paths are both
+    // backed by the same framebuffer.
+    vm.engine.memory.add_mmio(0xFD000000, 0x01000000, Box::new(MmioProxy { ptr: svga }));
 
     // PCI bus with Q35 (MCH + ICH9) machine devices.
     let mut bus = devices::bus::PciBus::new();
@@ -1292,12 +1461,11 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
         0x2920,  // Device ID: ICH9 SATA/IDE compatibility function
         0x01,    // Class: Mass storage
         0x01,    // Subclass: IDE controller
-        0x80,    // Prog IF: bus-master IDE, compatibility mode channels
+        0x00,    // Prog IF: compatibility-mode IDE only; no bus mastering until BMIDE exists
     );
     ide_pci.bus = 0;
     ide_pci.device = 31;
     ide_pci.function = 1;
-    ide_pci.set_bar(4, 0xC000, 0x10, false);
     ide_pci.set_interrupt(14, 1);
     ide_pci.set_subsystem(0x1AF4, 0x1100);
     bus.add_device(ide_pci);
@@ -1313,8 +1481,9 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     vga_pci.bus = 0;
     vga_pci.device = 2;
     vga_pci.function = 0;
-    // BAR0: framebuffer at 0xFD000000 (256 MiB, matches typical VGA).
-    vga_pci.set_bar(0, 0xFD000000, 0x01000000, true); // 16 MiB MMIO
+    // BAR0: linear framebuffer aperture. Keep this consistent with the
+    // Bochs/SeaVGABIOS LFB address so guests do not see conflicting values.
+    vga_pci.set_bar(0, 0xE0000000, 0x01000000, true); // 16 MiB MMIO
     // BAR2: Bochs VBE MMIO (optional, not strictly needed).
     vga_pci.set_bar(2, 0xFEBE0000, 0x1000, true); // 4 KiB
     // Expansion ROM base address (offset 0x30): 0xC0000 with enable bit.
@@ -1815,25 +1984,77 @@ pub extern "C" fn corevm_pic_raise_irq(handle: u64, irq: u8) {
 /// from 8259 PIC to IO-APIC during early boot. Deliverable vectors from either
 /// path are queued into the CPU interrupt controller.
 fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
-    // Legacy 8259 PIC path.
-    if !vm.pic_ptr.is_null() {
-        let pic = unsafe { &mut *vm.pic_ptr };
-        pic.raise_irq(irq);
-        // Immediately check if the PIC has a deliverable vector and queue it.
-        // The CPU run loop will deliver it when IF=1 (via pending_interrupt).
-        if let Some(vector) = pic.get_interrupt_vector() {
-            let ack_irq = pic.irq_for_vector(vector).unwrap_or(irq);
-            pic.acknowledge(ack_irq);
-            vm.engine.interrupts.raise_irq(vector);
+    // Prefer IO-APIC routing once the guest has actively programmed a redir
+    // entry for this line. Delivering the same source through both PIC and
+    // IO-APIC produces duplicate IRQs during APIC mode and confuses Windows.
+    let mut ioapic_routed = false;
+    if !vm.ioapic_ptr.is_null() {
+        let ioapic = unsafe { &mut *vm.ioapic_ptr };
+        if let Some((vector, level_triggered)) = ioapic.route_irq(irq) {
+            ioapic_routed = true;
+            #[cfg(feature = "host_test")]
+            if irq == 8 && IRQ_TRACE_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok() {
+                eprintln!(
+                    "[irq-route] irq={} via=ioapic vec={:02X} level={} ic={}",
+                    irq,
+                    vector,
+                    level_triggered as u8,
+                    vm.engine.instruction_count()
+                );
+            }
+            if !vm.lapic_ptr.is_null() {
+                unsafe { (*vm.lapic_ptr).raise_vector(vector, level_triggered) };
+                route_deliverable_lapic_irq(vm);
+            } else {
+                vm.engine.interrupts.raise_irq(vector);
+            }
         }
     }
 
-    // IO-APIC path (single-vCPU fixed-delivery subset).
-    if !vm.ioapic_ptr.is_null() {
-        let ioapic = unsafe { &mut *vm.ioapic_ptr };
-        if let Some(vector) = ioapic.route_irq(irq) {
-            vm.engine.interrupts.raise_irq(vector);
+    // Legacy 8259 PIC path.
+    if !ioapic_routed && !vm.pic_ptr.is_null() {
+        let pic = unsafe { &mut *vm.pic_ptr };
+        pic.raise_irq(irq);
+        #[cfg(feature = "host_test")]
+        if irq == 8 && IRQ_TRACE_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok() {
+            eprintln!(
+                "[irq-route] irq={} via=pic ic={}",
+                irq,
+                vm.engine.instruction_count()
+            );
         }
+        // Leave the request latched in the PIC until it is actually
+        // deliverable; otherwise IRQ0 is lost whenever the guest keeps IF=0.
+        route_deliverable_pic_irq(vm);
+    }
+}
+
+fn route_deliverable_lapic_irq(vm: &mut VmInstance) {
+    if vm.lapic_ptr.is_null() {
+        return;
+    }
+    if vm.engine.interrupts.lowest_pending_vector().is_some() {
+        return;
+    }
+    if vm.engine.interrupts.interrupt_shadow {
+        return;
+    }
+    if (vm.engine.cpu.regs.rflags & flags::IF) == 0 {
+        return;
+    }
+
+    let lapic = unsafe { &mut *vm.lapic_ptr };
+    if let Some(vector) = lapic.next_deliverable_vector() {
+        lapic.accept_vector(vector);
+        #[cfg(feature = "host_test")]
+        if vector >= 0xF0 && IRQ_TRACE_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok() {
+            eprintln!(
+                "[irq-deliver] via=lapic vec={:02X} ic={}",
+                vector,
+                vm.engine.instruction_count()
+            );
+        }
+        vm.engine.interrupts.raise_irq(vector);
     }
 }
 
@@ -1852,7 +2073,55 @@ fn route_deliverable_pic_irq(vm: &mut VmInstance) {
     if let Some(vector) = pic.get_interrupt_vector() {
         let ack_irq = pic.irq_for_vector(vector).unwrap_or(0);
         pic.acknowledge(ack_irq);
+        #[cfg(feature = "host_test")]
+        if ack_irq == 8 && IRQ_TRACE_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok() {
+            eprintln!(
+                "[irq-deliver] via=pic irq={} vec={:02X} ic={}",
+                ack_irq,
+                vector,
+                vm.engine.instruction_count()
+            );
+        }
         vm.engine.interrupts.raise_irq(vector);
+    }
+}
+
+fn pic_has_latched_irq(vm: &VmInstance) -> bool {
+    if vm.pic_ptr.is_null() {
+        return false;
+    }
+    let pic = unsafe { &*vm.pic_ptr };
+    (pic.master.irr & !pic.master.imr) != 0 || (pic.slave.irr & !pic.slave.imr) != 0
+}
+
+fn lapic_has_latched_irq(vm: &VmInstance) -> bool {
+    if vm.lapic_ptr.is_null() {
+        return false;
+    }
+    unsafe { (*vm.lapic_ptr).has_pending_vector() }
+}
+
+fn lapic_timer_running(vm: &VmInstance) -> bool {
+    if vm.lapic_ptr.is_null() {
+        return false;
+    }
+    unsafe { (*vm.lapic_ptr).timer_running() }
+}
+
+fn cmos_periodic_irq_armed(vm: &VmInstance) -> bool {
+    if vm.cmos_ptr.is_null() {
+        return false;
+    }
+    unsafe { (*vm.cmos_ptr).periodic_irq_armed() }
+}
+
+fn pit_timer_running(vm: &VmInstance) -> bool {
+    if vm.pit_ptr.is_null() || vm.pit_is_externally_clocked {
+        return false;
+    }
+    unsafe {
+        let pit = &*vm.pit_ptr;
+        pit.channels[0].enabled && pit.channels[0].count != 0
     }
 }
 
@@ -1927,12 +2196,7 @@ pub extern "C" fn corevm_lapic_diag_state(
         return 0;
     }
     let lapic = unsafe { &mut *vm.lapic_ptr };
-    use crate::memory::mmio::MmioHandler;
-    let svr = lapic.read(0x0F0, 4).unwrap_or(0) as u32;
-    let lvt_timer = lapic.read(0x320, 4).unwrap_or(0) as u32;
-    let init = lapic.read(0x380, 4).unwrap_or(0) as u32;
-    let cur = lapic.read(0x390, 4).unwrap_or(0) as u32;
-    let div = lapic.read(0x3E0, 4).unwrap_or(0) as u32;
+    let (svr, lvt_timer, init, cur, div) = lapic.diag_state();
     if !init_count_out.is_null() {
         unsafe { *init_count_out = init; }
     }

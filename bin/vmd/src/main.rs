@@ -64,6 +64,7 @@ const E1000_MMIO_BASE: u64 = 0xD000_0000;
 /// batches — enough for the PIT timer to fire at least once (needs ~55
 /// batches at 1193 ticks/batch for the 65536-tick period).
 const BATCH_SIZE: u64 = 50_000;
+const IDE_IRQ_POLL_QUANTUM: u64 = 1_024;
 
 /// SHM state constants (written to offset 16).
 const STATE_STOPPED: u32 = 0;
@@ -789,8 +790,23 @@ fn run_vm_batch() -> bool {
         _ => return false,
     };
 
-    // Execute instructions.
-    let exit = inst.handle.run(BATCH_SIZE);
+    // Poll IDE IRQs within the frontend batch so PIO/ATAPI completions are
+    // visible to the guest promptly instead of after tens of thousands of
+    // instructions.
+    let mut remaining = BATCH_SIZE;
+    let mut exit = ExitReason::InstructionLimit;
+    while remaining > 0 {
+        let chunk = core::cmp::min(remaining, IDE_IRQ_POLL_QUANTUM);
+        exit = inst.handle.run(chunk);
+        if inst.handle.ide_irq_raised() {
+            inst.handle.pic_raise_irq(14);
+            inst.handle.ide_clear_irq();
+        }
+        if !matches!(exit, ExitReason::InstructionLimit) {
+            break;
+        }
+        remaining -= chunk;
+    }
 
     match exit {
         ExitReason::Halted => {

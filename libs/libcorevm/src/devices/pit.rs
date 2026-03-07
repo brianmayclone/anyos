@@ -16,6 +16,20 @@
 
 use crate::error::Result;
 use crate::io::IoHandler;
+#[cfg(feature = "host_test")]
+use core::sync::atomic::{AtomicU32, Ordering};
+
+#[cfg(feature = "host_test")]
+static PIT_LOG_BUDGET: AtomicU32 = AtomicU32::new(32);
+
+#[cfg(feature = "host_test")]
+fn pit_log(args: core::fmt::Arguments<'_>) {
+    if PIT_LOG_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+        (n > 0).then_some(n - 1)
+    }).is_ok() {
+        eprintln!("[pit] {args}");
+    }
+}
 
 /// State of a single PIT counter channel.
 #[derive(Debug)]
@@ -267,7 +281,18 @@ impl IoHandler for Pit {
     fn write(&mut self, port: u16, _size: u8, val: u32) -> Result<()> {
         let byte = val as u8;
         match port {
-            0x40 => self.channels[0].write_count(byte),
+            0x40 => {
+                self.channels[0].write_count(byte);
+                #[cfg(feature = "host_test")]
+                pit_log(format_args!(
+                    "ch0 write data={:#04x} count={:#06x} cur={:#06x} mode={} access={}",
+                    byte,
+                    self.channels[0].count,
+                    self.channels[0].current,
+                    self.channels[0].mode,
+                    self.channels[0].access_mode
+                ));
+            }
             0x41 => self.channels[1].write_count(byte),
             0x42 => self.channels[2].write_count(byte),
             0x43 => {
@@ -297,6 +322,16 @@ impl IoHandler for Pit {
                     ch.write_hi = false;
                     ch.read_hi = false;
                     ch.latched = false;
+                    #[cfg(feature = "host_test")]
+                    if channel_idx == 0 {
+                        pit_log(format_args!(
+                            "ch0 control={:#04x} mode={} access={} bcd={}",
+                            byte,
+                            ch.mode,
+                            ch.access_mode,
+                            ch.bcd as u8
+                        ));
+                    }
                 }
             }
             _ => {}

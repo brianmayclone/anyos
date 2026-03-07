@@ -24,6 +24,20 @@
 
 use crate::error::Result;
 use crate::io::IoHandler;
+#[cfg(feature = "host_test")]
+use core::sync::atomic::{AtomicU32, Ordering};
+
+#[cfg(feature = "host_test")]
+static CMOS_LOG_BUDGET: AtomicU32 = AtomicU32::new(32);
+
+#[cfg(feature = "host_test")]
+fn cmos_log(args: core::fmt::Arguments<'_>) {
+    if CMOS_LOG_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+        (n > 0).then_some(n - 1)
+    }).is_ok() {
+        eprintln!("[cmos] {args}");
+    }
+}
 
 /// CMOS RTC and NVRAM controller.
 #[derive(Debug)]
@@ -38,6 +52,10 @@ pub struct Cmos {
     /// Incremented on each read of status register A; UIP bit toggles
     /// to simulate the once-per-second update cycle.
     uip_counter: u32,
+    /// Accumulated 32.768 kHz RTC base ticks toward the next periodic event.
+    periodic_tick_credit: u64,
+    /// Whether IRQF is currently asserted until status register C is read.
+    irq_latched: bool,
 }
 
 impl Cmos {
@@ -102,7 +120,61 @@ impl Cmos {
             data,
             nmi_disabled: false,
             uip_counter: 0,
+            periodic_tick_credit: 0,
+            irq_latched: false,
         }
+    }
+
+    fn periodic_rate_select(&self) -> u8 {
+        self.data[0x0A] & 0x0F
+    }
+
+    fn periodic_interval_ticks(&self) -> Option<u64> {
+        let rate = self.periodic_rate_select();
+        if !(3..=15).contains(&rate) {
+            return None;
+        }
+        Some(1u64 << (rate - 1))
+    }
+
+    fn periodic_irq_enabled(&self) -> bool {
+        (self.data[0x0B] & 0x40) != 0
+    }
+
+    /// Whether RTC periodic mode is currently configured and can raise IRQ8.
+    pub fn periodic_irq_armed(&self) -> bool {
+        self.periodic_irq_enabled() && self.periodic_interval_ticks().is_some()
+    }
+
+    /// Advance the RTC base clock by `ticks_32768` ticks.
+    ///
+    /// Returns `true` when a new IRQ8 edge should be raised.
+    pub fn advance(&mut self, ticks_32768: u64) -> bool {
+        let Some(interval) = self.periodic_interval_ticks() else {
+            return false;
+        };
+        self.periodic_tick_credit = self.periodic_tick_credit.saturating_add(ticks_32768);
+        if self.periodic_tick_credit < interval {
+            return false;
+        }
+
+        self.periodic_tick_credit %= interval;
+        if !self.periodic_irq_enabled() {
+            return false;
+        }
+
+        self.data[0x0C] |= 0x40 | 0x80; // PF | IRQF
+        if self.irq_latched {
+            return false;
+        }
+        self.irq_latched = true;
+        #[cfg(feature = "host_test")]
+        cmos_log(format_args!(
+            "periodic irq rate_sel={:X} statusC={:02X}",
+            self.periodic_rate_select(),
+            self.data[0x0C]
+        ));
+        true
     }
 }
 
@@ -156,6 +228,7 @@ impl IoHandler for Cmos {
                 // Reading status register C clears all interrupt flags.
                 if idx == 0x0C {
                     self.data[0x0C] = 0x00;
+                    self.irq_latched = false;
                 }
                 v
             }
@@ -182,6 +255,10 @@ impl IoHandler for Cmos {
                 let idx = (self.index & 0x7F) as usize;
                 // Status register C (0x0C) and D (0x0D) are read-only.
                 if idx != 0x0C && idx != 0x0D {
+                    #[cfg(feature = "host_test")]
+                    if idx == 0x0A || idx == 0x0B {
+                        cmos_log(format_args!("write reg {:02X} = {:02X}", idx, byte));
+                    }
                     self.data[idx] = byte;
                 }
             }

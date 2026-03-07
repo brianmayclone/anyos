@@ -16,20 +16,25 @@ use crate::syscall;
 #[cfg(feature = "host_test")]
 use core::sync::atomic::{AtomicU32, Ordering};
 
-/// Log a line to the serial console for IDE debugging (disabled for performance).
-#[cfg(feature = "host_test")]
-static IDE_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
-
 macro_rules! ide_log {
     ($($arg:tt)*) => {{
         #[cfg(feature = "host_test")]
         {
-            if IDE_TRACE_COUNT.fetch_add(1, Ordering::Relaxed) < 256 {
-                println!("[ide] {}", format_args!($($arg)*));
+            if IDE_LOG_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                (n > 0).then_some(n - 1)
+            }).is_ok() {
+                eprintln!("[ide] {}", format_args!($($arg)*));
             }
+        }
+        #[cfg(not(feature = "host_test"))]
+        {
+            let _ = format_args!($($arg)*);
         }
     }};
 }
+
+#[cfg(feature = "host_test")]
+static IDE_LOG_BUDGET: AtomicU32 = AtomicU32::new(256);
 
 // ── ATA status register bits ──────────────────────────────────────────────
 
@@ -1130,14 +1135,20 @@ impl IoHandler for Ide {
                 }
             }
             0x1F6 => {
+                let prev_drive = self.selected_drive();
                 self.drive_head = v;
                 self.hob_toggle = false;
-                self.apply_selected_drive_signature();
-                self.status = if self.selected_drive_state().present {
-                    SR_DRDY | SR_DSC
-                } else {
-                    SR_DSC
-                };
+                // Device/head selects the target but must not reset the taskfile.
+                // Native ATA/ATAPI drivers program 0x1F6 while building a
+                // command; clobbering count/LBA/byte-count registers here
+                // breaks packet commands after BIOS handoff.
+                if prev_drive != self.selected_drive() && self.transfer_mode == TransferMode::None {
+                    self.status = if self.selected_drive_state().present {
+                        SR_DRDY | SR_DSC
+                    } else {
+                        SR_DSC
+                    };
+                }
             }
             0x1F7 => self.execute_command(v),
             0x3F6 => {

@@ -465,6 +465,8 @@ impl Cpu {
             // Sync MMU state from control registers (fast-path: skips if unchanged).
             mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
 
+            crate::poll_external_irqs(interrupts, self.regs.rflags);
+
             // Check pending interrupts (only if IF=1 and no interrupt shadow)
             if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {
                 interrupts.acknowledge(vector);
@@ -869,12 +871,46 @@ impl Cpu {
                         self.consecutive_exception_rip = self.last_exec_rip;
                         self.consecutive_exception_count = 1;
                     }
+                    #[cfg(feature = "host_test")]
+                    if self.consecutive_exception_count <= 3 {
+                        use crate::memory::MemoryBus;
+                        let b0 = memory.read_u8(inst_phys).unwrap_or(0xFF);
+                        let b1 = memory.read_u8(inst_phys + 1).unwrap_or(0xFF);
+                        let b2 = memory.read_u8(inst_phys + 2).unwrap_or(0xFF);
+                        let b3 = memory.read_u8(inst_phys + 3).unwrap_or(0xFF);
+                        eprintln!(
+                            "[corevm] cached-block error at CS:IP={:04X}:{:X} phys={:X} opcode=0x{:04X} bytes=[{:02X} {:02X} {:02X} {:02X}] err={:?}",
+                            self.regs.seg[SegReg::Cs as usize].selector,
+                            self.last_exec_rip,
+                            inst_phys,
+                            inst.opcode,
+                            b0,
+                            b1,
+                            b2,
+                            b3,
+                            e,
+                        );
+                        eprintln!(
+                            "[corevm]  regs: EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESP={:08X} EBP={:08X} ESI={:08X} EDI={:08X} CR2={:08X} CR3={:08X} EFLAGS={:08X}",
+                            self.regs.gpr[0] as u32,
+                            self.regs.gpr[3] as u32,
+                            self.regs.gpr[1] as u32,
+                            self.regs.gpr[2] as u32,
+                            self.regs.sp() as u32,
+                            self.regs.gpr[5] as u32,
+                            self.regs.gpr[6] as u32,
+                            self.regs.gpr[7] as u32,
+                            self.regs.cr2 as u32,
+                            self.regs.cr3 as u32,
+                            self.regs.rflags as u32,
+                        );
+                    }
                     if self.consecutive_exception_count > 20 {
                         #[cfg(feature = "host_test")]
-                        eprintln!("[corevm] exception loop: CS:IP={:04X}:{:X} ({} repeats) CR2={:X} ESP={:X}",
+                        eprintln!("[corevm] exception loop: CS:IP={:04X}:{:X} ({} repeats) CR2={:X} ESP={:X} err={:?}",
                             self.regs.seg[SegReg::Cs as usize].selector,
                             self.last_exec_rip, self.consecutive_exception_count,
-                            self.regs.cr2, self.regs.sp());
+                            self.regs.cr2, self.regs.sp(), e);
                         return BlockExitReason::Exit(ExitReason::Exception(VmError::DoubleFault));
                     }
                     if let Err(e2) =

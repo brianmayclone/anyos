@@ -494,6 +494,7 @@ pub fn exec_iret(
             let flags_val = pop_val(cpu, size, mmu, memory)?;
             let old_cpl = cpu.regs.cpl;
             let new_cpl = (cs & 0x3) as u8;
+            let old_flags = cpu.regs.rflags;
 
             cpu.load_segment_from_gdt(SegReg::Cs, cs, memory, mmu)?;
             cpu.update_mode();
@@ -506,13 +507,12 @@ pub fn exec_iret(
                 flags_val & 0xFFFF_FFFF
             };
             new_flags |= flags::RFLAGS_FIXED;
-            if cpu.regs.cpl > 0 {
-                // Ring > 0: cannot change IOPL
-                new_flags = (new_flags & !flags::IOPL_MASK) | (cpu.regs.rflags & flags::IOPL_MASK);
-                // Ring > IOPL: cannot change IF
-                let iopl = ((cpu.regs.rflags & flags::IOPL_MASK) >> flags::IOPL_SHIFT) as u8;
+            if new_cpl > 0 {
+                // The target privilege level controls whether IF/IOPL can change.
+                new_flags = (new_flags & !flags::IOPL_MASK) | (old_flags & flags::IOPL_MASK);
+                let iopl = ((old_flags & flags::IOPL_MASK) >> flags::IOPL_SHIFT) as u8;
                 if new_cpl > iopl {
-                    new_flags = (new_flags & !flags::IF) | (cpu.regs.rflags & flags::IF);
+                    new_flags = (new_flags & !flags::IF) | (old_flags & flags::IF);
                 }
             }
             cpu.regs.rflags = new_flags;

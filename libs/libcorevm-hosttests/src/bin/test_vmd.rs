@@ -16,8 +16,9 @@ use libcorevm::{
     corevm_get_rip, corevm_get_segment_base, corevm_get_segment_selector, corevm_jit_cache_stats,
     corevm_jit_enable, corevm_jit_stats, corevm_lapic_diag_state, corevm_irq_pending_word,
     corevm_ioapic_redir_entry,
-    corevm_pic_diag_state, corevm_read_linear_u8, corevm_read_phys_u8,
-    corevm_fw_cfg_add_file, corevm_ide_attach_slave, corevm_load_binary, corevm_load_rom,
+    corevm_pic_diag_state, corevm_read_linear_u8, corevm_read_phys_u8, corevm_read_phys_u32,
+    corevm_fw_cfg_add_file, corevm_ide_attach_slave, corevm_ide_clear_irq, corevm_ide_irq_raised,
+    corevm_load_binary, corevm_load_rom, corevm_pic_raise_irq,
     corevm_ps2_key_press, corevm_ps2_key_release, corevm_set_rip,
     corevm_reset, corevm_run, corevm_serial_take_output,
     corevm_setup_ide, corevm_setup_pci_bus, corevm_setup_standard_devices, corevm_debug_take_output,
@@ -42,6 +43,9 @@ static KERNEL_SPIN2_DUMPED: AtomicBool = AtomicBool::new(false);
 static KERNEL_ENTRY2_DUMPED: AtomicBool = AtomicBool::new(false);
 static CD_BOOT_DUMPED: AtomicBool = AtomicBool::new(false);
 static LOWMEM_STAGE_DUMPED: AtomicBool = AtomicBool::new(false);
+static WINDOWS_WAIT_DUMPED: AtomicBool = AtomicBool::new(false);
+static WINDOWS_WAIT_CODE_DUMPED: AtomicBool = AtomicBool::new(false);
+const IDE_IRQ_POLL_QUANTUM: u64 = 1_024;
 const SIGINT: i32 = 2;
 
 unsafe extern "C" {
@@ -57,6 +61,26 @@ extern "C" fn on_sigint(_sig: i32) {
         return;
     }
     STOP_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+fn run_batch_with_irq_poll(vm: u64, batch: u64) -> u32 {
+    let mut remaining = batch.max(1);
+    let mut exit_code = 2;
+
+    while remaining > 0 {
+        let chunk = remaining.min(IDE_IRQ_POLL_QUANTUM);
+        exit_code = corevm_run(vm, chunk);
+        if corevm_ide_irq_raised(vm) != 0 {
+            corevm_pic_raise_irq(vm, 14);
+            corevm_ide_clear_irq(vm);
+        }
+        if exit_code != 2 {
+            break;
+        }
+        remaining -= chunk;
+    }
+
+    exit_code
 }
 
 #[derive(Clone, Debug)]
@@ -166,7 +190,7 @@ fn parse_args() -> Result<Config, String> {
         iso: PathBuf::new(),
         ram_mb: 256,
         cores: 1,
-        batch: 100_000,
+        batch: 1_000_000,
         max_seconds: 120,
         max_instructions: 0,
         stdin_keyboard: false,
@@ -307,6 +331,7 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
     let irq_p1 = corevm_irq_pending_word(handle, 1);
     let ioapic_r0 = corevm_ioapic_redir_entry(handle, 0);
     let ioapic_r1 = corevm_ioapic_redir_entry(handle, 1);
+    let ioapic_r8 = corevm_ioapic_redir_entry(handle, 8);
     let m_irr = (pic & 0xFF) as u8;
     let m_isr = ((pic >> 8) & 0xFF) as u8;
     let m_imr = ((pic >> 16) & 0xFF) as u8;
@@ -449,6 +474,15 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
     );
     let lapic_svr = (lapic & 0xFFFF_FFFF) as u32;
     let lapic_lvt_timer = (lapic >> 32) as u32;
+    let lapic_base = apic_base_msr & 0xFFFF_F000;
+    let lapic_tpr = corevm_read_phys_u32(handle, lapic_base.wrapping_add(0x080));
+    let lapic_ppr = corevm_read_phys_u32(handle, lapic_base.wrapping_add(0x0A0));
+    let lapic_isr6 = corevm_read_phys_u32(handle, lapic_base.wrapping_add(0x160));
+    let lapic_isr7 = corevm_read_phys_u32(handle, lapic_base.wrapping_add(0x170));
+    let lapic_tmr6 = corevm_read_phys_u32(handle, lapic_base.wrapping_add(0x1E0));
+    let lapic_tmr7 = corevm_read_phys_u32(handle, lapic_base.wrapping_add(0x1F0));
+    let lapic_irr6 = corevm_read_phys_u32(handle, lapic_base.wrapping_add(0x260));
+    let lapic_irr7 = corevm_read_phys_u32(handle, lapic_base.wrapping_add(0x270));
     let scan_boot_params = |hint: u64| -> Option<u64> {
         let rd32_phys = |base: u64| -> u32 {
             (corevm_read_phys_u8(handle, base) as u32)
@@ -752,8 +786,54 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
             }
         }
     }
+    if mode == 1
+        && ((rip & 0xFFFF_FFF0) == 0x8080_9BF0 || (rip & 0xFFFF_FFF0) == 0x8081_4850)
+        && !WINDOWS_WAIT_DUMPED.swap(true, Ordering::SeqCst)
+    {
+        eprintln!(
+            "[test-vmd] windows-wait rip={:08X} lapic[svr={:08X} tpr={:08X} ppr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X} isr6={:08X} isr7={:08X} irr6={:08X} irr7={:08X} tmr6={:08X} tmr7={:08X}] irqp[0={:016X} 1={:016X}] ioapic[r8={:016X}]",
+            rip as u32,
+            lapic_svr,
+            lapic_tpr,
+            lapic_ppr,
+            lapic_lvt_timer,
+            lapic_init,
+            lapic_cur,
+            lapic_div,
+            lapic_isr6,
+            lapic_isr7,
+            lapic_irr6,
+            lapic_irr7,
+            lapic_tmr6,
+            lapic_tmr7,
+            irq_p0,
+            irq_p1,
+            ioapic_r8,
+        );
+    }
+    if mode == 1
+        && (0x8082_8800..0x8082_8900).contains(&rip)
+        && !WINDOWS_WAIT_CODE_DUMPED.swap(true, Ordering::SeqCst)
+    {
+        for base in [0x8081_4820u64, 0x8082_8800u64] {
+            let mut line = String::new();
+            for i in 0..96u64 {
+                if i % 16 == 0 {
+                    if !line.is_empty() {
+                        eprintln!("{line}");
+                        line.clear();
+                    }
+                    line.push_str(&format!("[test-vmd] wincode {:08X}:", base.wrapping_add(i) as u32));
+                }
+                line.push_str(&format!(" {:02X}", readb(base.wrapping_add(i))));
+            }
+            if !line.is_empty() {
+                eprintln!("{line}");
+            }
+        }
+    }
     eprintln!(
-        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} fs={:04X} fs_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} APIC_BASE={:08X} EFER={:08X} JIFF={:08X} LPJ={:08X} FSCAL={:08X} MAXPFN={:08X} MAXBYTES={:08X} PVOP={:08X}[{:02X} {:02X} {:02X} {:02X}] INITRD_DST=[{:08X},{:08X}) LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X}] IRQP[0={:016X} 1={:016X}] IOAPIC[r0={:016X} r1={:016X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] ERR_RIP={:08X} ERR='{}' bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+        "[test-vmd] cpu probe: mode={} cpl={} cs:ip={:04X}:{:04X} cs_base={:08X} addr={:08X} ss={:04X} ss_base={:08X} fs={:04X} fs_base={:08X} EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X} FLAGS={:04X} IF={} ZF={} CF={} CR0={:08X} CR3={:08X} APIC_BASE={:08X} EFER={:08X} JIFF={:08X} LPJ={:08X} FSCAL={:08X} MAXPFN={:08X} MAXBYTES={:08X} PVOP={:08X}[{:02X} {:02X} {:02X} {:02X}] INITRD_DST=[{:08X},{:08X}) LAPIC[svr={:08X} lvt={:08X} init={:08X} cur={:08X} div={:08X} tpr={:08X} ppr={:08X} isr6={:08X} isr7={:08X} irr6={:08X} irr7={:08X} tmr6={:08X} tmr7={:08X}] IRQP[0={:016X} 1={:016X}] IOAPIC[r0={:016X} r1={:016X} r8={:016X}] STK={:08X}@{:08X} {:08X} {:08X} {:08X} RET={:08X} rbytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} PIC[m:{:02X}/{:02X}/{:02X} s:{:02X}/{:02X}/{:02X}] ERR_RIP={:08X} ERR='{}' bytes={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
         mode_name(mode),
         cpl,
         cs,
@@ -797,10 +877,19 @@ fn dump_cpu_probe(handle: u64, mode: u32, cs: u16, rip: u64) {
         lapic_init,
         lapic_cur,
         lapic_div,
+        lapic_tpr,
+        lapic_ppr,
+        lapic_isr6,
+        lapic_isr7,
+        lapic_irr6,
+        lapic_irr7,
+        lapic_tmr6,
+        lapic_tmr7,
         irq_p0,
         irq_p1,
         ioapic_r0,
         ioapic_r1,
+        ioapic_r8,
         stack_linear as u32,
         stack[0],
         stack[1],
@@ -1376,7 +1465,7 @@ fn main() {
             inject_ascii_key(vm.0, ch);
         }
 
-        let exit_code = corevm_run(vm.0, cfg.batch);
+        let exit_code = run_batch_with_irq_poll(vm.0, cfg.batch);
 
         let text = take_text_output(vm.0);
         if !text.is_empty() {

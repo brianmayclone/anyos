@@ -25,6 +25,8 @@ use crate::memory::mmio::MmioHandler;
 
 /// Number of interrupt redirection entries (IRQ 0-23).
 const NUM_REDIR_ENTRIES: usize = 24;
+const REDIR_REMOTE_IRR: u64 = 1 << 14;
+const REDIR_LEVEL_TRIGGERED: u64 = 1 << 15;
 
 /// IO-APIC device with register-indirect MMIO access.
 ///
@@ -120,11 +122,7 @@ impl IoApic {
 }
 
 impl IoApic {
-    /// Route an external IRQ pin through the redirection table.
-    ///
-    /// Returns `Some(vector)` when the entry is unmasked and uses fixed
-    /// delivery mode (0). Unsupported delivery modes are ignored for now.
-    pub fn route_irq(&mut self, irq: u8) -> Option<u8> {
+    fn routed_entry(&self, irq: u8) -> Option<(u8, bool)> {
         let idx = irq as usize;
         if idx >= NUM_REDIR_ENTRIES {
             return None;
@@ -139,7 +137,43 @@ impl IoApic {
         if delivery_mode != 0 {
             return None;
         }
-        Some((entry & 0xFF) as u8)
+        let vector = (entry & 0xFF) as u8;
+        let level_triggered = ((entry >> 15) & 1) != 0;
+        Some((vector, level_triggered))
+    }
+
+    /// Whether the given IRQ line is actively routed through the IO-APIC.
+    pub fn has_route(&self, irq: u8) -> bool {
+        self.routed_entry(irq).is_some()
+    }
+
+    /// Route an external IRQ pin through the redirection table.
+    ///
+    /// Returns `(vector, level_triggered)` when the entry is unmasked and
+    /// uses fixed delivery mode (0). Unsupported delivery modes are ignored.
+    pub fn route_irq(&mut self, irq: u8) -> Option<(u8, bool)> {
+        let idx = irq as usize;
+        let (vector, level_triggered) = self.routed_entry(irq)?;
+        if level_triggered {
+            let entry = &mut self.redir_table[idx];
+            if (*entry & REDIR_REMOTE_IRR) != 0 {
+                return None;
+            }
+            *entry |= REDIR_REMOTE_IRR;
+        }
+        Some((vector, level_triggered))
+    }
+
+    /// Complete delivery of a level-triggered vector after LAPIC EOI.
+    pub fn eoi_vector(&mut self, vector: u8) {
+        for entry in self.redir_table.iter_mut() {
+            if (*entry & REDIR_LEVEL_TRIGGERED) == 0 {
+                continue;
+            }
+            if (*entry & 0xFF) as u8 == vector {
+                *entry &= !REDIR_REMOTE_IRR;
+            }
+        }
     }
 
     /// Return a raw redirection table entry for diagnostics.
@@ -163,14 +197,6 @@ impl IoApic {
 
     /// Write a 32-bit value to an MMIO register by its base offset.
     fn write_mmio_register(&mut self, reg_base: u64, v: u32) {
-        #[cfg(feature = "host_test")]
-        {
-            use core::sync::atomic::{AtomicU32, Ordering};
-            static IOAPIC_WR_LOG: AtomicU32 = AtomicU32::new(0);
-            if IOAPIC_WR_LOG.fetch_add(1, Ordering::Relaxed) < 30 {
-                eprintln!("[ioapic] wr mmio_off={:02X} val={:08X} (regsel={:02X})", reg_base, v, self.reg_select);
-            }
-        }
         match reg_base {
             0x00 => self.reg_select = v,
             0x10 => self.write_reg(self.reg_select, v),

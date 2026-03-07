@@ -10,7 +10,9 @@ use libcorevm::{
     corevm_create_ex, corevm_debug_take_output, corevm_destroy, corevm_get_last_error,
     corevm_get_instruction_count, corevm_get_last_error_rip, corevm_get_mode, corevm_get_rip,
     corevm_get_segment_selector, corevm_fw_cfg_add_file, corevm_ide_attach_slave,
+    corevm_ide_clear_irq, corevm_ide_irq_raised,
     corevm_cache_stats, corevm_jit_enable, corevm_jit_stats, corevm_jit_helper_top, corevm_load_binary, corevm_load_rom,
+    corevm_pic_raise_irq,
     corevm_ps2_key_press, corevm_ps2_key_release,
     corevm_run, corevm_serial_take_output, corevm_set_rip, corevm_setup_ide, corevm_setup_pci_bus,
     corevm_setup_standard_devices, corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
@@ -29,6 +31,7 @@ const CHAR_H: usize = 16;
 const OVERLAY_PAD: usize = 8;
 const RENDER_MIN_INTERVAL: Duration = Duration::from_millis(16);
 const OVERLAY_UPDATE_INTERVAL: Duration = Duration::from_millis(250);
+const IDE_IRQ_POLL_QUANTUM: u64 = 1_024;
 
 const XK_BACKSPACE: c_ulong = 0xFF08;
 const XK_TAB: c_ulong = 0xFF09;
@@ -210,6 +213,26 @@ extern "C" fn on_sigint(_sig: i32) {
     STOP_REQUESTED.store(true, Ordering::SeqCst);
 }
 
+fn run_batch_with_irq_poll(vm: u64, batch: u64) -> u32 {
+    let mut remaining = batch.max(1);
+    let mut exit_code = 2;
+
+    while remaining > 0 {
+        let chunk = remaining.min(IDE_IRQ_POLL_QUANTUM);
+        exit_code = corevm_run(vm, chunk);
+        if corevm_ide_irq_raised(vm) != 0 {
+            corevm_pic_raise_irq(vm, 14);
+            corevm_ide_clear_irq(vm);
+        }
+        if exit_code != 2 {
+            break;
+        }
+        remaining -= chunk;
+    }
+
+    exit_code
+}
+
 #[derive(Clone, Debug)]
 enum BiosKind {
     SeaBios,
@@ -282,7 +305,7 @@ fn parse_args() -> Result<Config, String> {
         iso: PathBuf::new(),
         ram_mb: 64,
         cores: 1,
-        batch: 50_000,
+        batch: 1_000_000,
         max_seconds: 300,
         jit: false,
     };
@@ -793,7 +816,7 @@ fn main() {
 
     while !STOP_REQUESTED.load(Ordering::SeqCst) {
         run_calls = run_calls.saturating_add(1);
-        let exit_code = corevm_run(vm.0, cfg.batch);
+        let exit_code = run_batch_with_irq_poll(vm.0, cfg.batch);
         match exit_code {
             0 => exit_halted += 1,
             1 => exit_exception += 1,

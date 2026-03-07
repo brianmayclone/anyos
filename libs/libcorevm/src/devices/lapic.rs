@@ -33,12 +33,24 @@
 
 use crate::error::Result;
 use crate::memory::mmio::MmioHandler;
+#[cfg(feature = "host_test")]
 use core::sync::atomic::{AtomicU32, Ordering};
-
-static LAPIC_WRITE_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// LAPIC version: xAPIC, version 0x14 (20), max LVT entry 5.
 const LAPIC_VERSION: u32 = (5 << 16) | 0x14;
+
+#[cfg(feature = "host_test")]
+static LAPIC_TRACE_BUDGET: AtomicU32 = AtomicU32::new(128);
+
+#[cfg(feature = "host_test")]
+fn lapic_trace(args: core::fmt::Arguments<'_>) {
+    if LAPIC_TRACE_BUDGET
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1))
+        .is_ok()
+    {
+        eprintln!("[lapic] {args}");
+    }
+}
 
 /// Local APIC device emulation.
 ///
@@ -80,11 +92,12 @@ pub struct Lapic {
     timer_cur_count: u32,
     /// Fractional bus-tick credits toward the next timer decrement.
     timer_credit: u64,
-    /// TSC value when the timer was last started (init_count written).
-    /// Used to compute current_count in real-time on reads.
+    /// TSC value at the last wall-clock synchronization of the timer.
     timer_start_tsc: u64,
     /// Host TSC frequency in Hz (set once at init).
     host_tsc_freq: u64,
+    /// Sticky pending state for the timer vector until VM glue drains it.
+    timer_irq_pending: bool,
     /// Timer Divide Configuration.
     timer_divide: u32,
     /// Error Status Register.
@@ -95,6 +108,12 @@ pub struct Lapic {
     tmr: [u32; 8],
     /// Interrupt Request Register (8 × 32-bit).
     irr: [u32; 8],
+    /// FIFO of vectors completed via EOI, consumed by the VM glue so the
+    /// IO-APIC can drop remote-IRR for level-triggered routes without losing
+    /// multiple EOIs raised inside one host run slice.
+    eoi_vectors: [u8; 16],
+    eoi_head: u8,
+    eoi_len: u8,
 }
 
 impl Lapic {
@@ -122,11 +141,15 @@ impl Lapic {
             timer_credit: 0,
             timer_start_tsc: 0,
             host_tsc_freq: 0,
+            timer_irq_pending: false,
             timer_divide: 0,
             esr: 0,
             isr: [0; 8],
             tmr: [0; 8],
             irr: [0; 8],
+            eoi_vectors: [0; 16],
+            eoi_head: 0,
+            eoi_len: 0,
         }
     }
 }
@@ -137,34 +160,168 @@ impl Lapic {
         self.host_tsc_freq = freq;
     }
 
-    /// Compute the current timer count based on real elapsed time.
-    /// APIC bus frequency = 100 MHz.
-    fn realtime_current_count(&self) -> u32 {
-        if self.timer_init_count == 0 || self.host_tsc_freq == 0 {
-            return 0;
-        }
-        let now = {
-            #[cfg(feature = "host_test")]
-            { unsafe { core::arch::x86_64::_rdtsc() as u64 } }
-            #[cfg(not(feature = "host_test"))]
-            { crate::rdtsc() }
-        };
-        let elapsed_tsc = now.wrapping_sub(self.timer_start_tsc);
-        const APIC_BUS_FREQ: u128 = 100_000_000;
-        let bus_ticks = (elapsed_tsc as u128 * APIC_BUS_FREQ / self.host_tsc_freq as u128) as u64;
-        let div = self.timer_divisor();
-        let dec = bus_ticks / div;
-        if dec >= self.timer_init_count as u64 {
-            let periodic = (self.lvt_timer & (1 << 17)) != 0;
-            if periodic && self.timer_init_count != 0 {
-                let remainder = dec % self.timer_init_count as u64;
-                self.timer_init_count.saturating_sub(remainder as u32)
-            } else {
-                0
+    #[inline]
+    pub fn software_enabled(&self) -> bool {
+        (self.svr & (1 << 8)) != 0
+    }
+
+    #[inline]
+    fn priority_class(vector: u8) -> u8 {
+        vector >> 4
+    }
+
+    fn highest_set_vector(bits: &[u32; 8]) -> Option<u8> {
+        for (idx, &word) in bits.iter().enumerate().rev() {
+            if word != 0 {
+                let bit = 31 - word.leading_zeros() as u8;
+                return Some((idx as u8) * 32 + bit);
             }
-        } else {
-            self.timer_init_count - dec as u32
         }
+        None
+    }
+
+    fn highest_isr_vector(&self) -> Option<u8> {
+        Self::highest_set_vector(&self.isr)
+    }
+
+    fn highest_irr_vector(&self) -> Option<u8> {
+        Self::highest_set_vector(&self.irr)
+    }
+
+    fn set_bit(bits: &mut [u32; 8], vector: u8) {
+        let idx = (vector / 32) as usize;
+        let bit = vector % 32;
+        bits[idx] |= 1u32 << bit;
+    }
+
+    fn clear_bit(bits: &mut [u32; 8], vector: u8) {
+        let idx = (vector / 32) as usize;
+        let bit = vector % 32;
+        bits[idx] &= !(1u32 << bit);
+    }
+
+    fn current_ppr(&self) -> u8 {
+        let tpr_pri = (self.tpr & 0xF0) as u8;
+        let isr_pri = self
+            .highest_isr_vector()
+            .map(Self::priority_class)
+            .unwrap_or(0)
+            << 4;
+        tpr_pri.max(isr_pri)
+    }
+
+    pub fn timer_running(&self) -> bool {
+        self.software_enabled()
+            && self.timer_cur_count != 0
+    }
+
+    pub fn has_pending_vector(&self) -> bool {
+        self.highest_irr_vector().is_some()
+    }
+
+    pub fn raise_vector(&mut self, vector: u8, level_triggered: bool) {
+        Self::set_bit(&mut self.irr, vector);
+        if level_triggered {
+            Self::set_bit(&mut self.tmr, vector);
+        } else {
+            Self::clear_bit(&mut self.tmr, vector);
+        }
+        #[cfg(feature = "host_test")]
+        if vector == 0xFD {
+            lapic_trace(format_args!(
+                "raise vec={:02X} level={} tpr={:02X} ppr={:02X} isr6={:08X} isr7={:08X} irr6={:08X} irr7={:08X}",
+                vector,
+                level_triggered as u8,
+                self.tpr,
+                self.current_ppr(),
+                self.isr[6],
+                self.isr[7],
+                self.irr[6],
+                self.irr[7],
+            ));
+        }
+    }
+
+    pub fn next_deliverable_vector(&self) -> Option<u8> {
+        if !self.software_enabled() {
+            return None;
+        }
+        let ppr = self.current_ppr() >> 4;
+        self.highest_irr_vector()
+            .filter(|&vec| Self::priority_class(vec) > ppr)
+    }
+
+    pub fn accept_vector(&mut self, vector: u8) {
+        Self::clear_bit(&mut self.irr, vector);
+        Self::set_bit(&mut self.isr, vector);
+        #[cfg(feature = "host_test")]
+        if vector == 0xFD {
+            lapic_trace(format_args!(
+                "accept vec={:02X} tpr={:02X} ppr={:02X} isr6={:08X} isr7={:08X} irr6={:08X} irr7={:08X}",
+                vector,
+                self.tpr,
+                self.current_ppr(),
+                self.isr[6],
+                self.isr[7],
+                self.irr[6],
+                self.irr[7],
+            ));
+        }
+    }
+
+    pub fn eoi(&mut self) -> Option<u8> {
+        let vec = self.highest_isr_vector()?;
+        Self::clear_bit(&mut self.isr, vec);
+        Self::clear_bit(&mut self.tmr, vec);
+        #[cfg(feature = "host_test")]
+        if vec == 0xFD {
+            lapic_trace(format_args!(
+                "eoi vec={:02X} tpr={:02X} ppr={:02X} isr6={:08X} isr7={:08X} irr6={:08X} irr7={:08X}",
+                vec,
+                self.tpr,
+                self.current_ppr(),
+                self.isr[6],
+                self.isr[7],
+                self.irr[6],
+                self.irr[7],
+            ));
+        }
+        Some(vec)
+    }
+
+    fn push_eoi_vector(&mut self, vector: u8) {
+        let capacity = self.eoi_vectors.len() as u8;
+        if self.eoi_len == capacity {
+            // Keep the newest EOIs; dropping the oldest still preserves
+            // forward progress for level-triggered lines that are being
+            // actively serviced under interrupt load.
+            self.eoi_head = (self.eoi_head + 1) % capacity;
+            self.eoi_len -= 1;
+        }
+        let tail = (self.eoi_head + self.eoi_len) % capacity;
+        self.eoi_vectors[tail as usize] = vector;
+        self.eoi_len += 1;
+    }
+
+    pub fn take_eoi_vector(&mut self) -> Option<u8> {
+        if self.eoi_len == 0 {
+            return None;
+        }
+        let vector = self.eoi_vectors[self.eoi_head as usize];
+        let capacity = self.eoi_vectors.len() as u8;
+        self.eoi_head = (self.eoi_head + 1) % capacity;
+        self.eoi_len -= 1;
+        Some(vector)
+    }
+
+    pub fn diag_state(&self) -> (u32, u32, u32, u32, u32) {
+        (
+            self.svr,
+            self.lvt_timer,
+            self.timer_init_count,
+            self.timer_cur_count,
+            self.timer_divide,
+        )
     }
 
     fn timer_divisor(&self) -> u64 {
@@ -184,6 +341,72 @@ impl Lapic {
         }
     }
 
+    fn elapse_bus_ticks(&mut self, bus_ticks: u64) {
+        if !self.software_enabled() || self.timer_cur_count == 0 {
+            return;
+        }
+
+        let masked = (self.lvt_timer & (1 << 16)) != 0;
+        let div = self.timer_divisor();
+        self.timer_credit = self.timer_credit.saturating_add(bus_ticks);
+        if self.timer_credit < div {
+            return;
+        }
+
+        let dec = (self.timer_credit / div) as u32;
+        self.timer_credit %= div;
+        if dec < self.timer_cur_count {
+            self.timer_cur_count -= dec;
+            return;
+        }
+
+        let periodic = (self.lvt_timer & (1 << 17)) != 0;
+        if periodic && self.timer_init_count != 0 {
+            let overshoot = dec.saturating_sub(self.timer_cur_count);
+            let remainder = overshoot % self.timer_init_count;
+            self.timer_cur_count = if remainder == 0 {
+                self.timer_init_count
+            } else {
+                self.timer_init_count - remainder
+            };
+        } else {
+            self.timer_cur_count = 0;
+        }
+
+        if !masked {
+            self.timer_irq_pending = true;
+        }
+    }
+
+    fn sync_timer_from_tsc(&mut self) {
+        if self.host_tsc_freq == 0 || self.timer_cur_count == 0 {
+            return;
+        }
+
+        let now = {
+            #[cfg(feature = "host_test")]
+            { unsafe { core::arch::x86_64::_rdtsc() as u64 } }
+            #[cfg(not(feature = "host_test"))]
+            { crate::rdtsc() }
+        };
+        let elapsed_tsc = now.wrapping_sub(self.timer_start_tsc);
+        if elapsed_tsc == 0 {
+            return;
+        }
+
+        const APIC_BUS_FREQ: u128 = 100_000_000;
+        let bus_ticks =
+            (elapsed_tsc as u128 * APIC_BUS_FREQ / self.host_tsc_freq as u128) as u64;
+        if bus_ticks == 0 {
+            return;
+        }
+
+        let consumed_tsc =
+            (bus_ticks as u128 * self.host_tsc_freq as u128 / APIC_BUS_FREQ) as u64;
+        self.timer_start_tsc = self.timer_start_tsc.wrapping_add(consumed_tsc);
+        self.elapse_bus_ticks(bus_ticks);
+    }
+
     /// Advance the LAPIC timer by `bus_ticks` (at the APIC bus frequency).
     ///
     /// The caller is responsible for converting wall-clock or TSC time into
@@ -193,70 +416,47 @@ impl Lapic {
     /// timer is unmasked. For periodic mode, the counter reloads.
     pub fn advance(&mut self, bus_ticks: u64) -> Option<u8> {
         #[cfg(feature = "host_test")]
-        {
-            static ADV_LOG: AtomicU32 = AtomicU32::new(0);
-            let svr_en = (self.svr & (1 << 8)) != 0;
-            let masked = (self.lvt_timer & (1 << 16)) != 0;
-            if self.timer_init_count != 0 {
-                let n = ADV_LOG.fetch_add(1, Ordering::Relaxed);
-                if n < 10 || (n < 200 && n % 50 == 0) {
-                    eprintln!("[lapic-adv] bus_ticks={} cur={:08X} init={:08X} svr_en={} masked={} credit={} div={}",
-                        bus_ticks, self.timer_cur_count, self.timer_init_count, svr_en, masked,
-                        self.timer_credit, self.timer_divisor());
-                }
-            }
+        if (self.lvt_timer & 0xFF) == 0xFD {
+            lapic_trace(format_args!(
+                "advance-entry cur={} init={} div={} host_tsc_freq={} start_tsc={}",
+                self.timer_cur_count,
+                self.timer_init_count,
+                self.timer_divisor(),
+                self.host_tsc_freq,
+                self.timer_start_tsc
+            ));
         }
-        // APIC software enable (SVR bit 8) must be set.
-        if (self.svr & (1 << 8)) == 0 {
-            return None;
-        }
-        // Timer masked?
-        if (self.lvt_timer & (1 << 16)) != 0 {
-            return None;
-        }
-        if self.timer_cur_count == 0 {
-            return None;
-        }
-
-        let div = self.timer_divisor();
-        self.timer_credit = self.timer_credit.saturating_add(bus_ticks);
-        if self.timer_credit < div {
-            return None;
-        }
-
-        let dec = (self.timer_credit / div) as u32;
-        self.timer_credit %= div;
-
-        if dec < self.timer_cur_count {
-            self.timer_cur_count -= dec;
-            return None;
-        }
-
-        // Counter expired.
         let vec = (self.lvt_timer & 0xFF) as u8;
-        let periodic = (self.lvt_timer & (1 << 17)) != 0;
-        if periodic && self.timer_init_count != 0 {
-            self.timer_cur_count = self.timer_init_count;
-        } else {
-            self.timer_cur_count = 0;
+        let cur_before = self.timer_cur_count;
+        self.elapse_bus_ticks(bus_ticks);
+        #[cfg(feature = "host_test")]
+        if vec == 0xFD && self.timer_irq_pending {
+            lapic_trace(format_args!(
+                "timer-expire vec={:02X} cur_before={} cur_after={} init={} credit={} div={}",
+                vec,
+                cur_before,
+                self.timer_cur_count,
+                self.timer_init_count,
+                self.timer_credit,
+                self.timer_divisor()
+            ));
         }
-        Some(vec)
+        if self.timer_irq_pending {
+            self.timer_irq_pending = false;
+            Some(vec)
+        } else {
+            None
+        }
     }
 
     /// Read the raw 32-bit value of a register by its 16-byte-aligned offset.
-    fn read_register(&self, reg_base: u32) -> u32 {
-        #[cfg(feature = "host_test")]
-        if reg_base == 0x390 {
-            static READ_LOG: AtomicU32 = AtomicU32::new(0);
-            if READ_LOG.fetch_add(1, Ordering::Relaxed) < 20 {
-                eprintln!("[lapic] rd reg=390 cur_count={:08X} init={:08X}", self.timer_cur_count, self.timer_init_count);
-            }
-        }
+    fn read_register(&mut self, reg_base: u32) -> u32 {
         match reg_base {
             0x020 => self.id,
             0x030 => LAPIC_VERSION,
             0x080 => self.tpr,
-            0x090 | 0x0A0 => 0, // APR / PPR (not implemented)
+            0x090 => 0, // APR
+            0x0A0 => self.current_ppr() as u32,
             0x0D0 => self.ldr,
             0x0E0 => self.dfr,
             0x0F0 => self.svr,
@@ -277,11 +477,8 @@ impl Lapic {
             0x370 => self.lvt_error,
             0x380 => self.timer_init_count,
             0x390 => {
-                if self.host_tsc_freq > 0 && self.timer_init_count > 0 {
-                    self.realtime_current_count()
-                } else {
-                    self.timer_cur_count
-                }
+                self.sync_timer_from_tsc();
+                self.timer_cur_count
             }
             0x3E0 => self.timer_divide,
             _ => 0,
@@ -290,28 +487,14 @@ impl Lapic {
 
     /// Write a 32-bit value to a register by its 16-byte-aligned offset.
     fn write_register(&mut self, reg_base: u32, v: u32) {
-        if matches!(reg_base, 0x0F0 | 0x320 | 0x380 | 0x3E0)
-            && LAPIC_WRITE_LOG_COUNT.fetch_add(1, Ordering::Relaxed) < 200
-        {
-            #[cfg(feature = "host_test")]
-            eprintln!("[lapic] wr reg={:03X} val={:08X}", reg_base, v);
-            #[cfg(not(feature = "host_test"))]
-            libsyscall::serial_print(format_args!(
-                "[lapic] wr reg={:03X} val={:08X}\n",
-                reg_base,
-                v
-            ));
-        }
         match reg_base {
             // LAPIC ID: bits 31:24 are writable.
             0x020 => self.id = v & 0xFF00_0000,
             0x080 => self.tpr = v & 0xFF,
             // EOI: any write signals end-of-interrupt.
             0x0B0 => {
-                // Clear the highest-priority bit in ISR.
-                // Simplified: just clear all ISR bits.
-                for r in self.isr.iter_mut() {
-                    *r = 0;
+                if let Some(vector) = self.eoi() {
+                    self.push_eoi_vector(vector);
                 }
             }
             0x0D0 => self.ldr = v,
@@ -319,11 +502,28 @@ impl Lapic {
             0x0F0 => self.svr = v,
             0x280 => self.esr = 0, // Writing clears ESR
             0x300 => {
-                // ICR Low — triggers IPI. For single-CPU, just store.
                 self.icr_lo = v & !0x1000; // clear delivery status bit
+                let vector = (self.icr_lo & 0xFF) as u8;
+                let delivery_mode = ((self.icr_lo >> 8) & 0x7) as u8;
+                let shorthand = ((self.icr_lo >> 18) & 0x3) as u8;
+                let dest_apic = ((self.icr_hi >> 24) & 0xFF) as u8;
+                let self_apic = ((self.id >> 24) & 0xFF) as u8;
+                let hits_self = match shorthand {
+                    0 => dest_apic == self_apic,
+                    1 | 2 => true,  // self / all including self
+                    3 => false,     // all excluding self
+                    _ => false,
+                };
+                if hits_self && delivery_mode == 0 {
+                    self.raise_vector(vector, false);
+                }
             }
             0x310 => self.icr_hi = v,
-            0x320 => self.lvt_timer = v,
+            0x320 => {
+                self.lvt_timer = v;
+                #[cfg(feature = "host_test")]
+                lapic_trace(format_args!("timer-lvt {:08X}", self.lvt_timer));
+            }
             0x330 => self.lvt_thermal = v,
             0x340 => self.lvt_perf = v,
             0x350 => self.lvt_lint0 = v,
@@ -333,6 +533,15 @@ impl Lapic {
                 self.timer_init_count = v;
                 self.timer_cur_count = v;
                 self.timer_credit = 0;
+                self.timer_irq_pending = false;
+                #[cfg(feature = "host_test")]
+                lapic_trace(format_args!(
+                    "timer-init init={:08X} lvt={:08X} div={:08X} enabled={}",
+                    self.timer_init_count,
+                    self.lvt_timer,
+                    self.timer_divide,
+                    self.software_enabled() as u8
+                ));
                 // Record TSC at timer start for realtime current_count reads.
                 if v != 0 {
                     #[cfg(feature = "host_test")]
@@ -341,7 +550,11 @@ impl Lapic {
                     { self.timer_start_tsc = crate::rdtsc(); }
                 }
             }
-            0x3E0 => self.timer_divide = v,
+            0x3E0 => {
+                self.timer_divide = v;
+                #[cfg(feature = "host_test")]
+                lapic_trace(format_args!("timer-div {:08X}", self.timer_divide));
+            }
             _ => {}
         }
     }
