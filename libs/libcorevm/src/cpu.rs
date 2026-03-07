@@ -105,6 +105,9 @@ pub struct Cpu {
     pub jit_session: crate::jit::session::JitSession,
     /// Consecutive exception count at the same RIP (for #PF loop detection).
     consecutive_exception_rip: u64,
+    consecutive_exception_vector: u8,
+    consecutive_exception_error_code: u32,
+    consecutive_exception_cr2_page: u64,
     consecutive_exception_count: u32,
     /// Set by jit_mem_read on page fault; checked after each read in JIT code.
     pub jit_fault: bool,
@@ -162,6 +165,9 @@ impl Cpu {
             decode_cache: DecodeCache::new(),
             jit_session: crate::jit::session::JitSession::new(),
             consecutive_exception_rip: 0,
+            consecutive_exception_vector: 0xFF,
+            consecutive_exception_error_code: 0,
+            consecutive_exception_cr2_page: u64::MAX,
             consecutive_exception_count: 0,
             exc_ring: [(0, 0, 0, 0); 32],
             exc_ring_idx: 0,
@@ -204,6 +210,9 @@ impl Cpu {
         self.decode_cache.flush();
         self.jit_session.flush();
         self.consecutive_exception_rip = 0;
+        self.consecutive_exception_vector = 0xFF;
+        self.consecutive_exception_error_code = 0;
+        self.consecutive_exception_cr2_page = u64::MAX;
         self.consecutive_exception_count = 0;
         self.apic_id = 0;
         self.logical_cpu_count = 1;
@@ -217,6 +226,33 @@ impl Cpu {
     pub fn configure_topology(&mut self, apic_id: u32, logical_cpu_count: u8) {
         self.apic_id = apic_id;
         self.logical_cpu_count = logical_cpu_count.max(1);
+    }
+
+    fn exception_loop_key(error: &VmError) -> (u8, u32, u64) {
+        let vector = error.exception_vector().unwrap_or(0xFF);
+        let error_code = error.error_code().unwrap_or(0);
+        let cr2_page = match *error {
+            VmError::PageFault { address, .. } => address & !0xFFF,
+            _ => u64::MAX,
+        };
+        (vector, error_code, cr2_page)
+    }
+
+    fn note_exception_repeat(&mut self, error: &VmError) {
+        let (vector, error_code, cr2_page) = Self::exception_loop_key(error);
+        if self.last_exec_rip == self.consecutive_exception_rip
+            && vector == self.consecutive_exception_vector
+            && error_code == self.consecutive_exception_error_code
+            && cr2_page == self.consecutive_exception_cr2_page
+        {
+            self.consecutive_exception_count += 1;
+        } else {
+            self.consecutive_exception_rip = self.last_exec_rip;
+            self.consecutive_exception_vector = vector;
+            self.consecutive_exception_error_code = error_code;
+            self.consecutive_exception_cr2_page = cr2_page;
+            self.consecutive_exception_count = 1;
+        }
     }
 
     /// Mask RIP to the appropriate width for the current CPU mode.
@@ -649,15 +685,10 @@ impl Cpu {
                     return ExitReason::Breakpoint;
                 }
                 Err(ref e) => {
-                    // Detect infinite exception loops (e.g. #PF handler itself faults).
-                    // Track by faulting RIP — the handler runs instructions between
-                    // faults, so we can't rely on strictly consecutive errors.
-                    if self.last_exec_rip == self.consecutive_exception_rip {
-                        self.consecutive_exception_count += 1;
-                    } else {
-                        self.consecutive_exception_rip = self.last_exec_rip;
-                        self.consecutive_exception_count = 1;
-                    }
+                    // Detect infinite exception loops without killing legitimate
+                    // demand-paging sequences that fault on the same instruction
+                    // across different pages (common in Windows memset/stos paths).
+                    self.note_exception_repeat(e);
                     // Log only the first few occurrences (avoid flooding serial).
                     if self.consecutive_exception_count <= 3 {
                         use crate::memory::MemoryBus;
@@ -844,6 +875,18 @@ impl Cpu {
     ) -> BlockExitReason {
         let mut inst_phys = block_phys;
         for inst in instructions {
+            mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
+            crate::poll_external_irqs(interrupts, self.regs.rflags);
+            if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {
+                interrupts.acknowledge(vector);
+                if let Err(e) = self.deliver_interrupt_hw(vector, memory, mmu, interrupts) {
+                    return BlockExitReason::Exit(ExitReason::Exception(e));
+                }
+                interrupts.interrupt_shadow = false;
+                return BlockExitReason::Continue;
+            }
+            interrupts.interrupt_shadow = false;
+
             self.last_exec_rip = self.regs.rip;
             self.last_exec_cs = self.regs.seg[SegReg::Cs as usize].selector;
             self.last_fetch_addr = inst_phys;
@@ -864,13 +907,7 @@ impl Cpu {
                     return BlockExitReason::Exit(ExitReason::Breakpoint);
                 }
                 Err(ref e) => {
-                    // Detect infinite exception loops (same check as fallback path).
-                    if self.last_exec_rip == self.consecutive_exception_rip {
-                        self.consecutive_exception_count += 1;
-                    } else {
-                        self.consecutive_exception_rip = self.last_exec_rip;
-                        self.consecutive_exception_count = 1;
-                    }
+                    self.note_exception_repeat(e);
                     #[cfg(feature = "host_test")]
                     if self.consecutive_exception_count <= 3 {
                         use crate::memory::MemoryBus;
