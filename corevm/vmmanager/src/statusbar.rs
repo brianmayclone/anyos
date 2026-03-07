@@ -1,5 +1,6 @@
 use eframe::egui;
 use egui::Color32;
+use crate::theme;
 
 /// Runtime metrics for the status bar
 pub struct VmMetrics {
@@ -25,55 +26,73 @@ impl Default for VmMetrics {
 }
 
 /// Render the status bar at the bottom.
-/// If metrics is None, show "Ready" or "No VM selected".
 pub fn render_statusbar(
     ctx: &egui::Context,
     metrics: Option<&VmMetrics>,
     vm_selected: bool,
     last_key: Option<&str>,
 ) {
-    let statusbar_bg = Color32::from_rgb(0, 122, 204);
-
     egui::TopBottomPanel::bottom("statusbar")
-        .exact_height(24.0)
+        .exact_height(22.0)
+        .frame(
+            egui::Frame::new()
+                .fill(theme::STATUSBAR_BG)
+                .inner_margin(egui::Margin::symmetric(12, 0)),
+        )
         .show(ctx, |ui| {
-            ui.painter().rect_filled(ui.max_rect(), 0.0, statusbar_bg);
+            // Subtle top border
+            let rect = ui.max_rect();
+            ui.painter().line_segment(
+                [rect.left_top(), rect.right_top()],
+                egui::Stroke::new(0.5, Color32::from_rgb(55, 55, 58)),
+            );
 
             ui.horizontal_centered(|ui| {
-                ui.style_mut().visuals.override_text_color = Some(Color32::WHITE);
+                let label_color = theme::TEXT_SECONDARY;
+                let value_color = theme::TEXT_PRIMARY;
+                ui.style_mut().spacing.item_spacing = egui::vec2(4.0, 0.0);
 
                 match metrics {
                     Some(m) => {
-                        ui.label(m.state_label);
-                        ui.separator();
-                        ui.label(format!("{:.0} MIPS", m.mips));
-                        ui.separator();
-                        ui.label(format!("IPC: {:.1}", m.ipc));
-                        ui.separator();
-                        ui.label(m.cpu_mode);
+                        // State dot
+                        let dot_color = match m.state_label {
+                            "Running" => theme::SUCCESS_GREEN,
+                            "Paused" => theme::WARNING_ORANGE,
+                            _ => theme::TEXT_TERTIARY,
+                        };
+                        ui.colored_label(dot_color, "\u{25CF}");
+                        ui.colored_label(value_color, egui::RichText::new(m.state_label).size(11.0));
+                        ui.add_space(12.0);
+
+                        ui.colored_label(label_color, egui::RichText::new(format!("{:.0} MIPS", m.mips)).size(11.0));
+                        ui.add_space(8.0);
+                        ui.colored_label(label_color, egui::RichText::new(format!("IPC {:.1}", m.ipc)).size(11.0));
+                        ui.add_space(8.0);
+                        ui.colored_label(label_color, egui::RichText::new(m.cpu_mode).size(11.0));
+
                         if m.jit_blocks > 0 {
-                            ui.separator();
-                            ui.label(format!(
-                                "JIT: {} blocks ({:.0}%)",
-                                m.jit_blocks,
-                                m.jit_hit_rate * 100.0
-                            ));
+                            ui.add_space(8.0);
+                            ui.colored_label(
+                                label_color,
+                                egui::RichText::new(format!(
+                                    "JIT {} blk ({:.0}%)",
+                                    m.jit_blocks,
+                                    m.jit_hit_rate * 100.0
+                                )).size(11.0),
+                            );
                         }
                     }
                     None => {
-                        if vm_selected {
-                            ui.label("Ready");
-                        } else {
-                            ui.label("No VM selected");
-                        }
+                        let msg = if vm_selected { "Ready" } else { "No VM selected" };
+                        ui.colored_label(label_color, egui::RichText::new(msg).size(11.0));
                     }
                 }
 
                 if let Some(key_str) = last_key {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new(format!("Key: {}", key_str))
-                                .color(Color32::from_rgb(200, 230, 255)),
+                        ui.colored_label(
+                            theme::TEXT_TERTIARY,
+                            egui::RichText::new(format!("Key: {}", key_str)).size(11.0),
                         );
                     });
                 }

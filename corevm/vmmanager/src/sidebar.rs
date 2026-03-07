@@ -183,9 +183,9 @@ impl SidebarLayout {
 
 fn state_color(state: VmState) -> Color32 {
     match state {
-        VmState::Running => Color32::from_rgb(0, 200, 0),
-        VmState::Paused => Color32::from_rgb(255, 165, 0),
-        VmState::Stopped => Color32::from_rgb(128, 128, 128),
+        VmState::Running => Color32::from_rgb(48, 209, 88),
+        VmState::Paused => Color32::from_rgb(255, 159, 10),
+        VmState::Stopped => Color32::from_rgb(99, 99, 102),
     }
 }
 
@@ -208,13 +208,14 @@ fn render_vm_entry(
     let state = vm_states.get(uuid).copied().unwrap_or(VmState::Stopped);
     let color = state_color(state);
 
-    let response = ui.horizontal(|ui| {
-        ui.colored_label(color, "\u{25CF}");
-        let r = ui.selectable_value(selected, Some(uuid.to_string()), name);
-        r
-    });
-
-    let inner_resp = response.inner;
+    let inner_resp = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        // Draw a filled circle as status indicator
+        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+        let center = dot_rect.center() + egui::vec2(0.0, 2.0);
+        ui.painter().circle_filled(center, 4.0, color);
+        ui.selectable_value(selected, Some(uuid.to_string()), format!("\u{1F5A5} {}", name))
+    }).inner;
 
     if inner_resp.clicked() {
         *selected = Some(uuid.to_string());
@@ -285,41 +286,49 @@ pub fn render_sidebar(
     selected: &mut Option<String>,
     sidebar_state: &mut SidebarState,
 ) -> Vec<SidebarAction> {
-    let sidebar_bg = Color32::from_rgb(30, 30, 30);
     let mut actions = Vec::new();
     let mut drag_vm: Option<String> = None;
     let folder_names: Vec<String> = layout.folders.iter().map(|f| f.name.clone()).collect();
 
     egui::SidePanel::left("sidebar")
-        .exact_width(220.0)
+        .exact_width(230.0)
         .frame(
             egui::Frame::new()
-                .fill(sidebar_bg)
-                .inner_margin(egui::Margin::same(8)),
+                .fill(Color32::from_rgb(28, 28, 30))
+                .inner_margin(egui::Margin::symmetric(10, 12)),
         )
         .show(ctx, |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.spacing_mut().item_spacing.y = 3.0;
 
-            // Header with + buttons
+            // Header
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("Virtual Machines")
+                    egui::RichText::new("Machines")
+                        .size(13.0)
                         .strong()
-                        .color(Color32::WHITE),
+                        .color(Color32::from_rgb(142, 142, 147)),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("\u{1F4C1}+").on_hover_text("New folder").clicked() {
+                    if ui.add(
+                        egui::Button::new(egui::RichText::new("\u{1F4C1}").size(13.0))
+                            .fill(Color32::from_rgb(54, 54, 56))
+                            .corner_radius(egui::CornerRadius::same(6))
+                            .min_size(egui::vec2(24.0, 24.0)),
+                    ).on_hover_text("New folder").clicked() {
                         sidebar_state.show_new_folder = true;
                         sidebar_state.new_folder_name = "New Folder".to_string();
                     }
-                    if ui.small_button("+").on_hover_text("New VM").clicked() {
+                    if ui.add(
+                        egui::Button::new(egui::RichText::new("\u{1F5A5}+").size(13.0).color(Color32::WHITE))
+                            .fill(Color32::from_rgb(10, 132, 255))
+                            .corner_radius(egui::CornerRadius::same(6))
+                            .min_size(egui::vec2(24.0, 24.0)),
+                    ).on_hover_text("New VM").clicked() {
                         actions.push(SidebarAction::CreateVm);
                     }
                 });
             });
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
+            ui.add_space(6.0);
 
             // New folder inline editor
             if sidebar_state.show_new_folder {
@@ -375,7 +384,8 @@ pub fn render_sidebar(
                 let folder_expanded = layout.folders[fi].expanded;
 
                 let header_text = egui::RichText::new(format!("\u{1F4C1} {}", folder_name))
-                    .color(Color32::from_rgb(200, 200, 200));
+                    .size(13.0)
+                    .color(Color32::from_rgb(210, 210, 215));
 
                 let header = egui::CollapsingHeader::new(header_text)
                     .id_salt(format!("folder_{}", fi))
@@ -390,8 +400,8 @@ pub fn render_sidebar(
                         }
                         if vm_uuids.is_empty() {
                             ui.colored_label(
-                                Color32::from_rgb(80, 80, 85),
-                                "  (empty)",
+                                Color32::from_rgb(72, 72, 74),
+                                egui::RichText::new("  No machines").size(12.0).italics(),
                             );
                         }
                     });
@@ -435,7 +445,7 @@ pub fn render_sidebar(
                 ui.add_space(4.0);
                 ui.separator();
                 ui.add_space(2.0);
-                ui.colored_label(Color32::from_rgb(120, 120, 125), "Unsorted");
+                ui.colored_label(Color32::from_rgb(99, 99, 102), egui::RichText::new("Unsorted").size(12.0));
                 let root_uuids = layout.root_vms.clone();
                 for uuid in &root_uuids {
                     render_vm_entry(

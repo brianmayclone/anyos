@@ -67,6 +67,18 @@ pub fn scancode_for_key(key: egui::Key) -> Option<(u8, bool)> {
         egui::Key::PageUp => Some((0x49, true)),
         egui::Key::PageDown => Some((0x51, true)),
         egui::Key::Insert => Some((0x52, true)),
+        // Punctuation / symbols (Set 1)
+        egui::Key::Minus => Some((0x0C, false)),
+        egui::Key::Equals => Some((0x0D, false)),
+        egui::Key::OpenBracket => Some((0x1A, false)),
+        egui::Key::CloseBracket => Some((0x1B, false)),
+        egui::Key::Backslash => Some((0x2B, false)),
+        egui::Key::Semicolon => Some((0x27, false)),
+        egui::Key::Quote => Some((0x28, false)),
+        egui::Key::Backtick => Some((0x29, false)),
+        egui::Key::Comma => Some((0x33, false)),
+        egui::Key::Period => Some((0x34, false)),
+        egui::Key::Slash => Some((0x35, false)),
         _ => None,
     }
 }
@@ -87,7 +99,11 @@ pub fn handle_keyboard_events(ctx: &egui::Context, vm_handle: u64, display_focus
     ctx.input_mut(|i| {
         for event in &i.events {
             match event {
-                egui::Event::Key { key, pressed, .. } => {
+                egui::Event::Key { key, pressed, repeat, .. } => {
+                    // Ignore key-repeat events — we only want actual press/release
+                    if *repeat {
+                        continue;
+                    }
                     if let Some((scancode, _extended)) = scancode_for_key(*key) {
                         if *pressed {
                             libcorevm::corevm_ps2_key_press(vm_handle, scancode);
@@ -97,15 +113,8 @@ pub fn handle_keyboard_events(ctx: &egui::Context, vm_handle: u64, display_focus
                         }
                     }
                 }
-                egui::Event::Text(text) => {
-                    for ch in text.chars() {
-                        if let Some(scancode) = scancode_for_char(ch) {
-                            libcorevm::corevm_ps2_key_press(vm_handle, scancode);
-                            libcorevm::corevm_ps2_key_release(vm_handle, scancode);
-                            last_key = Some(format!("'{}' (0x{:02X})", ch, scancode));
-                        }
-                    }
-                }
+                // Ignore Text events entirely — we handle everything via Key events.
+                // Text events would cause duplicate input for keys already handled above.
                 _ => {}
             }
         }

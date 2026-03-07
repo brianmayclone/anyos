@@ -665,6 +665,27 @@ impl Cpu {
                 // Check MZ header
                 let mz = rd16h(mmu, cr3, base_va, memory);
                 eprintln!("[HANG-TRAP] PE check: MZ={:04X}", mz);
+                // Scan physical RAM for MZ headers (PE images)
+                let ram_size = memory.ram_size();
+                let mut mz_count = 0u32;
+                for pa in (0u64..ram_size as u64).step_by(0x1000) {
+                    let b0 = memory.read_u8(pa).unwrap_or(0);
+                    let b1 = memory.read_u8(pa + 1).unwrap_or(0);
+                    if b0 == 0x4D && b1 == 0x5A {
+                        // Check PE signature
+                        let pe_off = memory.read_u32(pa + 0x3C).unwrap_or(0) as u64;
+                        let pe_sig = if pe_off < 0x1000 { memory.read_u32(pa + pe_off).unwrap_or(0) } else { 0 };
+                        if pe_sig == 0x00004550 {
+                            let opt_off = pe_off + 24;
+                            let img_size = memory.read_u32(pa + opt_off + 56).unwrap_or(0);
+                            mz_count += 1;
+                            // Only log large PEs (>64KB) or first 10
+                            if img_size >= 0x10000 || mz_count <= 10 {
+                                eprintln!("[HANG-TRAP] PE at PA {:08X} pe_off={:X} img_size={:X}", pa, pe_off, img_size);
+                            }
+                        }
+                    }
+                }
                 if mz == 0x5A4D {
                     let pe_off = rd32h(mmu, cr3, base_va + 0x3C, memory) as u64;
                     let pe_sig = rd32h(mmu, cr3, base_va + pe_off, memory);

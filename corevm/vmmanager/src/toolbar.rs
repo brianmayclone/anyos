@@ -1,4 +1,5 @@
 use eframe::egui;
+use crate::theme;
 
 /// Actions the toolbar can trigger
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -10,7 +11,34 @@ pub enum ToolbarAction {
     Snapshot,
 }
 
-/// Render the toolbar. Returns an action if a button was clicked.
+fn icon_button(ui: &mut egui::Ui, icon: &str, tooltip: &str, enabled: bool, accent: bool) -> bool {
+    let color = if !enabled {
+        theme::TEXT_TERTIARY
+    } else if accent {
+        egui::Color32::WHITE
+    } else {
+        theme::TEXT_PRIMARY
+    };
+
+    let fill = if accent && enabled {
+        theme::ACCENT_BLUE
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+
+    let resp = ui.add_enabled(
+        enabled,
+        egui::Button::new(egui::RichText::new(icon).size(15.0).color(color))
+            .fill(fill)
+            .corner_radius(egui::CornerRadius::same(4))
+            .min_size(egui::vec2(24.0, 20.0)),
+    );
+    let clicked = resp.clicked();
+    resp.on_hover_text(tooltip);
+    clicked
+}
+
+/// Render the toolbar inline (meant to be called inside the menu bar).
 pub fn render_toolbar(
     ui: &mut egui::Ui,
     vm_selected: bool,
@@ -19,83 +47,45 @@ pub fn render_toolbar(
 ) -> Option<ToolbarAction> {
     let mut action = None;
 
-    ui.horizontal(|ui| {
-        ui.style_mut().spacing.item_spacing = egui::vec2(4.0, 0.0);
+    ui.style_mut().spacing.item_spacing = egui::vec2(2.0, 0.0);
+    ui.style_mut().spacing.button_padding = egui::vec2(4.0, 2.0);
 
-        // Start button
-        let start_enabled = vm_selected && !vm_running;
-        if ui
-            .add_enabled(
-                start_enabled,
-                egui::Button::new("▶ Start").min_size(egui::vec2(80.0, 32.0)),
-            )
-            .clicked()
-        {
-            action = Some(ToolbarAction::Start);
+    // Start / Resume
+    if !vm_running || vm_paused {
+        let (icon, tip) = if vm_paused { ("\u{25B6}", "Resume") } else { ("\u{25B6}", "Start") };
+        let enabled = vm_selected && (!vm_running || vm_paused);
+        if icon_button(ui, icon, tip, enabled, true) {
+            action = Some(if vm_paused { ToolbarAction::Pause } else { ToolbarAction::Start });
         }
+    }
 
-        // Pause button
-        let pause_enabled = vm_selected && vm_running && !vm_paused;
-        let pause_label = if vm_paused { "▶ Resume" } else { "⏸ Pause" };
-        if vm_paused {
-            if ui
-                .add_enabled(
-                    vm_selected,
-                    egui::Button::new(pause_label).min_size(egui::vec2(80.0, 32.0)),
-                )
-                .clicked()
-            {
-                action = Some(ToolbarAction::Pause);
-            }
-        } else {
-            if ui
-                .add_enabled(
-                    pause_enabled,
-                    egui::Button::new(pause_label).min_size(egui::vec2(80.0, 32.0)),
-                )
-                .clicked()
-            {
-                action = Some(ToolbarAction::Pause);
-            }
+    // Pause
+    if vm_running && !vm_paused {
+        if icon_button(ui, "\u{23F8}", "Pause", true, false) {
+            action = Some(ToolbarAction::Pause);
         }
+    }
 
-        // Stop button
-        let stop_enabled = vm_selected && (vm_running || vm_paused);
-        if ui
-            .add_enabled(
-                stop_enabled,
-                egui::Button::new("⏹ Stop").min_size(egui::vec2(80.0, 32.0)),
-            )
-            .clicked()
-        {
-            action = Some(ToolbarAction::Stop);
-        }
+    // Stop
+    let stop_enabled = vm_selected && (vm_running || vm_paused);
+    if icon_button(ui, "\u{23F9}", "Stop", stop_enabled, false) {
+        action = Some(ToolbarAction::Stop);
+    }
 
-        ui.separator();
+    ui.add_space(2.0);
+    ui.colored_label(egui::Color32::from_rgb(50, 50, 52), "|");
+    ui.add_space(2.0);
 
-        // Settings button
-        let settings_enabled = vm_selected && !vm_running;
-        if ui
-            .add_enabled(
-                settings_enabled,
-                egui::Button::new("⚙ Settings").min_size(egui::vec2(90.0, 32.0)),
-            )
-            .clicked()
-        {
-            action = Some(ToolbarAction::Settings);
-        }
+    // Settings
+    let settings_enabled = vm_selected && !vm_running;
+    if icon_button(ui, "\u{2699}", "Settings", settings_enabled, false) {
+        action = Some(ToolbarAction::Settings);
+    }
 
-        // Snapshot button
-        if ui
-            .add_enabled(
-                vm_selected,
-                egui::Button::new("📷 Snapshot").min_size(egui::vec2(90.0, 32.0)),
-            )
-            .clicked()
-        {
-            action = Some(ToolbarAction::Snapshot);
-        }
-    });
+    // Snapshot
+    if icon_button(ui, "\u{1F4F7}", "Snapshots", vm_selected, false) {
+        action = Some(ToolbarAction::Snapshot);
+    }
 
     action
 }
