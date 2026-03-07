@@ -408,7 +408,7 @@ pub extern "C" fn corevm_create_ex(ram_size_mb: u32, vcpu_count: u32) -> u64 {
 /// Read the CPU timestamp counter.
 #[cfg(feature = "host_test")]
 #[inline(always)]
-fn rdtsc() -> u64 {
+pub(crate) fn rdtsc() -> u64 {
     let lo: u32;
     let hi: u32;
     unsafe { core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nostack, nomem)); }
@@ -641,12 +641,13 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
     let mut exit = ExitReason::InstructionLimit;
     let mut remaining = max_instructions;
 
-    // Wall-clock PIT: use rdtsc to advance PIT at real 1.193182 MHz rate.
-    // This decouples timer behavior from emulation speed.
+    // Wall-clock timers: use rdtsc to advance PIT and LAPIC at realistic rates.
     #[cfg(feature = "host_test")]
-    let pit_t0 = rdtsc();
+    let timer_t0 = rdtsc();
     #[cfg(feature = "host_test")]
     let mut pit_tsc_accum: u64 = 0;
+    #[cfg(feature = "host_test")]
+    let mut lapic_tsc_accum: u64 = 0;
 
     // Instruction-based fallback for no_std (anyOS kernel).
     #[cfg(not(feature = "host_test"))]
@@ -673,11 +674,42 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
         }
 
 
-        // Advance LAPIC timer using guest instruction progress.
+        // Advance LAPIC timer.
         if ran > 0 && !vm.lapic_ptr.is_null() {
             let lapic = unsafe { &mut *vm.lapic_ptr };
-            if let Some(vector) = lapic.advance(ran) {
-                vm.engine.interrupts.raise_irq(vector);
+            #[cfg(feature = "host_test")]
+            {
+                // Wall-clock based: convert TSC elapsed to APIC bus ticks.
+                // APIC bus frequency ~100 MHz.
+                const APIC_BUS_FREQ: u64 = 100_000_000;
+                let now = rdtsc();
+                let elapsed_tsc = now.wrapping_sub(timer_t0).saturating_sub(lapic_tsc_accum);
+                let tsc_freq = vm.tsc_freq;
+                if tsc_freq > 0 {
+                    let bus_ticks = (elapsed_tsc as u128 * APIC_BUS_FREQ as u128 / tsc_freq as u128) as u64;
+                    if bus_ticks > 0 {
+                        lapic_tsc_accum = lapic_tsc_accum.wrapping_add(
+                            (bus_ticks as u128 * tsc_freq as u128 / APIC_BUS_FREQ as u128) as u64
+                        );
+                        if let Some(vector) = lapic.advance(bus_ticks) {
+                            vm.engine.interrupts.raise_irq(vector);
+                            static LAPIC_FIRES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                            let f = LAPIC_FIRES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if f < 10 {
+                                eprintln!("[lapic-fire] vec={} bus_ticks={} ic={}", vector, bus_ticks, after_ic);
+                            }
+                        }
+                    }
+                }
+            }
+            #[cfg(not(feature = "host_test"))]
+            {
+                // Instruction-based fallback: approximate 100 MHz bus at ~25 MIPS.
+                // Scale: bus_ticks = instructions * 4 (rough 100M/25M ratio).
+                let bus_ticks = ran * 4;
+                if let Some(vector) = lapic.advance(bus_ticks) {
+                    vm.engine.interrupts.raise_irq(vector);
+                }
             }
         }
 
@@ -686,7 +718,7 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
             #[cfg(feature = "host_test")]
             {
                 let now = rdtsc();
-                let elapsed_tsc = now.wrapping_sub(pit_t0).saturating_sub(pit_tsc_accum);
+                let elapsed_tsc = now.wrapping_sub(timer_t0).saturating_sub(pit_tsc_accum);
                 // Convert TSC ticks to PIT ticks: PIT runs at 1193182 Hz.
                 // tsc_freq is cycles/second. pit_ticks = elapsed * 1193182 / tsc_freq.
                 // Use a fixed estimate: modern CPUs ~3 GHz. We calibrate via TSC_FREQ.
@@ -885,6 +917,38 @@ pub extern "C" fn corevm_get_instruction_count(handle: u64) -> u64 {
 pub extern "C" fn corevm_get_last_error_rip(handle: u64) -> u64 {
     let vm = unsafe { vm_from_handle(handle) };
     vm.last_error_rip
+}
+
+/// Dump the exception ring buffer to serial output for BSOD diagnosis.
+#[no_mangle]
+pub extern "C" fn corevm_dump_exception_ring(handle: u64) {
+    let vm = unsafe { vm_from_handle(handle) };
+    let ring = &vm.engine.cpu.exc_ring;
+    let idx = vm.engine.cpu.exc_ring_idx;
+    let len = ring.len();
+    let count = if idx < len { idx } else { len };
+    let start = if idx < len { 0 } else { idx % len };
+    #[cfg(feature = "host_test")]
+    {
+        eprintln!("[exc-ring] last {} exceptions:", count);
+        for i in 0..count {
+            let j = (start + i) % len;
+            let (rip, vec, ec, cr2) = ring[j];
+            eprintln!("  [{}] RIP={:08X} vec={} ec={:X} cr2={:08X}", i, rip, vec, ec, cr2);
+        }
+    }
+    #[cfg(not(feature = "host_test"))]
+    {
+        libsyscall::serial_print(format_args!("[exc-ring] last {} exceptions:\n", count));
+        for i in 0..count {
+            let j = (start + i) % len;
+            let (rip, vec, ec, cr2) = ring[j];
+            libsyscall::serial_print(format_args!(
+                "  [{}] RIP={:08X} vec={} ec={:X} cr2={:08X}\n",
+                i, rip, vec, ec, cr2
+            ));
+        }
+    }
 }
 
 /// Write a human-readable description of the last error into the provided buffer.
@@ -1284,7 +1348,9 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     // Local APIC at standard MMIO address (0xFEE00000, 4 KB).
     // SeaBIOS probes LAPIC Version (0xFEE00030) to detect APIC support.
     // Without this, SeaBIOS reports "No apic" and may skip APIC-dependent init.
-    let lapic = Box::into_raw(Box::new(devices::lapic::Lapic::new()));
+    let mut lapic_obj = devices::lapic::Lapic::new();
+    lapic_obj.set_host_tsc_freq(vm.tsc_freq);
+    let lapic = Box::into_raw(Box::new(lapic_obj));
     vm.lapic_ptr = lapic;
     vm.engine.memory.add_mmio(0xFEE00000, 0x1000, Box::new(MmioProxy { ptr: lapic }));
 

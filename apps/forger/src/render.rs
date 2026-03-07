@@ -176,6 +176,10 @@ impl Renderer {
         let u_sky_sun_dir = gl::get_uniform_location(sky_program, "uSunDir");
         let a_sky_pos = gl::get_attrib_location(sky_program, "aPosition");
 
+        anyos_std::println!("forger: block prog={} sky prog={}", block_program, sky_program);
+        anyos_std::println!("forger: u_mvp={} u_sun={} u_amb={} u_fog_c={} u_fog_s={} u_fog_e={} u_tex={}", u_mvp, u_sun_dir, u_ambient, u_fog_color, u_fog_start, u_fog_end, u_texture);
+        anyos_std::println!("forger: a_pos={} a_uv={} a_norm={} a_light={}", a_position, a_texcoord, a_normal, a_light);
+
         Renderer {
             block_program,
             sky_program,
@@ -268,6 +272,7 @@ impl Renderer {
 
         // -- Sky pass --
         gl::disable(gl::GL_DEPTH_TEST);
+        gl::depth_mask(false);
         gl::use_program(self.sky_program);
 
         gl::uniform3f(self.u_sky_top, sky_top[0], sky_top[1], sky_top[2]);
@@ -281,6 +286,7 @@ impl Renderer {
         gl::disable_vertex_attrib_array(self.a_sky_pos as u32);
 
         // -- Block pass --
+        gl::depth_mask(true);
         gl::enable(gl::GL_DEPTH_TEST);
         gl::depth_func(gl::GL_LESS);
         gl::enable(gl::GL_BLEND);
@@ -294,6 +300,23 @@ impl Renderer {
         let view = look_matrix(cam_x, cam_y, cam_z, self.yaw, self.pitch);
         let mvp = mat4_mul(&proj, &view);
 
+        // Debug: print first draw call info once
+        static mut DBG_ONCE: bool = true;
+        unsafe {
+            if DBG_ONCE {
+                DBG_ONCE = false;
+                anyos_std::println!("forger: mvp[0]={} mvp[5]={} mvp[10]={} mvp[15]={}", mvp[0] as i32, mvp[5] as i32, mvp[10] as i32, mvp[15] as i32);
+                anyos_std::println!("forger: mvp[12]={} mvp[13]={} mvp[14]={}", mvp[12] as i32, mvp[13] as i32, mvp[14] as i32);
+                anyos_std::println!("forger: chunks to draw: {}", self.chunk_vbos.len());
+                let mut total_verts = 0u32;
+                let mut first_verts = 0u32;
+                for (i, (_, &(_, vc))) in self.chunk_vbos.iter().enumerate() {
+                    total_verts += vc;
+                    if i == 0 { first_verts = vc; }
+                }
+                anyos_std::println!("forger: total verts={} first chunk verts={}", total_verts, first_verts);
+            }
+        }
         gl::uniform_matrix4fv(self.u_mvp, false, &mvp);
         gl::uniform3f(self.u_sun_dir, sun_dir[0], sun_dir[1], sun_dir[2]);
         gl::uniform1f(self.u_ambient, ambient);

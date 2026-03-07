@@ -21,6 +21,7 @@ use crate::state::GlContext;
 use crate::types::*;
 use crate::compiler::backend_sw::ShaderExec;
 use crate::compiler::backend_jit::{JitFn, JitContext};
+use crate::serial_println;
 
 /// Maximum number of interpolated varyings between vertex and fragment shaders.
 ///
@@ -166,6 +167,31 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
 
     // Pre-allocate fragment shader exec (reused for all pixels in this draw call)
     let mut fs_exec = ShaderExec::new(fs_ir.num_regs, num_varyings);
+
+    // One-time debug: log first draw call vertex positions
+    static mut DRAW_DBG: u32 = 0;
+    let dbg_this = unsafe { DRAW_DBG < 2 };
+    if dbg_this {
+        unsafe { DRAW_DBG += 1; }
+        if !clip_verts.is_empty() {
+            let v0 = &clip_verts[0];
+            serial_println!("[libgl] draw: {} verts, v0.pos=({},{},{},{}), fb={}x{}, fast={}",
+                clip_verts.len(),
+                v0.position[0] as i32, v0.position[1] as i32,
+                v0.position[2] as i32, v0.position[3] as i32,
+                fb_w, fb_h, fast.is_some());
+            // Check how many verts are trivially inside
+            let inside = clip_verts.iter().filter(|v| trivially_inside(v)).count();
+            serial_println!("[libgl] draw: {} of {} verts trivially inside", inside, clip_verts.len());
+            if clip_verts.len() >= 3 {
+                let s0 = to_screen(&clip_verts[0].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
+                let s1 = to_screen(&clip_verts[1].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
+                let s2 = to_screen(&clip_verts[2].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
+                serial_println!("[libgl] draw: screen v0=({},{}), v1=({},{}), v2=({},{})",
+                    s0[0] as i32, s0[1] as i32, s1[0] as i32, s1[1] as i32, s2[0] as i32, s2[1] as i32);
+            }
+        }
+    }
 
     match mode {
         GL_TRIANGLES => {

@@ -125,6 +125,10 @@ pub struct Cpu {
     pub apic_id: u32,
     /// Configured number of logical CPUs in the VM package.
     pub logical_cpu_count: u8,
+    /// Ring buffer of recent exceptions for BSOD diagnosis.
+    /// Each entry: (rip, vector, error_code, cr2).
+    pub exc_ring: [(u64, u8, u32, u64); 32],
+    pub exc_ring_idx: usize,
     /// TSC-based timing counters for profiling the run loop.
     pub perf_tsc_interrupt: u64,
     pub perf_tsc_translate: u64,
@@ -159,6 +163,8 @@ impl Cpu {
             jit_session: crate::jit::session::JitSession::new(),
             consecutive_exception_rip: 0,
             consecutive_exception_count: 0,
+            exc_ring: [(0, 0, 0, 0); 32],
+            exc_ring_idx: 0,
             jit_fault: false,
             smc_pending: false,
             jit_halted: false,
@@ -1171,6 +1177,18 @@ impl Cpu {
             // Non-exception errors cannot be injected
             _ => return Err(*error),
         };
+
+        // Record in exception ring buffer for BSOD diagnosis.
+        {
+            let idx = self.exc_ring_idx % self.exc_ring.len();
+            self.exc_ring[idx] = (
+                self.regs.rip,
+                vector,
+                error_code.unwrap_or(0),
+                cr2_val.unwrap_or(0),
+            );
+            self.exc_ring_idx += 1;
+        }
 
         if let Some(addr) = cr2_val {
             self.regs.cr2 = addr;

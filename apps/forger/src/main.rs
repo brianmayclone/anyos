@@ -97,6 +97,7 @@ fn main() {
     }
 
     let spawn_y = find_spawn_height(&world);
+    anyos_std::println!("forger: {} chunks meshed, {} VBOs, spawn_y={}", world.chunks.len(), renderer.chunk_vbos.len(), spawn_y as i32);
 
     let fps_label = libanyui_client::Label::new("FPS: --");
     fps_label.set_position(4, 4);
@@ -265,6 +266,11 @@ fn game_tick() {
     if !fb_ptr.is_null() {
         let pixels = unsafe { core::slice::from_raw_parts(fb_ptr, (s.fb_w * s.fb_h) as usize) };
         s.canvas.copy_pixels_from(pixels);
+    }
+
+    // Debug: print camera once per second
+    if s.fps_frame_count == 0 {
+        anyos_std::println!("forger: cam=({},{},{}) vbos={} fb_null={}", ex as i32, ey as i32, ez as i32, s.renderer.chunk_vbos.len(), fb_ptr.is_null());
     }
 
     // FPS counter

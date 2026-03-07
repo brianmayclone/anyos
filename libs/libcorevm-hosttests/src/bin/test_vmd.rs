@@ -23,6 +23,7 @@ use libcorevm::{
     corevm_setup_ide, corevm_setup_pci_bus, corevm_setup_standard_devices, corevm_debug_take_output,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
     corevm_debugger_enable, corevm_debugger_break,
+    corevm_dump_exception_ring,
 };
 
 struct VmHandle(u64);
@@ -1428,6 +1429,33 @@ fn main() {
                     rip as u32
                 );
                 dump_cpu_probe(vm.0, mode, cs, rip);
+                // Dump exception ring once when stuck in kernel space
+                if rip >= 0x8000_0000 && !KERNEL_LOOP_DUMPED.swap(true, Ordering::SeqCst) {
+                    corevm_dump_exception_ring(vm.0);
+                    // Dump stack
+                    let esp = corevm_get_gpr(vm.0, 4);
+                    eprintln!("[bsod-stack] ESP={:08X} dumping 64 dwords:", esp);
+                    for i in 0..64u64 {
+                        let addr = esp.wrapping_add(i * 4);
+                        let b0 = corevm_read_linear_u8(vm.0, addr) as u32;
+                        let b1 = corevm_read_linear_u8(vm.0, addr + 1) as u32;
+                        let b2 = corevm_read_linear_u8(vm.0, addr + 2) as u32;
+                        let b3 = corevm_read_linear_u8(vm.0, addr + 3) as u32;
+                        let dw = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                        if i % 8 == 0 { eprint!("\n  {:08X}:", addr); }
+                        eprint!(" {:08X}", dw);
+                    }
+                    eprintln!();
+                    // Dump bytes at last #UD and #GP addresses from exception ring
+                    for dump_addr in [0x8019B90Bu64, 0x8019BDA1u64, rip] {
+                        eprint!("[bsod-code] {:08X}:", dump_addr);
+                        for j in 0..16u64 {
+                            let b = corevm_read_linear_u8(vm.0, dump_addr + j);
+                            eprint!(" {:02X}", b);
+                        }
+                        eprintln!();
+                    }
+                }
                 last_plain_diag = Instant::now();
             }
         }

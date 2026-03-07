@@ -78,8 +78,13 @@ pub struct Lapic {
     timer_init_count: u32,
     /// Timer Current Count.
     timer_cur_count: u32,
-    /// Fractional instruction credits toward the next timer tick.
+    /// Fractional bus-tick credits toward the next timer decrement.
     timer_credit: u64,
+    /// TSC value when the timer was last started (init_count written).
+    /// Used to compute current_count in real-time on reads.
+    timer_start_tsc: u64,
+    /// Host TSC frequency in Hz (set once at init).
+    host_tsc_freq: u64,
     /// Timer Divide Configuration.
     timer_divide: u32,
     /// Error Status Register.
@@ -115,6 +120,8 @@ impl Lapic {
             timer_init_count: 0,
             timer_cur_count: 0,
             timer_credit: 0,
+            timer_start_tsc: 0,
+            host_tsc_freq: 0,
             timer_divide: 0,
             esr: 0,
             isr: [0; 8],
@@ -125,6 +132,41 @@ impl Lapic {
 }
 
 impl Lapic {
+    /// Set the host TSC frequency for real-time timer computation.
+    pub fn set_host_tsc_freq(&mut self, freq: u64) {
+        self.host_tsc_freq = freq;
+    }
+
+    /// Compute the current timer count based on real elapsed time.
+    /// APIC bus frequency = 100 MHz.
+    fn realtime_current_count(&self) -> u32 {
+        if self.timer_init_count == 0 || self.host_tsc_freq == 0 {
+            return 0;
+        }
+        let now = {
+            #[cfg(feature = "host_test")]
+            { unsafe { core::arch::x86_64::_rdtsc() as u64 } }
+            #[cfg(not(feature = "host_test"))]
+            { crate::rdtsc() }
+        };
+        let elapsed_tsc = now.wrapping_sub(self.timer_start_tsc);
+        const APIC_BUS_FREQ: u128 = 100_000_000;
+        let bus_ticks = (elapsed_tsc as u128 * APIC_BUS_FREQ / self.host_tsc_freq as u128) as u64;
+        let div = self.timer_divisor();
+        let dec = bus_ticks / div;
+        if dec >= self.timer_init_count as u64 {
+            let periodic = (self.lvt_timer & (1 << 17)) != 0;
+            if periodic && self.timer_init_count != 0 {
+                let remainder = dec % self.timer_init_count as u64;
+                self.timer_init_count.saturating_sub(remainder as u32)
+            } else {
+                0
+            }
+        } else {
+            self.timer_init_count - dec as u32
+        }
+    }
+
     fn timer_divisor(&self) -> u64 {
         // APIC timer divide encoding:
         // 0b0000=2, 0001=4, 0010=8, 0011=16,
@@ -142,11 +184,28 @@ impl Lapic {
         }
     }
 
-    /// Advance the LAPIC timer by a number of guest instructions.
+    /// Advance the LAPIC timer by `bus_ticks` (at the APIC bus frequency).
+    ///
+    /// The caller is responsible for converting wall-clock or TSC time into
+    /// bus ticks. A typical APIC bus frequency is 100 MHz.
     ///
     /// Returns the timer interrupt vector when the counter expires and the
     /// timer is unmasked. For periodic mode, the counter reloads.
-    pub fn advance(&mut self, guest_instructions: u64) -> Option<u8> {
+    pub fn advance(&mut self, bus_ticks: u64) -> Option<u8> {
+        #[cfg(feature = "host_test")]
+        {
+            static ADV_LOG: AtomicU32 = AtomicU32::new(0);
+            let svr_en = (self.svr & (1 << 8)) != 0;
+            let masked = (self.lvt_timer & (1 << 16)) != 0;
+            if self.timer_init_count != 0 {
+                let n = ADV_LOG.fetch_add(1, Ordering::Relaxed);
+                if n < 10 || (n < 200 && n % 50 == 0) {
+                    eprintln!("[lapic-adv] bus_ticks={} cur={:08X} init={:08X} svr_en={} masked={} credit={} div={}",
+                        bus_ticks, self.timer_cur_count, self.timer_init_count, svr_en, masked,
+                        self.timer_credit, self.timer_divisor());
+                }
+            }
+        }
         // APIC software enable (SVR bit 8) must be set.
         if (self.svr & (1 << 8)) == 0 {
             return None;
@@ -160,7 +219,7 @@ impl Lapic {
         }
 
         let div = self.timer_divisor();
-        self.timer_credit = self.timer_credit.saturating_add(guest_instructions);
+        self.timer_credit = self.timer_credit.saturating_add(bus_ticks);
         if self.timer_credit < div {
             return None;
         }
@@ -186,6 +245,13 @@ impl Lapic {
 
     /// Read the raw 32-bit value of a register by its 16-byte-aligned offset.
     fn read_register(&self, reg_base: u32) -> u32 {
+        #[cfg(feature = "host_test")]
+        if reg_base == 0x390 {
+            static READ_LOG: AtomicU32 = AtomicU32::new(0);
+            if READ_LOG.fetch_add(1, Ordering::Relaxed) < 20 {
+                eprintln!("[lapic] rd reg=390 cur_count={:08X} init={:08X}", self.timer_cur_count, self.timer_init_count);
+            }
+        }
         match reg_base {
             0x020 => self.id,
             0x030 => LAPIC_VERSION,
@@ -210,7 +276,13 @@ impl Lapic {
             0x360 => self.lvt_lint1,
             0x370 => self.lvt_error,
             0x380 => self.timer_init_count,
-            0x390 => self.timer_cur_count,
+            0x390 => {
+                if self.host_tsc_freq > 0 && self.timer_init_count > 0 {
+                    self.realtime_current_count()
+                } else {
+                    self.timer_cur_count
+                }
+            }
             0x3E0 => self.timer_divide,
             _ => 0,
         }
@@ -219,8 +291,11 @@ impl Lapic {
     /// Write a 32-bit value to a register by its 16-byte-aligned offset.
     fn write_register(&mut self, reg_base: u32, v: u32) {
         if matches!(reg_base, 0x0F0 | 0x320 | 0x380 | 0x3E0)
-            && LAPIC_WRITE_LOG_COUNT.fetch_add(1, Ordering::Relaxed) < 64
+            && LAPIC_WRITE_LOG_COUNT.fetch_add(1, Ordering::Relaxed) < 200
         {
+            #[cfg(feature = "host_test")]
+            eprintln!("[lapic] wr reg={:03X} val={:08X}", reg_base, v);
+            #[cfg(not(feature = "host_test"))]
             libsyscall::serial_print(format_args!(
                 "[lapic] wr reg={:03X} val={:08X}\n",
                 reg_base,
@@ -258,6 +333,13 @@ impl Lapic {
                 self.timer_init_count = v;
                 self.timer_cur_count = v;
                 self.timer_credit = 0;
+                // Record TSC at timer start for realtime current_count reads.
+                if v != 0 {
+                    #[cfg(feature = "host_test")]
+                    { self.timer_start_tsc = unsafe { core::arch::x86_64::_rdtsc() as u64 }; }
+                    #[cfg(not(feature = "host_test"))]
+                    { self.timer_start_tsc = crate::rdtsc(); }
+                }
             }
             0x3E0 => self.timer_divide = v,
             _ => {}

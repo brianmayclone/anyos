@@ -163,6 +163,14 @@ impl IoApic {
 
     /// Write a 32-bit value to an MMIO register by its base offset.
     fn write_mmio_register(&mut self, reg_base: u64, v: u32) {
+        #[cfg(feature = "host_test")]
+        {
+            use core::sync::atomic::{AtomicU32, Ordering};
+            static IOAPIC_WR_LOG: AtomicU32 = AtomicU32::new(0);
+            if IOAPIC_WR_LOG.fetch_add(1, Ordering::Relaxed) < 30 {
+                eprintln!("[ioapic] wr mmio_off={:02X} val={:08X} (regsel={:02X})", reg_base, v, self.reg_select);
+            }
+        }
         match reg_base {
             0x00 => self.reg_select = v,
             0x10 => self.write_reg(self.reg_select, v),

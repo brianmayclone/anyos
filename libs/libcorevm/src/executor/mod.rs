@@ -29,6 +29,18 @@ use crate::io::IoDispatch;
 use crate::memory::{AccessType, GuestMemory, MemoryBus, Mmu};
 use crate::registers::{GprIndex, SegReg};
 
+/// Set SF, ZF, PF flags from an 8-bit result. Clears CF, OF, AF.
+#[inline]
+fn set_szp_flags(rflags: &mut u64, result: u8) {
+    use crate::flags;
+    let mut f = *rflags & !(flags::SF | flags::ZF | flags::PF | flags::CF | flags::OF | flags::AF);
+    if result & 0x80 != 0 { f |= flags::SF; }
+    if result == 0 { f |= flags::ZF; }
+    // Parity: set if even number of 1-bits in low byte
+    if result.count_ones() % 2 == 0 { f |= flags::PF; }
+    *rflags = f;
+}
+
 // ── Public entry point ──
 
 /// Execute a single decoded instruction.
@@ -387,7 +399,32 @@ fn exec_primary(
         0xD2 | 0xD3 => exec_group2(cpu, inst, memory, mmu),
 
         // ── AAM / AAD (32-bit only) ──
-        0xD4 | 0xD5 => Err(VmError::UndefinedOpcode(op)),
+        0xD4 => {
+            // AAM: AH = AL / imm8, AL = AL % imm8
+            let imm = inst.immediate as u8;
+            if imm == 0 {
+                return Err(VmError::DivideByZero);
+            }
+            let al = cpu.regs.read_gpr8(0, false); // AL
+            let new_ah = al / imm;
+            let new_al = al % imm;
+            let ax = (new_ah as u16) << 8 | new_al as u16;
+            cpu.regs.write_gpr16(0, ax);
+            set_szp_flags(&mut cpu.regs.rflags, new_al);
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+        0xD5 => {
+            // AAD: AL = AH * imm8 + AL, AH = 0
+            let imm = inst.immediate as u8;
+            let al = cpu.regs.read_gpr8(0, false); // AL
+            let ah = cpu.regs.read_gpr8(4, false); // AH
+            let result = ah.wrapping_mul(imm).wrapping_add(al);
+            cpu.regs.write_gpr16(0, result as u16); // AH=0, AL=result
+            set_szp_flags(&mut cpu.regs.rflags, result);
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
 
         // ── SALC (undocumented, 32-bit) ──
         0xD6 => Err(VmError::UndefinedOpcode(op)),
