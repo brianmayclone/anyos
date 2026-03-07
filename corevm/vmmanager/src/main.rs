@@ -1,5 +1,6 @@
 use eframe::egui;
 
+mod app;
 mod config;
 mod platform;
 mod sidebar;
@@ -17,18 +18,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "CoreVM Manager",
         options,
-        Box::new(|_cc| Ok(Box::new(App::default()))),
+        Box::new(|_cc| Ok(Box::new(app::CoreVmApp::new()))),
     )
-}
-
-#[derive(Default)]
-struct App;
-
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        theme::apply_theme(ctx);
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("CoreVM Manager");
-        });
-    }
 }
