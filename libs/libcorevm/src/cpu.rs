@@ -520,9 +520,9 @@ impl Cpu {
             if let Some(cached_block) = self.decode_cache.lookup(&block_key) {
                 if self.jit_engine.is_enabled() {
                     let t_before_jit = rdtsc();
-                    let jit_result = self.jit_execute_block(
-                        &block_key, &cached_block.instructions,
-                        memory, mmu, io, interrupts,
+                    let jit_result = self.jit_execute_block_chain(
+                        block_key, cached_block,
+                        target, memory, mmu, io, interrupts,
                     );
                     let t_after_jit = rdtsc();
                     self.perf_tsc_interrupt += t_after_intr - t_loop_start;
@@ -562,9 +562,9 @@ impl Cpu {
 
                 if self.jit_engine.is_enabled() {
                     let t_before_jit = rdtsc();
-                    let jit_result = self.jit_execute_block(
-                        &block_key, &cached_block.instructions,
-                        memory, mmu, io, interrupts,
+                    let jit_result = self.jit_execute_block_chain(
+                        block_key, cached_block,
+                        target, memory, mmu, io, interrupts,
                     );
                     let t_after_jit = rdtsc();
                     self.perf_tsc_interrupt += t_after_intr - t_loop_start;
@@ -942,6 +942,8 @@ impl Cpu {
         interrupts: &mut InterruptController,
     ) -> BlockExitReason {
         loop {
+            let exits_with_branch = block.exits_with_branch;
+
             let result = self.jit_execute_block(
                 &block_key, &block.instructions,
                 memory, mmu, io, interrupts,
@@ -951,11 +953,26 @@ impl Cpu {
                 BlockExitReason::Continue => {}
             }
 
+            // A JIT fault (page fault in memory helper) means we must return
+            // to the outer loop so the exception can be injected properly.
+            if self.jit_fault {
+                self.jit_fault = false;
+                return BlockExitReason::Continue;
+            }
+
             if target > 0 && self.instruction_count >= target {
                 return BlockExitReason::Exit(ExitReason::InstructionLimit);
             }
 
-            // Check for pending interrupts
+            // Block ended with a branch — return to outer loop so interrupts
+            // are checked and the new CS:RIP is fully resolved. This matches
+            // the interpreter chain's behavior and is critical for I/O-heavy
+            // workloads (ATAPI, DMA) that depend on timely interrupt delivery.
+            if exits_with_branch {
+                return BlockExitReason::Continue;
+            }
+
+            // Give pending interrupts a chance before chaining further blocks.
             if interrupts.pending_interrupt(self.regs.rflags).is_some() || interrupts.interrupt_shadow {
                 return BlockExitReason::Continue;
             }
@@ -1101,6 +1118,24 @@ impl Cpu {
                         mmu.flush_tlb();
                         return Ok(());
                     }
+                }
+            }
+        }
+
+        // Trace #PF on high VAs (MMIO area) to find I/O APIC mapping attempts
+        #[cfg(feature = "host_test")]
+        if let VmError::PageFault { address, error_code } = error {
+            let va = *address;
+            if self.mode == Mode::ProtectedMode && va >= 0xFEC0_0000 && va < 0xFFFF_0000 {
+                static PF_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                let c = PF_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                if c < 30 {
+                    let cr3 = self.regs.cr3 & 0xFFFF_F000;
+                    let va32 = va as u32;
+                    let pde_idx = va32 >> 22;
+                    let pde = memory.read_u32(cr3 + (pde_idx * 4) as u64).unwrap_or(0);
+                    eprintln!("[corevm] #PF(MMIO) #{} VA={:#010x} err={:#x} IP={:#010x} ESP={:#010x} PDE[{}]={:#010x} ic={}",
+                        c, va, error_code, self.regs.rip, self.regs.sp(), pde_idx, pde, self.instruction_count);
                 }
             }
         }
