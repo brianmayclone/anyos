@@ -667,8 +667,8 @@ fn exec_secondary(
             }
         }
 
-        // ── NOP r/m16/32/64 (0F 1F /0) ──
-        0x1F => {
+        // ── NOP r/m16/32/64 (0F 1E = ENDBR64/ENDBR32, 0F 1F /0 = multi-byte NOP) ──
+        0x1E | 0x1F => {
             cpu.regs.rip += inst.length as u64;
             Ok(())
         }

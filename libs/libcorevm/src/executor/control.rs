@@ -198,6 +198,9 @@ pub fn exec_ret_far(
     let offset_size = control_offset_size(cpu, inst);
     let stack_size = stack_operand_size(cpu, inst);
 
+    #[cfg(feature = "host_test")]
+    let pre_esp = cpu.regs.sp();
+
     let rip = pop_val(cpu, offset_size, mmu, memory)?;
     let cs = if matches!(cpu.mode, Mode::RealMode) {
         pop_val(cpu, OperandSize::Word, mmu, memory)? as u16
@@ -210,6 +213,18 @@ pub fn exec_ret_far(
         let imm = inst.immediate as u64;
         let sp = cpu.regs.sp().wrapping_add(imm);
         cpu.regs.set_sp(sp);
+    }
+
+    #[cfg(feature = "host_test")]
+    {
+        let efer = cpu.regs.read_msr(0xC0000080);
+        let lma = efer & (1 << 10) != 0;
+        if lma {
+            eprintln!(
+                "[corevm] RETF in LMA=1: mode={:?} offset_size={:?} stack_size={:?} ESP={:08X}->{:08X} popped RIP={:016X} CS={:04X}",
+                cpu.mode, offset_size, stack_size, pre_esp as u32, cpu.regs.sp() as u32, rip, cs,
+            );
+        }
     }
 
     load_cs(cpu, cs, memory, mmu)?;

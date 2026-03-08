@@ -1208,12 +1208,11 @@ impl DecodeCursor {
             }
 
             // -- NOP r/m16/32/64 (multi-byte NOP form) --
-            0x1F => {
+            // 0F 1E: ENDBR64/ENDBR32/RDSSPD/RDSSPQ — treated as NOP
+            // 0F 1F: standard multi-byte NOP
+            0x1E | 0x1F => {
                 let modrm = self.fetch_modrm()?;
-                let (md, reg, rm) = Self::split_modrm(modrm);
-                if reg != 0 {
-                    return Err(VmError::UndefinedOpcode(op_lo));
-                }
+                let (md, _reg, rm) = Self::split_modrm(modrm);
                 let rm_op = self.decode_rm(md, rm, self.inst.operand_size)?;
                 self.set_operand(0, rm_op);
                 self.inst.operand_count = 1;

@@ -753,6 +753,49 @@ impl Cpu {
                         ntdll_pa, isz, s, stored, if s == stored { "OK" } else { "MISMATCH" });
                     // don't break — check all copies
                 }
+                // Compare first two ntdll copies byte-by-byte to find differences
+                {
+                    let pa_a = 0xC9C000u64;
+                    let pa_b = 0x2039000u64;
+                    let mz_a = memory.read_u16(pa_a).unwrap_or(0);
+                    let mz_b = memory.read_u16(pa_b).unwrap_or(0);
+                    if mz_a == 0x5A4D && mz_b == 0x5A4D {
+                        let pe_o = memory.read_u32(pa_a + 0x3C).unwrap_or(0) as u64;
+                        let oo = pe_o + 24;
+                        let isz = memory.read_u32(pa_a + oo + 56).unwrap_or(0) as u64;
+                        let mut diff_count = 0u32;
+                        let mut first_diffs = alloc::vec::Vec::new();
+                        for i in 0..isz.min(0xC4000) {
+                            let ba = memory.read_u8(pa_a + i).unwrap_or(0);
+                            let bb = memory.read_u8(pa_b + i).unwrap_or(0);
+                            if ba != bb {
+                                diff_count += 1;
+                                if first_diffs.len() < 20 {
+                                    first_diffs.push((i, ba, bb));
+                                }
+                            }
+                        }
+                        eprintln!("[HANG-TRAP] ntdll diff A(C9C000) vs B(2039000): {} bytes differ", diff_count);
+                        for &(off, a, b) in &first_diffs {
+                            eprintln!("[HANG-TRAP]  offset {:06X}: A={:02X} B={:02X}", off, a, b);
+                        }
+                        // Also show .reloc section info
+                        let num_sec = memory.read_u16(pa_a + pe_o + 6).unwrap_or(0) as u64;
+                        let opt_sz = memory.read_u16(pa_a + pe_o + 20).unwrap_or(0) as u64;
+                        let sec_start = pe_o + 24 + opt_sz;
+                        for s in 0..num_sec.min(20) {
+                            let soff = sec_start + s * 40;
+                            let mut name = [0u8; 8];
+                            for k in 0..8 {
+                                name[k] = memory.read_u8(pa_a + soff + k as u64).unwrap_or(0);
+                            }
+                            let va = memory.read_u32(pa_a + soff + 12).unwrap_or(0);
+                            let vs = memory.read_u32(pa_a + soff + 8).unwrap_or(0);
+                            let nm = core::str::from_utf8(&name).unwrap_or("???");
+                            eprintln!("[HANG-TRAP]  sec{}: name={} VA={:08X} VSize={:08X}", s, nm.trim_end_matches('\0'), va, vs);
+                        }
+                    }
+                }
                 if mz == 0x5A4D {
                     let pe_off = rd32h(mmu, cr3, base_va + 0x3C, memory) as u64;
                     let pe_sig = rd32h(mmu, cr3, base_va + pe_off, memory);
@@ -823,7 +866,7 @@ impl Cpu {
 
             // ── Bugcheck halt trap ──
             #[cfg(feature = "host_test")]
-            if false {
+            if true {
                 use crate::memory::MemoryBus;
                 fn trl(mmu: &Mmu, cr3: u64, va: u64, mem: &GuestMemory) -> u64 {
                     mmu.translate_linear(va, cr3, crate::memory::AccessType::Read, 0, mem).unwrap_or(0)
