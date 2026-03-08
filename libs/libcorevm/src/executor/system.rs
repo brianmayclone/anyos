@@ -245,23 +245,8 @@ pub fn exec_mov_cr(cpu: &mut Cpu, inst: &DecodedInst, mmu: &Mmu) -> Result<()> {
         let val = cpu.regs.read_gpr64(src_gpr);
         match cr_idx {
             0 => {
-                #[cfg(feature = "host_test")]
-                let old_cr0 = cpu.regs.cr0;
                 cpu.regs.cr0 = val;
                 cpu.update_mode();
-                #[cfg(feature = "host_test")]
-                {
-                    let new_pg = val & 0x8000_0000 != 0;
-                    let old_pg = old_cr0 & 0x8000_0000 != 0;
-                    if new_pg != old_pg {
-                        eprintln!(
-                            "[corevm] MOV CR0: PG {}→{} CR0={:08X} CR3={:08X} EFER={:08X} mode={:?} RIP={:08X} ESP={:08X} next_RIP={:08X}",
-                            old_pg as u8, new_pg as u8, val as u32, cpu.regs.cr3 as u32,
-                            cpu.regs.efer as u32, cpu.mode, cpu.regs.rip as u32,
-                            cpu.regs.sp() as u32, cpu.regs.rip.wrapping_add(inst.length as u64) as u32,
-                        );
-                    }
-                }
             }
             2 => cpu.regs.cr2 = val,
             3 => {

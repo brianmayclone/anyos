@@ -398,26 +398,6 @@ impl Cpu {
         };
 
         // Sync MMU state will be done by the caller (VmEngine.run updates Mmu)
-
-        #[cfg(feature = "host_test")]
-        {
-            let old_lma_was = !lma; // just detect transitions
-            if lma && !cs_long {
-                // Compatibility sub-mode: LMA=1 but CS.L=0
-                // This is normal during Protected→Long mode transition
-                // (between MOV CR0 and the far JMP that loads a 64-bit CS)
-                eprintln!(
-                    "[corevm] MODE: Compatibility sub-mode (LMA=1, CS.L=0) cpu.mode={:?} decoder={:?} CR0={:08X} RIP={:08X} ESP={:08X}",
-                    self.mode, self.decoder.mode(), self.regs.cr0 as u32, self.regs.rip as u32, self.regs.sp() as u32,
-                );
-            }
-            if lma && cs_long && self.mode == Mode::LongMode {
-                eprintln!(
-                    "[corevm] MODE: Full Long Mode activated (CS.L=1) RIP={:016X} RSP={:016X} CS={:04X}",
-                    self.regs.rip, self.regs.sp(), self.regs.seg[SegReg::Cs as usize].selector,
-                );
-            }
-        }
     }
 
     /// Read a segment descriptor from the GDT given a selector.
@@ -866,7 +846,7 @@ impl Cpu {
 
             // ── Bugcheck halt trap ──
             #[cfg(feature = "host_test")]
-            if true {
+            if self.prev_exec_rip == self.regs.rip && self.regs.rip >= 0x80000000 {
                 use crate::memory::MemoryBus;
                 fn trl(mmu: &Mmu, cr3: u64, va: u64, mem: &GuestMemory) -> u64 {
                     mmu.translate_linear(va, cr3, crate::memory::AccessType::Read, 0, mem).unwrap_or(0)
