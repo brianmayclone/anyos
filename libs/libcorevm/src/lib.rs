@@ -2166,7 +2166,10 @@ fn pit_timer_running(vm: &VmInstance) -> bool {
     }
     unsafe {
         let pit = &*vm.pit_ptr;
-        pit.channels[0].enabled && pit.channels[0].count != 0
+        // Check channel 0 (IRQ timer) and channel 2 (speaker/calibration).
+        // Linux uses channel 2 + port 0x61 for TSC calibration during early boot.
+        (pit.channels[0].enabled && pit.channels[0].count != 0)
+            || (pit.channels[2].enabled && pit.channels[2].gate && pit.channels[2].count != 0)
     }
 }
 

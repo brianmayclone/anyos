@@ -718,6 +718,7 @@ impl Cpu {
                     let oo = pe_o + 24;
                     let isz = memory.read_u32(ntdll_pa + oo + 56).unwrap_or(0);
                     if isz < 0xC0000 || isz > 0x100000 { continue; } // filter to ntdll-sized
+                    let image_base = memory.read_u32(ntdll_pa + oo + 28).unwrap_or(0);
                     let stored = memory.read_u32(ntdll_pa + oo + 64).unwrap_or(0);
                     let cs_off = oo + 64;
                     let mut s: u32 = 0;
@@ -729,8 +730,44 @@ impl Cpu {
                     }
                     s = (s >> 16) + (s & 0xFFFF);
                     s += isz;
-                    eprintln!("[HANG-TRAP] ntdll@PA{:X} isz={:X} checksum: computed={:08X} stored={:08X} {}",
-                        ntdll_pa, isz, s, stored, if s == stored { "OK" } else { "MISMATCH" });
+                    // Also try computing as raw file (iterate up to file's raw extent, not SizeOfImage)
+                    let num_sec_c = memory.read_u16(ntdll_pa + pe_o + 6).unwrap_or(0) as u64;
+                    let opt_sz_c = memory.read_u16(ntdll_pa + pe_o + 20).unwrap_or(0) as u64;
+                    let sec_base = pe_o + 24 + opt_sz_c;
+                    let mut raw_end = 0u64;
+                    for si in 0..num_sec_c.min(20) {
+                        let so = sec_base + si * 40;
+                        let rp = memory.read_u32(ntdll_pa + so + 20).unwrap_or(0) as u64;
+                        let rs = memory.read_u32(ntdll_pa + so + 16).unwrap_or(0) as u64;
+                        if rp + rs > raw_end { raw_end = rp + rs; }
+                    }
+                    // Check if data at PA is section-mapped (sections at VA offsets) or flat-file (sections at raw offsets)
+                    // Section 0 (.text): if VA != rawptr, check which one matches
+                    let sec0_va = memory.read_u32(ntdll_pa + sec_base + 12).unwrap_or(0);
+                    let sec0_rp = memory.read_u32(ntdll_pa + sec_base + 20).unwrap_or(0);
+                    let is_flat = if sec0_va != sec0_rp {
+                        // Check if the data at sec0_rp offset looks like code (vs zeros at sec0_va)
+                        let at_rp = memory.read_u32(ntdll_pa + sec0_rp as u64).unwrap_or(0);
+                        let at_va = memory.read_u32(ntdll_pa + sec0_va as u64).unwrap_or(0);
+                        // .text should have code; the wrong offset would have zeros or different data
+                        eprintln!("[HANG-TRAP]   sec0 VA={:X} rawptr={:X} @VA={:08X} @rawptr={:08X}", sec0_va, sec0_rp, at_va, at_rp);
+                        false // can't easily tell, but log it
+                    } else { false };
+                    // Compute raw-file-style checksum too
+                    if raw_end > 0 && raw_end < 0x200000 {
+                        let mut sf: u32 = 0;
+                        for i in (0..raw_end).step_by(2) {
+                            if i >= cs_off && i < cs_off + 4 { continue; }
+                            let w = memory.read_u16(ntdll_pa + i).unwrap_or(0) as u32;
+                            sf = sf.wrapping_add(w);
+                            sf = (sf >> 16) + (sf & 0xFFFF);
+                        }
+                        sf = (sf >> 16) + (sf & 0xFFFF);
+                        sf += raw_end as u32;
+                        eprintln!("[HANG-TRAP]   raw_end={:X} raw_cksum={:08X}", raw_end, sf);
+                    }
+                    eprintln!("[HANG-TRAP] ntdll@PA{:X} isz={:X} imgbase={:08X} checksum: computed={:08X} stored={:08X} {}",
+                        ntdll_pa, isz, image_base, s, stored, if s == stored { "OK" } else { "MISMATCH" });
                     // don't break — check all copies
                 }
                 // Compare first two ntdll copies byte-by-byte to find differences
