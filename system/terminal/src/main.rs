@@ -2080,6 +2080,128 @@ fn save_profiles(profiles: &[Profile]) {
     let _ = fs::write_bytes(&path, json.as_bytes());
 }
 
+// ─── Scrollback Persistence ──────────────────────────────────────────────────
+
+fn scrollback_file_path() -> String {
+    let mut home_buf = [0u8; 128];
+    let hlen = anyos_std::env::get("HOME", &mut home_buf);
+    let home = if hlen != u32::MAX {
+        core::str::from_utf8(&home_buf[..hlen as usize]).unwrap_or("/")
+    } else {
+        "/"
+    };
+    format!("{}/.config/terminal/scrollback.txt", home)
+}
+
+/// Save the visible terminal buffer content (last N lines) to disk.
+fn save_scrollback(a: &TerminalApp) {
+    let path = scrollback_file_path();
+    let mut text = String::new();
+
+    // Save all sessions from active tab
+    for tab in &a.tabs {
+        let sessions = tab.root.collect_sessions();
+        for sess in sessions {
+            // Collect all lines as text
+            for line in &sess.buf.lines {
+                for cell in line {
+                    if cell.ch != '\0' && cell.width > 0 {
+                        text.push(cell.ch);
+                    }
+                    if cell.combining != '\0' {
+                        text.push(cell.combining);
+                    }
+                }
+                // Trim trailing spaces
+                while text.ends_with(' ') {
+                    text.pop();
+                }
+                text.push('\n');
+            }
+            text.push_str("───\n");
+        }
+    }
+
+    // Ensure directory exists
+    let dir = {
+        let mut d = String::new();
+        if let Some(pos) = path.rfind('/') {
+            d.push_str(&path[..pos]);
+        }
+        d
+    };
+    if !dir.is_empty() {
+        fs::mkdir(&dir);
+    }
+    let _ = fs::write_bytes(&path, text.as_bytes());
+}
+
+/// Load previous scrollback and display it in the terminal buffer.
+fn load_scrollback(buf: &mut TerminalBuffer) {
+    let path = scrollback_file_path();
+    let fd = fs::open(&path, 0);
+    if fd == u32::MAX {
+        return;
+    }
+
+    // Read up to 128KB of scrollback
+    let mut data = alloc::vec![0u8; 128 * 1024];
+    let n = fs::read(fd, &mut data);
+    fs::close(fd);
+    if n == 0 || n == u32::MAX {
+        return;
+    }
+
+    let text = match core::str::from_utf8(&data[..n as usize]) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    // Display previous scrollback as dim text
+    let saved_fg = buf.current_fg;
+    buf.current_fg = 0xFF606060; // dim gray for old output
+
+    // Add header
+    buf.write_str("── Vorherige Sitzung ──\n");
+
+    // Find the last section (after last ───) or use all text
+    let sections: Vec<&str> = text.split("───\n").collect();
+    let content = if sections.len() > 1 {
+        // Take the second-to-last section (last non-empty)
+        let mut last = "";
+        for s in sections.iter().rev() {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                last = s;
+                break;
+            }
+        }
+        last
+    } else {
+        text
+    };
+
+    // Only show last visible_rows lines to not overwhelm the buffer
+    let all_lines: Vec<&str> = content.lines().collect();
+    let max_lines = buf.visible_rows.saturating_sub(2); // leave room for header + prompt
+    let start = if all_lines.len() > max_lines {
+        all_lines.len() - max_lines
+    } else {
+        0
+    };
+
+    for line in &all_lines[start..] {
+        buf.write_str(line);
+        buf.write_char('\n');
+    }
+
+    buf.write_str("───────────────────────\n");
+    buf.current_fg = saved_fg;
+
+    // Delete the scrollback file after loading (one-shot recovery)
+    fs::unlink(&path);
+}
+
 fn find_default_profile(profiles: &[Profile]) -> Profile {
     for p in profiles {
         if p.is_default { return p.clone(); }
@@ -2199,6 +2321,23 @@ impl PaneNode {
             PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => {
                 left.collect_pane_ids(out);
                 right.collect_pane_ids(out);
+            }
+        }
+    }
+
+    /// Collect all sessions in this subtree.
+    fn collect_sessions(&self) -> Vec<&Session> {
+        let mut out = Vec::new();
+        self.collect_sessions_inner(&mut out);
+        out
+    }
+
+    fn collect_sessions_inner<'a>(&'a self, out: &mut Vec<&'a Session>) {
+        match self {
+            PaneNode::Leaf { session, .. } => out.push(session),
+            PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => {
+                left.collect_sessions_inner(out);
+                right.collect_sessions_inner(out);
             }
         }
     }
@@ -2650,6 +2789,7 @@ struct TerminalApp {
     theme_name: String,
     cursor_blink_on: bool,      // current blink phase (true = visible)
     cursor_blink_elapsed: u32,  // ms since last toggle
+    autosave_counter: u32,      // counts timer ticks for periodic scrollback save
 }
 
 impl TerminalApp {
@@ -6777,6 +6917,7 @@ fn main() {
         theme_name: String::from("Default"),
         cursor_blink_on: true,
         cursor_blink_elapsed: 0,
+        autosave_counter: 0,
     };
 
     // Apply profile font/theme/opacity settings
@@ -6827,13 +6968,16 @@ fn main() {
 
     unsafe { APP = Some(term_app); }
 
-    // Write welcome message (only for first tab's first pane)
+    // Load previous scrollback (crash recovery) + write welcome message
     {
         let a = app();
         let color_title = a.active_profile.color_title;
         let color_dim = a.active_profile.color_dim;
         if !has_saved_tabs {
             if let Some(sess) = a.active_session_mut() {
+                // Load previous session scrollback if available
+                load_scrollback(&mut sess.buf);
+
                 sess.buf.current_fg = color_title;
                 sess.buf.write_str(".anyOS Terminal v");
                 sess.buf.write_str(env!("ANYOS_VERSION"));
@@ -7087,17 +7231,31 @@ fn main() {
             }
             redraw();
         } else if button == 2 { // Scroll up (button 2 = scroll up in anyui)
-            if let Some(sess) = a.active_session_mut() {
-                sess.buf.scroll_up(3);
-                sess.dirty = true;
+            if (mods & MOD_SHIFT) != 0 {
+                // Shift+Scroll Up = increase font size
+                let new_size = a.font_size + 1;
+                a.set_font_size(new_size);
+                redraw();
+            } else {
+                if let Some(sess) = a.active_session_mut() {
+                    sess.buf.scroll_up(3);
+                    sess.dirty = true;
+                }
+                redraw();
             }
-            redraw();
         } else if button == 3 { // Scroll down (button 3 = scroll down in anyui)
-            if let Some(sess) = a.active_session_mut() {
-                sess.buf.scroll_down(3);
-                sess.dirty = true;
+            if (mods & MOD_SHIFT) != 0 {
+                // Shift+Scroll Down = decrease font size
+                let new_size = a.font_size.saturating_sub(1);
+                a.set_font_size(new_size);
+                redraw();
+            } else {
+                if let Some(sess) = a.active_session_mut() {
+                    sess.buf.scroll_down(3);
+                    sess.dirty = true;
+                }
+                redraw();
             }
-            redraw();
         } else if button == 4 { // Middle click paste
             if let Some(sess) = a.active_session_mut() {
                 if sess.fg_proc.is_none() && sess.su_pending_user.is_none() {
@@ -7547,6 +7705,7 @@ fn main() {
     });
 
     win.on_close(|_| {
+        save_scrollback(app());
         anyui::quit();
     });
 
@@ -7597,6 +7756,14 @@ fn main() {
                 }
             }
             redraw();
+        }
+
+        // Auto-save scrollback every 30 seconds (600 ticks * 50ms)
+        let a = app();
+        a.autosave_counter += 1;
+        if a.autosave_counter >= 600 {
+            a.autosave_counter = 0;
+            save_scrollback(a);
         }
     });
 

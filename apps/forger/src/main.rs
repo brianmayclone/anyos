@@ -340,6 +340,14 @@ fn game_tick() {
             s.renderer.fog_distance / 16.0,
         );
         s.window.set_title(&title);
-        s.fps_label.set_text(&alloc::format!("FPS: {}", s.fps_display));
     }
+
+    // Debug overlay (update every frame for smooth coordinate display)
+    let flying = libphysics_client::is_flying(s.player.body_id);
+    let mode = if flying { "FLY" } else { "WALK" };
+    let debug_text = alloc::format!(
+        "FPS: {} | X: {:.1} Y: {:.1} Z: {:.1} | {}",
+        s.fps_display, ex, ey, ez, mode
+    );
+    s.fps_label.set_text(&debug_text);
 }

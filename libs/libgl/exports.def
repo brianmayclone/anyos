@@ -105,3 +105,6 @@ EXPORTS
     gl_physics_set_active
     gl_physics_set_plane_d
     gl_physics_body_count
+    gl_physics_set_angular_velocity
+    gl_physics_get_orientation
+    gl_physics_set_angular_damping

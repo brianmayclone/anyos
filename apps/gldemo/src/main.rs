@@ -134,6 +134,20 @@ fn mat4_rotate_x(angle: f32) -> Mat4 {
     ]
 }
 
+/// Quaternion (w, x, y, z) to 4x4 rotation matrix (column-major).
+fn quat_to_mat4(w: f32, x: f32, y: f32, z: f32) -> Mat4 {
+    let x2 = x + x; let y2 = y + y; let z2 = z + z;
+    let xx = x * x2; let xy = x * y2; let xz = x * z2;
+    let yy = y * y2; let yz = y * z2; let zz = z * z2;
+    let wx = w * x2; let wy = w * y2; let wz = w * z2;
+    [
+        1.0 - yy - zz,  xy + wz,        xz - wy,        0.0,  // column 0
+        xy - wz,         1.0 - xx - zz,  yz + wx,        0.0,  // column 1
+        xz + wy,         yz - wx,        1.0 - xx - yy,  0.0,  // column 2
+        0.0,             0.0,            0.0,             1.0,  // column 3
+    ]
+}
+
 /// Look-at view matrix (column-major).
 fn mat4_look_at(eye: &[f32; 3], target: &[f32; 3], up: &[f32; 3]) -> Mat4 {
     let fx = target[0] - eye[0];
@@ -609,13 +623,14 @@ fn render_frame() {
     gl::uniform3f(s.loc_light_color0, 1.0, 0.95, 0.8);
     gl::uniform3f(s.loc_eye_pos, eye[0], eye[1], eye[2]);
 
-    // ── Draw sphere (physics-driven) ────────────────────────────────────
+    // ── Draw sphere (physics-driven with quaternion) ────────────────────
     {
         let (px, py, pz) = gl::physics_get_position(s.phys_sphere);
-        let rot_y = gl::physics_get_rotation_y(s.phys_sphere);
+        let (qw, qx, qy, qz) = gl::physics_get_orientation(s.phys_sphere);
+        let rot_mat = quat_to_mat4(qw, qx, qy, qz);
         let model = mat4_mul(
             &mat4_translate(px, py, pz),
-            &mat4_mul(&mat4_rotate_y(rot_y), &mat4_scale(0.8, 0.8, 0.8)),
+            &mat4_mul(&rot_mat, &mat4_scale(0.8, 0.8, 0.8)),
         );
         let mvp = mat4_mul(&proj, &mat4_mul(&view, &model));
 
@@ -633,16 +648,14 @@ fn render_frame() {
         gl::draw_elements(gl::GL_TRIANGLES, s.sphere_num_indices, gl::GL_UNSIGNED_SHORT, 0);
     }
 
-    // ── Draw cube (physics-driven) ──────────────────────────────────────
+    // ── Draw cube (physics-driven with quaternion orientation) ─────────
     {
         let (px, py, pz) = gl::physics_get_position(s.phys_cube);
-        let rot_y = gl::physics_get_rotation_y(s.phys_cube);
+        let (qw, qx, qy, qz) = gl::physics_get_orientation(s.phys_cube);
+        let rot_mat = quat_to_mat4(qw, qx, qy, qz);
         let model = mat4_mul(
             &mat4_translate(px, py, pz),
-            &mat4_mul(
-                &mat4_rotate_y(rot_y),
-                &mat4_mul(&mat4_rotate_x(t * 0.3), &mat4_scale(0.9, 0.9, 0.9)),
-            ),
+            &mat4_mul(&rot_mat, &mat4_scale(0.9, 0.9, 0.9)),
         );
         let mvp = mat4_mul(&proj, &mat4_mul(&view, &model));
 
@@ -660,16 +673,14 @@ fn render_frame() {
         gl::draw_elements(gl::GL_TRIANGLES, s.cube_num_indices, gl::GL_UNSIGNED_SHORT, 0);
     }
 
-    // ── Draw Amiga Boing Ball (physics-driven) ──────────────────────────
+    // ── Draw Amiga Boing Ball (physics-driven with quaternion) ──────────
     if s.boing_active {
         let (px, py, pz) = gl::physics_get_position(s.phys_boing);
-        let rot_y = gl::physics_get_rotation_y(s.phys_boing);
+        let (qw, qx, qy, qz) = gl::physics_get_orientation(s.phys_boing);
+        let rot_mat = quat_to_mat4(qw, qx, qy, qz);
         let model = mat4_mul(
             &mat4_translate(px, py, pz),
-            &mat4_mul(
-                &mat4_rotate_y(rot_y),
-                &mat4_mul(&mat4_rotate_x(0.4), &mat4_scale(0.6, 0.6, 0.6)),
-            ),
+            &mat4_mul(&rot_mat, &mat4_scale(0.6, 0.6, 0.6)),
         );
         let mvp = mat4_mul(&proj, &mat4_mul(&view, &model));
 
@@ -954,14 +965,19 @@ fn main() {
     let phys_sphere = gl::physics_add_sphere(2.0, 0.8, -1.0, 0.3, 0.0);
     gl::physics_set_restitution(phys_sphere, 0.7);
     gl::physics_set_use_gravity(phys_sphere, true);
+    gl::physics_set_angular_damping(phys_sphere, 1.0);
 
-    // Cube: mass=1.5 kg, half-extents=0.45, resting on floor (y = -0.5 + 0.45 = -0.05)
-    let phys_cube = gl::physics_add_box(1.5, 0.45, 0.45, 0.45, 1.2, -0.05, 0.0);
-    gl::physics_set_restitution(phys_cube, 0.4);
+    // Cube: mass=1.5 kg, half-extents=0.45, starts elevated for a drop
+    let phys_cube = gl::physics_add_box(1.5, 0.45, 0.45, 0.45, 1.2, 2.0, 0.0);
+    gl::physics_set_restitution(phys_cube, 0.5);
+    // Initial tumbling rotation (X + Y + Z) and angular damping so it slows down
+    gl::physics_set_angular_velocity(phys_cube, 4.0, 2.0, 1.5);
+    gl::physics_set_angular_damping(phys_cube, 1.5);
 
     // Boing ball: mass=1.0 kg, radius=0.6, starts inactive (off-screen)
     let phys_boing = gl::physics_add_sphere(1.0, 0.6, -5.0, 0.0, 0.5);
     gl::physics_set_restitution(phys_boing, 0.92);
+    gl::physics_set_angular_damping(phys_boing, 0.5);
     gl::physics_set_active(phys_boing, false);
 
     anyos_std::println!("gldemo: physics world created ({} bodies)", gl::physics_body_count());

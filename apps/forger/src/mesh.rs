@@ -104,60 +104,62 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
 }
 
 pub fn face_vertices(face: usize, x: f32, y: f32, z: f32) -> [[f32; 3]; 6] {
+    // Winding order: CCW when viewed from outside the block (outward-facing normal).
+    // Each face is two triangles: [v0,v1,v2, v0,v2,v3] with CCW = front face.
     match face {
-        // Top (+Y) — quad at y+1
+        // Top (+Y) — normal (0,+1,0)
         0 => [
             [x, y + 1.0, z],
+            [x + 1.0, y + 1.0, z + 1.0],
             [x + 1.0, y + 1.0, z],
-            [x + 1.0, y + 1.0, z + 1.0],
             [x, y + 1.0, z],
-            [x + 1.0, y + 1.0, z + 1.0],
             [x, y + 1.0, z + 1.0],
+            [x + 1.0, y + 1.0, z + 1.0],
         ],
-        // Bottom (-Y) — quad at y
+        // Bottom (-Y) — normal (0,-1,0)
         1 => [
             [x, y, z + 1.0],
+            [x + 1.0, y, z],
             [x + 1.0, y, z + 1.0],
-            [x + 1.0, y, z],
             [x, y, z + 1.0],
-            [x + 1.0, y, z],
             [x, y, z],
+            [x + 1.0, y, z],
         ],
-        // East (+X) — quad at x+1
+        // East (+X) — normal (+1,0,0)
         2 => [
             [x + 1.0, y, z],
+            [x + 1.0, y + 1.0, z + 1.0],
             [x + 1.0, y, z + 1.0],
-            [x + 1.0, y + 1.0, z + 1.0],
             [x + 1.0, y, z],
-            [x + 1.0, y + 1.0, z + 1.0],
             [x + 1.0, y + 1.0, z],
+            [x + 1.0, y + 1.0, z + 1.0],
         ],
-        // West (-X) — quad at x
+        // West (-X) — normal (-1,0,0)
         3 => [
             [x, y, z + 1.0],
+            [x, y + 1.0, z],
             [x, y, z],
-            [x, y + 1.0, z],
             [x, y, z + 1.0],
-            [x, y + 1.0, z],
             [x, y + 1.0, z + 1.0],
+            [x, y + 1.0, z],
         ],
-        // South (+Z) — quad at z+1
+        // South (+Z) — normal (0,0,+1)
         4 => [
             [x + 1.0, y, z + 1.0],
+            [x, y + 1.0, z + 1.0],
             [x, y, z + 1.0],
-            [x, y + 1.0, z + 1.0],
             [x + 1.0, y, z + 1.0],
-            [x, y + 1.0, z + 1.0],
             [x + 1.0, y + 1.0, z + 1.0],
+            [x, y + 1.0, z + 1.0],
         ],
-        // North (-Z) — quad at z
+        // North (-Z) — normal (0,0,-1)
         _ => [
             [x, y, z],
+            [x + 1.0, y + 1.0, z],
             [x + 1.0, y, z],
-            [x + 1.0, y + 1.0, z],
             [x, y, z],
-            [x + 1.0, y + 1.0, z],
             [x, y + 1.0, z],
+            [x + 1.0, y + 1.0, z],
         ],
     }
 }

@@ -211,6 +211,8 @@ name = "clock"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "dynlink",
+ "libanyui_client",
 ]
 
 [[package]]

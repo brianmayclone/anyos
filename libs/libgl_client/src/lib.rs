@@ -199,6 +199,9 @@ struct LibGl {
     physics_apply_impulse: extern "C" fn(u32, f32, f32, f32),
     physics_set_angular_vel_y: extern "C" fn(u32, f32),
     physics_get_rotation_y: extern "C" fn(u32) -> f32,
+    physics_set_angular_velocity: extern "C" fn(u32, f32, f32, f32),
+    physics_get_orientation: extern "C" fn(u32, *mut f32, *mut f32, *mut f32, *mut f32),
+    physics_set_angular_damping: extern "C" fn(u32, f32),
     physics_set_use_gravity: extern "C" fn(u32, u32),
     physics_set_active: extern "C" fn(u32, u32),
     physics_set_plane_d: extern "C" fn(u32, f32),
@@ -330,6 +333,9 @@ pub fn init() -> bool {
             physics_apply_impulse: resolve(&handle, "gl_physics_apply_impulse"),
             physics_set_angular_vel_y: resolve(&handle, "gl_physics_set_angular_vel_y"),
             physics_get_rotation_y: resolve(&handle, "gl_physics_get_rotation_y"),
+            physics_set_angular_velocity: resolve(&handle, "gl_physics_set_angular_velocity"),
+            physics_get_orientation: resolve(&handle, "gl_physics_get_orientation"),
+            physics_set_angular_damping: resolve(&handle, "gl_physics_set_angular_damping"),
             physics_set_use_gravity: resolve(&handle, "gl_physics_set_use_gravity"),
             physics_set_active: resolve(&handle, "gl_physics_set_active"),
             physics_set_plane_d: resolve(&handle, "gl_physics_set_plane_d"),
@@ -713,6 +719,23 @@ pub fn physics_set_angular_vel_y(id: u32, omega: f32) {
 /// Get current Y rotation angle (rad).
 pub fn physics_get_rotation_y(id: u32) -> f32 {
     (lib().physics_get_rotation_y)(id)
+}
+
+/// Set full 3D angular velocity (rad/s).
+pub fn physics_set_angular_velocity(id: u32, wx: f32, wy: f32, wz: f32) {
+    (lib().physics_set_angular_velocity)(id, wx, wy, wz);
+}
+
+/// Get orientation quaternion. Returns (w, x, y, z).
+pub fn physics_get_orientation(id: u32) -> (f32, f32, f32, f32) {
+    let (mut w, mut x, mut y, mut z) = (1.0f32, 0.0f32, 0.0f32, 0.0f32);
+    (lib().physics_get_orientation)(id, &mut w, &mut x, &mut y, &mut z);
+    (w, x, y, z)
+}
+
+/// Set angular damping factor (0.0 = no damping).
+pub fn physics_set_angular_damping(id: u32, damping: f32) {
+    (lib().physics_set_angular_damping)(id, damping);
 }
 
 /// Set whether body is affected by gravity.

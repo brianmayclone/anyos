@@ -1277,18 +1277,45 @@ pub extern "C" fn gl_physics_apply_impulse(id: u32, ix: f32, iy: f32, iz: f32) {
     phys().apply_impulse(id, ix, iy, iz);
 }
 
-/// Set angular velocity around Y axis.
+/// Set angular velocity around Y axis (backward compat).
 #[no_mangle]
 pub extern "C" fn gl_physics_set_angular_vel_y(id: u32, omega: f32) {
     if let Some(b) = phys().bodies.get_mut(id as usize) {
-        b.angular_vel_y = omega;
+        b.angular_vel.y = omega;
     }
 }
 
-/// Get current Y rotation angle.
+/// Get current Y rotation angle (extracted from quaternion).
 #[no_mangle]
 pub extern "C" fn gl_physics_get_rotation_y(id: u32) -> f32 {
-    phys().bodies.get(id as usize).map_or(0.0, |b| b.rotation_y)
+    phys().bodies.get(id as usize).map_or(0.0, |b| b.orientation.rotation_y())
+}
+
+/// Set full 3D angular velocity (rad/s).
+#[no_mangle]
+pub extern "C" fn gl_physics_set_angular_velocity(id: u32, wx: f32, wy: f32, wz: f32) {
+    if let Some(b) = phys().bodies.get_mut(id as usize) {
+        b.angular_vel = physics::Vec3::new(wx, wy, wz);
+    }
+}
+
+/// Get orientation quaternion. Writes (w, x, y, z) to output pointers.
+#[no_mangle]
+pub extern "C" fn gl_physics_get_orientation(id: u32, out_w: *mut f32, out_x: *mut f32, out_y: *mut f32, out_z: *mut f32) {
+    if let Some(b) = phys().bodies.get(id as usize) {
+        if !out_w.is_null() { unsafe { *out_w = b.orientation.w; } }
+        if !out_x.is_null() { unsafe { *out_x = b.orientation.x; } }
+        if !out_y.is_null() { unsafe { *out_y = b.orientation.y; } }
+        if !out_z.is_null() { unsafe { *out_z = b.orientation.z; } }
+    }
+}
+
+/// Set angular damping factor (0.0 = no damping, ~2.0 = moderate, ~5.0 = heavy).
+#[no_mangle]
+pub extern "C" fn gl_physics_set_angular_damping(id: u32, damping: f32) {
+    if let Some(b) = phys().bodies.get_mut(id as usize) {
+        b.angular_damping = damping;
+    }
 }
 
 /// Set whether body is affected by gravity.

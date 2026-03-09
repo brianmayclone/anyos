@@ -55,6 +55,92 @@ impl Vec3 {
     pub fn sub(self, b: Vec3) -> Vec3 {
         Vec3::new(self.x - b.x, self.y - b.y, self.z - b.z)
     }
+
+    pub fn cross(self, b: Vec3) -> Vec3 {
+        Vec3::new(
+            self.y * b.z - self.z * b.y,
+            self.z * b.x - self.x * b.z,
+            self.x * b.y - self.y * b.x,
+        )
+    }
+}
+
+// ── Quaternion ──────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug)]
+pub struct Quat {
+    pub w: f32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+impl Quat {
+    pub const IDENTITY: Quat = Quat { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+
+    pub fn mul(self, q: Quat) -> Quat {
+        Quat {
+            w: self.w * q.w - self.x * q.x - self.y * q.y - self.z * q.z,
+            x: self.w * q.x + self.x * q.w + self.y * q.z - self.z * q.y,
+            y: self.w * q.y - self.x * q.z + self.y * q.w + self.z * q.x,
+            z: self.w * q.z + self.x * q.y - self.y * q.x + self.z * q.w,
+        }
+    }
+
+    pub fn normalize(self) -> Quat {
+        let len = math::sqrt(self.w * self.w + self.x * self.x + self.y * self.y + self.z * self.z);
+        if len < 1e-9 { return Quat::IDENTITY; }
+        let inv = 1.0 / len;
+        Quat { w: self.w * inv, x: self.x * inv, y: self.y * inv, z: self.z * inv }
+    }
+
+    /// Integrate angular velocity (omega) over dt using quaternion derivative.
+    pub fn integrate(self, omega: Vec3, dt: f32) -> Quat {
+        let half_dt = dt * 0.5;
+        let dq = Quat {
+            w: 0.0,
+            x: omega.x * half_dt,
+            y: omega.y * half_dt,
+            z: omega.z * half_dt,
+        };
+        let delta = dq.mul(self);
+        Quat {
+            w: self.w + delta.w,
+            x: self.x + delta.x,
+            y: self.y + delta.y,
+            z: self.z + delta.z,
+        }.normalize()
+    }
+
+    /// Rotate a vector by this quaternion: q * v * q⁻¹.
+    pub fn rotate_vec(self, v: Vec3) -> Vec3 {
+        let qv = Vec3::new(self.x, self.y, self.z);
+        let uv = qv.cross(v);
+        let uuv = qv.cross(uv);
+        v.add(uv.scale(2.0 * self.w)).add(uuv.scale(2.0))
+    }
+
+    /// Extract approximate Y-axis rotation angle from quaternion.
+    pub fn rotation_y(self) -> f32 {
+        let siny = 2.0 * (self.w * self.y + self.x * self.z);
+        let cosy = 1.0 - 2.0 * (self.y * self.y + self.z * self.z);
+        atan2(siny, cosy)
+    }
+}
+
+/// atan2 approximation using polynomial atan on [0,1].
+fn atan2(y: f32, x: f32) -> f32 {
+    if x == 0.0 && y == 0.0 { return 0.0; }
+    let ax = math::abs(x);
+    let ay = math::abs(y);
+    let mn = if ax < ay { ax } else { ay };
+    let mx = if ax < ay { ay } else { ax };
+    let a = mn / mx;
+    let s = a * a;
+    let r = ((-0.0464964749 * s + 0.15931422) * s - 0.327622764) * s * a + a;
+    let r = if ay > ax { 1.5707963 - r } else { r };
+    let r = if x < 0.0 { 3.1415927 - r } else { r };
+    if y < 0.0 { -r } else { r }
 }
 
 // ── Collider shapes ─────────────────────────────────────────────────────────
@@ -86,10 +172,12 @@ pub struct RigidBody {
     pub restitution: f32,
     /// Collider shape.
     pub collider: Collider,
-    /// Angular velocity around Y axis (simple rotation for demo).
-    pub angular_vel_y: f32,
-    /// Current Y rotation angle.
-    pub rotation_y: f32,
+    /// 3D angular velocity (rad/s).
+    pub angular_vel: Vec3,
+    /// Orientation quaternion.
+    pub orientation: Quat,
+    /// Angular damping factor (0.0 = no damping, higher = more friction). Applied per second.
+    pub angular_damping: f32,
     /// Whether this body is affected by gravity.
     pub use_gravity: bool,
 }
@@ -105,8 +193,9 @@ impl RigidBody {
             inv_mass: 1.0,
             restitution: 0.5,
             collider: Collider::Sphere { radius: 0.5 },
-            angular_vel_y: 0.0,
-            rotation_y: 0.0,
+            angular_vel: Vec3::ZERO,
+            orientation: Quat::IDENTITY,
+            angular_damping: 0.0,
             use_gravity: true,
         }
     }
@@ -140,8 +229,9 @@ impl PhysicsWorld {
             inv_mass,
             restitution: 0.5,
             collider: Collider::Sphere { radius },
-            angular_vel_y: 0.0,
-            rotation_y: 0.0,
+            angular_vel: Vec3::ZERO,
+            orientation: Quat::IDENTITY,
+            angular_damping: 0.0,
             use_gravity: mass > 0.0,
         };
         let id = self.bodies.len() as u32;
@@ -161,8 +251,9 @@ impl PhysicsWorld {
             inv_mass: 0.0,
             restitution: 0.5,
             collider: Collider::Plane { normal, d },
-            angular_vel_y: 0.0,
-            rotation_y: 0.0,
+            angular_vel: Vec3::ZERO,
+            orientation: Quat::IDENTITY,
+            angular_damping: 0.0,
             use_gravity: false,
         };
         let id = self.bodies.len() as u32;
@@ -182,8 +273,9 @@ impl PhysicsWorld {
             inv_mass,
             restitution: 0.5,
             collider: Collider::Box { half_x: hx, half_y: hy, half_z: hz },
-            angular_vel_y: 0.0,
-            rotation_y: 0.0,
+            angular_vel: Vec3::ZERO,
+            orientation: Quat::IDENTITY,
+            angular_damping: 0.0,
             use_gravity: mass > 0.0,
         };
         let id = self.bodies.len() as u32;
@@ -253,11 +345,23 @@ impl PhysicsWorld {
             }
         }
 
-        // 3. Integrate velocity → position
+        // 3. Integrate velocity → position, angular velocity → orientation
         for b in self.bodies.iter_mut() {
             if !b.active || b.inv_mass == 0.0 { continue; }
             b.position = b.position.add(b.velocity.scale(dt));
-            b.rotation_y += b.angular_vel_y * dt;
+
+            // Angular damping (exponential decay per second)
+            if b.angular_damping > 0.0 {
+                let factor = 1.0 - b.angular_damping * dt;
+                let factor = if factor < 0.0 { 0.0 } else { factor };
+                b.angular_vel = b.angular_vel.scale(factor);
+            }
+
+            // Integrate orientation from angular velocity
+            let omega_len = b.angular_vel.length();
+            if omega_len > 1e-6 {
+                b.orientation = b.orientation.integrate(b.angular_vel, dt);
+            }
         }
     }
 
@@ -301,24 +405,30 @@ impl PhysicsWorld {
                 }
             }
 
-            // Box vs Plane
+            // Box vs Plane (OBB — accounts for box orientation)
             (Collider::Box { half_x, half_y, half_z }, Collider::Plane { normal, d }) => {
-                // Check lowest point of box against plane
-                // For a Y-up plane, lowest point is center.y - half_y
-                let extent = math::abs(normal.x) * half_x
-                           + math::abs(normal.y) * half_y
-                           + math::abs(normal.z) * half_z;
+                let orient_i = self.bodies[i].orientation;
+                let ax = orient_i.rotate_vec(Vec3::new(half_x, 0.0, 0.0));
+                let ay = orient_i.rotate_vec(Vec3::new(0.0, half_y, 0.0));
+                let az = orient_i.rotate_vec(Vec3::new(0.0, 0.0, half_z));
+                let extent = math::abs(normal.dot(ax))
+                           + math::abs(normal.dot(ay))
+                           + math::abs(normal.dot(az));
                 let dist = pos_i.dot(normal) - d;
                 if dist < extent {
                     let penetration = extent - dist;
                     self.resolve_contact(i, j, normal, penetration);
                 }
             }
-            // Plane vs Box (reversed)
+            // Plane vs Box (reversed, OBB)
             (Collider::Plane { normal, d }, Collider::Box { half_x, half_y, half_z }) => {
-                let extent = math::abs(normal.x) * half_x
-                           + math::abs(normal.y) * half_y
-                           + math::abs(normal.z) * half_z;
+                let orient_j = self.bodies[j].orientation;
+                let ax = orient_j.rotate_vec(Vec3::new(half_x, 0.0, 0.0));
+                let ay = orient_j.rotate_vec(Vec3::new(0.0, half_y, 0.0));
+                let az = orient_j.rotate_vec(Vec3::new(0.0, 0.0, half_z));
+                let extent = math::abs(normal.dot(ax))
+                           + math::abs(normal.dot(ay))
+                           + math::abs(normal.dot(az));
                 let dist = pos_j.dot(normal) - d;
                 if dist < extent {
                     let penetration = extent - dist;
@@ -394,40 +504,75 @@ impl PhysicsWorld {
             self.bodies[j].velocity = self.bodies[j].velocity.sub(impulse.scale(inv_mass_j));
         }
 
-        // Angular impulse transfer (simplified: tangential impulse → Y-axis spin)
-        // Tangential velocity = rel_vel - (rel_vel . n) * n
-        let tangent = rel_vel.sub(normal.scale(vel_along_normal));
-        let tang_len = tangent.length();
-        if tang_len > 0.01 {
-            // Friction-like spin: cross(contact_normal, tangent) projected onto Y
-            // For a sphere of radius r and mass m: I = 2/5 * m * r^2
-            // angular_impulse = r * tangential_force / I
-            let spin_factor = 0.3; // empirical friction coefficient for spin transfer
-            if inv_mass_i > 0.0 {
-                let r_i = match self.bodies[i].collider {
-                    Collider::Sphere { radius } => radius,
-                    Collider::Box { half_x, .. } => half_x,
-                    _ => 0.5,
-                };
-                let inertia_i = 0.4 * self.bodies[i].mass * r_i * r_i;
-                if inertia_i > 0.001 {
-                    // Cross product (normal × tangent).y for Y-axis spin
-                    let spin_y = (normal.z * tangent.x - normal.x * tangent.z) * impulse_mag.abs() * spin_factor / inertia_i;
-                    self.bodies[i].angular_vel_y += spin_y;
+        // 3D angular impulse from contact
+        // Contact point offset from center of mass (approximate)
+        // τ = r × J → Δω = I⁻¹ × τ
+        let spin_factor = 0.3; // friction coefficient for spin transfer
+
+        if inv_mass_i > 0.0 {
+            let r_i = match self.bodies[i].collider {
+                Collider::Sphere { radius } => radius,
+                Collider::Box { half_x, half_y, half_z } => {
+                    // Use average half-extent for inertia approximation
+                    (half_x + half_y + half_z) / 3.0
                 }
-            }
-            if inv_mass_j > 0.0 {
-                let r_j = match self.bodies[j].collider {
-                    Collider::Sphere { radius } => radius,
-                    Collider::Box { half_x, .. } => half_x,
-                    _ => 0.5,
-                };
-                let inertia_j = 0.4 * self.bodies[j].mass * r_j * r_j;
-                if inertia_j > 0.001 {
-                    let spin_y = (normal.z * tangent.x - normal.x * tangent.z) * impulse_mag.abs() * spin_factor / inertia_j;
-                    self.bodies[j].angular_vel_y -= spin_y;
+                _ => 0.5,
+            };
+            let (inertia_x, inertia_y, inertia_z) = match self.bodies[i].collider {
+                Collider::Sphere { radius } => {
+                    let i = 0.4 * self.bodies[i].mass * radius * radius;
+                    (i, i, i)
                 }
-            }
+                Collider::Box { half_x, half_y, half_z } => {
+                    let m = self.bodies[i].mass;
+                    let f = m / 3.0; // m/12 * 4 = m/3 (using full extents = 2*half)
+                    (f * (half_y * half_y + half_z * half_z),
+                     f * (half_x * half_x + half_z * half_z),
+                     f * (half_x * half_x + half_y * half_y))
+                }
+                _ => (1.0, 1.0, 1.0),
+            };
+            // Contact point is at surface in direction of -normal
+            let contact_r = normal.scale(-r_i);
+            let torque = contact_r.cross(impulse);
+            let ang_impulse = Vec3::new(
+                if inertia_x > 0.001 { torque.x * spin_factor / inertia_x } else { 0.0 },
+                if inertia_y > 0.001 { torque.y * spin_factor / inertia_y } else { 0.0 },
+                if inertia_z > 0.001 { torque.z * spin_factor / inertia_z } else { 0.0 },
+            );
+            self.bodies[i].angular_vel = self.bodies[i].angular_vel.add(ang_impulse);
+        }
+
+        if inv_mass_j > 0.0 {
+            let r_j = match self.bodies[j].collider {
+                Collider::Sphere { radius } => radius,
+                Collider::Box { half_x, half_y, half_z } => {
+                    (half_x + half_y + half_z) / 3.0
+                }
+                _ => 0.5,
+            };
+            let (inertia_x, inertia_y, inertia_z) = match self.bodies[j].collider {
+                Collider::Sphere { radius } => {
+                    let i = 0.4 * self.bodies[j].mass * radius * radius;
+                    (i, i, i)
+                }
+                Collider::Box { half_x, half_y, half_z } => {
+                    let m = self.bodies[j].mass;
+                    let f = m / 3.0;
+                    (f * (half_y * half_y + half_z * half_z),
+                     f * (half_x * half_x + half_z * half_z),
+                     f * (half_x * half_x + half_y * half_y))
+                }
+                _ => (1.0, 1.0, 1.0),
+            };
+            let contact_r = normal.scale(r_j);
+            let torque = contact_r.cross(impulse);
+            let ang_impulse = Vec3::new(
+                if inertia_x > 0.001 { torque.x * spin_factor / inertia_x } else { 0.0 },
+                if inertia_y > 0.001 { torque.y * spin_factor / inertia_y } else { 0.0 },
+                if inertia_z > 0.001 { torque.z * spin_factor / inertia_z } else { 0.0 },
+            );
+            self.bodies[j].angular_vel = self.bodies[j].angular_vel.sub(ang_impulse);
         }
     }
 }
