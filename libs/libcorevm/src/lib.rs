@@ -423,6 +423,9 @@ fn clear_external_irq_context() {
     }
 }
 
+/// Counter for throttling expensive LAPIC timer sync (RDTSC) calls.
+static mut POLL_COUNTER: u32 = 0;
+
 pub(crate) fn poll_external_irqs(
     interrupts: &mut InterruptController,
     rflags: u64,
@@ -430,10 +433,11 @@ pub(crate) fn poll_external_irqs(
     let ctx = unsafe { EXTERNAL_IRQ_CONTEXT };
     drain_lapic_eois_raw(ctx.lapic_ptr, ctx.ioapic_ptr);
 
-    // Advance the LAPIC timer inline so that it fires even when the guest
-    // programs and reads it within a single run slice.  We use TSC-based
-    // sync so each call is cheap (one RDTSC + compare).
-    if !ctx.lapic_ptr.is_null() {
+    // Throttle RDTSC-based LAPIC timer sync every 32 polls for performance.
+    let counter = unsafe { POLL_COUNTER.wrapping_add(1) };
+    unsafe { POLL_COUNTER = counter; }
+
+    if !ctx.lapic_ptr.is_null() && (counter & 31) == 0 {
         let lapic = unsafe { &mut *ctx.lapic_ptr };
         lapic.sync_timer_from_tsc();
         if lapic.take_timer_irq() {

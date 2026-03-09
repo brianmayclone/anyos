@@ -993,6 +993,7 @@ fn exec_out_dx(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result
 /// Handles register, memory, immediate, and relative-offset operands.
 /// For memory operands, computes the effective address, translates via
 /// the MMU, and reads the appropriate number of bytes.
+#[inline(always)]
 pub fn read_operand(
     cpu: &Cpu,
     inst: &DecodedInst,
@@ -1017,6 +1018,7 @@ pub fn read_operand(
 ///
 /// Handles register and memory operands. Writing to an immediate or
 /// relative-offset operand returns `#GP(0)`.
+#[inline(always)]
 pub fn write_operand(
     cpu: &mut Cpu,
     inst: &DecodedInst,
@@ -1116,6 +1118,7 @@ fn write_reg_operand(
 /// Assembles the address from the base register, index register (scaled),
 /// displacement, and segment base. RIP-relative addressing is handled for
 /// 64-bit mode.
+#[inline(always)]
 pub fn compute_effective_address(
     cpu: &Cpu,
     mem_op: &MemOperand,
@@ -1156,6 +1159,7 @@ pub fn compute_effective_address(
 }
 
 /// Translate a linear address via the MMU and read a value of the given size.
+#[inline(always)]
 #[inline(always)]
 pub fn translate_and_read(
     cpu: &Cpu,
@@ -1212,6 +1216,17 @@ pub fn translate_and_write(
         return translate_and_write_cross_page(cpu, linear, nbytes, val, mmu, memory);
     }
     let phys = mmu.translate_linear(linear, cpu.regs.cr3, AccessType::Write, cpu.regs.cpl, memory)?;
+    #[cfg(feature = "host_test")]
+    {
+        if linear == 0x801AA2A0 || linear == 0x801AA29C {
+            static WP_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let n = WP_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if n < 200 {
+                eprintln!("[WATCHPOINT] write {:#x} val={:#x} rip={:#x} ic={}",
+                    linear, val, cpu.regs.rip, cpu.instruction_count);
+            }
+        }
+    }
     match size {
         OperandSize::Byte => { memory.fast_write_u8(phys, val as u8); Ok(()) }
         OperandSize::Word => { memory.fast_write_u16(phys, val as u16); Ok(()) }

@@ -381,7 +381,7 @@ impl GuestMemory {
     pub fn fast_read_u8(&self, addr: u64) -> u8 {
         let a = addr as usize;
         if a < self.ram.size() && !self.is_possible_mmio(addr) {
-            self.ram.as_slice()[a]
+            unsafe { *self.ram.as_slice().as_ptr().add(a) }
         } else {
             self.read_u8(addr).unwrap_or(0xFF)
         }
@@ -392,8 +392,7 @@ impl GuestMemory {
     pub fn fast_read_u16(&self, addr: u64) -> u16 {
         let a = addr as usize;
         if a + 2 <= self.ram.size() && !self.is_possible_mmio(addr) {
-            let s = self.ram.as_slice();
-            u16::from_le_bytes([s[a], s[a + 1]])
+            unsafe { (self.ram.as_slice().as_ptr().add(a) as *const u16).read_unaligned() }
         } else {
             self.read_u16(addr).unwrap_or(0xFFFF)
         }
@@ -404,8 +403,7 @@ impl GuestMemory {
     pub fn fast_read_u32(&self, addr: u64) -> u32 {
         let a = addr as usize;
         if a + 4 <= self.ram.size() && !self.is_possible_mmio(addr) {
-            let s = self.ram.as_slice();
-            u32::from_le_bytes([s[a], s[a + 1], s[a + 2], s[a + 3]])
+            unsafe { (self.ram.as_slice().as_ptr().add(a) as *const u32).read_unaligned() }
         } else {
             self.read_u32(addr).unwrap_or(0xFFFF_FFFF)
         }
@@ -416,7 +414,7 @@ impl GuestMemory {
     pub fn fast_write_u8(&mut self, addr: u64, val: u8) {
         let a = addr as usize;
         if a < self.ram.size() && !self.is_possible_mmio(addr) {
-            self.ram.as_mut_slice()[a] = val;
+            unsafe { *self.ram.as_mut_slice().as_mut_ptr().add(a) = val; }
             smc::mark_page_dirty(addr);
         } else {
             let _ = self.write_u8(addr, val);
@@ -428,10 +426,7 @@ impl GuestMemory {
     pub fn fast_write_u16(&mut self, addr: u64, val: u16) {
         let a = addr as usize;
         if a + 2 <= self.ram.size() && !self.is_possible_mmio(addr) {
-            let bytes = val.to_le_bytes();
-            let s = self.ram.as_mut_slice();
-            s[a] = bytes[0];
-            s[a + 1] = bytes[1];
+            unsafe { (self.ram.as_mut_slice().as_mut_ptr().add(a) as *mut u16).write_unaligned(val); }
             smc::mark_page_dirty(addr);
         } else {
             let _ = self.write_u16(addr, val);
@@ -443,12 +438,7 @@ impl GuestMemory {
     pub fn fast_write_u32(&mut self, addr: u64, val: u32) {
         let a = addr as usize;
         if a + 4 <= self.ram.size() && !self.is_possible_mmio(addr) {
-            let bytes = val.to_le_bytes();
-            let s = self.ram.as_mut_slice();
-            s[a] = bytes[0];
-            s[a + 1] = bytes[1];
-            s[a + 2] = bytes[2];
-            s[a + 3] = bytes[3];
+            unsafe { (self.ram.as_mut_slice().as_mut_ptr().add(a) as *mut u32).write_unaligned(val); }
             smc::mark_page_dirty(addr);
         } else {
             let _ = self.write_u32(addr, val);
@@ -726,13 +716,13 @@ pub struct Mmu {
     /// Last CR3 value seen by the translation fast path.
     tlb_last_cr3: Cell<u64>,
     /// Direct-mapped TLB validity/permission flags per entry.
-    tlb_valid: UnsafeCell<[u8; 256]>,
+    tlb_valid: UnsafeCell<[u8; 4096]>,
     /// Direct-mapped TLB tag: linear page number.
-    tlb_linear_page: UnsafeCell<[u64; 256]>,
+    tlb_linear_page: UnsafeCell<[u64; 4096]>,
     /// Direct-mapped TLB tag: CR3 value used for translation.
-    tlb_cr3: UnsafeCell<[u64; 256]>,
+    tlb_cr3: UnsafeCell<[u64; 4096]>,
     /// Direct-mapped TLB payload: physical page number.
-    tlb_phys_page: UnsafeCell<[u64; 256]>,
+    tlb_phys_page: UnsafeCell<[u64; 4096]>,
     /// Raw pointer to guest RAM for setting PTE Accessed/Dirty bits.
     ram_ptr: *mut u8,
     /// Size of guest RAM in bytes.
@@ -756,10 +746,10 @@ impl Mmu {
             cached_cr4: 0,
             cached_efer: 0,
             tlb_last_cr3: Cell::new(0),
-            tlb_valid: UnsafeCell::new([0; 256]),
-            tlb_linear_page: UnsafeCell::new([0; 256]),
-            tlb_cr3: UnsafeCell::new([0; 256]),
-            tlb_phys_page: UnsafeCell::new([0; 256]),
+            tlb_valid: UnsafeCell::new([0; 4096]),
+            tlb_linear_page: UnsafeCell::new([0; 4096]),
+            tlb_cr3: UnsafeCell::new([0; 4096]),
+            tlb_phys_page: UnsafeCell::new([0; 4096]),
             ram_ptr: core::ptr::null_mut(),
             ram_size: 0,
         }
@@ -843,6 +833,7 @@ impl Mmu {
     /// - `cpl`: Current privilege level.
     /// - `mem`: Guest physical memory bus.
     #[inline]
+    #[inline(always)]
     pub fn translate_linear(
         &self,
         linear: u64,
@@ -864,7 +855,7 @@ impl Mmu {
 
         let linear_page = linear >> 12;
         let offset = linear & 0xFFF;
-        let idx = ((linear_page ^ (cr3 >> 12)) as usize) & 0xFF;
+        let idx = ((linear_page ^ (cr3 >> 12)) as usize) & 0xFFF;
         let access_mask = match access {
             AccessType::Read => 0x1,
             AccessType::Write => 0x2,

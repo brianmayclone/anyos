@@ -15,7 +15,7 @@ use crate::memory::MemoryBus;
 ///
 /// Limits memory usage per block and ensures the interpreter regains control
 /// periodically (for interrupt checks, stop requests, etc.).
-const MAX_BLOCK_INSTRUCTIONS: usize = 16;
+const MAX_BLOCK_INSTRUCTIONS: usize = 32;
 
 /// Composite key identifying a unique basic block.
 ///

@@ -329,6 +329,7 @@ impl Cpu {
         self.decoder.decode_from_buf(&buf, MAX_INST_LEN, phys_addr)
     }
 
+    #[inline(always)]
     pub fn mask_rip(&mut self) {
         match self.mode {
             Mode::RealMode => {
@@ -550,8 +551,6 @@ impl Cpu {
         }
 
         loop {
-            let t_loop_start = rdtsc();
-
             if self.stop_requested {
                 self.stop_requested = false;
                 return ExitReason::StopRequested;
@@ -565,8 +564,9 @@ impl Cpu {
 
             crate::poll_external_irqs(interrupts, self.regs.rflags);
 
-            // Kernel spin-loop detector
+            // Kernel spin-loop detector (disabled — writes to guest memory)
             #[cfg(feature = "host_test")]
+            #[cfg(any())] // never compile
             {
                 static SPIN_CNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
                 let rip = self.regs.rip;
@@ -654,8 +654,6 @@ impl Cpu {
             }
             interrupts.interrupt_shadow = false;
 
-            let t_after_intr = rdtsc();
-
             // Compute the linear address of the instruction
             let cs = &self.regs.seg[SegReg::Cs as usize];
             let fetch_addr = cs.base.wrapping_add(self.regs.rip);
@@ -698,8 +696,6 @@ impl Cpu {
                 }
             };
 
-            let t_after_translate = rdtsc();
-
             // Save trace info for diagnostics before decode/execute.
             self.prev_exec_rip = self.last_exec_rip;
             self.prev_exec_cs = self.last_exec_cs;
@@ -710,16 +706,15 @@ impl Cpu {
             // ── Self-modifying code: invalidate decode cache for written pages ──
             self.drain_smc_invalidations();
 
-            let t_after_smc = rdtsc();
-
             // ── Debugger hook (before decode cache) ──
             #[cfg(feature = "host_test")]
             if crate::debugger::should_break(self, phys_addr) {
                 crate::debugger::enter_prompt(self, memory, mmu, phys_addr, "breakpoint");
             }
 
-            // ── Hang detection trap: detect `jmp $` (EB FE) spin loops ──
+            // ── Hang detection trap (disabled — too expensive and writes guest memory) ──
             #[cfg(feature = "host_test")]
+            #[cfg(any())]
             if self.prev_exec_rip == self.regs.rip && self.regs.rip >= 0x80000000 {
                 use crate::memory::MemoryBus;
                 let _chk_p = mmu.translate_linear(self.regs.rip, self.regs.cr3, crate::memory::AccessType::Read, 0, memory).unwrap_or(0);
@@ -1052,8 +1047,9 @@ impl Cpu {
             } // inner: EB FE check
             } // outer: prev_exec_rip == rip
 
-            // ── Bugcheck halt trap ──
+            // ── Bugcheck halt trap (disabled — too expensive) ──
             #[cfg(feature = "host_test")]
+            #[cfg(any())]
             if self.prev_exec_rip == self.regs.rip && self.regs.rip >= 0x80000000 {
                 use crate::memory::MemoryBus;
                 fn trl(mmu: &Mmu, cr3: u64, va: u64, mem: &GuestMemory) -> u64 {
@@ -1443,6 +1439,52 @@ impl Cpu {
         interrupts: &mut InterruptController,
     ) -> BlockExitReason {
         loop {
+            // Sync MMU and poll interrupts once per block, not per instruction.
+            mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
+            mmu.rflags_ac = (self.regs.rflags & crate::flags::AC) != 0;
+            crate::poll_external_irqs(interrupts, self.regs.rflags);
+
+            #[cfg(feature = "host_test")]
+            {
+                use core::sync::atomic::{AtomicBool, Ordering};
+                static SPIN_DUMPED: AtomicBool = AtomicBool::new(false);
+                if self.regs.rip == 0x8019AD79 && !SPIN_DUMPED.swap(true, Ordering::Relaxed) {
+                    eprintln!("[SPIN-DUMP] hit 8019AD79 at ic={} IF={} tpr={:#x} rflags={:#x}",
+                        self.instruction_count,
+                        (self.regs.rflags & crate::flags::IF) != 0,
+                        if let Some(lapic) = unsafe { crate::EXTERNAL_IRQ_CONTEXT.lapic_ptr.as_ref() } { lapic.diag_tpr() } else { 0xDEAD },
+                        self.regs.rflags);
+                    // Dump code bytes 8019AD00-8019AF00
+                    for base in [0x8019AD00u64, 0x8019AD80u64, 0x8019AE00u64, 0x8019AE40u64] {
+                        let mut line = alloc::format!("[SPIN-CODE] {:08X}:", base);
+                        for i in 0..32u64 {
+                            let addr = base + i;
+                            let phys = mmu.translate_linear(addr, self.regs.cr3, crate::memory::AccessType::Read, 0, memory);
+                            let b = phys.map(|p| memory.fast_read_u8(p)).unwrap_or(0xFF);
+                            line.push_str(&alloc::format!(" {:02X}", b));
+                        }
+                        eprintln!("{}", line);
+                    }
+                    // Also dump what [0x801AA2A0] currently contains
+                    if let Ok(phys) = mmu.translate_linear(0x801AA2A0, self.regs.cr3, crate::memory::AccessType::Read, 0, memory) {
+                        let val = memory.fast_read_u32(phys);
+                        eprintln!("[SPIN-DUMP] [0x801AA2A0] = {:#x}", val);
+                    }
+                    // Dump stack
+                    let esp = self.regs.gpr[crate::registers::GprIndex::Rsp as usize];
+                    let ebp = self.regs.gpr[crate::registers::GprIndex::Rbp as usize];
+                    eprintln!("[SPIN-DUMP] ESP={:#x} EBP={:#x}", esp, ebp);
+                    for i in 0..16u64 {
+                        let addr = esp + i * 4;
+                        if let Ok(phys) = mmu.translate_linear(addr, self.regs.cr3, crate::memory::AccessType::Read, 0, memory) {
+                            let val = memory.fast_read_u32(phys);
+                            eprint!(" {:08X}", val);
+                        }
+                    }
+                    eprintln!();
+                }
+            }
+
             let block_exit = self.execute_cached_block(
                 &block.instructions,
                 block_key.phys_addr,
@@ -1517,26 +1559,22 @@ impl Cpu {
         io: &mut IoDispatch,
         interrupts: &mut InterruptController,
     ) -> BlockExitReason {
-        let mut inst_phys = block_phys;
-        for inst in instructions {
-            mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
-            mmu.rflags_ac = (self.regs.rflags & crate::flags::AC) != 0;
-            crate::poll_external_irqs(interrupts, self.regs.rflags);
-            if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {
-                interrupts.acknowledge(vector);
-                if let Err(e) = self.deliver_interrupt_hw(vector, memory, mmu, interrupts) {
-                    return BlockExitReason::Exit(ExitReason::Exception(e));
-                }
-                interrupts.interrupt_shadow = false;
-                return BlockExitReason::Continue;
+        // Check interrupts once at block entry, not per instruction.
+        if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {
+            interrupts.acknowledge(vector);
+            if let Err(e) = self.deliver_interrupt_hw(vector, memory, mmu, interrupts) {
+                return BlockExitReason::Exit(ExitReason::Exception(e));
             }
             interrupts.interrupt_shadow = false;
+            return BlockExitReason::Continue;
+        }
+        interrupts.interrupt_shadow = false;
 
+        let mut inst_phys = block_phys;
+        for inst in instructions {
             self.last_exec_rip = self.regs.rip;
             self.last_exec_cs = self.regs.seg[SegReg::Cs as usize].selector;
             self.last_fetch_addr = inst_phys;
-            self.prev_opcode = self.last_opcode;
-            self.last_opcode = inst.opcode;
 
             match crate::executor::execute(self, inst, memory, mmu, io, interrupts) {
                 Ok(()) => {
@@ -1552,6 +1590,7 @@ impl Cpu {
                     return BlockExitReason::Exit(ExitReason::Breakpoint);
                 }
                 Err(ref e) => {
+                    self.last_opcode = inst.opcode;
                     self.note_exception_repeat(e);
                     #[cfg(feature = "host_test")]
                     if self.consecutive_exception_count <= 3 {
@@ -1566,33 +1605,10 @@ impl Cpu {
                             self.last_exec_rip,
                             inst_phys,
                             inst.opcode,
-                            b0,
-                            b1,
-                            b2,
-                            b3,
-                            e,
-                        );
-                        eprintln!(
-                            "[corevm]  regs: EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESP={:08X} EBP={:08X} ESI={:08X} EDI={:08X} CR2={:08X} CR3={:08X} EFLAGS={:08X}",
-                            self.regs.gpr[0] as u32,
-                            self.regs.gpr[3] as u32,
-                            self.regs.gpr[1] as u32,
-                            self.regs.gpr[2] as u32,
-                            self.regs.sp() as u32,
-                            self.regs.gpr[5] as u32,
-                            self.regs.gpr[6] as u32,
-                            self.regs.gpr[7] as u32,
-                            self.regs.cr2 as u32,
-                            self.regs.cr3 as u32,
-                            self.regs.rflags as u32,
+                            b0, b1, b2, b3, e,
                         );
                     }
                     if self.consecutive_exception_count > 20 {
-                        #[cfg(feature = "host_test")]
-                        eprintln!("[corevm] exception loop: CS:IP={:04X}:{:X} ({} repeats) CR2={:X} ESP={:X} err={:?}",
-                            self.regs.seg[SegReg::Cs as usize].selector,
-                            self.last_exec_rip, self.consecutive_exception_count,
-                            self.regs.cr2, self.regs.sp(), e);
                         return BlockExitReason::Exit(ExitReason::Exception(VmError::DoubleFault));
                     }
                     if let Err(e2) =
@@ -1600,19 +1616,11 @@ impl Cpu {
                     {
                         return BlockExitReason::Exit(ExitReason::Exception(e2));
                     }
-                    // Exception injected — break out of block, let main loop
-                    // re-enter at the exception handler address.
                     return BlockExitReason::Continue;
                 }
             }
 
             inst_phys += inst.length as u64;
-
-            // Check for stop request between instructions within the block.
-            if self.stop_requested {
-                self.stop_requested = false;
-                return BlockExitReason::Exit(ExitReason::StopRequested);
-            }
         }
         BlockExitReason::Continue
     }
