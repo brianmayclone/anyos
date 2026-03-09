@@ -39,4 +39,14 @@ impl Interner {
     pub fn resolve(&self, sym: Symbol) -> &str {
         &self.strings[sym.0 as usize]
     }
+
+    /// Look up a string without interning it. Returns None if not yet interned.
+    pub fn lookup(&self, s: &str) -> Option<Symbol> {
+        self.map.get(s).copied()
+    }
+
+    /// Number of interned symbols.
+    pub fn len(&self) -> usize {
+        self.strings.len()
+    }
 }
