@@ -288,6 +288,49 @@ impl<'a> MirBuilder<'a> {
             }
 
             HirExprKind::Call(callee, args) => {
+                // Check if this is an enum variant constructor call
+                if let HirExprKind::Path(path) = &callee.kind {
+                    if path.segments.len() == 2 {
+                        let enum_name = path.segments[0].ident;
+                        let variant_name = path.segments[1].ident;
+                        if let Some(&variant_idx) = self.resolve.variant_indices.get(&(enum_name, variant_name)) {
+                            // Check if this enum has data variants
+                            let callee_ty = self.get_expr_ty(callee);
+                            if let TyKind::Adt(enum_def_id, _) = &callee_ty {
+                                if let Some(variants) = self.typeck.enum_variants.get(enum_def_id) {
+                                    let max_fields = variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
+                                    if max_fields > 0 {
+                                        // This is a data enum variant constructor
+                                        let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
+                                        let ty = TyKind::Adt(*enum_def_id, vec![]);
+                                        let tmp = self.alloc_temp(ty, expr.span);
+                                        // Build aggregate: [discriminant, field0, field1, ...]
+                                        let mut operands = vec![Operand::Constant(Constant {
+                                            ty: TyKind::Int(IntTy::I64),
+                                            value: ConstValue::Int(variant_idx as i128),
+                                        })];
+                                        operands.extend(arg_ops);
+                                        // Pad with zeros up to max_fields
+                                        let variant_fields = variants.get(variant_idx).map(|(_, f)| f.len()).unwrap_or(0);
+                                        for _ in variant_fields..max_fields {
+                                            operands.push(Operand::Constant(Constant {
+                                                ty: TyKind::Int(IntTy::I64),
+                                                value: ConstValue::Int(0),
+                                            }));
+                                        }
+                                        self.emit_assign(
+                                            Place::local(tmp),
+                                            Rvalue::Aggregate(AggregateKind::Adt(*enum_def_id, variant_idx), operands),
+                                            expr.span,
+                                        );
+                                        return Operand::Copy(Place::local(tmp));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let func_op = self.lower_expr(callee);
                 let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
                 let ty = self.get_expr_ty(expr);
@@ -631,15 +674,15 @@ impl<'a> MirBuilder<'a> {
                 let result_ty = self.get_expr_ty(expr);
                 let result = self.alloc_temp(result_ty, expr.span);
 
-                // For enum match: get discriminant, then switch
-                let disc_op = if let TyKind::Adt(_, _) = &scr_ty {
+                // For enum match: store scrutinee, get discriminant, then switch
+                let (disc_op, scr_local) = if let TyKind::Adt(_, _) = &scr_ty {
                     let scr_tmp = self.alloc_temp(scr_ty.clone(), expr.span);
                     self.emit_assign(Place::local(scr_tmp), Rvalue::Use(scr_op), expr.span);
                     let disc_tmp = self.alloc_temp(TyKind::Int(IntTy::I64), expr.span);
                     self.emit_assign(Place::local(disc_tmp), Rvalue::Discriminant(Place::local(scr_tmp)), expr.span);
-                    Operand::Copy(Place::local(disc_tmp))
+                    (Operand::Copy(Place::local(disc_tmp)), Some(scr_tmp))
                 } else {
-                    scr_op
+                    (scr_op, None)
                 };
 
                 // Save the block where discriminant was computed
@@ -660,6 +703,32 @@ impl<'a> MirBuilder<'a> {
                     }
 
                     self.current_block = arm_bb;
+
+                    // Bind inner pattern variables for TupleStruct patterns
+                    if let HirPattern::TupleStruct(_, inner_pats, _) = &arm.pat {
+                        if let Some(scr_local) = scr_local {
+                            for (field_idx, inner_pat) in inner_pats.iter().enumerate() {
+                                if let HirPattern::Ident(hir_id, name, _, _, _) = inner_pat {
+                                    if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
+                                        let field_ty = TyKind::Int(IntTy::I64); // placeholder
+                                        let local = self.alloc_local(field_ty, Some(*name), expr.span);
+                                        self.var_map.insert(def_id, local);
+                                        // Load from scrutinee's field (slot 1 + field_idx, since slot 0 is disc)
+                                        let src_place = Place {
+                                            local: scr_local,
+                                            projections: vec![Projection::Field(1 + field_idx)],
+                                        };
+                                        self.emit_assign(
+                                            Place::local(local),
+                                            Rvalue::Use(Operand::Copy(src_place)),
+                                            expr.span,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     let arm_op = self.lower_expr(&arm.body);
                     self.emit_assign(Place::local(result), Rvalue::Use(arm_op), arm.span);
                     self.terminate(Terminator::Goto(merge_bb));
@@ -793,11 +862,37 @@ impl<'a> MirBuilder<'a> {
                         value: ConstValue::FnItem(fn_name),
                     })
                 }
-                TyKind::Adt(_, _) if path.segments.len() == 2 => {
+                TyKind::Adt(ref enum_def_id, _) if path.segments.len() == 2 => {
+                    let enum_def_id = *enum_def_id;
                     // Enum variant: look up discriminant
                     let enum_name = path.segments[0].ident;
                     let variant_name = path.segments[1].ident;
                     if let Some(&idx) = self.resolve.variant_indices.get(&(enum_name, variant_name)) {
+                        // Check if this is a data enum (has variants with fields)
+                        if let Some(variants) = self.typeck.enum_variants.get(&enum_def_id) {
+                            let max_fields = variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
+                            if max_fields > 0 {
+                                // Data enum unit variant: emit Aggregate with disc + zero padding
+                                let tmp = self.alloc_temp(ty.clone(), expr.span);
+                                let mut operands = vec![Operand::Constant(Constant {
+                                    ty: TyKind::Int(IntTy::I64),
+                                    value: ConstValue::Int(idx as i128),
+                                })];
+                                for _ in 0..max_fields {
+                                    operands.push(Operand::Constant(Constant {
+                                        ty: TyKind::Int(IntTy::I64),
+                                        value: ConstValue::Int(0),
+                                    }));
+                                }
+                                self.emit_assign(
+                                    Place::local(tmp),
+                                    Rvalue::Aggregate(AggregateKind::Adt(enum_def_id, idx), operands),
+                                    expr.span,
+                                );
+                                return Operand::Copy(Place::local(tmp));
+                            }
+                        }
+                        // C-like enum: just the discriminant value
                         Operand::Constant(Constant {
                             ty,
                             value: ConstValue::Int(idx as i128),
@@ -847,6 +942,12 @@ impl<'a> MirBuilder<'a> {
     fn pattern_discriminant(&self, pat: &HirPattern) -> Option<u128> {
         match pat {
             HirPattern::Path(path) if path.segments.len() == 2 => {
+                let enum_name = path.segments[0].ident;
+                let variant_name = path.segments[1].ident;
+                self.resolve.variant_indices.get(&(enum_name, variant_name))
+                    .map(|&idx| idx as u128)
+            }
+            HirPattern::TupleStruct(path, _, _) if path.segments.len() == 2 => {
                 let enum_name = path.segments[0].ident;
                 let variant_name = path.segments[1].ident;
                 self.resolve.variant_indices.get(&(enum_name, variant_name))

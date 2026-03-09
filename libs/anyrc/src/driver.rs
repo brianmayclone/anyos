@@ -90,13 +90,28 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         }
     }
 
-    // 9. Build struct size map from HIR
+    // 9. Build struct size map from HIR (includes enum tagged union sizes)
     let struct_sizes = {
-        use crate::hir::HirItemKind;
+        use crate::hir::{HirItemKind, HirVariantFields};
         let mut map = std::collections::HashMap::new();
         for item in &hir.items {
-            if let HirItemKind::Struct(s) = &item.kind {
-                map.insert(s.def_id, s.fields.len());
+            match &item.kind {
+                HirItemKind::Struct(s) => {
+                    map.insert(s.def_id, s.fields.len());
+                }
+                HirItemKind::Enum(e) => {
+                    let max_fields = e.variants.iter().map(|v| match &v.fields {
+                        HirVariantFields::Unit => 0,
+                        HirVariantFields::Tuple(tys) => tys.len(),
+                        HirVariantFields::Struct(fields) => fields.len(),
+                    }).max().unwrap_or(0);
+                    if max_fields > 0 {
+                        // Tagged union: 1 slot for discriminant + max_fields for payload
+                        map.insert(e.def_id, 1 + max_fields);
+                    }
+                    // C-like enums (max_fields == 0) use 1 slot (8 bytes), handled by default
+                }
+                _ => {}
             }
         }
         map

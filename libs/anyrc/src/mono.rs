@@ -273,6 +273,7 @@ impl TypeckResult {
             errors: Vec::new(),
             generic_call_substs: HashMap::new(),
             generic_fn_defs: HashMap::new(),
+            enum_variants: self.enum_variants.clone(),
         }
     }
 }
