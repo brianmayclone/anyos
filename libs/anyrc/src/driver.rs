@@ -10,6 +10,7 @@ use crate::macros::expand_macros;
 use crate::mir::MirBody;
 use crate::mir_build::MirBuilder;
 use crate::mir_opt::optimize;
+use crate::mono::monomorphize;
 use crate::borrowck::check_borrows;
 use crate::parser::Parser;
 use crate::resolve::Resolver;
@@ -70,6 +71,9 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
 
     // 6. Build MIR
     let mut mir_bodies = MirBuilder::build_crate(&interner, &resolve_result, &typeck_result, &hir);
+
+    // 6b. Monomorphize generic functions
+    let mut mir_bodies = monomorphize(mir_bodies, &typeck_result, &mut interner, &hir, &resolve_result);
 
     // 7. Borrow check
     for body in &mir_bodies {
