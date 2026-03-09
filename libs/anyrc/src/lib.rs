@@ -8,3 +8,6 @@ pub mod hir;
 pub mod hir_lower;
 pub mod resolve;
 pub mod typeck;
+pub mod mir;
+pub mod mir_build;
+pub mod borrowck;
