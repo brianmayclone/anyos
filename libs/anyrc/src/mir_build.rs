@@ -1274,6 +1274,10 @@ impl<'a> MirBuilder<'a> {
             }
             HirExprKind::Field(base, field_name) => {
                 let mut place = self.lower_place(base);
+                let base_ty = self.get_expr_ty(base);
+                if matches!(&base_ty, TyKind::Ref(_, _)) {
+                    place.projections.push(Projection::Deref);
+                }
                 let idx = self.resolve_field_index(base, *field_name);
                 place.projections.push(Projection::Field(idx));
                 place
