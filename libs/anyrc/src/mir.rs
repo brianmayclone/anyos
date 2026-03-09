@@ -90,6 +90,7 @@ pub enum ConstValue {
     Bool(bool),
     Char(char),
     Str(String),
+    FnItem(crate::intern::Symbol),
     Unit,
 }
 

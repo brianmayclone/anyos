@@ -252,7 +252,7 @@ impl<'a> CodeEmitter<'a> {
         }
     }
 
-    fn emit_terminator(&mut self, term: &Terminator, _interner: &Interner) {
+    fn emit_terminator(&mut self, term: &Terminator, interner: &Interner) {
         match term {
             Terminator::Goto(target) => {
                 self.asm.jmp(self.block_labels[target.0]);
@@ -265,16 +265,22 @@ impl<'a> CodeEmitter<'a> {
                 }
                 self.asm.jmp(self.block_labels[default.0]);
             }
-            Terminator::Call { func: _, args, dest, target } => {
+            Terminator::Call { func, args, dest, target } => {
                 // Move args into calling convention registers
                 for (i, arg) in args.iter().enumerate() {
                     if i < ARG_REGS.len() {
                         self.load_operand(arg, ARG_REGS[i]);
                     }
                 }
-                // For now, all calls go through extern relocations
-                // The func operand would tell us which function, but we emit a placeholder call
-                self.asm.call_extern("__placeholder");
+                // Extract the function name from the func operand
+                let fn_name = match func {
+                    Operand::Constant(c) => match &c.value {
+                        ConstValue::FnItem(sym) => interner.resolve(*sym).to_string(),
+                        _ => "__unknown".to_string(),
+                    },
+                    _ => "__unknown".to_string(),
+                };
+                self.asm.call_extern(&fn_name);
                 // Store return value
                 self.store_place(dest, Reg::RAX);
                 self.asm.jmp(self.block_labels[target.0]);
@@ -301,6 +307,7 @@ fn const_to_i64(val: &ConstValue) -> i64 {
         ConstValue::Char(c) => *c as i64,
         ConstValue::Float(f) => *f as i64,
         ConstValue::Str(_) => 0,
+        ConstValue::FnItem(_) => 0,
         ConstValue::Unit => 0,
     }
 }
