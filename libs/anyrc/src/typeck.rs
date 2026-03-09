@@ -57,6 +57,8 @@ pub struct TypeckResult {
     pub generic_call_substs: HashMap<HirId, (DefId, Vec<TyKind>)>,
     /// DefIds of functions that have generic type params
     pub generic_fn_defs: HashMap<DefId, usize>,  // DefId -> number of type params
+    /// Enum variant field types: enum DefId -> vec of (variant_name, field_types)
+    pub enum_variants: HashMap<DefId, Vec<(Symbol, Vec<TyKind>)>>,
 }
 
 pub struct TypeChecker<'a> {
@@ -69,6 +71,8 @@ pub struct TypeChecker<'a> {
     struct_defs: HashMap<DefId, Vec<(Symbol, TyKind)>>,
     /// Map type name Symbol -> DefId for structs and enums
     type_name_to_def: HashMap<Symbol, DefId>,
+    /// Enum variant field types: enum DefId -> vec of (variant_name, field_types)
+    enum_variant_fields: HashMap<DefId, Vec<(Symbol, Vec<TyKind>)>>,
     /// Map resolver variant DefId -> owning enum DefId
     resolver_variant_to_enum: HashMap<DefId, DefId>,
     /// Current function's generic param symbols -> param index
@@ -96,6 +100,7 @@ impl<'a> TypeChecker<'a> {
             fn_sigs: HashMap::new(),
             struct_defs: HashMap::new(),
             type_name_to_def: HashMap::new(),
+            enum_variant_fields: HashMap::new(),
             resolver_variant_to_enum: HashMap::new(),
             current_generic_params: HashMap::new(),
             generic_call_substs: HashMap::new(),
@@ -151,6 +156,7 @@ impl<'a> TypeChecker<'a> {
             errors: std::mem::take(&mut self.errors),
             generic_call_substs,
             generic_fn_defs: std::mem::take(&mut self.generic_fn_defs),
+            enum_variants: std::mem::take(&mut self.enum_variant_fields),
         }
     }
 
@@ -190,12 +196,21 @@ impl<'a> TypeChecker<'a> {
             }
             HirItemKind::Enum(e) => {
                 self.type_name_to_def.insert(e.name, e.def_id);
-                // Map resolver's variant DefIds to this enum's DefId.
-                // The resolver iterates variants in order and allocates synthetic DefIds
-                // starting from 10000. We need to find them by looking at
-                // resolutions that point to the resolver's variant DefIds.
-                // But we can't easily do that. Instead, we'll resolve variant paths
-                // at usage time by matching the enum name and variant name.
+                // Collect variant field types
+                let mut variants = Vec::new();
+                for v in &e.variants {
+                    let field_tys = match &v.fields {
+                        HirVariantFields::Unit => vec![],
+                        HirVariantFields::Tuple(tys) => {
+                            tys.iter().map(|t| self.hir_ty_to_ty(t)).collect()
+                        }
+                        HirVariantFields::Struct(fields) => {
+                            fields.iter().map(|f| self.hir_ty_to_ty(&f.ty)).collect()
+                        }
+                    };
+                    variants.push((v.name, field_tys));
+                }
+                self.enum_variant_fields.insert(e.def_id, variants);
             }
             HirItemKind::Impl(ib) => {
                 // Register Self as an alias for the impl'd type
@@ -412,6 +427,12 @@ impl<'a> TypeChecker<'a> {
                             for a in args { self.check_expr(a); }
                             TyKind::Error
                         }
+                    }
+                    TyKind::Adt(enum_def_id, _) => {
+                        // Enum variant constructor call, e.g. Option::Some(42)
+                        // Check args against variant field types
+                        for a in args { self.check_expr(a); }
+                        TyKind::Adt(enum_def_id, vec![])
                     }
                     _ => {
                         for a in args { self.check_expr(a); }
