@@ -2547,13 +2547,17 @@ fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
         if pic_masked && !vm.lapic_ptr.is_null() {
             let lapic = unsafe { &mut *vm.lapic_ptr };
             if lapic.software_enabled() {
-                // Use the IOAPIC's programmed vector if available,
-                // otherwise use spaced vectors (different priority classes).
+                // Each IRQ needs its own LAPIC priority class (vector >> 4).
+                // Map IRQ 0→0x41, 1→0x51, ..., 11→0xF1. IRQs 12+ share 0xF1.
                 let fallback_vector: u8 = if !vm.ioapic_ptr.is_null() {
                     let ioapic = unsafe { &*vm.ioapic_ptr };
-                    ioapic.programmed_vector(irq).unwrap_or(0x51 + irq)
+                    ioapic.programmed_vector(irq).unwrap_or_else(|| {
+                        let cls = core::cmp::min(irq as u16 + 4, 15) as u8;
+                        (cls << 4) | 1
+                    })
                 } else {
-                    0x51 + irq
+                    let cls = core::cmp::min(irq as u16 + 4, 15) as u8;
+                    (cls << 4) | 1
                 };
                 #[cfg(feature = "host_test")]
                 {
