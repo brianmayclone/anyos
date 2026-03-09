@@ -623,10 +623,11 @@ impl<'a> MirBuilder<'a> {
             // Could be a function reference
             let ty = self.get_expr_ty(expr);
             match &ty {
-                TyKind::FnDef(def_id, _) => {
+                TyKind::FnDef(_def_id, _) => {
+                    let fn_name = path.segments.last().unwrap().ident;
                     Operand::Constant(Constant {
                         ty: ty.clone(),
-                        value: ConstValue::Unit, // function items are ZST
+                        value: ConstValue::FnItem(fn_name),
                     })
                 }
                 _ => Operand::Constant(Constant { ty, value: ConstValue::Unit }),
