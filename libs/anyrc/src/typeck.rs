@@ -525,6 +525,12 @@ impl<'a> TypeChecker<'a> {
                 let callee_ty = self.check_expr(callee);
                 match self.shallow_resolve(callee_ty) {
                     TyKind::FnDef(def_id, _) => {
+                        // Intrinsic functions: accept any args, return inferred type
+                        if self.resolve.intrinsic_fns.contains_key(&def_id) {
+                            for a in args { self.check_expr(a); }
+                            // Return a fresh infer var that will be resolved by context
+                            return self.fresh_infer(InferKind::General);
+                        }
                         if let Some((param_tys, ret_ty)) = self.fn_sigs.get(&def_id).cloned() {
                             // If this is a generic function, create fresh infer vars for each type param
                             let n_generics = self.generic_fn_defs.get(&def_id).copied().unwrap_or(0);
@@ -892,6 +898,10 @@ impl<'a> TypeChecker<'a> {
 
     fn infer_path_type(&self, path: &HirPath, expr_id: HirId) -> TyKind {
         if let Some(&def_id) = self.resolve.resolutions.get(&expr_id) {
+            // Intrinsic function from core/alloc?
+            if self.resolve.intrinsic_fns.contains_key(&def_id) {
+                return TyKind::FnDef(def_id, vec![]);
+            }
             // Function?
             if self.fn_sigs.contains_key(&def_id) {
                 return TyKind::FnDef(def_id, vec![]);

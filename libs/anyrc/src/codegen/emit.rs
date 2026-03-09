@@ -394,25 +394,36 @@ impl<'a> CodeEmitter<'a> {
                         }
                     }
                 }
-                // Extract the function name or do indirect call
-                match func {
-                    Operand::Constant(c) => match &c.value {
-                        ConstValue::FnItem(sym) => {
-                            let fn_name = interner.resolve(*sym).to_string();
-                            self.asm.call_extern(&fn_name);
-                        }
-                        _ => {
-                            self.asm.call_extern("__unknown");
-                        }
-                    },
-                    Operand::Copy(place) | Operand::Move(place) => {
-                        // Indirect call: load function pointer from place, call through register
-                        self.load_place(place, Reg::R10);
-                        self.asm.call_reg(Reg::R10);
+                // Check for intrinsic calls before emitting a regular call
+                let mut is_intrinsic = false;
+                if let Operand::Constant(c) = func {
+                    if let ConstValue::FnItem(sym) = &c.value {
+                        let fn_name = interner.resolve(*sym);
+                        is_intrinsic = self.try_emit_intrinsic(fn_name, args, dest);
                     }
-                };
-                // Store return value
-                self.store_place(dest, Reg::RAX);
+                }
+
+                if !is_intrinsic {
+                    // Extract the function name or do indirect call
+                    match func {
+                        Operand::Constant(c) => match &c.value {
+                            ConstValue::FnItem(sym) => {
+                                let fn_name = interner.resolve(*sym).to_string();
+                                self.asm.call_extern(&fn_name);
+                            }
+                            _ => {
+                                self.asm.call_extern("__unknown");
+                            }
+                        },
+                        Operand::Copy(place) | Operand::Move(place) => {
+                            // Indirect call: load function pointer from place, call through register
+                            self.load_place(place, Reg::R10);
+                            self.asm.call_reg(Reg::R10);
+                        }
+                    };
+                    // Store return value
+                    self.store_place(dest, Reg::RAX);
+                }
                 self.asm.jmp(self.block_labels[target.0]);
             }
             Terminator::Return => {
@@ -425,6 +436,89 @@ impl<'a> CodeEmitter<'a> {
                 // UD2 — just emit a nop as placeholder
                 self.asm.nop();
             }
+        }
+    }
+
+    /// Try to emit an intrinsic call. Returns true if the function was recognized as an intrinsic.
+    fn try_emit_intrinsic(&mut self, fn_name: &str, args: &[Operand], dest: &Place) -> bool {
+        match fn_name {
+            // core::ptr
+            "null_mut" | "null" => {
+                // Return null pointer (0)
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "write_bytes" => {
+                // (dst: *mut T, val: u8, count: usize)
+                // Args in RDI, RSI, RDX (already loaded by caller setup)
+                // rep stosb: RDI=dst, AL=val, RCX=count
+                self.asm.emit_raw(&[0x88, 0xF0]);       // mov al, sil
+                self.asm.emit_raw(&[0x48, 0x89, 0xD1]); // mov rcx, rdx
+                self.asm.emit_raw(&[0xF3, 0xAA]);       // rep stosb
+                true
+            }
+            "copy_nonoverlapping" => {
+                // (src: *const T, dst: *mut T, count: usize)
+                // Args: RDI=src, RSI=dst, RDX=count
+                // rep movsb needs: RSI=src, RDI=dst, RCX=count
+                self.asm.emit_raw(&[0x48, 0x87, 0xFE]); // xchg rdi, rsi
+                self.asm.emit_raw(&[0x48, 0x89, 0xD1]); // mov rcx, rdx
+                self.asm.emit_raw(&[0xF3, 0xA4]);       // rep movsb
+                true
+            }
+            "write_volatile" | "write" | "write_unaligned" => {
+                // (dst: *mut T, val: T) — args in RDI, RSI
+                // mov [rdi], rsi
+                self.asm.mov_mr(Reg::RDI, 0, Reg::RSI);
+                true
+            }
+            "read_volatile" | "read_unaligned" => {
+                // (src: *const T) -> T — arg in RDI
+                // mov rax, [rdi]
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            // core::mem
+            "size_of" => {
+                // For now, all types are 8 bytes
+                self.asm.mov_ri(Reg::RAX, 8);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "align_of" => {
+                self.asm.mov_ri(Reg::RAX, 8);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "transmute" => {
+                // Just move the first arg through — reinterpret bits
+                // Arg already in RDI
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "forget" => {
+                // No-op: skip drop
+                true
+            }
+            // core::hint
+            "spin_loop" => {
+                // PAUSE instruction
+                self.asm.emit_raw(&[0xF3, 0x90]);
+                true
+            }
+            // core::slice
+            "from_raw_parts" | "from_raw_parts_mut" => {
+                // Construct fat pointer from (ptr, len) — already in RDI, RSI
+                // Store as a 2-word aggregate at dest
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RDI);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RSI);
+                true
+            }
+            _ => false,
         }
     }
 

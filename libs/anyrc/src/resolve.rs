@@ -13,6 +13,8 @@ pub struct ResolveResult {
     pub impl_methods: HashMap<Symbol, Vec<(Symbol, DefId)>>,
     /// Map from (enum_name, variant_name) to variant index
     pub variant_indices: HashMap<(Symbol, Symbol), usize>,
+    /// Intrinsic DefIds: maps synthetic DefId to full path string (e.g. "core::ptr::null_mut")
+    pub intrinsic_fns: HashMap<DefId, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -52,6 +54,8 @@ pub struct Resolver<'a> {
     root_scope: usize,
     /// Stack of module scope indices for `super::` resolution
     module_stack: Vec<usize>,
+    /// Intrinsic DefIds: maps synthetic DefId to full path string
+    intrinsic_fns: HashMap<DefId, String>,
 }
 
 impl<'a> Resolver<'a> {
@@ -73,6 +77,7 @@ impl<'a> Resolver<'a> {
             module_scopes: HashMap::new(),
             root_scope: 0,
             module_stack: vec![0],
+            intrinsic_fns: HashMap::new(),
         }
     }
 
@@ -108,6 +113,7 @@ impl<'a> Resolver<'a> {
             errors: std::mem::take(&mut self.errors),
             impl_methods: self.impl_methods.clone(),
             variant_indices,
+            intrinsic_fns: std::mem::take(&mut self.intrinsic_fns),
         }
     }
 
@@ -176,6 +182,18 @@ impl<'a> Resolver<'a> {
     fn process_use_tree(&mut self, use_tree: &HirUseTree) {
         match &use_tree.kind {
             HirUseTreeKind::Simple(alias) => {
+                // Handle `use core::...` imports as intrinsics
+                if self.is_extern_crate_path(&use_tree.path) {
+                    let local_name = alias.unwrap_or_else(|| {
+                        *use_tree.path.last().unwrap()
+                    });
+                    let full_path = self.path_to_string(&use_tree.path);
+                    let def_id = self.alloc_synthetic_def_id();
+                    self.intrinsic_fns.insert(def_id, full_path);
+                    self.define(local_name, Namespace::Value, def_id);
+                    self.define(local_name, Namespace::Type, def_id);
+                    return;
+                }
                 // use a::b::c; or use a::b::c as d;
                 if let Some((def_id, ns)) = self.resolve_use_path(&use_tree.path, use_tree.span) {
                     let local_name = alias.unwrap_or_else(|| {
@@ -231,6 +249,21 @@ impl<'a> Resolver<'a> {
             return Some(result);
         }
         None
+    }
+
+    /// Check if a path represents an external known module (core, alloc)
+    fn is_extern_crate_path(&self, path: &[Symbol]) -> bool {
+        if path.is_empty() { return false; }
+        let first = self.interner.resolve(path[0]);
+        first == "core" || first == "alloc"
+    }
+
+    /// Build a full path string like "core::ptr::null_mut" from symbols
+    fn path_to_string(&self, path: &[Symbol]) -> String {
+        path.iter()
+            .map(|s| self.interner.resolve(*s).to_string())
+            .collect::<Vec<_>>()
+            .join("::")
     }
 
     fn resolve_use_path_ns(&self, path: &[Symbol], ns: Namespace) -> Option<(DefId, Namespace)> {
@@ -807,6 +840,20 @@ impl<'a> Resolver<'a> {
                 self.resolve_module_path(path, ns, hir_id);
                 return;
             }
+        }
+
+        // Handle core:: and alloc:: paths as intrinsics
+        if path.segments.len() >= 2 && (name_str == "core" || name_str == "alloc") {
+            let full_path = path.segments.iter()
+                .map(|s| self.interner.resolve(s.ident).to_string())
+                .collect::<Vec<_>>()
+                .join("::");
+            let def_id = self.alloc_synthetic_def_id();
+            self.intrinsic_fns.insert(def_id, full_path);
+            if hir_id != HirId(u32::MAX) {
+                self.resolutions.insert(hir_id, def_id);
+            }
+            return;
         }
 
         if path.segments.len() == 1 {
