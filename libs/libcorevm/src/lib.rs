@@ -2547,7 +2547,14 @@ fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
         if pic_masked && !vm.lapic_ptr.is_null() {
             let lapic = unsafe { &mut *vm.lapic_ptr };
             if lapic.software_enabled() {
-                let fallback_vector = 0x30 + irq;
+                // Use the IOAPIC's programmed vector if available,
+                // otherwise use spaced vectors (different priority classes).
+                let fallback_vector: u8 = if !vm.ioapic_ptr.is_null() {
+                    let ioapic = unsafe { &*vm.ioapic_ptr };
+                    ioapic.programmed_vector(irq).unwrap_or(0x51 + irq)
+                } else {
+                    0x51 + irq
+                };
                 #[cfg(feature = "host_test")]
                 {
                     static FB_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);

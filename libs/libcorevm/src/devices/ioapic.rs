@@ -162,6 +162,17 @@ impl IoApic {
         self.redir_table.get(irq as usize).copied().unwrap_or(0)
     }
 
+    /// Return the programmed vector for an IRQ, even if the entry is masked.
+    /// Returns None if the entry was never programmed (vector == 0).
+    pub fn programmed_vector(&self, irq: u8) -> Option<u8> {
+        let idx = irq as usize;
+        if idx >= NUM_REDIR_ENTRIES {
+            return None;
+        }
+        let vector = (self.redir_table[idx] & 0xFF) as u8;
+        if vector == 0 { None } else { Some(vector) }
+    }
+
     /// Route an external IRQ pin through the redirection table.
     ///
     /// Returns `(vector, level_triggered)` when the entry is unmasked and
