@@ -803,7 +803,7 @@ impl<'a> MirBuilder<'a> {
 
                 let method_def_id = if let TyKind::Adt(def_id, _) = &inner_ty {
                     // Find type name for this DefId
-                    let type_name = self.typeck.struct_defs.keys()
+                    self.typeck.struct_defs.keys()
                         .find(|&&did| did == *def_id)
                         .and_then(|_| {
                             // Search impl_methods by checking all type names
@@ -813,8 +813,7 @@ impl<'a> MirBuilder<'a> {
                                         .find(|(n, _)| *n == *method_name)
                                         .map(|(_, did)| *did)
                                 })
-                        });
-                    type_name
+                        })
                 } else {
                     None
                 };
