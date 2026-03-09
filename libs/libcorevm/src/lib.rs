@@ -439,6 +439,16 @@ pub(crate) fn poll_external_irqs(
         if lapic.take_timer_irq() {
             let vec = lapic.timer_vector();
             lapic.raise_vector(vec, false);
+            #[cfg(feature = "host_test")]
+            {
+                static POLL_TFIRE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                let cnt = POLL_TFIRE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                if cnt < 20 {
+                    let if_set = (rflags & flags::IF) != 0;
+                    eprintln!("[poll] timer-fire vec={:#04x} IF={}",
+                        vec, if_set as u8);
+                }
+            }
         }
     }
 
@@ -837,13 +847,13 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
         }
 
         // Advance LAPIC timer.
-        if ran > 0 && !vm.lapic_ptr.is_null() {
+        if !vm.lapic_ptr.is_null() {
             let lapic = unsafe { &mut *vm.lapic_ptr };
             #[cfg(feature = "host_test")]
             {
                 // Use wall-clock TSC for LAPIC timer so it stays consistent
                 // with what the guest reads from current_count (also TSC-based).
-                // Using instruction-based ticks here would double-count.
+                // Must run even when ran==0 (e.g. HLT) so timer fires on wall-clock.
                 lapic.sync_timer_from_tsc();
                 if lapic.take_timer_irq() {
                     let vec = lapic.timer_vector();

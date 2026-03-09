@@ -294,7 +294,20 @@ impl IoHandler for Pit {
                 ));
             }
             0x41 => self.channels[1].write_count(byte),
-            0x42 => self.channels[2].write_count(byte),
+            0x42 => {
+                self.channels[2].write_count(byte);
+                #[cfg(feature = "host_test")]
+                pit_log(format_args!(
+                    "ch2 write data={:#04x} count={:#06x} cur={:#06x} mode={} gate={} out={} enabled={}",
+                    byte,
+                    self.channels[2].count,
+                    self.channels[2].current,
+                    self.channels[2].mode,
+                    self.channels[2].gate as u8,
+                    self.channels[2].output as u8,
+                    self.channels[2].enabled as u8,
+                ));
+            }
             0x43 => {
                 // Mode/command register.
                 let channel_idx = ((byte >> 6) & 0x03) as usize;
@@ -323,9 +336,10 @@ impl IoHandler for Pit {
                     ch.read_hi = false;
                     ch.latched = false;
                     #[cfg(feature = "host_test")]
-                    if channel_idx == 0 {
+                    if channel_idx == 0 || channel_idx == 2 {
                         pit_log(format_args!(
-                            "ch0 control={:#04x} mode={} access={} bcd={}",
+                            "ch{} control={:#04x} mode={} access={} bcd={}",
+                            channel_idx,
                             byte,
                             ch.mode,
                             ch.access_mode,

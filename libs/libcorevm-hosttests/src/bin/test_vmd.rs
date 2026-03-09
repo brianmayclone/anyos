@@ -1,6 +1,6 @@
 use std::env;
 use std::collections::VecDeque;
-use std::ffi::CString;
+use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void, CString};
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -14,6 +14,7 @@ use libcorevm::{
     corevm_create_ex, corevm_destroy, corevm_get_instruction_count, corevm_get_last_error,
     corevm_get_cr, corevm_get_gpr, corevm_get_last_error_rip, corevm_get_mode, corevm_get_msr, corevm_get_rflags,
     corevm_get_rip, corevm_get_segment_base, corevm_get_segment_selector, corevm_jit_cache_stats,
+    corevm_cache_stats,
     corevm_jit_enable, corevm_jit_stats, corevm_lapic_diag_state, corevm_irq_pending_word,
     corevm_ioapic_redir_entry,
     corevm_pic_diag_state, corevm_read_linear_u8, corevm_read_phys_u8, corevm_read_phys_u32,
@@ -26,6 +27,462 @@ use libcorevm::{
     corevm_debugger_enable, corevm_debugger_break,
     corevm_dump_exception_ring,
 };
+
+// ── X11 FFI bindings (conditional display) ──
+
+const X11_KEY_PRESS: c_int = 2;
+const X11_KEY_RELEASE: c_int = 3;
+const X11_CONFIGURE_NOTIFY: c_int = 22;
+const X11_KEY_PRESS_MASK: c_long = 1 << 0;
+const X11_KEY_RELEASE_MASK: c_long = 1 << 1;
+const X11_EXPOSURE_MASK: c_long = 1 << 15;
+const X11_STRUCTURE_NOTIFY_MASK: c_long = 1 << 17;
+const X11_ZPIXMAP: c_int = 2;
+const X11_RENDER_MIN_INTERVAL: Duration = Duration::from_millis(16);
+const X11_OVERLAY_UPDATE_INTERVAL: Duration = Duration::from_millis(250);
+const X11_CHAR_W: usize = 8;
+const X11_CHAR_H: usize = 16;
+const X11_OVERLAY_PAD: usize = 8;
+
+const XK_BACKSPACE: c_ulong = 0xFF08;
+const XK_TAB: c_ulong = 0xFF09;
+const XK_RETURN: c_ulong = 0xFF0D;
+const XK_ESCAPE: c_ulong = 0xFF1B;
+const XK_LEFT: c_ulong = 0xFF51;
+const XK_UP: c_ulong = 0xFF52;
+const XK_RIGHT: c_ulong = 0xFF53;
+const XK_DOWN: c_ulong = 0xFF54;
+
+#[repr(C)]
+struct X11Display(c_void);
+#[repr(C)]
+struct X11Visual(c_void);
+#[repr(C)]
+struct X11GCData(c_void);
+type X11GC = *mut X11GCData;
+
+#[repr(C)]
+struct XEvent {
+    pad: [c_long; 24],
+}
+
+#[repr(C)]
+struct XAnyEvent {
+    type_: c_int,
+    _serial: c_ulong,
+    _send_event: c_int,
+    _display: *mut X11Display,
+    _window: c_ulong,
+}
+
+#[repr(C)]
+struct XKeyEvent {
+    type_: c_int,
+    _serial: c_ulong,
+    _send_event: c_int,
+    _display: *mut X11Display,
+    _window: c_ulong,
+    _root: c_ulong,
+    _subwindow: c_ulong,
+    _time: c_ulong,
+    _x: c_int,
+    _y: c_int,
+    _x_root: c_int,
+    _y_root: c_int,
+    _state: c_uint,
+    _keycode: c_uint,
+    _same_screen: c_int,
+}
+
+#[repr(C)]
+struct XConfigureEvent {
+    _type: c_int,
+    _serial: c_ulong,
+    _send_event: c_int,
+    _display: *mut X11Display,
+    _event: c_ulong,
+    _window: c_ulong,
+    _x: c_int,
+    _y: c_int,
+    width: c_int,
+    height: c_int,
+    _border_width: c_int,
+    _above: c_ulong,
+    _override_redirect: c_int,
+}
+
+#[repr(C)]
+struct XImage {
+    width: c_int,
+    height: c_int,
+    xoffset: c_int,
+    format: c_int,
+    data: *mut c_char,
+    byte_order: c_int,
+    bitmap_unit: c_int,
+    bitmap_bit_order: c_int,
+    bitmap_pad: c_int,
+    depth: c_int,
+    bytes_per_line: c_int,
+    bits_per_pixel: c_int,
+    red_mask: c_ulong,
+    green_mask: c_ulong,
+    blue_mask: c_ulong,
+    obdata: *mut c_char,
+    f: [usize; 8],
+}
+
+#[link(name = "X11")]
+unsafe extern "C" {
+    fn XOpenDisplay(name: *const c_char) -> *mut X11Display;
+    fn XCloseDisplay(display: *mut X11Display) -> c_int;
+    fn XDefaultScreen(display: *mut X11Display) -> c_int;
+    fn XRootWindow(display: *mut X11Display, screen: c_int) -> c_ulong;
+    fn XBlackPixel(display: *mut X11Display, screen: c_int) -> c_ulong;
+    fn XWhitePixel(display: *mut X11Display, screen: c_int) -> c_ulong;
+    fn XDefaultVisual(display: *mut X11Display, screen: c_int) -> *mut X11Visual;
+    fn XDefaultDepth(display: *mut X11Display, screen: c_int) -> c_int;
+    fn XCreateSimpleWindow(
+        display: *mut X11Display, parent: c_ulong,
+        x: c_int, y: c_int, width: c_uint, height: c_uint,
+        border_width: c_uint, border: c_ulong, background: c_ulong,
+    ) -> c_ulong;
+    fn XStoreName(display: *mut X11Display, window: c_ulong, name: *const c_char) -> c_int;
+    fn XSelectInput(display: *mut X11Display, window: c_ulong, mask: c_long) -> c_int;
+    fn XMapWindow(display: *mut X11Display, window: c_ulong) -> c_int;
+    fn XCreateGC(display: *mut X11Display, drawable: c_ulong, v: c_ulong, values: *mut c_void) -> X11GC;
+    fn XSetForeground(display: *mut X11Display, gc: X11GC, color: c_ulong) -> c_int;
+    fn XFillRectangle(
+        display: *mut X11Display, drawable: c_ulong, gc: X11GC,
+        x: c_int, y: c_int, width: c_uint, height: c_uint,
+    ) -> c_int;
+    fn XDrawString(
+        display: *mut X11Display, drawable: c_ulong, gc: X11GC,
+        x: c_int, y: c_int, text: *const c_char, len: c_int,
+    ) -> c_int;
+    fn XPending(display: *mut X11Display) -> c_int;
+    fn XNextEvent(display: *mut X11Display, event: *mut XEvent) -> c_int;
+    fn XLookupKeysym(event: *mut XKeyEvent, index: c_int) -> c_ulong;
+    fn XCreateImage(
+        display: *mut X11Display, visual: *mut X11Visual, depth: c_uint,
+        format: c_int, offset: c_int, data: *mut c_char,
+        width: c_uint, height: c_uint, bitmap_pad: c_int, bytes_per_line: c_int,
+    ) -> *mut XImage;
+    fn XPutImage(
+        display: *mut X11Display, drawable: c_ulong, gc: X11GC, image: *mut XImage,
+        src_x: c_int, src_y: c_int, dst_x: c_int, dst_y: c_int,
+        width: c_uint, height: c_uint,
+    ) -> c_int;
+    fn XFlush(display: *mut X11Display) -> c_int;
+}
+
+struct X11Window {
+    display: *mut X11Display,
+    window: c_ulong,
+    gc: X11GC,
+    visual: *mut X11Visual,
+    depth: c_int,
+    win_w: usize,
+    win_h: usize,
+    blit_buf: Vec<u32>,
+    ximage: *mut XImage,
+    last_render: Instant,
+    last_overlay_update: Instant,
+    last_text_hash: u64,
+    diag_lines: Vec<String>,
+    last_ic: u64,
+    last_calls: u64,
+    last_cache_hits: u64,
+    last_cache_misses: u64,
+    run_calls: u64,
+}
+
+impl X11Window {
+    fn open() -> Option<Self> {
+        let display = unsafe { XOpenDisplay(std::ptr::null()) };
+        if display.is_null() {
+            return None;
+        }
+        let screen = unsafe { XDefaultScreen(display) };
+        let root = unsafe { XRootWindow(display, screen) };
+        let black = unsafe { XBlackPixel(display, screen) };
+        let white = unsafe { XWhitePixel(display, screen) };
+        let window = unsafe { XCreateSimpleWindow(display, root, 50, 50, 800, 600, 1, white, black) };
+        unsafe {
+            XSelectInput(display, window,
+                X11_KEY_PRESS_MASK | X11_KEY_RELEASE_MASK | X11_EXPOSURE_MASK | X11_STRUCTURE_NOTIFY_MASK);
+            let title = b"CoreVM Display\0";
+            XStoreName(display, window, title.as_ptr() as *const c_char);
+            XMapWindow(display, window);
+        }
+        let gc = unsafe { XCreateGC(display, window, 0, std::ptr::null_mut()) };
+        let visual = unsafe { XDefaultVisual(display, screen) };
+        let depth = unsafe { XDefaultDepth(display, screen) };
+        let win_w = 800usize;
+        let win_h = 600usize;
+        let mut blit_buf = vec![0u32; win_w * win_h];
+        let ximage = unsafe {
+            XCreateImage(display, visual, depth as c_uint, X11_ZPIXMAP, 0,
+                blit_buf.as_mut_ptr() as *mut c_char, win_w as c_uint, win_h as c_uint, 32, 0)
+        };
+        Some(X11Window {
+            display, window, gc, visual, depth, win_w, win_h, blit_buf, ximage,
+            last_render: Instant::now() - X11_RENDER_MIN_INTERVAL,
+            last_overlay_update: Instant::now() - X11_OVERLAY_UPDATE_INTERVAL,
+            last_text_hash: 0,
+            diag_lines: vec![String::new(); 4],
+            last_ic: 0, last_calls: 0,
+            last_cache_hits: 0, last_cache_misses: 0,
+            run_calls: 0,
+        })
+    }
+
+    fn process_events(&mut self, vm: u64) {
+        while unsafe { XPending(self.display) } > 0 {
+            let mut ev = XEvent { pad: [0; 24] };
+            unsafe { XNextEvent(self.display, &mut ev) };
+            let any = unsafe { &*(&ev as *const XEvent as *const XAnyEvent) };
+            if any.type_ == X11_KEY_PRESS || any.type_ == X11_KEY_RELEASE {
+                let kev = unsafe { &mut *(&mut ev as *mut XEvent as *mut XKeyEvent) };
+                let ks = unsafe { XLookupKeysym(kev, 0) };
+                x11_keysym_to_ps2(vm, ks, any.type_ == X11_KEY_PRESS);
+            } else if any.type_ == X11_CONFIGURE_NOTIFY {
+                let cev = unsafe { &*(&ev as *const XEvent as *const XConfigureEvent) };
+                let nw = cev.width.max(1) as usize;
+                let nh = cev.height.max(1) as usize;
+                if nw != self.win_w || nh != self.win_h {
+                    self.win_w = nw;
+                    self.win_h = nh;
+                    self.blit_buf = vec![0u32; nw * nh];
+                    self.ximage = unsafe {
+                        XCreateImage(self.display, self.visual, self.depth as c_uint, X11_ZPIXMAP, 0,
+                            self.blit_buf.as_mut_ptr() as *mut c_char, nw as c_uint, nh as c_uint, 32, 0)
+                    };
+                }
+            }
+        }
+    }
+
+    fn update_overlay(&mut self, vm: u64, jit: bool) {
+        let now = Instant::now();
+        if now.duration_since(self.last_overlay_update) < X11_OVERLAY_UPDATE_INTERVAL {
+            return;
+        }
+        self.run_calls = self.run_calls.saturating_add(1);
+        let ic = corevm_get_instruction_count(vm);
+        let dt = now.duration_since(self.last_overlay_update).as_secs_f64().max(1e-6);
+        let dic = ic.saturating_sub(self.last_ic);
+        let dcalls = self.run_calls.saturating_sub(self.last_calls);
+        let mode = corevm_get_mode(vm);
+        let cs = corevm_get_segment_selector(vm, 1);
+        let rip = corevm_get_rip(vm);
+        let ipc = if dcalls > 0 { dic as f64 / dcalls as f64 } else { 0.0 };
+        let mips = (dic as f64 / dt) / 1_000_000.0;
+        self.diag_lines[0] = format!("mode={} cs:ip={:04X}:{:08X}", mode_name(mode), cs, rip as u32);
+        self.diag_lines[1] = format!("IPC={:.1} MIPS={:.2} ic={}", ipc, mips, ic);
+        let mut ch = 0u64; let mut cm = 0u64; let mut ce = 0u64;
+        corevm_cache_stats(vm, &mut ch, &mut cm, &mut ce);
+        let dch = ch.saturating_sub(self.last_cache_hits);
+        let dcm = cm.saturating_sub(self.last_cache_misses);
+        let hit_rate = if dch + dcm > 0 { dch as f64 / (dch + dcm) as f64 * 100.0 } else { 0.0 };
+        self.last_cache_hits = ch;
+        self.last_cache_misses = cm;
+        self.diag_lines[2] = format!("cache: {:.1}% hit ({}/{}) entries={}", hit_rate, dch, dcm, ce);
+        let mut jb = 0u64; let mut jn = 0u64; let mut jf = 0u64; let mut jc = 0u32;
+        corevm_jit_stats(vm, &mut jb, &mut jn, &mut jf, &mut jc);
+        self.diag_lines[3] = if jit { format!("JIT b={} n={} f={}", jb, jn, jf) } else { "JIT off".to_string() };
+        self.last_ic = ic;
+        self.last_calls = self.run_calls;
+        self.last_overlay_update = now;
+    }
+
+    fn render(&mut self, vm: u64) {
+        let now = Instant::now();
+        if now.duration_since(self.last_render) < X11_RENDER_MIN_INTERVAL {
+            return;
+        }
+        let mut text_count = 0u32;
+        let text_ptr = corevm_vga_get_text_buffer(vm, &mut text_count);
+        if !text_ptr.is_null() && text_count >= 2000 {
+            let cells = unsafe { std::slice::from_raw_parts(text_ptr, text_count as usize) };
+            let hash = x11_text_sig(cells);
+            if hash == self.last_text_hash {
+                return;
+            }
+            self.last_text_hash = hash;
+            for row in 0..25usize {
+                for col in 0..80usize {
+                    let cell = cells[row * 80 + col];
+                    let ch = (cell & 0xFF) as u8;
+                    let attr = (cell >> 8) as u8;
+                    let fg = x11_color16(attr & 0x0F);
+                    let bg = x11_color16((attr >> 4) & 0x0F);
+                    let x = (col * 8) as c_int;
+                    let y = (row * 16) as c_int;
+                    unsafe {
+                        XSetForeground(self.display, self.gc, bg);
+                        XFillRectangle(self.display, self.window, self.gc, x, y, 8, 16);
+                        if ch.is_ascii_graphic() || ch == b' ' {
+                            XSetForeground(self.display, self.gc, fg);
+                            let txt = [ch as c_char];
+                            XDrawString(self.display, self.window, self.gc, x + 1, y + 13, txt.as_ptr(), 1);
+                        }
+                    }
+                }
+            }
+        } else {
+            let mut fb_w = 0u32; let mut fb_h = 0u32; let mut fb_bpp = 0u8;
+            let fb_ptr = corevm_vga_get_framebuffer(vm, &mut fb_w, &mut fb_h, &mut fb_bpp);
+            if fb_ptr.is_null() || fb_w == 0 || fb_h == 0 || self.ximage.is_null() {
+                return;
+            }
+            let spp = (fb_bpp as usize).max(8).div_ceil(8);
+            let src_len = (fb_w as usize).saturating_mul(fb_h as usize).saturating_mul(spp);
+            let src = unsafe { std::slice::from_raw_parts(fb_ptr, src_len) };
+            x11_blit_fb_to_bgra(&mut self.blit_buf, src, fb_w as usize, fb_h as usize, fb_bpp, self.win_w, self.win_h);
+            unsafe {
+                (*self.ximage).data = self.blit_buf.as_mut_ptr() as *mut c_char;
+                XPutImage(self.display, self.window, self.gc, self.ximage,
+                    0, 0, 0, 0, self.win_w as c_uint, self.win_h as c_uint);
+            }
+        }
+        x11_draw_diag_overlay(self.display, self.window, self.gc, self.win_w, self.win_h, &self.diag_lines);
+        unsafe { XFlush(self.display); }
+        self.last_render = now;
+    }
+}
+
+impl Drop for X11Window {
+    fn drop(&mut self) {
+        unsafe { XCloseDisplay(self.display); }
+    }
+}
+
+fn x11_color16(idx: u8) -> c_ulong {
+    let (r, g, b) = match idx & 0x0F {
+        0x0 => (0x00u32, 0x00u32, 0x00u32), 0x1 => (0x00, 0x00, 0xAA), 0x2 => (0x00, 0xAA, 0x00),
+        0x3 => (0x00, 0xAA, 0xAA), 0x4 => (0xAA, 0x00, 0x00), 0x5 => (0xAA, 0x00, 0xAA),
+        0x6 => (0xAA, 0x55, 0x00), 0x7 => (0xAA, 0xAA, 0xAA), 0x8 => (0x55, 0x55, 0x55),
+        0x9 => (0x55, 0x55, 0xFF), 0xA => (0x55, 0xFF, 0x55), 0xB => (0x55, 0xFF, 0xFF),
+        0xC => (0xFF, 0x55, 0x55), 0xD => (0xFF, 0x55, 0xFF), 0xE => (0xFF, 0xFF, 0x55),
+        _ => (0xFF, 0xFF, 0xFF),
+    };
+    ((r as c_ulong) << 16) | ((g as c_ulong) << 8) | (b as c_ulong)
+}
+
+fn x11_text_sig(cells: &[u16]) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    for &v in cells.iter().take(2000) {
+        h ^= v as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+fn x11_draw_diag_overlay(display: *mut X11Display, window: c_ulong, gc: X11GC, win_w: usize, win_h: usize, lines: &[String]) {
+    if lines.is_empty() { return; }
+    let max_chars = lines.iter().map(|l| l.len()).max().unwrap_or(0);
+    let box_w = max_chars * X11_CHAR_W + X11_OVERLAY_PAD * 2;
+    let box_h = lines.len() * X11_CHAR_H + X11_OVERLAY_PAD * 2;
+    let x = win_w.saturating_sub(box_w + X11_OVERLAY_PAD) as c_int;
+    let y = win_h.saturating_sub(box_h + X11_OVERLAY_PAD) as c_int;
+    unsafe {
+        XSetForeground(display, gc, 0x000000);
+        XFillRectangle(display, window, gc, x, y, box_w as c_uint, box_h as c_uint);
+        XSetForeground(display, gc, 0x00FF88);
+        for (i, line) in lines.iter().enumerate() {
+            let tx = x + X11_OVERLAY_PAD as c_int;
+            let ty = y + X11_OVERLAY_PAD as c_int + (i * X11_CHAR_H + 13) as c_int;
+            XDrawString(display, window, gc, tx, ty, line.as_ptr() as *const c_char, line.len() as c_int);
+        }
+    }
+}
+
+fn x11_scancode_for_ascii(ch: u8) -> Option<(bool, u8)> {
+    let lower = ch.to_ascii_lowercase();
+    let shift = ch.is_ascii_uppercase();
+    let code = match lower {
+        b'1' => 0x02, b'2' => 0x03, b'3' => 0x04, b'4' => 0x05, b'5' => 0x06,
+        b'6' => 0x07, b'7' => 0x08, b'8' => 0x09, b'9' => 0x0A, b'0' => 0x0B,
+        b'q' => 0x10, b'w' => 0x11, b'e' => 0x12, b'r' => 0x13, b't' => 0x14,
+        b'y' => 0x15, b'u' => 0x16, b'i' => 0x17, b'o' => 0x18, b'p' => 0x19,
+        b'a' => 0x1E, b's' => 0x1F, b'd' => 0x20, b'f' => 0x21, b'g' => 0x22,
+        b'h' => 0x23, b'j' => 0x24, b'k' => 0x25, b'l' => 0x26,
+        b'z' => 0x2C, b'x' => 0x2D, b'c' => 0x2E, b'v' => 0x2F,
+        b'b' => 0x30, b'n' => 0x31, b'm' => 0x32,
+        b' ' => 0x39, b'\n' | b'\r' => 0x1C, b'\t' => 0x0F, 0x08 | 0x7F => 0x0E,
+        _ => return None,
+    };
+    Some((shift, code))
+}
+
+fn x11_key_press_ascii(vm: u64, ch: u8) {
+    if let Some((shift, code)) = x11_scancode_for_ascii(ch) {
+        if shift { corevm_ps2_key_press(vm, 0x2A); }
+        corevm_ps2_key_press(vm, code);
+        corevm_ps2_key_release(vm, code);
+        if shift { corevm_ps2_key_release(vm, 0x2A); }
+    }
+}
+
+fn x11_key_press_extended(vm: u64, code: u8, release: bool) {
+    corevm_ps2_key_press(vm, 0xE0);
+    if release { corevm_ps2_key_release(vm, code); } else { corevm_ps2_key_press(vm, code); }
+}
+
+fn x11_keysym_to_ps2(vm: u64, keysym: c_ulong, press: bool) {
+    match keysym {
+        XK_RETURN => { if press { x11_key_press_ascii(vm, b'\n'); } }
+        XK_TAB => { if press { x11_key_press_ascii(vm, b'\t'); } }
+        XK_BACKSPACE => { if press { x11_key_press_ascii(vm, 0x08); } }
+        XK_ESCAPE => { if press { corevm_ps2_key_press(vm, 0x01); corevm_ps2_key_release(vm, 0x01); } }
+        XK_UP => x11_key_press_extended(vm, 0x48, !press),
+        XK_DOWN => x11_key_press_extended(vm, 0x50, !press),
+        XK_LEFT => x11_key_press_extended(vm, 0x4B, !press),
+        XK_RIGHT => x11_key_press_extended(vm, 0x4D, !press),
+        ks if (0x20..=0x7E).contains(&ks) => { if press { x11_key_press_ascii(vm, ks as u8); } }
+        _ => {}
+    }
+}
+
+fn x11_blit_fb_to_bgra(dst: &mut [u32], src: &[u8], src_w: usize, src_h: usize, src_bpp: u8, dst_w: usize, dst_h: usize) {
+    let spp = (src_bpp as usize).max(8).div_ceil(8);
+    for y in 0..dst_h {
+        let sy = (y * src_h / dst_h).min(src_h.saturating_sub(1));
+        for x in 0..dst_w {
+            let sx = (x * src_w / dst_w).min(src_w.saturating_sub(1));
+            let sidx = (sy * src_w + sx) * spp;
+            let didx = y * dst_w + x;
+            let (r, g, b) = match spp {
+                1 => {
+                    let v = *src.get(sidx).unwrap_or(&0);
+                    if src_bpp == 4 {
+                        let c = x11_color16(v & 0x0F);
+                        (((c >> 16) & 0xFF) as u8, ((c >> 8) & 0xFF) as u8, (c & 0xFF) as u8)
+                    } else { (v, v, v) }
+                }
+                2 => {
+                    let lo = *src.get(sidx).unwrap_or(&0);
+                    let hi = *src.get(sidx + 1).unwrap_or(&0);
+                    let p = u16::from_le_bytes([lo, hi]);
+                    let r = (((p >> 11) & 0x1F) as u32 * 255 / 31) as u8;
+                    let g = (((p >> 5) & 0x3F) as u32 * 255 / 63) as u8;
+                    let b = ((p & 0x1F) as u32 * 255 / 31) as u8;
+                    (r, g, b)
+                }
+                _ => {
+                    let b = *src.get(sidx).unwrap_or(&0);
+                    let g = *src.get(sidx + 1).unwrap_or(&0);
+                    let r = *src.get(sidx + 2).unwrap_or(&0);
+                    (r, g, b)
+                }
+            };
+            dst[didx] = (b as u32) | ((g as u32) << 8) | ((r as u32) << 16);
+        }
+    }
+}
+
+// ── End X11 ──
 
 struct VmHandle(u64);
 
@@ -108,6 +565,7 @@ struct Config {
     auto_enter_ms: u64,
     jit: bool,
     debugger: bool,
+    no_display: bool,
 }
 
 struct SttyGuard {
@@ -201,6 +659,7 @@ fn parse_args() -> Result<Config, String> {
         auto_enter_ms: 0,
         jit: false,
         debugger: false,
+        no_display: false,
     };
 
     let mut args = env::args().skip(1);
@@ -278,6 +737,7 @@ fn parse_args() -> Result<Config, String> {
             }
             "--jit" => cfg.jit = true,
             "--debugger" | "--dbg" => cfg.debugger = true,
+            "--no-display" => cfg.no_display = true,
             "--help" | "-h" => {
                 return Err(String::new());
             }
@@ -293,7 +753,7 @@ fn parse_args() -> Result<Config, String> {
 
 fn usage(program: &str) {
     eprintln!(
-        "Usage: {program} [--iso <path>] [--disk <path>] [--seabios|--corevm-bios] [--bios <path>] [--vgabios <path>] [--bios-base <addr>] [--ram-mb <mb>] [--cores <n>] [--batch <n>] [--max-seconds <n>] [--max-instructions <n>] [--stdin-kbd] [--no-vga-text] [--plain] [--auto-enter-ms <ms>] [--jit]"
+        "Usage: {program} [--iso <path>] [--disk <path>] [--seabios|--corevm-bios] [--bios <path>] [--vgabios <path>] [--bios-base <addr>] [--ram-mb <mb>] [--cores <n>] [--batch <n>] [--max-seconds <n>] [--max-instructions <n>] [--stdin-kbd] [--no-vga-text] [--plain] [--auto-enter-ms <ms>] [--jit] [--no-display]"
     );
 }
 
@@ -1485,6 +1945,21 @@ fn main() {
         let _ = io::stdout().flush();
     }
 
+    let mut x11 = if !cfg.no_display && env::var("DISPLAY").is_ok() {
+        match X11Window::open() {
+            Some(w) => {
+                eprintln!("[test-vmd] X11 display opened");
+                Some(w)
+            }
+            None => {
+                eprintln!("[test-vmd] X11 display unavailable, continuing without");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     loop {
         if STOP_REQUESTED.load(Ordering::SeqCst) {
             break;
@@ -1516,6 +1991,12 @@ fn main() {
             last_auto_enter = Instant::now();
         }
         update_display_state(vm.0, &mut display);
+        if let Some(ref mut xw) = x11 {
+            xw.process_events(vm.0);
+            xw.run_calls = xw.run_calls.saturating_add(1);
+            xw.update_overlay(vm.0, cfg.jit);
+            xw.render(vm.0);
+        }
         let mode = corevm_get_mode(vm.0);
         let cs = corevm_get_segment_selector(vm.0, 1);
         let rip = corevm_get_rip(vm.0);

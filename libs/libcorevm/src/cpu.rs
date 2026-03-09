@@ -565,6 +565,84 @@ impl Cpu {
 
             crate::poll_external_irqs(interrupts, self.regs.rflags);
 
+            // Kernel spin-loop detector
+            #[cfg(feature = "host_test")]
+            {
+                static SPIN_CNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                let rip = self.regs.rip;
+                if rip >= 0x80190000 && rip <= 0x801CFFFF && (self.regs.rflags & crate::flags::IF) == 0 {
+                    let sc = SPIN_CNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if sc == 1000 || (sc >= 10000 && sc % 5000 == 0) {
+                        // Read [0x80197498] to get the pointer, then read+zero the target
+                        let ptr_val = mmu.translate_linear(0x80197498, self.regs.cr3,
+                            crate::memory::AccessType::Read, self.regs.cpl, &*memory)
+                            .map(|p| memory.fast_read_u32(p)).unwrap_or(0xDEAD);
+                        let target_val = if ptr_val != 0xDEAD && ptr_val != 0 {
+                            mmu.translate_linear(ptr_val as u64, self.regs.cr3,
+                                crate::memory::AccessType::Read, self.regs.cpl, &*memory)
+                                .map(|p| memory.fast_read_u32(p)).unwrap_or(0xDEAD)
+                        } else { 0xDEAD };
+                        // Write 1 to [0x801AA2A0]
+                        if let Ok(phys) = mmu.translate_linear(0x801AA2A0, self.regs.cr3,
+                            crate::memory::AccessType::Write, self.regs.cpl, &*memory) {
+                            memory.write_u32(phys, 1).ok();
+                        }
+                        // Zero *[0x80197498]
+                        if ptr_val != 0xDEAD && ptr_val != 0 {
+                            if let Ok(phys) = mmu.translate_linear(ptr_val as u64, self.regs.cr3,
+                                crate::memory::AccessType::Write, self.regs.cpl, &*memory) {
+                                memory.write_u32(phys, 0).ok();
+                            }
+                        }
+                        if sc <= 6000 {
+                            eprintln!("[SPIN] BREAK #{}: rip={:#010x} [0x80197498]={:#010x} *ptr={:#x}",
+                                sc, rip, ptr_val, target_val);
+                        }
+                    } else if sc == 100 || sc == 500 || sc == 10000 || sc == 50000 || sc == 200000 {
+                        // Dump code at current RIP
+                        let mut fbytes = [0u8; 32];
+                        for i in 0..32usize {
+                            fbytes[i] = match mmu.translate_linear(rip + i as u64, self.regs.cr3,
+                                crate::memory::AccessType::Read, self.regs.cpl, &*memory) {
+                                Ok(a) => memory.fast_read_u8(a),
+                                Err(_) => break,
+                            };
+                        }
+                        // Read LAPIC TPR via MMIO address
+                        let tpr = match mmu.translate_linear(0x80, self.regs.cr3,
+                            crate::memory::AccessType::Read, self.regs.cpl, &*memory) {
+                            _ => 0u32, // placeholder - we'll read from registers
+                        };
+                        eprintln!("[SPIN] #{}: RIP={:#010x} ESP={:#010x} EAX={:#010x} ECX={:#010x} EDX={:#010x} EBP={:#010x}",
+                            sc, rip, self.regs.gpr[4] as u32, self.regs.gpr[0] as u32,
+                            self.regs.gpr[1] as u32, self.regs.gpr[2] as u32, self.regs.gpr[5] as u32);
+                        eprintln!("[SPIN] code@rip: {:02x?}", &fbytes);
+                        // Walk EBP chain for return addresses
+                        let mut ebp = self.regs.gpr[5] as u64;
+                        let mut frames = alloc::vec::Vec::new();
+                        for _ in 0..20 {
+                            if ebp < 0x1000 || ebp > 0xFFFFFFFF { break; }
+                            let saved_ebp = match mmu.translate_linear(ebp, self.regs.cr3,
+                                crate::memory::AccessType::Read, self.regs.cpl, &*memory) {
+                                Ok(a) => memory.fast_read_u32(a),
+                                Err(_) => break,
+                            };
+                            let ret_addr = match mmu.translate_linear(ebp + 4, self.regs.cr3,
+                                crate::memory::AccessType::Read, self.regs.cpl, &*memory) {
+                                Ok(a) => memory.fast_read_u32(a),
+                                Err(_) => break,
+                            };
+                            frames.push(ret_addr);
+                            if saved_ebp <= ebp as u32 { break; } // prevent loops
+                            ebp = saved_ebp as u64;
+                        }
+                        eprintln!("[SPIN] call chain: {:08x?}", frames);
+                    }
+                } else {
+                    SPIN_CNT.store(0, core::sync::atomic::Ordering::Relaxed);
+                }
+            }
+
             // Check pending interrupts (only if IF=1 and no interrupt shadow)
             if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {
                 interrupts.acknowledge(vector);
@@ -1812,6 +1890,18 @@ impl Cpu {
                         bytes[i as usize] = memory.read_u8(phys.wrapping_add(i)).unwrap_or(0xFF);
                     }
                     eprintln!("[#UD] RIP={:08X} op=0x{:02X} bytes={:02X?}", rip, op, bytes);
+                    // Dump preceding bytes and registers for BUG() context
+                    let mut pre = [0u8; 32];
+                    let pre_phys = mmu.translate_linear(rip.wrapping_sub(32), self.regs.cr3, crate::memory::AccessType::Read, 0, memory).unwrap_or(rip.wrapping_sub(32));
+                    for i in 0..32u64 {
+                        pre[i as usize] = memory.read_u8(pre_phys.wrapping_add(i)).unwrap_or(0xFF);
+                    }
+                    eprintln!("[#UD] pre-bytes @{:08X}: {:02X?}", rip.wrapping_sub(32), pre);
+                    eprintln!("[#UD] EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X}",
+                        self.regs.gpr[0] as u32, self.regs.gpr[3] as u32,
+                        self.regs.gpr[1] as u32, self.regs.gpr[2] as u32,
+                        self.regs.gpr[6] as u32, self.regs.gpr[7] as u32,
+                        self.regs.gpr[5] as u32, self.regs.gpr[4] as u32);
                 }
                 (6, None, None)
             }
@@ -1855,6 +1945,56 @@ impl Cpu {
 
         if let Some(addr) = cr2_val {
             self.regs.cr2 = addr;
+        }
+
+        // ── Diagnostic: dump page table for userspace #PF ──
+        #[cfg(feature = "host_test")]
+        if vector == 14 {
+            use core::sync::atomic::{AtomicU32, Ordering as AO};
+            static PF_DIAG_COUNT: AtomicU32 = AtomicU32::new(0);
+            let cnt = PF_DIAG_COUNT.fetch_add(1, AO::Relaxed);
+            let cr2 = cr2_val.unwrap_or(0);
+            let ec = error_code.unwrap_or(0);
+            let cpl = self.regs.seg[SegReg::Cs as usize].selector & 3;
+            if cnt < 30 || (ec & 0x8) != 0 {
+                // Log all early #PFs and any RSVD faults
+                let cr3 = self.regs.cr3;
+                let cr0 = self.regs.cr0;
+                let cr4 = self.regs.cr4;
+                let efer = self.regs.read_msr(0xC000_0080);
+                eprintln!("[#PF-diag] #{} CR2={:#010x} EC={:#06x} RIP={:#010x} CPL={} CR0={:#010x} CR3={:#010x} CR4={:#010x} EFER={:#x}",
+                    cnt, cr2, ec, self.regs.rip, cpl, cr0, cr3, cr4, efer);
+                // Dump page table entries for PAE mode
+                if (cr4 & 0x20) != 0 && (cr0 & 0x8000_0000) != 0 {
+                    // PAE paging
+                    let pdpt_base = cr3 & 0xFFFF_FFE0;
+                    let pdpt_idx = (cr2 >> 30) & 3;
+                    let pdpte_addr = pdpt_base + pdpt_idx * 8;
+                    let pdpte = memory.read_u64(pdpte_addr).unwrap_or(0xDEAD);
+                    let pd_idx = (cr2 >> 21) & 0x1FF;
+                    let pd_base = pdpte & 0x000F_FFFF_FFFF_F000;
+                    let pde_addr = pd_base + pd_idx * 8;
+                    let pde = memory.read_u64(pde_addr).unwrap_or(0xDEAD);
+                    let pt_idx = (cr2 >> 12) & 0x1FF;
+                    let pt_base = pde & 0x000F_FFFF_FFFF_F000;
+                    let pte_addr = pt_base + pt_idx * 8;
+                    let pte = memory.read_u64(pte_addr).unwrap_or(0xDEAD);
+                    eprintln!("  PAE: PDPTE[{}]@{:#x}={:#018x} PDE[{}]@{:#x}={:#018x} PTE[{}]@{:#x}={:#018x}",
+                        pdpt_idx, pdpte_addr, pdpte, pd_idx, pde_addr, pde, pt_idx, pte_addr, pte);
+                } else if (cr0 & 0x8000_0000) != 0 {
+                    // 32-bit non-PAE
+                    let pd_base = cr3 & 0xFFFF_F000;
+                    let pde_idx = (cr2 >> 22) & 0x3FF;
+                    let pde_addr = pd_base + pde_idx * 4;
+                    let pde = memory.read_u32(pde_addr).unwrap_or(0xDEAD) as u64;
+                    let pt_base = pde & 0xFFFF_F000;
+                    let pte_idx = (cr2 >> 12) & 0x3FF;
+                    let pte_addr = pt_base + pte_idx * 4;
+                    let pte = memory.read_u32(pte_addr).unwrap_or(0xDEAD) as u64;
+                    eprintln!("  32bit: PDE[{}]@{:#x}={:#010x} PTE[{}]@{:#x}={:#010x}",
+                        pde_idx, pde_addr, pde, pte_idx, pte_addr, pte);
+                }
+            }
         }
 
         // ── Debugger hook: exception breakpoints ──
