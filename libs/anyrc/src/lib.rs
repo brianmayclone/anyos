@@ -11,3 +11,5 @@ pub mod typeck;
 pub mod mir;
 pub mod mir_build;
 pub mod borrowck;
+pub mod mir_opt;
+pub mod codegen;
