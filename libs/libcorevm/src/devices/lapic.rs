@@ -314,6 +314,10 @@ impl Lapic {
         Some(vector)
     }
 
+    pub fn diag_irr(&self, idx: usize) -> u32 {
+        self.irr.get(idx).copied().unwrap_or(0)
+    }
+
     pub fn diag_state(&self) -> (u32, u32, u32, u32, u32) {
         (
             self.svr,

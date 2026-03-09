@@ -119,8 +119,20 @@ impl IoApic {
                         let masked = (*entry >> 16) & 1;
                         let vec = *entry & 0xFF;
                         let dm = (*entry >> 8) & 7;
-                        eprintln!("[ioapic] write pin={} reg=0x{:02X} val=0x{:08X} -> entry=0x{:016X} masked={} vec=0x{:02X} dm={}",
-                            entry_index, index, val, *entry, masked, vec, dm);
+                        // Always log pin 2 writes, limited budget for others
+                        static WRITE_BUDGET: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(200);
+                        if entry_index == 2 {
+                            let entry_val = *entry;
+                            eprintln!("[ioapic-write2] entry={:016X}", entry_val);
+                        }
+                        if entry_index == 2 || WRITE_BUDGET.fetch_update(
+                            core::sync::atomic::Ordering::Relaxed,
+                            core::sync::atomic::Ordering::Relaxed,
+                            |n| (n > 0).then_some(n - 1)
+                        ).is_ok() {
+                            eprintln!("[ioapic] write pin={} reg=0x{:02X} val=0x{:08X} -> entry=0x{:016X} masked={} vec=0x{:02X} dm={}",
+                                entry_index, index, val, *entry, masked, vec, dm);
+                        }
                     }
                 }
             }
@@ -155,6 +167,17 @@ impl IoApic {
     /// Whether the given IRQ line is actively routed through the IO-APIC.
     pub fn has_route(&self, irq: u8) -> bool {
         self.routed_entry(irq).is_some()
+    }
+
+    /// Raw redir table entry for diagnostics.
+    pub fn diag_entry(&self, irq: u8) -> u64 {
+        let val = self.redir_table.get(irq as usize).copied().unwrap_or(0);
+        #[cfg(feature = "host_test")]
+        if irq == 2 {
+            eprintln!("[ioapic-diag] diag_entry(2)={:016X} self={:p} table={:p}",
+                val, self as *const _, self.redir_table.as_ptr());
+        }
+        val
     }
 
     /// Route an external IRQ pin through the redirection table.

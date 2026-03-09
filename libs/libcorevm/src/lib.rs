@@ -830,7 +830,6 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
         {
         }
 
-
         // Advance LAPIC timer.
         if ran > 0 && !vm.lapic_ptr.is_null() {
             let lapic = unsafe { &mut *vm.lapic_ptr };
@@ -2046,6 +2045,26 @@ pub extern "C" fn corevm_pic_raise_irq(handle: u64, irq: u8) {
 /// from 8259 PIC to IO-APIC during early boot. Deliverable vectors from either
 /// path are queued into the CPU interrupt controller.
 fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
+    #[cfg(feature = "host_test")]
+    {
+        static IRQ0_TRACE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(5);
+        if irq == 0 && vm.engine.instruction_count() > 300_000_000
+            && IRQ0_TRACE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok()
+        {
+            let has_ioapic = !vm.ioapic_ptr.is_null();
+            let has_lapic = !vm.lapic_ptr.is_null();
+            let (ioapic_pin2, pin2_entry) = if has_ioapic {
+                let io = unsafe { &*vm.ioapic_ptr };
+                (io.has_route(2), io.diag_entry(2))
+            } else { (false, 0) };
+            eprintln!(
+                "[irq0-trace] ic={} pin2_routed={} entry={:016X} IF={}",
+                vm.engine.instruction_count(),
+                ioapic_pin2, pin2_entry,
+                (vm.engine.cpu.regs.rflags & 0x200) != 0,
+            );
+        }
+    }
     // Prefer IO-APIC routing once the guest has actively programmed a redir
     // entry for this line. Delivering the same source through both PIC and
     // IO-APIC produces duplicate IRQs during APIC mode and confuses Windows.

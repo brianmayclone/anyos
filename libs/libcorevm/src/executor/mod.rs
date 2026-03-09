@@ -675,6 +675,22 @@ fn exec_secondary(
                         }
                         _ => Err(VmError::UndefinedOpcode(op2)),
                     },
+                    // CLAC (rm=2) / STAC (rm=3)
+                    1 => match rm {
+                        2 => {
+                            // CLAC: clear AC flag in EFLAGS
+                            cpu.regs.rflags &= !(1 << 18);
+                            cpu.regs.rip += inst.length as u64;
+                            Ok(())
+                        }
+                        3 => {
+                            // STAC: set AC flag in EFLAGS
+                            cpu.regs.rflags |= 1 << 18;
+                            cpu.regs.rip += inst.length as u64;
+                            Ok(())
+                        }
+                        _ => Err(VmError::UndefinedOpcode(op2)),
+                    },
                     // XGETBV / XSETBV
                     2 => match rm {
                         0 => system::exec_xgetbv(cpu, inst),
