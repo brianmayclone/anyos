@@ -62,6 +62,7 @@ pub enum Level {
     Note,
 }
 
+#[derive(Debug)]
 pub struct Diagnostic {
     pub level: Level,
     pub message: String,
