@@ -489,17 +489,23 @@ impl<'a> MirBuilder<'a> {
             }
 
             HirExprKind::Field(base, field_name) => {
-                let base_op = self.lower_expr(base);
-                // For field access, put base in a local and add Field projection
-                let base_ty = self.get_expr_ty(base);
-                let tmp = self.alloc_temp(base_ty, expr.span);
-                self.emit_assign(Place::local(tmp), Rvalue::Use(base_op), expr.span);
-                // Determine field index (simplified: use symbol to find index)
                 let field_idx = self.resolve_field_index(base, *field_name);
-                Operand::Copy(Place {
-                    local: tmp,
-                    projections: vec![Projection::Field(field_idx)],
-                })
+                // Try to get a direct place for the base to avoid copying the whole struct
+                let base_place = self.try_lower_to_place(base);
+                if let Some(mut place) = base_place {
+                    place.projections.push(Projection::Field(field_idx));
+                    Operand::Copy(place)
+                } else {
+                    // Base is a complex expression; lower it into a temp
+                    let base_op = self.lower_expr(base);
+                    let base_ty = self.get_expr_ty(base);
+                    let tmp = self.alloc_temp(base_ty, expr.span);
+                    self.emit_assign(Place::local(tmp), Rvalue::Use(base_op), expr.span);
+                    Operand::Copy(Place {
+                        local: tmp,
+                        projections: vec![Projection::Field(field_idx)],
+                    })
+                }
             }
 
             HirExprKind::Index(base, idx) => {
@@ -543,6 +549,25 @@ impl<'a> MirBuilder<'a> {
             HirExprKind::For(_, _, _, _) => {
                 Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
             }
+        }
+    }
+
+    /// Try to get a Place for an expression without lowering it (no side effects).
+    /// Returns None if the expression is not directly addressable.
+    fn try_lower_to_place(&self, expr: &HirExpr) -> Option<Place> {
+        match &expr.kind {
+            HirExprKind::Path(path) => {
+                self.resolve_path_to_local(path, expr.id)
+                    .map(|local| Place::local(local))
+            }
+            HirExprKind::Field(base, field_name) => {
+                let mut place = self.try_lower_to_place(base)?;
+                let idx = self.resolve_field_index(base, *field_name);
+                place.projections.push(Projection::Field(idx));
+                Some(place)
+            }
+            HirExprKind::Paren(inner) => self.try_lower_to_place(inner),
+            _ => None,
         }
     }
 
@@ -649,7 +674,17 @@ impl<'a> MirBuilder<'a> {
         if let Ok(idx) = name_str.parse::<usize>() {
             return idx;
         }
-        // For struct fields, would need to look up field order. Simplified: use 0.
+        // Look up field order from struct definition
+        let base_ty = self.get_expr_ty(base_expr);
+        if let TyKind::Adt(def_id, _) = &base_ty {
+            if let Some(fields) = self.typeck.struct_defs.get(def_id) {
+                for (i, (sym, _)) in fields.iter().enumerate() {
+                    if *sym == field_name {
+                        return i;
+                    }
+                }
+            }
+        }
         0
     }
 
