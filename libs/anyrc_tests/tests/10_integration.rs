@@ -212,3 +212,49 @@ fn run_nested_calls() {
     "#;
     assert_eq!(compile_and_run(src), 20);
 }
+
+#[test]
+fn run_method_self_by_ref() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        impl Point {
+            fn get_x(&self) -> i32 { self.x }
+        }
+        fn main() -> i32 {
+            let p = Point { x: 42, y: 0 };
+            p.get_x()
+        }
+    "#;
+    assert_eq!(compile_and_run(src), 42);
+}
+
+#[test]
+fn run_method_self_by_value() {
+    let src = r#"
+        struct Val { x: i32 }
+        impl Val {
+            fn get(self) -> i32 { self.x }
+        }
+        fn main() -> i32 {
+            let v = Val { x: 42 };
+            v.get()
+        }
+    "#;
+    assert_eq!(compile_and_run(src), 42);
+}
+
+#[test]
+fn run_method_self_by_value_with_constructor() {
+    let src = r#"
+        struct Val { x: i32 }
+        impl Val {
+            fn new(x: i32) -> Val { Val { x: x } }
+            fn get(self) -> i32 { self.x }
+        }
+        fn main() -> i32 {
+            let v = Val::new(7);
+            v.get()
+        }
+    "#;
+    assert_eq!(compile_and_run(src), 7);
+}
