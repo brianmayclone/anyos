@@ -795,20 +795,31 @@ impl<'a> MirBuilder<'a> {
                     // Get method name symbol
                     let fn_name = *method_name;
 
-                    // Build receiver operand - auto-ref if needed
-                    let recv_op = match &recv_ty {
-                        TyKind::Ref(_, _) => {
-                            // Already a reference, just lower it
-                            self.lower_expr(recv)
+                    // Check if the method takes self by reference or by value
+                    let self_is_ref = self.typeck.fn_sigs.get(&method_did)
+                        .and_then(|(params, _)| params.first())
+                        .map(|first_param| matches!(first_param, TyKind::Ref(_, _)))
+                        .unwrap_or(true);
+
+                    // Build receiver operand - auto-ref only if method takes &self
+                    let recv_op = if self_is_ref {
+                        match &recv_ty {
+                            TyKind::Ref(_, _) => {
+                                // Already a reference, just lower it
+                                self.lower_expr(recv)
+                            }
+                            _ => {
+                                // Need to take a reference: &recv
+                                let place = self.lower_place(recv);
+                                let ref_ty = TyKind::Ref(Box::new(recv_ty.clone()), Mutability::Immutable);
+                                let tmp = self.alloc_temp(ref_ty, expr.span);
+                                self.emit_assign(Place::local(tmp), Rvalue::Ref(BorrowKind::Shared, place), expr.span);
+                                Operand::Copy(Place::local(tmp))
+                            }
                         }
-                        _ => {
-                            // Need to take a reference: &recv
-                            let place = self.lower_place(recv);
-                            let ref_ty = TyKind::Ref(Box::new(recv_ty.clone()), Mutability::Immutable);
-                            let tmp = self.alloc_temp(ref_ty, expr.span);
-                            self.emit_assign(Place::local(tmp), Rvalue::Ref(BorrowKind::Shared, place), expr.span);
-                            Operand::Copy(Place::local(tmp))
-                        }
+                    } else {
+                        // self by value - pass the value directly
+                        self.lower_expr(recv)
                     };
 
                     // Build args: [receiver, ...user_args]
