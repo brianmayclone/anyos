@@ -228,6 +228,11 @@ impl<'a> TypeChecker<'a> {
                     self.collect_item(sub);
                 }
             }
+            HirItemKind::ExternBlock(eb) => {
+                for sub in &eb.items {
+                    self.collect_item(sub);
+                }
+            }
             _ => {}
         }
     }
