@@ -883,9 +883,9 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if let TyKind::Adt(def_id, _) = &inner_ty {
-                    // Find the type name for this DefId
+                    // Find the type name for this DefId, skipping "Self" alias
                     let type_name = self.type_name_to_def.iter()
-                        .find(|(_, &did)| did == *def_id)
+                        .find(|(sym, &did)| did == *def_id && self.interner.resolve(**sym) != "Self")
                         .map(|(sym, _)| *sym);
 
                     if let Some(type_name) = type_name {
