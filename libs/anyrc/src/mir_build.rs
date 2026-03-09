@@ -1703,10 +1703,19 @@ impl<'a> MirBuilder<'a> {
         match ty {
             TyKind::Bool | TyKind::Char => true,
             TyKind::Int(_) | TyKind::Uint(_) | TyKind::Float(_) => true,
-            TyKind::Ref(_, _) => true,
+            TyKind::Ref(_, Mutability::Immutable) => true,
+            TyKind::Ref(_, Mutability::Mut) => false,
             TyKind::RawPtr(_, _) => true,
             TyKind::Unit | TyKind::Never | TyKind::Error => true,
             TyKind::FnDef(_, _) | TyKind::FnPtr(_, _) => true,
+            TyKind::Adt(def_id, _) => {
+                if let Some(fields) = self.typeck.struct_defs.get(def_id) {
+                    fields.iter().all(|(_, fty)| self.is_copy_type(fty))
+                } else {
+                    false
+                }
+            }
+            TyKind::Tuple(elems) => elems.iter().all(|e| self.is_copy_type(e)),
             TyKind::Array(inner, _) => self.is_copy_type(inner),
             _ => false,
         }

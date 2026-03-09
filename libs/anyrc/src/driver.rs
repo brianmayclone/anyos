@@ -86,7 +86,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
 
     // 7. Borrow check
     for body in &mir_bodies {
-        let result = check_borrows(body, &interner);
+        let result = check_borrows(body, &interner, &typeck_result.struct_defs);
         if !result.errors.is_empty() {
             return Err(result.errors);
         }

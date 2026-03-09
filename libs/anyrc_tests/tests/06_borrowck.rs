@@ -21,7 +21,7 @@ fn build_and_check(src: &str) -> Vec<BorrowckResult> {
     let typeck_result = checker.check_crate(&hir);
 
     let bodies = MirBuilder::build_crate(&mut interner, &resolve_result, &typeck_result, &hir);
-    bodies.iter().map(|body| borrowck::check_borrows(body, &interner)).collect()
+    bodies.iter().map(|body| borrowck::check_borrows(body, &interner, &typeck_result.struct_defs)).collect()
 }
 
 fn assert_borrowck_ok(src: &str) {
@@ -54,9 +54,9 @@ fn borrowck_simple_mut_ref() {
 #[test]
 fn borrowck_use_after_move() {
     assert_borrowck_error(r#"
-        struct S { x: i32 }
+        struct S { x: &mut i32 }
         fn take(s: S) {}
-        fn foo() { let s = S { x: 1 }; take(s); take(s); }
+        fn foo() { let mut v: i32 = 1; let s = S { x: &mut v }; take(s); take(s); }
     "#, "moved");
 }
 

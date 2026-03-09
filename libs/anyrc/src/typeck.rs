@@ -385,6 +385,54 @@ impl<'a> TypeChecker<'a> {
             HirExprKind::Call(_, args) if args.len() == 1 => {
                 self.eval_const_expr(&args[0])
             }
+            HirExprKind::Binary(op, lhs, rhs) => {
+                let l = match self.eval_const_expr(lhs)? {
+                    ConstVal::Int(v) => v,
+                    _ => return None,
+                };
+                let r = match self.eval_const_expr(rhs)? {
+                    ConstVal::Int(v) => v,
+                    _ => return None,
+                };
+                let result = match op {
+                    BinOp::Add => l.wrapping_add(r),
+                    BinOp::Sub => l.wrapping_sub(r),
+                    BinOp::Mul => l.wrapping_mul(r),
+                    BinOp::Div => if r != 0 { l / r } else { return None },
+                    BinOp::Rem => if r != 0 { l % r } else { return None },
+                    BinOp::BitAnd => l & r,
+                    BinOp::BitOr => l | r,
+                    BinOp::BitXor => l ^ r,
+                    BinOp::Shl => l.wrapping_shl(r as u32),
+                    BinOp::Shr => l.wrapping_shr(r as u32),
+                    _ => return None,
+                };
+                Some(ConstVal::Int(result))
+            }
+            HirExprKind::Unary(op, inner) => {
+                let v = match self.eval_const_expr(inner)? {
+                    ConstVal::Int(v) => v,
+                    ConstVal::Bool(b) => match op {
+                        crate::ast::UnOp::Not => return Some(ConstVal::Bool(!b)),
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                match op {
+                    crate::ast::UnOp::Neg => Some(ConstVal::Int(-v)),
+                    crate::ast::UnOp::Not => Some(ConstVal::Int(!v)),
+                    _ => None,
+                }
+            }
+            // Resolve const references in const expressions (e.g., other const items)
+            HirExprKind::Path(_) => {
+                if let Some(&def_id) = self.resolve.resolutions.get(&expr.id) {
+                    if let Some((cv, _)) = self.const_values.get(&def_id) {
+                        return Some(cv.clone());
+                    }
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -661,9 +709,9 @@ impl<'a> TypeChecker<'a> {
             }
 
             HirExprKind::Struct(path, fields, _base) => {
-                // Find struct DefId by name
+                // Find struct DefId by name - use last segment for module-qualified paths
                 let def_id = if !path.segments.is_empty() {
-                    let name = path.segments[0].ident;
+                    let name = path.segments.last().unwrap().ident;
                     self.type_name_to_def.get(&name).copied()
                 } else {
                     None

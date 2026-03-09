@@ -985,11 +985,31 @@ impl<'a> Resolver<'a> {
                 // Actually for module paths this doesn't apply at this level
                 return None;
             } else {
-                // Intermediate segment: must be a module
+                // Intermediate segment: must be a module or a type (for Type::method paths)
                 if let Some(&sub_def_id) = self.scopes[scope].bindings.get(&(seg.ident, Namespace::Type)) {
                     if let Some(&sub_scope) = self.module_scopes.get(&sub_def_id) {
                         scope = sub_scope;
                     } else {
+                        // Not a module - might be Type::method. Check if next segment
+                        // is the last and resolves as an impl method.
+                        let next_idx = i + 1;
+                        if next_idx == path.segments.len() - 2 {
+                            let method_name = path.segments[next_idx + 1].ident;
+                            // Look up impl methods for this type
+                            if let Some(methods) = self.impl_methods.get(&seg.ident) {
+                                for &(mname, method_def_id) in methods {
+                                    if mname == method_name {
+                                        return Some(method_def_id);
+                                    }
+                                }
+                            }
+                            // Try enum variants
+                            if let Some(enum_info) = self.enum_variants.get(&sub_def_id) {
+                                if let Some(&variant_def_id) = enum_info.variants.get(&method_name) {
+                                    return Some(variant_def_id);
+                                }
+                            }
+                        }
                         return None;
                     }
                 } else {
