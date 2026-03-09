@@ -301,6 +301,7 @@ pub enum Ty {
     Array(Box<Ty>, Box<Expr>, Span),
     Slice(Box<Ty>, Span),
     FnPtr(Vec<Ty>, Option<Box<Ty>>, Span),
+    DynTrait(Path, Span),
     Infer(Span),
     Never(Span),
 }

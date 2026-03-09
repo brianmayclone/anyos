@@ -480,6 +480,7 @@ impl<'a> LoweringContext<'a> {
                 ret.as_ref().map(|t| Box::new(self.lower_ty(t))),
                 *span,
             ),
+            ast::Ty::DynTrait(path, span) => HirTy::DynTrait(self.lower_path(path), *span),
             ast::Ty::Infer(span) => HirTy::Infer(*span),
             ast::Ty::Never(span) => HirTy::Never(*span),
         }

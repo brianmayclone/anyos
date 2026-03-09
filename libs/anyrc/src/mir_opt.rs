@@ -81,7 +81,7 @@ fn replace_operands_in_rvalue(rvalue: &mut Rvalue, constants: &[Option<Constant>
                 replace_operand(op, constants);
             }
         }
-        Rvalue::Ref(_, _) | Rvalue::Discriminant(_) | Rvalue::Len(_) => {}
+        Rvalue::Ref(_, _) | Rvalue::Discriminant(_) | Rvalue::Len(_) | Rvalue::MakeVtable(_) => {}
     }
 }
 
@@ -194,6 +194,7 @@ fn collect_rvalue_reads(rvalue: &Rvalue, used: &mut HashSet<usize>) {
         Rvalue::Discriminant(p) | Rvalue::Len(p) => {
             used.insert(p.local.0);
         }
+        Rvalue::MakeVtable(_) => {}
     }
 }
 

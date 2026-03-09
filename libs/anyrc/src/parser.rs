@@ -1840,7 +1840,8 @@ impl<'a> Parser<'a> {
         // dyn Trait
         if self.at_kw(Keyword::Dyn) {
             self.bump();
-            // Just parse as a path for now
+            let path = self.parse_path_ty();
+            return Ty::DynTrait(path, self.span_from(start));
         }
 
         // Path type

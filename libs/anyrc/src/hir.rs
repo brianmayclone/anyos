@@ -290,6 +290,7 @@ pub enum HirTy {
     Array(Box<HirTy>, Box<HirExpr>, Span),
     Slice(Box<HirTy>, Span),
     FnPtr(Vec<HirTy>, Option<Box<HirTy>>, Span),
+    DynTrait(HirPath, Span),
     Infer(Span),
     Never(Span),
 }

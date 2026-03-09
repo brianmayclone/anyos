@@ -77,6 +77,8 @@ pub enum Rvalue {
     Aggregate(AggregateKind, Vec<Operand>),
     Discriminant(Place),
     Len(Place),
+    /// Construct a vtable on the stack. Each Symbol is a function name.
+    MakeVtable(Vec<crate::intern::Symbol>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

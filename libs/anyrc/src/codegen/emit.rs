@@ -216,6 +216,18 @@ impl<'a> CodeEmitter<'a> {
                         return;
                     }
                 }
+                // Special-case MakeVtable: store function addresses into stack slots
+                if let Rvalue::MakeVtable(fn_names) = rvalue {
+                    if place.projections.is_empty() {
+                        let base_slot = self.alloc.stack_slots[place.local.0];
+                        for (i, sym) in fn_names.iter().enumerate() {
+                            let fn_name = self.interner.resolve(*sym).to_string();
+                            self.asm.lea_rip_relative(Reg::RAX, &fn_name);
+                            self.asm.mov_mr(Reg::RBP, base_slot + (i as i32) * 8, Reg::RAX);
+                        }
+                        return;
+                    }
+                }
                 // Special-case multi-slot copies (struct = struct)
                 if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rvalue {
                     if place.projections.is_empty() && src.projections.is_empty() {
@@ -336,6 +348,10 @@ impl<'a> CodeEmitter<'a> {
                 self.load_place(place, dst);
             }
             Rvalue::Len(_) => {
+                self.asm.xor_rr(dst, dst);
+            }
+            Rvalue::MakeVtable(_) => {
+                // Handled in emit_statement special-case; shouldn't reach here
                 self.asm.xor_rr(dst, dst);
             }
         }

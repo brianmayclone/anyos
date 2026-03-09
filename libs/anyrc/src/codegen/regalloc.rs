@@ -29,6 +29,11 @@ pub fn ty_size(ty: &TyKind, struct_sizes: &StructSizes) -> i32 {
             }
         }
         TyKind::Array(_, len) => (*len as i32).max(1) * 8,
+        // Fat pointer: &dyn Trait is 16 bytes (data_ptr + vtable_ptr)
+        TyKind::Ref(inner, _) => {
+            if matches!(inner.as_ref(), TyKind::DynTrait(_)) { 16 } else { 8 }
+        }
+        TyKind::DynTrait(_) => 16, // unlikely to appear standalone, but be safe
         _ => 8,
     }
 }
@@ -45,6 +50,12 @@ pub fn allocate(body: &MirBody, struct_sizes: &StructSizes) -> RegAlloc {
                     match rvalue {
                         crate::mir::Rvalue::Aggregate(_, operands) if operands.len() > 1 => {
                             let needed = operands.len() as i32 * 8;
+                            if needed > local_sizes[place.local.0] {
+                                local_sizes[place.local.0] = needed;
+                            }
+                        }
+                        crate::mir::Rvalue::MakeVtable(fn_names) => {
+                            let needed = fn_names.len() as i32 * 8;
                             if needed > local_sizes[place.local.0] {
                                 local_sizes[place.local.0] = needed;
                             }
