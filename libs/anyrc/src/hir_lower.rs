@@ -345,6 +345,76 @@ impl<'a> LoweringContext<'a> {
                 };
                 (HirExprKind::InlineAsm(hir_asm), asm.span)
             }
+            // Desugar if let → match with two arms
+            ast::Expr::IfLet(pat, scrutinee, then_block, else_branch, span) => {
+                let hir_scrutinee = self.lower_expr(scrutinee);
+                let hir_then = self.lower_block(then_block);
+                let then_expr = HirExpr {
+                    id: self.alloc_hir_id(),
+                    kind: HirExprKind::Block(hir_then),
+                    span: *span,
+                };
+                let match_arm = HirMatchArm {
+                    id: self.alloc_hir_id(),
+                    pat: self.lower_pattern(pat),
+                    guard: None,
+                    body: Box::new(then_expr),
+                    span: *span,
+                };
+                let else_body = if let Some(e) = else_branch {
+                    self.lower_expr(e)
+                } else {
+                    HirExpr { id: self.alloc_hir_id(), kind: HirExprKind::Tuple(vec![]), span: *span }
+                };
+                let wildcard_arm = HirMatchArm {
+                    id: self.alloc_hir_id(),
+                    pat: HirPattern::Wildcard(*span),
+                    guard: None,
+                    body: Box::new(else_body),
+                    span: *span,
+                };
+                (HirExprKind::Match(Box::new(hir_scrutinee), vec![match_arm, wildcard_arm]), *span)
+            }
+            // Desugar while let → loop { match expr { pat => body, _ => break } }
+            ast::Expr::WhileLet(pat, scrutinee, body, label, span) => {
+                let hir_scrutinee = self.lower_expr(scrutinee);
+                let hir_body = self.lower_block(body);
+                let body_expr = HirExpr {
+                    id: self.alloc_hir_id(),
+                    kind: HirExprKind::Block(hir_body),
+                    span: *span,
+                };
+                let match_arm = HirMatchArm {
+                    id: self.alloc_hir_id(),
+                    pat: self.lower_pattern(pat),
+                    guard: None,
+                    body: Box::new(body_expr),
+                    span: *span,
+                };
+                let break_expr = HirExpr {
+                    id: self.alloc_hir_id(),
+                    kind: HirExprKind::Break(None, None),
+                    span: *span,
+                };
+                let wildcard_arm = HirMatchArm {
+                    id: self.alloc_hir_id(),
+                    pat: HirPattern::Wildcard(*span),
+                    guard: None,
+                    body: Box::new(break_expr),
+                    span: *span,
+                };
+                let match_expr = HirExpr {
+                    id: self.alloc_hir_id(),
+                    kind: HirExprKind::Match(Box::new(hir_scrutinee), vec![match_arm, wildcard_arm]),
+                    span: *span,
+                };
+                let loop_block = HirBlock {
+                    id: self.alloc_hir_id(),
+                    stmts: vec![HirStmt::Semi(match_expr, *span)],
+                    span: *span,
+                };
+                (HirExprKind::Loop(loop_block, *label), *span)
+            }
         };
         HirExpr { id: self.alloc_hir_id(), kind, span }
     }

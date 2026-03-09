@@ -381,9 +381,17 @@ impl<'a> Parser<'a> {
             return Expr::Loop(block, None, self.span_from(start));
         }
 
-        // while
+        // while / while let
         if self.at_kw(Keyword::While) {
             self.bump();
+            if self.at_kw(Keyword::Let) {
+                self.bump(); // let
+                let pat = self.parse_pattern();
+                self.expect_exact(&TokenKind::Eq);
+                let scrutinee = self.parse_expr_no_struct();
+                let block = self.parse_block();
+                return Expr::WhileLet(pat, Box::new(scrutinee), block, None, self.span_from(start));
+            }
             let cond = self.parse_expr_no_struct();
             let block = self.parse_block();
             return Expr::While(Box::new(cond), block, None, self.span_from(start));
@@ -505,6 +513,26 @@ impl<'a> Parser<'a> {
 
     fn parse_if_expr(&mut self, start: Span) -> Expr {
         self.bump(); // if
+        // if let <pattern> = <expr> <block> [else <block>]
+        if self.at_kw(Keyword::Let) {
+            self.bump(); // let
+            let pat = self.parse_pattern();
+            self.expect_exact(&TokenKind::Eq);
+            let scrutinee = self.parse_expr_no_struct();
+            let then_block = self.parse_block();
+            let else_branch = if self.at_kw(Keyword::Else) {
+                self.bump();
+                if self.at_kw(Keyword::If) {
+                    let s = self.current().span;
+                    Some(Box::new(self.parse_if_expr(s)))
+                } else {
+                    Some(Box::new(Expr::Block(self.parse_block())))
+                }
+            } else {
+                None
+            };
+            return Expr::IfLet(pat, Box::new(scrutinee), then_block, else_branch, self.span_from(start));
+        }
         let cond = self.parse_expr_no_struct();
         let then_block = self.parse_block();
         let else_branch = if self.at_kw(Keyword::Else) {
@@ -2025,6 +2053,18 @@ impl<'a> Parser<'a> {
         match &self.current().kind {
             TokenKind::IntLit(_) => {
                 if let TokenKind::IntLit(v) = self.bump().kind {
+                    // Check for range pattern: 0..=9
+                    if self.at_exact(&TokenKind::DotDotEq) {
+                        self.bump();
+                        if let TokenKind::IntLit(hi) = self.bump().kind {
+                            return Pattern::Range(
+                                Some(Box::new(Expr::Lit(Literal::Int(v), self.span_from(start)))),
+                                Some(Box::new(Expr::Lit(Literal::Int(hi), self.span_from(start)))),
+                                true,
+                                self.span_from(start),
+                            );
+                        }
+                    }
                     return Pattern::Literal(Literal::Int(v), self.span_from(start));
                 }
             }

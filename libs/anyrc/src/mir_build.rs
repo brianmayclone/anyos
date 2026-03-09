@@ -61,6 +61,13 @@ impl<'a> MirBuilder<'a> {
                     Self::collect_fns(interner, resolve, typeck, sub, bodies);
                 }
             }
+            HirItemKind::Mod(m) => {
+                if let Some(sub_items) = &m.items {
+                    for sub in sub_items {
+                        Self::collect_fns(interner, resolve, typeck, sub, bodies);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -697,15 +704,57 @@ impl<'a> MirBuilder<'a> {
                 let merge_bb = self.push_block();
                 let mut targets: Vec<(u128, BlockId)> = Vec::new();
                 let mut default_bb = merge_bb;
+                let mut range_arms: Vec<(BlockId, BlockId)> = Vec::new(); // (check_bb, arm_bb)
+
+                // Check if any arm has a range pattern
+                let has_range = arms.iter().any(|a| self.is_range_pattern(&a.pat));
 
                 for arm in arms {
                     let arm_bb = self.push_block();
-                    let disc_val = self.pattern_discriminant(&arm.pat);
 
-                    if let Some(val) = disc_val {
-                        targets.push((val, arm_bb));
+                    if let HirPattern::Range(lo, hi, _inclusive, span) = &arm.pat {
+                        // Range pattern: emit comparison chain
+                        let check_bb = self.push_block();
+                        range_arms.push((check_bb, arm_bb));
+
+                        self.current_block = check_bb;
+
+                        // Compare: disc_op >= lo && disc_op <= hi
+                        let in_range = if let (Some(lo_expr), Some(hi_expr)) = (lo, hi) {
+                            let lo_op = self.lower_expr(lo_expr);
+                            let hi_op = self.lower_expr(hi_expr);
+                            // ge_tmp = disc >= lo
+                            let ge_tmp = self.alloc_temp(TyKind::Bool, *span);
+                            self.emit_assign(Place::local(ge_tmp), Rvalue::BinaryOp(BinOp::Ge, disc_op.clone(), lo_op), *span);
+                            // le_tmp = disc <= hi
+                            let le_tmp = self.alloc_temp(TyKind::Bool, *span);
+                            self.emit_assign(Place::local(le_tmp), Rvalue::BinaryOp(BinOp::Le, disc_op.clone(), hi_op), *span);
+                            // in_range = ge && le
+                            let in_range = self.alloc_temp(TyKind::Bool, *span);
+                            self.emit_assign(Place::local(in_range), Rvalue::BinaryOp(BinOp::And, Operand::Copy(Place::local(ge_tmp)), Operand::Copy(Place::local(le_tmp))), *span);
+                            Operand::Copy(Place::local(in_range))
+                        } else {
+                            Operand::Constant(Constant { ty: TyKind::Bool, value: ConstValue::Bool(true) })
+                        };
+
+                        // SwitchInt on in_range: 1 → arm_bb, default → next
+                        // We'll fix up 'default' (next check or default_bb) later
+                        let placeholder_bb = self.push_block(); // placeholder for "not in range"
+                        self.blocks[check_bb.0].terminator = Terminator::SwitchInt {
+                            operand: in_range,
+                            targets: vec![(1, arm_bb)],
+                            default: placeholder_bb,
+                        };
+
+                        // placeholder_bb will be patched to point to next range check or switch/default
+                        // For now, store it -- we'll chain them below
                     } else {
-                        default_bb = arm_bb;
+                        let disc_val = self.pattern_discriminant(&arm.pat);
+                        if let Some(val) = disc_val {
+                            targets.push((val, arm_bb));
+                        } else {
+                            default_bb = arm_bb;
+                        }
                     }
 
                     self.current_block = arm_bb;
@@ -745,11 +794,43 @@ impl<'a> MirBuilder<'a> {
                     default_bb = last.1;
                 }
 
-                self.blocks[switch_bb.0].terminator = Terminator::SwitchInt {
-                    operand: disc_op,
-                    targets,
-                    default: default_bb,
-                };
+                if has_range && !range_arms.is_empty() {
+                    // Build the final target for non-range arms (SwitchInt or just goto default)
+                    let non_range_target_bb = if targets.is_empty() {
+                        default_bb
+                    } else {
+                        let sw_bb = self.push_block();
+                        self.blocks[sw_bb.0].terminator = Terminator::SwitchInt {
+                            operand: disc_op,
+                            targets,
+                            default: default_bb,
+                        };
+                        sw_bb
+                    };
+
+                    // Chain: switch_bb → first range check → second range check → ... → non_range_target_bb
+                    self.blocks[switch_bb.0].terminator = Terminator::Goto(range_arms[0].0);
+
+                    for i in 0..range_arms.len() {
+                        let (check_bb, _arm_bb) = range_arms[i];
+                        let next = if i + 1 < range_arms.len() {
+                            range_arms[i + 1].0
+                        } else {
+                            non_range_target_bb
+                        };
+                        if let Terminator::SwitchInt { ref mut default, .. } = self.blocks[check_bb.0].terminator {
+                            let placeholder = *default;
+                            self.blocks[placeholder.0].terminator = Terminator::Goto(next);
+                        }
+                    }
+                } else {
+                    // No range patterns: use normal SwitchInt
+                    self.blocks[switch_bb.0].terminator = Terminator::SwitchInt {
+                        operand: disc_op,
+                        targets,
+                        default: default_bb,
+                    };
+                }
 
                 self.current_block = merge_bb;
                 Operand::Copy(Place::local(result))
@@ -1063,9 +1144,24 @@ impl<'a> MirBuilder<'a> {
                 self.resolve.variant_indices.get(&(enum_name, variant_name))
                     .map(|&idx| idx as u128)
             }
+            HirPattern::Literal(lit, _) => {
+                match lit {
+                    Literal::Int(v) => Some(*v as u128),
+                    Literal::Bool(b) => Some(*b as u128),
+                    Literal::Char(c) => Some(*c as u128),
+                    _ => None,
+                }
+            }
             HirPattern::Wildcard(_) => None,
+            // Range patterns are handled specially in match lowering
+            HirPattern::Range(_, _, _, _) => None,
             _ => None,
         }
+    }
+
+    /// Check if a pattern is a range pattern
+    fn is_range_pattern(&self, pat: &HirPattern) -> bool {
+        matches!(pat, HirPattern::Range(_, _, _, _))
     }
 
     fn is_copy_type(&self, ty: &TyKind) -> bool {
