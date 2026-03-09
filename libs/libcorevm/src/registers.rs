@@ -330,11 +330,14 @@ pub const CR4_SMEP: u64 = 1 << 20;
 /// Supervisor Mode Access Prevention.
 pub const CR4_SMAP: u64 = 1 << 21;
 
+/// FSGSBASE enable (RDFSBASE/RDGSBASE/WRFSBASE/WRGSBASE).
+pub const CR4_FSGSBASE: u64 = 1 << 16;
+
 /// Mask of all CR4 bits valid for Broadwell (5th gen).
 pub const CR4_VALID_MASK: u64 = CR4_VME | CR4_PVI | CR4_TSD | CR4_DE | CR4_PSE
     | CR4_PAE | CR4_MCE | CR4_PGE | (1 << 8) /* PCE */
     | CR4_OSFXSR | CR4_OSXMMEXCPT
-    | CR4_PCIDE | CR4_OSXSAVE | CR4_SMEP | CR4_SMAP;
+    | CR4_FSGSBASE | CR4_PCIDE | CR4_OSXSAVE | CR4_SMEP | CR4_SMAP;
 
 impl RegisterFile {
     /// Create a new register file with power-on reset defaults.
