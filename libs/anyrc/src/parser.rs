@@ -970,6 +970,26 @@ impl<'a> Parser<'a> {
     // ── Items ──
 
     pub fn parse_crate(&mut self) -> Crate {
+        // Parse inner attributes (#![...])
+        let mut attrs = Vec::new();
+        while self.at_exact(&TokenKind::Hash) && self.peek_kind_at(1) == Some(&TokenKind::Not) {
+            let start = self.current().span;
+            self.bump(); // #
+            self.bump(); // !
+            self.expect_exact(&TokenKind::LBracket);
+            let path = self.parse_path_ty();
+            let args = if self.at_exact(&TokenKind::LParen) {
+                self.bump();
+                let tts = self.collect_token_trees(&TokenKind::RParen);
+                self.expect_exact(&TokenKind::RParen);
+                AttrArgs::Delimited(tts)
+            } else {
+                AttrArgs::Empty
+            };
+            self.expect_exact(&TokenKind::RBracket);
+            attrs.push(Attribute { path, args, span: self.span_from(start) });
+        }
+
         let mut items = Vec::new();
         while !self.at_exact(&TokenKind::Eof) {
             if let Some(item) = self.parse_item() {
@@ -978,7 +998,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Crate { items }
+        Crate { attrs, items }
     }
 
     fn parse_item(&mut self) -> Option<Item> {

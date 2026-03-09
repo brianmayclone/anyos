@@ -3,6 +3,7 @@ use crate::diagnostics::Span;
 
 // Top-level
 pub struct Crate {
+    pub attrs: Vec<Attribute>,
     pub items: Vec<Item>,
 }
 

@@ -9,7 +9,7 @@ fn lower(src: &str) -> HirCrate {
     let mut parser = Parser::new(src, &mut interner);
     let mut krate = parser.parse_crate();
     expand_macros(&mut krate, &mut interner);
-    let mut ctx = LoweringContext::new();
+    let mut ctx = LoweringContext::new(&mut interner);
     ctx.lower_crate(&krate)
 }
 

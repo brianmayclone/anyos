@@ -2,15 +2,17 @@ use crate::ast;
 use crate::hir::*;
 use crate::diagnostics::Span;
 use crate::ast::UnOp;
+use crate::intern::{Interner, Symbol};
 
-pub struct LoweringContext {
+pub struct LoweringContext<'a> {
     next_hir_id: u32,
     next_def_id: u32,
+    interner: &'a mut Interner,
 }
 
-impl LoweringContext {
-    pub fn new() -> Self {
-        Self { next_hir_id: 0, next_def_id: 0 }
+impl<'a> LoweringContext<'a> {
+    pub fn new(interner: &'a mut Interner) -> Self {
+        Self { next_hir_id: 0, next_def_id: 0, interner }
     }
 
     fn alloc_hir_id(&mut self) -> HirId {
@@ -61,7 +63,14 @@ impl LoweringContext {
             is_unsafe: f.is_unsafe,
             is_const: f.is_const,
             abi: f.abi.clone(),
+            no_mangle: self.has_attr(&f.attrs, "no_mangle"),
+            is_panic_handler: self.has_attr(&f.attrs, "panic_handler"),
         }
+    }
+
+    fn has_attr(&mut self, attrs: &[ast::Attribute], name: &str) -> bool {
+        let sym = self.interner.intern(name);
+        attrs.iter().any(|a| a.path.segments.len() == 1 && a.path.segments[0].ident == sym)
     }
 
     fn lower_param(&mut self, p: &ast::Param) -> HirParam {
