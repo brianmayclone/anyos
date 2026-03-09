@@ -26,6 +26,7 @@ fn assert_run_returns(src: &str, expected: i32) {
     {
         let mut f = std::fs::File::create(&exe_path).unwrap();
         f.write_all(&exe_bytes).unwrap();
+        f.sync_all().unwrap();
     }
     #[cfg(unix)]
     {
@@ -64,7 +65,7 @@ fn assert_typechecks(src: &str) {
     let mut parser = Parser::new(src, &mut interner);
     let mut krate = parser.parse_crate();
     anyrc::macros::expand_macros(&mut krate, &mut interner);
-    let mut lower_ctx = LoweringContext::new();
+    let mut lower_ctx = LoweringContext::new(&mut interner);
     let hir = lower_ctx.lower_crate(&krate);
     let mut resolver = Resolver::new(&interner);
     let resolve_result = resolver.resolve_crate(&hir);

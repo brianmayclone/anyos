@@ -14,7 +14,7 @@ fn compile_to_object(src: &str) -> Vec<u8> {
     let mut parser = Parser::new(src, &mut interner);
     let mut krate = parser.parse_crate();
     expand_macros(&mut krate, &mut interner);
-    let mut lower_ctx = LoweringContext::new();
+    let mut lower_ctx = LoweringContext::new(&mut interner);
     let hir = lower_ctx.lower_crate(&krate);
     let mut resolver = Resolver::new(&interner);
     let resolve_result = resolver.resolve_crate(&hir);

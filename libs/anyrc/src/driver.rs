@@ -48,12 +48,21 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     let mut parser = Parser::new(source, &mut interner);
     let mut krate = parser.parse_crate();
 
+    // Check crate-level attributes
+    let no_main = krate.attrs.iter().any(|a| {
+        a.path.segments.len() == 1 && interner.resolve(a.path.segments[0].ident) == "no_main"
+    });
+    let _no_std = krate.attrs.iter().any(|a| {
+        a.path.segments.len() == 1 && interner.resolve(a.path.segments[0].ident) == "no_std"
+    });
+
     // 2. Expand macros
     expand_macros(&mut krate, &mut interner);
 
     // 3. Lower to HIR
-    let mut lower_ctx = LoweringContext::new();
+    let mut lower_ctx = LoweringContext::new(&mut interner);
     let hir = lower_ctx.lower_crate(&krate);
+    drop(lower_ctx);
 
     // 4. Resolve names
     let mut resolver = Resolver::new(&interner);
@@ -137,7 +146,8 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         EmitKind::Exe => {
             let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &static_data);
             let obj_bytes = elf::write_object(&obj);
-            let exe = link::link(&[obj_bytes], &options.output);
+            let no_main_flag = no_main || options.crate_type == CrateType::StaticLib;
+            let exe = link::link(&[obj_bytes], &options.output, no_main_flag);
             Ok(exe)
         }
         EmitKind::Mir => {

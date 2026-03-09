@@ -133,6 +133,7 @@ impl<'a> MirBuilder<'a> {
             arg_count,
             name: func.name,
             span: Span::dummy(),
+            no_mangle: func.no_mangle,
         }
     }
 

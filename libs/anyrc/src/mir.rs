@@ -20,6 +20,7 @@ pub struct MirBody {
     pub arg_count: usize,
     pub name: Symbol,
     pub span: Span,
+    pub no_mangle: bool,
 }
 
 pub struct LocalDecl {

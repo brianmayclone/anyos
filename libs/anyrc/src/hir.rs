@@ -47,6 +47,8 @@ pub struct HirFnDef {
     pub is_unsafe: bool,
     pub is_const: bool,
     pub abi: Option<String>,
+    pub no_mangle: bool,
+    pub is_panic_handler: bool,
 }
 
 pub struct HirParam {

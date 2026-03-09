@@ -9,7 +9,7 @@ fn resolve_src(src: &str) -> (anyrc::resolve::ResolveResult, Interner) {
     let mut parser = Parser::new(src, &mut interner);
     let mut krate = parser.parse_crate();
     expand_macros(&mut krate, &mut interner);
-    let mut ctx = LoweringContext::new();
+    let mut ctx = LoweringContext::new(&mut interner);
     let hir = ctx.lower_crate(&krate);
     let mut resolver = Resolver::new(&interner);
     let result = resolver.resolve_crate(&hir);
