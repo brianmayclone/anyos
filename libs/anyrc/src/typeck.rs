@@ -6,7 +6,7 @@ use crate::diagnostics::{Span, Diagnostic, Level};
 use std::collections::HashMap;
 
 /// Internal type representation
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TyKind {
     Bool,
     Char,
@@ -29,7 +29,7 @@ pub enum TyKind {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InferVar(u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -39,13 +39,13 @@ enum InferKind {
     Float,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntTy { I8, I16, I32, I64, I128, Isize }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UintTy { U8, U16, U32, U64, U128, Usize }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FloatTy { F32, F64 }
 
 pub struct TypeckResult {
@@ -53,6 +53,10 @@ pub struct TypeckResult {
     pub struct_defs: HashMap<DefId, Vec<(Symbol, TyKind)>>,
     pub fn_sigs: HashMap<DefId, (Vec<TyKind>, TyKind)>,
     pub errors: Vec<Diagnostic>,
+    /// For each call to a generic function: call-site HirId -> (callee DefId, concrete type args)
+    pub generic_call_substs: HashMap<HirId, (DefId, Vec<TyKind>)>,
+    /// DefIds of functions that have generic type params
+    pub generic_fn_defs: HashMap<DefId, usize>,  // DefId -> number of type params
 }
 
 pub struct TypeChecker<'a> {
@@ -67,6 +71,12 @@ pub struct TypeChecker<'a> {
     type_name_to_def: HashMap<Symbol, DefId>,
     /// Map resolver variant DefId -> owning enum DefId
     resolver_variant_to_enum: HashMap<DefId, DefId>,
+    /// Current function's generic param symbols -> param index
+    current_generic_params: HashMap<Symbol, u32>,
+    /// Per call-site: (callee DefId, concrete type args)
+    generic_call_substs: HashMap<HirId, (DefId, Vec<TyKind>)>,
+    /// Generic function defs: DefId -> number of type params
+    generic_fn_defs: HashMap<DefId, usize>,
 
     next_infer: u32,
     infer_kinds: HashMap<InferVar, InferKind>,
@@ -87,6 +97,9 @@ impl<'a> TypeChecker<'a> {
             struct_defs: HashMap::new(),
             type_name_to_def: HashMap::new(),
             resolver_variant_to_enum: HashMap::new(),
+            current_generic_params: HashMap::new(),
+            generic_call_substs: HashMap::new(),
+            generic_fn_defs: HashMap::new(),
             next_infer: 0,
             infer_kinds: HashMap::new(),
             substitutions: HashMap::new(),
@@ -123,11 +136,21 @@ impl<'a> TypeChecker<'a> {
             *ty = self.resolve_ty_full(ty.clone());
         }
 
+        // Also resolve types in generic_call_substs
+        let mut generic_call_substs = std::mem::take(&mut self.generic_call_substs);
+        for (_, (_, substs)) in generic_call_substs.iter_mut() {
+            for ty in substs.iter_mut() {
+                *ty = self.resolve_ty_full(ty.clone());
+            }
+        }
+
         TypeckResult {
             expr_types,
             struct_defs: std::mem::take(&mut self.struct_defs),
             fn_sigs: self.fn_sigs.clone(),
             errors: std::mem::take(&mut self.errors),
+            generic_call_substs,
+            generic_fn_defs: std::mem::take(&mut self.generic_fn_defs),
         }
     }
 
@@ -136,6 +159,19 @@ impl<'a> TypeChecker<'a> {
     fn collect_item(&mut self, item: &HirItem) {
         match &item.kind {
             HirItemKind::Fn(f) => {
+                // Set up generic params for this function
+                let old_generics = std::mem::take(&mut self.current_generic_params);
+                let mut n_type_params = 0u32;
+                for gp in &f.generics.params {
+                    if let HirGenericParam::Type(name, _, _, _) = gp {
+                        self.current_generic_params.insert(*name, n_type_params);
+                        n_type_params += 1;
+                    }
+                }
+                if n_type_params > 0 {
+                    self.generic_fn_defs.insert(f.def_id, n_type_params as usize);
+                }
+
                 let params: Vec<TyKind> = f.params.iter()
                     .map(|p| self.hir_ty_to_ty(&p.ty))
                     .collect();
@@ -143,6 +179,7 @@ impl<'a> TypeChecker<'a> {
                     .map(|t| self.hir_ty_to_ty(t))
                     .unwrap_or(TyKind::Unit);
                 self.fn_sigs.insert(f.def_id, (params, ret));
+                self.current_generic_params = old_generics;
             }
             HirItemKind::Struct(s) => {
                 let fields: Vec<(Symbol, TyKind)> = s.fields.iter()
@@ -184,6 +221,16 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_fn(&mut self, f: &HirFnDef) {
+        // Set up generic params for this function's body
+        let old_generics = std::mem::take(&mut self.current_generic_params);
+        let mut n_type_params = 0u32;
+        for gp in &f.generics.params {
+            if let HirGenericParam::Type(name, _, _, _) = gp {
+                self.current_generic_params.insert(*name, n_type_params);
+                n_type_params += 1;
+            }
+        }
+
         let sig = self.fn_sigs.get(&f.def_id).cloned();
         let (param_tys, ret_ty) = sig.unwrap_or_else(|| (vec![], TyKind::Unit));
 
@@ -201,6 +248,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.current_fn_ret = old_ret;
+        self.current_generic_params = old_generics;
     }
 
     fn check_block(&mut self, block: &HirBlock) -> TyKind {
@@ -315,6 +363,24 @@ impl<'a> TypeChecker<'a> {
                 match self.shallow_resolve(callee_ty) {
                     TyKind::FnDef(def_id, _) => {
                         if let Some((param_tys, ret_ty)) = self.fn_sigs.get(&def_id).cloned() {
+                            // If this is a generic function, create fresh infer vars for each type param
+                            let n_generics = self.generic_fn_defs.get(&def_id).copied().unwrap_or(0);
+                            let (param_tys, ret_ty) = if n_generics > 0 {
+                                let infer_vars: Vec<TyKind> = (0..n_generics)
+                                    .map(|_| self.fresh_infer(InferKind::General))
+                                    .collect();
+                                let subst_params: Vec<TyKind> = param_tys.iter()
+                                    .map(|t| self.substitute_params(t, &infer_vars))
+                                    .collect();
+                                let subst_ret = self.substitute_params(&ret_ty, &infer_vars);
+                                // We'll record the concrete substs after unification
+                                // Store the infer vars so we can resolve them later
+                                self.generic_call_substs.insert(expr.id, (def_id, infer_vars.clone()));
+                                (subst_params, subst_ret)
+                            } else {
+                                (param_tys, ret_ty)
+                            };
+
                             if args.len() != param_tys.len() {
                                 self.error(expr.span, &format!(
                                     "wrong number of arguments: expected {}, found {}",
@@ -681,6 +747,31 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    // ── Generic substitution ──
+
+    /// Replace TyKind::Param(i) with the corresponding type from `substs`
+    fn substitute_params(&self, ty: &TyKind, substs: &[TyKind]) -> TyKind {
+        match ty {
+            TyKind::Param(idx) => {
+                if (*idx as usize) < substs.len() {
+                    substs[*idx as usize].clone()
+                } else {
+                    ty.clone()
+                }
+            }
+            TyKind::Ref(inner, m) => TyKind::Ref(Box::new(self.substitute_params(inner, substs)), *m),
+            TyKind::RawPtr(inner, m) => TyKind::RawPtr(Box::new(self.substitute_params(inner, substs)), *m),
+            TyKind::Tuple(tys) => TyKind::Tuple(tys.iter().map(|t| self.substitute_params(t, substs)).collect()),
+            TyKind::Array(inner, n) => TyKind::Array(Box::new(self.substitute_params(inner, substs)), *n),
+            TyKind::Slice(inner) => TyKind::Slice(Box::new(self.substitute_params(inner, substs))),
+            TyKind::FnPtr(params, ret) => TyKind::FnPtr(
+                params.iter().map(|t| self.substitute_params(t, substs)).collect(),
+                Box::new(self.substitute_params(ret, substs)),
+            ),
+            _ => ty.clone(),
+        }
+    }
+
     // ── HIR type to TyKind ──
 
     fn hir_ty_to_ty(&self, ty: &HirTy) -> TyKind {
@@ -707,8 +798,12 @@ impl<'a> TypeChecker<'a> {
                     "char" => TyKind::Char,
                     "str" => TyKind::Str,
                     _ => {
-                        // Look up as ADT by name
                         let sym = path.segments[0].ident;
+                        // Check generic type params first
+                        if let Some(&idx) = self.current_generic_params.get(&sym) {
+                            return TyKind::Param(idx);
+                        }
+                        // Look up as ADT by name
                         if let Some(&def_id) = self.type_name_to_def.get(&sym) {
                             TyKind::Adt(def_id, vec![])
                         } else {

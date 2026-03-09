@@ -349,7 +349,7 @@ pub enum Visibility {
     PubCrate,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mutability {
     Immutable,
     Mut,
