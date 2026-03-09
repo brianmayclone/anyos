@@ -101,28 +101,34 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
 
     // 9. Build struct size map from HIR (includes enum tagged union sizes)
     let struct_sizes = {
-        use crate::hir::{HirItemKind, HirVariantFields};
-        let mut map = std::collections::HashMap::new();
-        for item in &hir.items {
-            match &item.kind {
-                HirItemKind::Struct(s) => {
-                    map.insert(s.def_id, s.fields.len());
-                }
-                HirItemKind::Enum(e) => {
-                    let max_fields = e.variants.iter().map(|v| match &v.fields {
-                        HirVariantFields::Unit => 0,
-                        HirVariantFields::Tuple(tys) => tys.len(),
-                        HirVariantFields::Struct(fields) => fields.len(),
-                    }).max().unwrap_or(0);
-                    if max_fields > 0 {
-                        // Tagged union: 1 slot for discriminant + max_fields for payload
-                        map.insert(e.def_id, 1 + max_fields);
+        use crate::hir::{HirItemKind, HirVariantFields, HirItem};
+        fn collect_struct_sizes(items: &[HirItem], map: &mut std::collections::HashMap<crate::hir::DefId, usize>) {
+            for item in items {
+                match &item.kind {
+                    HirItemKind::Struct(s) => {
+                        map.insert(s.def_id, s.fields.len());
                     }
-                    // C-like enums (max_fields == 0) use 1 slot (8 bytes), handled by default
+                    HirItemKind::Enum(e) => {
+                        let max_fields = e.variants.iter().map(|v| match &v.fields {
+                            HirVariantFields::Unit => 0,
+                            HirVariantFields::Tuple(tys) => tys.len(),
+                            HirVariantFields::Struct(fields) => fields.len(),
+                        }).max().unwrap_or(0);
+                        if max_fields > 0 {
+                            map.insert(e.def_id, 1 + max_fields);
+                        }
+                    }
+                    HirItemKind::Mod(m) => {
+                        if let Some(sub_items) = &m.items {
+                            collect_struct_sizes(sub_items, map);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
+        let mut map = std::collections::HashMap::new();
+        collect_struct_sizes(&hir.items, &mut map);
         map
     };
 

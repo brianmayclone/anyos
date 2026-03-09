@@ -1492,10 +1492,16 @@ impl<'a> Parser<'a> {
                 break;
             }
             if !self.eat_exact(&TokenKind::ColonColon) {
-                // Simple use
+                // Simple use, possibly with alias
+                let alias = if self.at_kw(Keyword::As) {
+                    self.bump();
+                    Some(self.expect_ident_or_self())
+                } else {
+                    None
+                };
                 return UseTree {
                     path,
-                    kind: UseTreeKind::Simple(None),
+                    kind: UseTreeKind::Simple(alias),
                     span: self.span_from(start),
                 };
             }
