@@ -747,6 +747,19 @@ impl<'a> TypeChecker<'a> {
                 self.check_block(body);
                 TyKind::Unit
             }
+
+            HirExprKind::InlineAsm(asm) => {
+                for op in &asm.operands {
+                    match op {
+                        crate::hir::HirAsmOperand::In { expr, .. } => { self.check_expr(expr); }
+                        crate::hir::HirAsmOperand::Out { expr, .. } => {
+                            if let Some(e) = expr { self.check_expr(e); }
+                        }
+                        crate::hir::HirAsmOperand::InOut { expr, .. } => { self.check_expr(expr); }
+                    }
+                }
+                TyKind::Unit
+            }
         }
     }
 

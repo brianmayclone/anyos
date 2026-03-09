@@ -165,6 +165,19 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
             if let Some(a) = a { expand_expr(a, defs, interner, changed); }
             if let Some(b) = b { expand_expr(b, defs, interner, changed); }
         }
+        Expr::InlineAsm(asm) => {
+            for op in &mut asm.operands {
+                match op {
+                    AsmOperand::In { expr, .. } | AsmOperand::InOut { expr, .. } | AsmOperand::Const { expr } => {
+                        expand_expr(expr, defs, interner, changed);
+                    }
+                    AsmOperand::Out { expr: Some(expr), .. } => {
+                        expand_expr(expr, defs, interner, changed);
+                    }
+                    _ => {}
+                }
+            }
+        }
         _ => {}
     }
 }

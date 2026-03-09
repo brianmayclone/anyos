@@ -755,6 +755,57 @@ impl<'a> MirBuilder<'a> {
                 Operand::Copy(Place::local(result))
             }
 
+            HirExprKind::InlineAsm(asm) => {
+                let mut mir_operands = Vec::new();
+                for op in &asm.operands {
+                    match op {
+                        HirAsmOperand::In { reg, expr } => {
+                            let operand = self.lower_expr(expr);
+                            mir_operands.push(MirAsmOperand {
+                                kind: MirAsmOperandKind::In(operand),
+                                reg: match reg {
+                                    HirAsmReg::Named(s) => MirAsmReg::Named(s.clone()),
+                                    HirAsmReg::Class(s) => MirAsmReg::Class(s.clone()),
+                                },
+                            });
+                        }
+                        HirAsmOperand::Out { reg, expr } => {
+                            let place = expr.as_ref().map(|e| {
+                                self.try_lower_to_place(e)
+                                    .unwrap_or_else(|| Place::local(self.alloc_temp(TyKind::Uint(crate::typeck::UintTy::U64), e.span)))
+                            });
+                            mir_operands.push(MirAsmOperand {
+                                kind: MirAsmOperandKind::Out(place),
+                                reg: match reg {
+                                    HirAsmReg::Named(s) => MirAsmReg::Named(s.clone()),
+                                    HirAsmReg::Class(s) => MirAsmReg::Class(s.clone()),
+                                },
+                            });
+                        }
+                        HirAsmOperand::InOut { reg, expr } => {
+                            let operand = self.lower_expr(expr);
+                            let place = self.try_lower_to_place(expr);
+                            mir_operands.push(MirAsmOperand {
+                                kind: MirAsmOperandKind::InOut(operand, place),
+                                reg: match reg {
+                                    HirAsmReg::Named(s) => MirAsmReg::Named(s.clone()),
+                                    HirAsmReg::Class(s) => MirAsmReg::Class(s.clone()),
+                                },
+                            });
+                        }
+                    }
+                }
+                self.emit_stmt(Statement {
+                    kind: StatementKind::InlineAsm {
+                        template: asm.template.clone(),
+                        operands: mir_operands,
+                        options: asm.options.clone(),
+                    },
+                    span: expr.span,
+                });
+                Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+            }
+
             // Catch-all for unhandled cases
             HirExprKind::Closure(_, _, _, _) |
             HirExprKind::ArrayRepeat(_, _) |

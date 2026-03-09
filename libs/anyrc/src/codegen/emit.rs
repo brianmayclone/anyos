@@ -233,6 +233,9 @@ impl<'a> CodeEmitter<'a> {
                 self.emit_rvalue(rvalue, Reg::RAX);
                 self.store_place(place, Reg::RAX);
             }
+            StatementKind::InlineAsm { template, operands, options: _ } => {
+                self.emit_inline_asm(template, operands);
+            }
             StatementKind::StorageLive(_) | StatementKind::StorageDead(_) | StatementKind::Nop => {}
         }
     }
@@ -394,6 +397,211 @@ impl<'a> CodeEmitter<'a> {
                 // UD2 — just emit a nop as placeholder
                 self.asm.nop();
             }
+        }
+    }
+
+    fn emit_inline_asm(&mut self, template: &[String], operands: &[MirAsmOperand]) {
+        // Step 1: Move input operands into their designated registers
+        for (i, op) in operands.iter().enumerate() {
+            match &op.kind {
+                MirAsmOperandKind::In(operand) => {
+                    let target_reg = self.asm_reg_to_reg(&op.reg, i);
+                    self.load_operand(operand, target_reg);
+                }
+                MirAsmOperandKind::InOut(operand, _) => {
+                    let target_reg = self.asm_reg_to_reg(&op.reg, i);
+                    self.load_operand(operand, target_reg);
+                }
+                MirAsmOperandKind::Out(_) => {}
+            }
+        }
+
+        // Step 2: Emit the assembly instruction bytes for each template string
+        for tmpl in template {
+            let resolved = self.resolve_asm_template(tmpl, operands);
+            let bytes = Self::assemble_instruction(&resolved);
+            self.asm.emit_raw(&bytes);
+        }
+
+        // Step 3: Move output operands from their registers to destinations
+        for (i, op) in operands.iter().enumerate() {
+            match &op.kind {
+                MirAsmOperandKind::Out(Some(place)) => {
+                    let src_reg = self.asm_reg_to_reg(&op.reg, i);
+                    self.store_place(place, src_reg);
+                }
+                MirAsmOperandKind::InOut(_, Some(place)) => {
+                    let src_reg = self.asm_reg_to_reg(&op.reg, i);
+                    self.store_place(place, src_reg);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn asm_reg_to_reg(&self, reg: &MirAsmReg, _index: usize) -> Reg {
+        match reg {
+            MirAsmReg::Named(name) => match name.as_str() {
+                "rax" | "eax" | "ax" | "al" => Reg::RAX,
+                "rcx" | "ecx" | "cx" | "cl" => Reg::RCX,
+                "rdx" | "edx" | "dx" | "dl" => Reg::RDX,
+                "rbx" | "ebx" | "bx" | "bl" => Reg::RBX,
+                "rsp" | "esp" => Reg::RSP,
+                "rbp" | "ebp" => Reg::RBP,
+                "rsi" | "esi" => Reg::RSI,
+                "rdi" | "edi" => Reg::RDI,
+                "r8" | "r8d" => Reg::R8,
+                "r9" | "r9d" => Reg::R9,
+                "r10" | "r10d" => Reg::R10,
+                "r11" | "r11d" => Reg::R11,
+                _ => Reg::RAX, // fallback
+            },
+            MirAsmReg::Class(_) => Reg::RAX, // allocate RAX for generic reg class
+        }
+    }
+
+    fn resolve_asm_template(&self, tmpl: &str, operands: &[MirAsmOperand]) -> String {
+        let mut result = tmpl.to_string();
+        // Replace {0}, {1}, etc. with register names
+        for (i, op) in operands.iter().enumerate() {
+            let reg_name = match &op.reg {
+                MirAsmReg::Named(n) => n.clone(),
+                MirAsmReg::Class(_) => "rax".to_string(),
+            };
+            let placeholder = format!("{{{}}}", i);
+            result = result.replace(&placeholder, &reg_name);
+            // Also handle {name} - but we don't track names at MIR level, skip for now
+        }
+        // Replace bare {} with positional
+        let mut idx = 0;
+        while result.contains("{}") {
+            if idx < operands.len() {
+                let reg_name = match &operands[idx].reg {
+                    MirAsmReg::Named(n) => n.clone(),
+                    MirAsmReg::Class(_) => "rax".to_string(),
+                };
+                result = result.replacen("{}", &reg_name, 1);
+                idx += 1;
+            } else {
+                break;
+            }
+        }
+        result
+    }
+
+    fn assemble_instruction(instr: &str) -> Vec<u8> {
+        let instr = instr.trim();
+        match instr {
+            // Simple instructions
+            "nop" => vec![0x90],
+            "cli" => vec![0xFA],
+            "sti" => vec![0xFB],
+            "hlt" => vec![0xF4],
+            "ret" => vec![0xC3],
+            "iretq" => vec![0x48, 0xCF],
+            "swapgs" => vec![0x0F, 0x01, 0xF8],
+            "wrmsr" => vec![0x0F, 0x30],
+            "rdmsr" => vec![0x0F, 0x32],
+            "cpuid" => vec![0x0F, 0xA2],
+            "pause" => vec![0xF3, 0x90],
+            "ud2" => vec![0x0F, 0x0B],
+            "clflush" => vec![0x0F, 0xAE],
+            "mfence" => vec![0x0F, 0xAE, 0xF0],
+            "lfence" => vec![0x0F, 0xAE, 0xE8],
+            "sfence" => vec![0x0F, 0xAE, 0xF8],
+            "cld" => vec![0xFC],
+            "std" => vec![0xFD],
+
+            // Port I/O
+            "out dx, al" => vec![0xEE],
+            "out dx, ax" => vec![0x66, 0xEF],
+            "out dx, eax" => vec![0xEF],
+            "in al, dx" => vec![0xEC],
+            "in ax, dx" => vec![0x66, 0xED],
+            "in eax, dx" => vec![0xED],
+
+            // Control register moves
+            "mov rax, cr0" => vec![0x0F, 0x20, 0xC0],
+            "mov cr0, rax" => vec![0x0F, 0x22, 0xC0],
+            "mov rax, cr2" => vec![0x0F, 0x20, 0xD0],
+            "mov rax, cr3" => vec![0x0F, 0x20, 0xD8],
+            "mov cr3, rax" => vec![0x0F, 0x22, 0xD8],
+            "mov rax, cr4" => vec![0x0F, 0x20, 0xE0],
+            "mov cr4, rax" => vec![0x0F, 0x22, 0xE0],
+
+            // Memory ops with [rax]
+            "invlpg [rax]" => vec![0x0F, 0x01, 0x38],
+            "lgdt [rax]" => vec![0x0F, 0x01, 0x10],
+            "lidt [rax]" => vec![0x0F, 0x01, 0x18],
+            "sgdt [rax]" => vec![0x0F, 0x01, 0x00],
+            "sidt [rax]" => vec![0x0F, 0x01, 0x08],
+            "ltr ax" => vec![0x0F, 0x00, 0xD8],
+
+            _ => {
+                // Try to handle more patterns dynamically
+                Self::assemble_dynamic(instr)
+            }
+        }
+    }
+
+    fn assemble_dynamic(instr: &str) -> Vec<u8> {
+        // Handle "mov CRn, REG" and "mov REG, CRn" patterns
+        let parts: Vec<&str> = instr.splitn(2, ' ').collect();
+        if parts.len() == 2 {
+            let mnemonic = parts[0];
+            let args: Vec<&str> = parts[1].split(',').map(|s| s.trim()).collect();
+
+            if mnemonic == "mov" && args.len() == 2 {
+                // mov reg, crN
+                if args[1].starts_with("cr") {
+                    if let (Some(reg), Some(cr)) = (Self::reg_num_64(args[0]), Self::cr_num(args[1])) {
+                        // 0F 20 /r — MOV r64, CRn
+                        return vec![0x0F, 0x20, 0xC0 | (cr << 3) | reg];
+                    }
+                }
+                // mov crN, reg
+                if args[0].starts_with("cr") {
+                    if let (Some(cr), Some(reg)) = (Self::cr_num(args[0]), Self::reg_num_64(args[1])) {
+                        // 0F 22 /r — MOV CRn, r64
+                        return vec![0x0F, 0x22, 0xC0 | (cr << 3) | reg];
+                    }
+                }
+            }
+
+            if mnemonic == "invlpg" && args.len() == 1 {
+                // invlpg [reg]
+                let inner = args[0].trim_start_matches('[').trim_end_matches(']');
+                if let Some(reg) = Self::reg_num_64(inner) {
+                    return vec![0x0F, 0x01, 0x38 | reg];
+                }
+            }
+        }
+
+        // Unknown instruction — emit nop as fallback (should not happen in practice)
+        vec![0x90]
+    }
+
+    fn reg_num_64(name: &str) -> Option<u8> {
+        match name {
+            "rax" | "eax" => Some(0),
+            "rcx" | "ecx" => Some(1),
+            "rdx" | "edx" => Some(2),
+            "rbx" | "ebx" => Some(3),
+            "rsp" | "esp" => Some(4),
+            "rbp" | "ebp" => Some(5),
+            "rsi" | "esi" => Some(6),
+            "rdi" | "edi" => Some(7),
+            _ => None,
+        }
+    }
+
+    fn cr_num(name: &str) -> Option<u8> {
+        match name {
+            "cr0" => Some(0),
+            "cr2" => Some(2),
+            "cr3" => Some(3),
+            "cr4" => Some(4),
+            _ => None,
         }
     }
 }
