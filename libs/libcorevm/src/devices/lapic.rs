@@ -645,28 +645,8 @@ impl Lapic {
             0x310 => self.icr_hi = v,
             0x320 => {
                 self.lvt_timer = v;
-                // DIAGNOSTIC: if timer has been calibrated (init count written at
-                // least twice), force-clear the mask bit.
                 #[cfg(feature = "host_test")]
-                {
-                    static LVT_INIT_WRITES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                    // Count how many 0x380 writes have occurred via external counter
-                    // The init count handler increments TINIT_CNT.
-                    // If calibration done (init_count != 0xFFFFFFFF and != 0), force unmask
-                    if self.timer_init_count != 0 && self.timer_init_count != 0xFFFFFFFF
-                        && (v & (1 << 16)) != 0
-                    {
-                        let n = LVT_INIT_WRITES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                        if n < 5 {
-                            eprintln!("[lapic] DIAG: preventing re-mask of timer LVT: {:#010x} -> {:#010x}",
-                                v, v & !(1 << 16));
-                        }
-                        self.lvt_timer = v & !(1 << 16);
-                    }
-                    lapic_trace(format_args!("timer-lvt {:08X}", self.lvt_timer));
-                }
-                #[cfg(not(feature = "host_test"))]
-                { let _ = v; }
+                lapic_trace(format_args!("timer-lvt {:08X}", self.lvt_timer));
             }
             0x330 => self.lvt_thermal = v,
             0x340 => self.lvt_perf = v,

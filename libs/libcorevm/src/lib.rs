@@ -1551,10 +1551,21 @@ fn generate_acpi_tables(fw_cfg: &mut devices::fw_cfg::FwCfg) {
         (!sum).wrapping_add(1)
     }
 
-    // --- DSDT with _SB.PCI0._PRT for PCI interrupt routing ---
-    // Without _PRT, the Windows APIC HAL cannot route PCI device IRQs
-    // through the IOAPIC, causing IDE and other device interrupts to be lost.
-    let dsdt = build_dsdt_with_prt();
+    // --- DSDT (minimal AML) ---
+    // Header (36 bytes) + single Noop opcode (0xA3).
+    let dsdt_len = 36 + 1;
+    let mut dsdt = vec![0u8; dsdt_len];
+    dsdt[0..4].copy_from_slice(b"DSDT");
+    dsdt[4..8].copy_from_slice(&(dsdt_len as u32).to_le_bytes());
+    dsdt[8] = 1;                                              // Revision
+    dsdt[9] = 0;                                              // Checksum (filled later)
+    dsdt[10..16].copy_from_slice(b"COREVM");                 // OEM ID
+    dsdt[16..24].copy_from_slice(b"COREVMDT");               // OEM Table ID
+    dsdt[24..28].copy_from_slice(&1u32.to_le_bytes());       // OEM Revision
+    dsdt[28..32].copy_from_slice(b"CRVM");                   // Creator ID
+    dsdt[32..36].copy_from_slice(&1u32.to_le_bytes());       // Creator Revision
+    dsdt[36] = 0xA3; // AML Noop
+    dsdt[9] = acpi_checksum(&dsdt);
 
     // --- FADT (Fixed ACPI Description Table, revision 1) ---
     // Minimal FADT pointing to DSDT, with PM timer port.
@@ -2521,11 +2532,6 @@ fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
     // Legacy 8259 PIC path.
     if !ioapic_routed && !vm.pic_ptr.is_null() {
         let pic = unsafe { &mut *vm.pic_ptr };
-        let pic_masked = if irq < 8 {
-            (pic.master.imr >> irq) & 1 != 0
-        } else {
-            (pic.slave.imr >> (irq - 8)) & 1 != 0
-        };
         pic.raise_irq(irq);
         #[cfg(feature = "host_test")]
         if irq == 8 && IRQ_TRACE_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok() {
@@ -2539,36 +2545,20 @@ fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
         // deliverable; otherwise IRQ0 is lost whenever the guest keeps IF=0.
         route_deliverable_pic_irq(vm);
 
-        // Fallback: when the guest switched to APIC mode (PIC fully masked)
-        // but hasn't programmed the IOAPIC entry for this IRQ (e.g., because
-        // ACPI _PRT is missing or the driver hasn't connected yet), the IRQ
-        // would be silently lost. Deliver it directly to the LAPIC with a
-        // default vector so device I/O can complete.
-        if pic_masked && !vm.lapic_ptr.is_null() {
+        // Fallback for APIC mode: when the PIC is FULLY masked (both master
+        // and slave = 0xFF), the guest switched to APIC mode. If the IOAPIC
+        // entry for this IRQ isn't programmed, deliver via LAPIC using the
+        // PIC's configured vector so the guest's IDT handler matches.
+        let fully_masked = pic.master.imr == 0xFF && pic.slave.imr == 0xFF;
+        if fully_masked && !vm.lapic_ptr.is_null() {
             let lapic = unsafe { &mut *vm.lapic_ptr };
             if lapic.software_enabled() {
-                // Each IRQ needs its own LAPIC priority class (vector >> 4).
-                // Map IRQ 0→0x41, 1→0x51, ..., 11→0xF1. IRQs 12+ share 0xF1.
-                let fallback_vector: u8 = if !vm.ioapic_ptr.is_null() {
-                    let ioapic = unsafe { &*vm.ioapic_ptr };
-                    ioapic.programmed_vector(irq).unwrap_or_else(|| {
-                        let cls = core::cmp::min(irq as u16 + 4, 15) as u8;
-                        (cls << 4) | 1
-                    })
+                let vector = if irq < 8 {
+                    pic.master.vector_offset + irq
                 } else {
-                    let cls = core::cmp::min(irq as u16 + 4, 15) as u8;
-                    (cls << 4) | 1
+                    pic.slave.vector_offset + (irq - 8)
                 };
-                #[cfg(feature = "host_test")]
-                {
-                    static FB_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                    let n = FB_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                    if n < 20 {
-                        eprintln!("[irq-fallback] irq={} vec={:#04x} ic={}",
-                            irq, fallback_vector, vm.engine.instruction_count());
-                    }
-                }
-                lapic.raise_vector(fallback_vector, false);
+                lapic.raise_vector(vector, false);
                 route_deliverable_lapic_irq(vm);
             }
         }
