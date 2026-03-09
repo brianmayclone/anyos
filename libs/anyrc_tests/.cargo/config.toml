@@ -1,2 +1,5 @@
 [build]
 target = "x86_64-unknown-linux-gnu"
+
+# NOTE: Parent anyOS config has build-std = ["core", "alloc"] which conflicts.
+# Run tests with: cargo +nightly test -Z 'build-std='
