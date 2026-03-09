@@ -50,12 +50,37 @@ pub fn link(objects: &[Vec<u8>], _output_name: &str) -> Vec<u8> {
             merged_code.extend_from_slice(&obj.sections[ti].data);
         }
 
+        // Find .data section
+        let data_idx = obj.sections.iter().position(|s| s.name == ".data");
+        let data_offset_in_merged = merged_data.len() as u64;
+
+        if let Some(di) = data_idx {
+            merged_data.extend_from_slice(&obj.sections[di].data);
+        }
+
         // Register symbols
         for sym in &obj.symbols {
             if !sym.name.is_empty() && sym.section.is_some() {
-                // Symbol offset = its offset within .text + where .text starts in merged
-                let final_offset = text_offset_in_merged + sym.offset;
-                global_symbols.insert(sym.name.clone(), final_offset);
+                let sec_idx = sym.section.unwrap();
+                let sec_name = if sec_idx < obj.sections.len() {
+                    &obj.sections[sec_idx].name
+                } else {
+                    ""
+                };
+                if sec_name == ".data" {
+                    // Data symbol: offset relative to start of data in merged output
+                    // Data follows code in the flat layout, so offset = code_total + data_offset
+                    // We'll use a special marker to handle this at relocation time
+                    // For now, store as negative offset to distinguish
+                    // Actually, let's store (data_offset, true) meaning it's in data
+                    // We need the final code length to compute this, so we defer.
+                    // Instead, use a prefix convention:
+                    let final_offset = data_offset_in_merged + sym.offset;
+                    global_symbols.insert(format!("\x01{}", sym.name), final_offset);
+                } else {
+                    let final_offset = text_offset_in_merged + sym.offset;
+                    global_symbols.insert(sym.name.clone(), final_offset);
+                }
             }
         }
 
@@ -76,16 +101,26 @@ pub fn link(objects: &[Vec<u8>], _output_name: &str) -> Vec<u8> {
     // Content starts at offset 128 (64 ehdr + 56 phdr, aligned to 16 = 128)
     let content_file_offset: u64 = 128;
 
+    // Data section starts after code in the flat layout
+    let code_size = merged_code.len() as u64;
+
     for (offset, sym_name, rela_type, addend) in &pending_relocs {
-        let sym_offset = match global_symbols.get(sym_name) {
-            Some(&o) => o,
-            None => continue, // unresolved, skip
+        // Check if this is a data symbol (prefixed with \x01) or a code symbol
+        let (sym_offset, is_data) = if let Some(&o) = global_symbols.get(&format!("\x01{}", sym_name)) {
+            (o, true)
+        } else if let Some(&o) = global_symbols.get(sym_name) {
+            (o, false)
+        } else {
+            continue; // unresolved, skip
         };
+
+        // For data symbols, the actual offset in the flat file is code_size + sym_offset
+        let file_sym_offset = if is_data { code_size + sym_offset } else { sym_offset };
 
         match *rela_type {
             2 /* R_X86_64_PC32 */ => {
                 // S + A - P where S = sym_addr, P = reloc_addr
-                let s = base_addr + content_file_offset + sym_offset;
+                let s = base_addr + content_file_offset + file_sym_offset;
                 let p = base_addr + content_file_offset + offset;
                 let value = (s as i64) + addend - (p as i64);
                 let bytes = (value as i32).to_le_bytes();
@@ -95,7 +130,7 @@ pub fn link(objects: &[Vec<u8>], _output_name: &str) -> Vec<u8> {
                 }
             }
             1 /* R_X86_64_64 */ => {
-                let s = base_addr + content_file_offset + sym_offset;
+                let s = base_addr + content_file_offset + file_sym_offset;
                 let value = (s as i64 + addend) as u64;
                 let bytes = value.to_le_bytes();
                 let off = *offset as usize;

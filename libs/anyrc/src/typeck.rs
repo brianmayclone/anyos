@@ -59,6 +59,18 @@ pub struct TypeckResult {
     pub generic_fn_defs: HashMap<DefId, usize>,  // DefId -> number of type params
     /// Enum variant field types: enum DefId -> vec of (variant_name, field_types)
     pub enum_variants: HashMap<DefId, Vec<(Symbol, Vec<TyKind>)>>,
+    /// Evaluated const values: DefId -> (value, type)
+    pub const_values: HashMap<DefId, (ConstVal, TyKind)>,
+    /// Static definitions: DefId -> (name, type, initial_value, is_mut)
+    pub static_defs: HashMap<DefId, (Symbol, TyKind, ConstVal, bool)>,
+}
+
+/// Compile-time evaluated constant value
+#[derive(Debug, Clone)]
+pub enum ConstVal {
+    Int(i128),
+    Bool(bool),
+    Char(char),
 }
 
 pub struct TypeChecker<'a> {
@@ -81,6 +93,11 @@ pub struct TypeChecker<'a> {
     generic_call_substs: HashMap<HirId, (DefId, Vec<TyKind>)>,
     /// Generic function defs: DefId -> number of type params
     generic_fn_defs: HashMap<DefId, usize>,
+
+    /// Evaluated const values
+    const_values: HashMap<DefId, (ConstVal, TyKind)>,
+    /// Static definitions
+    static_defs: HashMap<DefId, (Symbol, TyKind, ConstVal, bool)>,
 
     next_infer: u32,
     infer_kinds: HashMap<InferVar, InferKind>,
@@ -105,6 +122,8 @@ impl<'a> TypeChecker<'a> {
             current_generic_params: HashMap::new(),
             generic_call_substs: HashMap::new(),
             generic_fn_defs: HashMap::new(),
+            const_values: HashMap::new(),
+            static_defs: HashMap::new(),
             next_infer: 0,
             infer_kinds: HashMap::new(),
             substitutions: HashMap::new(),
@@ -157,6 +176,8 @@ impl<'a> TypeChecker<'a> {
             generic_call_substs,
             generic_fn_defs: std::mem::take(&mut self.generic_fn_defs),
             enum_variants: std::mem::take(&mut self.enum_variant_fields),
+            const_values: std::mem::take(&mut self.const_values),
+            static_defs: std::mem::take(&mut self.static_defs),
         }
     }
 
@@ -228,12 +249,42 @@ impl<'a> TypeChecker<'a> {
                     self.collect_item(sub);
                 }
             }
+            HirItemKind::Const(c) => {
+                let ty = self.hir_ty_to_ty(&c.ty);
+                if let Some(val_expr) = &c.value {
+                    if let Some(cv) = self.eval_const_expr(val_expr) {
+                        self.const_values.insert(c.def_id, (cv, ty.clone()));
+                    }
+                }
+                // Register type so paths can resolve
+                self.local_types.insert(c.def_id, ty);
+            }
+            HirItemKind::Static(s) => {
+                let ty = self.hir_ty_to_ty(&s.ty);
+                if let Some(val_expr) = &s.value {
+                    let cv = self.eval_const_expr(val_expr).unwrap_or(ConstVal::Int(0));
+                    self.static_defs.insert(s.def_id, (s.name, ty.clone(), cv, s.is_mut));
+                }
+                self.local_types.insert(s.def_id, ty);
+            }
             HirItemKind::ExternBlock(eb) => {
                 for sub in &eb.items {
                     self.collect_item(sub);
                 }
             }
             _ => {}
+        }
+    }
+
+    fn eval_const_expr(&self, expr: &HirExpr) -> Option<ConstVal> {
+        match &expr.kind {
+            HirExprKind::Lit(lit) => match lit {
+                Literal::Int(v) => Some(ConstVal::Int(*v as i128)),
+                Literal::Bool(v) => Some(ConstVal::Bool(*v)),
+                Literal::Char(v) => Some(ConstVal::Char(*v)),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -725,7 +776,14 @@ impl<'a> TypeChecker<'a> {
                     return TyKind::Adt(enum_def_id, vec![]);
                 }
             }
-            // Could be a const or static - return Error for now
+            // Const item?
+            if let Some((_, ty)) = self.const_values.get(&def_id) {
+                return ty.clone();
+            }
+            // Static item?
+            if let Some((_, ty, _, _)) = self.static_defs.get(&def_id) {
+                return ty.clone();
+            }
             return TyKind::Error;
         }
         TyKind::Error

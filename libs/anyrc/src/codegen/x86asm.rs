@@ -414,6 +414,24 @@ impl X86Assembler {
         self.emit_mem_modrm(Self::reg_code(dst), base, disp);
     }
 
+    /// LEA dst, [rip + symbol] — emits with a PC-relative relocation
+    pub fn lea_rip_relative(&mut self, dst: Reg, symbol: &str) {
+        // LEA r64, [rip+disp32]: REX.W 8D ModRM(00, reg, 101)
+        // REX.W=1, REX.R = is_extended(dst), REX.B=0 (RIP has no base reg)
+        let rex = 0x48 | if Self::is_extended(dst) { 0x04 } else { 0 };
+        self.code.push(rex);
+        self.code.push(0x8D);
+        // ModRM: mod=00, reg=dst, rm=101 (RIP-relative)
+        self.code.push(Self::modrm(0b00, Self::reg_code(dst), 0b101));
+        let offset = self.code.len();
+        self.code.extend_from_slice(&[0; 4]); // disp32 placeholder
+        self.relocations.push(Relocation {
+            offset,
+            symbol: symbol.to_string(),
+            kind: RelocKind::PcRel32,
+        });
+    }
+
     pub fn nop(&mut self) {
         self.code.push(0x90);
     }
