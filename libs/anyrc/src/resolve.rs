@@ -145,7 +145,12 @@ impl<'a> Resolver<'a> {
             HirItemKind::Mod(m) => {
                 self.define(m.name, Namespace::Type, m.def_id);
             }
-            HirItemKind::Impl(_) | HirItemKind::Use(_) | HirItemKind::ExternBlock(_) => {}
+            HirItemKind::Impl(_) | HirItemKind::Use(_) => {}
+            HirItemKind::ExternBlock(eb) => {
+                for sub in &eb.items {
+                    self.register_item(sub);
+                }
+            }
         }
     }
 
@@ -212,7 +217,12 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(val);
                 }
             }
-            HirItemKind::Use(_) | HirItemKind::Mod(_) | HirItemKind::ExternBlock(_) => {}
+            HirItemKind::Use(_) | HirItemKind::Mod(_) => {}
+            HirItemKind::ExternBlock(eb) => {
+                for sub in &eb.items {
+                    self.resolve_item(sub);
+                }
+            }
         }
     }
 

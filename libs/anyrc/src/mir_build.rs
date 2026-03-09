@@ -56,6 +56,11 @@ impl<'a> MirBuilder<'a> {
                     Self::collect_fns(interner, resolve, typeck, sub, bodies);
                 }
             }
+            HirItemKind::ExternBlock(eb) => {
+                for sub in &eb.items {
+                    Self::collect_fns(interner, resolve, typeck, sub, bodies);
+                }
+            }
             _ => {}
         }
     }
