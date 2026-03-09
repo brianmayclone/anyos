@@ -46,6 +46,12 @@ pub struct Resolver<'a> {
     primitives: Vec<&'static str>,
     /// Map from impl self_ty first segment symbol to list of method (name, def_id)
     impl_methods: HashMap<Symbol, Vec<(Symbol, DefId)>>,
+    /// Module DefId -> scope index that contains the module's items
+    module_scopes: HashMap<DefId, usize>,
+    /// Root scope index (for `crate::` paths)
+    root_scope: usize,
+    /// Stack of module scope indices for `super::` resolution
+    module_stack: Vec<usize>,
 }
 
 impl<'a> Resolver<'a> {
@@ -64,6 +70,9 @@ impl<'a> Resolver<'a> {
                 "f32", "f64", "bool", "char", "str",
             ],
             impl_methods: HashMap::new(),
+            module_scopes: HashMap::new(),
+            root_scope: 0,
+            module_stack: vec![0],
         }
     }
 
@@ -74,17 +83,16 @@ impl<'a> Resolver<'a> {
     }
 
     pub fn resolve_crate(&mut self, krate: &HirCrate) -> ResolveResult {
-        // First pass: register all top-level items
+        // First pass: register all top-level items (recursing into modules)
         for item in &krate.items {
             self.register_item(item);
         }
 
-        // Second pass: collect impl methods
-        for item in &krate.items {
-            if let HirItemKind::Impl(impl_block) = &item.kind {
-                self.register_impl_methods(impl_block);
-            }
-        }
+        // Second pass: collect impl methods (recursing into modules)
+        self.collect_impls_recursive(&krate.items);
+
+        // Process use items
+        self.process_use_items_recursive(&krate.items);
 
         // Third pass: resolve all items
         for item in &krate.items {
@@ -93,13 +101,7 @@ impl<'a> Resolver<'a> {
 
         // Build variant_indices: (enum_name, variant_name) -> variant index
         let mut variant_indices = HashMap::new();
-        for item in &krate.items {
-            if let HirItemKind::Enum(e) = &item.kind {
-                for (idx, v) in e.variants.iter().enumerate() {
-                    variant_indices.insert((e.name, v.name), idx);
-                }
-            }
-        }
+        self.collect_variant_indices_recursive(&krate.items, &mut variant_indices);
 
         ResolveResult {
             resolutions: std::mem::take(&mut self.resolutions),
@@ -107,6 +109,219 @@ impl<'a> Resolver<'a> {
             impl_methods: self.impl_methods.clone(),
             variant_indices,
         }
+    }
+
+    fn collect_impls_recursive(&mut self, items: &[HirItem]) {
+        for item in items {
+            match &item.kind {
+                HirItemKind::Impl(impl_block) => {
+                    self.register_impl_methods(impl_block);
+                }
+                HirItemKind::Mod(m) => {
+                    if let Some(sub_items) = &m.items {
+                        self.collect_impls_recursive(sub_items);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_variant_indices_recursive(
+        &self,
+        items: &[HirItem],
+        variant_indices: &mut HashMap<(Symbol, Symbol), usize>,
+    ) {
+        for item in items {
+            match &item.kind {
+                HirItemKind::Enum(e) => {
+                    for (idx, v) in e.variants.iter().enumerate() {
+                        variant_indices.insert((e.name, v.name), idx);
+                    }
+                }
+                HirItemKind::Mod(m) => {
+                    if let Some(sub_items) = &m.items {
+                        self.collect_variant_indices_recursive(sub_items, variant_indices);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn process_use_items_recursive(&mut self, items: &[HirItem]) {
+        for item in items {
+            match &item.kind {
+                HirItemKind::Use(u) => {
+                    self.process_use_tree(u);
+                }
+                HirItemKind::Mod(m) => {
+                    if let Some(sub_items) = &m.items {
+                        // Enter the module scope to process its use items
+                        if let Some(&scope_idx) = self.module_scopes.get(&m.def_id) {
+                            let saved = self.current_scope;
+                            self.current_scope = scope_idx;
+                            self.module_stack.push(scope_idx);
+                            self.process_use_items_recursive(sub_items);
+                            self.module_stack.pop();
+                            self.current_scope = saved;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn process_use_tree(&mut self, use_tree: &HirUseTree) {
+        match &use_tree.kind {
+            HirUseTreeKind::Simple(alias) => {
+                // use a::b::c; or use a::b::c as d;
+                if let Some((def_id, ns)) = self.resolve_use_path(&use_tree.path, use_tree.span) {
+                    let local_name = alias.unwrap_or_else(|| {
+                        *use_tree.path.last().unwrap()
+                    });
+                    self.define(local_name, ns, def_id);
+                    // Also define in the other namespace for cross-ns usage
+                    let other_ns = if ns == Namespace::Value { Namespace::Type } else { Namespace::Value };
+                    // Try other ns too - don't error if not found
+                    if let Some((def_id2, _)) = self.resolve_use_path_ns(&use_tree.path, other_ns) {
+                        self.define(local_name, other_ns, def_id2);
+                    }
+                }
+            }
+            HirUseTreeKind::Nested(trees) => {
+                for sub in trees {
+                    // The sub-tree's path is prefixed by use_tree.path
+                    let mut full_path = use_tree.path.clone();
+                    full_path.extend_from_slice(&sub.path);
+                    let combined = HirUseTree {
+                        id: sub.id,
+                        path: full_path,
+                        kind: sub.kind.clone(),
+                        span: sub.span,
+                    };
+                    self.process_use_tree(&combined);
+                }
+            }
+            HirUseTreeKind::Glob => {
+                // use foo::*; - import all public items from module
+                // Resolve the path to find a module
+                if let Some(mod_def_id) = self.resolve_use_path_to_module(&use_tree.path, use_tree.span) {
+                    if let Some(&scope_idx) = self.module_scopes.get(&mod_def_id) {
+                        // Copy all bindings from that scope into current scope
+                        let bindings: Vec<_> = self.scopes[scope_idx].bindings.iter()
+                            .map(|(&k, &v)| (k, v))
+                            .collect();
+                        for ((name, ns), def_id) in bindings {
+                            self.define(name, ns, def_id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolve a use path to a (DefId, Namespace) pair
+    fn resolve_use_path(&self, path: &[Symbol], span: Span) -> Option<(DefId, Namespace)> {
+        if let Some(result) = self.resolve_use_path_ns(path, Namespace::Value) {
+            return Some(result);
+        }
+        if let Some(result) = self.resolve_use_path_ns(path, Namespace::Type) {
+            return Some(result);
+        }
+        None
+    }
+
+    fn resolve_use_path_ns(&self, path: &[Symbol], ns: Namespace) -> Option<(DefId, Namespace)> {
+        if path.is_empty() { return None; }
+
+        // Determine starting scope
+        let first_str = self.interner.resolve(path[0]);
+        let (start_scope, start_idx) = if first_str == "crate" {
+            (self.root_scope, 1)
+        } else if first_str == "super" {
+            let parent_scope = if self.module_stack.len() >= 2 {
+                self.module_stack[self.module_stack.len() - 2]
+            } else {
+                self.root_scope
+            };
+            (parent_scope, 1)
+        } else if first_str == "self" {
+            (*self.module_stack.last().unwrap_or(&self.root_scope), 1)
+        } else {
+            (*self.module_stack.last().unwrap_or(&self.root_scope), 0)
+        };
+
+        let mut scope = start_scope;
+        for (i, &seg) in path[start_idx..].iter().enumerate() {
+            let is_last = i == path.len() - start_idx - 1;
+            if is_last {
+                // Last segment: look up as value or type
+                if let Some(&def_id) = self.scopes[scope].bindings.get(&(seg, ns)) {
+                    return Some((def_id, ns));
+                }
+                // Try enum variant
+                if ns == Namespace::Value {
+                    // Try type ns for the segment - might be an enum/struct
+                    if let Some(&def_id) = self.scopes[scope].bindings.get(&(seg, Namespace::Type)) {
+                        return Some((def_id, Namespace::Type));
+                    }
+                }
+                return None;
+            } else {
+                // Non-last segment: must be a module
+                if let Some(&mod_def_id) = self.scopes[scope].bindings.get(&(seg, Namespace::Type)) {
+                    if let Some(&mod_scope) = self.module_scopes.get(&mod_def_id) {
+                        scope = mod_scope;
+                    } else {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
+        }
+        None
+    }
+
+    fn resolve_use_path_to_module(&self, path: &[Symbol], span: Span) -> Option<DefId> {
+        if path.is_empty() { return None; }
+
+        let first_str = self.interner.resolve(path[0]);
+        let (start_scope, start_idx) = if first_str == "crate" {
+            (self.root_scope, 1)
+        } else if first_str == "super" {
+            let parent_scope = if self.module_stack.len() >= 2 {
+                self.module_stack[self.module_stack.len() - 2]
+            } else {
+                self.root_scope
+            };
+            (parent_scope, 1)
+        } else if first_str == "self" {
+            (*self.module_stack.last().unwrap_or(&self.root_scope), 1)
+        } else {
+            (*self.module_stack.last().unwrap_or(&self.root_scope), 0)
+        };
+
+        let mut scope = start_scope;
+        for &seg in &path[start_idx..] {
+            if let Some(&mod_def_id) = self.scopes[scope].bindings.get(&(seg, Namespace::Type)) {
+                if let Some(&mod_scope) = self.module_scopes.get(&mod_def_id) {
+                    scope = mod_scope;
+                    // Continue to next segment
+                    // If this is the last segment, return this def_id
+                    if std::ptr::eq(&seg, path.last().unwrap()) {
+                        return Some(mod_def_id);
+                    }
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+        None
     }
 
     fn register_item(&mut self, item: &HirItem) {
@@ -144,6 +359,22 @@ impl<'a> Resolver<'a> {
             }
             HirItemKind::Mod(m) => {
                 self.define(m.name, Namespace::Type, m.def_id);
+                // Create a new scope for the module's items
+                if let Some(sub_items) = &m.items {
+                    let parent_scope = self.current_scope;
+                    // Module scope's parent is the enclosing scope so items inside
+                    // can see the enclosing scope's names.
+                    self.push_scope();
+                    let mod_scope_idx = self.current_scope;
+                    self.module_scopes.insert(m.def_id, mod_scope_idx);
+                    self.module_stack.push(mod_scope_idx);
+                    // Register all items within the module scope
+                    for sub in sub_items {
+                        self.register_item(sub);
+                    }
+                    self.module_stack.pop();
+                    self.current_scope = parent_scope;
+                }
             }
             HirItemKind::Impl(_) | HirItemKind::Use(_) => {}
             HirItemKind::ExternBlock(eb) => {
@@ -217,7 +448,21 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(val);
                 }
             }
-            HirItemKind::Use(_) | HirItemKind::Mod(_) => {}
+            HirItemKind::Mod(m) => {
+                if let Some(sub_items) = &m.items {
+                    if let Some(&scope_idx) = self.module_scopes.get(&m.def_id) {
+                        let saved = self.current_scope;
+                        self.current_scope = scope_idx;
+                        self.module_stack.push(scope_idx);
+                        for sub in sub_items {
+                            self.resolve_item(sub);
+                        }
+                        self.module_stack.pop();
+                        self.current_scope = saved;
+                    }
+                }
+            }
+            HirItemKind::Use(_) => {}
             HirItemKind::ExternBlock(eb) => {
                 for sub in &eb.items {
                     self.resolve_item(sub);
@@ -530,6 +775,14 @@ impl<'a> Resolver<'a> {
             }
         }
 
+        // Handle crate::, super::, self:: prefixes for multi-segment paths
+        if path.segments.len() >= 2 {
+            if name_str == "crate" || name_str == "super" || name_str == "self" {
+                self.resolve_module_path(path, ns, hir_id);
+                return;
+            }
+        }
+
         if path.segments.len() == 1 {
             // Simple single-segment path
             if let Some(def_id) = self.lookup(name, ns) {
@@ -551,43 +804,163 @@ impl<'a> Resolver<'a> {
                     ));
                 }
             }
-        } else if path.segments.len() == 2 {
-            // Two-segment path: Enum::Variant or Type::method
-            let second_name = path.segments[1].ident;
-
-            // Try enum variant first
-            if let Some(enum_def_id) = self.lookup(name, Namespace::Type) {
-                if let Some(enum_info) = self.enum_variants.get(&enum_def_id) {
-                    if let Some(&variant_def_id) = enum_info.variants.get(&second_name) {
-                        if hir_id != HirId(u32::MAX) {
-                            self.resolutions.insert(hir_id, variant_def_id);
-                        }
-                        return;
-                    }
+        } else if path.segments.len() >= 2 {
+            // Try module path resolution first
+            if let Some(def_id) = self.try_resolve_through_modules(path, ns) {
+                if hir_id != HirId(u32::MAX) {
+                    self.resolutions.insert(hir_id, def_id);
                 }
-                // Try impl methods
-                if let Some(methods) = self.impl_methods.get(&name) {
-                    for &(method_name, method_def_id) in methods {
-                        if method_name == second_name {
+                return;
+            }
+
+            if path.segments.len() == 2 {
+                // Two-segment path: Enum::Variant or Type::method
+                let second_name = path.segments[1].ident;
+
+                // Try enum variant first
+                if let Some(enum_def_id) = self.lookup(name, Namespace::Type) {
+                    if let Some(enum_info) = self.enum_variants.get(&enum_def_id) {
+                        if let Some(&variant_def_id) = enum_info.variants.get(&second_name) {
                             if hir_id != HirId(u32::MAX) {
-                                self.resolutions.insert(hir_id, method_def_id);
+                                self.resolutions.insert(hir_id, variant_def_id);
                             }
                             return;
                         }
                     }
+                    // Try impl methods
+                    if let Some(methods) = self.impl_methods.get(&name) {
+                        for &(method_name, method_def_id) in methods {
+                            if method_name == second_name {
+                                if hir_id != HirId(u32::MAX) {
+                                    self.resolutions.insert(hir_id, method_def_id);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                // Could not resolve
+                let second_str = self.interner.resolve(second_name);
+                self.errors.push(Diagnostic::new(
+                    Level::Error,
+                    &format!("`{}::{}` not found", name_str, second_str),
+                    path.span,
+                ));
+            }
+            // else: 3+ segments without module match - skip (external paths)
+        }
+    }
+
+    /// Try to resolve a path by walking through module scopes.
+    /// Returns Some(DefId) if the first segment is a module and the path resolves.
+    fn try_resolve_through_modules(&self, path: &HirPath, ns: Namespace) -> Option<DefId> {
+        let first = path.segments[0].ident;
+
+        // Check if first segment is a module
+        let mod_def_id = self.lookup(first, Namespace::Type)?;
+        let mut scope = *self.module_scopes.get(&mod_def_id)?;
+
+        // Walk remaining segments
+        for (i, seg) in path.segments[1..].iter().enumerate() {
+            let is_last = i == path.segments.len() - 2;
+            if is_last {
+                // Last segment: look up as value or type
+                if let Some(&def_id) = self.scopes[scope].bindings.get(&(seg.ident, ns)) {
+                    return Some(def_id);
+                }
+                // Try other namespace
+                let other_ns = if ns == Namespace::Value { Namespace::Type } else { Namespace::Value };
+                if let Some(&def_id) = self.scopes[scope].bindings.get(&(seg.ident, other_ns)) {
+                    return Some(def_id);
+                }
+                // Try enum variant: if the last two segments are Enum::Variant
+                // Actually for module paths this doesn't apply at this level
+                return None;
+            } else {
+                // Intermediate segment: must be a module
+                if let Some(&sub_def_id) = self.scopes[scope].bindings.get(&(seg.ident, Namespace::Type)) {
+                    if let Some(&sub_scope) = self.module_scopes.get(&sub_def_id) {
+                        scope = sub_scope;
+                    } else {
+                        return None;
+                    }
+                } else {
+                    return None;
                 }
             }
+        }
+        None
+    }
 
-            // Could not resolve
-            let second_str = self.interner.resolve(second_name);
-            self.errors.push(Diagnostic::new(
-                Level::Error,
-                &format!("`{}::{}` not found", name_str, second_str),
-                path.span,
-            ));
+    /// Resolve a path starting with crate::, super::, or self::
+    fn resolve_module_path(&mut self, path: &HirPath, ns: Namespace, hir_id: HirId) {
+        let first_str = self.interner.resolve(path.segments[0].ident);
+
+        let start_scope = if first_str == "crate" {
+            self.root_scope
+        } else if first_str == "super" {
+            if self.module_stack.len() >= 2 {
+                self.module_stack[self.module_stack.len() - 2]
+            } else {
+                self.root_scope
+            }
         } else {
-            // Multi-segment paths (3+): just skip for now, don't error
-            // These are likely external paths like std::mem::size_of
+            // "self"
+            *self.module_stack.last().unwrap_or(&self.root_scope)
+        };
+
+        let mut scope = start_scope;
+        let segments = &path.segments[1..]; // skip crate/super/self
+
+        for (i, seg) in segments.iter().enumerate() {
+            let is_last = i == segments.len() - 1;
+            if is_last {
+                // Last segment: look up as value or type
+                if let Some(&def_id) = self.scopes[scope].bindings.get(&(seg.ident, ns)) {
+                    if hir_id != HirId(u32::MAX) {
+                        self.resolutions.insert(hir_id, def_id);
+                    }
+                    return;
+                }
+                // Try other namespace
+                let other_ns = if ns == Namespace::Value { Namespace::Type } else { Namespace::Value };
+                if let Some(&def_id) = self.scopes[scope].bindings.get(&(seg.ident, other_ns)) {
+                    if hir_id != HirId(u32::MAX) {
+                        self.resolutions.insert(hir_id, def_id);
+                    }
+                    return;
+                }
+                let seg_str = self.interner.resolve(seg.ident);
+                self.errors.push(Diagnostic::new(
+                    Level::Error,
+                    &format!("`{}` not found in module", seg_str),
+                    path.span,
+                ));
+            } else {
+                // Intermediate segment: must be a module
+                if let Some(&mod_def_id) = self.scopes[scope].bindings.get(&(seg.ident, Namespace::Type)) {
+                    if let Some(&mod_scope) = self.module_scopes.get(&mod_def_id) {
+                        scope = mod_scope;
+                    } else {
+                        let seg_str = self.interner.resolve(seg.ident);
+                        self.errors.push(Diagnostic::new(
+                            Level::Error,
+                            &format!("`{}` is not a module", seg_str),
+                            path.span,
+                        ));
+                        return;
+                    }
+                } else {
+                    let seg_str = self.interner.resolve(seg.ident);
+                    self.errors.push(Diagnostic::new(
+                        Level::Error,
+                        &format!("`{}` not found in module", seg_str),
+                        path.span,
+                    ));
+                    return;
+                }
+            }
         }
     }
 

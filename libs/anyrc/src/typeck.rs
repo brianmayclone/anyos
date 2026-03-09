@@ -183,8 +183,20 @@ impl<'a> TypeChecker<'a> {
 
     // ── Pass 1: Collect ──
 
+    fn collect_item_recursive(&mut self, items: &[HirItem]) {
+        for item in items {
+            self.collect_item(item);
+        }
+    }
+
     fn collect_item(&mut self, item: &HirItem) {
         match &item.kind {
+            HirItemKind::Mod(m) => {
+                if let Some(sub_items) = &m.items {
+                    self.collect_item_recursive(sub_items);
+                }
+                return;
+            }
             HirItemKind::Fn(f) => {
                 // Set up generic params for this function
                 let old_generics = std::mem::take(&mut self.current_generic_params);
@@ -296,6 +308,13 @@ impl<'a> TypeChecker<'a> {
             HirItemKind::Impl(ib) => {
                 for sub in &ib.items {
                     self.check_item(sub);
+                }
+            }
+            HirItemKind::Mod(m) => {
+                if let Some(sub_items) = &m.items {
+                    for sub in sub_items {
+                        self.check_item(sub);
+                    }
                 }
             }
             _ => {}

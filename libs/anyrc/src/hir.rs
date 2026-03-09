@@ -140,6 +140,7 @@ pub struct HirStaticDef {
     pub is_mut: bool,
 }
 
+#[derive(Clone)]
 pub struct HirUseTree {
     pub id: HirId,
     pub path: Vec<Symbol>,
@@ -147,6 +148,7 @@ pub struct HirUseTree {
     pub span: Span,
 }
 
+#[derive(Clone)]
 pub enum HirUseTreeKind {
     Simple(Option<Symbol>),
     Glob,
