@@ -18,6 +18,7 @@ pub enum Item {
     Use(UseTree),
     Mod(ModDef),
     MacroDef(MacroRulesDef),
+    MacroCall(Path, Vec<TokenTree>, Span),
     ExternBlock(ExternBlockDef),
 }
 
@@ -149,6 +150,7 @@ pub struct MacroRulesDef {
     pub span: Span,
 }
 
+#[derive(Clone)]
 pub struct MacroRule {
     pub pattern: Vec<TokenTree>,
     pub body: Vec<TokenTree>,

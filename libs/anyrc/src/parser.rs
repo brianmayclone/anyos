@@ -1044,8 +1044,54 @@ impl<'a> Parser<'a> {
                     None
                 }
             }
+            // macro_rules! name { ... }
+            TokenKind::Ident(sym) if self.interner.resolve(*sym) == "macro_rules" => {
+                Some(self.parse_macro_rules_def(start))
+            }
+            // Macro invocation at item position: name!(...)
+            TokenKind::Ident(_) => {
+                let saved = self.pos;
+                let path = self.parse_path_expr();
+                if self.at_exact(&TokenKind::Not) {
+                    self.bump();
+                    let tts = self.parse_macro_args();
+                    self.eat_exact(&TokenKind::Semi);
+                    Some(Item::MacroCall(path, tts, self.span_from(start)))
+                } else {
+                    self.pos = saved;
+                    None
+                }
+            }
             _ => None,
         }
+    }
+
+    fn parse_macro_rules_def(&mut self, start: Span) -> Item {
+        self.bump(); // eat `macro_rules`
+        self.expect_exact(&TokenKind::Not);
+        let name = self.expect_ident();
+        // { rule ; rule ; ... }
+        self.expect_exact(&TokenKind::LBrace);
+        let mut rules = Vec::new();
+        while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
+            // ( pattern ) => { body }
+            self.expect_exact(&TokenKind::LParen);
+            let pattern = self.collect_token_trees(&TokenKind::RParen);
+            self.expect_exact(&TokenKind::RParen);
+            self.expect_exact(&TokenKind::FatArrow);
+            self.expect_exact(&TokenKind::LBrace);
+            let body = self.collect_token_trees(&TokenKind::RBrace);
+            self.expect_exact(&TokenKind::RBrace);
+            rules.push(MacroRule { pattern, body });
+            // optional semicolon between rules
+            self.eat_exact(&TokenKind::Semi);
+        }
+        self.expect_exact(&TokenKind::RBrace);
+        Item::MacroDef(MacroRulesDef {
+            name,
+            rules,
+            span: self.span_from(start),
+        })
     }
 
     fn parse_fn_def(
