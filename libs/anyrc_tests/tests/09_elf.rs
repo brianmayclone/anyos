@@ -20,7 +20,7 @@ fn compile_to_object(src: &str) -> Vec<u8> {
     let resolve_result = resolver.resolve_crate(&hir);
     let mut checker = TypeChecker::new(&interner, &resolve_result);
     let typeck_result = checker.check_crate(&hir);
-    let bodies = MirBuilder::build_crate(&interner, &resolve_result, &typeck_result, &hir);
+    let bodies = MirBuilder::build_crate(&mut interner, &resolve_result, &typeck_result, &hir);
 
     let mut text_data = Vec::new();
     let mut symbols = Vec::new();
