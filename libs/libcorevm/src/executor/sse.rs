@@ -186,6 +186,39 @@ pub fn exec_sse(
             Ok(())
         }
 
+        // ── F3 0F AE with mod=11: RDFSBASE/RDGSBASE/WRFSBASE/WRGSBASE ──
+        0xAE if inst.modrm_mod() == 3 && inst.modrm_reg() <= 3
+            && inst.rep == crate::instruction::RepPrefix::Rep =>
+        {
+            // Requires CR4.FSGSBASE (bit 16)
+            if (cpu.regs.cr4 & (1 << 16)) == 0 {
+                return Err(VmError::UndefinedOpcode(0xAE));
+            }
+            let rm = inst.modrm_rm() as usize;
+            let is_64 = inst.prefix.rex_w();
+            match inst.modrm_reg() {
+                0 => { // RDFSBASE
+                    let val = cpu.regs.seg[crate::registers::SegReg::Fs as usize].base;
+                    cpu.regs.gpr[rm] = if is_64 { val } else { val & 0xFFFF_FFFF };
+                }
+                1 => { // RDGSBASE
+                    let val = cpu.regs.seg[crate::registers::SegReg::Gs as usize].base;
+                    cpu.regs.gpr[rm] = if is_64 { val } else { val & 0xFFFF_FFFF };
+                }
+                2 => { // WRFSBASE
+                    let val = if is_64 { cpu.regs.gpr[rm] } else { cpu.regs.gpr[rm] & 0xFFFF_FFFF };
+                    cpu.regs.seg[crate::registers::SegReg::Fs as usize].base = val;
+                }
+                3 => { // WRGSBASE
+                    let val = if is_64 { cpu.regs.gpr[rm] } else { cpu.regs.gpr[rm] & 0xFFFF_FFFF };
+                    cpu.regs.seg[crate::registers::SegReg::Gs as usize].base = val;
+                }
+                _ => unreachable!(),
+            }
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+
         // ── FXSAVE (0F AE /0) ──
         0xAE if inst.modrm_reg() == 0 => exec_fxsave(cpu, inst, memory, mmu),
 

@@ -1403,27 +1403,158 @@ pub extern "C" fn corevm_write_phys_u32(handle: u64, addr: u64, val: u32) {
 fn generate_acpi_tables(fw_cfg: &mut devices::fw_cfg::FwCfg) {
     use alloc::vec;
 
+    /// Build a DSDT with \_SB.PCI0 device and _PRT for PCI interrupt routing.
+    ///
+    /// The _PRT maps PCI device interrupt pins to IOAPIC GSI (Global System
+    /// Interrupt) numbers. Without this, the Windows APIC HAL cannot program
+    /// IOAPIC redirection entries for PCI devices, and device IRQs are lost.
+    fn build_dsdt_with_prt() -> Vec<u8> {
+        // AML helper: encode a PkgLength. For lengths < 63, it's a single byte.
+        // For 63..4095, it's 2 bytes: (1<<6 | low_nibble), high_byte.
+        fn pkg_len_bytes(len: usize) -> Vec<u8> {
+            if len < 63 {
+                alloc::vec![len as u8]
+            } else if len < 4096 {
+                // Two-byte encoding: bit 7:6 = 01 (1 extra byte follows)
+                let lo = (len & 0xF) as u8;
+                let hi = ((len >> 4) & 0xFF) as u8;
+                alloc::vec![0x40 | lo, hi]
+            } else {
+                // Three-byte encoding
+                let lo = (len & 0xF) as u8;
+                let b1 = ((len >> 4) & 0xFF) as u8;
+                let b2 = ((len >> 12) & 0xFF) as u8;
+                alloc::vec![0x80 | lo, b1, b2]
+            }
+        }
+
+        // Build _PRT package contents: array of PCI routing entries.
+        // Each entry: Package(4) { DWORD Address, BYTE Pin, Name/0, DWORD GSI }
+        //
+        // PCI device layout:
+        //   0:1.0 (IDE)  → INTA# → GSI 14
+        //   0:2.0 (VGA)  → INTA# → GSI 10
+        //   0:3.0 (E1000) → INTA# → GSI 11
+        //   0:1F.2 (AHCI) → INTA# → GSI 11
+        struct PrtEntry { device: u16, pin: u8, gsi: u32 }
+        let entries = [
+            PrtEntry { device: 1, pin: 0, gsi: 14 },    // IDE INTA → GSI 14
+            PrtEntry { device: 2, pin: 0, gsi: 10 },    // VGA INTA → GSI 10
+            PrtEntry { device: 3, pin: 0, gsi: 11 },    // E1000 INTA → GSI 11
+            PrtEntry { device: 0x1F, pin: 0, gsi: 11 }, // AHCI INTA → GSI 11
+        ];
+
+        // Build each _PRT sub-package entry in AML:
+        // PackageOp PkgLength NumElements
+        //   DWordConst(address)   — 0x0C prefix + LE32
+        //   ByteConst(pin)        — 0x0A prefix + byte
+        //   ByteConst(0)          — 0x0A 0x00 (no PCI link device)
+        //   DWordConst(gsi)       — 0x0C prefix + LE32
+        let mut prt_elements = Vec::new();
+        for e in &entries {
+            let addr: u32 = (e.device as u32) << 16 | 0xFFFF;
+            let mut elem = Vec::new();
+            // DWordPrefix + Address
+            elem.push(0x0C);
+            elem.extend_from_slice(&addr.to_le_bytes());
+            // BytePrefix + Pin
+            elem.push(0x0A);
+            elem.push(e.pin);
+            // Zero (no link device)
+            elem.push(0x00);
+            // DWordPrefix + GSI
+            elem.push(0x0C);
+            elem.extend_from_slice(&e.gsi.to_le_bytes());
+
+            // Wrap in Package(4)
+            let num_elements: u8 = 4;
+            let inner_len = 1 + elem.len(); // NumElements + data
+            let pkg_len = pkg_len_bytes(inner_len + pkg_len_bytes(inner_len).len());
+            let mut pkg = Vec::new();
+            pkg.push(0x12); // PackageOp
+            pkg.extend_from_slice(&pkg_len);
+            pkg.push(num_elements);
+            pkg.extend_from_slice(&elem);
+
+            prt_elements.extend_from_slice(&pkg);
+        }
+
+        // _PRT = Package(N) { ... entries ... }
+        let prt_pkg_inner_len = 1 + prt_elements.len(); // NumElements + data
+        let prt_pkg_len = pkg_len_bytes(prt_pkg_inner_len + pkg_len_bytes(prt_pkg_inner_len).len());
+        let mut prt_pkg = Vec::new();
+        prt_pkg.push(0x12); // PackageOp
+        prt_pkg.extend_from_slice(&prt_pkg_len);
+        prt_pkg.push(entries.len() as u8); // NumElements
+        prt_pkg.extend_from_slice(&prt_elements);
+
+        // Name(_PRT, <prt_pkg>)
+        let mut name_prt = Vec::new();
+        name_prt.push(0x08); // NameOp
+        name_prt.extend_from_slice(b"_PRT"); // NameString
+        name_prt.extend_from_slice(&prt_pkg);
+
+        // Device(PCI0) { Name(_HID, EisaId("PNP0A03")), Name(_PRT, ...) }
+        // _HID = EisaId("PNP0A03") → 0x0C + compressed EISA ID as DWord
+        // PNP0A03 EISA encoding: 0x030AD041
+        let mut pci0_body = Vec::new();
+        // Name(_HID, EisaId("PNP0A03"))
+        pci0_body.push(0x08); // NameOp
+        pci0_body.extend_from_slice(b"_HID");
+        pci0_body.push(0x0C); // DWordPrefix
+        pci0_body.extend_from_slice(&0x030AD041u32.to_le_bytes()); // PNP0A03
+        // Name(_PRT, ...)
+        pci0_body.extend_from_slice(&name_prt);
+
+        // Wrap in Device(PCI0)
+        let dev_name = b"PCI0";
+        let dev_inner_len = dev_name.len() + pci0_body.len();
+        let dev_pkg_len = pkg_len_bytes(dev_inner_len + pkg_len_bytes(dev_inner_len).len());
+        let mut device_pci0 = Vec::new();
+        device_pci0.push(0x5B); // ExtOpPrefix
+        device_pci0.push(0x82); // DeviceOp
+        device_pci0.extend_from_slice(&dev_pkg_len);
+        device_pci0.extend_from_slice(dev_name);
+        device_pci0.extend_from_slice(&pci0_body);
+
+        // Scope(\_SB) { Device(PCI0) { ... } }
+        let scope_name: &[u8] = &[0x5C, b'_', b'S', b'B', b'_']; // "\_SB_"
+        let scope_inner_len = scope_name.len() + device_pci0.len();
+        let scope_pkg_len = pkg_len_bytes(scope_inner_len + pkg_len_bytes(scope_inner_len).len());
+        let mut scope_sb = Vec::new();
+        scope_sb.push(0x10); // ScopeOp
+        scope_sb.extend_from_slice(&scope_pkg_len);
+        scope_sb.extend_from_slice(scope_name);
+        scope_sb.extend_from_slice(&device_pci0);
+
+        // Build full DSDT: header (36 bytes) + AML body
+        let aml_body = scope_sb;
+        let dsdt_len = 36 + aml_body.len();
+        let mut dsdt = vec![0u8; dsdt_len];
+        dsdt[0..4].copy_from_slice(b"DSDT");
+        dsdt[4..8].copy_from_slice(&(dsdt_len as u32).to_le_bytes());
+        dsdt[8] = 1;                                              // Revision
+        dsdt[9] = 0;                                              // Checksum (filled later)
+        dsdt[10..16].copy_from_slice(b"COREVM");                 // OEM ID
+        dsdt[16..24].copy_from_slice(b"COREVMDT");               // OEM Table ID
+        dsdt[24..28].copy_from_slice(&1u32.to_le_bytes());       // OEM Revision
+        dsdt[28..32].copy_from_slice(b"CRVM");                   // Creator ID
+        dsdt[32..36].copy_from_slice(&1u32.to_le_bytes());       // Creator Revision
+        dsdt[36..].copy_from_slice(&aml_body);
+        dsdt[9] = acpi_checksum(&dsdt);
+        dsdt
+    }
+
     // Helper: compute ACPI checksum (sum of all bytes must be 0 mod 256).
     fn acpi_checksum(data: &[u8]) -> u8 {
         let sum: u8 = data.iter().fold(0u8, |a, &b| a.wrapping_add(b));
         (!sum).wrapping_add(1)
     }
 
-    // --- DSDT (minimal AML) ---
-    // Header (36 bytes) + single Noop opcode (0xA3) to avoid parse_termlist overrun.
-    let dsdt_len = 36 + 1;
-    let mut dsdt = vec![0u8; dsdt_len];
-    dsdt[0..4].copy_from_slice(b"DSDT");
-    dsdt[4..8].copy_from_slice(&(dsdt_len as u32).to_le_bytes());
-    dsdt[8] = 1;                                              // Revision
-    dsdt[9] = 0;                                              // Checksum (filled later)
-    dsdt[10..16].copy_from_slice(b"COREVM");                 // OEM ID
-    dsdt[16..24].copy_from_slice(b"COREVMDT");               // OEM Table ID
-    dsdt[24..28].copy_from_slice(&1u32.to_le_bytes());       // OEM Revision
-    dsdt[28..32].copy_from_slice(b"CRVM");                   // Creator ID
-    dsdt[32..36].copy_from_slice(&1u32.to_le_bytes());       // Creator Revision
-    dsdt[36] = 0xA3; // AML Noop
-    dsdt[9] = acpi_checksum(&dsdt);
+    // --- DSDT with _SB.PCI0._PRT for PCI interrupt routing ---
+    // Without _PRT, the Windows APIC HAL cannot route PCI device IRQs
+    // through the IOAPIC, causing IDE and other device interrupts to be lost.
+    let dsdt = build_dsdt_with_prt();
 
     // --- FADT (Fixed ACPI Description Table, revision 1) ---
     // Minimal FADT pointing to DSDT, with PM timer port.
@@ -2390,6 +2521,11 @@ fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
     // Legacy 8259 PIC path.
     if !ioapic_routed && !vm.pic_ptr.is_null() {
         let pic = unsafe { &mut *vm.pic_ptr };
+        let pic_masked = if irq < 8 {
+            (pic.master.imr >> irq) & 1 != 0
+        } else {
+            (pic.slave.imr >> (irq - 8)) & 1 != 0
+        };
         pic.raise_irq(irq);
         #[cfg(feature = "host_test")]
         if irq == 8 && IRQ_TRACE_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok() {
@@ -2402,6 +2538,29 @@ fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
         // Leave the request latched in the PIC until it is actually
         // deliverable; otherwise IRQ0 is lost whenever the guest keeps IF=0.
         route_deliverable_pic_irq(vm);
+
+        // Fallback: when the guest switched to APIC mode (PIC fully masked)
+        // but hasn't programmed the IOAPIC entry for this IRQ (e.g., because
+        // ACPI _PRT is missing or the driver hasn't connected yet), the IRQ
+        // would be silently lost. Deliver it directly to the LAPIC with a
+        // default vector so device I/O can complete.
+        if pic_masked && !vm.lapic_ptr.is_null() {
+            let lapic = unsafe { &mut *vm.lapic_ptr };
+            if lapic.software_enabled() {
+                let fallback_vector = 0x30 + irq;
+                #[cfg(feature = "host_test")]
+                {
+                    static FB_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    let n = FB_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if n < 20 {
+                        eprintln!("[irq-fallback] irq={} vec={:#04x} ic={}",
+                            irq, fallback_vector, vm.engine.instruction_count());
+                    }
+                }
+                lapic.raise_vector(fallback_vector, false);
+                route_deliverable_lapic_irq(vm);
+            }
+        }
     }
 }
 
