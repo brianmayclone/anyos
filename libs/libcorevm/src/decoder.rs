@@ -1502,9 +1502,18 @@ impl DecodeCursor {
                 let (md, reg, rm) = Self::split_modrm(modrm);
                 match reg {
                     // /0 FXSAVE, /1 FXRSTOR, /2 LDMXCSR, /3 STMXCSR
+                    // With F3 prefix and mod=11: RDFSBASE/RDGSBASE/WRFSBASE/WRGSBASE
                     0..=3 => {
                         if md == 3 {
-                            return Err(VmError::UndefinedOpcode(op_lo));
+                            if self.inst.rep != RepPrefix::Rep {
+                                return Err(VmError::UndefinedOpcode(op_lo));
+                            }
+                            // FSGSBASE: operand is the rm register
+                            let sz = if self.inst.prefix.rex_w() { OperandSize::Qword } else { OperandSize::Dword };
+                            let rm_op = self.decode_rm(md, rm, sz)?;
+                            self.set_operand(0, rm_op);
+                            self.inst.operand_count = 1;
+                            return Ok(());
                         }
                         let rm_op = self.decode_rm(md, rm, OperandSize::Qword)?;
                         self.set_operand(0, rm_op);
