@@ -1628,17 +1628,34 @@ impl DecodeCursor {
                 self.decode_modrm_rm_r(sz)
             }
 
-            // -- CMPXCHG8B/CMPXCHG16B m64/m128 --
+            // -- Group 9: CMPXCHG8B/16B (/1), RDRAND (/6), RDSEED (/7) --
             0xC7 => {
                 let modrm = self.fetch_modrm()?;
                 let (md, reg, rm) = Self::split_modrm(modrm);
-                if reg != 1 || md == 3 {
-                    return Err(VmError::UndefinedOpcode(op_lo));
+                match reg {
+                    1 => {
+                        // CMPXCHG8B/CMPXCHG16B — memory only
+                        if md == 3 {
+                            return Err(VmError::UndefinedOpcode(op_lo));
+                        }
+                        let rm_op = self.decode_rm(md, rm, OperandSize::Qword)?;
+                        self.set_operand(0, rm_op);
+                        self.inst.operand_count = 1;
+                        Ok(())
+                    }
+                    6 | 7 => {
+                        // RDRAND (/6) / RDSEED (/7) — register only
+                        if md != 3 {
+                            return Err(VmError::UndefinedOpcode(op_lo));
+                        }
+                        let sz = self.inst.operand_size;
+                        let reg_idx = self.extend_b(rm);
+                        self.set_operand(0, self.gpr_operand(reg_idx, sz));
+                        self.inst.operand_count = 1;
+                        Ok(())
+                    }
+                    _ => Err(VmError::UndefinedOpcode(op_lo)),
                 }
-                let rm_op = self.decode_rm(md, rm, OperandSize::Qword)?;
-                self.set_operand(0, rm_op);
-                self.inst.operand_count = 1;
-                Ok(())
             }
 
             // -- BSWAP r32/r64 --

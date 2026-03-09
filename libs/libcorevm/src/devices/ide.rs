@@ -443,9 +443,14 @@ impl Ide {
 
     fn current_lba(&self) -> u64 {
         if self.drive_head & 0x40 != 0 {
+            // LBA mode
             self.lba28()
         } else {
-            self.lba28()
+            // CHS mode: convert to LBA using standard geometry (16 heads, 63 sectors/track)
+            let cylinder = (self.cylinder_high as u64) << 8 | self.cylinder_low as u64;
+            let head = (self.drive_head & 0x0F) as u64;
+            let sector = self.sector_number as u64;
+            (cylinder * 16 + head) * 63 + sector.saturating_sub(1)
         }
     }
 

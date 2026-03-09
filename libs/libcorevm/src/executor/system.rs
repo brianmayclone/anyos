@@ -486,12 +486,10 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
         // Leaf 7, subleaf 0: structured feature flags (Broadwell baseline)
         (7, 0) => {
             // EAX = max subleaf (0).
-            // EBX: FSGSBASE(0), BMI1(3), AVX2(5), SMEP(7), BMI2(8),
-            //       ERMS(9), INVPCID(10), RDSEED(18), ADX(19), SMAP(20)
+            // EBX: FSGSBASE(0), SMEP(7), ERMS(9), SMAP(20)
+            // NOTE: BMI1(3), BMI2(8), AVX2(5) removed — require VEX prefix decoding
             let ebx: u32 = (1 << 0)   // FSGSBASE
-                | (1 << 3)   // BMI1 (TZCNT, ANDN, etc.)
                 | (1 << 7)   // SMEP
-                | (1 << 8)   // BMI2
                 | (1 << 9)   // ERMS (Enhanced REP MOVSB/STOSB)
                 | (1 << 20); // SMAP
             (0, ebx, 0, 0)

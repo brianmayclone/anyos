@@ -512,7 +512,9 @@ pub extern "C" fn corevm_create_ex(ram_size_mb: u32, vcpu_count: u32) -> u64 {
         tsc_freq: calibrate_tsc_freq(),
         #[cfg(feature = "host_test")]
         timer_tsc_last: 0,
+        #[cfg(feature = "host_test")]
         pit_tsc_accum: 0,
+        #[cfg(feature = "host_test")]
         cmos_tsc_accum: 0,
     });
     let h = Box::into_raw(instance) as u64;

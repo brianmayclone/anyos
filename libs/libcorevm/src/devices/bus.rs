@@ -330,8 +330,13 @@ impl PciBus {
                     }
                     // Normal BAR write: preserve type bits (bit 0 for I/O,
                     // bits 0-3 for MMIO).
-                    let type_bits = dev.config_space[register] & 0x0F;
-                    let new_val = (val & 0xFFFFFFF0) | (type_bits as u32);
+                    let is_io = dev.config_space[register] & 0x01 != 0;
+                    let (type_bits, addr_mask) = if is_io {
+                        (dev.config_space[register] & 0x03, 0xFFFF_FFFCu32)
+                    } else {
+                        (dev.config_space[register] & 0x0F, 0xFFFF_FFF0u32)
+                    };
+                    let new_val = (val & addr_mask) | (type_bits as u32);
                     config_write_u32(&mut dev.config_space, register, new_val);
                     return;
                 }

@@ -115,6 +115,9 @@ impl Cmos {
         data[0x34] = above_16mb as u8;
         data[0x35] = (above_16mb >> 8) as u8;
 
+        // Century register: BCD 0x20 for year 20xx.
+        data[0x32] = 0x20;
+
         Cmos {
             index: 0,
             data,

@@ -559,6 +559,14 @@ fn exec_primary(
 
         // ── CLI ──
         0xFA => {
+            // In protected/long mode: CPL must be <= IOPL, else #GP(0).
+            // In real mode / V86 with IOPL==3: always allowed.
+            if !matches!(cpu.mode, Mode::RealMode) {
+                let iopl = ((cpu.regs.rflags & crate::flags::IOPL_MASK) >> crate::flags::IOPL_SHIFT) as u8;
+                if cpu.regs.cpl > iopl {
+                    return Err(crate::error::VmError::GeneralProtection(0));
+                }
+            }
             cpu.regs.rflags &= !crate::flags::IF;
             cpu.regs.rip += inst.length as u64;
             Ok(())
@@ -566,6 +574,12 @@ fn exec_primary(
 
         // ── STI ──
         0xFB => {
+            if !matches!(cpu.mode, Mode::RealMode) {
+                let iopl = ((cpu.regs.rflags & crate::flags::IOPL_MASK) >> crate::flags::IOPL_SHIFT) as u8;
+                if cpu.regs.cpl > iopl {
+                    return Err(crate::error::VmError::GeneralProtection(0));
+                }
+            }
             cpu.regs.rflags |= crate::flags::IF;
             interrupts.interrupt_shadow = true;
             cpu.regs.rip += inst.length as u64;
@@ -811,8 +825,15 @@ fn exec_secondary(
         // ── XADD ──
         0xC0 | 0xC1 => data::exec_xadd(cpu, inst, memory, mmu),
 
-        // ── CMPXCHG8B/CMPXCHG16B ──
-        0xC7 => data::exec_cmpxchg8b16b(cpu, inst, memory, mmu),
+        // ── Group 9: CMPXCHG8B/16B (/1), RDRAND (/6), RDSEED (/7) ──
+        0xC7 => {
+            let reg = inst.modrm_reg() & 7;
+            match reg {
+                1 => data::exec_cmpxchg8b16b(cpu, inst, memory, mmu),
+                6 | 7 => data::exec_rdrand(cpu, inst),
+                _ => Err(crate::error::VmError::UndefinedOpcode(0xC7)),
+            }
+        }
 
         // ── BSWAP r32/r64 ──
         0xC8..=0xCF => data::exec_bswap(cpu, inst),
@@ -852,11 +873,24 @@ fn exec_group2(
 
 // ── I/O helpers ──
 
+/// Check I/O privilege level: CPL must be <= IOPL in protected/long mode.
+#[inline]
+fn check_iopl(cpu: &Cpu) -> Result<()> {
+    if !matches!(cpu.mode, Mode::RealMode) {
+        let iopl = ((cpu.regs.rflags & crate::flags::IOPL_MASK) >> crate::flags::IOPL_SHIFT) as u8;
+        if cpu.regs.cpl > iopl {
+            return Err(crate::error::VmError::GeneralProtection(0));
+        }
+    }
+    Ok(())
+}
+
 /// IN AL/AX/EAX, imm8 — read from an immediate port number.
 ///
 /// Byte opcodes (0xE4) always access AL (1 byte) regardless of operand size
 /// prefix or CPU mode. Word/dword opcodes (0xE5) respect `operand_size`.
 fn exec_in_imm(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<()> {
+    check_iopl(cpu)?;
     let port = inst.immediate as u16;
     // Even opcodes (0xE4) = byte; odd opcodes (0xE5) = word/dword per mode.
     let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
@@ -875,6 +909,7 @@ fn exec_in_imm(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result
 /// Byte opcodes (0xEC) always access AL (1 byte) regardless of operand size
 /// prefix or CPU mode. Word/dword opcodes (0xED) respect `operand_size`.
 fn exec_in_dx(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<()> {
+    check_iopl(cpu)?;
     let port = cpu.regs.read_gpr16(GprIndex::Rdx as u8);
     // Even opcodes (0xEC) = byte; odd opcodes (0xED) = word/dword per mode.
     let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
@@ -893,6 +928,7 @@ fn exec_in_dx(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<
 /// Byte opcodes (0xE6) always write AL (1 byte) regardless of operand size
 /// prefix or CPU mode. Word/dword opcodes (0xE7) respect `operand_size`.
 fn exec_out_imm(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<()> {
+    check_iopl(cpu)?;
     let port = inst.immediate as u16;
     // Even opcodes (0xE6) = byte; odd opcodes (0xE7) = word/dword per mode.
     let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
@@ -908,6 +944,7 @@ fn exec_out_imm(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Resul
 /// Byte opcodes (0xEE) always write AL (1 byte) regardless of operand size
 /// prefix or CPU mode. Word/dword opcodes (0xEF) respect `operand_size`.
 fn exec_out_dx(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<()> {
+    check_iopl(cpu)?;
     let port = cpu.regs.read_gpr16(GprIndex::Rdx as u8);
     // Even opcodes (0xEE) = byte; odd opcodes (0xEF) = word/dword per mode.
     let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
