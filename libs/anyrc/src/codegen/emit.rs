@@ -67,12 +67,33 @@ impl<'a> CodeEmitter<'a> {
 
     fn store_args_to_stack(&mut self) {
         // Locals: 0 = return place, 1..=arg_count = arguments
-        for i in 0..self.body.arg_count.min(ARG_REGS.len()) {
+        // Each arg may span multiple slots (structs), consuming multiple registers.
+        let mut reg_idx = 0;
+        for i in 0..self.body.arg_count {
             let local = i + 1; // arguments start at local 1
             if local < self.alloc.stack_slots.len() {
                 let slot = self.alloc.stack_slots[local];
-                self.asm.mov_mr(Reg::RBP, slot, ARG_REGS[i]);
+                let n_slots = (self.alloc.local_sizes[local] / 8) as usize;
+                for s in 0..n_slots {
+                    if reg_idx < ARG_REGS.len() {
+                        self.asm.mov_mr(Reg::RBP, slot + (s as i32) * 8, ARG_REGS[reg_idx]);
+                        reg_idx += 1;
+                    }
+                }
             }
+        }
+    }
+
+    fn operand_slot_count(&self, op: &Operand) -> usize {
+        match op {
+            Operand::Copy(place) | Operand::Move(place) => {
+                if place.projections.is_empty() {
+                    (self.alloc.local_sizes[place.local.0] / 8) as usize
+                } else {
+                    1
+                }
+            }
+            Operand::Constant(_) => 1,
         }
     }
 
@@ -295,10 +316,27 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.jmp(self.block_labels[default.0]);
             }
             Terminator::Call { func, args, dest, target } => {
-                // Move args into calling convention registers
-                for (i, arg) in args.iter().enumerate() {
-                    if i < ARG_REGS.len() {
-                        self.load_operand(arg, ARG_REGS[i]);
+                // Move args into calling convention registers.
+                // Struct args span multiple slots and consume multiple registers.
+                let mut reg_idx = 0;
+                for arg in args.iter() {
+                    let n_slots = self.operand_slot_count(arg);
+                    if n_slots > 1 {
+                        // Multi-slot arg (struct): copy each slot into consecutive regs
+                        if let Operand::Copy(place) | Operand::Move(place) = arg {
+                            let src_slot = self.alloc.stack_slots[place.local.0];
+                            for s in 0..n_slots {
+                                if reg_idx < ARG_REGS.len() {
+                                    self.asm.mov_rm(ARG_REGS[reg_idx], Reg::RBP, src_slot + (s as i32) * 8);
+                                    reg_idx += 1;
+                                }
+                            }
+                        }
+                    } else {
+                        if reg_idx < ARG_REGS.len() {
+                            self.load_operand(arg, ARG_REGS[reg_idx]);
+                            reg_idx += 1;
+                        }
                     }
                 }
                 // Extract the function name from the func operand

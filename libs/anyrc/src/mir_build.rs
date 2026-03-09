@@ -91,8 +91,12 @@ impl<'a> MirBuilder<'a> {
 
         // Params: _1 .. _arg_count
         let arg_count = func.params.len();
-        for param in &func.params {
-            let ty = builder.get_expr_ty_from_hir_ty(&param.ty);
+        let param_tys = builder.typeck.fn_sigs.get(&func.def_id)
+            .map(|(params, _)| params.clone())
+            .unwrap_or_default();
+        for (i, param) in func.params.iter().enumerate() {
+            let ty = param_tys.get(i).cloned()
+                .unwrap_or_else(|| builder.get_expr_ty_from_hir_ty(&param.ty));
             let name = match &param.pat {
                 HirPattern::Ident(_, sym, _, _, _) => Some(*sym),
                 _ => None,

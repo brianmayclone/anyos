@@ -86,14 +86,26 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         }
     }
 
-    // 9. Emit based on type
+    // 9. Build struct size map from HIR
+    let struct_sizes = {
+        use crate::hir::HirItemKind;
+        let mut map = std::collections::HashMap::new();
+        for item in &hir.items {
+            if let HirItemKind::Struct(s) = &item.kind {
+                map.insert(s.def_id, s.fields.len());
+            }
+        }
+        map
+    };
+
+    // 10. Emit based on type
     match options.emit {
         EmitKind::Obj => {
-            let obj = codegen_to_object(&mir_bodies, &interner);
+            let obj = codegen_to_object(&mir_bodies, &interner, &struct_sizes);
             Ok(elf::write_object(&obj))
         }
         EmitKind::Exe => {
-            let obj = codegen_to_object(&mir_bodies, &interner);
+            let obj = codegen_to_object(&mir_bodies, &interner, &struct_sizes);
             let obj_bytes = elf::write_object(&obj);
             let exe = link::link(&[obj_bytes], &options.output);
             Ok(exe)
@@ -109,13 +121,13 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     }
 }
 
-fn codegen_to_object(bodies: &[MirBody], interner: &Interner) -> ObjectFile {
+fn codegen_to_object(bodies: &[MirBody], interner: &Interner, struct_sizes: &regalloc::StructSizes) -> ObjectFile {
     let mut text_data = Vec::new();
     let mut symbols = Vec::new();
     let mut relocations = Vec::new();
 
     for body in bodies {
-        let alloc = regalloc::allocate(body);
+        let alloc = regalloc::allocate(body, struct_sizes);
         let (code, relocs) = CodeEmitter::emit_fn(body, &alloc, interner);
 
         let fn_offset = text_data.len() as u64;
