@@ -254,28 +254,6 @@ impl Lapic {
     pub fn accept_vector(&mut self, vector: u8) {
         Self::clear_bit(&mut self.irr, vector);
         Self::set_bit(&mut self.isr, vector);
-        #[cfg(feature = "host_test")]
-        {
-            static ACC_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-            let cnt = ACC_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if cnt < 200 || vector == 0xEC {
-                eprintln!("[lapic] accept #{} vec={:#04x} tpr={:#04x} ppr={:#04x}",
-                    cnt, vector, self.tpr, self.current_ppr());
-            }
-        }
-        #[cfg(feature = "host_test")]
-        if vector == 0xFD {
-            lapic_trace(format_args!(
-                "accept vec={:02X} tpr={:02X} ppr={:02X} isr6={:08X} isr7={:08X} irr6={:08X} irr7={:08X}",
-                vector,
-                self.tpr,
-                self.current_ppr(),
-                self.isr[6],
-                self.isr[7],
-                self.irr[6],
-                self.irr[7],
-            ));
-        }
     }
 
     pub fn eoi(&mut self) -> Option<u8> {
