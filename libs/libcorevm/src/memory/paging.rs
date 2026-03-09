@@ -55,13 +55,14 @@ pub fn walk_page_tables(
     mem: &dyn MemoryBus,
     ram: *mut u8,
     ram_size: usize,
+    rflags_ac: bool,
 ) -> Result<u64> {
     if mmu.long_mode {
-        walk_4level(linear, cr3, access, cpl, mmu, mem, ram, ram_size)
+        walk_4level(linear, cr3, access, cpl, mmu, mem, ram, ram_size, rflags_ac)
     } else if mmu.pae {
-        walk_pae(linear, cr3, access, cpl, mmu, mem, ram, ram_size)
+        walk_pae(linear, cr3, access, cpl, mmu, mem, ram, ram_size, rflags_ac)
     } else {
-        walk_2level(linear, cr3, access, cpl, mmu, mem, ram, ram_size)
+        walk_2level(linear, cr3, access, cpl, mmu, mem, ram, ram_size, rflags_ac)
     }
 }
 
@@ -134,54 +135,69 @@ unsafe fn raw_or_u64(ram: *mut u8, ram_size: usize, addr: u64, bits: u64) {
 
 // ── Permission check ──
 
-/// Check a page table entry for access violations.
-///
-/// Generates `VmError::PageFault` with an appropriate error code when the
-/// entry is not present or when the requested access is forbidden.
-///
-/// # Parameters
-///
-/// - `pte`: The page table entry to check.
-/// - `access`: Read, Write, or Execute.
-/// - `cpl`: Current privilege level (0 = kernel, 3 = user).
-/// - `linear`: The faulting linear address (for the #PF record).
-/// - `wp`: Whether CR0.WP is set (supervisor write-protect).
-/// - `nxe`: Whether EFER.NXE is set (no-execute supported).
-fn check_pte(
-    pte: u64,
-    access: AccessType,
-    cpl: u8,
-    linear: u64,
-    wp: bool,
-    nxe: bool,
-) -> Result<()> {
-    let present = (pte & PTE_P) != 0;
-    if !present {
+/// Check that a paging-structure entry is present. For intermediate levels
+/// only the Present bit needs to be verified; permission checks (U/S, R/W,
+/// NX, SMAP, SMEP) must use the *combined* flags across all levels and are
+/// deferred to [`check_final_permissions`].
+#[inline]
+fn check_present(pte: u64, access: AccessType, cpl: u8, linear: u64) -> Result<()> {
+    if (pte & PTE_P) == 0 {
         return Err(VmError::PageFault {
             address: linear,
             error_code: access.to_pf_error_code(cpl, false),
         });
     }
+    Ok(())
+}
 
+/// Permission check on the *effective* (combined) flags of the entire walk.
+///
+/// Intel SDM Vol. 3A §4.6: the effective U/S is the AND of U/S bits across
+/// all levels; effective R/W is the AND of R/W bits; effective NX is the OR
+/// of NX bits. SMEP/SMAP/WP operate on these effective permissions.
+fn check_final_permissions(
+    effective_us: bool,    // true = user-accessible (all levels had U/S=1)
+    effective_rw: bool,    // true = writable (all levels had R/W=1)
+    effective_nx: bool,    // true = NX (any level had NX=1)
+    access: AccessType,
+    cpl: u8,
+    linear: u64,
+    mmu: &Mmu,
+    rflags_ac: bool,
+) -> Result<()> {
     let is_user = cpl == 3;
-    let is_supervisor_page = (pte & PTE_US) == 0;
-    let is_read_only = (pte & PTE_RW) == 0;
 
     // User access to supervisor page.
-    if is_user && is_supervisor_page {
+    if is_user && !effective_us {
         return Err(VmError::PageFault {
             address: linear,
             error_code: access.to_pf_error_code(cpl, true),
         });
     }
 
+    // SMEP: supervisor cannot execute from user-accessible pages.
+    if !is_user && effective_us && mmu.smep && matches!(access, AccessType::Execute) {
+        return Err(VmError::PageFault {
+            address: linear,
+            error_code: access.to_pf_error_code(cpl, true),
+        });
+    }
+
+    // SMAP: supervisor cannot read/write user-accessible pages unless EFLAGS.AC=1.
+    if !is_user && effective_us && mmu.smap && !rflags_ac {
+        if matches!(access, AccessType::Read | AccessType::Write) {
+            return Err(VmError::PageFault {
+                address: linear,
+                error_code: access.to_pf_error_code(cpl, true),
+            });
+        }
+    }
+
     // Write access to read-only page.
     match access {
         AccessType::Write => {
-            if is_read_only {
-                // In supervisor mode, writes to RO pages fault only if CR0.WP=1.
-                // In user mode, writes to RO pages always fault.
-                if is_user || wp {
+            if !effective_rw {
+                if is_user || mmu.wp {
                     return Err(VmError::PageFault {
                         address: linear,
                         error_code: access.to_pf_error_code(cpl, true),
@@ -190,9 +206,7 @@ fn check_pte(
             }
         }
         AccessType::Execute => {
-            // NX check: if EFER.NXE is set and the NX bit is set, execution is
-            // forbidden.
-            if nxe && (pte & PTE_NX) != 0 {
+            if mmu.nxe && effective_nx {
                 return Err(VmError::PageFault {
                     address: linear,
                     error_code: access.to_pf_error_code(cpl, true),
@@ -205,6 +219,39 @@ fn check_pte(
     }
 
     Ok(())
+}
+
+/// Reserved bit mask for 64-bit PTEs (PAE/4-level): bits [51:MAXPHYADDR] are reserved.
+/// For 40-bit physical address (Broadwell), bits [51:40] are reserved.
+/// We use a conservative mask that checks bits [62:52] which are always reserved
+/// in non-NX entries (bit 63 is NX, handled separately).
+const RSVD_MASK_64: u64 = 0x7FF0_0000_0000_0000;
+
+/// Check a 64-bit PTE for reserved bit violations.
+/// Returns true if reserved bits are set (fault should use RSVD error code bit).
+#[inline]
+fn has_reserved_bits_64(pte: u64, is_large_page: bool) -> bool {
+    // Bits [62:52] are always reserved in valid page table entries.
+    // For large pages, additional bits in the address field may be reserved.
+    if (pte & RSVD_MASK_64) != 0 {
+        return true;
+    }
+    if is_large_page {
+        // For 2MB pages: bits [20:13] of the PDE are reserved (must be 0).
+        if (pte & 0x001F_E000) != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Generate a #PF with the RSVD bit (bit 3) set in the error code.
+#[inline]
+fn pf_rsvd(access: AccessType, cpl: u8, linear: u64) -> VmError {
+    VmError::PageFault {
+        address: linear,
+        error_code: access.to_pf_error_code(cpl, true) | (1 << 3), // RSVD bit
+    }
 }
 
 // ── 32-bit (2-level) paging ──
@@ -223,6 +270,7 @@ fn walk_2level(
     mem: &dyn MemoryBus,
     ram: *mut u8,
     ram_size: usize,
+    rflags_ac: bool,
 ) -> Result<u64> {
     let linear32 = linear as u32;
     let is_write = matches!(access, AccessType::Write);
@@ -234,10 +282,15 @@ fn walk_2level(
     let pde_raw = mem.read_u32(pde_addr)?;
     let pde = pde_raw as u64;
 
-    check_pte(pde, access, cpl, linear, mmu.wp, mmu.nxe)?;
+    check_present(pde, access, cpl, linear)?;
 
     // PSE 4 MiB huge page: PDE.PS=1 and CR4.PSE=1.
     if mmu.pse && (pde & PTE_PS) != 0 {
+        // For huge pages the PDE is the final level — check permissions on it alone.
+        let eff_us = (pde & PTE_US) != 0;
+        let eff_rw = (pde & PTE_RW) != 0;
+        // 32-bit non-PAE has no NX bit.
+        check_final_permissions(eff_us, eff_rw, false, access, cpl, linear, mmu, rflags_ac)?;
         unsafe {
             if is_write {
                 set_accessed_dirty_32(ram, ram_size, pde_addr, pde_raw);
@@ -260,7 +313,11 @@ fn walk_2level(
     let pte_raw = mem.read_u32(pte_addr)?;
     let pte = pte_raw as u64;
 
-    check_pte(pte, access, cpl, linear, mmu.wp, mmu.nxe)?;
+    // Combine effective permissions from PDE and PTE.
+    let eff_us = (pde & PTE_US) != 0 && (pte & PTE_US) != 0;
+    let eff_rw = (pde & PTE_RW) != 0 && (pte & PTE_RW) != 0;
+    check_present(pte, access, cpl, linear)?;
+    check_final_permissions(eff_us, eff_rw, false, access, cpl, linear, mmu, rflags_ac)?;
 
     // Set Accessed (+ Dirty for writes) on the final PTE.
     unsafe {
@@ -294,6 +351,7 @@ fn walk_pae(
     mem: &dyn MemoryBus,
     ram: *mut u8,
     ram_size: usize,
+    rflags_ac: bool,
 ) -> Result<u64> {
     let linear32 = linear as u32;
     let is_write = matches!(access, AccessType::Write);
@@ -311,6 +369,15 @@ fn walk_pae(
             error_code: access.to_pf_error_code(cpl, false),
         });
     }
+    // PAE PDPTE reserved bit check (Intel SDM Vol. 3A Table 4-7):
+    // bits [63], [8:5], [2:1] are reserved. Only P(0), PWT(3), PCD(4),
+    // and base address [51:12] are valid.
+    const PAE_PDPTE_RSVD: u64 = (1u64 << 63)    // NX not valid in PDPTE
+        | (0xF << 5)                              // bits [8:5]
+        | (0x6);                                   // bits [2:1]
+    if (pdpte & PAE_PDPTE_RSVD) != 0 || has_reserved_bits_64(pdpte, false) {
+        return Err(pf_rsvd(access, cpl, linear));
+    }
     // PAE PDPTEs do not have Accessed/Dirty bits per Intel spec.
 
     // PD index: bits [29:21] (9 bits -> 512 entries).
@@ -319,10 +386,16 @@ fn walk_pae(
     let pde_addr = pd_base + pd_index * 8;
     let pde = mem.read_u64(pde_addr)?;
 
-    check_pte(pde, access, cpl, linear, mmu.wp, mmu.nxe)?;
+    check_present(pde, access, cpl, linear)?;
 
-    // 2 MiB huge page: PDE.PS=1.
+    // 2 MiB huge page: PDE.PS=1 — PDE is the final level.
     if (pde & PTE_PS) != 0 {
+        check_final_permissions(
+            (pde & PTE_US) != 0,
+            (pde & PTE_RW) != 0,
+            (pde & PTE_NX) != 0,
+            access, cpl, linear, mmu, rflags_ac,
+        )?;
         unsafe {
             if is_write {
                 set_accessed_dirty_64(ram, ram_size, pde_addr, pde);
@@ -344,7 +417,13 @@ fn walk_pae(
     let pte_addr = pt_base + pt_index * 8;
     let pte = mem.read_u64(pte_addr)?;
 
-    check_pte(pte, access, cpl, linear, mmu.wp, mmu.nxe)?;
+    check_present(pte, access, cpl, linear)?;
+
+    // Combined permissions: AND for U/S and R/W, OR for NX (Intel SDM §4.6).
+    let eff_us = (pde & PTE_US) != 0 && (pte & PTE_US) != 0;
+    let eff_rw = (pde & PTE_RW) != 0 && (pte & PTE_RW) != 0;
+    let eff_nx = (pde & PTE_NX) != 0 || (pte & PTE_NX) != 0;
+    check_final_permissions(eff_us, eff_rw, eff_nx, access, cpl, linear, mmu, rflags_ac)?;
 
     // Set Accessed (+ Dirty for writes) on final PTE.
     unsafe {
@@ -385,6 +464,7 @@ fn walk_4level(
     mem: &dyn MemoryBus,
     ram: *mut u8,
     ram_size: usize,
+    rflags_ac: bool,
 ) -> Result<u64> {
     let is_write = matches!(access, AccessType::Write);
 
@@ -394,7 +474,11 @@ fn walk_4level(
     let pml4e_addr = pml4_base + pml4_index * 8;
     let pml4e = mem.read_u64(pml4e_addr)?;
 
-    check_pte(pml4e, access, cpl, linear, mmu.wp, mmu.nxe)?;
+    check_present(pml4e, access, cpl, linear)?;
+    // PML4E reserved bit check (no PS allowed at this level).
+    if has_reserved_bits_64(pml4e, false) || (pml4e & PTE_PS) != 0 {
+        return Err(pf_rsvd(access, cpl, linear));
+    }
     unsafe { set_accessed_64(ram, ram_size, pml4e_addr, pml4e); }
 
     // ── PDPT ──
@@ -403,10 +487,17 @@ fn walk_4level(
     let pdpte_addr = pdpt_base + pdpt_index * 8;
     let pdpte = mem.read_u64(pdpte_addr)?;
 
-    check_pte(pdpte, access, cpl, linear, mmu.wp, mmu.nxe)?;
+    check_present(pdpte, access, cpl, linear)?;
 
-    // 1 GiB huge page: PDPTE.PS=1.
+    // 1 GiB huge page: PDPTE.PS=1 — final level; combine PML4E + PDPTE.
     if (pdpte & PTE_PS) != 0 {
+        if has_reserved_bits_64(pdpte, false) || (pdpte & 0x3FFE_0000) != 0 {
+            return Err(pf_rsvd(access, cpl, linear));
+        }
+        let eff_us = (pml4e & PTE_US) != 0 && (pdpte & PTE_US) != 0;
+        let eff_rw = (pml4e & PTE_RW) != 0 && (pdpte & PTE_RW) != 0;
+        let eff_nx = (pml4e & PTE_NX) != 0 || (pdpte & PTE_NX) != 0;
+        check_final_permissions(eff_us, eff_rw, eff_nx, access, cpl, linear, mmu, rflags_ac)?;
         unsafe {
             if is_write {
                 set_accessed_dirty_64(ram, ram_size, pdpte_addr, pdpte);
@@ -419,6 +510,9 @@ fn walk_4level(
         return Ok(page_base | page_offset);
     }
 
+    if has_reserved_bits_64(pdpte, false) {
+        return Err(pf_rsvd(access, cpl, linear));
+    }
     unsafe { set_accessed_64(ram, ram_size, pdpte_addr, pdpte); }
 
     // ── PD ──
@@ -427,10 +521,17 @@ fn walk_4level(
     let pde_addr = pd_base + pd_index * 8;
     let pde = mem.read_u64(pde_addr)?;
 
-    check_pte(pde, access, cpl, linear, mmu.wp, mmu.nxe)?;
+    check_present(pde, access, cpl, linear)?;
 
-    // 2 MiB huge page: PDE.PS=1.
+    // 2 MiB huge page: PDE.PS=1 — final level; combine PML4E + PDPTE + PDE.
     if (pde & PTE_PS) != 0 {
+        if has_reserved_bits_64(pde, true) {
+            return Err(pf_rsvd(access, cpl, linear));
+        }
+        let eff_us = (pml4e & PTE_US) != 0 && (pdpte & PTE_US) != 0 && (pde & PTE_US) != 0;
+        let eff_rw = (pml4e & PTE_RW) != 0 && (pdpte & PTE_RW) != 0 && (pde & PTE_RW) != 0;
+        let eff_nx = (pml4e & PTE_NX) != 0 || (pdpte & PTE_NX) != 0 || (pde & PTE_NX) != 0;
+        check_final_permissions(eff_us, eff_rw, eff_nx, access, cpl, linear, mmu, rflags_ac)?;
         unsafe {
             if is_write {
                 set_accessed_dirty_64(ram, ram_size, pde_addr, pde);
@@ -443,6 +544,9 @@ fn walk_4level(
         return Ok(page_base | page_offset);
     }
 
+    if has_reserved_bits_64(pde, false) {
+        return Err(pf_rsvd(access, cpl, linear));
+    }
     unsafe { set_accessed_64(ram, ram_size, pde_addr, pde); }
 
     // ── PT ──
@@ -451,7 +555,19 @@ fn walk_4level(
     let pte_addr = pt_base + pt_index * 8;
     let pte = mem.read_u64(pte_addr)?;
 
-    check_pte(pte, access, cpl, linear, mmu.wp, mmu.nxe)?;
+    check_present(pte, access, cpl, linear)?;
+    if has_reserved_bits_64(pte, false) {
+        return Err(pf_rsvd(access, cpl, linear));
+    }
+
+    // Combined permissions across all 4 levels.
+    let eff_us = (pml4e & PTE_US) != 0 && (pdpte & PTE_US) != 0
+        && (pde & PTE_US) != 0 && (pte & PTE_US) != 0;
+    let eff_rw = (pml4e & PTE_RW) != 0 && (pdpte & PTE_RW) != 0
+        && (pde & PTE_RW) != 0 && (pte & PTE_RW) != 0;
+    let eff_nx = (pml4e & PTE_NX) != 0 || (pdpte & PTE_NX) != 0
+        || (pde & PTE_NX) != 0 || (pte & PTE_NX) != 0;
+    check_final_permissions(eff_us, eff_rw, eff_nx, access, cpl, linear, mmu, rflags_ac)?;
 
     // Set Accessed (+ Dirty for writes) on final PTE.
     unsafe {

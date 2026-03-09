@@ -359,6 +359,35 @@ pub fn exec_cmpxchg8b16b(
     Ok(())
 }
 
+/// RDRAND / RDSEED: store hardware random number in register.
+///
+/// CF=1 on success (always for us), OF=SF=ZF=AF=PF=0.
+pub fn exec_rdrand(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
+    // LCG PRNG using instruction count as evolving state — not cryptographically
+    // secure, but sufficient for guest OS entropy needs in emulation.
+    // Mixing RIP + instruction_count ensures different values on repeated calls.
+    let seed = cpu.instruction_count
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(cpu.regs.rip)
+        .wrapping_add(1442695040888963407);
+    let rand_val = seed;
+
+    // RDRAND/RDSEED destination is always a GPR register (enforced by decoder)
+    match &inst.operands[0] {
+        Operand::Register(RegOperand::Gpr(idx)) => {
+            cpu.regs.write_gpr(*idx, inst.operand_size, inst.prefix.has_rex(), rand_val);
+        }
+        _ => return Err(VmError::UndefinedOpcode(0xC7)),
+    }
+
+    // CF=1 (success), all other arithmetic flags cleared
+    cpu.regs.rflags &= !flags::ARITH_MASK;
+    cpu.regs.rflags |= flags::CF;
+
+    cpu.regs.rip += inst.length as u64;
+    Ok(())
+}
+
 /// XADD: exchange and add.
 ///
 /// Swaps dst and src, then stores (original_dst + original_src) in dst.

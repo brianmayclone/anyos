@@ -255,6 +255,15 @@ impl Lapic {
         Self::clear_bit(&mut self.irr, vector);
         Self::set_bit(&mut self.isr, vector);
         #[cfg(feature = "host_test")]
+        {
+            static ACC_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = ACC_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 200 || vector == 0xEC {
+                eprintln!("[lapic] accept #{} vec={:#04x} tpr={:#04x} ppr={:#04x}",
+                    cnt, vector, self.tpr, self.current_ppr());
+            }
+        }
+        #[cfg(feature = "host_test")]
         if vector == 0xFD {
             lapic_trace(format_args!(
                 "accept vec={:02X} tpr={:02X} ppr={:02X} isr6={:08X} isr7={:08X} irr6={:08X} irr7={:08X}",
@@ -314,6 +323,24 @@ impl Lapic {
         Some(vector)
     }
 
+    pub fn diag_irr(&self, idx: usize) -> u32 {
+        self.irr.get(idx).copied().unwrap_or(0)
+    }
+
+    pub fn diag_isr(&self, idx: usize) -> u32 {
+        self.isr.get(idx).copied().unwrap_or(0)
+    }
+
+    pub fn diag_tpr(&self) -> u32 {
+        self.tpr
+    }
+    pub fn diag_cur_count(&self) -> u32 {
+        self.timer_cur_count
+    }
+    pub fn diag_init_count(&self) -> u32 {
+        self.timer_init_count
+    }
+
     pub fn diag_state(&self) -> (u32, u32, u32, u32, u32) {
         (
             self.svr,
@@ -360,6 +387,17 @@ impl Lapic {
             return;
         }
 
+        #[cfg(feature = "host_test")]
+        {
+            static FIRE_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = FIRE_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 5 {
+                eprintln!("[lapic] elapse: TIMER EXPIRED! dec={} cur_was={} init={} periodic={} masked={}",
+                    dec, self.timer_cur_count, self.timer_init_count,
+                    (self.lvt_timer & (1 << 17)) != 0, masked);
+            }
+        }
+
         let periodic = (self.lvt_timer & (1 << 17)) != 0;
         if periodic && self.timer_init_count != 0 {
             let overshoot = dec.saturating_sub(self.timer_cur_count);
@@ -378,7 +416,31 @@ impl Lapic {
         }
     }
 
-    fn sync_timer_from_tsc(&mut self) {
+    /// Check and consume a pending timer IRQ flag.
+    pub fn take_timer_irq(&mut self) -> bool {
+        if self.timer_irq_pending {
+            self.timer_irq_pending = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Return the vector configured in the LVT timer entry.
+    pub fn timer_vector(&self) -> u8 {
+        (self.lvt_timer & 0xFF) as u8
+    }
+
+    pub fn sync_timer_from_tsc(&mut self) {
+        #[cfg(feature = "host_test")]
+        {
+            static SYNC_CALL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+            let n = SYNC_CALL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if n == 100_000 || n == 1_000_000 || n == 10_000_000 {
+                eprintln!("[lapic] sync_timer_from_tsc called {}x: freq={} cur={} init={}",
+                    n, self.host_tsc_freq, self.timer_cur_count, self.timer_init_count);
+            }
+        }
         if self.host_tsc_freq == 0 || self.timer_cur_count == 0 {
             return;
         }
@@ -404,6 +466,18 @@ impl Lapic {
         let consumed_tsc =
             (bus_ticks as u128 * self.host_tsc_freq as u128 / APIC_BUS_FREQ) as u64;
         self.timer_start_tsc = self.timer_start_tsc.wrapping_add(consumed_tsc);
+
+        #[cfg(feature = "host_test")]
+        {
+            static SYNC_DBG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = SYNC_DBG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt % 500_000 == 0 {
+                eprintln!("[lapic] sync#{}: elapsed_tsc={} bus_ticks={} cur={} init={} sw_en={}",
+                    cnt, elapsed_tsc, bus_ticks, self.timer_cur_count, self.timer_init_count,
+                    self.software_enabled() as u8);
+            }
+        }
+
         self.elapse_bus_ticks(bus_ticks);
     }
 
@@ -451,8 +525,31 @@ impl Lapic {
 
     /// Read the raw 32-bit value of a register by its 16-byte-aligned offset.
     fn read_register(&mut self, reg_base: u32) -> u32 {
+        let val = self.read_register_inner(reg_base);
+        #[cfg(feature = "host_test")]
+        {
+            static RLOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = RLOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 200 {
+                eprintln!("[lapic] read  reg={:#05x} val={:#010x}", reg_base, val);
+            }
+        }
+        val
+    }
+
+    fn read_register_inner(&mut self, reg_base: u32) -> u32 {
         match reg_base {
-            0x020 => self.id,
+            0x020 => {
+                #[cfg(feature = "host_test")]
+                {
+                    static RID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    let n = RID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if n < 10 {
+                        eprintln!("[lapic] read-0x020 #{}: id={:#010x}", n, self.id);
+                    }
+                }
+                self.id
+            }
             0x030 => LAPIC_VERSION,
             0x080 => self.tpr,
             0x090 => 0, // APR
@@ -469,7 +566,17 @@ impl Lapic {
             0x280 => self.esr,
             0x300 => self.icr_lo,
             0x310 => self.icr_hi,
-            0x320 => self.lvt_timer,
+            0x320 => {
+                #[cfg(feature = "host_test")]
+                {
+                    static RLVT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    let n = RLVT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if n < 20 {
+                        eprintln!("[lapic] read-0x320 #{}: lvt_timer={:#010x}", n, self.lvt_timer);
+                    }
+                }
+                self.lvt_timer
+            }
             0x330 => self.lvt_thermal,
             0x340 => self.lvt_perf,
             0x350 => self.lvt_lint0,
@@ -478,6 +585,15 @@ impl Lapic {
             0x380 => self.timer_init_count,
             0x390 => {
                 self.sync_timer_from_tsc();
+                #[cfg(feature = "host_test")]
+                {
+                    static RCNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    let n = RCNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if n < 10 || (n < 100 && n % 10 == 0) || n % 1000 == 0 {
+                        eprintln!("[lapic] read-0x390 #{}: cur_count={} init={} lvt={:#010x}",
+                            n, self.timer_cur_count, self.timer_init_count, self.lvt_timer);
+                    }
+                }
                 self.timer_cur_count
             }
             0x3E0 => self.timer_divide,
@@ -487,6 +603,17 @@ impl Lapic {
 
     /// Write a 32-bit value to a register by its 16-byte-aligned offset.
     fn write_register(&mut self, reg_base: u32, v: u32) {
+        #[cfg(feature = "host_test")]
+        {
+            static WLOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = WLOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            // Always log timer-related registers; budget other writes.
+            if reg_base == 0x320 || reg_base == 0x380 || reg_base == 0x3E0 || reg_base == 0x020 {
+                eprintln!("[lapic] write reg={:#05x} val={:#010x} (always-logged)", reg_base, v);
+            } else if cnt < 200 {
+                eprintln!("[lapic] write reg={:#05x} val={:#010x}", reg_base, v);
+            }
+        }
         match reg_base {
             // LAPIC ID: bits 31:24 are writable.
             0x020 => self.id = v & 0xFF00_0000,
@@ -499,7 +626,17 @@ impl Lapic {
             }
             0x0D0 => self.ldr = v,
             0x0E0 => self.dfr = v,
-            0x0F0 => self.svr = v,
+            0x0F0 => {
+                #[cfg(feature = "host_test")]
+                {
+                    static SVR_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    let cnt = SVR_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if cnt < 10 {
+                        eprintln!("[lapic] SVR write: {:#x} -> {:#x} (enabled={})", self.svr, v, (v >> 8) & 1);
+                    }
+                }
+                self.svr = v;
+            }
             0x280 => self.esr = 0, // Writing clears ESR
             0x300 => {
                 self.icr_lo = v & !0x1000; // clear delivery status bit
@@ -508,6 +645,15 @@ impl Lapic {
                 let shorthand = ((self.icr_lo >> 18) & 0x3) as u8;
                 let dest_apic = ((self.icr_hi >> 24) & 0xFF) as u8;
                 let self_apic = ((self.id >> 24) & 0xFF) as u8;
+                #[cfg(feature = "host_test")]
+                {
+                    static ICR_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    let n = ICR_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if n < 50 {
+                        eprintln!("[lapic] ICR #{}: lo={:#010x} hi={:#010x} dm={} vec={:#04x} dest={} short={}",
+                            n, v, self.icr_hi, delivery_mode, vector, dest_apic, shorthand);
+                    }
+                }
                 let hits_self = match shorthand {
                     0 => dest_apic == self_apic,
                     1 | 2 => true,  // self / all including self
@@ -521,8 +667,28 @@ impl Lapic {
             0x310 => self.icr_hi = v,
             0x320 => {
                 self.lvt_timer = v;
+                // DIAGNOSTIC: if timer has been calibrated (init count written at
+                // least twice), force-clear the mask bit.
                 #[cfg(feature = "host_test")]
-                lapic_trace(format_args!("timer-lvt {:08X}", self.lvt_timer));
+                {
+                    static LVT_INIT_WRITES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    // Count how many 0x380 writes have occurred via external counter
+                    // The init count handler increments TINIT_CNT.
+                    // If calibration done (init_count != 0xFFFFFFFF and != 0), force unmask
+                    if self.timer_init_count != 0 && self.timer_init_count != 0xFFFFFFFF
+                        && (v & (1 << 16)) != 0
+                    {
+                        let n = LVT_INIT_WRITES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        if n < 5 {
+                            eprintln!("[lapic] DIAG: preventing re-mask of timer LVT: {:#010x} -> {:#010x}",
+                                v, v & !(1 << 16));
+                        }
+                        self.lvt_timer = v & !(1 << 16);
+                    }
+                    lapic_trace(format_args!("timer-lvt {:08X}", self.lvt_timer));
+                }
+                #[cfg(not(feature = "host_test"))]
+                { let _ = v; }
             }
             0x330 => self.lvt_thermal = v,
             0x340 => self.lvt_perf = v,
@@ -535,13 +701,21 @@ impl Lapic {
                 self.timer_credit = 0;
                 self.timer_irq_pending = false;
                 #[cfg(feature = "host_test")]
-                lapic_trace(format_args!(
-                    "timer-init init={:08X} lvt={:08X} div={:08X} enabled={}",
-                    self.timer_init_count,
-                    self.lvt_timer,
-                    self.timer_divide,
-                    self.software_enabled() as u8
-                ));
+                {
+                    static TINIT_CNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    let cnt = TINIT_CNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if cnt < 30 || cnt % 100 == 0 {
+                        eprintln!("[lapic] timer-write-380 #{}: v={:#010x} lvt={:08X}",
+                            cnt, v, self.lvt_timer);
+                    }
+                    // DIAGNOSTIC: force-unmask timer after second init count write
+                    // (first is 0xFFFFFFFF calibration, second is operational)
+                    if cnt == 1 && (self.lvt_timer & (1 << 16)) != 0 {
+                        eprintln!("[lapic] DIAG: force-unmasking timer LVT {:#010x} -> {:#010x}",
+                            self.lvt_timer, self.lvt_timer & !(1 << 16));
+                        self.lvt_timer &= !(1 << 16);
+                    }
+                }
                 // Record TSC at timer start for realtime current_count reads.
                 if v != 0 {
                     #[cfg(feature = "host_test")]

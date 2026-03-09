@@ -96,8 +96,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(feature = "host_test")]
 static IRQ_TRACE_BUDGET: AtomicU32 = AtomicU32::new(96);
-#[cfg(feature = "host_test")]
-static LAPIC_RUN_TRACE_BUDGET: AtomicU32 = AtomicU32::new(32);
 
 // ── VmEngine (unchanged convenience wrapper) ──
 
@@ -317,6 +315,7 @@ struct VmInstance {
     ide_ptr: *mut devices::ide::Ide,
     fw_cfg_ptr: *mut devices::fw_cfg::FwCfg,
     debug_port_ptr: *mut devices::debug_port::DebugPort,
+    ahci_ptr: *mut devices::ahci::Ahci,
     /// True once an external runner starts driving PIT ticks explicitly.
     pit_is_externally_clocked: bool,
     /// TSC frequency in Hz (calibrated at startup, host_test only).
@@ -353,6 +352,7 @@ impl Drop for VmInstance {
             if !self.ide_ptr.is_null() { let _ = Box::from_raw(self.ide_ptr); }
             if !self.fw_cfg_ptr.is_null() { let _ = Box::from_raw(self.fw_cfg_ptr); }
             if !self.debug_port_ptr.is_null() { let _ = Box::from_raw(self.debug_port_ptr); }
+            if !self.ahci_ptr.is_null() { let _ = Box::from_raw(self.ahci_ptr); }
         }
     }
 }
@@ -430,6 +430,28 @@ pub(crate) fn poll_external_irqs(
     let ctx = unsafe { EXTERNAL_IRQ_CONTEXT };
     drain_lapic_eois_raw(ctx.lapic_ptr, ctx.ioapic_ptr);
 
+    // Advance the LAPIC timer inline so that it fires even when the guest
+    // programs and reads it within a single run slice.  We use TSC-based
+    // sync so each call is cheap (one RDTSC + compare).
+    if !ctx.lapic_ptr.is_null() {
+        let lapic = unsafe { &mut *ctx.lapic_ptr };
+        lapic.sync_timer_from_tsc();
+        if lapic.take_timer_irq() {
+            let vec = lapic.timer_vector();
+            lapic.raise_vector(vec, false);
+            #[cfg(feature = "host_test")]
+            {
+                static POLL_TFIRE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                let cnt = POLL_TFIRE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                if cnt < 20 {
+                    let if_set = (rflags & flags::IF) != 0;
+                    eprintln!("[poll] timer-fire vec={:#04x} IF={}",
+                        vec, if_set as u8);
+                }
+            }
+        }
+    }
+
     if interrupts.interrupt_shadow || (rflags & flags::IF) == 0 {
         return;
     }
@@ -495,12 +517,15 @@ pub extern "C" fn corevm_create_ex(ram_size_mb: u32, vcpu_count: u32) -> u64 {
         ide_ptr: ptr::null_mut(),
         fw_cfg_ptr: ptr::null_mut(),
         debug_port_ptr: ptr::null_mut(),
+        ahci_ptr: ptr::null_mut(),
         pit_is_externally_clocked: false,
         #[cfg(feature = "host_test")]
         tsc_freq: calibrate_tsc_freq(),
         #[cfg(feature = "host_test")]
         timer_tsc_last: 0,
+        #[cfg(feature = "host_test")]
         pit_tsc_accum: 0,
+        #[cfg(feature = "host_test")]
         cmos_tsc_accum: 0,
     });
     let h = Box::into_raw(instance) as u64;
@@ -802,6 +827,14 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
             slice = 1024;
         }
 
+        // Deliver IDE IRQ 14 before running instructions so the guest sees it.
+        if !vm.ide_ptr.is_null() {
+            let ide = unsafe { &mut *vm.ide_ptr };
+            if ide.irq_raised() {
+                inject_irq_line(vm, 14);
+            }
+        }
+
         let before_ic = vm.engine.instruction_count();
         exit = vm.engine.run(slice);
         let after_ic = vm.engine.instruction_count();
@@ -813,34 +846,24 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
         {
         }
 
-
         // Advance LAPIC timer.
-        if ran > 0 && !vm.lapic_ptr.is_null() {
+        if !vm.lapic_ptr.is_null() {
             let lapic = unsafe { &mut *vm.lapic_ptr };
             #[cfg(feature = "host_test")]
             {
-                // In interpreter mode, tie LAPIC time to emulated progress.
-                // This keeps timer IRQ generation and current_count consistent.
-                let bus_ticks = ran.saturating_mul(4);
-                if LAPIC_RUN_TRACE_BUDGET
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1))
-                    .is_ok()
-                {
-                    let (_svr, lvt_timer, init_count, cur_count, _div) = lapic.diag_state();
-                    if init_count != 0 || (lvt_timer & 0xFF) == 0xFD {
-                        eprintln!(
-                            "[lapic-run] ic={} ran={} bus_ticks={} lvt={:08X} init={:08X} cur={:08X}",
-                            vm.engine.instruction_count(),
-                            ran,
-                            bus_ticks,
-                            lvt_timer,
-                            init_count,
-                            cur_count
-                        );
+                // Use wall-clock TSC for LAPIC timer so it stays consistent
+                // with what the guest reads from current_count (also TSC-based).
+                // Must run even when ran==0 (e.g. HLT) so timer fires on wall-clock.
+                lapic.sync_timer_from_tsc();
+                if lapic.take_timer_irq() {
+                    let vec = lapic.timer_vector();
+                    static TFIRE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    let cnt = TFIRE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if cnt < 10 {
+                        eprintln!("[lapic] timer-fire vec={:#04x} cur={} init={} ic={}",
+                            vec, lapic.diag_cur_count(), lapic.diag_init_count(), vm.engine.instruction_count());
                     }
-                }
-                if let Some(vector) = lapic.advance(bus_ticks) {
-                    lapic.raise_vector(vector, false);
+                    lapic.raise_vector(vec, false);
                     route_deliverable_lapic_irq(vm);
                 }
             }
@@ -1371,6 +1394,283 @@ pub extern "C" fn corevm_write_phys_u32(handle: u64, addr: u64, val: u32) {
 // Devices — Setup
 // ════════════════════════════════════════════════════════════════════════
 
+/// Generate minimal ACPI tables (RSDP, RSDT, FADT, DSDT, MADT) and the
+/// `etc/table-loader` linker script so SeaBIOS can expose them to the guest.
+fn generate_acpi_tables(fw_cfg: &mut devices::fw_cfg::FwCfg) {
+    use alloc::vec;
+
+    // Helper: compute ACPI checksum (sum of all bytes must be 0 mod 256).
+    fn acpi_checksum(data: &[u8]) -> u8 {
+        let sum: u8 = data.iter().fold(0u8, |a, &b| a.wrapping_add(b));
+        (!sum).wrapping_add(1)
+    }
+
+    // --- DSDT (minimal AML) ---
+    // Header (36 bytes) + single Noop opcode (0xA3) to avoid parse_termlist overrun.
+    let dsdt_len = 36 + 1;
+    let mut dsdt = vec![0u8; dsdt_len];
+    dsdt[0..4].copy_from_slice(b"DSDT");
+    dsdt[4..8].copy_from_slice(&(dsdt_len as u32).to_le_bytes());
+    dsdt[8] = 1;                                              // Revision
+    dsdt[9] = 0;                                              // Checksum (filled later)
+    dsdt[10..16].copy_from_slice(b"COREVM");                 // OEM ID
+    dsdt[16..24].copy_from_slice(b"COREVMDT");               // OEM Table ID
+    dsdt[24..28].copy_from_slice(&1u32.to_le_bytes());       // OEM Revision
+    dsdt[28..32].copy_from_slice(b"CRVM");                   // Creator ID
+    dsdt[32..36].copy_from_slice(&1u32.to_le_bytes());       // Creator Revision
+    dsdt[36] = 0xA3; // AML Noop
+    dsdt[9] = acpi_checksum(&dsdt);
+
+    // --- FADT (Fixed ACPI Description Table, revision 1) ---
+    // Minimal FADT pointing to DSDT, with PM timer port.
+    let fadt_len = 116u32; // FADT rev 1 minimum
+    let mut fadt = vec![0u8; fadt_len as usize];
+    fadt[0..4].copy_from_slice(b"FACP");                     // Signature
+    fadt[4..8].copy_from_slice(&fadt_len.to_le_bytes());     // Length
+    fadt[8] = 1;                                              // Revision
+    fadt[10..16].copy_from_slice(b"COREVM");
+    fadt[16..24].copy_from_slice(b"COREVMFC");
+    fadt[24..28].copy_from_slice(&1u32.to_le_bytes());
+    fadt[28..32].copy_from_slice(b"CRVM");
+    fadt[32..36].copy_from_slice(&1u32.to_le_bytes());
+    // FIRMWARE_CTRL (FACS pointer) at offset 36 — set to 0 (no FACS)
+    // DSDT pointer at offset 40 — will be patched by linker
+    fadt[40..44].copy_from_slice(&0u32.to_le_bytes());       // placeholder
+    // SCI_INT at offset 46
+    fadt[46..48].copy_from_slice(&9u16.to_le_bytes());       // SCI on IRQ 9
+    // SMI_CMD at offset 48
+    fadt[48..52].copy_from_slice(&0u32.to_le_bytes());       // no SMI
+    // PM1a_EVT_BLK at offset 56
+    fadt[56..60].copy_from_slice(&0x600u32.to_le_bytes());
+    // PM1a_CNT_BLK at offset 64
+    fadt[64..68].copy_from_slice(&0x604u32.to_le_bytes());
+    // PM_TMR_BLK at offset 76
+    fadt[76..80].copy_from_slice(&0x608u32.to_le_bytes());
+    // PM1_EVT_LEN at offset 88
+    fadt[88] = 4;
+    // PM1_CNT_LEN at offset 89
+    fadt[89] = 2;
+    // PM_TMR_LEN at offset 91
+    fadt[91] = 4;
+    // Flags at offset 109: bit 8 = TMR_VAL_EXT (32-bit timer)
+    fadt[108..112].copy_from_slice(&((1u32 << 8) | 1).to_le_bytes()); // WBINVD + TMR_VAL_EXT
+    fadt[9] = acpi_checksum(&fadt);
+
+    // --- MADT (Multiple APIC Description Table) ---
+    // Contains: Local APIC address, 1 Processor Local APIC, 1 I/O APIC,
+    // 1 Interrupt Source Override (IRQ0 → GSI2)
+    let madt_entry_size = 8 + 12 + 10; // LAPIC(8) + IOAPIC(12) + ISO(10)
+    let madt_len = 44 + madt_entry_size; // header(44) + entries
+    let mut madt = vec![0u8; madt_len];
+    madt[0..4].copy_from_slice(b"APIC");                     // Signature
+    madt[4..8].copy_from_slice(&(madt_len as u32).to_le_bytes());
+    madt[8] = 1;                                              // Revision
+    madt[10..16].copy_from_slice(b"COREVM");
+    madt[16..24].copy_from_slice(b"COREVMMA");
+    madt[24..28].copy_from_slice(&1u32.to_le_bytes());
+    madt[28..32].copy_from_slice(b"CRVM");
+    madt[32..36].copy_from_slice(&1u32.to_le_bytes());
+    // Local APIC Address at offset 36
+    madt[36..40].copy_from_slice(&0xFEE00000u32.to_le_bytes());
+    // Flags at offset 40: bit 0 = PCAT_COMPAT (dual 8259 present)
+    madt[40..44].copy_from_slice(&1u32.to_le_bytes());
+
+    let mut off = 44;
+    // Processor Local APIC entry (type 0, len 8)
+    madt[off] = 0;     // Type: Processor Local APIC
+    madt[off+1] = 8;   // Length
+    madt[off+2] = 0;   // ACPI Processor UID
+    madt[off+3] = 0;   // APIC ID
+    madt[off+4..off+8].copy_from_slice(&1u32.to_le_bytes()); // Flags: enabled
+    off += 8;
+
+    // I/O APIC entry (type 1, len 12)
+    madt[off] = 1;     // Type: I/O APIC
+    madt[off+1] = 12;  // Length
+    madt[off+2] = 0;   // I/O APIC ID
+    madt[off+3] = 0;   // Reserved
+    madt[off+4..off+8].copy_from_slice(&0xFEC00000u32.to_le_bytes()); // Address
+    madt[off+8..off+12].copy_from_slice(&0u32.to_le_bytes()); // GSI base
+    off += 12;
+
+    // Interrupt Source Override (type 2, len 10): IRQ0 → GSI2 (standard for ACPI)
+    madt[off] = 2;     // Type: Interrupt Source Override
+    madt[off+1] = 10;  // Length
+    madt[off+2] = 0;   // Bus (ISA)
+    madt[off+3] = 0;   // Source (IRQ 0)
+    madt[off+4..off+8].copy_from_slice(&2u32.to_le_bytes()); // GSI 2
+    madt[off+8..off+10].copy_from_slice(&0u16.to_le_bytes()); // Flags: conforming
+
+    madt[9] = acpi_checksum(&madt);
+
+    // --- RSDT (Root System Description Table) ---
+    // Header (36 bytes) + 2 pointers (FADT, MADT) = 44 bytes
+    let rsdt_len = 36 + 2 * 4;
+    let mut rsdt = vec![0u8; rsdt_len];
+    rsdt[0..4].copy_from_slice(b"RSDT");
+    rsdt[4..8].copy_from_slice(&(rsdt_len as u32).to_le_bytes());
+    rsdt[8] = 1;
+    rsdt[10..16].copy_from_slice(b"COREVM");
+    rsdt[16..24].copy_from_slice(b"COREVMRS");
+    rsdt[24..28].copy_from_slice(&1u32.to_le_bytes());
+    rsdt[28..32].copy_from_slice(b"CRVM");
+    rsdt[32..36].copy_from_slice(&1u32.to_le_bytes());
+    // Pointers at offset 36, 40 — will be patched by linker
+    rsdt[9] = acpi_checksum(&rsdt);
+
+    // --- RSDP (Root System Description Pointer) ---
+    // Revision 0: 20 bytes
+    let mut rsdp = vec![0u8; 20];
+    rsdp[0..8].copy_from_slice(b"RSD PTR ");                 // Signature
+    rsdp[8] = 0;                                              // Checksum (filled later)
+    rsdp[9..15].copy_from_slice(b"COREVM");                  // OEM ID
+    rsdp[15] = 0;                                             // Revision 0
+    // RSDT Address at offset 16 — will be patched by linker
+    rsdp[8] = acpi_checksum(&rsdp);
+
+    // --- Concatenate all tables into etc/acpi/tables ---
+    // Order: DSDT, FADT, MADT, RSDT  (SeaBIOS table-loader references by offset)
+    let dsdt_off = 0u32;
+    let fadt_off = dsdt.len() as u32;
+    let madt_off = fadt_off + fadt.len() as u32;
+    let rsdt_off = madt_off + madt.len() as u32;
+
+    let mut tables = Vec::with_capacity(dsdt.len() + fadt.len() + madt.len() + rsdt.len());
+    tables.extend_from_slice(&dsdt);
+    tables.extend_from_slice(&fadt);
+    tables.extend_from_slice(&madt);
+    tables.extend_from_slice(&rsdt);
+
+    // --- Build etc/table-loader linker script ---
+    // Each command is 128 bytes. Format:
+    //   u32 command_tag, then command-specific fields, padded to 128 bytes.
+    // Commands:
+    //   1 = ALLOCATE: file[56], align(u32), zone(u8)
+    //   2 = ADD_POINTER: dest_file[56], src_file[56], offset(u32), size(u8)
+    //   3 = ADD_CHECKSUM: file[56], offset(u32), start(u32), length(u32)
+
+    let mut linker = Vec::new();
+
+    // Helper to create a 128-byte command
+    let mut cmd = |tag: u32, build: &dyn Fn(&mut [u8; 128])| {
+        let mut entry = [0u8; 128];
+        entry[0..4].copy_from_slice(&tag.to_le_bytes());
+        build(&mut entry);
+        linker.extend_from_slice(&entry);
+    };
+
+    let tables_name = b"etc/acpi/tables\0";
+    let rsdp_name = b"etc/acpi/rsdp\0";
+
+    // ALLOCATE etc/acpi/tables, align=4K, zone=FSEG (zone 1)
+    cmd(1, &|e| {
+        e[4..4+tables_name.len()].copy_from_slice(tables_name);
+        e[60..64].copy_from_slice(&4096u32.to_le_bytes()); // align
+        e[64] = 2; // zone: FSEG=2 (high memory)
+    });
+
+    // ALLOCATE etc/acpi/rsdp, align=16, zone=FSEG
+    cmd(1, &|e| {
+        e[4..4+rsdp_name.len()].copy_from_slice(rsdp_name);
+        e[60..64].copy_from_slice(&16u32.to_le_bytes());
+        e[64] = 2;
+    });
+
+    // ADD_POINTER: FADT.DSDT (offset 40 in FADT = fadt_off+40 in tables) → tables base + dsdt_off
+    cmd(2, &|e| {
+        e[4..4+tables_name.len()].copy_from_slice(tables_name);   // dest file
+        e[60..60+tables_name.len()].copy_from_slice(tables_name); // src file
+        e[116..120].copy_from_slice(&(fadt_off + 40).to_le_bytes()); // pointer offset in dest
+        e[120] = 4; // pointer size
+    });
+
+    // ADD_POINTER: RSDT entry[0] (FADT) at rsdt_off+36
+    cmd(2, &|e| {
+        e[4..4+tables_name.len()].copy_from_slice(tables_name);
+        e[60..60+tables_name.len()].copy_from_slice(tables_name);
+        e[116..120].copy_from_slice(&(rsdt_off + 36).to_le_bytes());
+        e[120] = 4;
+    });
+
+    // ADD_POINTER: RSDT entry[1] (MADT) at rsdt_off+40
+    cmd(2, &|e| {
+        e[4..4+tables_name.len()].copy_from_slice(tables_name);
+        e[60..60+tables_name.len()].copy_from_slice(tables_name);
+        e[116..120].copy_from_slice(&(rsdt_off + 40).to_le_bytes());
+        e[120] = 4;
+    });
+
+    // ADD_POINTER: RSDP.RsdtAddress (offset 16) → RSDT in tables
+    cmd(2, &|e| {
+        e[4..4+rsdp_name.len()].copy_from_slice(rsdp_name);       // dest: rsdp
+        e[60..60+tables_name.len()].copy_from_slice(tables_name);  // src: tables
+        e[116..120].copy_from_slice(&16u32.to_le_bytes());         // offset in rsdp
+        e[120] = 4;
+    });
+
+    // Now we need to write the initial pointer values so ADD_POINTER adds them
+    // to the allocated base address. Set the offsets as initial values.
+    // FADT.DSDT = offset of DSDT within tables file
+    tables[(fadt_off + 40) as usize..(fadt_off + 44) as usize]
+        .copy_from_slice(&dsdt_off.to_le_bytes());
+    // RSDT[0] = offset of FADT within tables file
+    tables[(rsdt_off + 36) as usize..(rsdt_off + 40) as usize]
+        .copy_from_slice(&fadt_off.to_le_bytes());
+    // RSDT[1] = offset of MADT within tables file
+    tables[(rsdt_off + 40) as usize..(rsdt_off + 44) as usize]
+        .copy_from_slice(&madt_off.to_le_bytes());
+    // RSDP.RsdtAddress = offset of RSDT within tables file
+    rsdp[16..20].copy_from_slice(&rsdt_off.to_le_bytes());
+
+    // ADD_CHECKSUM for each table
+    // DSDT checksum at dsdt_off+9, range [dsdt_off, dsdt_off+dsdt_len)
+    cmd(3, &|e| {
+        e[4..4+tables_name.len()].copy_from_slice(tables_name);
+        e[60..64].copy_from_slice(&(dsdt_off + 9).to_le_bytes());
+        e[64..68].copy_from_slice(&dsdt_off.to_le_bytes());
+        e[68..72].copy_from_slice(&(dsdt.len() as u32).to_le_bytes());
+    });
+
+    // FADT checksum at fadt_off+9
+    cmd(3, &|e| {
+        e[4..4+tables_name.len()].copy_from_slice(tables_name);
+        e[60..64].copy_from_slice(&(fadt_off + 9).to_le_bytes());
+        e[64..68].copy_from_slice(&fadt_off.to_le_bytes());
+        e[68..72].copy_from_slice(&(fadt.len() as u32).to_le_bytes());
+    });
+
+    // MADT checksum at madt_off+9
+    cmd(3, &|e| {
+        e[4..4+tables_name.len()].copy_from_slice(tables_name);
+        e[60..64].copy_from_slice(&(madt_off + 9).to_le_bytes());
+        e[64..68].copy_from_slice(&madt_off.to_le_bytes());
+        e[68..72].copy_from_slice(&(madt.len() as u32).to_le_bytes());
+    });
+
+    // RSDT checksum at rsdt_off+9
+    cmd(3, &|e| {
+        e[4..4+tables_name.len()].copy_from_slice(tables_name);
+        e[60..64].copy_from_slice(&(rsdt_off + 9).to_le_bytes());
+        e[64..68].copy_from_slice(&rsdt_off.to_le_bytes());
+        e[68..72].copy_from_slice(&(rsdt.len() as u32).to_le_bytes());
+    });
+
+    // RSDP checksum at offset 8
+    cmd(3, &|e| {
+        e[4..4+rsdp_name.len()].copy_from_slice(rsdp_name);
+        e[60..64].copy_from_slice(&8u32.to_le_bytes());
+        e[64..68].copy_from_slice(&0u32.to_le_bytes());
+        e[68..72].copy_from_slice(&20u32.to_le_bytes());
+    });
+
+    // Add files to fw_cfg
+    fw_cfg.add_file("etc/acpi/tables", tables);
+    fw_cfg.add_file("etc/acpi/rsdp", rsdp);
+    fw_cfg.add_file("etc/table-loader", linker);
+
+    vm_log!("ACPI tables generated (RSDP+RSDT+FADT+DSDT+MADT) via fw_cfg");
+}
+
 /// Register standard PC devices: PIC, PIT, CMOS, PS/2, Serial, VGA (800x600).
 ///
 /// This sets up the following I/O and MMIO regions:
@@ -1489,8 +1789,11 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     lpc_bridge.bus = 0;
     lpc_bridge.device = 31;
     lpc_bridge.function = 0;
-    // Mark as multi-function (header type bit 7) since ICH9 has multiple functions.
-    lpc_bridge.config_space[0x0E] = 0x80;
+    // Note: do NOT set the multi-function bit (0x80) here — some guest kernels
+    // (including anyOS) have a PCI scan loop that breaks when a multifunction
+    // sub-device probe exits early, corrupting the outer device-loop counter.
+    // Instead, the IDE controller is placed on a separate PCI device slot.
+    lpc_bridge.config_space[0x0E] = 0x00;
     lpc_bridge.set_subsystem(0x1AF4, 0x1100);
     bus.add_device(lpc_bridge);
 
@@ -1506,8 +1809,8 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
         0x00,    // Prog IF: compatibility-mode IDE only; no bus mastering until BMIDE exists
     );
     ide_pci.bus = 0;
-    ide_pci.device = 31;
-    ide_pci.function = 1;
+    ide_pci.device = 1;
+    ide_pci.function = 0;
     ide_pci.set_interrupt(14, 1);
     ide_pci.set_subsystem(0x1AF4, 0x1100);
     bus.add_device(ide_pci);
@@ -1568,10 +1871,25 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     vm.lapic_ptr = lapic;
     vm.engine.memory.add_mmio(0xFEE00000, 0x1000, Box::new(MmioProxy { ptr: lapic }));
 
+    // MSR_PLATFORM_INFO (0xCE): bits [15:8] = max non-turbo ratio.
+    // Bus frequency = 100 MHz, ratio = 20 → TSC = 2 GHz.
+    // Guests use this to determine TSC frequency for LAPIC timer calibration.
+    vm.engine.cpu.regs.write_msr(0xCE, 20u64 << 8);
+
+    // Configure wall-clock-based guest TSC so PIT calibration sees 2 GHz.
+    vm.engine.cpu.tsc_guest_freq = 2_000_000_000;
+    #[cfg(feature = "host_test")]
+    {
+        vm.engine.cpu.tsc_host_freq = vm.tsc_freq;
+        vm.engine.cpu.tsc_host_base = rdtsc();
+    }
+
     // ACPI PM — Power Management timer and control registers.
-    // ICH9 PMBASE = 0xB000; PM Timer at 0xB008 used by SeaBIOS for all delays.
+    // SeaBIOS Q35 LPC init moves PMBASE to 0x600. Register at both addresses
+    // so the timer works before and after relocation.
     let acpi_pm = Box::into_raw(Box::new(devices::acpi::AcpiPm::new()));
     vm.acpi_pm_ptr = acpi_pm;
+    vm.engine.io.register(0x600, 0x40, Box::new(IoProxy { ptr: acpi_pm }));
     vm.engine.io.register(0xB000, 0x40, Box::new(IoProxy { ptr: acpi_pm }));
 
     // fw_cfg — QEMU firmware configuration interface.
@@ -1581,6 +1899,10 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     ));
     vm.fw_cfg_ptr = fw_cfg;
     vm.engine.io.register(0x510, 2, Box::new(IoProxy { ptr: fw_cfg }));
+
+    // Generate ACPI tables (RSDP, RSDT, FADT, DSDT, MADT) and linker script
+    // so SeaBIOS can expose them to the guest OS.
+    generate_acpi_tables(unsafe { &mut *fw_cfg });
 
     // Debug port — QEMU debug console at port 0x402.
     // SeaBIOS writes debug output here; reading 0xE9 signals port is active.
@@ -2035,7 +2357,12 @@ fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
     let mut ioapic_routed = false;
     if !vm.ioapic_ptr.is_null() {
         let ioapic = unsafe { &mut *vm.ioapic_ptr };
-        if let Some((vector, level_triggered)) = ioapic.route_irq(irq) {
+        // On real hardware the PIT (ISA IRQ 0) is wired to IOAPIC pin 2.
+        // Try the remapped pin first, then fall back to the original line.
+        let try_pin = if irq == 0 { 2 } else { irq };
+        let route_result = ioapic.route_irq(try_pin)
+            .or_else(|| if try_pin != irq { ioapic.route_irq(irq) } else { None });
+        if let Some((vector, level_triggered)) = route_result {
             ioapic_routed = true;
             #[cfg(feature = "host_test")]
             if irq == 8 && IRQ_TRACE_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok() {
@@ -2416,6 +2743,118 @@ pub extern "C" fn corevm_ide_clear_irq(handle: u64) {
         return;
     }
     unsafe { (*vm.ide_ptr).clear_irq() };
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Device Setup — AHCI
+// ════════════════════════════════════════════════════════════════════════
+
+/// Set up the AHCI (SATA) controller at the given MMIO base address.
+///
+/// Creates an AHCI HBA with the specified number of ports (max 6) and
+/// registers it as an MMIO device and PCI device on the bus.
+#[no_mangle]
+pub extern "C" fn corevm_setup_ahci(handle: u64, mmio_base: u64, num_ports: u8) {
+    vm_log!("setting up AHCI controller at MMIO 0x{:X} ({} ports)", mmio_base, num_ports);
+    let vm = unsafe { vm_from_handle(handle) };
+
+    let ahci = Box::into_raw(Box::new(devices::ahci::Ahci::new(num_ports)));
+
+    // Set guest memory pointer for DMA
+    let (mem_ptr, mem_len) = vm.engine.memory.ram_mut_ptr();
+    unsafe { (*ahci).set_guest_memory(mem_ptr, mem_len) };
+
+    vm.ahci_ptr = ahci;
+    vm.engine.memory.add_mmio(
+        mmio_base,
+        devices::ahci::AHCI_MMIO_SIZE,
+        Box::new(MmioProxy { ptr: ahci }),
+    );
+
+    // Register AHCI as PCI device on the bus (bus 0, device 4, function 0)
+    if !vm.bus_ptr.is_null() {
+        let mut pci_dev = devices::ahci::create_ahci_pci_device(mmio_base as u32);
+        pci_dev.bus = 0;
+        pci_dev.device = 4;
+        pci_dev.function = 0;
+        unsafe { (*vm.bus_ptr).add_device(pci_dev) };
+    }
+}
+
+/// Attach an in-memory disk image to an AHCI port.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_attach_disk(handle: u64, port: u8, data: *const u8, len: u64) {
+    if data.is_null() || len == 0 {
+        return;
+    }
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ahci_ptr.is_null() {
+        return;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    vm_log!("attaching AHCI port {} disk image ({} bytes)", port, len);
+    let mut image = alloc::vec::Vec::with_capacity(len as usize);
+    image.extend_from_slice(slice);
+    unsafe { (*vm.ahci_ptr).attach_disk(port as usize, image, devices::ahci::AhciDriveKind::AtaDisk) };
+}
+
+/// Attach an in-memory CD-ROM image to an AHCI port.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_attach_cdrom(handle: u64, port: u8, data: *const u8, len: u64) {
+    if data.is_null() || len == 0 {
+        return;
+    }
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ahci_ptr.is_null() {
+        return;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    vm_log!("attaching AHCI port {} CDROM image ({} bytes)", port, len);
+    let mut image = alloc::vec::Vec::with_capacity(len as usize);
+    image.extend_from_slice(slice);
+    unsafe { (*vm.ahci_ptr).attach_disk(port as usize, image, devices::ahci::AhciDriveKind::AtapiCdrom) };
+}
+
+/// Attach a file-descriptor-backed disk to an AHCI port.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_attach_disk_fd(handle: u64, port: u8, fd: u64, size: u64) {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ahci_ptr.is_null() {
+        return;
+    }
+    vm_log!("attaching AHCI port {} disk fd={} size={}", port, fd, size);
+    unsafe { (*vm.ahci_ptr).attach_disk_fd(port as usize, fd as i32, size, devices::ahci::AhciDriveKind::AtaDisk) };
+}
+
+/// Attach a file-descriptor-backed CD-ROM to an AHCI port.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_attach_cdrom_fd(handle: u64, port: u8, fd: u64, size: u64) {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ahci_ptr.is_null() {
+        return;
+    }
+    vm_log!("attaching AHCI port {} CDROM fd={} size={}", port, fd, size);
+    unsafe { (*vm.ahci_ptr).attach_disk_fd(port as usize, fd as i32, size, devices::ahci::AhciDriveKind::AtapiCdrom) };
+}
+
+/// Check if the AHCI controller has a pending interrupt.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_irq_raised(handle: u64) -> u8 {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ahci_ptr.is_null() {
+        return 0;
+    }
+    if unsafe { (*vm.ahci_ptr).irq_raised() } { 1 } else { 0 }
+}
+
+/// Clear the AHCI pending interrupt.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_clear_irq(handle: u64) {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ahci_ptr.is_null() {
+        return;
+    }
+    unsafe { (*vm.ahci_ptr).clear_irq() };
 }
 
 // ════════════════════════════════════════════════════════════════════════

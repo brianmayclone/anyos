@@ -71,7 +71,7 @@ impl Ps2Controller {
             expecting_data: None,
             mouse_enabled: false,
             keyboard_enabled: true,
-            scancode_set: 1,
+            scancode_set: 2,
             mouse_buffer: VecDeque::new(),
             keyboard_buffer: VecDeque::new(),
             write_to_mouse: false,

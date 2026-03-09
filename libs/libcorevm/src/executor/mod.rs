@@ -106,7 +106,14 @@ fn exec_primary(
 
         // ── PUSH SS / POP SS ──
         0x16 => stack::exec_push_seg(cpu, inst, memory, mmu),
-        0x17 => stack::exec_pop_seg(cpu, inst, memory, mmu),
+        0x17 => {
+            // Intel SDM: POP SS sets interrupt shadow for one instruction.
+            let result = stack::exec_pop_seg(cpu, inst, memory, mmu);
+            if result.is_ok() {
+                interrupts.interrupt_shadow = true;
+            }
+            return result;
+        }
 
         // ── SBB ──
         0x18..=0x1D => arith::exec_sbb(cpu, inst, memory, mmu),
@@ -282,7 +289,17 @@ fn exec_primary(
         0x8D => data::exec_lea(cpu, inst),
 
         // ── MOV Sreg, r/m16 ──
-        0x8E => data::exec_mov_seg(cpu, inst, memory, mmu),
+        0x8E => {
+            // Intel SDM: MOV to SS sets interrupt shadow for one instruction.
+            let is_ss = matches!(&inst.operands[0],
+                crate::instruction::Operand::Register(
+                    crate::instruction::RegOperand::Seg(crate::registers::SegReg::Ss)));
+            let result = data::exec_mov_seg(cpu, inst, memory, mmu);
+            if result.is_ok() && is_ss {
+                interrupts.interrupt_shadow = true;
+            }
+            return result;
+        }
 
         // ── POP r/m ──
         0x8F => stack::exec_pop_rm(cpu, inst, memory, mmu),
@@ -542,6 +559,14 @@ fn exec_primary(
 
         // ── CLI ──
         0xFA => {
+            // In protected/long mode: CPL must be <= IOPL, else #GP(0).
+            // In real mode / V86 with IOPL==3: always allowed.
+            if !matches!(cpu.mode, Mode::RealMode) {
+                let iopl = ((cpu.regs.rflags & crate::flags::IOPL_MASK) >> crate::flags::IOPL_SHIFT) as u8;
+                if cpu.regs.cpl > iopl {
+                    return Err(crate::error::VmError::GeneralProtection(0));
+                }
+            }
             cpu.regs.rflags &= !crate::flags::IF;
             cpu.regs.rip += inst.length as u64;
             Ok(())
@@ -549,6 +574,12 @@ fn exec_primary(
 
         // ── STI ──
         0xFB => {
+            if !matches!(cpu.mode, Mode::RealMode) {
+                let iopl = ((cpu.regs.rflags & crate::flags::IOPL_MASK) >> crate::flags::IOPL_SHIFT) as u8;
+                if cpu.regs.cpl > iopl {
+                    return Err(crate::error::VmError::GeneralProtection(0));
+                }
+            }
             cpu.regs.rflags |= crate::flags::IF;
             interrupts.interrupt_shadow = true;
             cpu.regs.rip += inst.length as u64;
@@ -603,7 +634,7 @@ fn exec_secondary(
     cpu: &mut Cpu,
     inst: &DecodedInst,
     memory: &mut GuestMemory,
-    mmu: &Mmu,
+    mmu: &mut Mmu,
     _io: &mut IoDispatch,
     _interrupts: &mut InterruptController,
 ) -> Result<()> {
@@ -618,6 +649,13 @@ fn exec_secondary(
                 1 => system::exec_str(cpu, inst, memory, mmu),
                 2 => system::exec_lldt(cpu, inst, memory, mmu),
                 3 => system::exec_ltr(cpu, inst, memory, mmu),
+                // VERR/VERW: segment verification. Used by Linux for MDS mitigation.
+                // In an emulator, just set ZF=1 (segment is accessible) and advance RIP.
+                4 | 5 => {
+                    cpu.regs.rflags |= crate::flags::ZF;
+                    cpu.regs.rip += inst.length as u64;
+                    Ok(())
+                }
                 _ => Err(VmError::UndefinedOpcode(op2)),
             }
         }
@@ -644,6 +682,24 @@ fn exec_secondary(
                         }
                         _ => Err(VmError::UndefinedOpcode(op2)),
                     },
+                    // CLAC (rm=2) / STAC (rm=3)
+                    1 => match rm {
+                        2 => {
+                            // CLAC: clear AC flag in EFLAGS
+                            cpu.regs.rflags &= !(1 << 18);
+                            mmu.rflags_ac = false;
+                            cpu.regs.rip += inst.length as u64;
+                            Ok(())
+                        }
+                        3 => {
+                            // STAC: set AC flag in EFLAGS
+                            cpu.regs.rflags |= 1 << 18;
+                            mmu.rflags_ac = true;
+                            cpu.regs.rip += inst.length as u64;
+                            Ok(())
+                        }
+                        _ => Err(VmError::UndefinedOpcode(op2)),
+                    },
                     // XGETBV / XSETBV
                     2 => match rm {
                         0 => system::exec_xgetbv(cpu, inst),
@@ -665,6 +721,12 @@ fn exec_secondary(
                 7 => system::exec_invlpg(cpu, inst, memory, mmu),
                 _ => Err(VmError::UndefinedOpcode(op2)),
             }
+        }
+
+        // ── PREFETCH hints (0F 18 = PREFETCHx, 0F 0D = PREFETCHW) — treated as NOP ──
+        0x0D | 0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D => {
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
         }
 
         // ── NOP r/m16/32/64 (0F 1E = ENDBR64/ENDBR32, 0F 1F /0 = multi-byte NOP) ──
@@ -794,8 +856,15 @@ fn exec_secondary(
         // ── XADD ──
         0xC0 | 0xC1 => data::exec_xadd(cpu, inst, memory, mmu),
 
-        // ── CMPXCHG8B/CMPXCHG16B ──
-        0xC7 => data::exec_cmpxchg8b16b(cpu, inst, memory, mmu),
+        // ── Group 9: CMPXCHG8B/16B (/1), RDRAND (/6), RDSEED (/7) ──
+        0xC7 => {
+            let reg = inst.modrm_reg() & 7;
+            match reg {
+                1 => data::exec_cmpxchg8b16b(cpu, inst, memory, mmu),
+                6 | 7 => data::exec_rdrand(cpu, inst),
+                _ => Err(crate::error::VmError::UndefinedOpcode(0xC7)),
+            }
+        }
 
         // ── BSWAP r32/r64 ──
         0xC8..=0xCF => data::exec_bswap(cpu, inst),
@@ -835,11 +904,24 @@ fn exec_group2(
 
 // ── I/O helpers ──
 
+/// Check I/O privilege level: CPL must be <= IOPL in protected/long mode.
+#[inline]
+fn check_iopl(cpu: &Cpu) -> Result<()> {
+    if !matches!(cpu.mode, Mode::RealMode) {
+        let iopl = ((cpu.regs.rflags & crate::flags::IOPL_MASK) >> crate::flags::IOPL_SHIFT) as u8;
+        if cpu.regs.cpl > iopl {
+            return Err(crate::error::VmError::GeneralProtection(0));
+        }
+    }
+    Ok(())
+}
+
 /// IN AL/AX/EAX, imm8 — read from an immediate port number.
 ///
 /// Byte opcodes (0xE4) always access AL (1 byte) regardless of operand size
 /// prefix or CPU mode. Word/dword opcodes (0xE5) respect `operand_size`.
 fn exec_in_imm(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<()> {
+    check_iopl(cpu)?;
     let port = inst.immediate as u16;
     // Even opcodes (0xE4) = byte; odd opcodes (0xE5) = word/dword per mode.
     let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
@@ -858,6 +940,7 @@ fn exec_in_imm(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result
 /// Byte opcodes (0xEC) always access AL (1 byte) regardless of operand size
 /// prefix or CPU mode. Word/dword opcodes (0xED) respect `operand_size`.
 fn exec_in_dx(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<()> {
+    check_iopl(cpu)?;
     let port = cpu.regs.read_gpr16(GprIndex::Rdx as u8);
     // Even opcodes (0xEC) = byte; odd opcodes (0xED) = word/dword per mode.
     let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
@@ -876,6 +959,7 @@ fn exec_in_dx(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<
 /// Byte opcodes (0xE6) always write AL (1 byte) regardless of operand size
 /// prefix or CPU mode. Word/dword opcodes (0xE7) respect `operand_size`.
 fn exec_out_imm(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<()> {
+    check_iopl(cpu)?;
     let port = inst.immediate as u16;
     // Even opcodes (0xE6) = byte; odd opcodes (0xE7) = word/dword per mode.
     let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };
@@ -891,6 +975,7 @@ fn exec_out_imm(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Resul
 /// Byte opcodes (0xEE) always write AL (1 byte) regardless of operand size
 /// prefix or CPU mode. Word/dword opcodes (0xEF) respect `operand_size`.
 fn exec_out_dx(cpu: &mut Cpu, inst: &DecodedInst, io: &mut IoDispatch) -> Result<()> {
+    check_iopl(cpu)?;
     let port = cpu.regs.read_gpr16(GprIndex::Rdx as u8);
     // Even opcodes (0xEE) = byte; odd opcodes (0xEF) = word/dword per mode.
     let size = if inst.opcode & 1 == 0 { 1u8 } else { inst.operand_size.bytes().min(4) as u8 };

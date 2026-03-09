@@ -325,6 +325,19 @@ pub const CR4_OSXMMEXCPT: u64 = 1 << 10;
 pub const CR4_PCIDE: u64 = 1 << 17;
 /// XSAVE/XRSTOR enable.
 pub const CR4_OSXSAVE: u64 = 1 << 18;
+/// Supervisor Mode Execution Prevention.
+pub const CR4_SMEP: u64 = 1 << 20;
+/// Supervisor Mode Access Prevention.
+pub const CR4_SMAP: u64 = 1 << 21;
+
+/// FSGSBASE enable (RDFSBASE/RDGSBASE/WRFSBASE/WRGSBASE).
+pub const CR4_FSGSBASE: u64 = 1 << 16;
+
+/// Mask of all CR4 bits valid for Broadwell (5th gen).
+pub const CR4_VALID_MASK: u64 = CR4_VME | CR4_PVI | CR4_TSD | CR4_DE | CR4_PSE
+    | CR4_PAE | CR4_MCE | CR4_PGE | (1 << 8) /* PCE */
+    | CR4_OSFXSR | CR4_OSXMMEXCPT
+    | CR4_FSGSBASE | CR4_PCIDE | CR4_OSXSAVE | CR4_SMEP | CR4_SMAP;
 
 impl RegisterFile {
     /// Create a new register file with power-on reset defaults.
@@ -363,6 +376,9 @@ impl RegisterFile {
         regs.gpr[GprIndex::Rdx as usize] = 0x0000_0600;
         // IA32_APIC_BASE: BSP bit (8) + global enable (11) + default base 0xFEE00000.
         regs.write_msr(MSR_IA32_APIC_BASE, 0xFEE0_0900);
+        // IA32_PAT: Page Attribute Table — Intel SDM default value.
+        // PA0=WB(6), PA1=WT(4), PA2=UC-(7), PA3=UC(0), PA4=WB(6), PA5=WT(4), PA6=UC-(7), PA7=UC(0)
+        regs.write_msr(0x277, 0x0007_0406_0007_0406);
         // DR6 initial value: all breakpoint conditions clear
         regs.dr[6] = 0xFFFF_0FF0;
         // DR7 initial value: all breakpoints disabled

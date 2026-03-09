@@ -245,6 +245,17 @@ pub fn exec_mov_cr(cpu: &mut Cpu, inst: &DecodedInst, mmu: &Mmu) -> Result<()> {
         let val = cpu.regs.read_gpr64(src_gpr);
         match cr_idx {
             0 => {
+                // Intel SDM Vol. 3A 2-16: CR0 reserved bits validation.
+                // Setting PG=1 with PE=0 is invalid (#GP(0)).
+                // Setting NW=1 with CD=0 is invalid (#GP(0)).
+                if (val & CR0_PG) != 0 && (val & CR0_PE) == 0 {
+                    return Err(VmError::GeneralProtection(0));
+                }
+                if (val & CR0_NW) != 0 && (val & CR0_CD) == 0 {
+                    return Err(VmError::GeneralProtection(0));
+                }
+                // ET is hardwired to 1 on 486+.
+                let val = val | CR0_ET;
                 cpu.regs.cr0 = val;
                 cpu.update_mode();
             }
@@ -253,7 +264,15 @@ pub fn exec_mov_cr(cpu: &mut Cpu, inst: &DecodedInst, mmu: &Mmu) -> Result<()> {
                 cpu.regs.cr3 = val;
                 mmu.flush_tlb();
             }
-            4 => cpu.regs.cr4 = val,
+            4 => {
+                // Intel SDM Vol. 3A 2-18: #GP(0) if setting any reserved bit.
+                if (val & !CR4_VALID_MASK) != 0 {
+                    return Err(VmError::GeneralProtection(0));
+                }
+                cpu.regs.cr4 = val;
+                // CR4 changes may affect paging mode (PAE, PSE, PGE, SMEP, SMAP).
+                cpu.update_mode();
+            }
             8 => cpu.regs.cr8 = val,
             _ => return Err(VmError::UndefinedOpcode(op)),
         }
@@ -300,6 +319,11 @@ pub fn exec_rdmsr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
     let msr_index = cpu.regs.read_gpr32(GprIndex::Rcx as u8);
     let val = cpu.regs.read_msr(msr_index);
 
+    #[cfg(feature = "host_test")]
+    if msr_index == MSR_IA32_APIC_BASE {
+        eprintln!("[msr] RDMSR APIC_BASE: {:#018x}", val);
+    }
+
     cpu.regs.write_gpr32(GprIndex::Rax as u8, val as u32);
     cpu.regs.write_gpr32(GprIndex::Rdx as u8, (val >> 32) as u32);
 
@@ -323,6 +347,8 @@ pub fn exec_wrmsr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             // Keep only base (4K aligned) plus BSP/APIC-enable bits.
             // xAPIC mode uses bits 12.. for the MMIO base.
             let sanitized = (val & 0xFFFF_F000) | (val & ((1 << 8) | (1 << 11)));
+            #[cfg(feature = "host_test")]
+            eprintln!("[msr] WRMSR APIC_BASE: {:#018x} -> {:#018x}", cpu.regs.read_msr(msr_index), sanitized);
             cpu.regs.write_msr(msr_index, sanitized);
         }
         MSR_FS_BASE => {
@@ -334,7 +360,15 @@ pub fn exec_wrmsr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             cpu.regs.segment_mut(SegReg::Gs).base = val;
         }
         MSR_EFER => {
-            cpu.regs.write_msr(msr_index, val);
+            // Intel SDM Vol. 3A 2-21: EFER valid bits are SCE(0), LME(8), LMA(10), NXE(11).
+            // Setting reserved bits causes #GP(0). LMA is read-only.
+            const EFER_VALID_WRITE: u64 = EFER_SCE | EFER_LME | EFER_NXE;
+            if (val & !EFER_VALID_WRITE) & !(EFER_LMA) != 0 {
+                return Err(VmError::GeneralProtection(0));
+            }
+            // LMA is computed, not directly writable. Preserve the hardware-managed bit.
+            let new_val = (val & EFER_VALID_WRITE) | (cpu.regs.efer & EFER_LMA);
+            cpu.regs.write_msr(msr_index, new_val);
             cpu.update_mode();
         }
         _ => cpu.regs.write_msr(msr_index, val),
@@ -371,48 +405,66 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             let eax_val = 0x0003_06C1u32;
             // EBX: brand index=0, CLFLUSH=8, max IDs=logical_cpus, APIC ID=apic_id
             let ebx_val = (8u32 << 8) | ((logical_cpus & 0xFF) << 16) | (apic_id << 24);
-            // ECX feature flags:
-            // SSE3(0), SSSE3(9), CMPXCHG16B(13), SSE4.1(19), SSE4.2(20),
-            // POPCNT(23)
+            // ECX feature flags (Broadwell baseline):
+            // SSE3(0), PCLMULQDQ(1), SSSE3(9), FMA(12), CMPXCHG16B(13),
+            // SSE4.1(19), SSE4.2(20), MOVBE(22), POPCNT(23), AES(25),
+            // RDRAND(30), hypervisor(31 — signals virtualised environment)
             // NOTE: XSAVE(26)/OSXSAVE(27) intentionally NOT advertised —
             // XSAVE/XRSTOR are not implemented; guests use FXSAVE/FXRSTOR.
-            let ecx_val = (1 << 0)
-                | (1 << 9)
-                | (1 << 13)
-                | (1 << 19)
-                | (1 << 20)
-                | (1 << 23);
-            // EDX feature flags:
+            let ecx_val: u32 = (1 << 0)   // SSE3
+                | (1 << 1)   // PCLMULQDQ
+                | (1 << 9)   // SSSE3
+                | (1 << 13)  // CMPXCHG16B
+                | (1 << 19)  // SSE4.1
+                | (1 << 20)  // SSE4.2
+                | (1 << 22)  // MOVBE
+                | (1 << 23)  // POPCNT
+                | (1 << 25)  // AES-NI
+                | (1 << 30)  // RDRAND
+                | (1u32 << 31); // Hypervisor present
+            // EDX feature flags (Broadwell baseline):
             // FPU(0), VME(1), DE(2), PSE(3), TSC(4), MSR(5), PAE(6),
-            // MCE(7), CX8(8), APIC(9), PGE(13), MCA(14), CMOV(15),
-            // PAT(16), PSE-36(17), CLFLUSH(19), MMX(23), FXSR(24),
-            // SSE(25), SSE2(26)
-            let mut edx_val: u32 = (1 << 0)
-                | (1 << 1)
-                | (1 << 2)
-                | (1 << 3)
-                | (1 << 4)
-                | (1 << 5)
-                | (1 << 6)
-                | (1 << 7)
-                | (1 << 8)
-                | (1 << 9)
-                | (1 << 13)
-                | (1 << 14)
-                | (1 << 15)
-                | (1 << 16)
-                | (1 << 17)
-                | (1 << 19)
-                | (1 << 23)
-                | (1 << 24)
-                | (1 << 25)
-                | (1 << 26);
+            // MCE(7), CX8(8), APIC(9), SEP(11), PGE(13), MCA(14),
+            // CMOV(15), PAT(16), PSE-36(17), CLFLUSH(19), MMX(23),
+            // FXSR(24), SSE(25), SSE2(26)
+            let mut edx_val: u32 = (1 << 0)   // FPU
+                | (1 << 1)   // VME
+                | (1 << 2)   // DE
+                | (1 << 3)   // PSE
+                | (1 << 4)   // TSC
+                | (1 << 5)   // MSR
+                | (1 << 6)   // PAE
+                | (1 << 7)   // MCE
+                | (1 << 8)   // CX8
+                | (1 << 9)   // APIC
+                | (1 << 11)  // SEP (SYSENTER/SYSEXIT)
+                | (1 << 13)  // PGE
+                | (1 << 14)  // MCA
+                | (1 << 15)  // CMOV
+                | (1 << 16)  // PAT
+                | (1 << 17)  // PSE-36
+                | (1 << 19)  // CLFLUSH
+                | (1 << 23)  // MMX
+                | (1 << 24)  // FXSR
+                | (1 << 25)  // SSE
+                | (1 << 26); // SSE2
             if logical_cpus > 1 {
                 // HTT indicates support for multiple logical processors.
                 edx_val |= 1 << 28;
             }
             (eax_val, ebx_val, ecx_val, edx_val)
         }
+
+        // Leaf 2: cache/TLB descriptors (Broadwell-like).
+        // EAX[7:0] = 0x01 means CPUID leaf 2 needs to be called once.
+        (2, _) => {
+            // Descriptors: 0xFF=use leaf 4, 0x5A=2M data TLB, 0xB2=ITLB,
+            // 0x03=4K data TLB, 0x76=instruction TLB, 0xF0=64B prefetch
+            (0x7600_5A01, 0x00F0_B2FF, 0, 0x00CA_0003)
+        }
+
+        // Leaf 4: deterministic cache parameters (minimal, subleaf 0 = no more caches).
+        (4, _) => (0, 0, 0, 0),
 
         // Leaf 0x0B: x2APIC topology (minimal SMT/package view).
         (0x0B, 0) => {
@@ -438,11 +490,24 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
         }
         (0x0B, _) => (0, 0, subleaf & 0xFF, apic_id),
 
-        // Leaf 7, subleaf 0: structured feature flags (minimal baseline)
+        // Leaf 7, subleaf 0: structured feature flags (Broadwell baseline)
         (7, 0) => {
-            // EBX: BMI1 (bit 3) for TZCNT.
-            (0, 1 << 3, 0, 0)
+            // EAX = max subleaf (0).
+            // EBX: FSGSBASE(0), SMEP(7), ERMS(9), SMAP(20)
+            // NOTE: BMI1(3), BMI2(8), AVX2(5) removed — require VEX prefix decoding
+            // NOTE: SMAP(20) not advertised — while STAC/CLAC + rflags_ac
+            // sync is implemented, the TLB does not tag entries by AC state,
+            // so cached supervisor translations of user pages linger after
+            // STAC and cause spurious SMAP faults.
+            let ebx: u32 = (1 << 0)   // FSGSBASE
+                | (1 << 7)   // SMEP
+                | (1 << 9);  // ERMS (Enhanced REP MOVSB/STOSB)
+            (0, ebx, 0, 0)
         }
+
+        // Leaf 0x40000000: hypervisor vendor ID.
+        // "CoreVManyOS" = "Core" "VMa_" "nyOS"
+        (0x4000_0000, _) => (0x4000_0000, 0x65726F43, 0x534F796E, 0x5F614D56),
 
         // Leaf D: XSAVE not supported — return zeros.
         (0x0D, _) => (0, 0, 0, 0),
@@ -491,15 +556,33 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
 
 // ── RDTSC ──
 
+/// Compute the guest TSC value.
+///
+/// In host_test mode, uses host wall-clock RDTSC scaled to the guest frequency
+/// so that PIT calibration sees the correct TSC rate. Otherwise, falls back to
+/// instruction count.
+#[inline]
+fn guest_tsc(cpu: &Cpu) -> u64 {
+    #[cfg(feature = "host_test")]
+    {
+        if cpu.tsc_host_freq > 0 && cpu.tsc_guest_freq > 0 {
+            let host_now = crate::rdtsc();
+            let elapsed = host_now.wrapping_sub(cpu.tsc_host_base);
+            let guest_tsc = (elapsed as u128 * cpu.tsc_guest_freq as u128
+                / cpu.tsc_host_freq as u128) as u64;
+            return cpu.regs.read_msr(MSR_TSC).wrapping_add(guest_tsc);
+        }
+    }
+    cpu.regs
+        .read_msr(MSR_TSC)
+        .wrapping_add(cpu.instruction_count.saturating_mul(TSC_TICKS_PER_INST))
+}
+
 /// RDTSC: read Time Stamp Counter.
 ///
-/// Returns the TSC value in EDX:EAX. We use the stored MSR_TSC value and
-/// increment it each time RDTSC is executed.
+/// Returns the TSC value in EDX:EAX.
 pub fn exec_rdtsc(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
-    let tsc = cpu
-        .regs
-        .read_msr(MSR_TSC)
-        .wrapping_add(cpu.instruction_count.saturating_mul(TSC_TICKS_PER_INST));
+    let tsc = guest_tsc(cpu);
     cpu.regs.write_gpr32(GprIndex::Rax as u8, tsc as u32);
     cpu.regs.write_gpr32(GprIndex::Rdx as u8, (tsc >> 32) as u32);
 
@@ -511,10 +594,7 @@ pub fn exec_rdtsc(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
 ///
 /// Returns TSC in EDX:EAX and TSC_AUX in ECX.
 pub fn exec_rdtscp(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
-    let tsc = cpu
-        .regs
-        .read_msr(MSR_TSC)
-        .wrapping_add(cpu.instruction_count.saturating_mul(TSC_TICKS_PER_INST));
+    let tsc = guest_tsc(cpu);
     cpu.regs.write_gpr32(GprIndex::Rax as u8, tsc as u32);
     cpu.regs.write_gpr32(GprIndex::Rdx as u8, (tsc >> 32) as u32);
     cpu.regs.write_gpr32(GprIndex::Rcx as u8, 0);

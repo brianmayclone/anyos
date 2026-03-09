@@ -157,6 +157,11 @@ impl IoApic {
         self.routed_entry(irq).is_some()
     }
 
+    /// Raw redir table entry for diagnostics.
+    pub fn diag_entry(&self, irq: u8) -> u64 {
+        self.redir_table.get(irq as usize).copied().unwrap_or(0)
+    }
+
     /// Route an external IRQ pin through the redirection table.
     ///
     /// Returns `(vector, level_triggered)` when the entry is unmasked and
@@ -221,6 +226,14 @@ impl MmioHandler for IoApic {
     /// IOREGSEL (offset 0x00) and IOWIN (offset 0x10) are both 32-bit
     /// registers. Sub-dword accesses extract the correct byte(s).
     fn read(&mut self, offset: u64, size: u8) -> Result<u64> {
+        #[cfg(feature = "host_test")]
+        {
+            static IOAPIC_ACCESS_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = IOAPIC_ACCESS_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 40 {
+                eprintln!("[ioapic] MMIO read offset={:#x} size={} regsel={:#x}", offset, size, self.reg_select);
+            }
+        }
         // IOREGSEL is at 0x00-0x03, IOWIN at 0x10-0x13.
         // Determine which register and the byte offset within it.
         let (reg_base, byte_off) = match offset {
@@ -239,6 +252,14 @@ impl MmioHandler for IoApic {
     ///
     /// Sub-dword writes perform a read-modify-write to merge partial bytes.
     fn write(&mut self, offset: u64, size: u8, val: u64) -> Result<()> {
+        #[cfg(feature = "host_test")]
+        {
+            static IOAPIC_WCOUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = IOAPIC_WCOUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 40 {
+                eprintln!("[ioapic] MMIO write offset={:#x} size={} val={:#x}", offset, size, val);
+            }
+        }
         let (reg_base, byte_off) = match offset {
             0x00..=0x03 => (0x00u64, (offset & 0x3) as u32),
             0x10..=0x13 => (0x10u64, (offset & 0x3) as u32),

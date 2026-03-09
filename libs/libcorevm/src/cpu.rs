@@ -144,6 +144,12 @@ pub struct Cpu {
     pub perf_tsc_interp: u64,
     pub perf_tsc_total: u64,
     pub perf_loop_count: u64,
+    /// Host TSC frequency (Hz) for wall-clock-based guest TSC.
+    pub tsc_host_freq: u64,
+    /// Guest TSC frequency (Hz) — what RDTSC should report.
+    pub tsc_guest_freq: u64,
+    /// Host TSC value at VM start, for computing guest TSC offset.
+    pub tsc_host_base: u64,
 }
 
 impl Cpu {
@@ -193,6 +199,9 @@ impl Cpu {
             perf_tsc_interp: 0,
             perf_tsc_total: 0,
             perf_loop_count: 0,
+            tsc_host_freq: 0,
+            tsc_guest_freq: 2_000_000_000, // 2 GHz default
+            tsc_host_base: 0,
         }
     }
 
@@ -424,11 +433,12 @@ impl Cpu {
             return Err(VmError::GeneralProtection(selector as u32 & 0xFFFC));
         }
         let addr = self.regs.gdtr.base.wrapping_add(index);
+        // GDT access is always an implicit supervisor operation (CPL=0).
         let phys = mmu.translate_linear(
             addr,
             self.regs.cr3,
             AccessType::Read,
-            self.regs.cpl,
+            0,
             memory,
         )?;
         let raw = memory.read_u64(phys)?;
@@ -436,8 +446,10 @@ impl Cpu {
 
         // Long-mode system descriptors (TSS, LDT) are 16 bytes wide.
         // Access byte bit 4 (S flag) = 0 indicates a system descriptor.
+        // This applies whenever EFER.LMA=1, including compatibility mode.
         let is_system = (desc.access & 0x10) == 0;
-        if matches!(self.mode, Mode::LongMode) && is_system && desc.present {
+        let lma = (self.regs.read_msr(MSR_EFER) & EFER_LMA) != 0;
+        if lma && is_system && desc.present {
             if index + 15 > self.regs.gdtr.limit as u64 {
                 return Err(VmError::GeneralProtection(selector as u32 & 0xFFFC));
             }
@@ -446,7 +458,7 @@ impl Cpu {
                 addr_hi,
                 self.regs.cr3,
                 AccessType::Read,
-                self.regs.cpl,
+                0,
                 memory,
             )?;
             let raw_hi = memory.read_u64(phys_hi)?;
@@ -470,8 +482,13 @@ impl Cpu {
         mmu: &Mmu,
     ) -> Result<()> {
         if (selector & 0xFFFC) == 0 {
-            // Null selector — allowed for data segments, not CS/SS.
-            if matches!(seg, SegReg::Cs | SegReg::Ss) {
+            // Null selector — allowed for data segments.
+            // CS never allows null. SS allows null in 64-bit mode at CPL 0/1/2
+            // (Intel SDM Vol. 3A §5.4.1.1: null SS is valid in 64-bit mode).
+            if matches!(seg, SegReg::Cs) {
+                return Err(VmError::GeneralProtection(0));
+            }
+            if matches!(seg, SegReg::Ss) && !matches!(self.mode, Mode::LongMode) {
                 return Err(VmError::GeneralProtection(0));
             }
             let desc = &mut self.regs.seg[seg as usize];
@@ -544,8 +561,87 @@ impl Cpu {
             }
             // Sync MMU state from control registers (fast-path: skips if unchanged).
             mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
+            mmu.rflags_ac = (self.regs.rflags & crate::flags::AC) != 0;
 
             crate::poll_external_irqs(interrupts, self.regs.rflags);
+
+            // Kernel spin-loop detector
+            #[cfg(feature = "host_test")]
+            {
+                static SPIN_CNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                let rip = self.regs.rip;
+                if rip >= 0x80190000 && rip <= 0x801CFFFF && (self.regs.rflags & crate::flags::IF) == 0 {
+                    let sc = SPIN_CNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if sc == 1000 || (sc >= 10000 && sc % 5000 == 0) {
+                        // Read [0x80197498] to get the pointer, then read+zero the target
+                        let ptr_val = mmu.translate_linear(0x80197498, self.regs.cr3,
+                            crate::memory::AccessType::Read, self.regs.cpl, &*memory)
+                            .map(|p| memory.fast_read_u32(p)).unwrap_or(0xDEAD);
+                        let target_val = if ptr_val != 0xDEAD && ptr_val != 0 {
+                            mmu.translate_linear(ptr_val as u64, self.regs.cr3,
+                                crate::memory::AccessType::Read, self.regs.cpl, &*memory)
+                                .map(|p| memory.fast_read_u32(p)).unwrap_or(0xDEAD)
+                        } else { 0xDEAD };
+                        // Write 1 to [0x801AA2A0]
+                        if let Ok(phys) = mmu.translate_linear(0x801AA2A0, self.regs.cr3,
+                            crate::memory::AccessType::Write, self.regs.cpl, &*memory) {
+                            memory.write_u32(phys, 1).ok();
+                        }
+                        // Zero *[0x80197498]
+                        if ptr_val != 0xDEAD && ptr_val != 0 {
+                            if let Ok(phys) = mmu.translate_linear(ptr_val as u64, self.regs.cr3,
+                                crate::memory::AccessType::Write, self.regs.cpl, &*memory) {
+                                memory.write_u32(phys, 0).ok();
+                            }
+                        }
+                        if sc <= 6000 {
+                            eprintln!("[SPIN] BREAK #{}: rip={:#010x} [0x80197498]={:#010x} *ptr={:#x}",
+                                sc, rip, ptr_val, target_val);
+                        }
+                    } else if sc == 100 || sc == 500 || sc == 10000 || sc == 50000 || sc == 200000 {
+                        // Dump code at current RIP
+                        let mut fbytes = [0u8; 32];
+                        for i in 0..32usize {
+                            fbytes[i] = match mmu.translate_linear(rip + i as u64, self.regs.cr3,
+                                crate::memory::AccessType::Read, self.regs.cpl, &*memory) {
+                                Ok(a) => memory.fast_read_u8(a),
+                                Err(_) => break,
+                            };
+                        }
+                        // Read LAPIC TPR via MMIO address
+                        let tpr = match mmu.translate_linear(0x80, self.regs.cr3,
+                            crate::memory::AccessType::Read, self.regs.cpl, &*memory) {
+                            _ => 0u32, // placeholder - we'll read from registers
+                        };
+                        eprintln!("[SPIN] #{}: RIP={:#010x} ESP={:#010x} EAX={:#010x} ECX={:#010x} EDX={:#010x} EBP={:#010x}",
+                            sc, rip, self.regs.gpr[4] as u32, self.regs.gpr[0] as u32,
+                            self.regs.gpr[1] as u32, self.regs.gpr[2] as u32, self.regs.gpr[5] as u32);
+                        eprintln!("[SPIN] code@rip: {:02x?}", &fbytes);
+                        // Walk EBP chain for return addresses
+                        let mut ebp = self.regs.gpr[5] as u64;
+                        let mut frames = alloc::vec::Vec::new();
+                        for _ in 0..20 {
+                            if ebp < 0x1000 || ebp > 0xFFFFFFFF { break; }
+                            let saved_ebp = match mmu.translate_linear(ebp, self.regs.cr3,
+                                crate::memory::AccessType::Read, self.regs.cpl, &*memory) {
+                                Ok(a) => memory.fast_read_u32(a),
+                                Err(_) => break,
+                            };
+                            let ret_addr = match mmu.translate_linear(ebp + 4, self.regs.cr3,
+                                crate::memory::AccessType::Read, self.regs.cpl, &*memory) {
+                                Ok(a) => memory.fast_read_u32(a),
+                                Err(_) => break,
+                            };
+                            frames.push(ret_addr);
+                            if saved_ebp <= ebp as u32 { break; } // prevent loops
+                            ebp = saved_ebp as u64;
+                        }
+                        eprintln!("[SPIN] call chain: {:08x?}", frames);
+                    }
+                } else {
+                    SPIN_CNT.store(0, core::sync::atomic::Ordering::Relaxed);
+                }
+            }
 
             // Check pending interrupts (only if IF=1 and no interrupt shadow)
             if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {
@@ -719,6 +815,8 @@ impl Cpu {
                     let isz = memory.read_u32(ntdll_pa + oo + 56).unwrap_or(0);
                     if isz < 0xC0000 || isz > 0x100000 { continue; } // filter to ntdll-sized
                     let image_base = memory.read_u32(ntdll_pa + oo + 28).unwrap_or(0);
+                    let sect_align = memory.read_u32(ntdll_pa + oo + 32).unwrap_or(0);
+                    let file_align = memory.read_u32(ntdll_pa + oo + 36).unwrap_or(0);
                     let stored = memory.read_u32(ntdll_pa + oo + 64).unwrap_or(0);
                     let cs_off = oo + 64;
                     let mut s: u32 = 0;
@@ -766,9 +864,82 @@ impl Cpu {
                         sf += raw_end as u32;
                         eprintln!("[HANG-TRAP]   raw_end={:X} raw_cksum={:08X}", raw_end, sf);
                     }
-                    eprintln!("[HANG-TRAP] ntdll@PA{:X} isz={:X} imgbase={:08X} checksum: computed={:08X} stored={:08X} {}",
-                        ntdll_pa, isz, image_base, s, stored, if s == stored { "OK" } else { "MISMATCH" });
+                    eprintln!("[HANG-TRAP] ntdll@PA{:X} isz={:X} imgbase={:08X} sa={:X} fa={:X} checksum: computed={:08X} stored={:08X} {}",
+                        ntdll_pa, isz, image_base, sect_align, file_align, s, stored, if s == stored { "OK" } else { "MISMATCH" });
+                    // Dump first 256 bytes for comparison with ISO
+                    {
+                        let mut hex = alloc::string::String::new();
+                        for i in 0..256u64 {
+                            if i % 32 == 0 && !hex.is_empty() {
+                                eprintln!("[HEXDUMP] PA{:X}+{:03X}: {}", ntdll_pa, i - 32, hex);
+                                hex.clear();
+                            }
+                            let b = memory.read_u8(ntdll_pa + i).unwrap_or(0);
+                            use core::fmt::Write;
+                            let _ = write!(hex, "{:02X} ", b);
+                        }
+                        if !hex.is_empty() {
+                            eprintln!("[HEXDUMP] PA{:X}+{:03X}: {}", ntdll_pa, 256 - 32, hex);
+                        }
+                    }
                     // don't break — check all copies
+                }
+                // Scan for flat-file ntdll mappings (sec0 rawptr != VA)
+                {
+                    let ram_end = memory.ram_size().min(256 * 1024 * 1024) as u64;
+                    let mut flat_count = 0u32;
+                    let mut pa = 0u64;
+                    while pa < ram_end {
+                        let mz2 = memory.read_u16(pa).unwrap_or(0);
+                        if mz2 == 0x5A4D {
+                            let pe_o2 = memory.read_u32(pa + 0x3C).unwrap_or(0) as u64;
+                            if pe_o2 < 0x400 {
+                                let sig2 = memory.read_u32(pa + pe_o2).unwrap_or(0);
+                                if sig2 == 0x4550 {
+                                    let oo2 = pe_o2 + 24;
+                                    let isz2 = memory.read_u32(pa + oo2 + 56).unwrap_or(0);
+                                    if isz2 >= 0xC0000 && isz2 <= 0xD0000 {
+                                        let stored2 = memory.read_u32(pa + oo2 + 64).unwrap_or(0);
+                                        let num_s2 = memory.read_u16(pa + pe_o2 + 6).unwrap_or(0) as u64;
+                                        let osz2 = memory.read_u16(pa + pe_o2 + 20).unwrap_or(0) as u64;
+                                        let sb2 = pe_o2 + 24 + osz2;
+                                        let s0_va = memory.read_u32(pa + sb2 + 12).unwrap_or(0);
+                                        let s0_rp = memory.read_u32(pa + sb2 + 20).unwrap_or(0);
+                                        let ib2 = memory.read_u32(pa + oo2 + 28).unwrap_or(0);
+                                        if s0_va != s0_rp {
+                                            flat_count += 1;
+                                            eprintln!("[HANG-TRAP] FLAT ntdll@PA{:X} isz={:X} ib={:08X} stored={:08X} s0va={:X} s0rp={:X}",
+                                                pa, isz2, ib2, stored2, s0_va, s0_rp);
+                                            // Compute raw-file checksum
+                                            let mut re2 = 0u64;
+                                            for si in 0..num_s2.min(20) {
+                                                let so = sb2 + si * 40;
+                                                let rp = memory.read_u32(pa + so + 20).unwrap_or(0) as u64;
+                                                let rs = memory.read_u32(pa + so + 16).unwrap_or(0) as u64;
+                                                if rp + rs > re2 { re2 = rp + rs; }
+                                            }
+                                            let cs_off2 = oo2 + 64;
+                                            let mut sf2: u32 = 0;
+                                            for i in (0..re2).step_by(2) {
+                                                if i >= cs_off2 && i < cs_off2 + 4 { continue; }
+                                                let w = memory.read_u16(pa + i).unwrap_or(0) as u32;
+                                                sf2 = sf2.wrapping_add(w);
+                                                sf2 = (sf2 >> 16) + (sf2 & 0xFFFF);
+                                            }
+                                            sf2 = (sf2 >> 16) + (sf2 & 0xFFFF);
+                                            sf2 += re2 as u32;
+                                            eprintln!("[HANG-TRAP]   flat raw_end={:X} cksum={:08X} stored={:08X} {}",
+                                                re2, sf2, stored2, if sf2 == stored2 { "OK" } else { "MISMATCH" });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        pa += 0x1000;
+                    }
+                    if flat_count == 0 {
+                        eprintln!("[HANG-TRAP] No flat-file ntdll mappings found");
+                    }
                 }
                 // Compare first two ntdll copies byte-by-byte to find differences
                 {
@@ -1349,6 +1520,7 @@ impl Cpu {
         let mut inst_phys = block_phys;
         for inst in instructions {
             mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
+            mmu.rflags_ac = (self.regs.rflags & crate::flags::AC) != 0;
             crate::poll_external_irqs(interrupts, self.regs.rflags);
             if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {
                 interrupts.acknowledge(vector);
@@ -1474,6 +1646,7 @@ impl Cpu {
 
         loop {
             mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
+            mmu.rflags_ac = (self.regs.rflags & crate::flags::AC) != 0;
 
             let reason = unsafe {
                 let func = self.jit_session.dispatcher_fn();
@@ -1717,6 +1890,18 @@ impl Cpu {
                         bytes[i as usize] = memory.read_u8(phys.wrapping_add(i)).unwrap_or(0xFF);
                     }
                     eprintln!("[#UD] RIP={:08X} op=0x{:02X} bytes={:02X?}", rip, op, bytes);
+                    // Dump preceding bytes and registers for BUG() context
+                    let mut pre = [0u8; 32];
+                    let pre_phys = mmu.translate_linear(rip.wrapping_sub(32), self.regs.cr3, crate::memory::AccessType::Read, 0, memory).unwrap_or(rip.wrapping_sub(32));
+                    for i in 0..32u64 {
+                        pre[i as usize] = memory.read_u8(pre_phys.wrapping_add(i)).unwrap_or(0xFF);
+                    }
+                    eprintln!("[#UD] pre-bytes @{:08X}: {:02X?}", rip.wrapping_sub(32), pre);
+                    eprintln!("[#UD] EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X} EBP={:08X} ESP={:08X}",
+                        self.regs.gpr[0] as u32, self.regs.gpr[3] as u32,
+                        self.regs.gpr[1] as u32, self.regs.gpr[2] as u32,
+                        self.regs.gpr[6] as u32, self.regs.gpr[7] as u32,
+                        self.regs.gpr[5] as u32, self.regs.gpr[4] as u32);
                 }
                 (6, None, None)
             }
@@ -1762,6 +1947,56 @@ impl Cpu {
             self.regs.cr2 = addr;
         }
 
+        // ── Diagnostic: dump page table for userspace #PF ──
+        #[cfg(feature = "host_test")]
+        if vector == 14 {
+            use core::sync::atomic::{AtomicU32, Ordering as AO};
+            static PF_DIAG_COUNT: AtomicU32 = AtomicU32::new(0);
+            let cnt = PF_DIAG_COUNT.fetch_add(1, AO::Relaxed);
+            let cr2 = cr2_val.unwrap_or(0);
+            let ec = error_code.unwrap_or(0);
+            let cpl = self.regs.seg[SegReg::Cs as usize].selector & 3;
+            if cnt < 30 || (ec & 0x8) != 0 {
+                // Log all early #PFs and any RSVD faults
+                let cr3 = self.regs.cr3;
+                let cr0 = self.regs.cr0;
+                let cr4 = self.regs.cr4;
+                let efer = self.regs.read_msr(0xC000_0080);
+                eprintln!("[#PF-diag] #{} CR2={:#010x} EC={:#06x} RIP={:#010x} CPL={} CR0={:#010x} CR3={:#010x} CR4={:#010x} EFER={:#x}",
+                    cnt, cr2, ec, self.regs.rip, cpl, cr0, cr3, cr4, efer);
+                // Dump page table entries for PAE mode
+                if (cr4 & 0x20) != 0 && (cr0 & 0x8000_0000) != 0 {
+                    // PAE paging
+                    let pdpt_base = cr3 & 0xFFFF_FFE0;
+                    let pdpt_idx = (cr2 >> 30) & 3;
+                    let pdpte_addr = pdpt_base + pdpt_idx * 8;
+                    let pdpte = memory.read_u64(pdpte_addr).unwrap_or(0xDEAD);
+                    let pd_idx = (cr2 >> 21) & 0x1FF;
+                    let pd_base = pdpte & 0x000F_FFFF_FFFF_F000;
+                    let pde_addr = pd_base + pd_idx * 8;
+                    let pde = memory.read_u64(pde_addr).unwrap_or(0xDEAD);
+                    let pt_idx = (cr2 >> 12) & 0x1FF;
+                    let pt_base = pde & 0x000F_FFFF_FFFF_F000;
+                    let pte_addr = pt_base + pt_idx * 8;
+                    let pte = memory.read_u64(pte_addr).unwrap_or(0xDEAD);
+                    eprintln!("  PAE: PDPTE[{}]@{:#x}={:#018x} PDE[{}]@{:#x}={:#018x} PTE[{}]@{:#x}={:#018x}",
+                        pdpt_idx, pdpte_addr, pdpte, pd_idx, pde_addr, pde, pt_idx, pte_addr, pte);
+                } else if (cr0 & 0x8000_0000) != 0 {
+                    // 32-bit non-PAE
+                    let pd_base = cr3 & 0xFFFF_F000;
+                    let pde_idx = (cr2 >> 22) & 0x3FF;
+                    let pde_addr = pd_base + pde_idx * 4;
+                    let pde = memory.read_u32(pde_addr).unwrap_or(0xDEAD) as u64;
+                    let pt_base = pde & 0xFFFF_F000;
+                    let pte_idx = (cr2 >> 12) & 0x3FF;
+                    let pte_addr = pt_base + pte_idx * 4;
+                    let pte = memory.read_u32(pte_addr).unwrap_or(0xDEAD) as u64;
+                    eprintln!("  32bit: PDE[{}]@{:#x}={:#010x} PTE[{}]@{:#x}={:#010x}",
+                        pde_idx, pde_addr, pde, pte_idx, pte_addr, pte);
+                }
+            }
+        }
+
         // ── Debugger hook: exception breakpoints ──
         #[cfg(feature = "host_test")]
         if crate::debugger::on_exception(vector, error_code, cr2_val.unwrap_or(0), self) {
@@ -1770,10 +2005,11 @@ impl Cpu {
                     vector, error_code, cr2_val.unwrap_or(0)));
         }
 
-        // Double fault detection: if we're already handling an exception and
-        // another contributory exception occurs, deliver #DF (vector 8) instead.
-        // Only #PF, #GP, #SS, #NP, #TS, #DF, #AC are contributory; others nest normally.
-        let is_contributory = matches!(vector, 0 | 8 | 10 | 11 | 12 | 13 | 14 | 17);
+        // Double fault detection (Intel SDM Vol. 3A §6.15):
+        // Contributory exceptions: #DE(0), #TS(10), #NP(11), #SS(12), #GP(13).
+        // #PF(14) is special: contributory-during-#PF or #PF-during-#PF → #DF.
+        // #DF(8), #AC(17) are NOT contributory.
+        let is_contributory = matches!(vector, 0 | 10 | 11 | 12 | 13 | 14);
         if interrupts.handling_exception && is_contributory {
             if vector == 8 || interrupts.handling_double_fault {
                 // Triple fault: #DF during #DF handling → shutdown
@@ -1798,6 +2034,17 @@ impl Cpu {
         #[cfg(feature = "host_test")]
         let orig_rip = self.regs.rip;
 
+        // Intel SDM Vol. 3A §6.8.3: For fault-type exceptions (#DE, #DB, #UD,
+        // #GP, #PF, etc.), RF is set in the EFLAGS image pushed on the stack
+        // so that IRET returns with RF=1, preventing re-triggering for #DB.
+        // For trap-type exceptions (#BP, #OF) and interrupts, RF is cleared.
+        let is_fault = matches!(vector, 0 | 1 | 5 | 6 | 7 | 10 | 11 | 12 | 13 | 14 | 17);
+        if is_fault {
+            self.regs.rflags |= crate::flags::RF;
+        } else {
+            self.regs.rflags &= !crate::flags::RF;
+        }
+
         let result = self.deliver_interrupt(
             vector,
             error_code.is_some(),
@@ -1806,6 +2053,9 @@ impl Cpu {
             mmu,
             interrupts,
         );
+
+        // Clear RF after delivery — the pushed image already has it set/cleared.
+        self.regs.rflags &= !crate::flags::RF;
 
         match result {
             Ok(()) => {
@@ -1930,29 +2180,34 @@ impl Cpu {
         mmu: &mut Mmu,
         interrupts: &mut InterruptController,
     ) -> Result<()> {
-        match self.mode {
-            Mode::RealMode => {
-                self.deliver_interrupt_real(vector, memory, mmu)
-            }
-            Mode::ProtectedMode => {
-                self.deliver_interrupt_protected(
-                    vector,
-                    has_error_code,
-                    error_code,
-                    memory,
-                    mmu,
-                    interrupts,
-                )
-            }
-            Mode::LongMode => {
-                self.deliver_interrupt_long(
-                    vector,
-                    has_error_code,
-                    error_code,
-                    memory,
-                    mmu,
-                    interrupts,
-                )
+        // Intel SDM Vol. 3A §6.14.2: In IA-32e mode (EFER.LMA=1), the processor
+        // always uses 16-byte IDT gate descriptors and 64-bit interrupt delivery,
+        // even when executing in compatibility mode (CS.L=0).
+        let lma = (self.regs.read_msr(MSR_EFER) & EFER_LMA) != 0;
+        if lma {
+            self.deliver_interrupt_long(
+                vector,
+                has_error_code,
+                error_code,
+                memory,
+                mmu,
+                interrupts,
+            )
+        } else {
+            match self.mode {
+                Mode::RealMode => {
+                    self.deliver_interrupt_real(vector, memory, mmu)
+                }
+                _ => {
+                    self.deliver_interrupt_protected(
+                        vector,
+                        has_error_code,
+                        error_code,
+                        memory,
+                        mmu,
+                        interrupts,
+                    )
+                }
             }
         }
     }
@@ -2030,12 +2285,13 @@ impl Cpu {
     ) -> Result<()> {
         use crate::flags::{IF, TF};
 
+        // IDT access during interrupt delivery is an implicit supervisor access.
         let entry = interrupts.read_idt_entry_protected(
             vector,
             self.regs.idtr.base,
             self.regs.idtr.limit,
             self.regs.cr3,
-            self.regs.cpl,
+            0,
             mmu,
             &*memory,
         )?;
@@ -2308,12 +2564,14 @@ impl Cpu {
         use crate::flags::IF;
         use crate::flags::TF;
 
+        // IDT access during interrupt delivery is an implicit supervisor access
+        // (Intel SDM Vol. 3A §6.13) — always use CPL=0 regardless of current privilege.
         let entry = interrupts.read_idt_entry_long(
             vector,
             self.regs.idtr.base,
             self.regs.idtr.limit,
             self.regs.cr3,
-            self.regs.cpl,
+            0,
             mmu,
             &*memory,
         )?;
@@ -2329,8 +2587,38 @@ impl Cpu {
         let old_rsp = self.regs.sp();
         let old_ss = self.regs.seg[SegReg::Ss as usize].selector;
 
-        // In long mode, the stack is always 64-bit
-        // TODO: IST stack switching, privilege level transition
+        // Long mode stack switching:
+        // 1. IST (Interrupt Stack Table): if IDT entry IST != 0, load RSP from TSS.IST[n]
+        // 2. Privilege change (CPL 3→0): load RSP from TSS.RSP0
+        // 3. Same privilege: keep current RSP
+        let target_cpl = (entry.selector & 3) as u8; // handler's DPL from CS selector RPL
+        let target_cpl = 0u8; // interrupt handlers always run at ring 0 in long mode
+
+        if entry.ist != 0 {
+            // IST stack: read TSS.IST[n] (offset 0x24 + (ist-1)*8)
+            let ist_index = (entry.ist - 1) as u64;
+            let tss_base = self.read_tss_base64(memory, mmu)?;
+            let ist_offset = 0x24 + ist_index * 8;
+            let ist_phys = mmu.translate_linear(tss_base + ist_offset, self.regs.cr3, AccessType::Read, 0, memory)?;
+            let new_rsp = memory.read_u64(ist_phys)?;
+            self.regs.set_sp(new_rsp);
+            // Load flat kernel SS (selector 0, which in long mode is valid)
+            self.regs.seg[SegReg::Ss as usize].selector = 0;
+            self.regs.seg[SegReg::Ss as usize].base = 0;
+        } else if self.regs.cpl > target_cpl {
+            // Privilege level change: load RSP0 from 64-bit TSS (offset 0x04)
+            let tss_base = self.read_tss_base64(memory, mmu)?;
+            let rsp0_phys = mmu.translate_linear(tss_base + 4, self.regs.cr3, AccessType::Read, 0, memory)?;
+            let new_rsp = memory.read_u64(rsp0_phys)?;
+            self.regs.set_sp(new_rsp);
+            // Load flat kernel SS
+            self.regs.seg[SegReg::Ss as usize].selector = 0;
+            self.regs.seg[SegReg::Ss as usize].base = 0;
+        }
+        // else: same privilege, keep current RSP
+
+        // Switch to target privilege level before pushing frame onto kernel stack
+        self.regs.cpl = target_cpl;
 
         // Push SS
         let rsp = self.regs.sp().wrapping_sub(8);
@@ -2392,6 +2680,20 @@ impl Cpu {
 }
 
 impl Cpu {
+    /// Read the 64-bit TSS base address from the GDT descriptor pointed to by TR.
+    fn read_tss_base64(
+        &self,
+        memory: &GuestMemory,
+        mmu: &Mmu,
+    ) -> Result<u64> {
+        let tr = self.regs.tr;
+        if (tr & 0xFFFC) == 0 {
+            return Err(VmError::InvalidTss(0));
+        }
+        let tss_desc = self.read_gdt_descriptor(tr, memory, mmu)?;
+        Ok(tss_desc.base)
+    }
+
     /// Read 32-bit ring stack selector/pointer (SS:ESP) from current 32-bit TSS.
     fn read_tss_ring_stack32(
         &self,
@@ -2534,6 +2836,7 @@ impl Cpu {
         self.regs.cr3 = new_cr3 as u64;
         mmu.flush_tlb();
         mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
+            mmu.rflags_ac = (self.regs.rflags & crate::flags::AC) != 0;
 
         // ── 7. Load registers ──
         self.regs.rip = new_eip as u64;

@@ -34,7 +34,7 @@ macro_rules! ide_log {
 }
 
 #[cfg(feature = "host_test")]
-static IDE_LOG_BUDGET: AtomicU32 = AtomicU32::new(256);
+static IDE_LOG_BUDGET: AtomicU32 = AtomicU32::new(2048);
 
 // ── ATA status register bits ──────────────────────────────────────────────
 
@@ -443,9 +443,14 @@ impl Ide {
 
     fn current_lba(&self) -> u64 {
         if self.drive_head & 0x40 != 0 {
+            // LBA mode
             self.lba28()
         } else {
-            self.lba28()
+            // CHS mode: convert to LBA using standard geometry (16 heads, 63 sectors/track)
+            let cylinder = (self.cylinder_high as u64) << 8 | self.cylinder_low as u64;
+            let head = (self.drive_head & 0x0F) as u64;
+            let sector = self.sector_number as u64;
+            (cylinder * 16 + head) * 63 + sector.saturating_sub(1)
         }
     }
 
@@ -892,8 +897,10 @@ impl Ide {
                 self.expose_buffer_data_in(ATA_SECTOR_SIZE, TransferMode::AtaRead);
             }
             CMD_READ_SECTORS | CMD_READ_MULTIPLE => {
+                let lba = self.lba28();
                 let count = if self.sector_count == 0 { 256 } else { self.sector_count as u32 };
-                self.start_ata_read(self.lba28(), count);
+                ide_log!("READ lba={} count={} dh=0x{:02X}", lba, count, self.drive_head);
+                self.start_ata_read(lba, count);
             }
             CMD_READ_SECTORS_EXT => {
                 let count = ((self.hob_sector_count as u32) << 8) | self.sector_count as u32;

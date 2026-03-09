@@ -167,7 +167,8 @@ pub mod smc {
 /// Diagnostic: count writes to SeaBIOS mmconfig variable at 0xF4DF8.
 static MMCFG_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 use crate::registers::{
-    SegmentDescriptor, CR0_PG, CR0_WP, CR4_PAE, CR4_PSE, EFER_LMA, EFER_NXE,
+    SegmentDescriptor, CR0_PG, CR0_WP, CR4_PAE, CR4_PSE, CR4_SMEP, CR4_SMAP,
+    EFER_LMA, EFER_NXE,
 };
 
 pub use flat::FlatMemory;
@@ -710,6 +711,12 @@ pub struct Mmu {
     pub wp: bool,
     /// EFER.NXE — no-execute enable.
     pub nxe: bool,
+    /// CR4.SMEP — supervisor mode execution prevention.
+    pub smep: bool,
+    /// CR4.SMAP — supervisor mode access prevention.
+    pub smap: bool,
+    /// Cached EFLAGS.AC for SMAP override. Updated per-instruction.
+    pub rflags_ac: bool,
     /// Cached CR0/CR4/EFER for change detection.
     cached_cr0: u64,
     /// Cached CR4 value.
@@ -742,6 +749,9 @@ impl Mmu {
             long_mode: false,
             wp: false,
             nxe: false,
+            smep: false,
+            smap: false,
+            rflags_ac: false,
             cached_cr0: 0,
             cached_cr4: 0,
             cached_efer: 0,
@@ -787,6 +797,8 @@ impl Mmu {
         self.pae = (cr4 & CR4_PAE) != 0;
         self.long_mode = (efer & EFER_LMA) != 0;
         self.nxe = (efer & EFER_NXE) != 0;
+        self.smep = (cr4 & CR4_SMEP) != 0;
+        self.smap = (cr4 & CR4_SMAP) != 0;
     }
 
     /// Translate a logical address (segment descriptor + offset) to a physical address.
@@ -870,7 +882,7 @@ impl Mmu {
             }
         }
 
-        let translated = walk_page_tables(linear, cr3, access, cpl, self, mem, self.ram_ptr, self.ram_size)?;
+        let translated = walk_page_tables(linear, cr3, access, cpl, self, mem, self.ram_ptr, self.ram_size, self.rflags_ac)?;
         let phys_page = translated >> 12;
 
         unsafe {

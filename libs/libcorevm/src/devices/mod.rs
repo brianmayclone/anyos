@@ -34,3 +34,4 @@ pub mod ioapic;
 pub mod lapic;
 pub mod acpi;
 pub mod apm;
+pub mod ahci;

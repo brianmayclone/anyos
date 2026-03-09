@@ -50,6 +50,19 @@ impl IoHandler for Port61 {
         self.refresh_toggle = !self.refresh_toggle;
         let refresh = if self.refresh_toggle { 1 } else { 0 };
         let v = (self.control & 0x03) | (refresh << 4) | (pit_out << 5);
+        #[cfg(feature = "host_test")]
+        {
+            static P61_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = P61_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 5 || (pit_out != 0 && cnt < 20) {
+                eprintln!("[port61] read val={:#04x} pit_out={} gate={} cur={} enabled={}",
+                    v, pit_out,
+                    if self.pit.is_null() { 0 } else { unsafe { (*self.pit).channels[2].gate as u8 } },
+                    if self.pit.is_null() { 0 } else { unsafe { (*self.pit).channels[2].count } },
+                    if self.pit.is_null() { 0 } else { unsafe { (*self.pit).channels[2].enabled as u8 } },
+                );
+            }
+        }
         Ok(v as u32)
     }
 

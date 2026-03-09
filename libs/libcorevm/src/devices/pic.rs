@@ -288,6 +288,14 @@ impl IoHandler for PicPair {
     /// Dispatches to the ICW/OCW protocol handler for the appropriate PIC.
     fn write(&mut self, port: u16, _size: u8, val: u32) -> Result<()> {
         let byte = val as u8;
+        #[cfg(feature = "host_test")]
+        {
+            static PIC_WLOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = PIC_WLOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 40 {
+                eprintln!("[pic] write port={:#06x} val={:#04x} m_mask={:#04x} s_mask={:#04x}", port, byte, self.master.imr, self.slave.imr);
+            }
+        }
         match port {
             0x20 => Self::write_command(&mut self.master, byte),
             0x21 => Self::write_data(&mut self.master, byte),
