@@ -100,6 +100,13 @@ struct DllExports {
     _present_rect: usize,
     set_clipboard: extern "C" fn(channel_id: u32, data_ptr: *const u8, data_len: u32, format: u32),
     get_clipboard: extern "C" fn(channel_id: u32, sub_id: u32, out_ptr: *mut u8, out_cap: u32, out_format: *mut u32) -> u32,
+    show_notification: extern "C" fn(
+        channel_id: u32,
+        title_ptr: *const u8, title_len: u32,
+        msg_ptr: *const u8, msg_len: u32,
+        icon_ptr: *const u32,
+        timeout_ms: u32, flags: u32,
+    ),
 }
 
 fn dll() -> &'static DllExports {
@@ -916,6 +923,20 @@ pub fn clipboard_get() -> Option<alloc::string::String> {
     core::str::from_utf8(&buf[..actual])
         .ok()
         .map(|s| alloc::string::String::from(s))
+}
+
+/// Show a desktop notification banner via the compositor.
+/// `timeout_ms` = 0 means default (5 seconds).
+pub fn show_notification(title: &str, message: &str, timeout_ms: u32) {
+    if !ensure_init() { return; }
+    let st = state();
+    (dll().show_notification)(
+        st.channel_id,
+        title.as_ptr(), title.len() as u32,
+        message.as_ptr(), message.len() as u32,
+        core::ptr::null(),
+        timeout_ms, 0,
+    );
 }
 
 /// Get GPU driver name.
