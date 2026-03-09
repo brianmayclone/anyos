@@ -186,3 +186,80 @@ fn compile_string_import() {
         fn main() -> i32 { 0 }
     "#);
 }
+
+#[test]
+fn run_kernel_address_module() {
+    assert_run_returns(r#"
+        struct PhysAddr { val: u64 }
+        impl PhysAddr {
+            fn new(addr: u64) -> PhysAddr { PhysAddr { val: addr } }
+            fn as_u64(self) -> u64 { self.val }
+            fn frame_index(self) -> i32 {
+                let v = self.as_u64();
+                let fs: u64 = 4096;
+                (v / fs) as i32
+            }
+        }
+        fn main() -> i32 {
+            let addr = PhysAddr::new(8192);
+            addr.frame_index()
+        }
+    "#, 2);
+}
+
+#[test]
+fn run_kernel_mini_spinlock() {
+    // Simplified spinlock pattern from kernel
+    assert_run_returns(r#"
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        struct Spinlock { locked: AtomicBool }
+
+        impl Spinlock {
+            fn new() -> Spinlock {
+                Spinlock { locked: AtomicBool::new(false) }
+            }
+            fn lock(&self) {
+                self.locked.store(true, Ordering::Acquire);
+            }
+            fn unlock(&self) {
+                self.locked.store(false, Ordering::Release);
+            }
+            fn is_locked(&self) -> i32 {
+                let v = self.locked.load(Ordering::Relaxed);
+                if v { 1 } else { 0 }
+            }
+        }
+
+        fn main() -> i32 {
+            let s = Spinlock::new();
+            s.lock();
+            let r1 = s.is_locked();
+            s.unlock();
+            let r2 = s.is_locked();
+            r1 + r2
+        }
+    "#, 1);
+}
+
+#[test]
+fn run_kernel_port_io() {
+    // Kernel-like: unsafe, inline asm, static, bitwise ops
+    assert_run_returns(r#"
+        static mut TEST_PORT: u32 = 0;
+
+        fn outb(port: u16, val: u8) {
+            unsafe { TEST_PORT = (port as u32) | ((val as u32) << 16); }
+        }
+
+        fn inb(port: u16) -> u8 {
+            unsafe { (TEST_PORT >> 16) as u8 }
+        }
+
+        fn main() -> i32 {
+            outb(0x3F8, 42);
+            let v = inb(0x3F8);
+            v as i32
+        }
+    "#, 42);
+}

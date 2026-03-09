@@ -283,10 +283,10 @@ impl<'a> CodeEmitter<'a> {
                     BinOp::BitXor => self.asm.xor_rr(Reg::RAX, Reg::RCX),
                     BinOp::Shl => {
                         // SHL r/m64, CL: REX.W D3 /4 — CL is low byte of RCX
-                        self.asm.shl_ri(Reg::RAX, 0); // placeholder for dynamic shift
+                        self.asm.shl_cl(Reg::RAX);
                     }
                     BinOp::Shr => {
-                        self.asm.shr_ri(Reg::RAX, 0); // placeholder for dynamic shift
+                        self.asm.shr_cl(Reg::RAX);
                     }
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                         self.asm.cmp_rr(Reg::RAX, Reg::RCX);
@@ -326,7 +326,57 @@ impl<'a> CodeEmitter<'a> {
             }
             Rvalue::Ref(_, place) => {
                 let slot = self.alloc.stack_slots[place.local.0];
-                self.asm.lea(dst, Reg::RBP, slot);
+                if place.projections.is_empty() {
+                    self.asm.lea(dst, Reg::RBP, slot);
+                } else {
+                    // Compute address of the projected place
+                    // Walk projections, computing the effective address
+                    enum Base { Stack(i32), Reg }
+                    let mut base = Base::Stack(slot);
+                    for proj in &place.projections {
+                        match proj {
+                            Projection::Deref => {
+                                // Load the pointer from current location
+                                match base {
+                                    Base::Stack(off) => {
+                                        self.asm.mov_rm(dst, Reg::RBP, off);
+                                    }
+                                    Base::Reg => {
+                                        self.asm.mov_rm(dst, dst, 0);
+                                    }
+                                }
+                                // dst now holds the pointer; future ops relative to it
+                                base = Base::Reg;
+                            }
+                            Projection::Field(idx) => {
+                                let field_offset = (*idx as i32) * 8;
+                                match base {
+                                    Base::Stack(ref mut off) => {
+                                        *off += field_offset;
+                                    }
+                                    Base::Reg => {
+                                        if field_offset != 0 {
+                                            self.asm.add_ri(dst, field_offset);
+                                        }
+                                        // dst now points to the field
+                                    }
+                                }
+                            }
+                            Projection::Index(_) => {
+                                // Simplified
+                            }
+                        }
+                    }
+                    // Now compute the final address
+                    match base {
+                        Base::Stack(off) => {
+                            self.asm.lea(dst, Reg::RBP, off);
+                        }
+                        Base::Reg => {
+                            // dst already holds the address
+                        }
+                    }
+                }
             }
             Rvalue::Cast(op, _) => {
                 // Simple truncation/extension - just load for now

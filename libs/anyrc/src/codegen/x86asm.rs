@@ -274,6 +274,20 @@ impl X86Assembler {
         self.code.push(imm);
     }
 
+    pub fn shl_cl(&mut self, dst: Reg) {
+        // SHL r/m64, CL: REX.W D3 /4
+        self.rex_single(true, dst);
+        self.code.push(0xD3);
+        self.code.push(Self::modrm(0b11, 4, Self::reg_code(dst)));
+    }
+
+    pub fn shr_cl(&mut self, dst: Reg) {
+        // SHR r/m64, CL: REX.W D3 /5
+        self.rex_single(true, dst);
+        self.code.push(0xD3);
+        self.code.push(Self::modrm(0b11, 5, Self::reg_code(dst)));
+    }
+
     pub fn sar_ri(&mut self, dst: Reg, imm: u8) {
         self.rex_single(true, dst);
         self.code.push(0xC1);
