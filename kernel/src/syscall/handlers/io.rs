@@ -44,16 +44,18 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                     crate::ipc::anon_pipe::write(pipe_id, buf)
                 }
                 FdKind::Tty => {
-                    // Terminal I/O: write to named stdout pipe + serial
+                    // Terminal I/O: write to named stdout pipe + serial (if verbose)
                     let pipe_id = crate::task::scheduler::current_thread_stdout_pipe();
                     if pipe_id != 0 {
                         crate::ipc::pipe::write(pipe_id, buf);
                     }
-                    let lock_state = crate::drivers::serial::output_lock_acquire();
-                    for &byte in buf {
-                        crate::drivers::serial::write_byte(byte);
+                    if crate::drivers::serial::is_verbose() {
+                        let lock_state = crate::drivers::serial::output_lock_acquire();
+                        for &byte in buf {
+                            crate::drivers::serial::write_byte(byte);
+                        }
+                        crate::drivers::serial::output_lock_release(lock_state);
                     }
-                    crate::drivers::serial::output_lock_release(lock_state);
                     len
                 }
                 FdKind::PipeRead { .. } | FdKind::None => u32::MAX,
@@ -67,11 +69,13 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                 if pipe_id != 0 {
                     crate::ipc::pipe::write(pipe_id, buf);
                 }
-                let lock_state = crate::drivers::serial::output_lock_acquire();
-                for &byte in buf {
-                    crate::drivers::serial::write_byte(byte);
+                if crate::drivers::serial::is_verbose() {
+                    let lock_state = crate::drivers::serial::output_lock_acquire();
+                    for &byte in buf {
+                        crate::drivers::serial::write_byte(byte);
+                    }
+                    crate::drivers::serial::output_lock_release(lock_state);
                 }
-                crate::drivers::serial::output_lock_release(lock_state);
                 len
             } else {
                 u32::MAX

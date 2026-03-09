@@ -218,6 +218,16 @@ fn build_preferences_card(panel: &ui::View) {
     // Notifications toggle (UI only)
     let notif_row = layout::build_setting_row(&card, i18n::t("Notifications"), false);
     layout::add_toggle_to_row(&notif_row, true);
+
+    layout::build_separator(&card);
+
+    // Serial Verbose toggle — controls whether userspace stdout/stderr
+    // and driver messages are forwarded to the serial console.
+    let serial_row = layout::build_setting_row(&card, i18n::t("Serial Verbose"), false);
+    let serial_toggle = layout::add_toggle_to_row(&serial_row, false);
+    serial_toggle.on_checked_changed(|e| {
+        sys::set_serial_verbose(e.checked);
+    });
 }
 
 // ── Keyboard layout card ────────────────────────────────────────────────────
