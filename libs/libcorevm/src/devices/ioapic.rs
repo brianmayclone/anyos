@@ -119,20 +119,8 @@ impl IoApic {
                         let masked = (*entry >> 16) & 1;
                         let vec = *entry & 0xFF;
                         let dm = (*entry >> 8) & 7;
-                        // Always log pin 2 writes, limited budget for others
-                        static WRITE_BUDGET: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(200);
-                        if entry_index == 2 {
-                            let entry_val = *entry;
-                            eprintln!("[ioapic-write2] entry={:016X}", entry_val);
-                        }
-                        if entry_index == 2 || WRITE_BUDGET.fetch_update(
-                            core::sync::atomic::Ordering::Relaxed,
-                            core::sync::atomic::Ordering::Relaxed,
-                            |n| (n > 0).then_some(n - 1)
-                        ).is_ok() {
-                            eprintln!("[ioapic] write pin={} reg=0x{:02X} val=0x{:08X} -> entry=0x{:016X} masked={} vec=0x{:02X} dm={}",
-                                entry_index, index, val, *entry, masked, vec, dm);
-                        }
+                        eprintln!("[ioapic] write pin={} reg=0x{:02X} val=0x{:08X} -> entry=0x{:016X} masked={} vec=0x{:02X} dm={}",
+                            entry_index, index, val, *entry, masked, vec, dm);
                     }
                 }
             }
@@ -171,13 +159,7 @@ impl IoApic {
 
     /// Raw redir table entry for diagnostics.
     pub fn diag_entry(&self, irq: u8) -> u64 {
-        let val = self.redir_table.get(irq as usize).copied().unwrap_or(0);
-        #[cfg(feature = "host_test")]
-        if irq == 2 {
-            eprintln!("[ioapic-diag] diag_entry(2)={:016X} self={:p} table={:p}",
-                val, self as *const _, self.redir_table.as_ptr());
-        }
-        val
+        self.redir_table.get(irq as usize).copied().unwrap_or(0)
     }
 
     /// Route an external IRQ pin through the redirection table.
@@ -244,6 +226,14 @@ impl MmioHandler for IoApic {
     /// IOREGSEL (offset 0x00) and IOWIN (offset 0x10) are both 32-bit
     /// registers. Sub-dword accesses extract the correct byte(s).
     fn read(&mut self, offset: u64, size: u8) -> Result<u64> {
+        #[cfg(feature = "host_test")]
+        {
+            static IOAPIC_ACCESS_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = IOAPIC_ACCESS_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 40 {
+                eprintln!("[ioapic] MMIO read offset={:#x} size={} regsel={:#x}", offset, size, self.reg_select);
+            }
+        }
         // IOREGSEL is at 0x00-0x03, IOWIN at 0x10-0x13.
         // Determine which register and the byte offset within it.
         let (reg_base, byte_off) = match offset {
@@ -262,6 +252,14 @@ impl MmioHandler for IoApic {
     ///
     /// Sub-dword writes perform a read-modify-write to merge partial bytes.
     fn write(&mut self, offset: u64, size: u8, val: u64) -> Result<()> {
+        #[cfg(feature = "host_test")]
+        {
+            static IOAPIC_WCOUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = IOAPIC_WCOUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 40 {
+                eprintln!("[ioapic] MMIO write offset={:#x} size={} val={:#x}", offset, size, val);
+            }
+        }
         let (reg_base, byte_off) = match offset {
             0x00..=0x03 => (0x00u64, (offset & 0x3) as u32),
             0x10..=0x13 => (0x10u64, (offset & 0x3) as u32),

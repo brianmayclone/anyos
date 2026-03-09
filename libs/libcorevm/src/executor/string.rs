@@ -15,7 +15,7 @@ use crate::error::Result;
 use crate::flags::{self, OperandSize};
 use crate::instruction::{DecodedInst, RepPrefix};
 use crate::io::IoDispatch;
-use crate::memory::{GuestMemory, Mmu};
+use crate::memory::{GuestMemory, MemoryBus, Mmu};
 use crate::registers::{GprIndex, SegReg};
 
 use super::{translate_and_read, translate_and_write};
@@ -416,6 +416,11 @@ pub fn exec_ins(
     let size_io = if size_io > 4 { 4 } else { size_io };
 
     if inst.rep == RepPrefix::Rep {
+        // Fast path: cache page translation to avoid per-word MMU walks.
+        let mut cached_page: u64 = u64::MAX; // virtual page number
+        let mut cached_phys_base: u64 = 0;   // physical base of that page
+        let elem_bytes = elem.bytes() as u64;
+
         loop {
             let count = read_counter(cpu, inst);
             if count == 0 {
@@ -424,7 +429,35 @@ pub fn exec_ins(
 
             let val = io.port_in(port, size_io)? as u64;
             let d = dst_linear(cpu, inst);
-            translate_and_write(cpu, d, elem, val, mmu, memory)?;
+            let page = d >> 12;
+            let off = d & 0xFFF;
+
+            // Check if we need a new page translation
+            if page != cached_page || (off + elem_bytes) > 0x1000 {
+                // Falls on page boundary or new page — use full translate_and_write
+                if (off + elem_bytes) > 0x1000 {
+                    translate_and_write(cpu, d, elem, val, mmu, memory)?;
+                } else {
+                    let phys = mmu.translate_linear(d, cpu.regs.cr3, crate::memory::AccessType::Write, cpu.regs.cpl, memory)?;
+                    cached_page = page;
+                    cached_phys_base = phys & !0xFFF;
+                    match elem {
+                        OperandSize::Byte => memory.fast_write_u8(phys, val as u8),
+                        OperandSize::Word => memory.fast_write_u16(phys, val as u16),
+                        OperandSize::Dword => memory.fast_write_u32(phys, val as u32),
+                        OperandSize::Qword => { memory.write_u64(phys, val)?; }
+                    }
+                }
+            } else {
+                // Same page — use cached physical base
+                let phys = cached_phys_base | off;
+                match elem {
+                    OperandSize::Byte => memory.fast_write_u8(phys, val as u8),
+                    OperandSize::Word => memory.fast_write_u16(phys, val as u16),
+                    OperandSize::Dword => memory.fast_write_u32(phys, val as u32),
+                    OperandSize::Qword => { memory.write_u64(phys, val)?; }
+                }
+            }
 
             write_di(cpu, inst, read_di(cpu, inst).wrapping_add(delta as u64));
             write_counter(cpu, inst, count - 1);

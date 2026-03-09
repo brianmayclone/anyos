@@ -144,6 +144,12 @@ pub struct Cpu {
     pub perf_tsc_interp: u64,
     pub perf_tsc_total: u64,
     pub perf_loop_count: u64,
+    /// Host TSC frequency (Hz) for wall-clock-based guest TSC.
+    pub tsc_host_freq: u64,
+    /// Guest TSC frequency (Hz) — what RDTSC should report.
+    pub tsc_guest_freq: u64,
+    /// Host TSC value at VM start, for computing guest TSC offset.
+    pub tsc_host_base: u64,
 }
 
 impl Cpu {
@@ -193,6 +199,9 @@ impl Cpu {
             perf_tsc_interp: 0,
             perf_tsc_total: 0,
             perf_loop_count: 0,
+            tsc_host_freq: 0,
+            tsc_guest_freq: 2_000_000_000, // 2 GHz default
+            tsc_host_base: 0,
         }
     }
 
@@ -424,11 +433,12 @@ impl Cpu {
             return Err(VmError::GeneralProtection(selector as u32 & 0xFFFC));
         }
         let addr = self.regs.gdtr.base.wrapping_add(index);
+        // GDT access is always an implicit supervisor operation (CPL=0).
         let phys = mmu.translate_linear(
             addr,
             self.regs.cr3,
             AccessType::Read,
-            self.regs.cpl,
+            0,
             memory,
         )?;
         let raw = memory.read_u64(phys)?;
@@ -436,8 +446,10 @@ impl Cpu {
 
         // Long-mode system descriptors (TSS, LDT) are 16 bytes wide.
         // Access byte bit 4 (S flag) = 0 indicates a system descriptor.
+        // This applies whenever EFER.LMA=1, including compatibility mode.
         let is_system = (desc.access & 0x10) == 0;
-        if matches!(self.mode, Mode::LongMode) && is_system && desc.present {
+        let lma = (self.regs.read_msr(MSR_EFER) & EFER_LMA) != 0;
+        if lma && is_system && desc.present {
             if index + 15 > self.regs.gdtr.limit as u64 {
                 return Err(VmError::GeneralProtection(selector as u32 & 0xFFFC));
             }
@@ -446,7 +458,7 @@ impl Cpu {
                 addr_hi,
                 self.regs.cr3,
                 AccessType::Read,
-                self.regs.cpl,
+                0,
                 memory,
             )?;
             let raw_hi = memory.read_u64(phys_hi)?;
@@ -470,8 +482,13 @@ impl Cpu {
         mmu: &Mmu,
     ) -> Result<()> {
         if (selector & 0xFFFC) == 0 {
-            // Null selector — allowed for data segments, not CS/SS.
-            if matches!(seg, SegReg::Cs | SegReg::Ss) {
+            // Null selector — allowed for data segments.
+            // CS never allows null. SS allows null in 64-bit mode at CPL 0/1/2
+            // (Intel SDM Vol. 3A §5.4.1.1: null SS is valid in 64-bit mode).
+            if matches!(seg, SegReg::Cs) {
+                return Err(VmError::GeneralProtection(0));
+            }
+            if matches!(seg, SegReg::Ss) && !matches!(self.mode, Mode::LongMode) {
                 return Err(VmError::GeneralProtection(0));
             }
             let desc = &mut self.regs.seg[seg as usize];
@@ -771,6 +788,22 @@ impl Cpu {
                     }
                     eprintln!("[HANG-TRAP] ntdll@PA{:X} isz={:X} imgbase={:08X} sa={:X} fa={:X} checksum: computed={:08X} stored={:08X} {}",
                         ntdll_pa, isz, image_base, sect_align, file_align, s, stored, if s == stored { "OK" } else { "MISMATCH" });
+                    // Dump first 256 bytes for comparison with ISO
+                    {
+                        let mut hex = alloc::string::String::new();
+                        for i in 0..256u64 {
+                            if i % 32 == 0 && !hex.is_empty() {
+                                eprintln!("[HEXDUMP] PA{:X}+{:03X}: {}", ntdll_pa, i - 32, hex);
+                                hex.clear();
+                            }
+                            let b = memory.read_u8(ntdll_pa + i).unwrap_or(0);
+                            use core::fmt::Write;
+                            let _ = write!(hex, "{:02X} ", b);
+                        }
+                        if !hex.is_empty() {
+                            eprintln!("[HEXDUMP] PA{:X}+{:03X}: {}", ntdll_pa, 256 - 32, hex);
+                        }
+                    }
                     // don't break — check all copies
                 }
                 // Scan for flat-file ntdll mappings (sec0 rawptr != VA)
@@ -2007,29 +2040,34 @@ impl Cpu {
         mmu: &mut Mmu,
         interrupts: &mut InterruptController,
     ) -> Result<()> {
-        match self.mode {
-            Mode::RealMode => {
-                self.deliver_interrupt_real(vector, memory, mmu)
-            }
-            Mode::ProtectedMode => {
-                self.deliver_interrupt_protected(
-                    vector,
-                    has_error_code,
-                    error_code,
-                    memory,
-                    mmu,
-                    interrupts,
-                )
-            }
-            Mode::LongMode => {
-                self.deliver_interrupt_long(
-                    vector,
-                    has_error_code,
-                    error_code,
-                    memory,
-                    mmu,
-                    interrupts,
-                )
+        // Intel SDM Vol. 3A §6.14.2: In IA-32e mode (EFER.LMA=1), the processor
+        // always uses 16-byte IDT gate descriptors and 64-bit interrupt delivery,
+        // even when executing in compatibility mode (CS.L=0).
+        let lma = (self.regs.read_msr(MSR_EFER) & EFER_LMA) != 0;
+        if lma {
+            self.deliver_interrupt_long(
+                vector,
+                has_error_code,
+                error_code,
+                memory,
+                mmu,
+                interrupts,
+            )
+        } else {
+            match self.mode {
+                Mode::RealMode => {
+                    self.deliver_interrupt_real(vector, memory, mmu)
+                }
+                _ => {
+                    self.deliver_interrupt_protected(
+                        vector,
+                        has_error_code,
+                        error_code,
+                        memory,
+                        mmu,
+                        interrupts,
+                    )
+                }
             }
         }
     }
@@ -2107,12 +2145,13 @@ impl Cpu {
     ) -> Result<()> {
         use crate::flags::{IF, TF};
 
+        // IDT access during interrupt delivery is an implicit supervisor access.
         let entry = interrupts.read_idt_entry_protected(
             vector,
             self.regs.idtr.base,
             self.regs.idtr.limit,
             self.regs.cr3,
-            self.regs.cpl,
+            0,
             mmu,
             &*memory,
         )?;
@@ -2385,12 +2424,14 @@ impl Cpu {
         use crate::flags::IF;
         use crate::flags::TF;
 
+        // IDT access during interrupt delivery is an implicit supervisor access
+        // (Intel SDM Vol. 3A §6.13) — always use CPL=0 regardless of current privilege.
         let entry = interrupts.read_idt_entry_long(
             vector,
             self.regs.idtr.base,
             self.regs.idtr.limit,
             self.regs.cr3,
-            self.regs.cpl,
+            0,
             mmu,
             &*memory,
         )?;
@@ -2406,8 +2447,38 @@ impl Cpu {
         let old_rsp = self.regs.sp();
         let old_ss = self.regs.seg[SegReg::Ss as usize].selector;
 
-        // In long mode, the stack is always 64-bit
-        // TODO: IST stack switching, privilege level transition
+        // Long mode stack switching:
+        // 1. IST (Interrupt Stack Table): if IDT entry IST != 0, load RSP from TSS.IST[n]
+        // 2. Privilege change (CPL 3→0): load RSP from TSS.RSP0
+        // 3. Same privilege: keep current RSP
+        let target_cpl = (entry.selector & 3) as u8; // handler's DPL from CS selector RPL
+        let target_cpl = 0u8; // interrupt handlers always run at ring 0 in long mode
+
+        if entry.ist != 0 {
+            // IST stack: read TSS.IST[n] (offset 0x24 + (ist-1)*8)
+            let ist_index = (entry.ist - 1) as u64;
+            let tss_base = self.read_tss_base64(memory, mmu)?;
+            let ist_offset = 0x24 + ist_index * 8;
+            let ist_phys = mmu.translate_linear(tss_base + ist_offset, self.regs.cr3, AccessType::Read, 0, memory)?;
+            let new_rsp = memory.read_u64(ist_phys)?;
+            self.regs.set_sp(new_rsp);
+            // Load flat kernel SS (selector 0, which in long mode is valid)
+            self.regs.seg[SegReg::Ss as usize].selector = 0;
+            self.regs.seg[SegReg::Ss as usize].base = 0;
+        } else if self.regs.cpl > target_cpl {
+            // Privilege level change: load RSP0 from 64-bit TSS (offset 0x04)
+            let tss_base = self.read_tss_base64(memory, mmu)?;
+            let rsp0_phys = mmu.translate_linear(tss_base + 4, self.regs.cr3, AccessType::Read, 0, memory)?;
+            let new_rsp = memory.read_u64(rsp0_phys)?;
+            self.regs.set_sp(new_rsp);
+            // Load flat kernel SS
+            self.regs.seg[SegReg::Ss as usize].selector = 0;
+            self.regs.seg[SegReg::Ss as usize].base = 0;
+        }
+        // else: same privilege, keep current RSP
+
+        // Switch to target privilege level before pushing frame onto kernel stack
+        self.regs.cpl = target_cpl;
 
         // Push SS
         let rsp = self.regs.sp().wrapping_sub(8);
@@ -2469,6 +2540,20 @@ impl Cpu {
 }
 
 impl Cpu {
+    /// Read the 64-bit TSS base address from the GDT descriptor pointed to by TR.
+    fn read_tss_base64(
+        &self,
+        memory: &GuestMemory,
+        mmu: &Mmu,
+    ) -> Result<u64> {
+        let tr = self.regs.tr;
+        if (tr & 0xFFFC) == 0 {
+            return Err(VmError::InvalidTss(0));
+        }
+        let tss_desc = self.read_gdt_descriptor(tr, memory, mmu)?;
+        Ok(tss_desc.base)
+    }
+
     /// Read 32-bit ring stack selector/pointer (SS:ESP) from current 32-bit TSS.
     fn read_tss_ring_stack32(
         &self,

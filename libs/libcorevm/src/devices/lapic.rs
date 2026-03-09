@@ -318,6 +318,14 @@ impl Lapic {
         self.irr.get(idx).copied().unwrap_or(0)
     }
 
+    pub fn diag_isr(&self, idx: usize) -> u32 {
+        self.isr.get(idx).copied().unwrap_or(0)
+    }
+
+    pub fn diag_tpr(&self) -> u32 {
+        self.tpr
+    }
+
     pub fn diag_state(&self) -> (u32, u32, u32, u32, u32) {
         (
             self.svr,
@@ -470,6 +478,19 @@ impl Lapic {
 
     /// Read the raw 32-bit value of a register by its 16-byte-aligned offset.
     fn read_register(&mut self, reg_base: u32) -> u32 {
+        let val = self.read_register_inner(reg_base);
+        #[cfg(feature = "host_test")]
+        {
+            static RLOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = RLOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 200 {
+                eprintln!("[lapic] read  reg={:#05x} val={:#010x}", reg_base, val);
+            }
+        }
+        val
+    }
+
+    fn read_register_inner(&mut self, reg_base: u32) -> u32 {
         match reg_base {
             0x020 => self.id,
             0x030 => LAPIC_VERSION,
@@ -506,6 +527,14 @@ impl Lapic {
 
     /// Write a 32-bit value to a register by its 16-byte-aligned offset.
     fn write_register(&mut self, reg_base: u32, v: u32) {
+        #[cfg(feature = "host_test")]
+        {
+            static WLOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = WLOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 200 {
+                eprintln!("[lapic] write reg={:#05x} val={:#010x}", reg_base, v);
+            }
+        }
         match reg_base {
             // LAPIC ID: bits 31:24 are writable.
             0x020 => self.id = v & 0xFF00_0000,
@@ -518,7 +547,17 @@ impl Lapic {
             }
             0x0D0 => self.ldr = v,
             0x0E0 => self.dfr = v,
-            0x0F0 => self.svr = v,
+            0x0F0 => {
+                #[cfg(feature = "host_test")]
+                {
+                    static SVR_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    let cnt = SVR_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if cnt < 10 {
+                        eprintln!("[lapic] SVR write: {:#x} -> {:#x} (enabled={})", self.svr, v, (v >> 8) & 1);
+                    }
+                }
+                self.svr = v;
+            }
             0x280 => self.esr = 0, // Writing clears ESR
             0x300 => {
                 self.icr_lo = v & !0x1000; // clear delivery status bit

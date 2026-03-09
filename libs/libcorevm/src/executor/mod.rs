@@ -634,7 +634,7 @@ fn exec_secondary(
     cpu: &mut Cpu,
     inst: &DecodedInst,
     memory: &mut GuestMemory,
-    mmu: &Mmu,
+    mmu: &mut Mmu,
     _io: &mut IoDispatch,
     _interrupts: &mut InterruptController,
 ) -> Result<()> {
@@ -649,6 +649,13 @@ fn exec_secondary(
                 1 => system::exec_str(cpu, inst, memory, mmu),
                 2 => system::exec_lldt(cpu, inst, memory, mmu),
                 3 => system::exec_ltr(cpu, inst, memory, mmu),
+                // VERR/VERW: segment verification. Used by Linux for MDS mitigation.
+                // In an emulator, just set ZF=1 (segment is accessible) and advance RIP.
+                4 | 5 => {
+                    cpu.regs.rflags |= crate::flags::ZF;
+                    cpu.regs.rip += inst.length as u64;
+                    Ok(())
+                }
                 _ => Err(VmError::UndefinedOpcode(op2)),
             }
         }
@@ -680,12 +687,14 @@ fn exec_secondary(
                         2 => {
                             // CLAC: clear AC flag in EFLAGS
                             cpu.regs.rflags &= !(1 << 18);
+                            mmu.rflags_ac = false;
                             cpu.regs.rip += inst.length as u64;
                             Ok(())
                         }
                         3 => {
                             // STAC: set AC flag in EFLAGS
                             cpu.regs.rflags |= 1 << 18;
+                            mmu.rflags_ac = true;
                             cpu.regs.rip += inst.length as u64;
                             Ok(())
                         }
@@ -712,6 +721,12 @@ fn exec_secondary(
                 7 => system::exec_invlpg(cpu, inst, memory, mmu),
                 _ => Err(VmError::UndefinedOpcode(op2)),
             }
+        }
+
+        // ── PREFETCH hints (0F 18 = PREFETCHx, 0F 0D = PREFETCHW) — treated as NOP ──
+        0x0D | 0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D => {
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
         }
 
         // ── NOP r/m16/32/64 (0F 1E = ENDBR64/ENDBR32, 0F 1F /0 = multi-byte NOP) ──

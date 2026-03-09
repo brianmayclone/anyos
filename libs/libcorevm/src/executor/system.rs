@@ -319,6 +319,11 @@ pub fn exec_rdmsr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
     let msr_index = cpu.regs.read_gpr32(GprIndex::Rcx as u8);
     let val = cpu.regs.read_msr(msr_index);
 
+    #[cfg(feature = "host_test")]
+    if msr_index == MSR_IA32_APIC_BASE {
+        eprintln!("[msr] RDMSR APIC_BASE: {:#018x}", val);
+    }
+
     cpu.regs.write_gpr32(GprIndex::Rax as u8, val as u32);
     cpu.regs.write_gpr32(GprIndex::Rdx as u8, (val >> 32) as u32);
 
@@ -342,6 +347,8 @@ pub fn exec_wrmsr(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             // Keep only base (4K aligned) plus BSP/APIC-enable bits.
             // xAPIC mode uses bits 12.. for the MMIO base.
             let sanitized = (val & 0xFFFF_F000) | (val & ((1 << 8) | (1 << 11)));
+            #[cfg(feature = "host_test")]
+            eprintln!("[msr] WRMSR APIC_BASE: {:#018x} -> {:#018x}", cpu.regs.read_msr(msr_index), sanitized);
             cpu.regs.write_msr(msr_index, sanitized);
         }
         MSR_FS_BASE => {
@@ -488,10 +495,13 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
             // EAX = max subleaf (0).
             // EBX: FSGSBASE(0), SMEP(7), ERMS(9), SMAP(20)
             // NOTE: BMI1(3), BMI2(8), AVX2(5) removed — require VEX prefix decoding
+            // NOTE: SMAP(20) not advertised — while STAC/CLAC + rflags_ac
+            // sync is implemented, the TLB does not tag entries by AC state,
+            // so cached supervisor translations of user pages linger after
+            // STAC and cause spurious SMAP faults.
             let ebx: u32 = (1 << 0)   // FSGSBASE
                 | (1 << 7)   // SMEP
-                | (1 << 9)   // ERMS (Enhanced REP MOVSB/STOSB)
-                | (1 << 20); // SMAP
+                | (1 << 9);  // ERMS (Enhanced REP MOVSB/STOSB)
             (0, ebx, 0, 0)
         }
 
@@ -546,15 +556,33 @@ pub fn exec_cpuid(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
 
 // ── RDTSC ──
 
+/// Compute the guest TSC value.
+///
+/// In host_test mode, uses host wall-clock RDTSC scaled to the guest frequency
+/// so that PIT calibration sees the correct TSC rate. Otherwise, falls back to
+/// instruction count.
+#[inline]
+fn guest_tsc(cpu: &Cpu) -> u64 {
+    #[cfg(feature = "host_test")]
+    {
+        if cpu.tsc_host_freq > 0 && cpu.tsc_guest_freq > 0 {
+            let host_now = crate::rdtsc();
+            let elapsed = host_now.wrapping_sub(cpu.tsc_host_base);
+            let guest_tsc = (elapsed as u128 * cpu.tsc_guest_freq as u128
+                / cpu.tsc_host_freq as u128) as u64;
+            return cpu.regs.read_msr(MSR_TSC).wrapping_add(guest_tsc);
+        }
+    }
+    cpu.regs
+        .read_msr(MSR_TSC)
+        .wrapping_add(cpu.instruction_count.saturating_mul(TSC_TICKS_PER_INST))
+}
+
 /// RDTSC: read Time Stamp Counter.
 ///
-/// Returns the TSC value in EDX:EAX. We use the stored MSR_TSC value and
-/// increment it each time RDTSC is executed.
+/// Returns the TSC value in EDX:EAX.
 pub fn exec_rdtsc(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
-    let tsc = cpu
-        .regs
-        .read_msr(MSR_TSC)
-        .wrapping_add(cpu.instruction_count.saturating_mul(TSC_TICKS_PER_INST));
+    let tsc = guest_tsc(cpu);
     cpu.regs.write_gpr32(GprIndex::Rax as u8, tsc as u32);
     cpu.regs.write_gpr32(GprIndex::Rdx as u8, (tsc >> 32) as u32);
 
@@ -566,10 +594,7 @@ pub fn exec_rdtsc(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
 ///
 /// Returns TSC in EDX:EAX and TSC_AUX in ECX.
 pub fn exec_rdtscp(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
-    let tsc = cpu
-        .regs
-        .read_msr(MSR_TSC)
-        .wrapping_add(cpu.instruction_count.saturating_mul(TSC_TICKS_PER_INST));
+    let tsc = guest_tsc(cpu);
     cpu.regs.write_gpr32(GprIndex::Rax as u8, tsc as u32);
     cpu.regs.write_gpr32(GprIndex::Rdx as u8, (tsc >> 32) as u32);
     cpu.regs.write_gpr32(GprIndex::Rcx as u8, 0);

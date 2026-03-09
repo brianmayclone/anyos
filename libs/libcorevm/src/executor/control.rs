@@ -344,6 +344,10 @@ fn dispatch_software_interrupt(
 ) -> Result<()> {
     let next_rip = cpu.regs.rip.wrapping_add(inst.length as u64);
 
+    // When EFER.LMA=1, the IDT always uses 16-byte long-mode gate format,
+    // even for software interrupts from compatibility-mode (CS.L=0) code.
+    let efer_lma = (cpu.regs.read_msr(crate::registers::MSR_EFER) & crate::registers::EFER_LMA) != 0;
+
     match cpu.mode {
         Mode::RealMode => {
             // Real mode: push FLAGS (16-bit), CS, IP; load from IVT
@@ -361,6 +365,15 @@ fn dispatch_software_interrupt(
             let (seg, off) = interrupts.read_idt_entry_real(vector, memory)?;
             cpu.regs.load_segment_real(SegReg::Cs, seg);
             cpu.regs.rip = off as u64;
+        }
+        Mode::ProtectedMode if efer_lma => {
+            // Compatibility mode (EFER.LMA=1, CS.L=0): the IDT uses 16-byte
+            // long-mode gate descriptors and delivery uses 64-bit semantics
+            // (Intel SDM Vol. 3A §6.14.2). Delegate to deliver_interrupt which
+            // already checks EFER.LMA and handles TSS stack switching.
+            cpu.regs.rip = next_rip;
+            cpu.deliver_interrupt(vector, false, None, memory, mmu, interrupts)?;
+            return Ok(());
         }
         Mode::ProtectedMode => {
             // In V86 mode, software INTs trap to the monitor if IOPL < 3.
@@ -611,6 +624,7 @@ pub fn exec_iret(
 
             cpu.regs.set_sp(rsp);
             cpu.load_segment_from_gdt(SegReg::Ss, ss, memory, mmu)?;
+            cpu.regs.cpl = (cs & 3) as u8;
         }
     }
 

@@ -363,10 +363,12 @@ pub fn exec_cmpxchg8b16b(
 ///
 /// CF=1 on success (always for us), OF=SF=ZF=AF=PF=0.
 pub fn exec_rdrand(cpu: &mut Cpu, inst: &DecodedInst) -> Result<()> {
-    // Simple PRNG seeded from TSC — not cryptographically secure, but sufficient
-    // for guest OS entropy needs in emulation.
-    let seed = cpu.regs.rip
+    // LCG PRNG using instruction count as evolving state — not cryptographically
+    // secure, but sufficient for guest OS entropy needs in emulation.
+    // Mixing RIP + instruction_count ensures different values on repeated calls.
+    let seed = cpu.instruction_count
         .wrapping_mul(6364136223846793005)
+        .wrapping_add(cpu.regs.rip)
         .wrapping_add(1442695040888963407);
     let rand_val = seed;
 

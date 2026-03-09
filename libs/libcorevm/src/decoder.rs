@@ -1211,6 +1211,20 @@ impl DecodeCursor {
                 Ok(())
             }
 
+            // -- PREFETCH hints (0F 0D, 0F 18) and reserved NOPs (0F 19-1D) --
+            0x0D | 0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D => {
+                let modrm = self.fetch_modrm()?;
+                let (md, _reg, rm) = Self::split_modrm(modrm);
+                if md != 3 {
+                    let rm_op = self.decode_rm(md, rm, self.inst.operand_size)?;
+                    self.set_operand(0, rm_op);
+                } else {
+                    self.set_operand(0, Operand::Register(RegOperand::Gpr(rm)));
+                }
+                self.inst.operand_count = 1;
+                Ok(())
+            }
+
             // -- NOP r/m16/32/64 (multi-byte NOP form) --
             // 0F 1E: ENDBR64/ENDBR32/RDSSPD/RDSSPQ — treated as NOP
             // 0F 1F: standard multi-byte NOP
@@ -1432,7 +1446,21 @@ impl DecodeCursor {
 
             // -- SSE/SSE2 2-operand forms (xmm,r/m and r/m,xmm) --
             0x10 | 0x12 | 0x16 | 0x28 | 0x54 | 0x55 | 0x56 | 0x57 | 0x6E | 0x6F
-            | 0x74 | 0x75 | 0x76 | 0xEF => self.decode_modrm_xmm_rm(OperandSize::Qword),
+            | 0x74 | 0x75 | 0x76 | 0xEF
+            // SSE2 packed integer arithmetic
+            | 0xD4  // PADDQ
+            | 0xD5  // PMULLW
+            | 0xD8 | 0xD9  // PSUBUSB, PSUBUSW
+            | 0xDA | 0xDB  // PMINUB, PAND
+            | 0xDC | 0xDD  // PADDUSB, PADDUSW
+            | 0xDE | 0xDF  // PMAXUB, PANDN
+            | 0xE0 | 0xE1 | 0xE2  // PAVGB, PSRAW, PSRAD
+            | 0xE3 | 0xE4 | 0xE5  // PAVGW, PMULHUW, PMULHW
+            | 0xE8 | 0xE9 | 0xEA | 0xEB | 0xEC | 0xED | 0xEE  // PSUBSB..PMAXSW
+            | 0xF1 | 0xF2 | 0xF3  // PSLLW, PSLLD, PSLLQ
+            | 0xF4 | 0xF5 | 0xF6  // PMULUDQ, PMADDWD, PSADBW
+            | 0xF8 | 0xF9 | 0xFA | 0xFB | 0xFC | 0xFD | 0xFE  // PSUBB..PADDD
+            => self.decode_modrm_xmm_rm(OperandSize::Qword),
             // PSHUFD/PSHUFLW/PSHUFHW: xmm, xmm/m128, imm8
             0x70 => {
                 self.decode_modrm_xmm_rm(OperandSize::Qword)?;
@@ -1442,6 +1470,19 @@ impl DecodeCursor {
                 Ok(())
             }
             0x60..=0x6D => self.decode_modrm_xmm_rm(OperandSize::Qword),
+            // Group 12/13/14: packed shift by immediate (0F 71/72/73 /reg imm8)
+            // Encoded as: xmm destination in ModRM.rm, shift type in ModRM.reg, imm8
+            0x71 | 0x72 | 0x73 => {
+                let modrm = self.fetch_modrm()?;
+                let (_md, _reg, rm) = Self::split_modrm(modrm);
+                let rm = self.extend_b(rm);
+                // Destination is the xmm register in rm field (mod must be 3)
+                self.set_operand(0, Operand::Register(RegOperand::Xmm(rm)));
+                let imm = self.fetch_u8()? as u64;
+                self.set_operand(1, Operand::Immediate(imm));
+                self.inst.operand_count = 2;
+                Ok(())
+            }
             0x11 | 0x13 | 0x17 | 0x29 | 0x2B | 0x7F | 0xD6 => self.decode_modrm_rm_xmm(OperandSize::Qword),
 
             // -- MOVD/MOVQ variant split by F3 prefix --
@@ -1681,6 +1722,25 @@ impl DecodeCursor {
             // 66 0F 38 00 /r -- PSHUFB xmm, xmm/m128
             0x00 => self.decode_modrm_xmm_rm(OperandSize::Qword),
 
+            // 66 0F 38 17 /r -- PTEST xmm, xmm/m128
+            // 66 0F 38 29 /r -- PCMPEQQ xmm, xmm/m128
+            // 66 0F 38 39 /r -- PMINSD xmm, xmm/m128
+            // 66 0F 38 3B /r -- PMINUD xmm, xmm/m128
+            // 66 0F 38 3D /r -- PMAXSD xmm, xmm/m128
+            // 66 0F 38 3F /r -- PMAXUD xmm, xmm/m128
+            // 66 0F 38 40 /r -- PMULLD xmm, xmm/m128
+            0x17 | 0x29 | 0x39 | 0x3B | 0x3D | 0x3F | 0x40
+            // SSE4.1 variable blends (implicit XMM0 mask)
+            | 0x10 | 0x14 | 0x15  // PBLENDVB, BLENDVPS, BLENDVPD
+            // SSSE3 PABS variants
+            | 0x1C | 0x1D | 0x1E  // PABSB, PABSW, PABSD
+            // SSE4.1 PMOVZX/PMOVSX variants
+            | 0x20 | 0x21 | 0x22 | 0x23 | 0x24 | 0x25  // PMOVSXBW..PMOVSXDQ
+            | 0x30 | 0x31 | 0x32 | 0x33 | 0x34 | 0x35  // PMOVZXBW..PMOVZXDQ
+            => {
+                self.decode_modrm_xmm_rm(OperandSize::Qword)
+            }
+
             // 0F 38 F0 /r -- MOVBE r16/32/64, m16/32/64
             // F2 0F 38 F0 /r -- CRC32 r32/r64, r/m8
             0xF0 => {
@@ -1759,8 +1819,10 @@ impl DecodeCursor {
     fn decode_escape_0f3a(&mut self) -> Result<()> {
         let op = self.inst.opcode as u8;
         match op {
+            // 66 0F 3A 0E /r ib -- PBLENDW xmm, xmm/m128, imm8
             // 66 0F 3A 0F /r ib -- PALIGNR xmm, xmm/m128, imm8
-            0x0F => {
+            // 66 0F 3A 44 /r ib -- PCLMULQDQ xmm, xmm/m128, imm8
+            0x0E | 0x0F | 0x44 => {
                 self.decode_modrm_xmm_rm(OperandSize::Qword)?;
                 let imm = self.fetch_u8()? as u64;
                 self.inst.immediate = imm;
@@ -1768,6 +1830,103 @@ impl DecodeCursor {
                 self.inst.operand_count = 3;
                 Ok(())
             }
+
+            // 66 0F 3A 14 /r ib -- PEXTRB r/m8, xmm, imm8
+            0x14 => {
+                let modrm = self.fetch_modrm()?;
+                let (md, reg, rm) = Self::split_modrm(modrm);
+                let xmm_reg = self.extend_r(reg);
+                let rm_op = if md == 3 {
+                    self.gpr_operand(self.extend_b(rm), OperandSize::Dword)
+                } else {
+                    self.decode_rm(md, rm, OperandSize::Byte)?
+                };
+                self.set_operand(0, rm_op);
+                self.set_operand(1, self.xmm_operand(xmm_reg));
+                let imm = self.fetch_u8()? as u64;
+                self.inst.immediate = imm;
+                self.set_operand(2, Operand::Immediate(imm));
+                self.inst.operand_count = 3;
+                Ok(())
+            }
+
+            // 66 0F 3A 16 /r ib -- PEXTRD r/m32, xmm, imm8
+            // 66 0F 3A 17 /r ib -- EXTRACTPS r/m32, xmm, imm8
+            0x16 | 0x17 => {
+                let modrm = self.fetch_modrm()?;
+                let (md, reg, rm) = Self::split_modrm(modrm);
+                let xmm_reg = self.extend_r(reg);
+                let rm_op = if md == 3 {
+                    self.gpr_operand(self.extend_b(rm), OperandSize::Dword)
+                } else {
+                    self.decode_rm(md, rm, OperandSize::Dword)?
+                };
+                self.set_operand(0, rm_op);
+                self.set_operand(1, self.xmm_operand(xmm_reg));
+                let imm = self.fetch_u8()? as u64;
+                self.inst.immediate = imm;
+                self.set_operand(2, Operand::Immediate(imm));
+                self.inst.operand_count = 3;
+                Ok(())
+            }
+
+            // 66 0F 3A 20 /r ib -- PINSRB xmm, r/m8, imm8
+            0x20 => {
+                let modrm = self.fetch_modrm()?;
+                let (md, reg, rm) = Self::split_modrm(modrm);
+                let xmm_reg = self.extend_r(reg);
+                let rm_op = if md == 3 {
+                    self.gpr_operand(self.extend_b(rm), OperandSize::Dword)
+                } else {
+                    self.decode_rm(md, rm, OperandSize::Byte)?
+                };
+                self.set_operand(0, self.xmm_operand(xmm_reg));
+                self.set_operand(1, rm_op);
+                let imm = self.fetch_u8()? as u64;
+                self.inst.immediate = imm;
+                self.set_operand(2, Operand::Immediate(imm));
+                self.inst.operand_count = 3;
+                Ok(())
+            }
+
+            // 66 0F 3A 21 /r ib -- INSERTPS xmm, xmm/m32, imm8
+            0x21 => {
+                let modrm = self.fetch_modrm()?;
+                let (md, reg, rm) = Self::split_modrm(modrm);
+                let xmm_reg = self.extend_r(reg);
+                let rm_op = if md == 3 {
+                    Operand::Register(RegOperand::Xmm(self.extend_b(rm)))
+                } else {
+                    self.decode_rm(md, rm, OperandSize::Dword)?
+                };
+                self.set_operand(0, self.xmm_operand(xmm_reg));
+                self.set_operand(1, rm_op);
+                let imm = self.fetch_u8()? as u64;
+                self.inst.immediate = imm;
+                self.set_operand(2, Operand::Immediate(imm));
+                self.inst.operand_count = 3;
+                Ok(())
+            }
+
+            // 66 0F 3A 22 /r ib -- PINSRD xmm, r/m32, imm8
+            0x22 => {
+                let modrm = self.fetch_modrm()?;
+                let (md, reg, rm) = Self::split_modrm(modrm);
+                let xmm_reg = self.extend_r(reg);
+                let rm_op = if md == 3 {
+                    self.gpr_operand(self.extend_b(rm), OperandSize::Dword)
+                } else {
+                    self.decode_rm(md, rm, OperandSize::Dword)?
+                };
+                self.set_operand(0, self.xmm_operand(xmm_reg));
+                self.set_operand(1, rm_op);
+                let imm = self.fetch_u8()? as u64;
+                self.inst.immediate = imm;
+                self.set_operand(2, Operand::Immediate(imm));
+                self.inst.operand_count = 3;
+                Ok(())
+            }
+
             _ => Err(VmError::UndefinedOpcode(op)),
         }
     }
