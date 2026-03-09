@@ -208,6 +208,24 @@ pub enum HirExprKind {
     Try(Box<HirExpr>),
     // For loop kept as-is for now (needs trait resolution for full desugaring)
     For(HirPattern, Box<HirExpr>, HirBlock, Option<Symbol>),
+    InlineAsm(HirInlineAsm),
+}
+
+pub struct HirInlineAsm {
+    pub template: Vec<String>,
+    pub operands: Vec<HirAsmOperand>,
+    pub options: Vec<String>,
+}
+
+pub enum HirAsmOperand {
+    In { reg: HirAsmReg, expr: Box<HirExpr> },
+    Out { reg: HirAsmReg, expr: Option<Box<HirExpr>> },
+    InOut { reg: HirAsmReg, expr: Box<HirExpr> },
+}
+
+pub enum HirAsmReg {
+    Named(String),
+    Class(String),
 }
 
 pub struct HirFieldExpr {

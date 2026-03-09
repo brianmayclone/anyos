@@ -405,6 +405,16 @@ impl<'a> Resolver<'a> {
                 self.resolve_block(body);
                 self.pop_scope();
             }
+            HirExprKind::InlineAsm(asm) => {
+                for op in &asm.operands {
+                    match op {
+                        crate::hir::HirAsmOperand::In { expr, .. } => self.resolve_expr(expr),
+                        crate::hir::HirAsmOperand::Out { expr: Some(e), .. } => self.resolve_expr(e),
+                        crate::hir::HirAsmOperand::InOut { expr, .. } => self.resolve_expr(expr),
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 

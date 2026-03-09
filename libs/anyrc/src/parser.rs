@@ -475,6 +475,14 @@ impl<'a> Parser<'a> {
 
             // Macro call: path!(...)
             if self.at_exact(&TokenKind::Not) {
+                // Check for asm! built-in
+                if path.segments.len() == 1 {
+                    let name = self.interner.resolve(path.segments[0].ident);
+                    if name == "asm" {
+                        self.bump(); // !
+                        return self.parse_inline_asm(start);
+                    }
+                }
                 self.bump();
                 let tts = self.parse_macro_args();
                 return Expr::MacroCall(path, tts, self.span_from(start));
@@ -2196,6 +2204,153 @@ impl<'a> Parser<'a> {
         }
         self.expect_exact(&TokenKind::RBrace);
         Pattern::Struct(path, fields, has_rest, self.span_from(start))
+    }
+
+    fn parse_inline_asm(&mut self, start: Span) -> Expr {
+        self.expect_exact(&TokenKind::LParen);
+
+        let mut template = Vec::new();
+        let mut operands = Vec::new();
+        let mut options = Vec::new();
+
+        // Parse template strings first
+        while let TokenKind::StringLit(s) = &self.current().kind {
+            template.push(s.clone());
+            self.bump();
+            if !self.eat_exact(&TokenKind::Comma) {
+                self.expect_exact(&TokenKind::RParen);
+                return Expr::InlineAsm(InlineAsm {
+                    template, operands, options,
+                    span: self.span_from(start),
+                });
+            }
+        }
+
+        // Parse operands and options
+        while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
+            // Check for options(...)
+            if self.at_ident() {
+                let name = self.interner.resolve(self.peek_ident()).to_string();
+                if name == "options" {
+                    self.bump(); // options
+                    self.expect_exact(&TokenKind::LParen);
+                    while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
+                        if self.at_ident() {
+                            let opt = self.interner.resolve(self.peek_ident()).to_string();
+                            self.bump();
+                            options.push(opt);
+                        }
+                        if !self.eat_exact(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect_exact(&TokenKind::RParen);
+                    if !self.eat_exact(&TokenKind::Comma) {
+                        break;
+                    }
+                    continue;
+                }
+            }
+
+            // Parse operand: [name =] direction(reg) expr
+
+            // Check for "name =" prefix
+            if self.at_ident() {
+                let saved = self.pos;
+                let _ident = self.peek_ident();
+                self.bump();
+                if self.eat_exact(&TokenKind::Eq) {
+                    // consumed "name ="
+                } else {
+                    self.pos = saved;
+                }
+            }
+
+            // Parse direction keyword: in, out, inout, const, sym
+            let dir = if self.at_kw(Keyword::In) {
+                self.bump();
+                "in"
+            } else if self.at_ident() {
+                let d = self.interner.resolve(self.peek_ident()).to_string();
+                if d == "out" || d == "inout" || d == "lateout" || d == "inlateout" {
+                    self.bump();
+                    if d == "lateout" { "out" } else if d == "inlateout" { "inout" } else if d == "out" { "out" } else { "inout" }
+                } else if d == "const" {
+                    self.bump();
+                    let expr = self.parse_expr();
+                    operands.push(AsmOperand::Const { expr: Box::new(expr) });
+                    if !self.eat_exact(&TokenKind::Comma) { break; }
+                    continue;
+                } else if d == "sym" {
+                    self.bump();
+                    let path = self.parse_path_expr();
+                    operands.push(AsmOperand::Sym { path });
+                    if !self.eat_exact(&TokenKind::Comma) { break; }
+                    continue;
+                } else {
+                    panic!("unexpected asm operand direction: {}", d);
+                }
+            } else {
+                break;
+            };
+
+            {
+
+                // Parse register spec: (reg) or ("specific_reg")
+                self.expect_exact(&TokenKind::LParen);
+                let reg = if let TokenKind::StringLit(s) = &self.current().kind {
+                    let r = AsmReg::Named(s.clone());
+                    self.bump();
+                    r
+                } else if self.at_ident() {
+                    let r = AsmReg::Class(self.interner.resolve(self.peek_ident()).to_string());
+                    self.bump();
+                    r
+                } else {
+                    panic!("expected register spec in asm! at {:?}", self.current().span);
+                };
+                self.expect_exact(&TokenKind::RParen);
+
+                // Parse expression (for in/inout, required; for out, optional with _)
+                match dir {
+                    "in" => {
+                        let expr = self.parse_expr();
+                        operands.push(AsmOperand::In { reg, expr: Box::new(expr) });
+                    }
+                    "out" => {
+                        if self.at_ident() && self.interner.resolve(self.peek_ident()) == "_" {
+                            self.bump();
+                            operands.push(AsmOperand::Out { reg, expr: None });
+                        } else {
+                            let expr = self.parse_expr();
+                            operands.push(AsmOperand::Out { reg, expr: Some(Box::new(expr)) });
+                        }
+                    }
+                    "inout" => {
+                        let expr = self.parse_expr();
+                        operands.push(AsmOperand::InOut { reg, expr: Box::new(expr) });
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            if !self.eat_exact(&TokenKind::Comma) {
+                break;
+            }
+        }
+
+        self.expect_exact(&TokenKind::RParen);
+        Expr::InlineAsm(InlineAsm {
+            template, operands, options,
+            span: self.span_from(start),
+        })
+    }
+
+    fn peek_ident(&self) -> Symbol {
+        match self.current().kind {
+            TokenKind::Ident(sym) => sym,
+            _ => panic!("expected ident"),
+        }
     }
 }
 

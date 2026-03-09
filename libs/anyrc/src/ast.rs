@@ -209,6 +209,27 @@ pub enum Expr {
     MacroCall(Path, Vec<TokenTree>, Span),
     Unsafe(Block, Span),
     Paren(Box<Expr>, Span),
+    InlineAsm(InlineAsm),
+}
+
+pub struct InlineAsm {
+    pub template: Vec<String>,
+    pub operands: Vec<AsmOperand>,
+    pub options: Vec<String>,
+    pub span: Span,
+}
+
+pub enum AsmOperand {
+    In { reg: AsmReg, expr: Box<Expr> },
+    Out { reg: AsmReg, expr: Option<Box<Expr>> },
+    InOut { reg: AsmReg, expr: Box<Expr> },
+    Const { expr: Box<Expr> },
+    Sym { path: Path },
+}
+
+pub enum AsmReg {
+    Named(String),
+    Class(String),
 }
 
 pub struct FieldExpr {

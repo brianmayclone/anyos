@@ -337,6 +337,14 @@ impl<'a> LoweringContext<'a> {
             }
             ast::Expr::Unsafe(b, span) => (HirExprKind::Unsafe(self.lower_block(b)), *span),
             ast::Expr::Paren(e, span) => (HirExprKind::Paren(Box::new(self.lower_expr(e))), *span),
+            ast::Expr::InlineAsm(asm) => {
+                let hir_asm = HirInlineAsm {
+                    template: asm.template.clone(),
+                    operands: asm.operands.iter().map(|op| self.lower_asm_operand(op)).collect(),
+                    options: asm.options.clone(),
+                };
+                (HirExprKind::InlineAsm(hir_asm), asm.span)
+            }
         };
         HirExpr { id: self.alloc_hir_id(), kind, span }
     }
@@ -474,5 +482,40 @@ impl<'a> LoweringContext<'a> {
 
     fn lower_trait_bound(&mut self, tb: &ast::TraitBound) -> HirTraitBound {
         HirTraitBound { path: self.lower_path(&tb.path), span: tb.span }
+    }
+
+    fn lower_asm_operand(&mut self, op: &ast::AsmOperand) -> HirAsmOperand {
+        match op {
+            ast::AsmOperand::In { reg, expr } => HirAsmOperand::In {
+                reg: self.lower_asm_reg(reg),
+                expr: Box::new(self.lower_expr(expr)),
+            },
+            ast::AsmOperand::Out { reg, expr } => HirAsmOperand::Out {
+                reg: self.lower_asm_reg(reg),
+                expr: expr.as_ref().map(|e| Box::new(self.lower_expr(e))),
+            },
+            ast::AsmOperand::InOut { reg, expr } => HirAsmOperand::InOut {
+                reg: self.lower_asm_reg(reg),
+                expr: Box::new(self.lower_expr(expr)),
+            },
+            ast::AsmOperand::Const { .. } | ast::AsmOperand::Sym { .. } => {
+                // Simplified: treat as no-op
+                HirAsmOperand::In {
+                    reg: HirAsmReg::Class("reg".to_string()),
+                    expr: Box::new(HirExpr {
+                        id: self.alloc_hir_id(),
+                        kind: HirExprKind::Lit(ast::Literal::Int(0)),
+                        span: Span::dummy(),
+                    }),
+                }
+            }
+        }
+    }
+
+    fn lower_asm_reg(&self, reg: &ast::AsmReg) -> HirAsmReg {
+        match reg {
+            ast::AsmReg::Named(s) => HirAsmReg::Named(s.clone()),
+            ast::AsmReg::Class(s) => HirAsmReg::Class(s.clone()),
+        }
     }
 }

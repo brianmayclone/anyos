@@ -440,4 +440,8 @@ impl X86Assembler {
         self.code.push(0x0F);
         self.code.push(0x05);
     }
+
+    pub fn emit_raw(&mut self, bytes: &[u8]) {
+        self.code.extend_from_slice(bytes);
+    }
 }

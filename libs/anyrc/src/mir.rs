@@ -45,6 +45,27 @@ pub enum StatementKind {
     StorageLive(Local),
     StorageDead(Local),
     Nop,
+    InlineAsm {
+        template: Vec<String>,
+        operands: Vec<MirAsmOperand>,
+        options: Vec<String>,
+    },
+}
+
+pub struct MirAsmOperand {
+    pub kind: MirAsmOperandKind,
+    pub reg: MirAsmReg,
+}
+
+pub enum MirAsmOperandKind {
+    In(Operand),
+    Out(Option<Place>),
+    InOut(Operand, Option<Place>),
+}
+
+pub enum MirAsmReg {
+    Named(String),
+    Class(String),
 }
 
 pub enum Rvalue {
