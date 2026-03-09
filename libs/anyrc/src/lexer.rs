@@ -76,7 +76,7 @@ pub enum TokenKind {
     // Punctuation
     Arrow, FatArrow, ColonColon, DotDot, DotDotEq,
     LParen, RParen, LBrace, RBrace, LBracket, RBracket,
-    Semi, Colon, Comma, Dot, At, Hash, Question,
+    Semi, Colon, Comma, Dot, At, Hash, Question, Dollar,
     // Special
     Eof,
 }
@@ -498,6 +498,7 @@ impl<'a> Lexer<'a> {
             b'@' => TokenKind::At,
             b'#' => TokenKind::Hash,
             b'?' => TokenKind::Question,
+            b'$' => TokenKind::Dollar,
 
             _ => {
                 // Unknown byte, skip

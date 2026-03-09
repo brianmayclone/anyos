@@ -3,3 +3,6 @@ pub mod diagnostics;
 pub mod lexer;
 pub mod ast;
 pub mod parser;
+pub mod macros;
+pub mod hir;
+pub mod hir_lower;
