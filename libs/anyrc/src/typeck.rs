@@ -169,6 +169,33 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn check_crate(&mut self, krate: &HirCrate) -> TypeckResult {
+        // Register intrinsic types (AtomicBool, etc.) so they can be used as type annotations.
+        // We find symbols by scanning resolutions that point to intrinsic type DefIds.
+        {
+            let intrinsic_type_defs: Vec<(DefId, String)> = self.resolve.intrinsic_fns.iter()
+                .filter(|(_, path)| {
+                    let name = path.rsplit("::").next().unwrap_or(path);
+                    name.starts_with("Atomic") || name == "Ordering"
+                        || name == "UnsafeCell"
+                        || name == "Vec" || name == "Box" || name == "String"
+                })
+                .map(|(&d, p)| (d, p.clone()))
+                .collect();
+            // For each HirId->DefId resolution where DefId is an intrinsic type,
+            // we need to find the symbol. We can get it from the path string.
+            for (def_id, path) in &intrinsic_type_defs {
+                let type_name = path.rsplit("::").next().unwrap_or(path);
+                // Find a symbol with this name by scanning all interned symbols
+                // that appear in resolutions mapping to this DefId
+                // Actually, just search all existing symbols in type_name_to_def keys
+                // or we can find the symbol from the interner by trying to look it up
+                let sym = self.interner.lookup(type_name);
+                if let Some(sym) = sym {
+                    self.type_name_to_def.entry(sym).or_insert(*def_id);
+                }
+            }
+        }
+
         // Pass 1: collect signatures
         for item in &krate.items {
             self.collect_item(item);
@@ -354,6 +381,10 @@ impl<'a> TypeChecker<'a> {
                 Literal::Char(v) => Some(ConstVal::Char(*v)),
                 _ => None,
             },
+            // AtomicXxx::new(val) in const context → evaluate the inner value
+            HirExprKind::Call(_, args) if args.len() == 1 => {
+                self.eval_const_expr(&args[0])
+            }
             _ => None,
         }
     }
@@ -525,10 +556,18 @@ impl<'a> TypeChecker<'a> {
                 let callee_ty = self.check_expr(callee);
                 match self.shallow_resolve(callee_ty) {
                     TyKind::FnDef(def_id, _) => {
-                        // Intrinsic functions: accept any args, return inferred type
-                        if self.resolve.intrinsic_fns.contains_key(&def_id) {
+                        // Intrinsic functions: accept any args
+                        if let Some(intrinsic_path) = self.resolve.intrinsic_fns.get(&def_id).cloned() {
                             for a in args { self.check_expr(a); }
-                            // Return a fresh infer var that will be resolved by context
+                            // For Type::new() constructors, return the type as Adt
+                            if intrinsic_path.ends_with("::new") {
+                                let type_name = intrinsic_path.rsplit("::").nth(1).unwrap_or("");
+                                if let Some(sym) = self.interner.lookup(type_name) {
+                                    if let Some(&type_def_id) = self.type_name_to_def.get(&sym) {
+                                        return TyKind::Adt(type_def_id, vec![]);
+                                    }
+                                }
+                            }
                             return self.fresh_infer(InferKind::General);
                         }
                         if let Some((param_tys, ret_ty)) = self.fn_sigs.get(&def_id).cloned() {

@@ -911,6 +911,19 @@ impl<'a> Resolver<'a> {
                             }
                         }
                     }
+
+                    // Check if first segment is an intrinsic type (e.g. AtomicBool::new, Ordering::Relaxed)
+                    if self.intrinsic_fns.contains_key(&enum_def_id) {
+                        let type_str = self.interner.resolve(name);
+                        let method_str = self.interner.resolve(second_name);
+                        let full_path = format!("{}::{}", type_str, method_str);
+                        let def_id = self.alloc_synthetic_def_id();
+                        self.intrinsic_fns.insert(def_id, full_path);
+                        if hir_id != HirId(u32::MAX) {
+                            self.resolutions.insert(hir_id, def_id);
+                        }
+                        return;
+                    }
                 }
 
                 // Could not resolve

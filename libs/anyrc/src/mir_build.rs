@@ -831,6 +831,51 @@ impl<'a> MirBuilder<'a> {
                     });
                     self.current_block = next_block;
                     Operand::Copy(Place::local(dest))
+                } else if let TyKind::Adt(def_id, _) = &inner_ty {
+                    // Check if receiver is an intrinsic type (AtomicBool, etc.)
+                    if self.resolve.intrinsic_fns.contains_key(def_id) {
+                        let method_str = self.interner.resolve(*method_name).to_string();
+                        // Find the intrinsic type name from its path
+                        let type_path = self.resolve.intrinsic_fns.get(def_id).unwrap();
+                        let type_name = type_path.rsplit("::").next().unwrap_or(type_path);
+                        // Create a descriptive intrinsic name like "AtomicBool::load"
+                        let intrinsic_name = format!("{}::{}", type_name, method_str);
+                        let sym = self.interner.intern(&intrinsic_name);
+
+                        // Build receiver as pointer (take address of self)
+                        // Use Shared borrow to avoid borrow checker conflicts on atomics
+                        let recv_op = {
+                            let place = self.lower_place(recv);
+                            let ref_ty = TyKind::Ref(Box::new(recv_ty.clone()), Mutability::Immutable);
+                            let tmp = self.alloc_temp(ref_ty, expr.span);
+                            self.emit_assign(Place::local(tmp), Rvalue::Ref(BorrowKind::Shared, place), expr.span);
+                            Operand::Copy(Place::local(tmp))
+                        };
+
+                        let mut all_args = vec![recv_op];
+                        for a in args {
+                            all_args.push(self.lower_expr(a));
+                        }
+
+                        let ty = self.get_expr_ty(expr);
+                        let dest = self.alloc_temp(ty, expr.span);
+                        let next_block = self.push_block();
+                        let fn_def_id = *def_id; // use the type's DefId; codegen uses sym name
+                        self.terminate(Terminator::Call {
+                            func: Operand::Constant(Constant {
+                                ty: TyKind::FnDef(fn_def_id, vec![]),
+                                value: ConstValue::FnItem(sym),
+                            }),
+                            args: all_args,
+                            dest: Place::local(dest),
+                            target: next_block,
+                        });
+                        self.current_block = next_block;
+                        Operand::Copy(Place::local(dest))
+                    } else {
+                        // Fallback
+                        Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+                    }
                 } else {
                     // Fallback
                     Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
@@ -1318,12 +1363,43 @@ impl<'a> MirBuilder<'a> {
         } else {
             let ty = self.get_expr_ty(expr);
             match &ty {
-                TyKind::FnDef(_def_id, _) => {
-                    let fn_name = path.segments.last().unwrap().ident;
-                    Operand::Constant(Constant {
-                        ty: ty.clone(),
-                        value: ConstValue::FnItem(fn_name),
-                    })
+                TyKind::FnDef(def_id, _) => {
+                    // For intrinsic fns, use the full path as the symbol name
+                    // so codegen can distinguish e.g. "AtomicBool::new" from a regular "new"
+                    if let Some(intrinsic_path) = self.resolve.intrinsic_fns.get(def_id).cloned() {
+                        // Ordering::* variants → integer constants (ignored on x86)
+                        if intrinsic_path.starts_with("Ordering::") {
+                            let val = match intrinsic_path.as_str() {
+                                "Ordering::Relaxed" => 0i128,
+                                "Ordering::Release" => 1,
+                                "Ordering::Acquire" => 2,
+                                "Ordering::AcqRel"  => 3,
+                                "Ordering::SeqCst"  => 4,
+                                _ => 0,
+                            };
+                            return Operand::Constant(Constant {
+                                ty: TyKind::Int(IntTy::I32),
+                                value: ConstValue::Int(val),
+                            });
+                        }
+                        // For atomic Type::method paths, use the full path so codegen
+                        // can distinguish them. For other intrinsics, use last segment.
+                        let fn_name = if intrinsic_path.contains("Atomic") {
+                            self.interner.intern(&intrinsic_path)
+                        } else {
+                            path.segments.last().unwrap().ident
+                        };
+                        Operand::Constant(Constant {
+                            ty: ty.clone(),
+                            value: ConstValue::FnItem(fn_name),
+                        })
+                    } else {
+                        let fn_name = path.segments.last().unwrap().ident;
+                        Operand::Constant(Constant {
+                            ty: ty.clone(),
+                            value: ConstValue::FnItem(fn_name),
+                        })
+                    }
                 }
                 TyKind::Adt(ref enum_def_id, _) if path.segments.len() == 2 => {
                     let enum_def_id = *enum_def_id;
