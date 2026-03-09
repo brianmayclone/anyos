@@ -494,20 +494,30 @@ impl<'a> MirBuilder<'a> {
 
             HirExprKind::Field(base, field_name) => {
                 let field_idx = self.resolve_field_index(base, *field_name);
+                let base_ty = self.get_expr_ty(base);
+                let needs_deref = matches!(&base_ty, TyKind::Ref(_, _));
+
                 // Try to get a direct place for the base to avoid copying the whole struct
                 let base_place = self.try_lower_to_place(base);
                 if let Some(mut place) = base_place {
+                    if needs_deref {
+                        place.projections.push(Projection::Deref);
+                    }
                     place.projections.push(Projection::Field(field_idx));
                     Operand::Copy(place)
                 } else {
                     // Base is a complex expression; lower it into a temp
                     let base_op = self.lower_expr(base);
-                    let base_ty = self.get_expr_ty(base);
                     let tmp = self.alloc_temp(base_ty, expr.span);
                     self.emit_assign(Place::local(tmp), Rvalue::Use(base_op), expr.span);
+                    let mut projs = Vec::new();
+                    if needs_deref {
+                        projs.push(Projection::Deref);
+                    }
+                    projs.push(Projection::Field(field_idx));
                     Operand::Copy(Place {
                         local: tmp,
-                        projections: vec![Projection::Field(field_idx)],
+                        projections: projs,
                     })
                 }
             }
@@ -543,9 +553,134 @@ impl<'a> MirBuilder<'a> {
                 }))
             }
 
+            HirExprKind::MethodCall(recv, method_name, _, args) => {
+                // Resolve the method: find the impl method DefId by looking at receiver type
+                let recv_ty = self.get_expr_ty(recv);
+                let inner_ty = match &recv_ty {
+                    TyKind::Ref(inner, _) => inner.as_ref().clone(),
+                    other => other.clone(),
+                };
+
+                let method_def_id = if let TyKind::Adt(def_id, _) = &inner_ty {
+                    // Find type name for this DefId
+                    let type_name = self.typeck.struct_defs.keys()
+                        .find(|&&did| did == *def_id)
+                        .and_then(|_| {
+                            // Search impl_methods by checking all type names
+                            self.resolve.impl_methods.iter()
+                                .find_map(|(ty_name, methods)| {
+                                    methods.iter()
+                                        .find(|(n, _)| *n == *method_name)
+                                        .map(|(_, did)| *did)
+                                })
+                        });
+                    type_name
+                } else {
+                    None
+                };
+
+                if let Some(method_did) = method_def_id {
+                    // Get method name symbol
+                    let fn_name = *method_name;
+
+                    // Build receiver operand - auto-ref if needed
+                    let recv_op = match &recv_ty {
+                        TyKind::Ref(_, _) => {
+                            // Already a reference, just lower it
+                            self.lower_expr(recv)
+                        }
+                        _ => {
+                            // Need to take a reference: &recv
+                            let place = self.lower_place(recv);
+                            let ref_ty = TyKind::Ref(Box::new(recv_ty.clone()), Mutability::Immutable);
+                            let tmp = self.alloc_temp(ref_ty, expr.span);
+                            self.emit_assign(Place::local(tmp), Rvalue::Ref(BorrowKind::Shared, place), expr.span);
+                            Operand::Copy(Place::local(tmp))
+                        }
+                    };
+
+                    // Build args: [receiver, ...user_args]
+                    let mut all_args = vec![recv_op];
+                    for a in args {
+                        all_args.push(self.lower_expr(a));
+                    }
+
+                    let ty = self.get_expr_ty(expr);
+                    let dest = self.alloc_temp(ty, expr.span);
+                    let next_block = self.push_block();
+                    self.terminate(Terminator::Call {
+                        func: Operand::Constant(Constant {
+                            ty: TyKind::FnDef(method_did, vec![]),
+                            value: ConstValue::FnItem(fn_name),
+                        }),
+                        args: all_args,
+                        dest: Place::local(dest),
+                        target: next_block,
+                    });
+                    self.current_block = next_block;
+                    Operand::Copy(Place::local(dest))
+                } else {
+                    // Fallback
+                    Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+                }
+            }
+
+            HirExprKind::Match(scrutinee, arms) => {
+                let scr_op = self.lower_expr(scrutinee);
+                let scr_ty = self.get_expr_ty(scrutinee);
+                let result_ty = self.get_expr_ty(expr);
+                let result = self.alloc_temp(result_ty, expr.span);
+
+                // For enum match: get discriminant, then switch
+                let disc_op = if let TyKind::Adt(_, _) = &scr_ty {
+                    let scr_tmp = self.alloc_temp(scr_ty.clone(), expr.span);
+                    self.emit_assign(Place::local(scr_tmp), Rvalue::Use(scr_op), expr.span);
+                    let disc_tmp = self.alloc_temp(TyKind::Int(IntTy::I64), expr.span);
+                    self.emit_assign(Place::local(disc_tmp), Rvalue::Discriminant(Place::local(scr_tmp)), expr.span);
+                    Operand::Copy(Place::local(disc_tmp))
+                } else {
+                    scr_op
+                };
+
+                // Save the block where discriminant was computed
+                let switch_bb = self.current_block;
+
+                let merge_bb = self.push_block();
+                let mut targets: Vec<(u128, BlockId)> = Vec::new();
+                let mut default_bb = merge_bb;
+
+                for arm in arms {
+                    let arm_bb = self.push_block();
+                    let disc_val = self.pattern_discriminant(&arm.pat);
+
+                    if let Some(val) = disc_val {
+                        targets.push((val, arm_bb));
+                    } else {
+                        default_bb = arm_bb;
+                    }
+
+                    self.current_block = arm_bb;
+                    let arm_op = self.lower_expr(&arm.body);
+                    self.emit_assign(Place::local(result), Rvalue::Use(arm_op), arm.span);
+                    self.terminate(Terminator::Goto(merge_bb));
+                }
+
+                if default_bb == merge_bb && !targets.is_empty() {
+                    let last = targets.pop().unwrap();
+                    default_bb = last.1;
+                }
+
+                self.blocks[switch_bb.0].terminator = Terminator::SwitchInt {
+                    operand: disc_op,
+                    targets,
+                    default: default_bb,
+                };
+
+                self.current_block = merge_bb;
+                Operand::Copy(Place::local(result))
+            }
+
             // Catch-all for unhandled cases
-            HirExprKind::Match(_, _, ..) |
-            HirExprKind::MethodCall(_, _, _, _) |
             HirExprKind::Closure(_, _, _, _) |
             HirExprKind::ArrayRepeat(_, _) |
             HirExprKind::Range(_, _, _) |
@@ -649,7 +784,6 @@ impl<'a> MirBuilder<'a> {
                 Operand::Move(Place::local(local))
             }
         } else {
-            // Could be a function reference
             let ty = self.get_expr_ty(expr);
             match &ty {
                 TyKind::FnDef(_def_id, _) => {
@@ -658,6 +792,19 @@ impl<'a> MirBuilder<'a> {
                         ty: ty.clone(),
                         value: ConstValue::FnItem(fn_name),
                     })
+                }
+                TyKind::Adt(_, _) if path.segments.len() == 2 => {
+                    // Enum variant: look up discriminant
+                    let enum_name = path.segments[0].ident;
+                    let variant_name = path.segments[1].ident;
+                    if let Some(&idx) = self.resolve.variant_indices.get(&(enum_name, variant_name)) {
+                        Operand::Constant(Constant {
+                            ty,
+                            value: ConstValue::Int(idx as i128),
+                        })
+                    } else {
+                        Operand::Constant(Constant { ty, value: ConstValue::Unit })
+                    }
                 }
                 _ => Operand::Constant(Constant { ty, value: ConstValue::Unit }),
             }
@@ -680,7 +827,11 @@ impl<'a> MirBuilder<'a> {
         }
         // Look up field order from struct definition
         let base_ty = self.get_expr_ty(base_expr);
-        if let TyKind::Adt(def_id, _) = &base_ty {
+        let base_ty = match &base_ty {
+            TyKind::Ref(inner, _) => inner.as_ref(),
+            other => other,
+        };
+        if let TyKind::Adt(def_id, _) = base_ty {
             if let Some(fields) = self.typeck.struct_defs.get(def_id) {
                 for (i, (sym, _)) in fields.iter().enumerate() {
                     if *sym == field_name {
@@ -690,6 +841,20 @@ impl<'a> MirBuilder<'a> {
             }
         }
         0
+    }
+
+    /// Extract discriminant value from a match arm pattern.
+    fn pattern_discriminant(&self, pat: &HirPattern) -> Option<u128> {
+        match pat {
+            HirPattern::Path(path) if path.segments.len() == 2 => {
+                let enum_name = path.segments[0].ident;
+                let variant_name = path.segments[1].ident;
+                self.resolve.variant_indices.get(&(enum_name, variant_name))
+                    .map(|&idx| idx as u128)
+            }
+            HirPattern::Wildcard(_) => None,
+            _ => None,
+        }
     }
 
     fn is_copy_type(&self, ty: &TyKind) -> bool {
