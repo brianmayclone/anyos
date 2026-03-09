@@ -113,30 +113,49 @@ impl<'a> CodeEmitter<'a> {
         let slot = self.alloc.stack_slots[place.local.0];
         if place.projections.is_empty() {
             self.asm.mov_rm(dst, Reg::RBP, slot);
-        } else {
-            // Load base address into dst, then apply projections
-            self.asm.mov_rm(dst, Reg::RBP, slot);
-            for proj in &place.projections {
-                match proj {
-                    Projection::Field(idx) => {
-                        // Each field is 8 bytes
-                        let field_offset = (*idx as i32) * 8;
-                        // dst currently has the value at the base slot.
-                        // For aggregates on the stack, we need the address.
-                        // Load from [rbp + slot + field_offset]
-                        self.asm.mov_rm(dst, Reg::RBP, slot + field_offset);
+            return;
+        }
+
+        // State: (base_reg, offset) or "stack-based" (RBP, slot)
+        // After Deref: dst = pointer loaded from current location; future ops use [dst + off]
+        // After Field: adjust offset
+        enum Base { Stack(i32), Reg }
+        let mut base = Base::Stack(slot);
+
+        for (i, proj) in place.projections.iter().enumerate() {
+            let is_last = i == place.projections.len() - 1;
+            match proj {
+                Projection::Deref => {
+                    match base {
+                        Base::Stack(off) => {
+                            self.asm.mov_rm(dst, Reg::RBP, off);
+                        }
+                        Base::Reg => {
+                            self.asm.mov_rm(dst, dst, 0);
+                        }
                     }
-                    Projection::Deref => {
-                        // dst has a pointer, dereference it
+                    // dst now holds a pointer to the deref'd data
+                    if is_last {
+                        // Lone deref: load the value pointed to
                         self.asm.mov_rm(dst, dst, 0);
                     }
-                    Projection::Index(idx_local) => {
-                        // Load index into RCX, compute address
-                        self.asm.mov_rm(Reg::RCX, Reg::RBP, self.alloc.stack_slots[idx_local.0]);
-                        // dst + index*8
-                        self.asm.imul_rr(Reg::RCX, Reg::RCX); // placeholder; not ideal
-                        // simplified: just load from base for now
+                    base = Base::Reg;
+                }
+                Projection::Field(idx) => {
+                    let field_offset = (*idx as i32) * 8;
+                    match base {
+                        Base::Stack(off) => {
+                            self.asm.mov_rm(dst, Reg::RBP, off + field_offset);
+                        }
+                        Base::Reg => {
+                            self.asm.mov_rm(dst, dst, field_offset);
+                        }
                     }
+                    base = Base::Reg; // after loading a value, further projections from reg
+                }
+                Projection::Index(idx_local) => {
+                    self.asm.mov_rm(Reg::RCX, Reg::RBP, self.alloc.stack_slots[idx_local.0]);
+                    // simplified for now
                 }
             }
         }
@@ -295,8 +314,11 @@ impl<'a> CodeEmitter<'a> {
                     self.load_operand(first, dst);
                 }
             }
-            Rvalue::Discriminant(_) | Rvalue::Len(_) => {
-                // Stub: load 0
+            Rvalue::Discriminant(place) => {
+                // For C-like enums, the value is the discriminant (first word)
+                self.load_place(place, dst);
+            }
+            Rvalue::Len(_) => {
                 self.asm.xor_rr(dst, dst);
             }
         }

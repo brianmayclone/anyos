@@ -198,6 +198,17 @@ impl<'a> TypeChecker<'a> {
                 // at usage time by matching the enum name and variant name.
             }
             HirItemKind::Impl(ib) => {
+                // Register Self as an alias for the impl'd type
+                if let HirTy::Path(p) = &ib.self_ty {
+                    if !p.segments.is_empty() {
+                        let self_ty_name = p.segments[0].ident;
+                        if let Some(&def_id) = self.type_name_to_def.get(&self_ty_name) {
+                            if let Some(self_sym) = self.interner.lookup("Self") {
+                                self.type_name_to_def.insert(self_sym, def_id);
+                            }
+                        }
+                    }
+                }
                 for sub in &ib.items {
                     self.collect_item(sub);
                 }
@@ -304,6 +315,10 @@ impl<'a> TypeChecker<'a> {
         ty
     }
 
+    fn get_expr_ty_cached(&self, expr: &HirExpr) -> TyKind {
+        self.expr_types.get(&expr.id).cloned().unwrap_or(TyKind::Error)
+    }
+
     fn check_expr_inner(&mut self, expr: &HirExpr) -> TyKind {
         match &expr.kind {
             HirExprKind::Lit(lit) => match lit {
@@ -407,7 +422,13 @@ impl<'a> TypeChecker<'a> {
 
             HirExprKind::Field(base, field_name) => {
                 let base_ty = self.check_expr(base);
-                match self.shallow_resolve(base_ty) {
+                let resolved = self.shallow_resolve(base_ty);
+                // Auto-deref references for field access
+                let resolved = match &resolved {
+                    TyKind::Ref(inner, _) => self.shallow_resolve(inner.as_ref().clone()),
+                    other => other.clone(),
+                };
+                match resolved {
                     TyKind::Adt(def_id, _) => {
                         if let Some(fields) = self.struct_defs.get(&def_id) {
                             if let Some((_, fty)) = fields.iter().find(|(n, _)| *n == *field_name) {
@@ -577,9 +598,48 @@ impl<'a> TypeChecker<'a> {
             HirExprKind::Paren(inner) => self.check_expr(inner),
             HirExprKind::Unsafe(block) => self.check_block(block),
 
-            HirExprKind::MethodCall(recv, _, _, args) => {
-                self.check_expr(recv);
+            HirExprKind::MethodCall(recv, method_name, _, args) => {
+                let recv_ty = self.check_expr(recv);
                 for a in args { self.check_expr(a); }
+
+                // Resolve the receiver type to find the method
+                let base_ty = self.shallow_resolve(recv_ty.clone());
+                // Unwrap references to get the underlying type name
+                let inner_ty = match &base_ty {
+                    TyKind::Ref(inner, _) => self.shallow_resolve(inner.as_ref().clone()),
+                    other => other.clone(),
+                };
+
+                if let TyKind::Adt(def_id, _) = &inner_ty {
+                    // Find the type name for this DefId
+                    let type_name = self.type_name_to_def.iter()
+                        .find(|(_, &did)| did == *def_id)
+                        .map(|(sym, _)| *sym);
+
+                    if let Some(type_name) = type_name {
+                        // Look up impl methods
+                        if let Some(methods) = self.resolve.impl_methods.get(&type_name) {
+                            if let Some((_, method_def_id)) = methods.iter().find(|(n, _)| *n == *method_name) {
+                                if let Some((param_tys, ret_ty)) = self.fn_sigs.get(method_def_id).cloned() {
+                                    // Check argument types (skip &self parameter)
+                                    let user_params = if !param_tys.is_empty() { &param_tys[1..] } else { &param_tys[..] };
+                                    if args.len() != user_params.len() {
+                                        self.error(expr.span, &format!(
+                                            "wrong number of arguments: expected {}, found {}",
+                                            user_params.len(), args.len()));
+                                    } else {
+                                        for (arg, pty) in args.iter().zip(user_params.iter()) {
+                                            let aty = self.get_expr_ty_cached(arg);
+                                            self.unify(pty, &aty, arg.span);
+                                        }
+                                    }
+                                    return ret_ty;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 self.fresh_infer(InferKind::General)
             }
 

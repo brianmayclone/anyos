@@ -9,6 +9,10 @@ pub struct ResolveResult {
     pub resolutions: HashMap<HirId, DefId>,
     /// Errors encountered during resolution
     pub errors: Vec<Diagnostic>,
+    /// Map from type name Symbol to list of (method_name, method_def_id)
+    pub impl_methods: HashMap<Symbol, Vec<(Symbol, DefId)>>,
+    /// Map from (enum_name, variant_name) to variant index
+    pub variant_indices: HashMap<(Symbol, Symbol), usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -87,9 +91,21 @@ impl<'a> Resolver<'a> {
             self.resolve_item(item);
         }
 
+        // Build variant_indices: (enum_name, variant_name) -> variant index
+        let mut variant_indices = HashMap::new();
+        for item in &krate.items {
+            if let HirItemKind::Enum(e) = &item.kind {
+                for (idx, v) in e.variants.iter().enumerate() {
+                    variant_indices.insert((e.name, v.name), idx);
+                }
+            }
+        }
+
         ResolveResult {
             resolutions: std::mem::take(&mut self.resolutions),
             errors: std::mem::take(&mut self.errors),
+            impl_methods: self.impl_methods.clone(),
+            variant_indices,
         }
     }
 
@@ -471,8 +487,13 @@ impl<'a> Resolver<'a> {
             }
         }
 
-        // Also allow "self" parameter without resolution
+        // Allow "self" parameter - try to resolve it, but don't error if not found
         if name_str == "self" && path.segments.len() == 1 {
+            if let Some(def_id) = self.lookup(name, ns) {
+                if hir_id != HirId(u32::MAX) {
+                    self.resolutions.insert(hir_id, def_id);
+                }
+            }
             return;
         }
 
