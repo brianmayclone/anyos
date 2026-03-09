@@ -539,8 +539,10 @@ impl<'a> Resolver<'a> {
                 HirGenericParam::Type(name, bounds, default, _) => {
                     let did = self.alloc_synthetic_def_id();
                     self.define(*name, Namespace::Type, did);
+                    // Trait bounds are not enforced — resolve them if possible,
+                    // but silently ignore unresolved ones.
                     for bound in bounds {
-                        self.resolve_path(&bound.path, Namespace::Type, HirId(u32::MAX));
+                        self.resolve_trait_bound_path(&bound.path);
                     }
                     if let Some(default) = default {
                         self.resolve_ty(default);
@@ -554,6 +556,27 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
+    }
+
+    /// Try to resolve a trait bound path; silently ignore if not found
+    /// (we don't have a trait solver, so bounds are informational only).
+    fn resolve_trait_bound_path(&mut self, path: &HirPath) {
+        if path.segments.is_empty() { return; }
+        let name = path.segments[0].ident;
+        // Resolve generic args in segments
+        for seg in &path.segments {
+            if let Some(args) = &seg.args {
+                for arg in &args.args {
+                    match arg {
+                        HirGenericArg::Type(ty) => self.resolve_ty(ty),
+                        HirGenericArg::Const(e) => self.resolve_expr(e),
+                        HirGenericArg::Lifetime(_) => {}
+                    }
+                }
+            }
+        }
+        // Try to resolve but don't emit error if not found
+        let _ = self.lookup(name, Namespace::Type);
     }
 
     fn resolve_expr(&mut self, expr: &HirExpr) {

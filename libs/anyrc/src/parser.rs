@@ -1059,7 +1059,13 @@ impl<'a> Parser<'a> {
             TokenKind::Kw(Keyword::Use) => Some(Item::Use(self.parse_use_tree_item(start))),
             TokenKind::Kw(Keyword::Mod) => Some(Item::Mod(self.parse_mod_def(vis, start))),
             TokenKind::Kw(Keyword::Const) => {
-                Some(Item::Const(self.parse_const_def(vis, start)))
+                // `const fn` → parse as function with is_const=true
+                if self.peek_kind() == &TokenKind::Kw(Keyword::Fn) {
+                    self.bump(); // eat `const`
+                    Some(Item::Fn(self.parse_fn_def(vis, attrs, false, true, None, start)))
+                } else {
+                    Some(Item::Const(self.parse_const_def(vis, start)))
+                }
             }
             TokenKind::Kw(Keyword::Static) => {
                 Some(Item::Static(self.parse_static_def(vis, start)))
@@ -1282,25 +1288,49 @@ impl<'a> Parser<'a> {
         let generics = self.parse_generics();
         let where_clause = self.parse_where_clause();
         let _ = where_clause; // stored in generics implicitly for now
-        self.expect_exact(&TokenKind::LBrace);
         let mut fields = Vec::new();
-        while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
-            let f_start = self.current().span;
-            let f_vis = self.parse_visibility();
-            let f_name = self.expect_ident();
-            self.expect_exact(&TokenKind::Colon);
-            let f_ty = self.parse_ty();
-            fields.push(FieldDef {
-                name: f_name,
-                ty: f_ty,
-                vis: f_vis,
-                span: self.span_from(f_start),
-            });
-            if !self.eat_exact(&TokenKind::Comma) {
-                break;
+        if self.at_exact(&TokenKind::LParen) {
+            // Tuple struct: struct Foo(pub i32, u64);
+            self.bump();
+            let mut idx = 0u32;
+            while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
+                let f_start = self.current().span;
+                let f_vis = self.parse_visibility();
+                let f_ty = self.parse_ty();
+                let f_name = self.interner.intern(&idx.to_string());
+                idx += 1;
+                fields.push(FieldDef {
+                    name: f_name,
+                    ty: f_ty,
+                    vis: f_vis,
+                    span: self.span_from(f_start),
+                });
+                if !self.eat_exact(&TokenKind::Comma) {
+                    break;
+                }
             }
+            self.expect_exact(&TokenKind::RParen);
+            self.expect_exact(&TokenKind::Semi);
+        } else {
+            self.expect_exact(&TokenKind::LBrace);
+            while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
+                let f_start = self.current().span;
+                let f_vis = self.parse_visibility();
+                let f_name = self.expect_ident();
+                self.expect_exact(&TokenKind::Colon);
+                let f_ty = self.parse_ty();
+                fields.push(FieldDef {
+                    name: f_name,
+                    ty: f_ty,
+                    vis: f_vis,
+                    span: self.span_from(f_start),
+                });
+                if !self.eat_exact(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect_exact(&TokenKind::RBrace);
         }
-        self.expect_exact(&TokenKind::RBrace);
         StructDef {
             name,
             generics,
@@ -1891,6 +1921,22 @@ impl<'a> Parser<'a> {
                 let mut bounds = Vec::new();
                 let default = if self.eat_exact(&TokenKind::Colon) {
                     loop {
+                        // Skip lifetime bounds (e.g. T: Copy + 'static)
+                        if matches!(self.current().kind, TokenKind::Lifetime(_)) {
+                            self.bump();
+                            if !self.eat_exact(&TokenKind::Plus) {
+                                break;
+                            }
+                            continue;
+                        }
+                        // Stop if we hit >, ,, =, or { (not a bound)
+                        if self.at_exact(&TokenKind::Gt)
+                            || self.at_exact(&TokenKind::Comma)
+                            || self.at_exact(&TokenKind::Eq)
+                            || self.at_exact(&TokenKind::LBrace)
+                        {
+                            break;
+                        }
                         let b_start = self.current().span;
                         let path = self.parse_path_ty();
                         bounds.push(TraitBound {
@@ -2002,6 +2048,21 @@ impl<'a> Parser<'a> {
                 self.expect_exact(&TokenKind::Colon);
                 let mut bounds = Vec::new();
                 loop {
+                    // Skip lifetime bounds in where clauses
+                    if matches!(self.current().kind, TokenKind::Lifetime(_)) {
+                        self.bump();
+                        if !self.eat_exact(&TokenKind::Plus) {
+                            break;
+                        }
+                        continue;
+                    }
+                    if self.at_exact(&TokenKind::LBrace)
+                        || self.at_exact(&TokenKind::Semi)
+                        || self.at_exact(&TokenKind::Comma)
+                        || self.at_exact(&TokenKind::Eof)
+                    {
+                        break;
+                    }
                     let b_start = self.current().span;
                     let path = self.parse_path_ty();
                     bounds.push(TraitBound {
