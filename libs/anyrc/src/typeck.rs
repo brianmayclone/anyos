@@ -898,7 +898,8 @@ impl<'a> TypeChecker<'a> {
             HirExprKind::ArrayRepeat(val, count) => {
                 let vty = self.check_expr(val);
                 self.check_expr(count);
-                TyKind::Array(Box::new(vty), 0)
+                let n = self.eval_const_usize(count);
+                TyKind::Array(Box::new(vty), n)
             }
 
             HirExprKind::Range(a, b, _) => {
@@ -912,8 +913,20 @@ impl<'a> TypeChecker<'a> {
                 self.fresh_infer(InferKind::General)
             }
 
-            HirExprKind::For(_, iter, body, _) => {
-                self.check_expr(iter);
+            HirExprKind::For(pat, iter, body, _) => {
+                let iter_ty = self.check_expr(iter);
+                // Infer the element type from the iterable
+                let elem_ty = match &iter.kind {
+                    HirExprKind::Range(start, _end, _) => {
+                        if let Some(s) = start {
+                            self.get_expr_ty_cached(s)
+                        } else {
+                            TyKind::Int(IntTy::I64)
+                        }
+                    }
+                    _ => iter_ty,
+                };
+                self.bind_pattern(pat, elem_ty);
                 self.check_block(body);
                 TyKind::Unit
             }
@@ -937,8 +950,11 @@ impl<'a> TypeChecker<'a> {
 
     fn infer_path_type(&self, path: &HirPath, expr_id: HirId) -> TyKind {
         if let Some(&def_id) = self.resolve.resolutions.get(&expr_id) {
-            // Intrinsic function from core/alloc?
-            if self.resolve.intrinsic_fns.contains_key(&def_id) {
+            // Intrinsic function from core/alloc, or primitive associated constant?
+            if let Some(path_str) = self.resolve.intrinsic_fns.get(&def_id) {
+                if let Some(ty) = Self::primitive_assoc_const_type(path_str) {
+                    return ty;
+                }
                 return TyKind::FnDef(def_id, vec![]);
             }
             // Function?
@@ -974,6 +990,26 @@ impl<'a> TypeChecker<'a> {
             return TyKind::Error;
         }
         TyKind::Error
+    }
+
+    /// Check if a path string like "u32::MAX" is a primitive associated constant.
+    /// Returns the type if so.
+    fn primitive_assoc_const_type(path: &str) -> Option<TyKind> {
+        match path {
+            "u8::MAX" | "u8::MIN" => Some(TyKind::Uint(UintTy::U8)),
+            "u16::MAX" | "u16::MIN" => Some(TyKind::Uint(UintTy::U16)),
+            "u32::MAX" | "u32::MIN" => Some(TyKind::Uint(UintTy::U32)),
+            "u64::MAX" | "u64::MIN" => Some(TyKind::Uint(UintTy::U64)),
+            "u128::MAX" | "u128::MIN" => Some(TyKind::Uint(UintTy::U128)),
+            "usize::MAX" | "usize::MIN" => Some(TyKind::Uint(UintTy::Usize)),
+            "i8::MAX" | "i8::MIN" => Some(TyKind::Int(IntTy::I8)),
+            "i16::MAX" | "i16::MIN" => Some(TyKind::Int(IntTy::I16)),
+            "i32::MAX" | "i32::MIN" => Some(TyKind::Int(IntTy::I32)),
+            "i64::MAX" | "i64::MIN" => Some(TyKind::Int(IntTy::I64)),
+            "i128::MAX" | "i128::MIN" => Some(TyKind::Int(IntTy::I128)),
+            "isize::MAX" | "isize::MIN" => Some(TyKind::Int(IntTy::Isize)),
+            _ => None,
+        }
     }
 
     // ── Unification ──
