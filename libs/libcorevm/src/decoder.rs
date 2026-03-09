@@ -1673,6 +1673,24 @@ impl DecodeCursor {
                 self.decode_modrm_rm_r(sz)
             }
 
+            // -- PEXTRW r32, xmm, imm8 (reg-reg only) --
+            0xC5 => {
+                let modrm = self.fetch_modrm()?;
+                let (md, reg, rm) = Self::split_modrm(modrm);
+                if md != 3 {
+                    return Err(VmError::UndefinedOpcode(op_lo));
+                }
+                let reg = self.extend_r(reg);
+                let rm = self.extend_b(rm);
+                self.set_operand(0, self.gpr_operand(reg, OperandSize::Dword));
+                self.set_operand(1, Operand::Register(RegOperand::Xmm(rm)));
+                let imm = self.fetch_u8()? as u64;
+                self.inst.immediate = imm;
+                self.set_operand(2, Operand::Immediate(imm));
+                self.inst.operand_count = 3;
+                Ok(())
+            }
+
             // -- Group 9: CMPXCHG8B/16B (/1), RDRAND (/6), RDSEED (/7) --
             0xC7 => {
                 let modrm = self.fetch_modrm()?;

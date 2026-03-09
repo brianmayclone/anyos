@@ -503,6 +503,25 @@ pub fn exec_sse(
             Ok(())
         }
 
+        // ── PEXTRW (66 0F C5) ── extract word from XMM to GPR
+        0xC5 if has_66 => {
+            let src_idx = match &inst.operands[1] {
+                Operand::Register(RegOperand::Xmm(idx)) => *idx as usize,
+                _ => return Err(VmError::UndefinedOpcode(op2)),
+            };
+            let x = cpu.sse.xmm[src_idx];
+            let sel = (inst.immediate & 7) as u32;
+            // XMM is 128 bits stored as lo:hi (each u64)
+            let word = if sel < 4 {
+                ((x.lo >> (sel * 16)) & 0xFFFF) as u32
+            } else {
+                ((x.hi >> ((sel - 4) * 16)) & 0xFFFF) as u32
+            };
+            write_operand(cpu, inst, &inst.operands[0], word as u64, memory, mmu)?;
+            cpu.regs.rip += inst.length as u64;
+            Ok(())
+        }
+
         // ── PMOVMSKB (66 0F D7) ── extract byte sign bits to GPR
         0xD7 if has_66 => {
             let src_idx = match &inst.operands[1] {

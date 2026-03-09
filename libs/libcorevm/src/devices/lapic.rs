@@ -325,6 +325,12 @@ impl Lapic {
     pub fn diag_tpr(&self) -> u32 {
         self.tpr
     }
+    pub fn diag_cur_count(&self) -> u32 {
+        self.timer_cur_count
+    }
+    pub fn diag_init_count(&self) -> u32 {
+        self.timer_init_count
+    }
 
     pub fn diag_state(&self) -> (u32, u32, u32, u32, u32) {
         (
@@ -407,6 +413,15 @@ impl Lapic {
 
     pub fn sync_timer_from_tsc(&mut self) {
         if self.host_tsc_freq == 0 || self.timer_cur_count == 0 {
+            #[cfg(feature = "host_test")]
+            {
+                static SYNC_SKIP: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                let cnt = SYNC_SKIP.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                if cnt < 5 && self.timer_init_count != 0 {
+                    eprintln!("[lapic] sync_timer_from_tsc SKIP: host_tsc_freq={} cur={} init={} sw_enabled={}",
+                        self.host_tsc_freq, self.timer_cur_count, self.timer_init_count, self.software_enabled());
+                }
+            }
             return;
         }
 

@@ -847,6 +847,12 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
                 lapic.sync_timer_from_tsc();
                 if lapic.take_timer_irq() {
                     let vec = lapic.timer_vector();
+                    static TFIRE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    let cnt = TFIRE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if cnt < 10 {
+                        eprintln!("[lapic] timer-fire vec={:#04x} cur={} init={} ic={}",
+                            vec, lapic.diag_cur_count(), lapic.diag_init_count(), vm.engine.instruction_count());
+                    }
                     lapic.raise_vector(vec, false);
                     route_deliverable_lapic_irq(vm);
                 }
