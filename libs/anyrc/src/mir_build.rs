@@ -669,18 +669,26 @@ impl<'a> MirBuilder<'a> {
             }
 
             HirExprKind::Index(base, idx) => {
-                let base_op = self.lower_expr(base);
                 let idx_op = self.lower_expr(idx);
-                let base_ty = self.get_expr_ty(base);
-                let base_tmp = self.alloc_temp(base_ty, expr.span);
-                self.emit_assign(Place::local(base_tmp), Rvalue::Use(base_op), expr.span);
                 let idx_ty = self.get_expr_ty(idx);
                 let idx_tmp = self.alloc_temp(idx_ty, expr.span);
                 self.emit_assign(Place::local(idx_tmp), Rvalue::Use(idx_op), expr.span);
-                Operand::Copy(Place {
-                    local: base_tmp,
-                    projections: vec![Projection::Index(idx_tmp)],
-                })
+
+                // Try to get a direct place for the base to avoid copying the whole array
+                let base_place = self.try_lower_to_place(base);
+                if let Some(mut place) = base_place {
+                    place.projections.push(Projection::Index(idx_tmp));
+                    Operand::Copy(place)
+                } else {
+                    let base_op = self.lower_expr(base);
+                    let base_ty = self.get_expr_ty(base);
+                    let base_tmp = self.alloc_temp(base_ty, expr.span);
+                    self.emit_assign(Place::local(base_tmp), Rvalue::Use(base_op), expr.span);
+                    Operand::Copy(Place {
+                        local: base_tmp,
+                        projections: vec![Projection::Index(idx_tmp)],
+                    })
+                }
             }
 
             HirExprKind::Cast(inner, _ty) => {
@@ -706,6 +714,26 @@ impl<'a> MirBuilder<'a> {
                     TyKind::Ref(inner, _) => inner.as_ref().clone(),
                     other => other.clone(),
                 };
+
+                // Handle .len() on arrays
+                let method_str = self.interner.resolve(*method_name);
+                if method_str == "len" && args.is_empty() {
+                    if let TyKind::Array(_, n) = &inner_ty {
+                        let ty = self.get_expr_ty(expr);
+                        let tmp = self.alloc_temp(ty, expr.span);
+                        self.emit_assign(
+                            Place::local(tmp),
+                            Rvalue::Use(Operand::Constant(Constant {
+                                ty: TyKind::Uint(crate::typeck::UintTy::Usize),
+                                value: ConstValue::Uint(*n as u128),
+                            })),
+                            expr.span,
+                        );
+                        // Still need to evaluate receiver for side effects
+                        let _ = self.lower_expr(recv);
+                        return Operand::Copy(Place::local(tmp));
+                    }
+                }
 
                 // Handle dyn Trait virtual dispatch
                 if let TyKind::DynTrait(trait_def_id) = &inner_ty {
@@ -1307,7 +1335,20 @@ impl<'a> MirBuilder<'a> {
                 Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
             }
 
-            HirExprKind::ArrayRepeat(_, _) |
+            HirExprKind::ArrayRepeat(val, _count) => {
+                let ty = self.get_expr_ty(expr);
+                let n = if let TyKind::Array(_, n) = &ty { *n } else { 0 };
+                let val_op = self.lower_expr(val);
+                let ops: Vec<Operand> = (0..n).map(|_| val_op.clone()).collect();
+                let tmp = self.alloc_temp(ty, expr.span);
+                self.emit_assign(
+                    Place::local(tmp),
+                    Rvalue::Aggregate(AggregateKind::Array, ops),
+                    expr.span,
+                );
+                Operand::Copy(Place::local(tmp))
+            }
+
             HirExprKind::Range(_, _, _) |
             HirExprKind::Try(_) => {
                 Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
@@ -1432,6 +1473,12 @@ impl<'a> MirBuilder<'a> {
                     crate::typeck::ConstVal::Char(v) => ConstValue::Char(*v),
                 };
                 return Operand::Constant(Constant { ty: ty.clone(), value: val });
+            }
+            // Check if it resolves to a primitive associated constant (e.g. u32::MAX)
+            if let Some(path_str) = self.resolve.intrinsic_fns.get(&def_id).cloned() {
+                if let Some((val, ty)) = Self::primitive_assoc_const_value(&path_str) {
+                    return Operand::Constant(Constant { ty, value: val });
+                }
             }
             // Check if it resolves to a static
             if let Some((name, ty, _, _)) = self.typeck.static_defs.get(&def_id) {
@@ -1626,6 +1673,32 @@ impl<'a> MirBuilder<'a> {
         matches!(pat, HirPattern::Range(_, _, _, _))
     }
 
+    fn primitive_assoc_const_value(path: &str) -> Option<(ConstValue, TyKind)> {
+        use crate::typeck::{IntTy, UintTy};
+        match path {
+            "u8::MAX"  => Some((ConstValue::Uint(u8::MAX as u128), TyKind::Uint(UintTy::U8))),
+            "u16::MAX" => Some((ConstValue::Uint(u16::MAX as u128), TyKind::Uint(UintTy::U16))),
+            "u32::MAX" => Some((ConstValue::Uint(u32::MAX as u128), TyKind::Uint(UintTy::U32))),
+            "u64::MAX" => Some((ConstValue::Uint(u64::MAX as u128), TyKind::Uint(UintTy::U64))),
+            "u128::MAX" => Some((ConstValue::Uint(u128::MAX), TyKind::Uint(UintTy::U128))),
+            "usize::MAX" => Some((ConstValue::Uint(usize::MAX as u128), TyKind::Uint(UintTy::Usize))),
+            "i8::MAX"  => Some((ConstValue::Int(i8::MAX as i128), TyKind::Int(IntTy::I8))),
+            "i16::MAX" => Some((ConstValue::Int(i16::MAX as i128), TyKind::Int(IntTy::I16))),
+            "i32::MAX" => Some((ConstValue::Int(i32::MAX as i128), TyKind::Int(IntTy::I32))),
+            "i64::MAX" => Some((ConstValue::Int(i64::MAX as i128), TyKind::Int(IntTy::I64))),
+            "i128::MAX" => Some((ConstValue::Int(i128::MAX), TyKind::Int(IntTy::I128))),
+            "isize::MAX" => Some((ConstValue::Int(isize::MAX as i128), TyKind::Int(IntTy::Isize))),
+            "i8::MIN"  => Some((ConstValue::Int(i8::MIN as i128), TyKind::Int(IntTy::I8))),
+            "i16::MIN" => Some((ConstValue::Int(i16::MIN as i128), TyKind::Int(IntTy::I16))),
+            "i32::MIN" => Some((ConstValue::Int(i32::MIN as i128), TyKind::Int(IntTy::I32))),
+            "i64::MIN" => Some((ConstValue::Int(i64::MIN as i128), TyKind::Int(IntTy::I64))),
+            "i128::MIN" => Some((ConstValue::Int(i128::MIN), TyKind::Int(IntTy::I128))),
+            "isize::MIN" => Some((ConstValue::Int(isize::MIN as i128), TyKind::Int(IntTy::Isize))),
+            s if s.ends_with("::MIN") && s.starts_with('u') => Some((ConstValue::Uint(0), TyKind::Uint(UintTy::U8))), // all unsigned MIN = 0
+            _ => None,
+        }
+    }
+
     fn is_copy_type(&self, ty: &TyKind) -> bool {
         match ty {
             TyKind::Bool | TyKind::Char => true,
@@ -1634,6 +1707,7 @@ impl<'a> MirBuilder<'a> {
             TyKind::RawPtr(_, _) => true,
             TyKind::Unit | TyKind::Never | TyKind::Error => true,
             TyKind::FnDef(_, _) | TyKind::FnPtr(_, _) => true,
+            TyKind::Array(inner, _) => self.is_copy_type(inner),
             _ => false,
         }
     }

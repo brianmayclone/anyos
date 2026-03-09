@@ -926,6 +926,27 @@ impl<'a> Resolver<'a> {
                     }
                 }
 
+                // Check if first segment is a primitive type with an associated constant
+                if self.primitives.iter().any(|&p| p == name_str) {
+                    let second_str = self.interner.resolve(second_name);
+                    let is_assoc_const = matches!(
+                        (name_str, second_str),
+                        ("u8", "MAX") | ("u16", "MAX") | ("u32", "MAX") | ("u64", "MAX") | ("u128", "MAX") | ("usize", "MAX")
+                        | ("i8", "MAX") | ("i16", "MAX") | ("i32", "MAX") | ("i64", "MAX") | ("i128", "MAX") | ("isize", "MAX")
+                        | ("i8", "MIN") | ("i16", "MIN") | ("i32", "MIN") | ("i64", "MIN") | ("i128", "MIN") | ("isize", "MIN")
+                        | ("u8", "MIN") | ("u16", "MIN") | ("u32", "MIN") | ("u64", "MIN") | ("u128", "MIN") | ("usize", "MIN")
+                    );
+                    if is_assoc_const {
+                        let full_path = format!("{}::{}", name_str, second_str);
+                        let def_id = self.alloc_synthetic_def_id();
+                        self.intrinsic_fns.insert(def_id, full_path);
+                        if hir_id != HirId(u32::MAX) {
+                            self.resolutions.insert(hir_id, def_id);
+                        }
+                        return;
+                    }
+                }
+
                 // Could not resolve
                 let second_str = self.interner.resolve(second_name);
                 self.errors.push(Diagnostic::new(
