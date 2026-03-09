@@ -11,6 +11,7 @@ pub struct CodeEmitter<'a> {
     asm: X86Assembler,
     alloc: &'a RegAlloc,
     body: &'a MirBody,
+    interner: &'a Interner,
     block_labels: Vec<Label>,
 }
 
@@ -31,6 +32,7 @@ impl<'a> CodeEmitter<'a> {
             asm,
             alloc,
             body,
+            interner,
             block_labels,
         };
 
@@ -103,8 +105,16 @@ impl<'a> CodeEmitter<'a> {
                 self.load_place(place, dst);
             }
             Operand::Constant(c) => {
-                let val = const_to_i64(&c.value);
-                self.asm.mov_ri(dst, val);
+                match &c.value {
+                    ConstValue::StaticRef(sym) => {
+                        let name = self.interner.resolve(*sym).to_string();
+                        self.asm.lea_rip_relative(dst, &name);
+                    }
+                    _ => {
+                        let val = const_to_i64(&c.value);
+                        self.asm.mov_ri(dst, val);
+                    }
+                }
             }
         }
     }
@@ -397,6 +407,7 @@ fn const_to_i64(val: &ConstValue) -> i64 {
         ConstValue::Float(f) => *f as i64,
         ConstValue::Str(_) => 0,
         ConstValue::FnItem(_) => 0,
+        ConstValue::StaticRef(_) => 0,
         ConstValue::Unit => 0,
     }
 }

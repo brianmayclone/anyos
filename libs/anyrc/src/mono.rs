@@ -274,6 +274,8 @@ impl TypeckResult {
             generic_call_substs: HashMap::new(),
             generic_fn_defs: HashMap::new(),
             enum_variants: self.enum_variants.clone(),
+            const_values: self.const_values.clone(),
+            static_defs: self.static_defs.clone(),
         }
     }
 }

@@ -117,14 +117,25 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         map
     };
 
+    // 9b. Collect static data from typeck results
+    let static_data: Vec<StaticData> = typeck_result.static_defs.values().map(|(name, _ty, val, _is_mut)| {
+        let name_str = interner.resolve(*name).to_string();
+        let bytes = match val {
+            crate::typeck::ConstVal::Int(v) => (*v as i64).to_le_bytes().to_vec(),
+            crate::typeck::ConstVal::Bool(v) => (*v as i64).to_le_bytes().to_vec(),
+            crate::typeck::ConstVal::Char(v) => (*v as i64).to_le_bytes().to_vec(),
+        };
+        StaticData { name: name_str, data: bytes }
+    }).collect();
+
     // 10. Emit based on type
     match options.emit {
         EmitKind::Obj => {
-            let obj = codegen_to_object(&mir_bodies, &interner, &struct_sizes);
+            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &static_data);
             Ok(elf::write_object(&obj))
         }
         EmitKind::Exe => {
-            let obj = codegen_to_object(&mir_bodies, &interner, &struct_sizes);
+            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &static_data);
             let obj_bytes = elf::write_object(&obj);
             let exe = link::link(&[obj_bytes], &options.output);
             Ok(exe)
@@ -141,6 +152,16 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
 }
 
 fn codegen_to_object(bodies: &[MirBody], interner: &Interner, struct_sizes: &regalloc::StructSizes) -> ObjectFile {
+    codegen_to_object_with_statics(bodies, interner, struct_sizes, &[])
+}
+
+/// Static data entry: (symbol_name, initial_bytes)
+pub struct StaticData {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
+fn codegen_to_object_with_statics(bodies: &[MirBody], interner: &Interner, struct_sizes: &regalloc::StructSizes, statics: &[StaticData]) -> ObjectFile {
     let mut text_data = Vec::new();
     let mut symbols = Vec::new();
     let mut relocations = Vec::new();
@@ -202,16 +223,52 @@ fn codegen_to_object(bodies: &[MirBody], interner: &Interner, struct_sizes: &reg
         text_data.extend_from_slice(&code);
     }
 
+    let mut sections = vec![
+        Section {
+            name: ".text".to_string(),
+            data: text_data,
+            sh_type: 1, // SHT_PROGBITS
+            sh_flags: 0x2 | 0x4, // SHF_ALLOC | SHF_EXECINSTR
+            sh_addralign: 16,
+        },
+    ];
+
+    // Add .data section if there are statics
+    if !statics.is_empty() {
+        let data_section_idx = sections.len(); // index 1
+        let mut data_bytes = Vec::new();
+        for s in statics {
+            let offset = data_bytes.len() as u64;
+            data_bytes.extend_from_slice(&s.data);
+            // Add symbol for this static in .data section
+            let existing = symbols.iter().position(|sym| sym.name == s.name);
+            if let Some(idx) = existing {
+                symbols[idx].section = Some(data_section_idx);
+                symbols[idx].offset = offset;
+                symbols[idx].size = s.data.len() as u64;
+                symbols[idx].sym_type = 1; // STT_OBJECT
+            } else {
+                symbols.push(ElfSymbol {
+                    name: s.name.clone(),
+                    section: Some(data_section_idx),
+                    offset,
+                    size: s.data.len() as u64,
+                    binding: 1, // STB_GLOBAL
+                    sym_type: 1, // STT_OBJECT
+                });
+            }
+        }
+        sections.push(Section {
+            name: ".data".to_string(),
+            data: data_bytes,
+            sh_type: 1, // SHT_PROGBITS
+            sh_flags: 0x2 | 0x1, // SHF_ALLOC | SHF_WRITE
+            sh_addralign: 8,
+        });
+    }
+
     ObjectFile {
-        sections: vec![
-            Section {
-                name: ".text".to_string(),
-                data: text_data,
-                sh_type: 1, // SHT_PROGBITS
-                sh_flags: 0x2 | 0x4, // SHF_ALLOC | SHF_EXECINSTR
-                sh_addralign: 16,
-            },
-        ],
+        sections,
         symbols,
         relocations,
     }

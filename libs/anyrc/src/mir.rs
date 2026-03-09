@@ -91,6 +91,8 @@ pub enum ConstValue {
     Char(char),
     Str(String),
     FnItem(crate::intern::Symbol),
+    /// Reference to a static variable by its symbol name
+    StaticRef(crate::intern::Symbol),
     Unit,
 }
 

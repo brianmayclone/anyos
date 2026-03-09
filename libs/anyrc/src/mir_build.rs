@@ -788,6 +788,26 @@ impl<'a> MirBuilder<'a> {
     fn lower_place(&mut self, expr: &HirExpr) -> Place {
         match &expr.kind {
             HirExprKind::Path(path) => {
+                // Check if it's a static - allocate a temp with StaticRef
+                if let Some(&def_id) = self.resolve.resolutions.get(&expr.id) {
+                    if let Some((name, ty, _, _)) = self.typeck.static_defs.get(&def_id) {
+                        // For assignment to a static, we create a temp that holds the
+                        // static address via Projection::Static
+                        let tmp = self.alloc_temp(TyKind::RawPtr(Box::new(ty.clone()), crate::ast::Mutability::Mut), expr.span);
+                        self.emit_assign(
+                            Place::local(tmp),
+                            Rvalue::Use(Operand::Constant(Constant {
+                                ty: TyKind::RawPtr(Box::new(ty.clone()), crate::ast::Mutability::Mut),
+                                value: ConstValue::StaticRef(*name),
+                            })),
+                            expr.span,
+                        );
+                        return Place {
+                            local: tmp,
+                            projections: vec![Projection::Deref],
+                        };
+                    }
+                }
                 if let Some(local) = self.resolve_path_to_local(path, expr.id) {
                     Place::local(local)
                 } else {
@@ -849,6 +869,39 @@ impl<'a> MirBuilder<'a> {
     }
 
     fn lower_path(&mut self, path: &HirPath, expr: &HirExpr) -> Operand {
+        // Check if it resolves to a const
+        if let Some(&def_id) = self.resolve.resolutions.get(&expr.id) {
+            if let Some((cv, ty)) = self.typeck.const_values.get(&def_id) {
+                let val = match cv {
+                    crate::typeck::ConstVal::Int(v) => ConstValue::Int(*v),
+                    crate::typeck::ConstVal::Bool(v) => ConstValue::Bool(*v),
+                    crate::typeck::ConstVal::Char(v) => ConstValue::Char(*v),
+                };
+                return Operand::Constant(Constant { ty: ty.clone(), value: val });
+            }
+            // Check if it resolves to a static
+            if let Some((name, ty, _, _)) = self.typeck.static_defs.get(&def_id) {
+                let name = *name;
+                let ty = ty.clone();
+                // Load address of static into a temp (LEA)
+                let ptr_ty = TyKind::RawPtr(Box::new(ty.clone()), crate::ast::Mutability::Mut);
+                let addr_tmp = self.alloc_temp(ptr_ty, expr.span);
+                self.emit_assign(
+                    Place::local(addr_tmp),
+                    Rvalue::Use(Operand::Constant(Constant {
+                        ty: TyKind::RawPtr(Box::new(ty.clone()), crate::ast::Mutability::Mut),
+                        value: ConstValue::StaticRef(name),
+                    })),
+                    expr.span,
+                );
+                // Dereference to load the value
+                return Operand::Copy(Place {
+                    local: addr_tmp,
+                    projections: vec![Projection::Deref],
+                });
+            }
+        }
+
         // Check if it resolves to a local variable
         if let Some(local) = self.resolve_path_to_local(path, expr.id) {
             let ty = self.get_expr_ty(expr);
