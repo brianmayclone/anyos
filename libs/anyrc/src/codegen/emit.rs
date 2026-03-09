@@ -110,6 +110,10 @@ impl<'a> CodeEmitter<'a> {
                         let name = self.interner.resolve(*sym).to_string();
                         self.asm.lea_rip_relative(dst, &name);
                     }
+                    ConstValue::FnItem(sym) => {
+                        let name = self.interner.resolve(*sym).to_string();
+                        self.asm.lea_rip_relative(dst, &name);
+                    }
                     _ => {
                         let val = const_to_i64(&c.value);
                         self.asm.mov_ri(dst, val);
@@ -374,15 +378,23 @@ impl<'a> CodeEmitter<'a> {
                         }
                     }
                 }
-                // Extract the function name from the func operand
-                let fn_name = match func {
+                // Extract the function name or do indirect call
+                match func {
                     Operand::Constant(c) => match &c.value {
-                        ConstValue::FnItem(sym) => interner.resolve(*sym).to_string(),
-                        _ => "__unknown".to_string(),
+                        ConstValue::FnItem(sym) => {
+                            let fn_name = interner.resolve(*sym).to_string();
+                            self.asm.call_extern(&fn_name);
+                        }
+                        _ => {
+                            self.asm.call_extern("__unknown");
+                        }
                     },
-                    _ => "__unknown".to_string(),
+                    Operand::Copy(place) | Operand::Move(place) => {
+                        // Indirect call: load function pointer from place, call through register
+                        self.load_place(place, Reg::R10);
+                        self.asm.call_reg(Reg::R10);
+                    }
                 };
-                self.asm.call_extern(&fn_name);
                 // Store return value
                 self.store_place(dest, Reg::RAX);
                 self.asm.jmp(self.block_labels[target.0]);

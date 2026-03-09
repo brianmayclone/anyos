@@ -120,7 +120,11 @@ pub fn monomorphize(
             }
 
             // Build MIR for this specialization
-            let mut body = MirBuilder::build_fn(interner, resolve, &specialized_typeck, fn_def);
+            let mut built = MirBuilder::build_fn(interner, resolve, &specialized_typeck, fn_def);
+            // The main function body is last; any closures come before it
+            let mut body = built.pop().expect("build_fn returned empty");
+            // Add any closure bodies
+            mir_bodies.extend(built);
 
             // Substitute types in all locals
             for local in &mut body.locals {
@@ -276,6 +280,10 @@ impl TypeckResult {
             enum_variants: self.enum_variants.clone(),
             const_values: self.const_values.clone(),
             static_defs: self.static_defs.clone(),
+            closure_defs: self.closure_defs.clone(),
+            trait_methods: self.trait_methods.clone(),
+            trait_impls: self.trait_impls.clone(),
+            trait_names: self.trait_names.clone(),
         }
     }
 }

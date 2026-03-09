@@ -79,7 +79,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     }
 
     // 6. Build MIR
-    let mut mir_bodies = MirBuilder::build_crate(&interner, &resolve_result, &typeck_result, &hir);
+    let mut mir_bodies = MirBuilder::build_crate(&mut interner, &resolve_result, &typeck_result, &hir);
 
     // 6b. Monomorphize generic functions
     let mut mir_bodies = monomorphize(mir_bodies, &typeck_result, &mut interner, &hir, &resolve_result);

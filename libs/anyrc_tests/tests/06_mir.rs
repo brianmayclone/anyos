@@ -19,7 +19,7 @@ fn build_mir(src: &str) -> Vec<MirBody> {
     let mut checker = TypeChecker::new(&interner, &resolve_result);
     let typeck_result = checker.check_crate(&hir);
 
-    MirBuilder::build_crate(&interner, &resolve_result, &typeck_result, &hir)
+    MirBuilder::build_crate(&mut interner, &resolve_result, &typeck_result, &hir)
 }
 
 fn build_fn_mir(src: &str) -> MirBody {

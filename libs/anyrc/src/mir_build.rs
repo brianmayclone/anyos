@@ -9,7 +9,7 @@ use crate::typeck::{TyKind, TypeckResult, IntTy, FloatTy};
 use crate::diagnostics::Span;
 
 pub struct MirBuilder<'a> {
-    interner: &'a Interner,
+    interner: &'a mut Interner,
     resolve: &'a ResolveResult,
     typeck: &'a TypeckResult,
 
@@ -22,49 +22,58 @@ pub struct MirBuilder<'a> {
 
     /// Stack of (loop_header, loop_exit) block ids for break/continue
     loop_stack: Vec<(BlockId, BlockId)>,
+
+    /// Extra MirBodies generated from closure expressions
+    extra_bodies: Vec<MirBody>,
+
+    /// Counter for generating unique closure names
+    closure_counter: u32,
+
+    /// Map from closure DefId to its symbol name
+    closure_symbols: HashMap<DefId, Symbol>,
 }
 
 impl<'a> MirBuilder<'a> {
     pub fn build_crate(
-        interner: &'a Interner,
-        resolve: &'a ResolveResult,
-        typeck: &'a TypeckResult,
+        interner: &mut Interner,
+        resolve: &ResolveResult,
+        typeck: &TypeckResult,
         hir: &HirCrate,
     ) -> Vec<MirBody> {
-        let mut bodies = Vec::new();
+        // First collect all function defs (no mut borrow needed)
+        let mut fn_defs = Vec::new();
         for item in &hir.items {
-            Self::collect_fns(interner, resolve, typeck, item, &mut bodies);
+            Self::collect_fn_defs(item, &mut fn_defs);
+        }
+        // Then build MIR for each (sequential, so &mut interner is fine)
+        let mut bodies = Vec::new();
+        for f in &fn_defs {
+            bodies.extend(Self::build_fn(interner, resolve, typeck, f));
         }
         bodies
     }
 
-    fn collect_fns(
-        interner: &'a Interner,
-        resolve: &'a ResolveResult,
-        typeck: &'a TypeckResult,
-        item: &HirItem,
-        bodies: &mut Vec<MirBody>,
-    ) {
+    fn collect_fn_defs<'b>(item: &'b HirItem, out: &mut Vec<&'b HirFnDef>) {
         match &item.kind {
             HirItemKind::Fn(f) => {
                 if f.body.is_some() {
-                    bodies.push(Self::build_fn(interner, resolve, typeck, f));
+                    out.push(f);
                 }
             }
             HirItemKind::Impl(ib) => {
                 for sub in &ib.items {
-                    Self::collect_fns(interner, resolve, typeck, sub, bodies);
+                    Self::collect_fn_defs(sub, out);
                 }
             }
             HirItemKind::ExternBlock(eb) => {
                 for sub in &eb.items {
-                    Self::collect_fns(interner, resolve, typeck, sub, bodies);
+                    Self::collect_fn_defs(sub, out);
                 }
             }
             HirItemKind::Mod(m) => {
                 if let Some(sub_items) = &m.items {
                     for sub in sub_items {
-                        Self::collect_fns(interner, resolve, typeck, sub, bodies);
+                        Self::collect_fn_defs(sub, out);
                     }
                 }
             }
@@ -73,11 +82,11 @@ impl<'a> MirBuilder<'a> {
     }
 
     pub fn build_fn(
-        interner: &'a Interner,
-        resolve: &'a ResolveResult,
-        typeck: &'a TypeckResult,
+        interner: &mut Interner,
+        resolve: &ResolveResult,
+        typeck: &TypeckResult,
         func: &HirFnDef,
-    ) -> MirBody {
+    ) -> Vec<MirBody> {
         let mut builder = MirBuilder {
             interner,
             resolve,
@@ -87,6 +96,9 @@ impl<'a> MirBuilder<'a> {
             current_block: BlockId(0),
             var_map: HashMap::new(),
             loop_stack: Vec::new(),
+            extra_bodies: Vec::new(),
+            closure_counter: 0,
+            closure_symbols: HashMap::new(),
         };
 
         // Create entry block
@@ -134,14 +146,16 @@ impl<'a> MirBuilder<'a> {
             builder.terminate(Terminator::Return);
         }
 
-        MirBody {
+        let mut result = builder.extra_bodies;
+        result.push(MirBody {
             basic_blocks: builder.blocks,
             locals: builder.locals,
             arg_count,
             name: func.name,
             span: Span::dummy(),
             no_mangle: func.no_mangle,
-        }
+        });
+        result
     }
 
     fn get_fn_ret_ty(&self, func: &HirFnDef) -> TyKind {
@@ -345,7 +359,59 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 let func_op = self.lower_expr(callee);
-                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
+                let mut arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
+
+                // Check for &T -> &dyn Trait coercion at call site
+                if let Operand::Constant(c) = &func_op {
+                    if let TyKind::FnDef(fn_def_id, _) = &c.ty {
+                        if let Some((param_tys, _)) = self.typeck.fn_sigs.get(fn_def_id).cloned() {
+                            for (i, pty) in param_tys.iter().enumerate() {
+                                if i >= arg_ops.len() { break; }
+                                if let TyKind::Ref(inner, _) = pty {
+                                    if let TyKind::DynTrait(trait_def_id) = inner.as_ref() {
+                                        let arg_op = arg_ops[i].clone();
+                                        let arg_expr_ty = self.get_expr_ty(&args[i]);
+                                        let concrete_ty_name = match &arg_expr_ty {
+                                            TyKind::Ref(inner, _) => {
+                                                if let TyKind::Adt(_, _) = inner.as_ref() {
+                                                    self.resolve.impl_methods.keys()
+                                                        .find(|ty_name| {
+                                                            self.typeck.trait_impls.contains_key(&(**ty_name, *trait_def_id))
+                                                        })
+                                                        .copied()
+                                                } else { None }
+                                            }
+                                            _ => None,
+                                        };
+                                        if let Some(type_name) = concrete_ty_name {
+                                            let trait_name = self.typeck.trait_names.get(trait_def_id)
+                                                .map(|s| self.interner.resolve(*s).to_string())
+                                                .unwrap_or_default();
+                                            let type_name_str = self.interner.resolve(type_name).to_string();
+                                            let vtable_sym_str = format!("__vtable_{type_name_str}_{trait_name}");
+                                            let vtable_sym = self.interner.intern(&vtable_sym_str);
+                                            let fat_ptr_ty = TyKind::Ref(Box::new(TyKind::DynTrait(*trait_def_id)), Mutability::Immutable);
+                                            let fat_ptr_local = self.alloc_temp(fat_ptr_ty, expr.span);
+                                            self.emit_assign(
+                                                Place::local(fat_ptr_local),
+                                                Rvalue::Aggregate(AggregateKind::Tuple, vec![
+                                                    arg_op,
+                                                    Operand::Constant(Constant {
+                                                        ty: TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable),
+                                                        value: ConstValue::StaticRef(vtable_sym),
+                                                    }),
+                                                ]),
+                                                expr.span,
+                                            );
+                                            arg_ops[i] = Operand::Copy(Place::local(fat_ptr_local));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let ty = self.get_expr_ty(expr);
                 let dest = self.alloc_temp(ty, expr.span);
                 let next_block = self.push_block();
@@ -616,6 +682,72 @@ impl<'a> MirBuilder<'a> {
                     TyKind::Ref(inner, _) => inner.as_ref().clone(),
                     other => other.clone(),
                 };
+
+                // Handle dyn Trait virtual dispatch
+                if let TyKind::DynTrait(trait_def_id) = &inner_ty {
+                    if let Some(trait_methods) = self.typeck.trait_methods.get(trait_def_id) {
+                        let method_index = trait_methods.iter()
+                            .position(|(n, _)| *n == *method_name)
+                            .unwrap_or(0);
+
+                        // Lower receiver (already a &dyn Trait = fat pointer)
+                        let recv_op = self.lower_expr(recv);
+                        // Store fat pointer to a local so we can project into it
+                        let fat_ptr_ty = TyKind::Ref(Box::new(inner_ty.clone()), Mutability::Immutable);
+                        let fat_ptr_local = self.alloc_temp(fat_ptr_ty, expr.span);
+                        self.emit_assign(Place::local(fat_ptr_local), Rvalue::Use(recv_op), expr.span);
+
+                        // Extract data_ptr (field 0) and vtable_ptr (field 1)
+                        let data_ptr_local = self.alloc_temp(TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable), expr.span);
+                        self.emit_assign(
+                            Place::local(data_ptr_local),
+                            Rvalue::Use(Operand::Copy(Place {
+                                local: fat_ptr_local,
+                                projections: vec![Projection::Field(0)],
+                            })),
+                            expr.span,
+                        );
+                        let vtable_ptr_local = self.alloc_temp(TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable), expr.span);
+                        self.emit_assign(
+                            Place::local(vtable_ptr_local),
+                            Rvalue::Use(Operand::Copy(Place {
+                                local: fat_ptr_local,
+                                projections: vec![Projection::Field(1)],
+                            })),
+                            expr.span,
+                        );
+
+                        // Load fn_ptr from vtable[method_index]
+                        // vtable_ptr points to an array of fn ptrs; fn_ptr = *(vtable_ptr + method_index * 8)
+                        let fn_ptr_local = self.alloc_temp(TyKind::FnPtr(vec![], Box::new(TyKind::Unit)), expr.span);
+                        self.emit_assign(
+                            Place::local(fn_ptr_local),
+                            Rvalue::Use(Operand::Copy(Place {
+                                local: vtable_ptr_local,
+                                projections: vec![Projection::Deref, Projection::Field(method_index)],
+                            })),
+                            expr.span,
+                        );
+
+                        // Build args: [data_ptr (as &self), ...user_args]
+                        let mut all_args = vec![Operand::Copy(Place::local(data_ptr_local))];
+                        for a in args {
+                            all_args.push(self.lower_expr(a));
+                        }
+
+                        let ty = self.get_expr_ty(expr);
+                        let dest = self.alloc_temp(ty, expr.span);
+                        let next_block = self.push_block();
+                        self.terminate(Terminator::Call {
+                            func: Operand::Copy(Place::local(fn_ptr_local)),
+                            args: all_args,
+                            dest: Place::local(dest),
+                            target: next_block,
+                        });
+                        self.current_block = next_block;
+                        return Operand::Copy(Place::local(dest));
+                    }
+                }
 
                 let method_def_id = if let TyKind::Adt(def_id, _) = &inner_ty {
                     // Find type name for this DefId
@@ -888,7 +1020,113 @@ impl<'a> MirBuilder<'a> {
             }
 
             // Catch-all for unhandled cases
-            HirExprKind::Closure(_, _, _, _) |
+            HirExprKind::Closure(params, ret_ty, body, _) => {
+                // Look up the closure's synthetic DefId from typeck
+                let closure_def_id = self.typeck.closure_defs.get(&expr.id).copied();
+
+                // Generate unique closure function name
+                let closure_name_str = format!("__closure_{}", self.closure_counter);
+                self.closure_counter += 1;
+                let closure_sym = self.interner.intern(&closure_name_str);
+
+                // Get the function signature from typeck
+                let (param_tys, ret_type) = if let Some(def_id) = closure_def_id {
+                    self.typeck.fn_sigs.get(&def_id).cloned()
+                        .unwrap_or_else(|| (vec![], TyKind::Unit))
+                } else {
+                    (vec![], TyKind::Unit)
+                };
+
+                // Build a separate MirBody for the closure
+                let mut closure_blocks: Vec<BasicBlock> = Vec::new();
+                let mut closure_locals: Vec<LocalDecl> = Vec::new();
+
+                // _0 = return place
+                closure_locals.push(LocalDecl {
+                    ty: ret_type,
+                    mutability: Mutability::Immutable,
+                    name: None,
+                    span: Span::dummy(),
+                });
+
+                // Save current builder state
+                let saved_blocks = std::mem::take(&mut self.blocks);
+                let saved_locals = std::mem::take(&mut self.locals);
+                let saved_current_block = self.current_block;
+                let saved_var_map = std::mem::take(&mut self.var_map);
+
+                self.blocks = Vec::new();
+                self.locals = Vec::new();
+                self.push_block();
+
+                // _0 = return place
+                let ret_ty_resolved = if let Some(def_id) = closure_def_id {
+                    self.typeck.fn_sigs.get(&def_id)
+                        .map(|(_, ret)| ret.clone())
+                        .unwrap_or(TyKind::Unit)
+                } else {
+                    TyKind::Unit
+                };
+                self.alloc_local(ret_ty_resolved, None, Span::dummy());
+
+                // Params
+                let arg_count = params.len();
+                for (i, param) in params.iter().enumerate() {
+                    let ty = param_tys.get(i).cloned()
+                        .unwrap_or(TyKind::Int(IntTy::I32));
+                    let name = match &param.pat {
+                        HirPattern::Ident(_, sym, _, _, _) => Some(*sym),
+                        _ => None,
+                    };
+                    let local = self.alloc_local(ty, name, param.span);
+                    if let HirPattern::Ident(hir_id, _, _, _, _) = &param.pat {
+                        if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
+                            self.var_map.insert(def_id, local);
+                        }
+                    }
+                }
+
+                // Lower the closure body
+                let result = self.lower_expr(body);
+                let ret_place = Place::local(Local(0));
+                self.emit_assign(ret_place, Rvalue::Use(result), expr.span);
+                self.terminate(Terminator::Return);
+
+                // Extract the built closure body
+                closure_blocks = std::mem::take(&mut self.blocks);
+                closure_locals = std::mem::take(&mut self.locals);
+
+                // Restore builder state
+                self.blocks = saved_blocks;
+                self.locals = saved_locals;
+                self.current_block = saved_current_block;
+                self.var_map = saved_var_map;
+
+                let closure_body = MirBody {
+                    basic_blocks: closure_blocks,
+                    locals: closure_locals,
+                    arg_count,
+                    name: closure_sym,
+                    span: expr.span,
+                    no_mangle: false,
+                };
+                self.extra_bodies.push(closure_body);
+                if let Some(def_id) = closure_def_id {
+                    self.closure_symbols.insert(def_id, closure_sym);
+                }
+
+                // Return a FnItem constant pointing to the closure function
+                let fn_ty = if let Some(def_id) = closure_def_id {
+                    TyKind::FnDef(def_id, vec![])
+                } else {
+                    TyKind::Unit
+                };
+                Operand::Constant(Constant {
+                    ty: fn_ty,
+                    value: ConstValue::FnItem(closure_sym),
+                })
+            }
+
             HirExprKind::ArrayRepeat(_, _) |
             HirExprKind::Range(_, _, _) |
             HirExprKind::Try(_) |
@@ -1038,6 +1276,16 @@ impl<'a> MirBuilder<'a> {
         // Check if it resolves to a local variable
         if let Some(local) = self.resolve_path_to_local(path, expr.id) {
             let ty = self.get_expr_ty(expr);
+            // If the local holds a FnDef (e.g., a closure), return the FnItem constant
+            // so that codegen can emit a direct call.
+            if let TyKind::FnDef(def_id, _) = &ty {
+                if let Some(&sym) = self.closure_symbols.get(def_id) {
+                    return Operand::Constant(Constant {
+                        ty: ty.clone(),
+                        value: ConstValue::FnItem(sym),
+                    });
+                }
+            }
             if self.is_copy_type(&ty) {
                 Operand::Copy(Place::local(local))
             } else {

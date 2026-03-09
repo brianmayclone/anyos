@@ -18,7 +18,7 @@ fn build_fn_mir(src: &str) -> MirBody {
     let resolve_result = resolver.resolve_crate(&hir);
     let mut checker = TypeChecker::new(&interner, &resolve_result);
     let typeck_result = checker.check_crate(&hir);
-    MirBuilder::build_crate(&interner, &resolve_result, &typeck_result, &hir)
+    MirBuilder::build_crate(&mut interner, &resolve_result, &typeck_result, &hir)
         .into_iter().next().unwrap()
 }
 

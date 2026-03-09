@@ -24,6 +24,7 @@ pub enum TyKind {
     FnDef(DefId, Vec<TyKind>),
     FnPtr(Vec<TyKind>, Box<TyKind>),
     Adt(DefId, Vec<TyKind>),
+    DynTrait(DefId),
     Param(u32),
     Infer(InferVar),
     Error,
@@ -63,6 +64,14 @@ pub struct TypeckResult {
     pub const_values: HashMap<DefId, (ConstVal, TyKind)>,
     /// Static definitions: DefId -> (name, type, initial_value, is_mut)
     pub static_defs: HashMap<DefId, (Symbol, TyKind, ConstVal, bool)>,
+    /// Closure expression HirId -> synthetic DefId
+    pub closure_defs: HashMap<HirId, DefId>,
+    /// Trait method ordering: trait DefId -> ordered list of (method_name, method_def_id)
+    pub trait_methods: HashMap<DefId, Vec<(Symbol, DefId)>>,
+    /// Trait impls: (concrete_type_name, trait_def_id) -> list of method DefIds in vtable order
+    pub trait_impls: HashMap<(Symbol, DefId), Vec<(Symbol, DefId)>>,
+    /// Trait DefId -> trait name Symbol
+    pub trait_names: HashMap<DefId, Symbol>,
 }
 
 /// Compile-time evaluated constant value
@@ -99,12 +108,23 @@ pub struct TypeChecker<'a> {
     /// Static definitions
     static_defs: HashMap<DefId, (Symbol, TyKind, ConstVal, bool)>,
 
+    /// Trait method ordering: trait DefId -> ordered list of (method_name, method_def_id)
+    trait_methods: HashMap<DefId, Vec<(Symbol, DefId)>>,
+    /// Trait impls: (concrete_type_name, trait_def_id) -> list of impl method DefIds in vtable order
+    trait_impls: HashMap<(Symbol, DefId), Vec<(Symbol, DefId)>>,
+    /// Trait DefId -> trait name Symbol
+    trait_names: HashMap<DefId, Symbol>,
+
     next_infer: u32,
     infer_kinds: HashMap<InferVar, InferKind>,
     substitutions: HashMap<InferVar, TyKind>,
 
     current_fn_ret: Option<TyKind>,
     errors: Vec<Diagnostic>,
+
+    /// Synthetic DefIds for closure expressions: HirId -> DefId
+    closure_defs: HashMap<HirId, DefId>,
+    next_closure_def_id: u32,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -124,11 +144,16 @@ impl<'a> TypeChecker<'a> {
             generic_fn_defs: HashMap::new(),
             const_values: HashMap::new(),
             static_defs: HashMap::new(),
+            trait_methods: HashMap::new(),
+            trait_impls: HashMap::new(),
+            trait_names: HashMap::new(),
             next_infer: 0,
             infer_kinds: HashMap::new(),
             substitutions: HashMap::new(),
             current_fn_ret: None,
             errors: Vec::new(),
+            closure_defs: HashMap::new(),
+            next_closure_def_id: 0x8000_0000,
         }
     }
 
@@ -178,6 +203,10 @@ impl<'a> TypeChecker<'a> {
             enum_variants: std::mem::take(&mut self.enum_variant_fields),
             const_values: std::mem::take(&mut self.const_values),
             static_defs: std::mem::take(&mut self.static_defs),
+            closure_defs: std::mem::take(&mut self.closure_defs),
+            trait_methods: std::mem::take(&mut self.trait_methods),
+            trait_impls: std::mem::take(&mut self.trait_impls),
+            trait_names: std::mem::take(&mut self.trait_names),
         }
     }
 
@@ -255,6 +284,21 @@ impl<'a> TypeChecker<'a> {
                                 self.type_name_to_def.insert(self_sym, def_id);
                             }
                         }
+                        // If this is a trait impl, record the mapping
+                        if let Some(trait_ref) = &ib.trait_ref {
+                            if !trait_ref.segments.is_empty() {
+                                let trait_name = trait_ref.segments[0].ident;
+                                if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
+                                    let mut impl_methods = Vec::new();
+                                    for sub in &ib.items {
+                                        if let HirItemKind::Fn(f) = &sub.kind {
+                                            impl_methods.push((f.name, f.def_id));
+                                        }
+                                    }
+                                    self.trait_impls.insert((self_ty_name, trait_def_id), impl_methods);
+                                }
+                            }
+                        }
                     }
                 }
                 for sub in &ib.items {
@@ -283,6 +327,20 @@ impl<'a> TypeChecker<'a> {
                 for sub in &eb.items {
                     self.collect_item(sub);
                 }
+            }
+            HirItemKind::Trait(t) => {
+                // Register trait name so `dyn Trait` can resolve it
+                self.type_name_to_def.insert(t.name, t.def_id);
+                self.trait_names.insert(t.def_id, t.name);
+                // Register trait method signatures and ordering
+                let mut methods = Vec::new();
+                for sub in &t.items {
+                    if let HirItemKind::Fn(f) = &sub.kind {
+                        methods.push((f.name, f.def_id));
+                    }
+                    self.collect_item(sub);
+                }
+                self.trait_methods.insert(t.def_id, methods);
             }
             _ => {}
         }
@@ -706,6 +764,23 @@ impl<'a> TypeChecker<'a> {
                     other => other.clone(),
                 };
 
+                // Handle dyn Trait method calls
+                if let TyKind::DynTrait(trait_def_id) = &inner_ty {
+                    if let Some(methods) = self.trait_methods.get(trait_def_id).cloned() {
+                        if let Some((_, method_def_id)) = methods.iter().find(|(n, _)| *n == *method_name) {
+                            if let Some((param_tys, ret_ty)) = self.fn_sigs.get(method_def_id).cloned() {
+                                let user_params = if !param_tys.is_empty() { &param_tys[1..] } else { &param_tys[..] };
+                                if args.len() != user_params.len() {
+                                    self.error(expr.span, &format!(
+                                        "wrong number of arguments: expected {}, found {}",
+                                        user_params.len(), args.len()));
+                                }
+                                return ret_ty;
+                            }
+                        }
+                    }
+                }
+
                 if let TyKind::Adt(def_id, _) = &inner_ty {
                     // Find the type name for this DefId
                     let type_name = self.type_name_to_def.iter()
@@ -739,9 +814,40 @@ impl<'a> TypeChecker<'a> {
                 self.fresh_infer(InferKind::General)
             }
 
-            HirExprKind::Closure(_, _, body, _) => {
-                self.check_expr(body);
-                self.fresh_infer(InferKind::General)
+            HirExprKind::Closure(params, ret_ty, body, _) => {
+                // Allocate a synthetic DefId for this closure
+                let closure_def_id = DefId(self.next_closure_def_id);
+                self.next_closure_def_id += 1;
+                self.closure_defs.insert(expr.id, closure_def_id);
+
+                // Resolve parameter types from annotations
+                let param_tys: Vec<TyKind> = params.iter().map(|p| {
+                    let ty = self.hir_ty_to_ty(&p.ty);
+                    // Register param binding in local_types
+                    if let HirPattern::Ident(hir_id, _, _, _, _) = &p.pat {
+                        if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
+                            self.local_types.insert(def_id, ty.clone());
+                        }
+                    }
+                    ty
+                }).collect();
+
+                // Check body
+                let body_ty = self.check_expr(body);
+
+                // Return type: explicit annotation or inferred from body
+                let ret = if let Some(rt) = ret_ty {
+                    let rt_ty = self.hir_ty_to_ty(rt);
+                    self.unify(&rt_ty, &body_ty, expr.span);
+                    rt_ty
+                } else {
+                    body_ty
+                };
+
+                // Register fn signature for this closure
+                self.fn_sigs.insert(closure_def_id, (param_tys, ret));
+
+                TyKind::FnDef(closure_def_id, vec![])
             }
 
             HirExprKind::ArrayRepeat(val, count) => {
@@ -860,6 +966,19 @@ impl<'a> TypeChecker<'a> {
             }
 
             (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a == b => return,
+
+            // Allow coercion from FnDef to FnPtr if signatures match
+            (TyKind::FnPtr(expected_params, expected_ret), TyKind::FnDef(def_id, _)) => {
+                if let Some((actual_params, actual_ret)) = self.fn_sigs.get(def_id).cloned() {
+                    if expected_params.len() == actual_params.len() {
+                        for (ep, ap) in expected_params.clone().iter().zip(actual_params.iter()) {
+                            self.unify(ep, ap, span);
+                        }
+                        self.unify(expected_ret, &actual_ret, span);
+                        return;
+                    }
+                }
+            }
 
             _ => {}
         }
@@ -1010,6 +1129,15 @@ impl<'a> TypeChecker<'a> {
                     .map(|t| self.hir_ty_to_ty(t))
                     .unwrap_or(TyKind::Unit);
                 TyKind::FnPtr(ptys, Box::new(rty))
+            }
+            HirTy::DynTrait(path, _) => {
+                if path.segments.is_empty() { return TyKind::Error; }
+                let sym = path.segments[0].ident;
+                if let Some(&def_id) = self.type_name_to_def.get(&sym) {
+                    TyKind::DynTrait(def_id)
+                } else {
+                    TyKind::Error
+                }
             }
             HirTy::Never(_) => TyKind::Never,
             HirTy::Infer(_) => TyKind::Error,
