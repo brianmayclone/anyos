@@ -2529,37 +2529,38 @@ fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
         }
     }
 
-    // Legacy 8259 PIC path.
-    if !ioapic_routed && !vm.pic_ptr.is_null() {
+    // Always latch in PIC so the IRQ is preserved even if currently masked.
+    // Only attempt PIC delivery if IOAPIC didn't route it (avoids duplicates).
+    if !vm.pic_ptr.is_null() {
         let pic = unsafe { &mut *vm.pic_ptr };
         pic.raise_irq(irq);
-        #[cfg(feature = "host_test")]
-        if irq == 8 && IRQ_TRACE_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok() {
-            eprintln!(
-                "[irq-route] irq={} via=pic ic={}",
-                irq,
-                vm.engine.instruction_count()
-            );
-        }
-        // Leave the request latched in the PIC until it is actually
-        // deliverable; otherwise IRQ0 is lost whenever the guest keeps IF=0.
-        route_deliverable_pic_irq(vm);
 
-        // Fallback for APIC mode: when the PIC is FULLY masked (both master
-        // and slave = 0xFF), the guest switched to APIC mode. If the IOAPIC
-        // entry for this IRQ isn't programmed, deliver via LAPIC using the
-        // PIC's configured vector so the guest's IDT handler matches.
-        let fully_masked = pic.master.imr == 0xFF && pic.slave.imr == 0xFF;
-        if fully_masked && !vm.lapic_ptr.is_null() {
-            let lapic = unsafe { &mut *vm.lapic_ptr };
-            if lapic.software_enabled() {
-                let vector = if irq < 8 {
-                    pic.master.vector_offset + irq
-                } else {
-                    pic.slave.vector_offset + (irq - 8)
-                };
-                lapic.raise_vector(vector, false);
-                route_deliverable_lapic_irq(vm);
+        if !ioapic_routed {
+            #[cfg(feature = "host_test")]
+            if irq == 8 && IRQ_TRACE_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok() {
+                eprintln!(
+                    "[irq-route] irq={} via=pic ic={}",
+                    irq,
+                    vm.engine.instruction_count()
+                );
+            }
+            route_deliverable_pic_irq(vm);
+
+            // Fallback for APIC mode: when the PIC is FULLY masked (both
+            // master and slave = 0xFF), the guest switched to APIC mode.
+            // Deliver via LAPIC using the PIC's configured vector.
+            let fully_masked = pic.master.imr == 0xFF && pic.slave.imr == 0xFF;
+            if fully_masked && !vm.lapic_ptr.is_null() {
+                let lapic = unsafe { &mut *vm.lapic_ptr };
+                if lapic.software_enabled() {
+                    let vector = if irq < 8 {
+                        pic.master.vector_offset + irq
+                    } else {
+                        pic.slave.vector_offset + (irq - 8)
+                    };
+                    lapic.raise_vector(vector, false);
+                    route_deliverable_lapic_irq(vm);
+                }
             }
         }
     }
