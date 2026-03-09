@@ -518,6 +518,57 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RSI);
                 true
             }
+            // Atomic intrinsics
+            // AtomicXxx::new(val) — just returns the value (stored by caller)
+            s if s.ends_with("::new") && s.contains("Atomic") => {
+                // arg0 = value, already in RDI
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            // AtomicXxx::load(&self, ordering) — load from self pointer
+            s if s.ends_with("::load") && s.contains("Atomic") => {
+                // arg0 = &self (pointer to atomic), arg1 = ordering (ignored)
+                // mov rax, [rdi]
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            // AtomicXxx::store(&self, val, ordering) — store to self pointer
+            s if s.ends_with("::store") && s.contains("Atomic") => {
+                // arg0 = &self, arg1 = val, arg2 = ordering (ignored)
+                // mov [rdi], rsi
+                self.asm.mov_mr(Reg::RDI, 0, Reg::RSI);
+                true
+            }
+            // AtomicXxx::fetch_add(&self, val, ordering) → lock xadd
+            s if s.ends_with("::fetch_add") && s.contains("Atomic") => {
+                // arg0 = &self, arg1 = val, arg2 = ordering (ignored)
+                // lock xadd [rdi], rsi → old value ends up in rsi
+                self.asm.emit_raw(&[0xF0, 0x48, 0x0F, 0xC1, 0x37]); // lock xadd [rdi], rsi
+                self.asm.mov_rr(Reg::RAX, Reg::RSI); // return old value
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            // AtomicXxx::compare_exchange(&self, current, new, success_ord, fail_ord)
+            s if s.ends_with("::compare_exchange") && s.contains("Atomic") => {
+                // arg0=&self, arg1=current, arg2=new, arg3=succ_ord, arg4=fail_ord
+                // lock cmpxchg [rdi], rdx — rax(=rsi)=expected, result in rax
+                self.asm.mov_rr(Reg::RAX, Reg::RSI); // rax = current (expected)
+                self.asm.emit_raw(&[0xF0, 0x48, 0x0F, 0xB1, 0x17]); // lock cmpxchg [rdi], rdx
+                // Return old value in rax (if == expected, exchange happened)
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            // AtomicXxx::swap(&self, val, ordering) → xchg
+            s if s.ends_with("::swap") && s.contains("Atomic") => {
+                // arg0=&self, arg1=val, arg2=ordering
+                // xchg [rdi], rsi → old value in rsi
+                self.asm.emit_raw(&[0x48, 0x87, 0x37]); // xchg [rdi], rsi
+                self.asm.mov_rr(Reg::RAX, Reg::RSI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
             _ => false,
         }
     }
