@@ -1,0 +1,710 @@
+//! AHCI (Advanced Host Controller Interface) 1.3.1 controller emulation.
+//!
+//! Emulates an Intel ICH9-class SATA controller in AHCI mode. Supports up to
+//! 6 ports, each with independent command list and received FIS structures.
+//! Implements FIS-based ATA/ATAPI command processing for disk and CD-ROM
+//! devices.
+//!
+//! PCI identity: class 01:06:01 (Mass Storage / SATA / AHCI 1.0)
+//! Vendor/Device: 8086:2922 (Intel ICH9 AHCI)
+
+use alloc::vec;
+use alloc::vec::Vec;
+use crate::error::Result;
+use crate::memory::mmio::MmioHandler;
+
+// ── AHCI HBA Generic Host Control registers (offsets from ABAR) ──
+
+const HBA_CAP: u64 = 0x00;
+const HBA_GHC: u64 = 0x04;
+const HBA_IS: u64 = 0x08;
+const HBA_PI: u64 = 0x0C;
+const HBA_VS: u64 = 0x10;
+const HBA_CCC_CTL: u64 = 0x14;
+const HBA_CCC_PORTS: u64 = 0x18;
+const HBA_EM_LOC: u64 = 0x1C;
+const HBA_EM_CTL: u64 = 0x20;
+const HBA_CAP2: u64 = 0x24;
+const HBA_BOHC: u64 = 0x28;
+
+// ── Per-port register offsets (base = 0x100 + port*0x80) ──
+
+const PORT_CLB: u64 = 0x00;
+const PORT_CLBU: u64 = 0x04;
+const PORT_FB: u64 = 0x08;
+const PORT_FBU: u64 = 0x0C;
+const PORT_IS: u64 = 0x10;
+const PORT_IE: u64 = 0x14;
+const PORT_CMD: u64 = 0x18;
+const PORT_TFD: u64 = 0x20;
+const PORT_SIG: u64 = 0x24;
+const PORT_SSTS: u64 = 0x28;
+const PORT_SCTL: u64 = 0x2C;
+const PORT_SERR: u64 = 0x30;
+const PORT_SACT: u64 = 0x34;
+const PORT_CI: u64 = 0x38;
+const PORT_SNTF: u64 = 0x3C;
+const PORT_FBS: u64 = 0x40;
+
+const PORT_CMD_ST: u32 = 1 << 0;
+const PORT_CMD_FRE: u32 = 1 << 4;
+const PORT_CMD_FR: u32 = 1 << 14;
+const PORT_CMD_CR: u32 = 1 << 15;
+const PORT_CMD_ICC_ACTIVE: u32 = 1 << 28;
+
+const PORT_IS_DHRS: u32 = 1 << 0;
+
+const GHC_HR: u32 = 1 << 0;
+const GHC_IE: u32 = 1 << 1;
+const GHC_AE: u32 = 1u32 << 31;
+
+const TFD_STS_DRDY: u32 = 1 << 6;
+const TFD_STS_DSC: u32 = 1 << 4;
+
+const SSTS_DET_PRESENT: u32 = 0x3;
+const SSTS_SPD_GEN1: u32 = 0x1 << 4;
+const SSTS_IPM_ACTIVE: u32 = 0x1 << 8;
+
+const FIS_TYPE_REG_H2D: u8 = 0x27;
+const FIS_TYPE_REG_D2H: u8 = 0x34;
+
+const ATA_CMD_IDENTIFY: u8 = 0xEC;
+const ATA_CMD_IDENTIFY_PACKET: u8 = 0xA1;
+const ATA_CMD_READ_DMA: u8 = 0xC8;
+const ATA_CMD_READ_DMA_EXT: u8 = 0x25;
+const ATA_CMD_WRITE_DMA: u8 = 0xCA;
+const ATA_CMD_WRITE_DMA_EXT: u8 = 0x35;
+const ATA_CMD_SET_FEATURES: u8 = 0xEF;
+const ATA_CMD_FLUSH: u8 = 0xE7;
+const ATA_CMD_FLUSH_EXT: u8 = 0xEA;
+const ATA_CMD_PACKET: u8 = 0xA0;
+const ATA_CMD_READ_SECTORS: u8 = 0x20;
+const ATA_CMD_READ_SECTORS_EXT: u8 = 0x24;
+const ATA_CMD_WRITE_SECTORS: u8 = 0x30;
+const ATA_CMD_WRITE_SECTORS_EXT: u8 = 0x34;
+
+const MAX_PORTS: usize = 6;
+/// MMIO region size for AHCI HBA.
+pub const AHCI_MMIO_SIZE: u64 = 0x1100;
+const SECTOR_SIZE: usize = 512;
+const ATAPI_SECTOR_SIZE: usize = 2048;
+
+// ── Guest DMA helper (borrowck-friendly) ──
+
+struct GuestDma {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl GuestDma {
+    fn read_bytes(&self, addr: u64, count: usize) -> Option<Vec<u8>> {
+        let a = addr as usize;
+        if a + count > self.len { return None; }
+        let mut buf = vec![0u8; count];
+        unsafe { core::ptr::copy_nonoverlapping(self.ptr.add(a), buf.as_mut_ptr(), count); }
+        Some(buf)
+    }
+
+    fn write_bytes(&self, addr: u64, data: &[u8]) {
+        let a = addr as usize;
+        if a + data.len() > self.len { return; }
+        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(a), data.len()); }
+    }
+
+    fn write_u32(&self, addr: u64, val: u32) {
+        self.write_bytes(addr, &val.to_le_bytes());
+    }
+
+    fn write_prdt(&self, prdt_base: u64, prdtl: u32, data: &[u8]) {
+        let mut offset = 0usize;
+        for i in 0..prdtl as u64 {
+            if offset >= data.len() { break; }
+            let ea = prdt_base + i * 16;
+            if let Some(e) = self.read_bytes(ea, 16) {
+                let dba = u32::from_le_bytes([e[0], e[1], e[2], e[3]]) as u64
+                    | (u32::from_le_bytes([e[4], e[5], e[6], e[7]]) as u64) << 32;
+                let bc = (u32::from_le_bytes([e[12], e[13], e[14], e[15]]) & 0x3FFFFF) + 1;
+                let n = (bc as usize).min(data.len() - offset);
+                self.write_bytes(dba, &data[offset..offset + n]);
+                offset += n;
+            }
+        }
+    }
+
+    fn read_prdt(&self, prdt_base: u64, prdtl: u32, buf: &mut [u8]) {
+        let mut offset = 0usize;
+        for i in 0..prdtl as u64 {
+            if offset >= buf.len() { break; }
+            let ea = prdt_base + i * 16;
+            if let Some(e) = self.read_bytes(ea, 16) {
+                let dba = u32::from_le_bytes([e[0], e[1], e[2], e[3]]) as u64
+                    | (u32::from_le_bytes([e[4], e[5], e[6], e[7]]) as u64) << 32;
+                let bc = (u32::from_le_bytes([e[12], e[13], e[14], e[15]]) & 0x3FFFFF) + 1;
+                let n = (bc as usize).min(buf.len() - offset);
+                if let Some(chunk) = self.read_bytes(dba, n) {
+                    buf[offset..offset + n].copy_from_slice(&chunk);
+                }
+                offset += n;
+            }
+        }
+    }
+}
+
+// ── Drive ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AhciDriveKind {
+    AtaDisk,
+    AtapiCdrom,
+}
+
+struct AhciDrive {
+    kind: AhciDriveKind,
+    disk: Vec<u8>,
+    disk_fd: i32,
+    total_bytes: u64,
+    present: bool,
+}
+
+impl AhciDrive {
+    fn new() -> Self {
+        AhciDrive { kind: AhciDriveKind::AtaDisk, disk: Vec::new(), disk_fd: -1, total_bytes: 0, present: false }
+    }
+
+    fn sector_size(&self) -> usize {
+        match self.kind { AhciDriveKind::AtaDisk => SECTOR_SIZE, AhciDriveKind::AtapiCdrom => ATAPI_SECTOR_SIZE }
+    }
+
+    fn total_sectors(&self) -> u64 { self.total_bytes / self.sector_size() as u64 }
+
+    fn seek_to(&self, byte_offset: u64) {
+        #[cfg(feature = "host_test")]
+        {
+            use crate::syscall;
+            let fd = self.disk_fd as u32;
+            syscall::lseek(fd, 0, 0); // rewind
+            let mut remaining = byte_offset;
+            const MAX_CHUNK: u64 = 0x7FFF_FFFF;
+            while remaining > MAX_CHUNK {
+                syscall::lseek(fd, MAX_CHUNK as i32, 1);
+                remaining -= MAX_CHUNK;
+            }
+            if remaining > 0 {
+                syscall::lseek(fd, remaining as i32, 1);
+            }
+        }
+        #[cfg(not(feature = "host_test"))]
+        { let _ = byte_offset; }
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) {
+        if self.disk_fd >= 0 {
+            self.seek_to(offset);
+            #[cfg(feature = "host_test")]
+            {
+                use crate::syscall;
+                let n = syscall::read(self.disk_fd as u32, buf);
+                let read_len = if n == u32::MAX { 0 } else { (n as usize).min(buf.len()) };
+                if read_len < buf.len() { buf[read_len..].fill(0); }
+            }
+            #[cfg(not(feature = "host_test"))]
+            { let _ = offset; for b in buf.iter_mut() { *b = 0; } }
+        } else {
+            let s = offset as usize;
+            let e = (s + buf.len()).min(self.disk.len());
+            if s < self.disk.len() {
+                buf[..e - s].copy_from_slice(&self.disk[s..e]);
+                for b in buf[e - s..].iter_mut() { *b = 0; }
+            } else {
+                for b in buf.iter_mut() { *b = 0; }
+            }
+        }
+    }
+
+    fn write_at(&mut self, offset: u64, buf: &[u8]) {
+        if self.disk_fd >= 0 {
+            self.seek_to(offset);
+            #[cfg(feature = "host_test")]
+            {
+                use crate::syscall;
+                syscall::write(self.disk_fd as u32, buf);
+            }
+        } else {
+            let s = offset as usize;
+            let e = s + buf.len();
+            if e <= self.disk.len() {
+                self.disk[s..e].copy_from_slice(buf);
+            } else if s < self.disk.len() {
+                let dl = self.disk.len();
+                self.disk[s..].copy_from_slice(&buf[..dl - s]);
+            }
+        }
+    }
+
+    fn build_identify(&self) -> [u8; 512] {
+        let mut id = [0u8; 512];
+        let sectors = self.total_sectors();
+        if self.kind == AhciDriveKind::AtapiCdrom {
+            write_word(&mut id, 0, 0x85C0);
+        } else {
+            write_word(&mut id, 0, 0x0040);
+        }
+        write_ata_string(&mut id, 10, b"COREVM_AHCI_0000", 20);
+        write_ata_string(&mut id, 23, b"1.0     ", 8);
+        write_ata_string(&mut id, 27, b"CoreVM AHCI Virtual Disk            ", 40);
+        write_word(&mut id, 47, 0x8010);
+        write_word(&mut id, 49, 0x0F00);
+        write_word(&mut id, 53, 0x0006);
+        write_word(&mut id, 59, 0x0010);
+        let lba28 = if sectors > 0x0FFF_FFFF { 0x0FFF_FFFF } else { sectors as u32 };
+        write_word(&mut id, 60, (lba28 & 0xFFFF) as u16);
+        write_word(&mut id, 61, (lba28 >> 16) as u16);
+        write_word(&mut id, 63, 0x0407);
+        write_word(&mut id, 64, 0x0003);
+        write_word(&mut id, 75, 31);
+        write_word(&mut id, 76, 0x000E);
+        write_word(&mut id, 80, 0x01F0);
+        write_word(&mut id, 82, 0x7C6B);
+        write_word(&mut id, 83, 0x7400 | (1 << 10));
+        write_word(&mut id, 85, 0x7C69);
+        write_word(&mut id, 86, 0x7400 | (1 << 10));
+        write_word(&mut id, 88, 0x407F);
+        write_word(&mut id, 100, (sectors & 0xFFFF) as u16);
+        write_word(&mut id, 101, ((sectors >> 16) & 0xFFFF) as u16);
+        write_word(&mut id, 102, ((sectors >> 32) & 0xFFFF) as u16);
+        write_word(&mut id, 103, ((sectors >> 48) & 0xFFFF) as u16);
+        write_word(&mut id, 106, 0x6001);
+        write_word(&mut id, 217, 0x0001);
+        id
+    }
+}
+
+// ── Port ──
+
+struct AhciPort {
+    clb: u64, fb: u64,
+    is: u32, ie: u32, cmd: u32, tfd: u32, sig: u32,
+    ssts: u32, sctl: u32, serr: u32, sact: u32, ci: u32, sntf: u32, fbs: u32,
+    drive: AhciDrive,
+}
+
+impl AhciPort {
+    fn new() -> Self {
+        AhciPort {
+            clb: 0, fb: 0, is: 0, ie: 0, cmd: 0,
+            tfd: TFD_STS_DRDY | TFD_STS_DSC, sig: 0xFFFF_FFFF,
+            ssts: 0, sctl: 0, serr: 0, sact: 0, ci: 0, sntf: 0, fbs: 0,
+            drive: AhciDrive::new(),
+        }
+    }
+
+    fn update_presence(&mut self) {
+        if self.drive.present {
+            self.ssts = SSTS_DET_PRESENT | SSTS_SPD_GEN1 | SSTS_IPM_ACTIVE;
+            self.sig = match self.drive.kind {
+                AhciDriveKind::AtaDisk => 0x0000_0101,
+                AhciDriveKind::AtapiCdrom => 0xEB14_0101,
+            };
+            self.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+        } else {
+            self.ssts = 0;
+            self.sig = 0xFFFF_FFFF;
+            self.tfd = 0x7F;
+        }
+    }
+}
+
+// ── AHCI HBA ──
+
+pub struct Ahci {
+    cap: u32, ghc: u32, is: u32, pi: u32, vs: u32,
+    ccc_ctl: u32, ccc_ports: u32, em_loc: u32, em_ctl: u32, cap2: u32, bohc: u32,
+    ports: [AhciPort; MAX_PORTS],
+    irq_pending: bool,
+    guest_mem_ptr: *mut u8,
+    guest_mem_len: usize,
+}
+
+unsafe impl Send for Ahci {}
+
+impl Ahci {
+    pub fn new(num_ports: u8) -> Self {
+        let np = (num_ports as usize).min(MAX_PORTS);
+        let pi = (1u32 << np) - 1;
+        let cap = (np as u32 - 1)
+            | (31 << 8)        // 32 command slots
+            | (1 << 13)        // PSC
+            | (1 << 14)        // SSC
+            | (1 << 20)        // SAL
+            | (1 << 21)        // ISS Gen1
+            | (1 << 24)        // SNCQ
+            | (1u32 << 31);   // S64A
+
+        Ahci {
+            cap, ghc: GHC_AE, is: 0, pi, vs: 0x0001_0301,
+            ccc_ctl: 0, ccc_ports: 0, em_loc: 0, em_ctl: 0, cap2: 0, bohc: 0,
+            ports: core::array::from_fn(|_| AhciPort::new()),
+            irq_pending: false,
+            guest_mem_ptr: core::ptr::null_mut(),
+            guest_mem_len: 0,
+        }
+    }
+
+    pub fn attach_disk(&mut self, port: usize, image: Vec<u8>, kind: AhciDriveKind) {
+        if port >= MAX_PORTS { return; }
+        let total = image.len() as u64;
+        self.ports[port].drive = AhciDrive { kind, disk: image, disk_fd: -1, total_bytes: total, present: true };
+        self.ports[port].update_presence();
+    }
+
+    pub fn attach_disk_fd(&mut self, port: usize, fd: i32, size: u64, kind: AhciDriveKind) {
+        if port >= MAX_PORTS { return; }
+        self.ports[port].drive = AhciDrive { kind, disk: Vec::new(), disk_fd: fd, total_bytes: size, present: true };
+        self.ports[port].update_presence();
+    }
+
+    pub fn irq_raised(&self) -> bool { self.irq_pending }
+    pub fn clear_irq(&mut self) { self.irq_pending = false; }
+
+    pub fn set_guest_memory(&mut self, ptr: *mut u8, len: usize) {
+        self.guest_mem_ptr = ptr;
+        self.guest_mem_len = len;
+    }
+
+    fn dma(&self) -> GuestDma {
+        GuestDma { ptr: self.guest_mem_ptr, len: self.guest_mem_len }
+    }
+
+    fn process_commands(&mut self, port_idx: usize) {
+        if port_idx >= MAX_PORTS { return; }
+        if self.guest_mem_ptr.is_null() { return; }
+
+        let dma = self.dma();
+        let port = &mut self.ports[port_idx];
+        if !port.drive.present || port.cmd & PORT_CMD_ST == 0 { return; }
+
+        let ci = port.ci;
+        if ci == 0 { return; }
+
+        for slot in 0..32u32 {
+            if ci & (1 << slot) == 0 { continue; }
+
+            let cmd_hdr_addr = port.clb + (slot as u64) * 32;
+            let header = match dma.read_bytes(cmd_hdr_addr, 32) { Some(h) => h, None => continue };
+
+            let dw0 = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+            let prdtl = (dw0 >> 16) & 0xFFFF;
+
+            let ctba = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as u64
+                | (u32::from_le_bytes([header[12], header[13], header[14], header[15]]) as u64) << 32;
+
+            let cfis = match dma.read_bytes(ctba, 64) { Some(f) => f, None => continue };
+            if cfis[0] != FIS_TYPE_REG_H2D { continue; }
+
+            let command = cfis[2];
+            let lba = cfis[4] as u64 | (cfis[5] as u64) << 8 | (cfis[6] as u64) << 16
+                | (cfis[8] as u64) << 24 | (cfis[9] as u64) << 32 | (cfis[10] as u64) << 40;
+            let mut count = (cfis[13] as u32) << 8 | cfis[12] as u32;
+            if count == 0 { count = 256; }
+
+            let prdt_base = ctba + 0x80;
+
+            match command {
+                ATA_CMD_IDENTIFY | ATA_CMD_IDENTIFY_PACKET => {
+                    let id = port.drive.build_identify();
+                    if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &id); }
+                    dma.write_u32(cmd_hdr_addr + 4, 512);
+                    port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+                    port.is |= PORT_IS_DHRS;
+                }
+                ATA_CMD_READ_DMA | ATA_CMD_READ_DMA_EXT
+                | ATA_CMD_READ_SECTORS | ATA_CMD_READ_SECTORS_EXT => {
+                    let ss = port.drive.sector_size();
+                    let total = count as usize * ss;
+                    let mut buf = vec![0u8; total];
+                    port.drive.read_at(lba * ss as u64, &mut buf);
+                    if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &buf); }
+                    dma.write_u32(cmd_hdr_addr + 4, total as u32);
+                    port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+                    port.is |= PORT_IS_DHRS;
+                }
+                ATA_CMD_WRITE_DMA | ATA_CMD_WRITE_DMA_EXT
+                | ATA_CMD_WRITE_SECTORS | ATA_CMD_WRITE_SECTORS_EXT => {
+                    let ss = port.drive.sector_size();
+                    let total = count as usize * ss;
+                    let mut buf = vec![0u8; total];
+                    if prdtl > 0 { dma.read_prdt(prdt_base, prdtl, &mut buf); }
+                    port.drive.write_at(lba * ss as u64, &buf);
+                    dma.write_u32(cmd_hdr_addr + 4, total as u32);
+                    port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+                    port.is |= PORT_IS_DHRS;
+                }
+                ATA_CMD_FLUSH | ATA_CMD_FLUSH_EXT | ATA_CMD_SET_FEATURES => {
+                    port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+                    port.is |= PORT_IS_DHRS;
+                }
+                ATA_CMD_PACKET => {
+                    if let Some(acmd) = dma.read_bytes(ctba + 0x40, 16) {
+                        process_atapi(port, &dma, &acmd, prdt_base, prdtl, cmd_hdr_addr);
+                    } else {
+                        port.tfd = TFD_STS_DRDY | TFD_STS_DSC | 1;
+                        port.is |= PORT_IS_DHRS;
+                    }
+                }
+                _ => {
+                    port.tfd = TFD_STS_DRDY | TFD_STS_DSC | 1;
+                    port.is |= PORT_IS_DHRS;
+                }
+            }
+
+            // Post D2H FIS
+            if port.fb != 0 && port.cmd & PORT_CMD_FRE != 0 {
+                let mut d2h = [0u8; 20];
+                d2h[0] = FIS_TYPE_REG_D2H;
+                d2h[1] = 0x40;
+                d2h[2] = (port.tfd & 0xFF) as u8;
+                d2h[3] = ((port.tfd >> 8) & 0xFF) as u8;
+                dma.write_bytes(port.fb + 0x40, &d2h);
+            }
+
+            port.ci &= !(1 << slot);
+            port.sact &= !(1 << slot);
+        }
+
+        // Update global IS
+        let port = &self.ports[port_idx];
+        if port.is & port.ie != 0 {
+            self.is |= 1 << port_idx;
+            if self.ghc & GHC_IE != 0 {
+                self.irq_pending = true;
+            }
+        }
+    }
+
+    fn port_read(&self, idx: usize, off: u64) -> u32 {
+        if idx >= MAX_PORTS { return 0xFFFFFFFF; }
+        let p = &self.ports[idx];
+        match off {
+            PORT_CLB => p.clb as u32, PORT_CLBU => (p.clb >> 32) as u32,
+            PORT_FB => p.fb as u32, PORT_FBU => (p.fb >> 32) as u32,
+            PORT_IS => p.is, PORT_IE => p.ie,
+            PORT_CMD => {
+                let mut c = p.cmd;
+                if c & PORT_CMD_ST != 0 { c |= PORT_CMD_CR; }
+                if c & PORT_CMD_FRE != 0 { c |= PORT_CMD_FR; }
+                c
+            }
+            PORT_TFD => p.tfd, PORT_SIG => p.sig, PORT_SSTS => p.ssts,
+            PORT_SCTL => p.sctl, PORT_SERR => p.serr, PORT_SACT => p.sact,
+            PORT_CI => p.ci, PORT_SNTF => p.sntf, PORT_FBS => p.fbs,
+            _ => 0,
+        }
+    }
+
+    fn port_write(&mut self, idx: usize, off: u64, val: u32) {
+        if idx >= MAX_PORTS { return; }
+        match off {
+            PORT_CLB => { let hi = self.ports[idx].clb & !0xFFFF_FFFF; self.ports[idx].clb = hi | (val as u64 & !0x3FF); }
+            PORT_CLBU => { let lo = self.ports[idx].clb & 0xFFFF_FFFF; self.ports[idx].clb = (val as u64) << 32 | lo; }
+            PORT_FB => { let hi = self.ports[idx].fb & !0xFFFF_FFFF; self.ports[idx].fb = hi | (val as u64 & !0xFF); }
+            PORT_FBU => { let lo = self.ports[idx].fb & 0xFFFF_FFFF; self.ports[idx].fb = (val as u64) << 32 | lo; }
+            PORT_IS => { self.ports[idx].is &= !val; if self.ports[idx].is == 0 { self.is &= !(1 << idx); } }
+            PORT_IE => { self.ports[idx].ie = val; }
+            PORT_CMD => { self.ports[idx].cmd = val & !(PORT_CMD_CR | PORT_CMD_FR); }
+            PORT_SCTL => {
+                let old = self.ports[idx].sctl & 0x0F;
+                self.ports[idx].sctl = val;
+                if old == 1 && val & 0x0F == 0 { self.ports[idx].update_presence(); }
+            }
+            PORT_SERR => { self.ports[idx].serr &= !val; }
+            PORT_SACT => { self.ports[idx].sact |= val; }
+            PORT_CI => { self.ports[idx].ci |= val; self.process_commands(idx); }
+            PORT_FBS => { self.ports[idx].fbs = val; }
+            _ => {}
+        }
+    }
+}
+
+impl MmioHandler for Ahci {
+    fn read(&mut self, offset: u64, size: u8) -> Result<u64> {
+        let val = match offset {
+            HBA_CAP => self.cap, HBA_GHC => self.ghc, HBA_IS => self.is,
+            HBA_PI => self.pi, HBA_VS => self.vs, HBA_CCC_CTL => self.ccc_ctl,
+            HBA_CCC_PORTS => self.ccc_ports, HBA_EM_LOC => self.em_loc,
+            HBA_EM_CTL => self.em_ctl, HBA_CAP2 => self.cap2, HBA_BOHC => self.bohc,
+            0x100..=0x10FF => {
+                let po = offset - 0x100;
+                self.port_read((po / 0x80) as usize, po % 0x80)
+            }
+            _ => 0,
+        };
+        Ok(match size {
+            1 => (val >> ((offset & 3) * 8)) as u64 & 0xFF,
+            2 => (val >> ((offset & 2) * 8)) as u64 & 0xFFFF,
+            _ => val as u64,
+        })
+    }
+
+    fn write(&mut self, offset: u64, _size: u8, val: u64) -> Result<()> {
+        let v = val as u32;
+        match offset {
+            HBA_GHC => {
+                if v & GHC_HR != 0 {
+                    for p in self.ports.iter_mut() {
+                        p.is = 0; p.ie = 0; p.cmd = 0; p.ci = 0; p.sact = 0; p.serr = 0;
+                        p.update_presence();
+                    }
+                    self.is = 0; self.ghc = GHC_AE; self.irq_pending = false;
+                } else {
+                    self.ghc = v | GHC_AE;
+                }
+            }
+            HBA_IS => { self.is &= !v; if self.is == 0 { self.irq_pending = false; } }
+            HBA_CCC_CTL => self.ccc_ctl = v, HBA_CCC_PORTS => self.ccc_ports = v,
+            HBA_EM_CTL => self.em_ctl = v, HBA_BOHC => self.bohc = v,
+            0x100..=0x10FF => {
+                let po = offset - 0x100;
+                self.port_write((po / 0x80) as usize, po % 0x80, v);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+// ── ATAPI command processing (free function to avoid borrow issues) ──
+
+fn process_atapi(port: &mut AhciPort, dma: &GuestDma, acmd: &[u8], prdt_base: u64, prdtl: u32, cmd_hdr_addr: u64) {
+    match acmd[0] {
+        0x00 => { // TEST UNIT READY
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
+        0x03 => { // REQUEST SENSE
+            let len = (acmd[4] as usize).min(18);
+            let mut s = [0u8; 18];
+            s[0] = 0x70; s[7] = 10;
+            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &s[..len]); }
+            dma.write_u32(cmd_hdr_addr + 4, len as u32);
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
+        0x12 => { // INQUIRY
+            let al = ((acmd[3] as usize) << 8) | acmd[4] as usize;
+            let mut d = [0u8; 36];
+            d[0] = 0x05; d[1] = 0x80; d[2] = 0x05; d[3] = 0x32; d[4] = 31;
+            d[8..16].copy_from_slice(b"CoreVM  ");
+            d[16..32].copy_from_slice(b"Virtual CD-ROM  ");
+            d[32..36].copy_from_slice(b"1.0 ");
+            let len = al.min(36);
+            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+            dma.write_u32(cmd_hdr_addr + 4, len as u32);
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
+        0x25 => { // READ CAPACITY
+            let secs = port.drive.total_sectors();
+            let last = if secs > 0 { (secs - 1) as u32 } else { 0 };
+            let bs = port.drive.sector_size() as u32;
+            let mut d = [0u8; 8];
+            d[0..4].copy_from_slice(&last.to_be_bytes());
+            d[4..8].copy_from_slice(&bs.to_be_bytes());
+            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d); }
+            dma.write_u32(cmd_hdr_addr + 4, 8);
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
+        0x28 => { // READ (10)
+            let lba = u32::from_be_bytes([acmd[2], acmd[3], acmd[4], acmd[5]]) as u64;
+            let cnt = u16::from_be_bytes([acmd[7], acmd[8]]) as u32;
+            let ss = port.drive.sector_size();
+            let total = cnt as usize * ss;
+            let mut buf = vec![0u8; total];
+            port.drive.read_at(lba * ss as u64, &mut buf);
+            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &buf); }
+            dma.write_u32(cmd_hdr_addr + 4, total as u32);
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
+        0x43 => { // READ TOC
+            let msf = acmd[1] & 0x02 != 0;
+            let al = u16::from_be_bytes([acmd[7], acmd[8]]) as usize;
+            let secs = port.drive.total_sectors() as u32;
+            let mut d = vec![0u8; 20];
+            d[0] = 0; d[1] = 18; d[2] = 1; d[3] = 1;
+            d[5] = 0x14; d[6] = 1;
+            if msf { let (m,s,f) = lba_to_msf(0); d[9]=m; d[10]=s; d[11]=f; }
+            d[13] = 0x14; d[14] = 0xAA;
+            if msf { let (m,s,f) = lba_to_msf(secs); d[17]=m; d[18]=s; d[19]=f; }
+            else { d[16..20].copy_from_slice(&secs.to_be_bytes()); }
+            let len = al.min(d.len());
+            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+            dma.write_u32(cmd_hdr_addr + 4, len as u32);
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
+        0x46 => { // GET CONFIGURATION
+            let al = u16::from_be_bytes([acmd[7], acmd[8]]) as usize;
+            let mut d = [0u8; 8];
+            d[3] = 4; d[7] = 0x08;
+            let len = al.min(8);
+            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+            dma.write_u32(cmd_hdr_addr + 4, len as u32);
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
+        0x4A => { // GET EVENT STATUS
+            let mut d = [0u8; 8];
+            d[1] = 6; d[2] = 0x04; d[3] = 0x10; d[4] = 0x02;
+            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d); }
+            dma.write_u32(cmd_hdr_addr + 4, 8);
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
+        0x1A | 0x5A => { // MODE SENSE
+            let d = [0u8; 8];
+            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d); }
+            dma.write_u32(cmd_hdr_addr + 4, 8);
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
+        0x1B | 0x1E => { // START STOP / PREVENT ALLOW
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
+        _ => {
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC | 1;
+            port.is |= PORT_IS_DHRS;
+        }
+    }
+}
+
+// ── Helpers ──
+
+fn write_word(buf: &mut [u8], word_idx: usize, val: u16) {
+    let off = word_idx * 2;
+    if off + 1 < buf.len() { buf[off] = val as u8; buf[off + 1] = (val >> 8) as u8; }
+}
+
+fn write_ata_string(buf: &mut [u8], word_idx: usize, s: &[u8], max_bytes: usize) {
+    let off = word_idx * 2;
+    for i in (0..max_bytes).step_by(2) {
+        let b0 = if i < s.len() { s[i] } else { b' ' };
+        let b1 = if i + 1 < s.len() { s[i + 1] } else { b' ' };
+        if off + i + 1 < buf.len() { buf[off + i] = b1; buf[off + i + 1] = b0; }
+    }
+}
+
+fn lba_to_msf(lba: u32) -> (u8, u8, u8) {
+    let t = lba + 150;
+    ((t / 75 / 60) as u8, ((t / 75) % 60) as u8, (t % 75) as u8)
+}
+
+/// Create a PCI device entry for the AHCI controller.
+pub fn create_ahci_pci_device(mmio_base: u32) -> crate::devices::bus::PciDevice {
+    let mut dev = crate::devices::bus::PciDevice::new(0x8086, 0x2922, 0x01, 0x06, 0x01);
+    dev.set_subsystem(0x8086, 0x2922);
+    dev.set_interrupt(11, 1);
+    dev.set_bar(5, mmio_base, 0x1000, true);
+    dev
+}

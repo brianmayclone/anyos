@@ -317,6 +317,7 @@ struct VmInstance {
     ide_ptr: *mut devices::ide::Ide,
     fw_cfg_ptr: *mut devices::fw_cfg::FwCfg,
     debug_port_ptr: *mut devices::debug_port::DebugPort,
+    ahci_ptr: *mut devices::ahci::Ahci,
     /// True once an external runner starts driving PIT ticks explicitly.
     pit_is_externally_clocked: bool,
     /// TSC frequency in Hz (calibrated at startup, host_test only).
@@ -353,6 +354,7 @@ impl Drop for VmInstance {
             if !self.ide_ptr.is_null() { let _ = Box::from_raw(self.ide_ptr); }
             if !self.fw_cfg_ptr.is_null() { let _ = Box::from_raw(self.fw_cfg_ptr); }
             if !self.debug_port_ptr.is_null() { let _ = Box::from_raw(self.debug_port_ptr); }
+            if !self.ahci_ptr.is_null() { let _ = Box::from_raw(self.ahci_ptr); }
         }
     }
 }
@@ -507,6 +509,7 @@ pub extern "C" fn corevm_create_ex(ram_size_mb: u32, vcpu_count: u32) -> u64 {
         ide_ptr: ptr::null_mut(),
         fw_cfg_ptr: ptr::null_mut(),
         debug_port_ptr: ptr::null_mut(),
+        ahci_ptr: ptr::null_mut(),
         pit_is_externally_clocked: false,
         #[cfg(feature = "host_test")]
         tsc_freq: calibrate_tsc_freq(),
@@ -2435,6 +2438,118 @@ pub extern "C" fn corevm_ide_clear_irq(handle: u64) {
         return;
     }
     unsafe { (*vm.ide_ptr).clear_irq() };
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Device Setup — AHCI
+// ════════════════════════════════════════════════════════════════════════
+
+/// Set up the AHCI (SATA) controller at the given MMIO base address.
+///
+/// Creates an AHCI HBA with the specified number of ports (max 6) and
+/// registers it as an MMIO device and PCI device on the bus.
+#[no_mangle]
+pub extern "C" fn corevm_setup_ahci(handle: u64, mmio_base: u64, num_ports: u8) {
+    vm_log!("setting up AHCI controller at MMIO 0x{:X} ({} ports)", mmio_base, num_ports);
+    let vm = unsafe { vm_from_handle(handle) };
+
+    let ahci = Box::into_raw(Box::new(devices::ahci::Ahci::new(num_ports)));
+
+    // Set guest memory pointer for DMA
+    let (mem_ptr, mem_len) = vm.engine.memory.ram_mut_ptr();
+    unsafe { (*ahci).set_guest_memory(mem_ptr, mem_len) };
+
+    vm.ahci_ptr = ahci;
+    vm.engine.memory.add_mmio(
+        mmio_base,
+        devices::ahci::AHCI_MMIO_SIZE,
+        Box::new(MmioProxy { ptr: ahci }),
+    );
+
+    // Register AHCI as PCI device on the bus (bus 0, device 4, function 0)
+    if !vm.bus_ptr.is_null() {
+        let mut pci_dev = devices::ahci::create_ahci_pci_device(mmio_base as u32);
+        pci_dev.bus = 0;
+        pci_dev.device = 4;
+        pci_dev.function = 0;
+        unsafe { (*vm.bus_ptr).add_device(pci_dev) };
+    }
+}
+
+/// Attach an in-memory disk image to an AHCI port.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_attach_disk(handle: u64, port: u8, data: *const u8, len: u64) {
+    if data.is_null() || len == 0 {
+        return;
+    }
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ahci_ptr.is_null() {
+        return;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    vm_log!("attaching AHCI port {} disk image ({} bytes)", port, len);
+    let mut image = alloc::vec::Vec::with_capacity(len as usize);
+    image.extend_from_slice(slice);
+    unsafe { (*vm.ahci_ptr).attach_disk(port as usize, image, devices::ahci::AhciDriveKind::AtaDisk) };
+}
+
+/// Attach an in-memory CD-ROM image to an AHCI port.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_attach_cdrom(handle: u64, port: u8, data: *const u8, len: u64) {
+    if data.is_null() || len == 0 {
+        return;
+    }
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ahci_ptr.is_null() {
+        return;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    vm_log!("attaching AHCI port {} CDROM image ({} bytes)", port, len);
+    let mut image = alloc::vec::Vec::with_capacity(len as usize);
+    image.extend_from_slice(slice);
+    unsafe { (*vm.ahci_ptr).attach_disk(port as usize, image, devices::ahci::AhciDriveKind::AtapiCdrom) };
+}
+
+/// Attach a file-descriptor-backed disk to an AHCI port.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_attach_disk_fd(handle: u64, port: u8, fd: u64, size: u64) {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ahci_ptr.is_null() {
+        return;
+    }
+    vm_log!("attaching AHCI port {} disk fd={} size={}", port, fd, size);
+    unsafe { (*vm.ahci_ptr).attach_disk_fd(port as usize, fd as i32, size, devices::ahci::AhciDriveKind::AtaDisk) };
+}
+
+/// Attach a file-descriptor-backed CD-ROM to an AHCI port.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_attach_cdrom_fd(handle: u64, port: u8, fd: u64, size: u64) {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ahci_ptr.is_null() {
+        return;
+    }
+    vm_log!("attaching AHCI port {} CDROM fd={} size={}", port, fd, size);
+    unsafe { (*vm.ahci_ptr).attach_disk_fd(port as usize, fd as i32, size, devices::ahci::AhciDriveKind::AtapiCdrom) };
+}
+
+/// Check if the AHCI controller has a pending interrupt.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_irq_raised(handle: u64) -> u8 {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ahci_ptr.is_null() {
+        return 0;
+    }
+    if unsafe { (*vm.ahci_ptr).irq_raised() } { 1 } else { 0 }
+}
+
+/// Clear the AHCI pending interrupt.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_clear_irq(handle: u64) {
+    let vm = unsafe { vm_from_handle(handle) };
+    if vm.ahci_ptr.is_null() {
+        return;
+    }
+    unsafe { (*vm.ahci_ptr).clear_irq() };
 }
 
 // ════════════════════════════════════════════════════════════════════════
