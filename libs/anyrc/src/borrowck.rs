@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::diagnostics::{Diagnostic, Level, Span};
-use crate::intern::Interner;
+use crate::hir::DefId;
+use crate::intern::{Interner, Symbol};
 use crate::mir::*;
 use crate::typeck::TyKind;
 
@@ -15,7 +16,7 @@ struct ActiveBorrow {
     span: Span,
 }
 
-pub fn check_borrows(body: &MirBody, interner: &Interner) -> BorrowckResult {
+pub fn check_borrows(body: &MirBody, interner: &Interner, struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>) -> BorrowckResult {
     let mut errors = Vec::new();
     let mut moved: HashSet<usize> = HashSet::new();
     let mut borrows: Vec<ActiveBorrow> = Vec::new();
@@ -98,7 +99,7 @@ pub fn check_borrows(body: &MirBody, interner: &Interner) -> BorrowckResult {
                     }
 
                     // Track moves in rvalue
-                    record_moves(rvalue, &mut moved);
+                    record_moves(rvalue, &mut moved, &body.locals, struct_defs);
                 }
                 StatementKind::StorageDead(local) => {
                     // End borrows and moves for this local
@@ -118,7 +119,7 @@ pub fn check_borrows(body: &MirBody, interner: &Interner) -> BorrowckResult {
                     // Record moves from call args
                     if let Operand::Move(place) = arg {
                         let ty = &body.locals[place.local.0].ty;
-                        if !is_copy_type(ty) {
+                        if !is_copy_type(ty, struct_defs) {
                             moved.insert(place.local.0);
                         }
                     }
@@ -180,10 +181,13 @@ fn check_operand_not_moved(
     }
 }
 
-fn record_moves(rvalue: &Rvalue, moved: &mut HashSet<usize>) {
+fn record_moves(rvalue: &Rvalue, moved: &mut HashSet<usize>, locals: &[LocalDecl], struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>) {
     let mut check_op = |op: &Operand| {
         if let Operand::Move(place) = op {
-            moved.insert(place.local.0);
+            let ty = &locals[place.local.0].ty;
+            if !is_copy_type(ty, struct_defs) {
+                moved.insert(place.local.0);
+            }
         }
     };
     match rvalue {
@@ -203,14 +207,26 @@ fn record_moves(rvalue: &Rvalue, moved: &mut HashSet<usize>) {
     }
 }
 
-fn is_copy_type(ty: &TyKind) -> bool {
+fn is_copy_type(ty: &TyKind, struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>) -> bool {
     match ty {
         TyKind::Bool | TyKind::Char => true,
         TyKind::Int(_) | TyKind::Uint(_) | TyKind::Float(_) => true,
-        TyKind::Ref(_, _) => true,
+        TyKind::Ref(_, crate::ast::Mutability::Immutable) => true,
+        TyKind::Ref(_, crate::ast::Mutability::Mut) => false,
         TyKind::RawPtr(_, _) => true,
         TyKind::Unit | TyKind::Never | TyKind::Error => true,
         TyKind::FnDef(_, _) | TyKind::FnPtr(_, _) => true,
+        TyKind::Adt(def_id, _) => {
+            // A struct is Copy if all its fields are Copy
+            if let Some(fields) = struct_defs.get(def_id) {
+                fields.iter().all(|(_, fty)| is_copy_type(fty, struct_defs))
+            } else {
+                // Unknown struct (e.g., enum or external) — conservatively non-Copy
+                false
+            }
+        }
+        TyKind::Tuple(elems) => elems.iter().all(|e| is_copy_type(e, struct_defs)),
+        TyKind::Array(inner, _) => is_copy_type(inner, struct_defs),
         _ => false,
     }
 }
