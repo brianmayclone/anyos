@@ -140,8 +140,9 @@ Output goes to file descriptor 1 (stdout) via the `fs::write()` syscall.
 | `spawn_piped` | `fn spawn_piped(path: &str, args: &str, pipe_id: u32) -> u32` | Spawn with stdout redirected to a pipe. |
 | `spawn_piped_full` | `fn spawn_piped_full(path: &str, args: &str, stdout_pipe: u32, stdin_pipe: u32) -> u32` | Spawn with both stdin and stdout pipes. |
 | `waitpid` | `fn waitpid(tid: u32) -> u32` | Block until thread terminates. Returns exit code. |
-| `try_waitpid` | `fn try_waitpid(tid: u32) -> u32` | Non-blocking wait. Returns exit code, `STILL_RUNNING`, or `u32::MAX`. |
-| `kill` | `fn kill(tid: u32) -> u32` | Kill a thread. Returns 0 on success. |
+| `try_waitpid` | `fn try_waitpid(tid: u32) -> u32` | Non-blocking wait. Returns exit code, `STOPPED`, `STILL_RUNNING`, or `u32::MAX`. |
+| `kill` | `fn kill(tid: u32) -> u32` | Kill a thread (SIGKILL). Returns 0 on success. |
+| `send_signal` | `fn send_signal(tid: u32, sig: u32) -> u32` | Send a specific signal to a thread. Returns 0 on success. |
 | `getargs` | `fn getargs(buf: &mut [u8]) -> usize` | Get raw command-line arguments (includes argv[0]). |
 | `args` | `fn args(buf: &mut [u8; 256]) -> &str` | Get arguments, skipping program name. Handles quoted argv[0] for paths with spaces (e.g. `"/Applications/My App.app" file.md`). |
 | `thread_create` | `fn thread_create(entry: fn(), stack_top: usize, name: &str) -> u32` | Create a new thread. Returns TID. |
@@ -159,6 +160,9 @@ Output goes to file descriptor 1 (stdout) via the `fs::write()` syscall.
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `STILL_RUNNING` | `u32::MAX - 1` | Return from `try_waitpid()` when thread is still alive |
+| `STOPPED` | `u32::MAX - 2` | Return from `try_waitpid()` when thread is stopped by signal (SIGTSTP/SIGSTOP) |
+| `SIGTSTP` | `20` | Terminal stop signal (Ctrl+Z) |
+| `SIGCONT` | `18` | Continue stopped process |
 
 ---
 

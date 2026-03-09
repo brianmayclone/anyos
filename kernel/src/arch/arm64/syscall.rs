@@ -33,5 +33,5 @@ pub extern "C" fn arm64_syscall_dispatch(
 /// which is set up in `exceptions::init()`. No MSR configuration needed
 /// (unlike x86's LSTAR/STAR/SFMASK).
 pub fn init_bsp() {
-    crate::serial_println!("[OK] Syscall: SVC #0 handler active (via VBAR_EL1)");
+    crate::serial_verbose_println!("[OK] Syscall: SVC #0 handler active (via VBAR_EL1)");
 }

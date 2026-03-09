@@ -45,6 +45,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                     ThreadState::Running => 1,
                     ThreadState::Blocked => 2,
                     ThreadState::Terminated => unreachable!(),
+                    ThreadState::Stopped => 4,
                 };
                 let name_str = thread.name_str();
                 let len = name_str.len().min(32);
@@ -94,7 +95,7 @@ pub fn is_scheduler_locked() -> bool { SCHEDULER.is_locked() }
 /// Must only be called when `is_scheduler_locked_by_cpu(cpu)` returns true.
 pub unsafe fn force_unlock_scheduler() {
     SCHEDULER.force_unlock();
-    crate::serial_println!("  RECOVERED: force-released scheduler lock");
+    crate::serial_verbose_println!("  RECOVERED: force-released scheduler lock");
 }
 
 // =============================================================================

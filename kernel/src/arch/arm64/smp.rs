@@ -32,7 +32,7 @@ pub fn current_cpu_id() -> usize {
 /// Initialize BSP SMP state.
 pub fn init_bsp() {
     ONLINE_CPUS.store(1, Ordering::Relaxed);
-    crate::serial_println!("[OK] SMP: BSP CPU {} online", current_cpu_id());
+    crate::serial_verbose_println!("[OK] SMP: BSP CPU {} online", current_cpu_id());
 }
 
 /// Start Application Processors using PSCI CPU_ON.
@@ -52,7 +52,7 @@ pub fn start_aps(num_cpus: usize) {
             continue;
         }
 
-        crate::serial_println!("  Starting CPU {}...", cpu);
+        crate::serial_verbose_println!("  Starting CPU {}...", cpu);
 
         // PSCI CPU_ON: SMC #0 with x0=fn_id, x1=target_cpu, x2=entry_point, x3=context_id
         let result: i64;
@@ -76,18 +76,18 @@ pub fn start_aps(num_cpus: usize) {
 
         if result == 0 {
             ONLINE_CPUS.fetch_add(1, Ordering::Relaxed);
-            crate::serial_println!("  CPU {} started successfully", cpu);
+            crate::serial_verbose_println!("  CPU {} started successfully", cpu);
         } else {
-            crate::serial_println!("  CPU {} failed to start: PSCI error {}", cpu, result);
+            crate::serial_verbose_println!("  CPU {} failed to start: PSCI error {}", cpu, result);
         }
     }
 
-    crate::serial_println!("[OK] SMP: {} CPUs online", ONLINE_CPUS.load(Ordering::Relaxed));
+    crate::serial_verbose_println!("[OK] SMP: {} CPUs online", ONLINE_CPUS.load(Ordering::Relaxed));
 }
 
 /// Register the current AP as online (called from ap_startup.S → Rust AP entry).
 pub fn register_ap() {
     // AP-specific init will be done here
     let cpu = current_cpu_id();
-    crate::serial_println!("  AP CPU {} entered Rust code", cpu);
+    crate::serial_verbose_println!("  AP CPU {} entered Rust code", cpu);
 }

@@ -43,7 +43,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         _ => "Unknown",
     };
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  USB HID: {} detected (subclass={} [{}], protocol={}, addr={})",
         device_type, iface.subclass, subclass_desc, iface.protocol, dev.address,
     );
@@ -55,17 +55,17 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     });
 
     if let Some(ep) = int_ep {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  USB HID: interrupt IN endpoint {:#04x}, max_packet={}, interval={}ms",
             ep.address, ep.max_packet_size, ep.interval,
         );
     } else {
-        crate::serial_println!("  USB HID: no interrupt IN endpoint found");
+        crate::serial_verbose_println!("  USB HID: no interrupt IN endpoint found");
     }
 
     // Only handle boot protocol devices (subclass 1)
     if iface.subclass != 1 {
-        crate::serial_println!("  USB HID: skipping non-boot device");
+        crate::serial_verbose_println!("  USB HID: skipping non-boot device");
         return;
     }
 
@@ -82,9 +82,9 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         dev.address, dev.controller, dev.speed, dev.max_packet_size,
         &set_protocol, false, 0,
     ) {
-        Ok(_) => crate::serial_println!("  USB HID: SET_PROTOCOL(boot) OK for addr={}", dev.address),
+        Ok(_) => crate::serial_verbose_println!("  USB HID: SET_PROTOCOL(boot) OK for addr={}", dev.address),
         Err(e) => {
-            crate::serial_println!("  USB HID: SET_PROTOCOL failed: {} — continuing anyway", e);
+            crate::serial_verbose_println!("  USB HID: SET_PROTOCOL failed: {} — continuing anyway", e);
             // Some devices work in boot protocol by default, so don't bail
         }
     }
@@ -101,7 +101,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     };
 
     HID_DEVICES.lock().push(hid_dev);
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  USB HID: registered {} (addr={}) for polling",
         device_type, dev.address,
     );

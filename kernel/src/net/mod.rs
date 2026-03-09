@@ -41,7 +41,7 @@ pub fn init() {
     udp::init();
     tcp::init();
 
-    crate::serial_println!("[OK] Network stack initialized (MAC={})", mac);
+    crate::serial_verbose_println!("[OK] Network stack initialized (MAC={})", mac);
 }
 
 /// Get a snapshot of the current network config.

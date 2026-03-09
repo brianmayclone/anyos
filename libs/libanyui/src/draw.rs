@@ -127,7 +127,7 @@ static mut FONT_DRAW: Option<DrawFn> = None;
 static mut FONT_DRAW_CLIP: Option<DrawClipFn> = None;
 
 /// Ensure libfont.so is loaded and symbols are resolved.
-fn ensure_libfont() {
+pub fn ensure_libfont() {
     unsafe {
         if FONT_MEASURE.is_some() { return; }
         let base = crate::syscall::dll_load(b"/Libraries/libfont.so");
@@ -384,6 +384,32 @@ pub fn draw_text_bitmap(s: &Surface, x: i32, y: i32, color: u32, text: &[u8]) {
     if y + 16 <= s.clip_y || y >= s.clip_y + s.clip_h as i32
         || x >= s.clip_x + s.clip_w as i32 { return; }
     font_bitmap::draw_text(s.pixels, s.width, s.height, x, y, text, color);
+}
+
+/// Draw text directly into a raw pixel buffer via libfont.
+/// Caller must call `ensure_libfont()` first.
+pub fn draw_text_to_buf(
+    buf: *mut u32, buf_w: u32, buf_h: u32,
+    x: i32, y: i32, color: u32,
+    font_id: u32, size: u16, text: &[u8],
+) {
+    if text.is_empty() || buf.is_null() { return; }
+    if let Some(draw_clip) = unsafe { FONT_DRAW_CLIP } {
+        draw_clip(
+            buf, buf_w, buf_h,
+            x, y, color,
+            font_id, size,
+            text.as_ptr(), text.len() as u32,
+            0, 0, buf_w as i32, buf_h as i32,
+        );
+    } else if let Some(draw) = unsafe { FONT_DRAW } {
+        draw(
+            buf, buf_w, buf_h,
+            x, y, color,
+            font_id, size,
+            text.as_ptr(), text.len() as u32,
+        );
+    }
 }
 
 // ── Text measurement ───────────────────────────────────────────────

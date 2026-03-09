@@ -26,7 +26,7 @@ static ROOT_PARTITION_LBA: core::sync::atomic::AtomicU32 = core::sync::atomic::A
 /// Set the root partition LBA (called from main.rs after partition scanning).
 pub fn set_root_partition_lba(lba: u32) {
     ROOT_PARTITION_LBA.store(lba, core::sync::atomic::Ordering::Relaxed);
-    crate::serial_println!("[VFS] root partition LBA set to {}", lba);
+    crate::serial_verbose_println!("[VFS] root partition LBA set to {}", lba);
 }
 
 /// Get the current root partition LBA.
@@ -365,7 +365,7 @@ pub fn init() {
         state.open_files.push(None);
     }
 
-    crate::serial_println!("[OK] VFS initialized");
+    crate::serial_verbose_println!("[OK] VFS initialized");
 }
 
 /// Check if a root disk filesystem is mounted.
@@ -395,7 +395,7 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
         #[cfg(target_arch = "aarch64")]
         let vbr_ok = crate::drivers::arm::storage::read_sectors(root_partition_lba(), 1, &mut buf);
         if vbr_ok {
-            crate::serial_println!("  VFS auto-detect: OEM bytes = {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+            crate::serial_verbose_println!("  VFS auto-detect: OEM bytes = {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
                 buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10]);
             if &buf[3..11] == b"EXFAT   " {
                 crate::debug_println!("  [VFS] mount: detected exFAT, calling ExFatFs::new()");
@@ -403,11 +403,11 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
                     Ok(exfat) => {
                         crate::debug_println!("  [VFS] mount: ExFatFs::new() succeeded");
                         state.exfat_fs = Some(exfat);
-                        crate::serial_println!("  Mounted exFAT at '{}'", path);
+                        crate::serial_verbose_println!("  Mounted exFAT at '{}'", path);
                     }
                     Err(_e) => {
                         crate::debug_println!("  [VFS] mount: ExFatFs::new() FAILED: {:?}", _e);
-                        crate::serial_println!("  Failed to mount exFAT at '{}'", path);
+                        crate::serial_verbose_println!("  Failed to mount exFAT at '{}'", path);
                     }
                 }
                 FsType::ExFat
@@ -416,10 +416,10 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
                 match NtfsFs::new(device_id, root_partition_lba()) {
                     Ok(ntfs) => {
                         state.ntfs_fs = Some(ntfs);
-                        crate::serial_println!("  Mounted NTFS (read-only) at '{}'", path);
+                        crate::serial_verbose_println!("  Mounted NTFS (read-only) at '{}'", path);
                     }
                     Err(_e) => {
-                        crate::serial_println!("  Failed to mount NTFS at '{}'", path);
+                        crate::serial_verbose_println!("  Failed to mount NTFS at '{}'", path);
                     }
                 }
                 FsType::Ntfs
@@ -431,27 +431,27 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
                             crate::fs::fat::FatType::Fat16 => "FAT16",
                             crate::fs::fat::FatType::Fat32 => "FAT32",
                         };
-                        crate::serial_println!("  Mounted {} at '{}'", type_name, path);
+                        crate::serial_verbose_println!("  Mounted {} at '{}'", type_name, path);
                         state.fat_fs = Some(fat);
                     }
                     Err(_) => {
-                        crate::serial_println!("  Failed to mount FAT at '{}'", path);
+                        crate::serial_verbose_println!("  Failed to mount FAT at '{}'", path);
                     }
                 }
                 FsType::Fat
             }
         } else {
-            crate::serial_println!("  Failed to read partition at LBA {}", root_partition_lba());
+            crate::serial_verbose_println!("  Failed to read partition at LBA {}", root_partition_lba());
             FsType::Fat
         }
     } else if fs_type == FsType::Iso9660 {
         match Iso9660Fs::new() {
             Ok(iso) => {
                 state.iso9660_fs = Some(iso);
-                crate::serial_println!("  Mounted ISO 9660 at '{}'", path);
+                crate::serial_verbose_println!("  Mounted ISO 9660 at '{}'", path);
             }
             Err(_) => {
-                crate::serial_println!("  Failed to mount ISO 9660 at '{}'", path);
+                crate::serial_verbose_println!("  Failed to mount ISO 9660 at '{}'", path);
             }
         }
         FsType::Iso9660
@@ -479,7 +479,7 @@ pub fn mount_devfs() {
         fs_type: FsType::DevFs,
         device_id: 0,
     });
-    crate::serial_println!("  Mounted DevFs at '/dev'");
+    crate::serial_verbose_println!("  Mounted DevFs at '/dev'");
 }
 
 /// Open a file by path with the given flags. Returns a file descriptor on success.
@@ -1607,7 +1607,7 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
                 fs_type: FsType::Iso9660,
                 device_id: 0,
             });
-            crate::serial_println!("  Mounted ISO 9660 at '{}'", mount_path);
+            crate::serial_verbose_println!("  Mounted ISO 9660 at '{}'", mount_path);
             Ok(())
         }
         4 => {
@@ -1627,7 +1627,7 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
                 fs_type: FsType::Ntfs,
                 device_id: 0,
             });
-            crate::serial_println!("  Mounted NTFS (read-only) at '{}'", mount_path);
+            crate::serial_verbose_println!("  Mounted NTFS (read-only) at '{}'", mount_path);
             Ok(())
         }
         5 => {
@@ -1652,7 +1652,7 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
                 device_id: 0,
             });
             state.smbfs.push((String::from(mount_path), smb));
-            crate::serial_println!("  Mounted SMB at '{}'", mount_path);
+            crate::serial_verbose_println!("  Mounted SMB at '{}'", mount_path);
             Ok(())
         }
         _ => Err(FsError::InvalidPath),
@@ -1690,12 +1690,12 @@ pub fn umount_fs(mount_path: &str) -> Result<(), FsError> {
                 drop(vfs);
                 smb.disconnect();
                 // Re-log after disconnect
-                crate::serial_println!("  Unmounted SMB '{}'", mount_path);
+                crate::serial_verbose_println!("  Unmounted SMB '{}'", mount_path);
                 return Ok(());
             }
         }
 
-        crate::serial_println!("  Unmounted '{}'", mount_path);
+        crate::serial_verbose_println!("  Unmounted '{}'", mount_path);
         Ok(())
     } else {
         Err(FsError::NotFound)

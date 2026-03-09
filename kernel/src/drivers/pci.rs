@@ -145,7 +145,7 @@ pub fn scan_all() {
         }
     }
 
-    crate::serial_println!("[OK] PCI scan: {} device(s) found", devices.len());
+    crate::serial_verbose_println!("[OK] PCI scan: {} device(s) found", devices.len());
 }
 
 /// Human-readable name for a PCI class/subclass
@@ -188,7 +188,7 @@ pub fn class_name(class: u8, subclass: u8) -> &'static str {
 pub fn print_devices() {
     let devices = PCI_DEVICES.lock();
     for dev in devices.iter() {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  PCI {:02x}:{:02x}.{} - {:04x}:{:04x} - {} (class {:02x}:{:02x})",
             dev.bus, dev.device, dev.function,
             dev.vendor_id, dev.device_id,
@@ -198,7 +198,7 @@ pub fn print_devices() {
 
         #[cfg(feature = "debug_verbose")]
         {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "    prog_if={:02x} rev={:02x} hdr={:02x} IRQ={} PIN={}",
                 dev.prog_if, dev.revision_id, dev.header_type,
                 dev.interrupt_line, dev.interrupt_pin
@@ -206,9 +206,9 @@ pub fn print_devices() {
             for (i, bar) in dev.bars.iter().enumerate() {
                 if *bar != 0 {
                     if bar & 1 == 0 {
-                        crate::serial_println!("    BAR{}: MMIO {:#010x}", i, bar & 0xFFFFFFF0);
+                        crate::serial_verbose_println!("    BAR{}: MMIO {:#010x}", i, bar & 0xFFFFFFF0);
                     } else {
-                        crate::serial_println!("    BAR{}: I/O  {:#06x}", i, bar & 0xFFFFFFFC);
+                        crate::serial_verbose_println!("    BAR{}: I/O  {:#06x}", i, bar & 0xFFFFFFFC);
                     }
                 }
             }

@@ -72,7 +72,7 @@ impl Iso9660Fs {
 
         let block_size = u16::from_le_bytes([pvd[128], pvd[129]]);
         if block_size != ISO_BLOCK_SIZE as u16 {
-            crate::serial_println!("  ISO9660: unexpected block size {}", block_size);
+            crate::serial_verbose_println!("  ISO9660: unexpected block size {}", block_size);
             return Err(FsError::IoError);
         }
 
@@ -86,7 +86,7 @@ impl Iso9660Fs {
             .unwrap_or("")
             .trim();
 
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "[OK] ISO 9660: '{}', {} blocks, root at LBA {}",
             vol_id, total_blocks, root_lba
         );

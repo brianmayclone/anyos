@@ -9,6 +9,7 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
+use core::cell::UnsafeCell;
 
 use crate::drivers::pci::PciDevice;
 use crate::drivers::hal::{self, Driver, DriverType, DriverError};
@@ -32,42 +33,38 @@ static PORT_COUNT: Spinlock<usize> = Spinlock::new(0);
 
 // ── Driver State ─────────────────────────────────────────────────────────────
 
-pub struct VirtioSerialDriver {
+struct Inner {
     vdev: VirtioDevice,
     receiveq: VirtQueue,
     transmitq: VirtQueue,
-    /// Physical address of the receive buffer (BUF_SIZE bytes).
     rx_buf_phys: u64,
-    /// Physical address of the transmit buffer (BUF_SIZE bytes).
     tx_buf_phys: u64,
-    /// Intermediate buffer for received data that hasn't been consumed yet.
     rx_pending: [u8; BUF_SIZE],
-    /// Number of valid bytes in rx_pending.
     rx_pending_len: usize,
-    /// Read position within rx_pending.
     rx_pending_pos: usize,
-    /// Whether we have a receive buffer posted to the device.
     rx_posted: bool,
+}
+
+pub struct VirtioSerialDriver {
+    inner: UnsafeCell<Inner>,
 }
 
 // VirtioSerialDriver is only accessed under kernel synchronization.
 unsafe impl Send for VirtioSerialDriver {}
+unsafe impl Sync for VirtioSerialDriver {}
 
-impl VirtioSerialDriver {
-    /// Post (or re-post) a receive buffer to the device.
+impl Inner {
     fn post_rx_buffer(&mut self) {
         if self.rx_posted {
             return;
         }
         let writable = [(self.rx_buf_phys, BUF_SIZE as u32)];
         if self.receiveq.push(&[], &writable).is_some() {
-            // Notify the device about the new buffer.
             self.vdev.notify_queue(0);
             self.rx_posted = true;
         }
     }
 
-    /// Poll the receive queue for completed buffers and copy data to rx_pending.
     fn poll_rx(&mut self) {
         if let Some((_id, len)) = self.receiveq.poll_used() {
             self.rx_posted = false;
@@ -83,9 +80,14 @@ impl VirtioSerialDriver {
                 self.rx_pending_len = bytes;
                 self.rx_pending_pos = 0;
             }
-            // Re-post for next receive.
             self.post_rx_buffer();
         }
+    }
+}
+
+impl VirtioSerialDriver {
+    fn inner(&self) -> &mut Inner {
+        unsafe { &mut *self.inner.get() }
     }
 }
 
@@ -95,17 +97,13 @@ impl Driver for VirtioSerialDriver {
     fn driver_type(&self) -> DriverType { DriverType::Char }
 
     fn init(&mut self) -> Result<(), DriverError> {
-        // Post the initial receive buffer.
-        self.post_rx_buffer();
+        self.inner().post_rx_buffer();
         Ok(())
     }
 
     fn read(&self, _offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
-        // SAFETY: We need &mut self for poll_rx, but the Driver trait gives us &self.
-        // This is safe because the HAL serializes access to device drivers.
-        let this = unsafe { &mut *(self as *const Self as *mut Self) };
+        let this = self.inner();
 
-        // Check for pending data first.
         if this.rx_pending_pos < this.rx_pending_len {
             let avail = this.rx_pending_len - this.rx_pending_pos;
             let copy_len = avail.min(buf.len());
@@ -116,7 +114,6 @@ impl Driver for VirtioSerialDriver {
             return Ok(copy_len);
         }
 
-        // Poll for new data (non-blocking).
         this.poll_rx();
 
         if this.rx_pending_pos < this.rx_pending_len {
@@ -128,7 +125,6 @@ impl Driver for VirtioSerialDriver {
             this.rx_pending_pos += copy_len;
             Ok(copy_len)
         } else {
-            // No data available right now.
             Ok(0)
         }
     }
@@ -138,9 +134,8 @@ impl Driver for VirtioSerialDriver {
             return Ok(0);
         }
 
-        let this = unsafe { &mut *(self as *const Self as *mut Self) };
+        let this = self.inner();
 
-        // Copy data to the TX buffer and submit via the transmit queue.
         let send_len = buf.len().min(BUF_SIZE);
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -174,7 +169,7 @@ impl Driver for VirtioSerialDriver {
 ///
 /// Called by the PCI driver table when a matching device is found.
 pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
-    crate::serial_println!("VirtIO Serial: probing PCI {:04x}:{:04x}",
+    crate::serial_verbose_println!("VirtIO Serial: probing PCI {:04x}:{:04x}",
         pci.vendor_id, pci.device_id);
 
     // 1. Find VirtIO PCI capabilities.
@@ -187,7 +182,7 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
     // We only need VERSION_1. Skip MULTIPORT for simplicity (single port mode).
     let desired_features = VIRTIO_F_VERSION_1;
     if let Err(e) = vdev.init_device(desired_features) {
-        crate::serial_println!("VirtIO Serial: init failed: {}", e);
+        crate::serial_verbose_println!("VirtIO Serial: init failed: {}", e);
         return None;
     }
 
@@ -209,15 +204,17 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
     }
 
     let mut driver = VirtioSerialDriver {
-        vdev,
-        receiveq,
-        transmitq,
-        rx_buf_phys: rx_phys,
-        tx_buf_phys: tx_phys,
-        rx_pending: [0u8; BUF_SIZE],
-        rx_pending_len: 0,
-        rx_pending_pos: 0,
-        rx_posted: false,
+        inner: UnsafeCell::new(Inner {
+            vdev,
+            receiveq,
+            transmitq,
+            rx_buf_phys: rx_phys,
+            tx_buf_phys: tx_phys,
+            rx_pending: [0u8; BUF_SIZE],
+            rx_pending_len: 0,
+            rx_pending_pos: 0,
+            rx_posted: false,
+        }),
     };
 
     // Initialize (posts initial RX buffer).
@@ -236,7 +233,7 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
         s
     };
 
-    crate::serial_println!("VirtIO Serial: registered as {}", path);
+    crate::serial_verbose_println!("VirtIO Serial: registered as {}", path);
     hal::register_device(&path, Box::new(driver), Some(pci.clone()));
 
     // Return None — we already registered via HAL with a custom path.

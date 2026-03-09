@@ -126,16 +126,16 @@ impl SmbFs {
 
         let ip = parse_ipv4(ip_str).ok_or(FsError::InvalidPath)?;
 
-        crate::serial_println!("[SMBFS] Connecting to {}:{}", ip_str, 445);
+        crate::serial_verbose_println!("[SMBFS] Connecting to {}:{}", ip_str, 445);
 
         // TCP connect to port 445
         let socket_id = tcp::connect(Ipv4Addr(ip), 445, SMB_CONNECT_TIMEOUT);
         if socket_id == u32::MAX {
-            crate::serial_println!("[SMBFS] TCP connect failed");
+            crate::serial_verbose_println!("[SMBFS] TCP connect failed");
             return Err(FsError::IoError);
         }
 
-        crate::serial_println!("[SMBFS] TCP connected, socket={}", socket_id);
+        crate::serial_verbose_println!("[SMBFS] TCP connected, socket={}", socket_id);
 
         let mut fs = SmbFs {
             socket_id,
@@ -165,7 +165,7 @@ impl SmbFs {
         };
         fs.tree_connect(&tree_path)?;
 
-        crate::serial_println!("[SMBFS] Mounted //{}:{}/{}", ip_str, 445, share_name);
+        crate::serial_verbose_println!("[SMBFS] Mounted //{}:{}/{}", ip_str, 445, share_name);
         Ok(fs)
     }
 
@@ -227,7 +227,7 @@ impl SmbFs {
         // Send
         let sent = tcp::send(self.socket_id, &packet, SMB_TIMEOUT);
         if sent == u32::MAX {
-            crate::serial_println!("[SMBFS] send failed");
+            crate::serial_verbose_println!("[SMBFS] send failed");
             return Err(FsError::IoError);
         }
 
@@ -235,13 +235,13 @@ impl SmbFs {
         let mut nb_hdr = [0u8; 4];
         let n = tcp::recv(self.socket_id, &mut nb_hdr, SMB_TIMEOUT);
         if n == u32::MAX || n < 4 {
-            crate::serial_println!("[SMBFS] recv NetBIOS header failed (got {})", n);
+            crate::serial_verbose_println!("[SMBFS] recv NetBIOS header failed (got {})", n);
             return Err(FsError::IoError);
         }
 
         let resp_len = ((nb_hdr[1] as usize) << 16) | ((nb_hdr[2] as usize) << 8) | (nb_hdr[3] as usize);
         if resp_len == 0 || resp_len > 1024 * 1024 {
-            crate::serial_println!("[SMBFS] invalid response length: {}", resp_len);
+            crate::serial_verbose_println!("[SMBFS] invalid response length: {}", resp_len);
             return Err(FsError::IoError);
         }
 
@@ -251,7 +251,7 @@ impl SmbFs {
         while received < resp_len {
             let n = tcp::recv(self.socket_id, &mut response[received..], SMB_TIMEOUT);
             if n == u32::MAX || n == 0 {
-                crate::serial_println!("[SMBFS] recv body failed at {}/{}", received, resp_len);
+                crate::serial_verbose_println!("[SMBFS] recv body failed at {}/{}", received, resp_len);
                 return Err(FsError::IoError);
             }
             received += n as usize;
@@ -303,7 +303,7 @@ impl SmbFs {
         let resp = self.transact(&hdr, &body)?;
         let status = Self::response_status(&resp);
         if status != STATUS_SUCCESS {
-            crate::serial_println!("[SMBFS] Negotiate failed: status=0x{:08X}", status);
+            crate::serial_verbose_println!("[SMBFS] Negotiate failed: status=0x{:08X}", status);
             return Err(FsError::IoError);
         }
 
@@ -318,7 +318,7 @@ impl SmbFs {
             }
         }
 
-        crate::serial_println!("[SMBFS] Negotiate OK, max_read={}, max_write={}",
+        crate::serial_verbose_println!("[SMBFS] Negotiate OK, max_read={}, max_write={}",
             self.max_read_size, self.max_write_size);
         Ok(())
     }
@@ -347,12 +347,12 @@ impl SmbFs {
         self.session_id = Self::response_session_id(&resp1);
 
         if status1 != STATUS_MORE_PROCESSING_REQUIRED && status1 != STATUS_SUCCESS {
-            crate::serial_println!("[SMBFS] Session setup phase 1 failed: 0x{:08X}", status1);
+            crate::serial_verbose_println!("[SMBFS] Session setup phase 1 failed: 0x{:08X}", status1);
             return Err(FsError::IoError);
         }
 
         if status1 == STATUS_SUCCESS {
-            crate::serial_println!("[SMBFS] Session setup OK (single phase), session_id={}", self.session_id);
+            crate::serial_verbose_println!("[SMBFS] Session setup OK (single phase), session_id={}", self.session_id);
             return Ok(());
         }
 
@@ -375,11 +375,11 @@ impl SmbFs {
         self.session_id = Self::response_session_id(&resp2);
 
         if status2 != STATUS_SUCCESS {
-            crate::serial_println!("[SMBFS] Session setup phase 2 failed: 0x{:08X}", status2);
+            crate::serial_verbose_println!("[SMBFS] Session setup phase 2 failed: 0x{:08X}", status2);
             return Err(FsError::IoError);
         }
 
-        crate::serial_println!("[SMBFS] Session setup OK, session_id={}", self.session_id);
+        crate::serial_verbose_println!("[SMBFS] Session setup OK, session_id={}", self.session_id);
         Ok(())
     }
 
@@ -400,12 +400,12 @@ impl SmbFs {
         let status = Self::response_status(&resp);
 
         if status != STATUS_SUCCESS {
-            crate::serial_println!("[SMBFS] Tree connect failed: 0x{:08X}", status);
+            crate::serial_verbose_println!("[SMBFS] Tree connect failed: 0x{:08X}", status);
             return Err(FsError::IoError);
         }
 
         self.tree_id = Self::response_tree_id(&resp);
-        crate::serial_println!("[SMBFS] Tree connect OK, tree_id={}", self.tree_id);
+        crate::serial_verbose_println!("[SMBFS] Tree connect OK, tree_id={}", self.tree_id);
         Ok(())
     }
 
@@ -462,7 +462,7 @@ impl SmbFs {
                 0xC0000035 => Err(FsError::AlreadyExists),  // STATUS_OBJECT_NAME_COLLISION
                 0xC0000022 => Err(FsError::PermissionDenied), // STATUS_ACCESS_DENIED
                 _ => {
-                    crate::serial_println!("[SMBFS] Create failed: 0x{:08X} path='{}'", status, path);
+                    crate::serial_verbose_println!("[SMBFS] Create failed: 0x{:08X} path='{}'", status, path);
                     Err(FsError::IoError)
                 }
             };
@@ -528,7 +528,7 @@ impl SmbFs {
             if status == 0xC0000011 { // STATUS_END_OF_FILE
                 return Ok(Vec::new());
             }
-            crate::serial_println!("[SMBFS] Read failed: 0x{:08X}", status);
+            crate::serial_verbose_println!("[SMBFS] Read failed: 0x{:08X}", status);
             return Err(FsError::IoError);
         }
 
@@ -575,7 +575,7 @@ impl SmbFs {
         let status = Self::response_status(&resp);
 
         if status != STATUS_SUCCESS {
-            crate::serial_println!("[SMBFS] Write failed: 0x{:08X}", status);
+            crate::serial_verbose_println!("[SMBFS] Write failed: 0x{:08X}", status);
             return Err(FsError::IoError);
         }
 
@@ -620,7 +620,7 @@ impl SmbFs {
                 break;
             }
             if status != STATUS_SUCCESS {
-                crate::serial_println!("[SMBFS] QueryDirectory failed: 0x{:08X}", status);
+                crate::serial_verbose_println!("[SMBFS] QueryDirectory failed: 0x{:08X}", status);
                 return Err(FsError::IoError);
             }
 
@@ -713,7 +713,7 @@ impl SmbFs {
         let resp = self.transact(&hdr, &body)?;
         let status = Self::response_status(&resp);
         if status != STATUS_SUCCESS {
-            crate::serial_println!("[SMBFS] SetInfo delete failed: 0x{:08X}", status);
+            crate::serial_verbose_println!("[SMBFS] SetInfo delete failed: 0x{:08X}", status);
             return Err(FsError::IoError);
         }
         Ok(())

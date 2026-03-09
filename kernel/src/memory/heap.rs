@@ -644,19 +644,19 @@ pub fn validate_heap() {
             let size = (*current).size;
 
             if addr < heap_start || addr >= heap_end {
-                crate::serial_println!("HEAP CORRUPT: block #{} at {:#x} outside heap bounds [{:#x}..{:#x}]",
+                crate::serial_verbose_println!("HEAP CORRUPT: block #{} at {:#x} outside heap bounds [{:#x}..{:#x}]",
                     count, addr, heap_start, heap_end);
                 HEAP_ALLOCATOR.release(flags);
                 return;
             }
             if size == 0 || addr + size > heap_end {
-                crate::serial_println!("HEAP CORRUPT: block #{} at {:#x} size {:#x} extends past heap end {:#x}",
+                crate::serial_verbose_println!("HEAP CORRUPT: block #{} at {:#x} size {:#x} extends past heap end {:#x}",
                     count, addr, size, heap_end);
                 HEAP_ALLOCATOR.release(flags);
                 return;
             }
             if addr < prev_end {
-                crate::serial_println!("HEAP CORRUPT: block #{} at {:#x} overlaps previous ending at {:#x}",
+                crate::serial_verbose_println!("HEAP CORRUPT: block #{} at {:#x} overlaps previous ending at {:#x}",
                     count, addr, prev_end);
                 HEAP_ALLOCATOR.release(flags);
                 return;
@@ -668,13 +668,13 @@ pub fn validate_heap() {
             current = (*current).next;
 
             if count > 10000 {
-                crate::serial_println!("HEAP CORRUPT: free list has >10000 entries (loop?)");
+                crate::serial_verbose_println!("HEAP CORRUPT: free list has >10000 entries (loop?)");
                 HEAP_ALLOCATOR.release(flags);
                 return;
             }
         }
 
-        crate::serial_println!("  Heap check: {} free block(s), {} KiB free / {} KiB committed",
+        crate::serial_verbose_println!("  Heap check: {} free block(s), {} KiB free / {} KiB committed",
             count, total_free / 1024, HEAP_COMMITTED.load(Ordering::Acquire) / 1024);
         HEAP_ALLOCATOR.release(flags);
     }
@@ -727,7 +727,7 @@ pub fn init() {
         HEAP_INITIALIZED = true;
     }
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "Kernel heap initialized: {:#018x} - {:#018x} ({} KiB committed, max {} MiB)",
         HEAP_START,
         HEAP_START + HEAP_INITIAL_SIZE as u64,

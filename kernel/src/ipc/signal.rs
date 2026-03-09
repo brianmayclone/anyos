@@ -113,4 +113,9 @@ impl SignalState {
     pub fn default_is_ignore(sig: u32) -> bool {
         matches!(sig, SIGCHLD | SIGCONT)
     }
+
+    /// Returns true if the default action for this signal is to stop the process.
+    pub fn default_is_stop(sig: u32) -> bool {
+        matches!(sig, SIGTSTP | SIGSTOP | SIGTTIN | SIGTTOU)
+    }
 }

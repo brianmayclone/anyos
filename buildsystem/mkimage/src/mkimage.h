@@ -14,6 +14,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <time.h>
 
 /* ── Constants ────────────────────────────────────────────────────────── */
 
@@ -207,10 +208,12 @@ void     exfat_init(ExFat *fs, uint8_t *image, uint32_t fs_start,
 void     exfat_write_boot(ExFat *fs);
 void     exfat_init_fs(ExFat *fs);
 uint32_t exfat_create_dir(ExFat *fs, uint32_t parent, const char *name,
-                          uint16_t uid, uint16_t gid, uint16_t mode);
+                          uint16_t uid, uint16_t gid, uint16_t mode,
+                          time_t mtime);
 void     exfat_add_file(ExFat *fs, uint32_t parent, const char *name,
                         const uint8_t *data, size_t size,
-                        uint16_t uid, uint16_t gid, uint16_t mode);
+                        uint16_t uid, uint16_t gid, uint16_t mode,
+                        time_t mtime);
 void     exfat_populate_sysroot(ExFat *fs, const char *sysroot_path);
 void     exfat_flush(ExFat *fs);
 void     exfat_free(ExFat *fs);

@@ -26,6 +26,8 @@ use player::Player;
 struct GameState {
     canvas: libanyui_client::Canvas,
     window: libanyui_client::Window,
+    canvas_w: u32,
+    canvas_h: u32,
     fb_w: u32,
     fb_h: u32,
     world: World,
@@ -56,8 +58,12 @@ fn find_spawn_height(world: &World) -> f32 {
 }
 
 fn main() {
-    libanyui_client::init();
+    if !libanyui_client::init() {
+        anyos_std::println!("forger: FATAL - failed to load libanyui.so");
+        return;
+    }
     anyos_std::i18n::init();
+    anyos_std::println!("forger: anyui initialized");
 
     let window = libanyui_client::Window::new("Forger", 50, 50, 800, 600);
     let canvas = libanyui_client::Canvas::new(800, 600);
@@ -66,38 +72,54 @@ fn main() {
     window.add(&canvas);
     window.set_visible(true);
 
-    let fb_w = canvas.get_stride();
-    let fb_h = canvas.get_height();
+    let canvas_w = canvas.get_stride();
+    let canvas_h = canvas.get_height();
+    let fb_w = canvas_w / 2;
+    let fb_h = canvas_h / 2;
 
-    gl::init();
+    if !gl::init() {
+        anyos_std::println!("forger: FATAL - failed to load libgl.so");
+        return;
+    }
+    anyos_std::println!("forger: libgl loaded, canvas={}x{} render={}x{}", canvas_w, canvas_h, fb_w, fb_h);
     gl::gl_init(fb_w, fb_h);
     gl::set_hw_backend(false);
     gl::enable(gl::GL_DEPTH_TEST);
     gl::depth_func(gl::GL_LESS);
-    gl::enable(gl::GL_BLEND);
-    gl::blend_func(gl::GL_SRC_ALPHA, gl::GL_ONE_MINUS_SRC_ALPHA);
+    gl::enable(gl::GL_CULL_FACE);
+    gl::cull_face(gl::GL_BACK);
+    // Blending disabled for performance (all fragments output alpha=1.0)
 
-    physics::init();
+    if !physics::init() {
+        anyos_std::println!("forger: FATAL - failed to load libphysics.so");
+        return;
+    }
+    anyos_std::println!("forger: libphysics loaded");
 
     let atlas_data = textures::generate_atlas();
     let renderer = Renderer::init(&atlas_data, textures::ATLAS_W as u32, textures::ATLAS_H as u32);
 
     let mut world = World::new(42);
-    world.ensure_chunks_around(0, 0, 4);
+    anyos_std::println!("forger: generating chunks...");
+    world.ensure_chunks_around(0, 0, 2);
+    anyos_std::println!("forger: {} chunks generated", world.chunks.len());
 
     // Build and upload initial chunk meshes
     let mut renderer = renderer;
     let keys: Vec<(i32, i32)> = world.chunks.keys().copied().collect();
-    for (cx, cz) in keys {
-        let m = mesh::build_chunk_mesh(&world, cx, cz);
-        renderer.upload_chunk(cx, cz, &m);
-        if let Some(chunk) = world.chunks.get_mut(&(cx, cz)) {
+    let mut total_verts: u32 = 0;
+    for (cx, cz) in &keys {
+        let m = mesh::build_chunk_mesh(&world, *cx, *cz);
+        let vc = m.vertex_count;
+        total_verts += vc;
+        renderer.upload_chunk(*cx, *cz, &m);
+        if let Some(chunk) = world.chunks.get_mut(&(*cx, *cz)) {
             chunk.dirty = false;
         }
     }
 
     let spawn_y = find_spawn_height(&world);
-    anyos_std::println!("forger: {} chunks meshed, {} VBOs, spawn_y={}", world.chunks.len(), renderer.chunk_vbos.len(), spawn_y as i32);
+    anyos_std::println!("forger: {} chunks, {} VBOs, {} total verts, spawn_y={}", world.chunks.len(), renderer.chunk_vbos.len(), total_verts, spawn_y as i32);
 
     let fps_label = libanyui_client::Label::new("FPS: --");
     fps_label.set_position(4, 4);
@@ -110,6 +132,8 @@ fn main() {
         STATE = Some(GameState {
             canvas,
             window,
+            canvas_w,
+            canvas_h,
             fb_w,
             fb_h,
             world,
@@ -192,8 +216,15 @@ fn main() {
         s.player.mouse_move(dx as f32, dy as f32);
     });
 
+    // Reset FPS timer just before event loop so init time is not counted
+    unsafe {
+        STATE.as_mut().unwrap().fps_last_ms = anyos_std::sys::uptime_ms();
+    }
+
+    anyos_std::println!("forger: entering event loop");
+
     // Game loop timer
-    libanyui_client::set_timer(16, || {
+    libanyui_client::set_timer(33, || {
         game_tick();
     });
 
@@ -203,14 +234,16 @@ fn main() {
 fn game_tick() {
     let s = unsafe { STATE.as_mut().unwrap() };
 
-    // Handle resize
+    // Handle resize (render at half resolution)
     let cur_w = s.canvas.get_stride();
     let cur_h = s.canvas.get_height();
-    if cur_w != s.fb_w || cur_h != s.fb_h {
-        s.fb_w = cur_w;
-        s.fb_h = cur_h;
-        gl::gl_resize(cur_w, cur_h);
-        gl::viewport(0, 0, cur_w as i32, cur_h as i32);
+    if cur_w != s.canvas_w || cur_h != s.canvas_h {
+        s.canvas_w = cur_w;
+        s.canvas_h = cur_h;
+        s.fb_w = cur_w / 2;
+        s.fb_h = cur_h / 2;
+        gl::gl_resize(s.fb_w, s.fb_h);
+        gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
     }
 
     // Physics/player update
@@ -224,10 +257,10 @@ fn game_tick() {
     s.player.jump = false;
     s.player.descend = false;
 
-    // Ensure chunks around player
+    // Ensure chunks around player (limit to 3 to keep SW rasterizer manageable)
     let (px, _, pz) = s.player.position();
     let view_chunks = (s.renderer.fog_distance / 16.0) as i32 + 1;
-    s.world.ensure_chunks_around(px as i32, pz as i32, view_chunks.min(8));
+    s.world.ensure_chunks_around(px as i32, pz as i32, view_chunks.min(3));
 
     // Rebuild dirty chunk meshes (max 2 per frame)
     let mut rebuilt = 0;
@@ -247,12 +280,6 @@ fn game_tick() {
         }
     }
 
-    // Day/night cycle: 10 min = 1 day
-    s.renderer.time_of_day += 1.0 / (60.0 * 600.0);
-    if s.renderer.time_of_day >= 1.0 {
-        s.renderer.time_of_day -= 1.0;
-    }
-
     // Sync camera
     let (ex, ey, ez) = s.player.eye_position();
     s.renderer.yaw = s.player.yaw;
@@ -261,16 +288,37 @@ fn game_tick() {
     // Render
     s.renderer.render(ex, ey, ez, s.fb_w, s.fb_h);
 
-    // Swap to canvas
+    // Swap to canvas (upscale from half-res)
     let fb_ptr = gl::swap_buffers();
     if !fb_ptr.is_null() {
-        let pixels = unsafe { core::slice::from_raw_parts(fb_ptr, (s.fb_w * s.fb_h) as usize) };
-        s.canvas.copy_pixels_from(pixels);
+        let src = unsafe { core::slice::from_raw_parts(fb_ptr, (s.fb_w * s.fb_h) as usize) };
+        let cw = s.canvas_w as usize;
+        let ch = s.canvas_h as usize;
+        let rw = s.fb_w as usize;
+        let rh = s.fb_h as usize;
+        let mut upscaled = vec![0u32; cw * ch];
+        for cy in 0..ch {
+            let sy = (cy * rh / ch).min(rh - 1);
+            let src_row = sy * rw;
+            let dst_row = cy * cw;
+            for cx in 0..cw {
+                let sx = (cx * rw / cw).min(rw - 1);
+                upscaled[dst_row + cx] = src[src_row + sx];
+            }
+        }
+        s.canvas.copy_pixels_from(&upscaled);
     }
 
-    // Debug: print camera once per second
+    // Debug: print camera and pixel samples once per second
     if s.fps_frame_count == 0 {
         anyos_std::println!("forger: cam=({},{},{}) vbos={} fb_null={}", ex as i32, ey as i32, ez as i32, s.renderer.chunk_vbos.len(), fb_ptr.is_null());
+        if !fb_ptr.is_null() {
+            let src = unsafe { core::slice::from_raw_parts(fb_ptr, (s.fb_w * s.fb_h) as usize) };
+            let mid = (s.fb_w * s.fb_h / 2) as usize;
+            let top = (s.fb_w * 10 + s.fb_w / 2) as usize; // sky area
+            anyos_std::println!("forger: px[0]=0x{:08X} px[mid]=0x{:08X} px[sky]=0x{:08X} fb={}x{}",
+                src[0], src[mid.min(src.len()-1)], src[top.min(src.len()-1)], s.fb_w, s.fb_h);
+        }
     }
 
     // FPS counter

@@ -182,12 +182,12 @@ pub fn init() -> bool {
     {
         Some(dev) => dev,
         None => {
-            crate::serial_println!("  E1000: device not found on PCI bus");
+            crate::serial_verbose_println!("  E1000: device not found on PCI bus");
             return false;
         }
     };
 
-    crate::serial_println!("  E1000: found at PCI {:02x}:{:02x}.{}",
+    crate::serial_verbose_println!("  E1000: found at PCI {:02x}:{:02x}.{}",
         pci_dev.bus, pci_dev.device, pci_dev.function);
 
     // Enable bus mastering for DMA
@@ -196,10 +196,10 @@ pub fn init() -> bool {
     // Get BAR0 (MMIO base physical address)
     let bar0 = pci_dev.bars[0] & 0xFFFFFFF0;
     if bar0 == 0 {
-        crate::serial_println!("  E1000: BAR0 is zero, cannot map MMIO");
+        crate::serial_verbose_println!("  E1000: BAR0 is zero, cannot map MMIO");
         return false;
     }
-    crate::serial_println!("  E1000: BAR0 = {:#010x}", bar0);
+    crate::serial_verbose_println!("  E1000: BAR0 = {:#010x}", bar0);
 
     // Map MMIO region (128 KiB should be enough for E1000 registers)
     let mmio_virt = E1000_MMIO_VIRT;
@@ -212,7 +212,7 @@ pub fn init() -> bool {
 
     // Get IRQ line from PCI config
     let irq = pci_dev.interrupt_line;
-    crate::serial_println!("  E1000: IRQ = {}", irq);
+    crate::serial_verbose_println!("  E1000: IRQ = {}", irq);
 
     // --- Device Reset ---
     unsafe {
@@ -245,7 +245,7 @@ pub fn init() -> bool {
             ((rah >> 8) & 0xFF) as u8,
         ]
     };
-    crate::serial_println!("  E1000: MAC = {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+    crate::serial_verbose_println!("  E1000: MAC = {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
     // --- Clear Multicast Table Array ---
@@ -398,8 +398,8 @@ pub fn init() -> bool {
 
     // Check link status
     let link_up = unsafe { mmio_read(mmio_virt, REG_STATUS) & 2 != 0 };
-    crate::serial_println!("  E1000: link {}", if link_up { "UP" } else { "DOWN" });
-    crate::serial_println!("[OK] E1000 NIC initialized ({} RX + {} TX descriptors)",
+    crate::serial_verbose_println!("  E1000: link {}", if link_up { "UP" } else { "DOWN" });
+    crate::serial_verbose_println!("[OK] E1000 NIC initialized ({} RX + {} TX descriptors)",
         NUM_RX_DESC, NUM_TX_DESC);
 
     // Register with the generic network subsystem
@@ -683,7 +683,7 @@ fn e1000_irq_handler(_irq: u8) {
 
             if icr & ICR_LSC != 0 {
                 let link = unsafe { mmio_read(e1000.mmio_base, REG_STATUS) & 2 != 0 };
-                crate::serial_println!("  E1000: link status changed: {}",
+                crate::serial_verbose_println!("  E1000: link status changed: {}",
                     if link { "UP" } else { "DOWN" });
             }
 

@@ -377,7 +377,7 @@ fn clear_halt(dev: &UsbStorageDevice, endpoint: u8) -> Result<(), &'static str> 
 /// 3. CLEAR_FEATURE(ENDPOINT_HALT) on bulk OUT
 /// 4. Reset data toggles
 fn bot_error_recovery(dev: &mut UsbStorageDevice) {
-    crate::serial_println!("  USB Storage: BOT error recovery (disk {})", dev.disk_id);
+    crate::serial_verbose_println!("  USB Storage: BOT error recovery (disk {})", dev.disk_id);
     let _ = bot_reset(dev);
     let _ = clear_halt(dev, dev.ep_in);
     let _ = clear_halt(dev, dev.ep_out);
@@ -502,7 +502,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         _ => "Unknown",
     };
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  USB Storage: detected (subclass={:#04x} [{}], protocol={:#04x} [{}], addr={})",
         iface.subclass, subclass_desc,
         iface.protocol, protocol_desc,
@@ -522,7 +522,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
 
     let (ep_in, ep_out) = match (bulk_in, bulk_out) {
         (Some(i), Some(o)) => {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "  USB Storage: bulk IN ep={:#04x} (max={}), bulk OUT ep={:#04x} (max={})",
                 i.address, i.max_packet_size,
                 o.address, o.max_packet_size,
@@ -530,14 +530,14 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
             (i, o)
         }
         _ => {
-            crate::serial_println!("  USB Storage: missing bulk endpoints");
+            crate::serial_verbose_println!("  USB Storage: missing bulk endpoints");
             return;
         }
     };
 
     // Support SCSI transparent (0x06) and ATAPI (0x02) with Bulk-Only (0x50)
     if (iface.subclass != 0x06 && iface.subclass != 0x02) || iface.protocol != 0x50 {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  USB Storage: unsupported subclass/protocol combination"
         );
         return;
@@ -549,7 +549,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     let cbw_csw_phys = match physical::alloc_frame() {
         Some(f) => f.as_u64(),
         None => {
-            crate::serial_println!("  USB Storage: failed to allocate CBW/CSW page");
+            crate::serial_verbose_println!("  USB Storage: failed to allocate CBW/CSW page");
             return;
         }
     };
@@ -560,7 +560,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     let bounce_phys = match physical::alloc_contiguous(BOUNCE_PAGES) {
         Some(p) => p.as_u64(),
         None => {
-            crate::serial_println!("  USB Storage: failed to allocate bounce buffer");
+            crate::serial_verbose_println!("  USB Storage: failed to allocate bounce buffer");
             return;
         }
     };
@@ -603,19 +603,19 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
                 let asc = sense[12];
                 let ascq = sense[13];
                 if asc == 0x04 && ascq == 0x01 {
-                    crate::serial_println!("  USB Storage: CDROM spinning up (attempt {})", attempt + 1);
+                    crate::serial_verbose_println!("  USB Storage: CDROM spinning up (attempt {})", attempt + 1);
                 } else if asc == 0x3A {
-                    crate::serial_println!("  USB Storage: no medium in CDROM drive");
+                    crate::serial_verbose_println!("  USB Storage: no medium in CDROM drive");
                     return;
                 }
             }
         } else {
-            crate::serial_println!("  USB Storage: TEST_UNIT_READY attempt {} failed", attempt + 1);
+            crate::serial_verbose_println!("  USB Storage: TEST_UNIT_READY attempt {} failed", attempt + 1);
         }
         crate::arch::x86::pit::delay_ms(delay_ms);
     }
     if !ready {
-        crate::serial_println!("  USB Storage: device not ready after retries");
+        crate::serial_verbose_println!("  USB Storage: device not ready after retries");
         return;
     }
 
@@ -629,10 +629,10 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
                 stor_dev.is_cdrom = true;
             }
             let type_str = if stor_dev.is_cdrom { "CD/DVD-ROM" } else { "Disk" };
-            crate::serial_println!("  USB Storage: {} {} [{}]", vendor, product, type_str);
+            crate::serial_verbose_println!("  USB Storage: {} {} [{}]", vendor, product, type_str);
         }
         Err(e) => {
-            crate::serial_println!("  USB Storage: INQUIRY failed: {}", e);
+            crate::serial_verbose_println!("  USB Storage: INQUIRY failed: {}", e);
         }
     }
 
@@ -642,13 +642,13 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
             stor_dev.block_count = blocks;
             stor_dev.block_size = block_size;
             let size_mib = blocks as u64 * block_size as u64 / (1024 * 1024);
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "  USB Storage: {} sectors x {} bytes = {} MiB",
                 blocks, block_size, size_mib
             );
         }
         Err(e) => {
-            crate::serial_println!("  USB Storage: READ_CAPACITY failed: {}", e);
+            crate::serial_verbose_println!("  USB Storage: READ_CAPACITY failed: {}", e);
             return;
         }
     }
@@ -688,7 +688,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
             None,
         );
 
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  USB Storage: registered as /dev/cdrom{} (USB CD/DVD-ROM, disk {})",
             cdrom_idx, disk_id
         );
@@ -706,7 +706,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         // Scan for partitions (CDROMs don't have MBR/GPT)
         blockdev::scan_and_register_partitions(disk_id);
 
-        crate::serial_println!("  USB Storage: registered as disk {} (hd{})", disk_id, disk_id);
+        crate::serial_verbose_println!("  USB Storage: registered as disk {} (hd{})", disk_id, disk_id);
     }
 }
 
@@ -742,11 +742,11 @@ pub fn disconnect(port: u8, controller: ControllerType) {
         crate::drivers::storage::unregister_device_io(disk_id);
 
         if is_cdrom {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "  USB Storage: /dev/cdrom{} removed (disk {})", cdrom_index, disk_id
             );
         } else {
-            crate::serial_println!("  USB Storage: disk {} (hd{}) removed", disk_id, disk_id);
+            crate::serial_verbose_println!("  USB Storage: disk {} (hd{}) removed", disk_id, disk_id);
         }
     }
 }

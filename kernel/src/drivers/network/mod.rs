@@ -29,7 +29,7 @@ static NET: Spinlock<Option<Box<dyn NetworkDriver>>> = Spinlock::new(None);
 
 /// Register a network driver (called from driver init during PCI probe).
 pub fn register(driver: Box<dyn NetworkDriver>) {
-    crate::serial_println!("  Network: registered '{}'", driver.name());
+    crate::serial_verbose_println!("  Network: registered '{}'", driver.name());
     let mut net = NET.lock();
     *net = Some(driver);
 }

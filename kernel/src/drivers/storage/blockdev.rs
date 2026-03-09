@@ -5,7 +5,7 @@
 //! and enforce bounds checking.
 
 use alloc::vec::Vec;
-use crate::serial_println;
+use crate::serial_verbose_println;
 use crate::sync::spinlock::Spinlock;
 
 /// Block device representing a whole disk or a partition on a disk.
@@ -29,7 +29,7 @@ impl BlockDevice {
     /// Returns `true` on success. Fails if the read would exceed bounds.
     pub fn read_sectors(&self, relative_lba: u32, count: u32, buf: &mut [u8]) -> bool {
         if (relative_lba as u64 + count as u64) > self.size_sectors {
-            serial_println!(
+            serial_verbose_println!(
                 "[blockdev] read out of bounds: dev={} rel_lba={} count={} size={}",
                 self.id, relative_lba, count, self.size_sectors
             );
@@ -54,7 +54,7 @@ impl BlockDevice {
     /// Returns `true` on success. Fails if the write would exceed bounds.
     pub fn write_sectors(&self, relative_lba: u32, count: u32, buf: &[u8]) -> bool {
         if (relative_lba as u64 + count as u64) > self.size_sectors {
-            serial_println!(
+            serial_verbose_println!(
                 "[blockdev] write out of bounds: dev={} rel_lba={} count={} size={}",
                 self.id, relative_lba, count, self.size_sectors
             );
@@ -101,7 +101,7 @@ pub fn register_device(dev: BlockDevice) -> u8 {
     let id = devs.len() as u8;
     let mut dev = dev;
     dev.id = id;
-    serial_println!(
+    serial_verbose_println!(
         "[blockdev] registered: id={} disk={} part={:?} start={} size={}",
         id, dev.disk_id, dev.partition, dev.start_lba, dev.size_sectors
     );
@@ -151,7 +151,7 @@ pub fn scan_and_register_partitions(disk_id: u8) {
     let whole_disk = match find_device(disk_id, None) {
         Some(d) => d,
         None => {
-            serial_println!("[blockdev] scan_and_register: disk {} not found", disk_id);
+            serial_verbose_println!("[blockdev] scan_and_register: disk {} not found", disk_id);
             return;
         }
     };
@@ -165,7 +165,7 @@ pub fn scan_and_register_partitions(disk_id: u8) {
         true
     });
 
-    serial_println!(
+    serial_verbose_println!(
         "[blockdev] disk {} partition scheme: {:?}, {} partitions found",
         disk_id, table.scheme, table.partitions.len()
     );

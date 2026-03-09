@@ -291,7 +291,7 @@ impl ExFatFs {
     pub fn new(device_id: u32, partition_start_lba: u32) -> Result<Self, FsError> {
         let mut buf = [0u8; 512];
         if !storage_read_sectors(partition_start_lba, 1, &mut buf) {
-            crate::serial_println!("  exFAT: Failed to read VBR at LBA {}", partition_start_lba);
+            crate::serial_verbose_println!("  exFAT: Failed to read VBR at LBA {}", partition_start_lba);
             return Err(FsError::IoError);
         }
 
@@ -302,7 +302,7 @@ impl ExFatFs {
 
         // MustBeZero region (bytes 11..64) — quick sanity check
         if buf[11..64].iter().any(|&b| b != 0) {
-            crate::serial_println!("  exFAT: MustBeZero region is non-zero");
+            crate::serial_verbose_println!("  exFAT: MustBeZero region is non-zero");
             return Err(FsError::IoError);
         }
 
@@ -318,7 +318,7 @@ impl ExFatFs {
         let _number_of_fats = buf[110];
 
         if bytes_per_sector_shift != 9 {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "  exFAT: Unsupported sector size shift: {} (only 9 supported)",
                 bytes_per_sector_shift
             );
@@ -326,11 +326,11 @@ impl ExFatFs {
         }
 
         let cluster_size = 512u32 << sectors_per_cluster_shift;
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "[OK] exFAT filesystem: {} clusters, {} bytes/cluster, root=cluster {}",
             cluster_count, cluster_size, root_cluster
         );
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  exFAT: FAT at sector +{}, data at sector +{}, {} FATs",
             fat_offset, cluster_heap_offset, _number_of_fats
         );
@@ -342,10 +342,10 @@ impl ExFatFs {
         crate::debug_println!("  [exFAT] new: caching FAT table abs_lba={} sectors={} ({} KB)",
             abs_fat_lba, fat_length, fat_cache_bytes / 1024);
         if !storage_read_sectors(abs_fat_lba, fat_length, &mut fat_cache) {
-            crate::serial_println!("  exFAT: Failed to cache FAT table");
+            crate::serial_verbose_println!("  exFAT: Failed to cache FAT table");
             return Err(FsError::IoError);
         }
-        crate::serial_println!("  exFAT: cached {} KB FAT table", fat_cache_bytes / 1024);
+        crate::serial_verbose_println!("  exFAT: cached {} KB FAT table", fat_cache_bytes / 1024);
         crate::debug_println!("  [exFAT] new: FAT cache complete, calling load_bitmap()");
 
         let mut fs = ExFatFs {
@@ -546,7 +546,7 @@ impl ExFatFs {
                     raw.truncate(bm_size as usize);
                     self.bitmap = raw;
 
-                    crate::serial_println!(
+                    crate::serial_verbose_println!(
                         "  exFAT: allocation bitmap at cluster {}, {} bytes",
                         bm_cluster, bm_size
                     );
@@ -568,7 +568,7 @@ impl ExFatFs {
             }
         }
 
-        crate::serial_println!("  exFAT: allocation bitmap not found!");
+        crate::serial_verbose_println!("  exFAT: allocation bitmap not found!");
         Err(FsError::IoError)
     }
 

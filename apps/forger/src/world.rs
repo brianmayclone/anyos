@@ -30,6 +30,7 @@ fn index(x: usize, y: usize, z: usize) -> usize {
 pub struct Chunk {
     blocks: [u8; CHUNK_SIZE],
     pub dirty: bool,
+    pub max_y: usize,
 }
 
 impl Chunk {
@@ -37,6 +38,7 @@ impl Chunk {
         Chunk {
             blocks: [block::AIR; CHUNK_SIZE],
             dirty: true,
+            max_y: 0,
         }
     }
 
@@ -46,6 +48,9 @@ impl Chunk {
 
     pub fn set(&mut self, x: usize, y: usize, z: usize, id: u8) {
         self.blocks[index(x, y, z)] = id;
+        if id != block::AIR && y > self.max_y {
+            self.max_y = y;
+        }
     }
 }
 

@@ -1,17 +1,54 @@
 //! Signal helpers, parent/child TID management, thread existence checks.
 
-use super::{get_cpu_id, SCHEDULER};
+use super::{get_cpu_id, SCHEDULER, schedule};
 use crate::task::thread::ThreadState;
 use alloc::vec::Vec;
 
 /// Send a signal to a thread by TID. Returns true if the thread exists.
 pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
+    use crate::ipc::signal::{SIGTSTP, SIGSTOP, SIGCONT, SIG_DFL};
+
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
-        if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-            thread.signals.send(sig);
+        let idx = match sched.threads.iter().position(|t| t.tid == tid) {
+            Some(i) => i,
+            None => return false,
+        };
+
+        let handler = sched.threads[idx].signals.get_handler(sig);
+
+        // SIGTSTP/SIGSTOP: stop the thread (default action)
+        if (sig == SIGTSTP || sig == SIGSTOP) && handler == SIG_DFL {
+            let state = sched.threads[idx].state;
+            if state == ThreadState::Ready || state == ThreadState::Running || state == ThreadState::Blocked {
+                sched.threads[idx].state = ThreadState::Stopped;
+                crate::serial_verbose_println!("Signal {}: stopped T{} (was {:?})", sig, tid, state);
+                // Wake any waitpid waiter so it can see the stopped state
+                if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
+                    sched.wake_thread_inner(waiter_tid);
+                }
+            }
             return true;
         }
+
+        // SIGCONT: resume a stopped thread
+        if sig == SIGCONT {
+            if sched.threads[idx].state == ThreadState::Stopped {
+                sched.threads[idx].state = ThreadState::Ready;
+                let cpu = sched.threads[idx].affinity_cpu;
+                let n = sched.num_cpus();
+                let target = if cpu < n { cpu } else { 0 };
+                let priority = sched.threads[idx].priority;
+                sched.per_cpu[target].run_queue.enqueue(tid, priority);
+                crate::serial_verbose_println!("Signal {}: continued T{}", sig, tid);
+            }
+            // SIGCONT also clears pending stop signals
+            sched.threads[idx].signals.pending &= !((1 << SIGTSTP) | (1 << SIGSTOP));
+            return true;
+        }
+
+        sched.threads[idx].signals.send(sig);
+        return true;
     }
     false
 }
@@ -144,6 +181,38 @@ pub fn get_thread_parent_tid(tid: u32) -> u32 {
         }
     }
     0
+}
+
+/// Stop the current thread (SIGTSTP/SIGSTOP default action).
+/// Sets state to Stopped and yields the CPU. The thread will not be
+/// scheduled again until it receives SIGCONT.
+pub fn stop_current_thread(sig: u32) {
+    {
+        let mut guard = SCHEDULER.lock();
+        let cpu_id = get_cpu_id();
+        let sched = match guard.as_mut() { Some(s) => s, None => return };
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            crate::serial_verbose_println!("Signal {}: stopping current T{}", sig, sched.threads[idx].tid);
+            sched.threads[idx].context.save_complete = 0;
+            sched.threads[idx].state = ThreadState::Stopped;
+            // Wake any waitpid waiter so it can see the stopped state
+            if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
+                sched.wake_thread_inner(waiter_tid);
+            }
+        }
+    }
+    schedule();
+}
+
+/// Check if a thread is in Stopped state.
+pub fn is_thread_stopped(tid: u32) -> bool {
+    let guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(thread) = sched.threads.iter().find(|t| t.tid == tid) {
+            return thread.state == ThreadState::Stopped;
+        }
+    }
+    false
 }
 
 /// Collect TIDs of all live non-idle threads (for system shutdown).

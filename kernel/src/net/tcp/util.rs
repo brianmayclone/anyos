@@ -101,7 +101,7 @@ pub fn cleanup_for_thread(tid: u32) {
                     }
                 }
                 table[i] = None;
-                crate::serial_println!("TCP: cleanup listener socket {} for TID {}", i, tid);
+                crate::serial_verbose_println!("TCP: cleanup listener socket {} for TID {}", i, tid);
             }
         }
 
@@ -126,7 +126,7 @@ pub fn cleanup_for_thread(tid: u32) {
                     }
                 }
                 table[i] = None;
-                crate::serial_println!("TCP: cleanup socket {} for TID {}", i, tid);
+                crate::serial_verbose_println!("TCP: cleanup socket {} for TID {}", i, tid);
             }
         }
     }

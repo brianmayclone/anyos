@@ -38,11 +38,11 @@ pub fn discover() -> Result<DhcpResult, &'static str> {
         DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &discover,
     );
 
-    crate::serial_println!("  DHCP: DISCOVER sent");
+    crate::serial_verbose_println!("  DHCP: DISCOVER sent");
 
     // --- Wait for OFFER ---
     let offer = wait_dhcp_response(DHCP_OFFER, 500)?;
-    crate::serial_println!("  DHCP: OFFER received - IP {}", offer.ip);
+    crate::serial_verbose_println!("  DHCP: OFFER received - IP {}", offer.ip);
 
     // --- Send REQUEST ---
     let request = build_dhcp_packet(DHCP_REQUEST, mac, offer.ip, offer.server_ip);
@@ -51,11 +51,11 @@ pub fn discover() -> Result<DhcpResult, &'static str> {
         DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &request,
     );
 
-    crate::serial_println!("  DHCP: REQUEST sent for {}", offer.ip);
+    crate::serial_verbose_println!("  DHCP: REQUEST sent for {}", offer.ip);
 
     // --- Wait for ACK ---
     let ack = wait_dhcp_response(DHCP_ACK, 500)?;
-    crate::serial_println!("  DHCP: ACK received");
+    crate::serial_verbose_println!("  DHCP: ACK received");
 
     super::udp::unbind(DHCP_CLIENT_PORT);
 

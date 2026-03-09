@@ -63,11 +63,11 @@ impl NtfsFs {
         }
 
         let bpb = NtfsBpb::parse(&buf).ok_or_else(|| {
-            crate::serial_println!("  NTFS: invalid boot sector at LBA {}", partition_lba);
+            crate::serial_verbose_println!("  NTFS: invalid boot sector at LBA {}", partition_lba);
             FsError::IoError
         })?;
 
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "[OK] NTFS filesystem: {}B/sector, {} sec/cluster, MFT at cluster {}, record_size={}",
             bpb.bytes_per_sector, bpb.sectors_per_cluster,
             bpb.mft_cluster, bpb.mft_record_size,
@@ -96,7 +96,7 @@ impl NtfsFs {
             record_sectors,
             &mut mft_buf,
         ) {
-            crate::serial_println!("  NTFS: failed to read MFT record 0");
+            crate::serial_verbose_println!("  NTFS: failed to read MFT record 0");
             return Err(FsError::IoError);
         }
 
@@ -105,18 +105,18 @@ impl NtfsFs {
         // Find the unnamed $DATA attribute of $MFT
         let data_attr = mft_record.find_attr(at::DATA, None)
             .ok_or_else(|| {
-                crate::serial_println!("  NTFS: MFT record 0 has no $DATA attribute");
+                crate::serial_verbose_println!("  NTFS: MFT record 0 has no $DATA attribute");
                 FsError::IoError
             })?;
 
         ntfs.mft_runs = mft_record.get_data_runs(&data_attr);
         if ntfs.mft_runs.is_empty() {
-            crate::serial_println!("  NTFS: MFT has no data runs");
+            crate::serial_verbose_println!("  NTFS: MFT has no data runs");
             return Err(FsError::IoError);
         }
 
         let total_mft_clusters: u64 = ntfs.mft_runs.iter().map(|r| r.length).sum();
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  NTFS: MFT spans {} clusters ({} records approx), index_record_size={}",
             total_mft_clusters,
             total_mft_clusters * bpb.cluster_size as u64 / bpb.mft_record_size as u64,

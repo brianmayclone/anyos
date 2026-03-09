@@ -66,7 +66,7 @@ fn virt_to_phys(virt: usize) -> u64 {
 pub fn init(dev: &VirtioMmioDevice) {
     // Feature negotiation — we don't need any special features
     if dev.init_device(0).is_none() {
-        crate::serial_println!("  virtio-blk: feature negotiation failed");
+        crate::serial_verbose_println!("  virtio-blk: feature negotiation failed");
         return;
     }
 
@@ -75,30 +75,30 @@ pub fn init(dev: &VirtioMmioDevice) {
     let blk_size = if capacity > 0 { dev.read_config_u32(20) } else { 512 }; // offset 20: blk_size
     let blk_size = if blk_size == 0 { 512 } else { blk_size };
 
-    crate::serial_println!("  virtio-blk: capacity={} sectors, blk_size={}", capacity, blk_size);
+    crate::serial_verbose_println!("  virtio-blk: capacity={} sectors, blk_size={}", capacity, blk_size);
 
     // Set up requestq (queue 0)
     let queue = match VirtQueue::new(0, DEFAULT_QUEUE_SIZE) {
         Some(q) => q,
         None => {
-            crate::serial_println!("  virtio-blk: failed to allocate virtqueue");
+            crate::serial_verbose_println!("  virtio-blk: failed to allocate virtqueue");
             return;
         }
     };
 
     let (desc_phys, avail_phys, used_phys) = queue.phys_addrs();
-    crate::serial_println!("  virtio-blk: queue phys: desc={:#x} avail={:#x} used={:#x}",
+    crate::serial_verbose_println!("  virtio-blk: queue phys: desc={:#x} avail={:#x} used={:#x}",
         desc_phys, avail_phys, used_phys);
     if !dev.setup_queue_raw(0, DEFAULT_QUEUE_SIZE, desc_phys, avail_phys, used_phys) {
-        crate::serial_println!("  virtio-blk: failed to setup queue");
+        crate::serial_verbose_println!("  virtio-blk: failed to setup queue");
         return;
     }
 
-    crate::serial_println!("  virtio-blk: status after setup={:#x}", dev.get_status());
+    crate::serial_verbose_println!("  virtio-blk: status after setup={:#x}", dev.get_status());
 
     // Mark device ready
     dev.driver_ok();
-    crate::serial_println!("  virtio-blk: status after driver_ok={:#x}", dev.get_status());
+    crate::serial_verbose_println!("  virtio-blk: status after driver_ok={:#x}", dev.get_status());
 
     let blk = VirtioBlk {
         base: dev.base(),
@@ -208,7 +208,7 @@ fn do_io(req_type: u32, sector: u64, count: u32, buf: &mut [u8]) -> bool {
         core::hint::spin_loop();
         timeout -= 1;
         if timeout == 0 {
-            crate::serial_println!("  virtio-blk: I/O timeout");
+            crate::serial_verbose_println!("  virtio-blk: I/O timeout");
             physical::free_frame(hdr_frame);
             return false;
         }

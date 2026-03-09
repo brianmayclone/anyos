@@ -56,7 +56,7 @@ impl BochsVgaGpu {
         let double_buffered = virt_height >= height * 2;
 
         if double_buffered {
-            crate::serial_println!("  Bochs VGA: double-buffering enabled (virt_height={})", virt_height);
+            crate::serial_verbose_println!("  Bochs VGA: double-buffering enabled (virt_height={})", virt_height);
         }
 
         BochsVgaGpu {
@@ -109,7 +109,7 @@ impl GpuDriver for BochsVgaGpu {
         // Reset Y offset
         dispi_write(VBE_DISPI_INDEX_Y_OFFSET, 0);
 
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  Bochs VGA: mode set to {}x{}x{} (pitch={}, dblbuf={})",
             actual_w, actual_h, actual_bpp, pitch, self.double_buffered
         );

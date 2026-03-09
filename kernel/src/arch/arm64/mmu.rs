@@ -68,7 +68,7 @@ pub fn init() {
         // Barrier to ensure configuration is visible
         core::arch::asm!("isb", options(nostack));
     }
-    crate::serial_println!("[OK] MMU configured: TCR={:#018x} MAIR={:#018x}", TCR_VALUE, MAIR_VALUE);
+    crate::serial_verbose_println!("[OK] MMU configured: TCR={:#018x} MAIR={:#018x}", TCR_VALUE, MAIR_VALUE);
 }
 
 /// Read TTBR0_EL1 (user page table base).

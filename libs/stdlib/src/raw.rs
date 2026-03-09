@@ -229,6 +229,9 @@ pub(crate) const SYS_SET_HOSTNAME: u32 = 281;
 // Power management
 pub(crate) const SYS_SHUTDOWN: u32 = 282;
 
+// Kernel debug settings
+pub(crate) const SYS_SET_SERIAL_VERBOSE: u32 = 283;
+
 // Debug / trace (anyTrace)
 pub(crate) const SYS_DEBUG_ATTACH: u32         = 300;
 pub(crate) const SYS_DEBUG_DETACH: u32         = 301;

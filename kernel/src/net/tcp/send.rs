@@ -297,7 +297,7 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
         // Check timeout.
         let now = crate::arch::hal::timer_current_ticks();
         if now.wrapping_sub(start) >= timeout_ticks {
-            crate::serial_println!("TCP: send timeout on socket {}", socket_id);
+            crate::serial_verbose_println!("TCP: send timeout on socket {}", socket_id);
             return if ack_offset > 0 { ack_offset as u32 } else { u32::MAX };
         }
 

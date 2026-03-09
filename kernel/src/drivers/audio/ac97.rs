@@ -14,7 +14,7 @@ use crate::arch::x86::port;
 use crate::memory::physical;
 use crate::sync::spinlock::Spinlock;
 use crate::drivers::pci::PciDevice;
-use crate::serial_println;
+use crate::serial_verbose_println;
 
 // ---------------------------------------------------------------------------
 // AC'97 Mixer registers (offsets from NAMBAR / BAR0)
@@ -102,14 +102,14 @@ pub fn init_from_pci(pci: &PciDevice) {
 
     // AC'97 uses I/O ports (bit 0 set in BAR)
     if bar0 & 1 == 0 || bar1 & 1 == 0 {
-        serial_println!("AC97: BARs are not I/O ports (BAR0={:#x}, BAR1={:#x})", bar0, bar1);
+        serial_verbose_println!("AC97: BARs are not I/O ports (BAR0={:#x}, BAR1={:#x})", bar0, bar1);
         return;
     }
 
     let nambar = (bar0 & 0xFFFC) as u16;
     let nabmbar = (bar1 & 0xFFFC) as u16;
 
-    serial_println!("AC97: NAMBAR={:#06x}, NABMBAR={:#06x}, IRQ={}", nambar, nabmbar, pci.interrupt_line);
+    serial_verbose_println!("AC97: NAMBAR={:#06x}, NABMBAR={:#06x}, IRQ={}", nambar, nabmbar, pci.interrupt_line);
 
     // Enable PCI bus mastering
     crate::drivers::pci::enable_bus_master(pci);
@@ -126,7 +126,7 @@ pub fn init_from_pci(pci: &PciDevice) {
     // Check Global Status for codec ready
     let gsts = unsafe { port::inl(nabmbar + NABM_GLB_STS) };
     if gsts & 0x100 == 0 {
-        serial_println!("AC97: Primary codec not ready (GSTS={:#010x})", gsts);
+        serial_verbose_println!("AC97: Primary codec not ready (GSTS={:#010x})", gsts);
         // Try warm reset
         unsafe {
             port::outl(nabmbar + NABM_GLB_CTRL, GC_COLD_RESET | GC_WARM_RESET);
@@ -155,16 +155,16 @@ pub fn init_from_pci(pci: &PciDevice) {
         unsafe { port::outw(nambar + NAM_EXT_AUDIO_CTRL, ext_ctrl | 0x0001); }
         // Set sample rate to 48000 Hz
         unsafe { port::outw(nambar + NAM_PCM_FRONT_DAC_RATE, 48000); }
-        serial_println!("AC97: VRA enabled, sample rate = 48000 Hz");
+        serial_verbose_println!("AC97: VRA enabled, sample rate = 48000 Hz");
     } else {
-        serial_println!("AC97: No VRA, using fixed 48000 Hz");
+        serial_verbose_println!("AC97: No VRA, using fixed 48000 Hz");
     }
 
     // Allocate BDL (1 frame = 4096 bytes, we only need 256 bytes for 32 entries)
     let bdl_frame = match physical::alloc_frame() {
         Some(f) => f,
         None => {
-            serial_println!("AC97: Failed to allocate BDL frame");
+            serial_verbose_println!("AC97: Failed to allocate BDL frame");
             return;
         }
     };
@@ -181,7 +181,7 @@ pub fn init_from_pci(pci: &PciDevice) {
         let buf_frame = match physical::alloc_frame() {
             Some(f) => f,
             None => {
-                serial_println!("AC97: Failed to allocate audio buffer {}", i);
+                serial_verbose_println!("AC97: Failed to allocate audio buffer {}", i);
                 return;
             }
         };
@@ -247,7 +247,7 @@ pub fn init_from_pci(pci: &PciDevice) {
         crate::arch::x86::pic::unmask(irq);
     }
 
-    serial_println!("[OK] AC'97 initialized (48 kHz, 16-bit stereo, IRQ {})", irq);
+    serial_verbose_println!("[OK] AC'97 initialized (48 kHz, 16-bit stereo, IRQ {})", irq);
 
     // Register with the generic audio subsystem
     super::register(Box::new(Ac97Driver));

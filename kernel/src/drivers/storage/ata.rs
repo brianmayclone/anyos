@@ -107,7 +107,7 @@ pub fn init() {
         // into the void and then hanging in wait_bsy().
         let probe = inb(ATA_STATUS);
         if probe == 0xFF {
-            crate::serial_println!("  ATA: No IDE controller (floating bus)");
+            crate::serial_verbose_println!("  ATA: No IDE controller (floating bus)");
             return;
         }
 
@@ -128,23 +128,23 @@ pub fn init() {
         // Check if drive exists
         let status = inb(ATA_STATUS);
         if status == 0 || status == 0xFF {
-            crate::serial_println!("  ATA: No primary master drive detected");
+            crate::serial_verbose_println!("  ATA: No primary master drive detected");
             return;
         }
 
         if !wait_bsy() {
-            crate::serial_println!("  ATA: IDENTIFY timed out (BSY stuck)");
+            crate::serial_verbose_println!("  ATA: IDENTIFY timed out (BSY stuck)");
             return;
         }
 
         // Check for non-ATA drives
         if inb(ATA_LBA_MID) != 0 || inb(ATA_LBA_HI) != 0 {
-            crate::serial_println!("  ATA: Non-ATA device on primary master");
+            crate::serial_verbose_println!("  ATA: Non-ATA device on primary master");
             return;
         }
 
         if !wait_drq() {
-            crate::serial_println!("  ATA: IDENTIFY failed (no DRQ)");
+            crate::serial_verbose_println!("  ATA: IDENTIFY failed (no DRQ)");
             return;
         }
 
@@ -172,7 +172,7 @@ pub fn init() {
         };
 
         let model_str = core::str::from_utf8(&model).unwrap_or("???").trim();
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "[OK] ATA drive: '{}', {} sectors ({} MiB)",
             model_str,
             sectors,

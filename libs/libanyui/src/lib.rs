@@ -190,6 +190,10 @@ pub(crate) struct AnyuiState {
     // ── Tooltip ──────────────────────────────────────────────────────
     /// Framework-managed tooltip control ID (created lazily on first use).
     pub active_tooltip: Option<ControlId>,
+    /// Control ID waiting for tooltip display (pending hover delay).
+    pub tooltip_pending_id: Option<ControlId>,
+    /// Timestamp (ms) when hover started on the pending tooltip control.
+    pub tooltip_hover_start: u32,
 
     // ── Context menu popup ──────────────────────────────────────────
     /// Active popup window for context menus (at most one at a time).
@@ -319,6 +323,8 @@ pub extern "C" fn anyui_init() -> u32 {
             click_count: 0,
             pressed_button: 0,
             active_tooltip: None,
+            tooltip_pending_id: None,
+            tooltip_hover_start: 0,
             popup: None,
             timers: timer::TimerState::new(),
             needs_repaint: true,
@@ -1206,6 +1212,30 @@ pub extern "C" fn anyui_canvas_copy_to(id: ControlId, dst: *mut u32, len: u32) -
         }
     }
     0
+}
+
+/// Draw text into a Canvas pixel buffer using the system font engine (libfont).
+///
+/// - `font_id`: 0 = system, 1 = bold, 2 = thin, 3 = italic, 4 = mono (Andale Mono)
+/// - `size`: font size in pixels
+#[no_mangle]
+pub extern "C" fn anyui_canvas_draw_text(
+    id: ControlId, x: i32, y: i32, color: u32,
+    font_id: u32, size: u16, text_ptr: *const u8, text_len: u32,
+) {
+    if text_ptr.is_null() || text_len == 0 { return; }
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cv) = as_canvas(ctrl) {
+            let w = cv.base.w;
+            let h = cv.base.h;
+            let ptr = cv.pixels.as_mut_ptr();
+            draw::ensure_libfont();
+            let text = unsafe { core::slice::from_raw_parts(text_ptr, text_len as usize) };
+            draw::draw_text_to_buf(ptr, w, h, x, y, color, font_id, size, text);
+            cv.base.mark_dirty();
+        }
+    }
 }
 
 // ── ImageView ────────────────────────────────────────────────────────

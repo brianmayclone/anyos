@@ -100,6 +100,13 @@ impl Canvas {
         (lib().canvas_copy_to)(self.ctrl.id, dst.as_mut_ptr(), dst.len() as u32) as usize
     }
 
+    /// Draw text into the canvas using the system font engine.
+    ///
+    /// `font_id`: 0 = system, 1 = bold, 2 = thin, 3 = italic, 4 = mono (Andale Mono).
+    pub fn draw_text(&self, x: i32, y: i32, color: u32, font_id: u32, size: u16, text: &str) {
+        (lib().canvas_draw_text)(self.ctrl.id, x, y, color, font_id, size, text.as_ptr(), text.len() as u32);
+    }
+
     /// Register callback for click events.
     pub fn on_click(&self, mut f: impl FnMut(&ClickEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| f(&ClickEvent { id }));

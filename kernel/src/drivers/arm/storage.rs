@@ -29,24 +29,24 @@ pub fn init_filesystem() {
     use crate::fs;
 
     if !super::blk::is_available() {
-        crate::serial_println!("  [ARM64] No VirtIO block device — skipping filesystem init");
+        crate::serial_verbose_println!("  [ARM64] No VirtIO block device — skipping filesystem init");
         return;
     }
 
     let capacity = super::blk::capacity();
-    crate::serial_println!("  [ARM64] Disk: {} sectors ({} MiB)",
+    crate::serial_verbose_println!("  [ARM64] Disk: {} sectors ({} MiB)",
         capacity, capacity * 512 / 1024 / 1024);
 
     // Scan partition table (MBR/GPT) from sector 0
     let mut mbr_buf = [0u8; 512];
     if !read_sectors(0, 1, &mut mbr_buf) {
-        crate::serial_println!("  [ARM64] Failed to read MBR — cannot mount filesystem");
+        crate::serial_verbose_println!("  [ARM64] Failed to read MBR — cannot mount filesystem");
         return;
     }
 
     // Check for MBR signature
     if mbr_buf[510] != 0x55 || mbr_buf[511] != 0xAA {
-        crate::serial_println!("  [ARM64] No MBR signature found — trying raw FAT at LBA 0");
+        crate::serial_verbose_println!("  [ARM64] No MBR signature found — trying raw FAT at LBA 0");
         // No partition table — try mounting entire disk as FAT
         fs::vfs::set_root_partition_lba(0);
         fs::vfs::init();
@@ -70,7 +70,7 @@ pub fn init_filesystem() {
             mbr_buf[base + 12], mbr_buf[base + 13],
             mbr_buf[base + 14], mbr_buf[base + 15],
         ]);
-        crate::serial_println!("  [ARM64] Partition {}: type={:#04x} LBA={} size={}",
+        crate::serial_verbose_println!("  [ARM64] Partition {}: type={:#04x} LBA={} size={}",
             i, part_type, start_lba, size_sectors);
 
         if part_type == 0xEE {
@@ -87,10 +87,10 @@ pub fn init_filesystem() {
     }
 
     if root_lba == 0 {
-        crate::serial_println!("  [ARM64] No partitions found — trying raw FAT at LBA 0");
+        crate::serial_verbose_println!("  [ARM64] No partitions found — trying raw FAT at LBA 0");
     }
 
-    crate::serial_println!("  [ARM64] Root partition LBA: {}", root_lba);
+    crate::serial_verbose_println!("  [ARM64] Root partition LBA: {}", root_lba);
     fs::vfs::set_root_partition_lba(root_lba);
 
     // Initialize VFS
@@ -100,9 +100,9 @@ pub fn init_filesystem() {
     fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
 
     if fs::vfs::has_root_fs() {
-        crate::serial_println!("  [ARM64] Root filesystem mounted successfully");
+        crate::serial_verbose_println!("  [ARM64] Root filesystem mounted successfully");
     } else {
-        crate::serial_println!("  [ARM64] Warning: root filesystem mount failed");
+        crate::serial_verbose_println!("  [ARM64] Warning: root filesystem mount failed");
     }
 
     // Mount devfs
@@ -114,13 +114,13 @@ fn parse_gpt_partitions() -> u32 {
     // Read GPT header at LBA 1
     let mut gpt_buf = [0u8; 512];
     if !read_sectors(1, 1, &mut gpt_buf) {
-        crate::serial_println!("  [ARM64] Failed to read GPT header");
+        crate::serial_verbose_println!("  [ARM64] Failed to read GPT header");
         return 0;
     }
 
     // Verify GPT signature "EFI PART"
     if &gpt_buf[0..8] != b"EFI PART" {
-        crate::serial_println!("  [ARM64] Invalid GPT signature");
+        crate::serial_verbose_println!("  [ARM64] Invalid GPT signature");
         return 0;
     }
 
@@ -135,7 +135,7 @@ fn parse_gpt_partitions() -> u32 {
         gpt_buf[84], gpt_buf[85], gpt_buf[86], gpt_buf[87],
     ]);
 
-    crate::serial_println!("  [ARM64] GPT: {} entries at LBA {}, entry_size={}",
+    crate::serial_verbose_println!("  [ARM64] GPT: {} entries at LBA {}, entry_size={}",
         num_entries, entries_lba, entry_size);
 
     // Read partition entries (typically at LBA 2, 128 entries × 128 bytes = 32 sectors)
@@ -146,7 +146,7 @@ fn parse_gpt_partitions() -> u32 {
     let mut entry_buf = [0u8; 512 * 32]; // max 32 sectors
     let read_len = (sectors_needed as usize) * 512;
     if !read_sectors(entries_lba as u32, sectors_needed, &mut entry_buf[..read_len]) {
-        crate::serial_println!("  [ARM64] Failed to read GPT entries");
+        crate::serial_verbose_println!("  [ARM64] Failed to read GPT entries");
         return 0;
     }
 
@@ -175,7 +175,7 @@ fn parse_gpt_partitions() -> u32 {
             entry_buf[offset + 46], entry_buf[offset + 47],
         ]);
 
-        crate::serial_println!("  [ARM64] GPT partition {}: LBA {}-{} ({} MiB)",
+        crate::serial_verbose_println!("  [ARM64] GPT partition {}: LBA {}-{} ({} MiB)",
             i, first_lba, last_lba,
             (last_lba - first_lba + 1) * 512 / 1024 / 1024);
 

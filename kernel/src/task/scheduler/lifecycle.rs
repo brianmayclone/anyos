@@ -131,11 +131,11 @@ pub static mut BAD_RSP_SAVED: u64 = 0;
 pub extern "C" fn bad_rsp_recovery() -> ! {
     let cpu_id = crate::arch::hal::cpu_id();
     let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
-    crate::serial_println!("!RSP RECOVERY on CPU {} — killing TID={}, entering idle", cpu_id, tid);
+    crate::serial_verbose_println!("!RSP RECOVERY on CPU {} — killing TID={}, entering idle", cpu_id, tid);
 
     let bad_rsp = unsafe { BAD_RSP_SAVED };
     let tss_rsp0 = crate::arch::hal::get_kernel_stack_for_cpu(cpu_id);
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  bad_rsp={:#018x} TSS.RSP0={:#018x}", bad_rsp, tss_rsp0,
     );
 
@@ -148,7 +148,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
                 if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
                     if let Some(idx) = sched.find_idx(current_tid) {
                         if sched.threads[idx].critical {
-                            crate::serial_println!(
+                            crate::serial_verbose_println!(
                                 "  CRITICAL thread '{}' (TID={}) spared",
                                 sched.threads[idx].name_str(), current_tid,
                             );
@@ -218,7 +218,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
 pub fn fault_kill_and_idle(signal: u32) -> ! {
     let cpu_id = crate::arch::hal::cpu_id();
     let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
-    crate::serial_println!("  FALLBACK: manual kill TID={} signal={} on CPU {}", tid, signal, cpu_id);
+    crate::serial_verbose_println!("  FALLBACK: manual kill TID={} signal={} on CPU {}", tid, signal, cpu_id);
 
     let cpu = cpu_id as u32;
     if is_scheduler_locked_by_cpu(cpu) {
@@ -226,11 +226,11 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
     }
     if crate::memory::physical::is_allocator_locked_by_cpu(cpu) {
         unsafe { crate::memory::physical::force_unlock_allocator(); }
-        crate::serial_println!("  RECOVERED: force-released physical allocator lock");
+        crate::serial_verbose_println!("  RECOVERED: force-released physical allocator lock");
     }
     if crate::task::dll::is_dll_locked_by_cpu(cpu) {
         unsafe { crate::task::dll::force_unlock_dlls(); }
-        crate::serial_println!("  RECOVERED: force-released LOADED_DLLS lock");
+        crate::serial_verbose_println!("  RECOVERED: force-released LOADED_DLLS lock");
     }
 
     let mut idle_stack_top: u64 = 0;

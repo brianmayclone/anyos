@@ -171,16 +171,22 @@ int execvp(const char *file, char *const argv[]) {
     /* Try exact path first */
     if (execv(file, argv) == 0) return 0;  /* never reached on success */
 
-    /* If not absolute, try /bin/<file> */
+    /* If not absolute, search standard directories */
     if (file[0] != '/') {
-        char path[256];
-        int pos = 0;
-        const char *prefix = "/bin/";
-        while (*prefix) path[pos++] = *prefix++;
-        int i = 0;
-        while (file[i] && pos < 255) path[pos++] = file[i++];
-        path[pos] = '\0';
-        return execv(path, argv);
+        static const char *search_dirs[] = {
+            "/System/bin/", "/System/sbin/", "/bin/", "/sbin/", 0
+        };
+        for (int d = 0; search_dirs[d]; d++) {
+            char path[256];
+            int pos = 0;
+            const char *prefix = search_dirs[d];
+            while (*prefix) path[pos++] = *prefix++;
+            int i = 0;
+            while (file[i] && pos < 255) path[pos++] = file[i++];
+            path[pos] = '\0';
+            execv(path, argv);
+            /* execv only returns on error, try next dir */
+        }
     }
     errno = ENOENT;
     return -1;

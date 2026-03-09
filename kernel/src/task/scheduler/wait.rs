@@ -165,6 +165,9 @@ pub fn try_waitpid(tid: u32) -> u32 {
             target.exit_code = None;
             return code;
         }
+        if target.state == ThreadState::Stopped {
+            return u32::MAX - 2; // Stopped by signal
+        }
         // Mark that someone is polling for this thread's exit —
         // prevents auto-reap from discarding the exit code.
         if target.waiting_tid.is_none() {

@@ -274,6 +274,9 @@ pub const SYS_SET_HOSTNAME: u32 = 281;
 // Power management
 pub const SYS_SHUTDOWN: u32 = 282;
 
+// Kernel debug settings
+pub const SYS_SET_SERIAL_VERBOSE: u32 = 283;
+
 // Debug / trace (anyTrace)
 pub const SYS_DEBUG_ATTACH: u32         = 300;
 pub const SYS_DEBUG_DETACH: u32         = 301;
@@ -587,6 +590,9 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
 
         // Power management
         SYS_SHUTDOWN => handlers::sys_shutdown(arg1),
+
+        // Kernel debug settings
+        SYS_SET_SERIAL_VERBOSE => handlers::sys_set_serial_verbose(arg1),
 
         // Debug / trace (anyTrace)
         SYS_DEBUG_ATTACH => handlers::sys_debug_attach(arg1),

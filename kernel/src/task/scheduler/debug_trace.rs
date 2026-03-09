@@ -751,6 +751,7 @@ pub fn thread_info_ex(target_tid: u32, buf_ptr: u64, size: u32) -> u32 {
         ThreadState::Running => 1,
         ThreadState::Blocked => 2,
         ThreadState::Terminated => 3,
+        ThreadState::Stopped => 4,
     };
 
     // Helper to write u32 LE at offset

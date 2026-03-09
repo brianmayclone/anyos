@@ -136,9 +136,9 @@ pub fn init() {
     unsafe { outb(0x60, status | 0x02); } // Enable IRQ12
 
     if has_scroll {
-        crate::serial_println!("[OK] PS/2 mouse initialized (IntelliMouse, scroll wheel)");
+        crate::serial_verbose_println!("[OK] PS/2 mouse initialized (IntelliMouse, scroll wheel)");
     } else {
-        crate::serial_println!("[OK] PS/2 mouse initialized");
+        crate::serial_verbose_println!("[OK] PS/2 mouse initialized");
     }
 }
 
@@ -282,7 +282,7 @@ pub fn get_current_buttons() -> MouseButtons {
 pub fn inject_absolute(x: i32, y: i32, buttons: MouseButtons) {
     static LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
     if !LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
-        crate::serial_println!("[mouse] inject_absolute first event: x={} y={}", x, y);
+        crate::serial_verbose_println!("[mouse] inject_absolute first event: x={} y={}", x, y);
     }
 
     let mut state = MOUSE_STATE.lock();

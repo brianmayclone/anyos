@@ -105,7 +105,7 @@ fn copy_str_to_buf(src: &str, dst: &mut [u8]) {
 /// Initialize the user and group databases from `/System/users/passwd` and `/System/users/group`.
 /// Should be called after VFS is available.
 pub fn init() {
-    crate::serial_println!("  Initializing user database...");
+    crate::serial_verbose_println!("  Initializing user database...");
 
     // Parse passwd file
     if let Ok(data) = crate::fs::vfs::read_file_to_vec("/System/users/passwd") {
@@ -125,11 +125,11 @@ pub fn init() {
                     idx += 1;
                 }
             }
-            crate::serial_println!("    Loaded {} user(s)", idx);
+            crate::serial_verbose_println!("    Loaded {} user(s)", idx);
         }
     } else {
         // No passwd file — create default root user in memory
-        crate::serial_println!("    No passwd file found, creating default root user");
+        crate::serial_verbose_println!("    No passwd file found, creating default root user");
         let mut users = USERS.lock();
         let mut entry = UserEntry::empty();
         copy_str_to_buf("root", &mut entry.username);
@@ -160,10 +160,10 @@ pub fn init() {
                     idx += 1;
                 }
             }
-            crate::serial_println!("    Loaded {} group(s)", idx);
+            crate::serial_verbose_println!("    Loaded {} group(s)", idx);
         }
     } else {
-        crate::serial_println!("    No group file found, creating default root group");
+        crate::serial_verbose_println!("    No group file found, creating default root group");
         let mut groups = GROUPS.lock();
         let mut entry = GroupEntry::empty();
         copy_str_to_buf("root", &mut entry.name);
@@ -245,7 +245,7 @@ pub fn authenticate(username: &str, password: &str) -> Option<(u16, u16)> {
         // Compute MD5 of the provided password
         let computed = crate::crypto::md5::md5_hex(password.as_bytes());
         let computed_str = core::str::from_utf8(&computed).unwrap_or("");
-        crate::serial_println!("  AUTH: user='{}' pass='{}' computed='{}' stored='{}'", username, password, computed_str, stored_hash);
+        crate::serial_verbose_println!("  AUTH: user='{}' pass='{}' computed='{}' stored='{}'", username, password, computed_str, stored_hash);
         if stored_hash == computed_str {
             return Some((user.uid, user.gid));
         }

@@ -75,7 +75,7 @@ pub fn enable_pcid() {
         PCID_NOFLUSH_MASK = 1u64 << 63;
     }
     PCID_ACTIVE.store(true, Ordering::Release);
-    crate::serial_println!("[OK] PCID enabled (CR4.PCIDE=1) — TLB preserved across context switches");
+    crate::serial_verbose_println!("[OK] PCID enabled (CR4.PCIDE=1) — TLB preserved across context switches");
 }
 
 /// Page table entry flag: page is present in physical memory.
@@ -342,7 +342,7 @@ pub fn init(boot_info: &BootInfo) {
             addr += FRAME_SIZE as u64;
         }
 
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "Framebuffer mapped: {:#010x}-{:#010x} ({} pages, WC)",
             fb_start, fb_end, (fb_end - fb_start) / FRAME_SIZE as u64
         );
@@ -366,7 +366,7 @@ pub fn init(boot_info: &BootInfo) {
         );
     }
 
-    crate::serial_println!("4-level paging enabled (identity + higher-half at {:#018x})", KERNEL_VIRT_BASE);
+    crate::serial_verbose_println!("4-level paging enabled (identity + higher-half at {:#018x})", KERNEL_VIRT_BASE);
 
     // Enable PCID after paging is fully set up (CR3 already has PCID 0 = page-aligned)
     enable_pcid();

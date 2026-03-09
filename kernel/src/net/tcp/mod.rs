@@ -58,7 +58,7 @@ pub fn init() {
         table.push(None);
     }
     *conns = Some(table);
-    crate::serial_println!("[OK] TCP initialized ({} slots, OOO buffering, fast retransmit)", MAX_CONNECTIONS);
+    crate::serial_verbose_println!("[OK] TCP initialized ({} slots, OOO buffering, fast retransmit)", MAX_CONNECTIONS);
 }
 
 // ── Statistics ───────────────────────────────────────────────────────

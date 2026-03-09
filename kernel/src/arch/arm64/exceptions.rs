@@ -37,7 +37,7 @@ pub fn init() {
             options(nostack),
         );
     }
-    crate::serial_println!("[OK] VBAR_EL1 set (exception vector table installed)");
+    crate::serial_verbose_println!("[OK] VBAR_EL1 set (exception vector table installed)");
 }
 
 /// Register an IRQ handler for a specific interrupt ID.
@@ -59,7 +59,7 @@ pub extern "C" fn arm64_irq_handler() {
     let intid = super::gic::acknowledge();
     let count = IRQ_DIAG_COUNT.fetch_add(1, Ordering::Relaxed);
     if count < 3 {
-        crate::serial_println!("  [IRQ] intid={} count={}", intid, count);
+        crate::serial_verbose_println!("  [IRQ] intid={} count={}", intid, count);
     }
     if intid < 1020 { // Not spurious
         // EOI FIRST: the handler may context-switch (schedule_tick), which would
@@ -70,10 +70,10 @@ pub extern "C" fn arm64_irq_handler() {
         if let Some(h) = handler {
             h();
         } else if count < 3 {
-            crate::serial_println!("  [IRQ] no handler for intid={}", intid);
+            crate::serial_verbose_println!("  [IRQ] no handler for intid={}", intid);
         }
     } else if count < 3 {
-        crate::serial_println!("  [IRQ] spurious intid={}", intid);
+        crate::serial_verbose_println!("  [IRQ] spurious intid={}", intid);
     }
 }
 
@@ -93,7 +93,7 @@ pub extern "C" fn arm64_sync_handler(esr: u64, far: u64, elr: u64) {
         }
         EC_DATA_ABORT_LOWER | EC_DATA_ABORT_SAME => {
             FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "DATA ABORT: FAR={:#018x} ELR={:#018x} ESR={:#018x} ISS={:#010x}",
                 far, elr, esr, iss,
             );
@@ -102,7 +102,7 @@ pub extern "C" fn arm64_sync_handler(esr: u64, far: u64, elr: u64) {
         }
         EC_INST_ABORT_LOWER | EC_INST_ABORT_SAME => {
             FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "INSTRUCTION ABORT: FAR={:#018x} ELR={:#018x} ESR={:#018x}",
                 far, elr, esr,
             );
@@ -113,15 +113,15 @@ pub extern "C" fn arm64_sync_handler(esr: u64, far: u64, elr: u64) {
             crate::task::scheduler::handle_device_not_available();
         }
         EC_BREAKPOINT_LOWER => {
-            crate::serial_println!("BREAKPOINT at ELR={:#018x}", elr);
+            crate::serial_verbose_println!("BREAKPOINT at ELR={:#018x}", elr);
             // TODO: debug trap handling
         }
         EC_SS_LOWER => {
-            crate::serial_println!("SINGLE STEP at ELR={:#018x}", elr);
+            crate::serial_verbose_println!("SINGLE STEP at ELR={:#018x}", elr);
             // TODO: single-step handling for debugger
         }
         _ => {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "UNHANDLED EXCEPTION: EC={:#04x} ISS={:#010x} FAR={:#018x} ELR={:#018x}",
                 ec, iss, far, elr,
             );
@@ -135,7 +135,7 @@ fn handle_fault(ec: u32, far: u64, elr: u64) {
     // If from EL0 (user mode), kill the thread
     let is_user = ec == EC_DATA_ABORT_LOWER || ec == EC_INST_ABORT_LOWER;
     if is_user {
-        crate::serial_println!("  Killing user thread due to fault");
+        crate::serial_verbose_println!("  Killing user thread due to fault");
         if !crate::task::scheduler::try_exit_current(139) {
             crate::task::scheduler::fault_kill_and_idle(139);
         }

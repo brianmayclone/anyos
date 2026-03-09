@@ -255,12 +255,12 @@ pub fn init() {
             if let Some((total_lba, block_size)) = read_capacity(&drive) {
                 drive.capacity_lba = total_lba;
                 let size_mb = (total_lba as u64 * block_size as u64) / (1024 * 1024);
-                crate::serial_println!(
+                crate::serial_verbose_println!(
                     "[OK] ATAPI {}: '{}', {} blocks x {} bytes ({} MiB)",
                     name, model_str, total_lba, block_size, size_mb
                 );
             } else {
-                crate::serial_println!(
+                crate::serial_verbose_println!(
                     "[OK] ATAPI {}: '{}' (no media or capacity unavailable)",
                     name, model_str
                 );

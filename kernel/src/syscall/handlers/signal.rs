@@ -120,10 +120,16 @@ pub fn deliver_pending_signal_32(regs: &mut super::super::SyscallRegs, syscall_r
         // Default action
         if SignalState::default_is_terminate(sig) {
             // Terminate the process with the signal number as exit code
-            crate::serial_println!("Signal {}: default terminate for T{}",
+            crate::serial_verbose_println!("Signal {}: default terminate for T{}",
                 sig, crate::task::scheduler::current_tid());
             // Use sys_exit to properly clean up
             super::sys_exit(128 + sig);
+            return;
+        }
+        if SignalState::default_is_stop(sig) {
+            // Stop signals are handled in send_signal_to_thread; if we get here,
+            // just stop the current thread
+            crate::task::scheduler::stop_current_thread(sig);
             return;
         }
         // Default ignore (SIGCHLD, SIGCONT) — do nothing
@@ -205,9 +211,13 @@ pub fn deliver_pending_signal_default() {
 
     if handler == SIG_DFL {
         if SignalState::default_is_terminate(sig) {
-            crate::serial_println!("Signal {}: default terminate for T{} (64-bit)",
+            crate::serial_verbose_println!("Signal {}: default terminate for T{} (64-bit)",
                 sig, crate::task::scheduler::current_tid());
             super::sys_exit(128 + sig);
+        }
+        if SignalState::default_is_stop(sig) {
+            crate::task::scheduler::stop_current_thread(sig);
+            return;
         }
         // Default ignore — do nothing
         return;
@@ -220,7 +230,7 @@ pub fn deliver_pending_signal_default() {
     // User handler for 64-bit path — not implemented yet.
     // For now, treat as SIG_DFL.
     if SignalState::default_is_terminate(sig) {
-        crate::serial_println!("Signal {}: no 64-bit trampoline, terminate T{}",
+        crate::serial_verbose_println!("Signal {}: no 64-bit trampoline, terminate T{}",
             sig, crate::task::scheduler::current_tid());
         super::sys_exit(128 + sig);
     }

@@ -91,7 +91,7 @@ const KERNEL_PC_MAX: u64 = 0xFFFF_0000_C000_0000;
 #[inline]
 fn clamp_priority(priority: u8, context: &str) -> u8 {
     if priority > MAX_PRIORITY {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  WARN: priority {} > {} clamped to {} ({})",
             priority, MAX_PRIORITY, MAX_PRIORITY, context
         );
@@ -650,6 +650,12 @@ impl Scheduler {
                 {
                     return Some(tid);
                 }
+                // Stopped/Terminated threads should not be re-enqueued
+                if self.threads[idx].state == ThreadState::Stopped
+                    || self.threads[idx].state == ThreadState::Terminated
+                {
+                    continue;
+                }
                 // Not eligible yet — re-enqueue and try the next candidate
                 let pri = self.threads[idx].priority;
                 self.per_cpu[queue_cpu].run_queue.enqueue(tid, pri);
@@ -688,7 +694,7 @@ pub fn init() {
             s.threads[idx].state = ThreadState::Running;
         }
     }
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "[OK] Mach scheduler initialized ({} priority levels, {} CPUs max, lazy FPU)",
         NUM_PRIORITIES, MAX_CPUS,
     );
@@ -883,14 +889,14 @@ fn schedule_inner(from_timer: bool) {
                         && !t.is_idle
                     {
                         if t.context.canary != CANARY_MAGIC {
-                            crate::serial_println!(
+                            crate::serial_verbose_println!(
                                 "!CANARY DEAD: TID={} '{}' canary={:#018x} ctx={:#x}",
                                 t.tid, t.name_str(),
                                 t.context.canary, &t.context as *const _ as u64,
                             );
                             break; // Only report first — keep critical section short
                         } else if t.context.checksum != t.context.compute_checksum() {
-                            crate::serial_println!(
+                            crate::serial_verbose_println!(
                                 "!CHECKSUM FAIL: TID={} '{}' chk={:#018x} expect={:#018x}",
                                 t.tid, t.name_str(),
                                 t.context.checksum, t.context.compute_checksum(),
@@ -989,7 +995,7 @@ fn schedule_inner(from_timer: bool) {
         let idle_idx = match sched.find_idx(idle_tid) {
             Some(i) => i,
             None => {
-                crate::serial_println!("FATAL: idle thread TID {} missing on CPU {}", idle_tid, cpu_id);
+                crate::serial_verbose_println!("FATAL: idle thread TID {} missing on CPU {}", idle_tid, cpu_id);
                 drop(guard);
                 PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
                 return;
@@ -1047,7 +1053,7 @@ fn schedule_inner(from_timer: bool) {
                 // Validate candidate before committing
                 let kstack_valid = kstack_top >= KERNEL_ADDR_MIN;
                 if !kstack_valid {
-                    crate::serial_println!(
+                    crate::serial_verbose_println!(
                         "BUG: thread '{}' (TID={}) invalid kstack_top={:#x} — killing",
                         sched.threads[next_idx].name_str(), next_tid, kstack_top,
                     );
@@ -1156,7 +1162,7 @@ fn schedule_inner(from_timer: bool) {
                     }
                 } else {
                     // Current thread reaped — MUST context_switch to idle.
-                    crate::serial_println!(
+                    crate::serial_verbose_println!(
                         "!REAPED-CURRENT: CPU{} tid={} → idle, switching via scratch ctx",
                         cpu_id, current_tid,
                     );
@@ -1282,7 +1288,7 @@ fn schedule_inner(from_timer: bool) {
     if let Some((reason, next_tid, ctx_ptr)) = corrupt_diag {
         unsafe {
             let ctx = &*ctx_ptr;
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "!{}: TID={} ctx={:#x} canary={:#018x} chk={:#018x} expect={:#018x}",
                 reason, next_tid, ctx_ptr as u64,
                 ctx.canary, ctx.checksum, ctx.compute_checksum(),
@@ -1296,18 +1302,18 @@ fn schedule_inner(from_timer: bool) {
                     "rsp", "rip", "rfl", "cr3", "sav", "can", "chk",
                 ];
                 for i in 0..22 {
-                    crate::serial_println!("  [{}] {} = {:#018x}", i * 8, names[i], *p.add(i));
+                    crate::serial_verbose_println!("  [{}] {} = {:#018x}", i * 8, names[i], *p.add(i));
                 }
             }
             #[cfg(target_arch = "aarch64")]
             {
                 // Dump x0-x30 + sp + pc + pstate + ttbr0 + tpidr + sav + can + chk
                 for i in 0..31 {
-                    crate::serial_println!("  [{}] x{} = {:#018x}", i * 8, i, *p.add(i));
+                    crate::serial_verbose_println!("  [{}] x{} = {:#018x}", i * 8, i, *p.add(i));
                 }
                 let names = ["sp ", "pc ", "pst", "tt0", "tpi", "sav", "can", "chk"];
                 for i in 0..8 {
-                    crate::serial_println!("  [{}] {} = {:#018x}", (31 + i) * 8, names[i], *p.add(31 + i));
+                    crate::serial_verbose_println!("  [{}] {} = {:#018x}", (31 + i) * 8, names[i], *p.add(31 + i));
                 }
             }
         }
@@ -1354,7 +1360,7 @@ fn schedule_inner(from_timer: bool) {
             let next_lr = unsafe { (*new_ctx).x[30] };
             let next_ttbr0 = unsafe { (*new_ctx).get_page_table() };
             let next_save = unsafe { (*new_ctx).save_complete };
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "  [SCHED] ctx_switch: from T{} -> T{} pc={:#x} lr={:#x} sp={:#x} ttbr0={:#x} save={}",
                 outgoing_tid, _next_tid, next_pc, next_lr, next_sp, next_ttbr0, next_save,
             );
@@ -1447,6 +1453,6 @@ pub fn register_ap_idle(cpu_id: usize) {
     } else {
         crate::debug_println!("  [Sched] register_ap_idle: cpu={} ERROR: scheduler not initialized!", cpu_id);
     }
-    crate::serial_println!("  SMP: CPU{} idle thread registered", cpu_id);
+    crate::serial_verbose_println!("  SMP: CPU{} idle thread registered", cpu_id);
     crate::debug_println!("  [Sched] register_ap_idle: cpu={} done, releasing lock", cpu_id);
 }

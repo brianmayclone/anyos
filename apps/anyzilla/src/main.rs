@@ -126,6 +126,10 @@ struct Prefs {
     win_y: i32,
     win_w: u32,
     win_h: u32,
+    last_host: String,
+    last_port: u16,
+    last_user: String,
+    last_pass: String,
 }
 
 fn prefs_path() -> String {
@@ -137,7 +141,8 @@ fn load_prefs() -> Prefs {
     let path = prefs_path();
     let fd = fs::open(&path, 0);
     if fd == u32::MAX {
-        return Prefs { win_x: -1, win_y: -1, win_w: 1100, win_h: 680 };
+        return Prefs { win_x: -1, win_y: -1, win_w: 1100, win_h: 680,
+            last_host: String::new(), last_port: 21, last_user: String::new(), last_pass: String::new() };
     }
     let mut data = Vec::new();
     let mut buf = [0u8; 2048];
@@ -150,14 +155,23 @@ fn load_prefs() -> Prefs {
     let text = core::str::from_utf8(&data).unwrap_or("");
     let val = match Value::parse(text.trim()) {
         Ok(v) => v,
-        Err(_) => return Prefs { win_x: -1, win_y: -1, win_w: 1100, win_h: 680 },
+        Err(_) => return Prefs { win_x: -1, win_y: -1, win_w: 1100, win_h: 680,
+            last_host: String::new(), last_port: 21, last_user: String::new(), last_pass: String::new() },
     };
-    Prefs {
+    let mut p = Prefs {
         win_x: val["win_x"].as_i64().unwrap_or(-1) as i32,
         win_y: val["win_y"].as_i64().unwrap_or(-1) as i32,
         win_w: val["win_w"].as_i64().unwrap_or(1100) as u32,
         win_h: val["win_h"].as_i64().unwrap_or(680) as u32,
-    }
+        last_host: val["last_host"].as_str().unwrap_or("").to_string(),
+        last_port: val["last_port"].as_i64().unwrap_or(21) as u16,
+        last_user: val["last_user"].as_str().unwrap_or("").to_string(),
+        last_pass: val["last_pass"].as_str().unwrap_or("").to_string(),
+    };
+    // Guard against 0×0 window (can happen if prefs were saved during teardown)
+    if p.win_w < 200 { p.win_w = 1100; }
+    if p.win_h < 100 { p.win_h = 680; }
+    p
 }
 
 fn save_prefs(p: &Prefs) {
@@ -166,6 +180,12 @@ fn save_prefs(p: &Prefs) {
     root.set("win_y", (p.win_y as i64).into());
     root.set("win_w", (p.win_w as i64).into());
     root.set("win_h", (p.win_h as i64).into());
+    if !p.last_host.is_empty() {
+        root.set("last_host", Value::from(p.last_host.as_str()));
+        root.set("last_port", (p.last_port as i64).into());
+        root.set("last_user", Value::from(p.last_user.as_str()));
+        root.set("last_pass", Value::from(p.last_pass.as_str()));
+    }
     let json = root.to_json_string_pretty();
     let _ = fs::write_bytes(&prefs_path(), json.as_bytes());
 }
@@ -276,13 +296,10 @@ impl FtpClient {
         }
         let data_sock = net::tcp_connect(&ip, port, CONNECT_TIMEOUT);
         if data_sock == u32::MAX {
-            anyos_std::println!("[anyzilla] LIST: data connect FAILED");
             return Vec::new();
         }
         let resp = self.read_response();
-        anyos_std::println!("[anyzilla] LIST ctrl resp: '{}'", resp.trim());
         if !resp.starts_with("150") && !resp.starts_with("125") {
-            anyos_std::println!("[anyzilla] LIST: unexpected resp, aborting");
             net::tcp_close(data_sock);
             return Vec::new();
         }
@@ -290,7 +307,6 @@ impl FtpClient {
         let mut buf = [0u8; RECV_BUF];
         loop {
             let n = net::tcp_recv(data_sock, &mut buf);
-            anyos_std::println!("[anyzilla] LIST data recv: n={}", n);
             if n == 0 || n == u32::MAX { break; }
             raw.extend_from_slice(&buf[..n as usize]);
         }
@@ -298,7 +314,6 @@ impl FtpClient {
         let _ = self.read_response();
 
         let text = String::from_utf8_lossy(&raw).into_owned();
-        anyos_std::println!("[anyzilla] LIST raw {} bytes: '{}'", raw.len(), text);
         let mut entries = Vec::new();
         entries.push(FileEntry { name: "..".into(), size: 0, is_dir: true, modified: "".into() });
         for line in text.lines() {
@@ -308,7 +323,6 @@ impl FtpClient {
                 }
             }
         }
-        anyos_std::println!("[anyzilla] LIST parsed {} entries", entries.len());
         entries
     }
 
@@ -775,11 +789,17 @@ fn list_local_dir(path: &str) -> Vec<FileEntry> {
         let size = u32::from_le_bytes([buf[base + 4], buf[base + 5], buf[base + 6], buf[base + 7]]) as u64;
         if name_len == 0 || name_len > 56 { continue; }
         let name_bytes = &buf[base + 8..base + 8 + name_len];
-        let name = match core::str::from_utf8(name_bytes) {
+        // Trim trailing null bytes
+        let trimmed = match name_bytes.iter().position(|&b| b == 0) {
+            Some(pos) => &name_bytes[..pos],
+            None => name_bytes,
+        };
+        if trimmed.is_empty() { continue; }
+        let name = match core::str::from_utf8(trimmed) {
             Ok(s) => s.to_string(),
             Err(_) => continue,
         };
-        if name == "." { continue; }
+        if name == "." || name == ".." { continue; }
         // Filter hidden files (starting with .)
         if !show_hidden && name.starts_with('.') { continue; }
         let is_dir = entry_type == 1;
@@ -814,12 +834,12 @@ fn join_path(base: &str, name: &str) -> String {
 fn get_home_dir() -> String {
     let mut buf = [0u8; 256];
     let len = env::get("HOME", &mut buf);
-    if len > 0 {
+    if len > 0 && (len as usize) <= buf.len() {
         if let Ok(s) = core::str::from_utf8(&buf[..len as usize]) {
             return s.trim().to_string();
         }
     }
-    "/home/user".to_string()
+    "/".to_string()
 }
 
 fn get_field_text(field: &anyui::TextField) -> String {
@@ -852,6 +872,7 @@ const CMD_MKDIR: u32     = 6;
 const CMD_DELETE: u32    = 7;
 const CMD_RENAME: u32    = 8;
 const CMD_DISCONNECT: u32 = 9;
+const CMD_EXIT: u32      = 10;
 
 // Result codes
 const RES_NONE: u32    = 0;
@@ -893,9 +914,14 @@ fn read_cstr(buf: &[u8]) -> &str {
 // ─── Worker Thread Entry ──────────────────────────────────────────────────────
 
 fn worker_entry() {
-    // Each call to this function handles exactly one command, then exits.
-    // A new thread is spawned for each command.
-    let cmd = WORKER_CMD.load(Ordering::Acquire);
+    // Persistent worker thread: loops waiting for commands.
+    // This thread owns the FTP control socket — killing it would RST the connection.
+    loop {
+        let cmd = WORKER_CMD.load(Ordering::Acquire);
+        if cmd == CMD_IDLE {
+            anyos_std::process::sleep(10);
+            continue;
+        }
 
     match cmd {
         CMD_CONNECT => {
@@ -908,27 +934,24 @@ fn worker_entry() {
             if net::dns(&host, &mut ip) != 0 {
                 unsafe { write_result_str(&format!("DNS-Fehler: {}", host)); }
                 WORKER_RESULT.store(RES_ERROR, Ordering::Release);
-                WORKER_CMD.store(CMD_IDLE, Ordering::Release);
-                WORKER_BUSY.store(false, Ordering::Release);
-                return;
-            }
-
-            match FtpClient::connect(&ip, port) {
-                None => {
-                    unsafe { write_result_str(&format!("Verbindungsfehler: {}:{}", host, port)); }
-                    WORKER_RESULT.store(RES_ERROR, Ordering::Release);
-                }
-                Some(mut ftp) => {
-                    if !ftp.login(&user, &pass) {
-                        unsafe { write_result_str("Login fehlgeschlagen"); }
-                        ftp.disconnect();
+            } else {
+                match FtpClient::connect(&ip, port) {
+                    None => {
+                        unsafe { write_result_str(&format!("Verbindungsfehler: {}:{}", host, port)); }
                         WORKER_RESULT.store(RES_ERROR, Ordering::Release);
-                    } else {
-                        // Store the connected FTP client
-                        unsafe { FTP_CLIENT = Some(ftp); }
-                        // Get initial directory listing
-                        do_list_in_worker();
-                        WORKER_RESULT.store(RES_OK, Ordering::Release);
+                    }
+                    Some(mut ftp) => {
+                        if !ftp.login(&user, &pass) {
+                            unsafe { write_result_str("Login fehlgeschlagen"); }
+                            ftp.disconnect();
+                            WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+                        } else {
+                            // Store the connected FTP client
+                            unsafe { FTP_CLIENT = Some(ftp); }
+                            // Get initial directory listing
+                            do_list_in_worker();
+                            WORKER_RESULT.store(RES_OK, Ordering::Release);
+                        }
                     }
                 }
             }
@@ -959,6 +982,7 @@ fn worker_entry() {
                 let bytes = ftp.download(&remote_name, &local_path);
                 if bytes > 0 {
                     unsafe { write_result_str(&format!("OK Download: {} ({} Bytes)", remote_name, bytes)); }
+                    do_list_in_worker();
                     WORKER_RESULT.store(RES_OK, Ordering::Release);
                 } else {
                     unsafe { write_result_str(&format!("FEHLER Download: {}", remote_name)); }
@@ -974,6 +998,7 @@ fn worker_entry() {
                 let bytes = ftp.upload(&local_path, &remote_name);
                 if bytes > 0 {
                     unsafe { write_result_str(&format!("OK Upload: {} ({} Bytes)", remote_name, bytes)); }
+                    do_list_in_worker();
                     WORKER_RESULT.store(RES_OK, Ordering::Release);
                 } else {
                     unsafe { write_result_str(&format!("FEHLER Upload: {}", remote_name)); }
@@ -1037,14 +1062,21 @@ fn worker_entry() {
             WORKER_RESULT.store(RES_OK, Ordering::Release);
         }
 
+        CMD_EXIT => {
+            if let Some(mut ftp) = unsafe { FTP_CLIENT.take() } {
+                ftp.disconnect();
+            }
+            WORKER_CMD.store(CMD_IDLE, Ordering::Release);
+            WORKER_BUSY.store(false, Ordering::Release);
+            return; // exit worker thread
+        }
+
         _ => {}
     }
 
     WORKER_CMD.store(CMD_IDLE, Ordering::Release);
     WORKER_BUSY.store(false, Ordering::Release);
-    // Thread has no return address on the stack (mmap zeroes it), so returning
-    // would jump to RIP=0x0.  Kill this thread cleanly instead.
-    anyos_std::process::kill(anyos_std::process::getpid());
+    } // end loop
 }
 
 fn do_list_in_worker() {
@@ -1104,13 +1136,32 @@ fn parse_file_list(raw: &[u8], len: usize) -> Vec<FileEntry> {
     entries
 }
 
+static WORKER_SPAWNED: AtomicBool = AtomicBool::new(false);
+static WORKER_TID: AtomicU32 = AtomicU32::new(0);
+
 fn spawn_worker() {
     WORKER_BUSY.store(true, Ordering::Release);
     WORKER_RESULT.store(RES_NONE, Ordering::Release);
-    if let Ok(handle) = anyos_std::process::Thread::spawn_with_stack(worker_entry, 64 * 1024, "ftp-worker") {
-        core::mem::forget(handle);
-    } else {
-        WORKER_BUSY.store(false, Ordering::Release);
+    // Only spawn the worker thread once; it loops forever waiting for commands.
+    if !WORKER_SPAWNED.load(Ordering::Relaxed) {
+        if let Ok(handle) = anyos_std::process::Thread::spawn_with_stack(worker_entry, 64 * 1024, "ftp-worker") {
+            WORKER_TID.store(handle.tid(), Ordering::Release);
+            core::mem::forget(handle);
+            WORKER_SPAWNED.store(true, Ordering::Release);
+        } else {
+            WORKER_BUSY.store(false, Ordering::Release);
+        }
+    }
+    // If already spawned, the worker thread will pick up CMD from WORKER_CMD.
+}
+
+/// Force-kill the worker thread so the process can exit cleanly.
+fn kill_worker() {
+    let tid = WORKER_TID.load(Ordering::Relaxed);
+    if tid != 0 {
+        anyos_std::process::kill(tid);
+        WORKER_SPAWNED.store(false, Ordering::Release);
+        WORKER_TID.store(0, Ordering::Release);
     }
 }
 
@@ -1445,6 +1496,17 @@ fn do_connect(host: &str, port: u16, user: &str, pass: &str) {
     a.last_user = user.to_string();
     a.last_pass = pass.to_string();
     a.reconnect_attempts = 0;
+
+    // Prefs sofort speichern (robust gegen Absturz/Kill)
+    let (w, h) = a.win.get_size();
+    let (x, y) = a.win.get_position();
+    save_prefs(&Prefs {
+        win_x: x, win_y: y, win_w: w, win_h: h,
+        last_host: a.last_host.clone(),
+        last_port: a.last_port,
+        last_user: a.last_user.clone(),
+        last_pass: a.last_pass.clone(),
+    });
 
     log_line(&format!("Verbinde mit {}:{}...", host, port));
     WORKER_CMD.store(CMD_CONNECT, Ordering::Release);
@@ -2205,6 +2267,7 @@ fn main() {
     qc_host.set_size(200, 24);
     qc_host.set_position(48, 5);
     qc_host.set_placeholder("ftp.example.com");
+    if !prefs.last_host.is_empty() { qc_host.set_text(&prefs.last_host); }
     qc_bar.add(&qc_host);
 
     let qc_lbl_port = anyui::Label::new("Port:");
@@ -2216,7 +2279,7 @@ fn main() {
     let qc_port = anyui::TextField::new();
     qc_port.set_size(50, 24);
     qc_port.set_position(294, 5);
-    qc_port.set_text("21");
+    qc_port.set_text(&format!("{}", prefs.last_port));
     qc_bar.add(&qc_port);
 
     let qc_lbl_user = anyui::Label::new("User:");
@@ -2229,6 +2292,7 @@ fn main() {
     qc_user.set_size(140, 24);
     qc_user.set_position(394, 5);
     qc_user.set_placeholder("anonymous");
+    if !prefs.last_user.is_empty() { qc_user.set_text(&prefs.last_user); }
     qc_bar.add(&qc_user);
 
     let qc_lbl_pass = anyui::Label::new("Pass:");
@@ -2241,6 +2305,7 @@ fn main() {
     qc_pass.set_size(140, 24);
     qc_pass.set_position(584, 5);
     qc_pass.set_password_mode(true);
+    if !prefs.last_pass.is_empty() { qc_pass.set_text(&prefs.last_pass); }
     qc_bar.add(&qc_pass);
 
     let qc_btn = anyui::Button::new("Verbinden");
@@ -2270,8 +2335,6 @@ fn main() {
 
     // ── Log panel ─────────────────────────────────────────────────────────────
     let log_view = anyui::View::new();
-    log_view.set_dock(anyui::DOCK_BOTTOM);
-    log_view.set_size(1100, 120);
     log_view.set_color(0xFF1A1A1A);
     let log_editor = anyui::TextEditor::new(1100, 120);
     log_editor.set_dock(anyui::DOCK_FILL);
@@ -2279,9 +2342,8 @@ fn main() {
     log_editor.set_text_color(0xFF88CC88);
     log_editor.set_read_only(true);
     log_view.add(&log_editor);
-    win.add(&log_view);
 
-    // ── Main split view ───────────────────────────────────────────────────────
+    // ── Main split view (local / remote) ─────────────────────────────────────
     let split = anyui::SplitView::new();
     split.set_dock(anyui::DOCK_FILL);
     split.set_orientation(anyui::ORIENTATION_HORIZONTAL);
@@ -2344,7 +2406,18 @@ fn main() {
     ]);
     remote_pane.add(&remote_grid);
     split.add(&remote_pane);
-    win.add(&split);
+
+    // ── Vertical split: file panes (top) + log (bottom) ─────────────────────
+    let vsplit = anyui::SplitView::new();
+    vsplit.set_dock(anyui::DOCK_FILL);
+    vsplit.set_orientation(anyui::ORIENTATION_VERTICAL);
+    vsplit.set_split_ratio(75);
+    vsplit.set_min_split(30);
+    vsplit.set_max_split(95);
+    vsplit.set_resizable(true);
+    vsplit.add(&split);
+    vsplit.add(&log_view);
+    win.add(&vsplit);
 
     // Context menus (extended with sort options)
     let local_menu = anyui::ContextMenu::new("Hochladen|Umbenennen|Loeschen|Neuer Ordner|Aktualisieren|-|Sort: Name|Sort: Groesse|Sort: Datum|Pfad bearbeiten");
@@ -2664,12 +2737,29 @@ fn main() {
 
     let win_c = win.clone();
     win.on_close(move |_| {
-        // Save window position/size
+        // Save window position/size (only if valid — compositor may return 0 during teardown)
         let (w, h) = win_c.get_size();
         let (x, y) = win_c.get_position();
-        save_prefs(&Prefs { win_x: x, win_y: y, win_w: w, win_h: h });
-        if let Some(mut ftp) = unsafe { FTP_CLIENT.take() } {
-            ftp.disconnect();
+        if w >= 200 && h >= 100 {
+            let a = app();
+            save_prefs(&Prefs {
+                win_x: x, win_y: y, win_w: w, win_h: h,
+                last_host: a.last_host.clone(),
+                last_port: a.last_port,
+                last_user: a.last_user.clone(),
+                last_pass: a.last_pass.clone(),
+            });
+        }
+        // Disconnect FTP and kill worker thread
+        if WORKER_SPAWNED.load(Ordering::Relaxed) {
+            WORKER_CMD.store(CMD_EXIT, Ordering::Release);
+            anyos_std::process::sleep(50);
+            // Force-kill worker if still blocked in tcp_recv
+            kill_worker();
+        } else {
+            if let Some(mut ftp) = unsafe { FTP_CLIENT.take() } {
+                ftp.disconnect();
+            }
         }
         anyui::quit();
     });
@@ -2691,4 +2781,7 @@ fn main() {
     app().poll_timer_id = poll_id;
 
     anyui::run();
+
+    // Ensure worker thread is killed before process exit
+    kill_worker();
 }

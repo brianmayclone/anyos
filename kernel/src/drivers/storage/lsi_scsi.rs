@@ -182,7 +182,7 @@ unsafe fn doorbell_handshake(
 
     // Wait for doorbell interrupt (IOC acknowledged handshake start)
     if !wait_doorbell_int(io_base) {
-        crate::serial_println!("  LSI: handshake start timeout");
+        crate::serial_verbose_println!("  LSI: handshake start timeout");
         return false;
     }
     outl(io_base + REG_HOST_INT_STATUS, 0);
@@ -191,7 +191,7 @@ unsafe fn doorbell_handshake(
     for &dword in msg_dwords {
         outl(io_base + REG_DOORBELL, dword);
         if !wait_doorbell_int(io_base) {
-            crate::serial_println!("  LSI: handshake write timeout");
+            crate::serial_verbose_println!("  LSI: handshake write timeout");
             return false;
         }
         outl(io_base + REG_HOST_INT_STATUS, 0);
@@ -200,7 +200,7 @@ unsafe fn doorbell_handshake(
     // Read reply 16 bits at a time from doorbell
     for word in reply_buf.iter_mut() {
         if !wait_doorbell_int(io_base) {
-            crate::serial_println!("  LSI: handshake read timeout");
+            crate::serial_verbose_println!("  LSI: handshake read timeout");
             return false;
         }
         *word = (inl(io_base + REG_DOORBELL) & 0xFFFF) as u16;
@@ -365,7 +365,7 @@ unsafe fn scsi_read_write(ctrl: &mut LsiController, lba: u32, count: u16, is_rea
             if reply & 0x8000_0000 != 0 {
                 // Address reply — error occurred
                 let reply_addr = reply & 0x7FFF_FFFF;
-                crate::serial_println!("  LSI: SCSI I/O error (reply addr={:#010x})", reply_addr);
+                crate::serial_verbose_println!("  LSI: SCSI I/O error (reply addr={:#010x})", reply_addr);
                 // Re-post reply buffer
                 outl(ctrl.io_base + REG_REPLY_FIFO, ctrl.reply_buf_phys as u32);
                 return false;
@@ -374,7 +374,7 @@ unsafe fn scsi_read_write(ctrl: &mut LsiController, lba: u32, count: u16, is_rea
             true
         }
         None => {
-            crate::serial_println!("  LSI: SCSI I/O timeout");
+            crate::serial_verbose_println!("  LSI: SCSI I/O timeout");
             false
         }
     }
@@ -387,11 +387,11 @@ pub fn init_and_register(pci: &PciDevice) {
     // BAR0 = I/O port base
     let bar0 = pci.bars[0];
     if bar0 & 1 == 0 {
-        crate::serial_println!("  LSI SCSI: BAR0 is not I/O port");
+        crate::serial_verbose_println!("  LSI SCSI: BAR0 is not I/O port");
         return;
     }
     let io_base = (bar0 & 0xFFFC) as u16;
-    crate::serial_println!("  LSI SCSI: I/O port base = {:#06x}", io_base);
+    crate::serial_verbose_println!("  LSI SCSI: I/O port base = {:#06x}", io_base);
 
     // Enable PCI bus mastering + I/O
     let cmd = pci_config_read32(pci.bus, pci.device, pci.function, 0x04);
@@ -413,10 +413,10 @@ pub fn init_and_register(pci: &PciDevice) {
     }
     if !ready {
         let db = unsafe { inl(io_base + REG_DOORBELL) };
-        crate::serial_println!("  LSI SCSI: IOC not ready after reset (doorbell={:#010x})", db);
+        crate::serial_verbose_println!("  LSI SCSI: IOC not ready after reset (doorbell={:#010x})", db);
         return;
     }
-    crate::serial_println!("  LSI SCSI: IOC reset OK, state=READY");
+    crate::serial_verbose_println!("  LSI SCSI: IOC reset OK, state=READY");
 
     // Step 2: Mask interrupts (we poll), then clear status
     unsafe {
@@ -427,15 +427,15 @@ pub fn init_and_register(pci: &PciDevice) {
     // Step 3: Allocate DMA pages (identity-mapped)
     let req_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_println!("  LSI SCSI: alloc req frame failed"); return; }
+        None => { crate::serial_verbose_println!("  LSI SCSI: alloc req frame failed"); return; }
     };
     let reply_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_println!("  LSI SCSI: alloc reply buf failed"); return; }
+        None => { crate::serial_verbose_println!("  LSI SCSI: alloc reply buf failed"); return; }
     };
     let sense_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_println!("  LSI SCSI: alloc sense buf failed"); return; }
+        None => { crate::serial_verbose_println!("  LSI SCSI: alloc sense buf failed"); return; }
     };
 
     // Identity-map all DMA pages
@@ -447,7 +447,7 @@ pub fn init_and_register(pci: &PciDevice) {
     // Allocate bounce buffer
     let bounce_phys = match physical::alloc_contiguous(BOUNCE_PAGES) {
         Some(p) => p.as_u64(),
-        None => { crate::serial_println!("  LSI SCSI: alloc bounce buffer failed"); return; }
+        None => { crate::serial_verbose_println!("  LSI SCSI: alloc bounce buffer failed"); return; }
     };
     for i in 0..BOUNCE_PAGES {
         let p = bounce_phys + (i as u64) * 4096;
@@ -482,17 +482,17 @@ pub fn init_and_register(pci: &PciDevice) {
     let mut reply_words = [0u16; 12]; // 24 bytes = 12 words
     let ok = unsafe { doorbell_handshake(io_base, msg_bytes, &mut reply_words) };
     if !ok {
-        crate::serial_println!("  LSI SCSI: IOC Init handshake failed");
+        crate::serial_verbose_println!("  LSI SCSI: IOC Init handshake failed");
         return;
     }
 
     // Check IOC status from reply (word 7 = ioc_status)
     let ioc_status = reply_words[7];
     if ioc_status != 0 {
-        crate::serial_println!("  LSI SCSI: IOC Init failed (status={:#06x})", ioc_status);
+        crate::serial_verbose_println!("  LSI SCSI: IOC Init failed (status={:#06x})", ioc_status);
         return;
     }
-    crate::serial_println!("  LSI SCSI: IOC Init OK");
+    crate::serial_verbose_println!("  LSI SCSI: IOC Init OK");
 
     // Step 5: Post reply buffer to Reply FIFO
     unsafe {
@@ -513,7 +513,7 @@ pub fn init_and_register(pci: &PciDevice) {
     let mut found_target: Option<u8> = None;
     for target_id in 0..8u8 {
         if unsafe { scsi_test_unit_ready(&mut ctrl, target_id) } {
-            crate::serial_println!("  LSI SCSI: found disk at target {}", target_id);
+            crate::serial_verbose_println!("  LSI SCSI: found disk at target {}", target_id);
             found_target = Some(target_id);
             break;
         }
@@ -525,10 +525,10 @@ pub fn init_and_register(pci: &PciDevice) {
             unsafe { CTRL = Some(ctrl); }
             AVAILABLE.store(true, Ordering::Release);
             super::set_backend_lsi();
-            crate::serial_println!("[OK] LSI Logic SCSI storage backend active (target={})", tid);
+            crate::serial_verbose_println!("[OK] LSI Logic SCSI storage backend active (target={})", tid);
         }
         None => {
-            crate::serial_println!("  LSI SCSI: no disk found on any target");
+            crate::serial_verbose_println!("  LSI SCSI: no disk found on any target");
         }
     }
 }

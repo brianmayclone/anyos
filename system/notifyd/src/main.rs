@@ -10,6 +10,7 @@
 #![no_std]
 #![no_main]
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use anyos_std::println;
@@ -23,6 +24,81 @@ mod render;
 
 use framebuffer::Framebuffer;
 use render::{BANNER_W, BANNER_H, STACK_GAP, MARGIN_TOP, MAX_VISIBLE, MARGIN_RIGHT};
+
+// ── Notification History Persistence ──────────────────────────────────────
+
+const HISTORY_FILE: &str = "/tmp/.notification_history.json";
+const MAX_HISTORY: usize = 200;
+
+/// Append a notification to the persistent JSON history file.
+fn persist_notification(title: &str, msg: &str, sender_tid: u32) {
+    let mut entries = load_history();
+    let time_str = now_string();
+
+    let mut obj = anyos_std::json::Value::new_object();
+    obj.set("title", title.into());
+    obj.set("message", msg.into());
+    obj.set("time", time_str.as_str().into());
+    obj.set("sender", (sender_tid as i64).into());
+
+    entries.insert(0, obj);
+
+    while entries.len() > MAX_HISTORY {
+        entries.pop();
+    }
+
+    let mut root = anyos_std::json::Value::new_object();
+    let mut arr = anyos_std::json::Value::new_array();
+    for e in entries {
+        arr.push(e);
+    }
+    root.set("notifications", arr);
+    let json = root.to_json_string_pretty();
+    let _ = anyos_std::fs::write_bytes(HISTORY_FILE, json.as_bytes());
+}
+
+fn load_history() -> Vec<anyos_std::json::Value> {
+    let fd = anyos_std::fs::open(HISTORY_FILE, 0);
+    if fd == u32::MAX { return Vec::new(); }
+    let mut content = Vec::new();
+    let mut buf = [0u8; 512];
+    loop {
+        let n = anyos_std::fs::read(fd, &mut buf);
+        if n == 0 || n == u32::MAX { break; }
+        content.extend_from_slice(&buf[..n as usize]);
+    }
+    anyos_std::fs::close(fd);
+
+    let text = match core::str::from_utf8(&content) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let json = match anyos_std::json::Value::parse(text) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut result = Vec::new();
+    if let Some(arr) = json["notifications"].as_array() {
+        for item in arr {
+            result.push(item.clone());
+        }
+    }
+    result
+}
+
+fn now_string() -> String {
+    let mut buf = [0u8; 8];
+    anyos_std::sys::time(&mut buf);
+    let year = buf[0] as u16 | ((buf[1] as u16) << 8);
+    let month = buf[2];
+    let day = buf[3];
+    let hour = buf[4];
+    let min = buf[5];
+    let sec = buf[6];
+    anyos_std::format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year, month, day, hour, min, sec)
+}
 
 // ── IPC Constants ───────────────────────────────────────────────────────────
 
@@ -419,6 +495,11 @@ fn handle_show_notification(sender_tid: u32, shm_id: u32, timeout_ms: u32) {
     });
 
     a.needs_redraw = true;
+
+    // Persist to history file
+    let title_str = core::str::from_utf8(&title[..tlen]).unwrap_or("");
+    let msg_str = core::str::from_utf8(&msg[..mlen]).unwrap_or("");
+    persist_notification(title_str, msg_str, sender_tid);
 
     // Switch to fast timer for animation
     if !a.fast_timer {

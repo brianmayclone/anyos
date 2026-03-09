@@ -30,6 +30,7 @@ pub mod rasterizer;
 pub mod simd;
 pub mod fxaa;
 pub mod svga3d;
+pub mod physics;
 
 mod syscall;
 
@@ -860,7 +861,7 @@ pub extern "C" fn glUniform1i(location: GLint, v0: GLint) {
 /// Set a 1-float uniform.
 #[no_mangle]
 pub extern "C" fn glUniform1f(location: GLint, v0: GLfloat) {
-    set_uniform_floats(location, &[v0, 0.0, 0.0, 0.0]);
+    set_uniform_floats(location, &[v0, v0, v0, v0]);
 }
 
 /// Set a 2-float uniform.
@@ -1156,4 +1157,164 @@ unsafe fn cstr_to_str<'a>(ptr: *const u8) -> &'a str {
     while *ptr.add(len) != 0 { len += 1; }
     let slice = core::slice::from_raw_parts(ptr, len);
     core::str::from_utf8(slice).unwrap_or("")
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Physics Engine
+// ══════════════════════════════════════════════════════════════════════════════
+
+static mut PHYSICS_WORLD: Option<physics::PhysicsWorld> = None;
+
+fn phys() -> &'static mut physics::PhysicsWorld {
+    unsafe {
+        if PHYSICS_WORLD.is_none() {
+            PHYSICS_WORLD = Some(physics::PhysicsWorld::new());
+        }
+        PHYSICS_WORLD.as_mut().unwrap()
+    }
+}
+
+/// Create/reset the physics world. Returns 1 on success.
+#[no_mangle]
+pub extern "C" fn gl_physics_create_world() -> u32 {
+    unsafe { PHYSICS_WORLD = Some(physics::PhysicsWorld::new()); }
+    1
+}
+
+/// Set the gravity vector (default: 0, -9.81, 0).
+#[no_mangle]
+pub extern "C" fn gl_physics_set_gravity(gx: f32, gy: f32, gz: f32) {
+    phys().gravity = physics::Vec3::new(gx, gy, gz);
+}
+
+/// Step the simulation by `dt` seconds.
+#[no_mangle]
+pub extern "C" fn gl_physics_step(dt: f32) {
+    phys().step(dt);
+}
+
+/// Add a sphere body. Returns body ID.
+#[no_mangle]
+pub extern "C" fn gl_physics_add_sphere(mass: f32, radius: f32, x: f32, y: f32, z: f32) -> u32 {
+    phys().add_sphere(mass, radius, x, y, z)
+}
+
+/// Add an infinite plane (static). Returns body ID.
+#[no_mangle]
+pub extern "C" fn gl_physics_add_plane(nx: f32, ny: f32, nz: f32, d: f32) -> u32 {
+    phys().add_plane(nx, ny, nz, d)
+}
+
+/// Add an axis-aligned box body. Returns body ID.
+#[no_mangle]
+pub extern "C" fn gl_physics_add_box(mass: f32, hx: f32, hy: f32, hz: f32, x: f32, y: f32, z: f32) -> u32 {
+    phys().add_box(mass, hx, hy, hz, x, y, z)
+}
+
+/// Set body velocity.
+#[no_mangle]
+pub extern "C" fn gl_physics_set_velocity(id: u32, vx: f32, vy: f32, vz: f32) {
+    if let Some(b) = phys().bodies.get_mut(id as usize) {
+        b.velocity = physics::Vec3::new(vx, vy, vz);
+    }
+}
+
+/// Set body position.
+#[no_mangle]
+pub extern "C" fn gl_physics_set_position(id: u32, x: f32, y: f32, z: f32) {
+    if let Some(b) = phys().bodies.get_mut(id as usize) {
+        b.position = physics::Vec3::new(x, y, z);
+    }
+}
+
+/// Get body position. Writes to out_x/y/z pointers.
+#[no_mangle]
+pub extern "C" fn gl_physics_get_position(id: u32, out_x: *mut f32, out_y: *mut f32, out_z: *mut f32) {
+    if let Some(b) = phys().bodies.get(id as usize) {
+        if !out_x.is_null() { unsafe { *out_x = b.position.x; } }
+        if !out_y.is_null() { unsafe { *out_y = b.position.y; } }
+        if !out_z.is_null() { unsafe { *out_z = b.position.z; } }
+    }
+}
+
+/// Get body velocity. Writes to out pointers.
+#[no_mangle]
+pub extern "C" fn gl_physics_get_velocity(id: u32, out_x: *mut f32, out_y: *mut f32, out_z: *mut f32) {
+    if let Some(b) = phys().bodies.get(id as usize) {
+        if !out_x.is_null() { unsafe { *out_x = b.velocity.x; } }
+        if !out_y.is_null() { unsafe { *out_y = b.velocity.y; } }
+        if !out_z.is_null() { unsafe { *out_z = b.velocity.z; } }
+    }
+}
+
+/// Set coefficient of restitution (bounciness, 0.0..1.0).
+#[no_mangle]
+pub extern "C" fn gl_physics_set_restitution(id: u32, e: f32) {
+    if let Some(b) = phys().bodies.get_mut(id as usize) {
+        b.restitution = e;
+    }
+}
+
+/// Set body mass (0 = static/immovable).
+#[no_mangle]
+pub extern "C" fn gl_physics_set_mass(id: u32, mass: f32) {
+    if let Some(b) = phys().bodies.get_mut(id as usize) {
+        b.mass = mass;
+        b.inv_mass = if mass <= 0.0 { 0.0 } else { 1.0 / mass };
+        b.use_gravity = mass > 0.0;
+    }
+}
+
+/// Apply a force to a body (accumulated until next step).
+#[no_mangle]
+pub extern "C" fn gl_physics_apply_force(id: u32, fx: f32, fy: f32, fz: f32) {
+    phys().apply_force(id, fx, fy, fz);
+}
+
+/// Apply an impulse (instant velocity change).
+#[no_mangle]
+pub extern "C" fn gl_physics_apply_impulse(id: u32, ix: f32, iy: f32, iz: f32) {
+    phys().apply_impulse(id, ix, iy, iz);
+}
+
+/// Set angular velocity around Y axis.
+#[no_mangle]
+pub extern "C" fn gl_physics_set_angular_vel_y(id: u32, omega: f32) {
+    if let Some(b) = phys().bodies.get_mut(id as usize) {
+        b.angular_vel_y = omega;
+    }
+}
+
+/// Get current Y rotation angle.
+#[no_mangle]
+pub extern "C" fn gl_physics_get_rotation_y(id: u32) -> f32 {
+    phys().bodies.get(id as usize).map_or(0.0, |b| b.rotation_y)
+}
+
+/// Set whether body is affected by gravity.
+#[no_mangle]
+pub extern "C" fn gl_physics_set_use_gravity(id: u32, use_grav: u32) {
+    if let Some(b) = phys().bodies.get_mut(id as usize) {
+        b.use_gravity = use_grav != 0;
+    }
+}
+
+/// Set body active/inactive.
+#[no_mangle]
+pub extern "C" fn gl_physics_set_active(id: u32, active: u32) {
+    if let Some(b) = phys().bodies.get_mut(id as usize) {
+        b.active = active != 0;
+    }
+}
+
+/// Update the distance parameter of a plane collider.
+#[no_mangle]
+pub extern "C" fn gl_physics_set_plane_d(id: u32, d: f32) {
+    phys().set_plane_d(id, d);
+}
+
+/// Get number of bodies in the world.
+#[no_mangle]
+pub extern "C" fn gl_physics_body_count() -> u32 {
+    phys().bodies.len() as u32
 }

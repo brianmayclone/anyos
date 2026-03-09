@@ -916,7 +916,7 @@ pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
     let user_stack = result.stack_top;
 
     let fmt = if result.is_compat32 { "elf32" } else { "elf64" };
-    crate::serial_println!("exec: T{} -> ({}, {} pages, entry={:#x})",
+    crate::serial_verbose_println!("exec: T{} -> ({}, {} pages, entry={:#x})",
         tid, fmt, result.user_pages, result.entry);
 
     if result.is_compat32 {
@@ -1024,7 +1024,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     let data = match crate::fs::vfs::read_file_to_vec(actual_path) {
         Ok(d) => d,
         Err(e) => {
-            crate::serial_println!("  load_and_run: read_file_to_vec('{}') failed: {:?}", actual_path, e);
+            crate::serial_verbose_println!("  load_and_run: read_file_to_vec('{}') failed: {:?}", actual_path, e);
             return Err("Failed to read program file");
         }
     };
@@ -1259,7 +1259,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     crate::task::scheduler::set_thread_identity(tid, parent_uid, parent_gid);
 
     let fmt = if is_compat32 { "elf32" } else if is_elf(&data) { "elf64" } else { "flat" };
-    crate::serial_println!("spawn: '{}' -> T{} ({}, {} pages, entry={:#x})",
+    crate::serial_verbose_println!("spawn: '{}' -> T{} ({}, {} pages, entry={:#x})",
         path, tid, fmt, total_user_pages, entry_point);
 
     // All setup complete (CR3, pending data, args, CWD, caps). Now make the thread runnable.
@@ -1287,7 +1287,7 @@ extern "C" fn user_thread_trampoline() {
     // which runs with PSTATE.I=1 (interrupts masked). Re-enable interrupts
     // so timer ticks continue firing while this thread runs.
     crate::arch::hal::enable_interrupts();
-    crate::serial_println!("  [TRAMPOLINE] entered, tid={}", crate::task::scheduler::current_tid());
+    crate::serial_verbose_println!("  [TRAMPOLINE] entered, tid={}", crate::task::scheduler::current_tid());
     let tid = crate::task::scheduler::current_tid();
     let (entry, user_stack, compat32) = {
         let mut slots = PENDING_PROGRAMS.lock();
@@ -1300,7 +1300,7 @@ extern "C" fn user_thread_trampoline() {
         (e, s, c)
     };
 
-    crate::serial_println!("  [TRAMPOLINE] tid={} entry={:#x} stack={:#x} compat32={}",
+    crate::serial_verbose_println!("  [TRAMPOLINE] tid={} entry={:#x} stack={:#x} compat32={}",
         tid, entry, user_stack, compat32);
     if compat32 {
         unsafe { jump_to_user_mode_compat32(entry, user_stack); }

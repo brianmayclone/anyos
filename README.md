@@ -15,8 +15,8 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 ![NASM](https://img.shields.io/badge/NASM-Assembly-0066B8?style=flat-square)
 ![x86_64](https://img.shields.io/badge/Arch-x86__64-4B7BEC?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/License-MIT-2ecc71?style=flat-square)
-![Programs](https://img.shields.io/badge/Programs-127+-e67e22?style=flat-square)
-![Syscalls](https://img.shields.io/badge/Syscalls-141-9b59b6?style=flat-square)
+![Programs](https://img.shields.io/badge/Programs-150+-e67e22?style=flat-square)
+![Syscalls](https://img.shields.io/badge/Syscalls-184-9b59b6?style=flat-square)
 
 <br>
 
@@ -85,7 +85,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **SMP support** — multi-core (up to 16 CPUs) via LAPIC/IOAPIC with per-CPU idle threads and work stealing
 - **Per-process address spaces** with isolated PML4 page directories
 - **Ring 3 user mode** with dual syscall interface: `SYSCALL/SYSRET` (64-bit) and `INT 0x80` (32-bit compat)
-- **141 system calls** across 22 categories (process, file I/O, networking, IPC, display, audio, USB, permissions, signals, ...)
+- **184 system calls** across 22 categories (process, file I/O, networking, IPC, display, audio, USB, permissions, signals, debugging, ...)
 - **Physical + virtual memory manager** with kernel heap allocator
 - **exFAT filesystem** with long filename support, symlinks, mount points, chmod/chown
 - **Storage drivers**: ATA PIO, **AHCI** (SATA DMA), **NVMe** (PCIe), ATAPI (CD-ROM), LSI SCSI
@@ -93,7 +93,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **Loadable kernel drivers** (KDRV format) with PCI device matching and hot-loading from `.ddv` bundles
 - **FPU/SSE support** with lazy save/restore (CR0.TS flag) per context switch
 - **TSC-calibrated timekeeping** via PIT channel 2 polled (no IRQ dependency)
-- **POSIX compatibility**: `fork`, `exec`, `pipe`, `dup2`, `signals` (SIGUSR1, SIGCHLD, SIG_IGN), `poll()` for pipes and files
+- **POSIX compatibility**: `fork`, `exec`, `pipe`, `dup2`, `signals` (13 signals: SIGHUP–SIGTTOU, job control with SIGTSTP/SIGCONT), `poll()` for pipes and files
 - **Security hardening**: NX-bit / DEP (EFER.NXE + per-segment ELF page flags), ASLR (stack + mmap randomization via RDRAND/TSC), up to 256 FDs per process with separated socket namespace
 - **User identity system** — UID/GID, user accounts, groups, authentication
 - **Runtime app permissions** — per-user capability grants with consent dialog on first launch, reviewable in Settings
@@ -104,26 +104,31 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **Double-buffered compositor** with damage-based partial updates and blur effects
 - **GPU drivers**: Bochs VGA (page flipping), VMware SVGA II (2D acceleration, hardware cursor), VirtualBox VGA, VirtIO GPU
 - **macOS-inspired dark theme** with rounded windows, shadows, and alpha blending
-- **42 UI controls** via the anyui framework + uisys shared library (buttons, text fields, code editor, tree view, data grid, toolbars, canvas, expander, flow/stack panels, etc.)
-- **8 shared libraries** — uisys, libimage, librender, libcompositor (DLIB format) + libanyui, libfont, libgl, libcorevm (.so format with ELF dynamic linking)
+- **44 UI controls** via the anyui framework (buttons, text fields, code editor, tree view, data grid, toolbars, canvas, expander, flow/stack panels, autocomplete, etc.)
+- **14 shared libraries** — libimage, librender, libcompositor (DLIB format) + libanyui, libfont, libgl, libcorevm, libhttp, libdb, libzip, libsvg, libjs, libwebview, libm (.so format with ELF dynamic linking)
 - **TrueType font rendering** with gamma-corrected subpixel LCD anti-aliasing and size-adaptive smoothing (SF Pro family)
 
 ### 3D Graphics
 
-- **OpenGL ES 2.0** compatible 3D engine (`libgl.so`) with 68 API exports
+- **OpenGL ES 2.0** compatible 3D engine (`libgl.so`) with 105 API exports
 - **Built-in GLSL ES 1.00 shader compiler** — lexer, recursive-descent parser, AST, SSA-style IR (~35 opcodes), register-based interpreter
 - **Software rasterizer** — edge-function triangle fill, Sutherland-Hodgman frustum clipping, perspective-correct varying interpolation, per-fragment depth test and blending
 - **No libm dependency** — all transcendental math (sin, cos, sqrt, pow, log2, exp2) via polynomial approximations
 - **Vertex + Fragment shaders** with swizzle, type constructors (vec2/3/4, mat3/4), 18 built-in functions (texture2D, normalize, dot, cross, clamp, mix, reflect, ...)
 - **Texture sampling** with nearest/bilinear filtering and repeat/clamp/mirror wrap modes
+- **Physics engine** — rigid body dynamics with sphere/plane/box colliders, gravity, restitution, forces, impulses, angular velocity (20 API exports)
 - **Phase 2 planned**: VMware SVGA3D hardware acceleration with DX9 SM 2.0 bytecode backend
 
 ### Networking
 
 - **Intel E1000** NIC driver (MMIO, DMA)
 - **Protocol stack**: Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS
+- **Loopback interface** (`lo` 127.0.0.1) with own-IP loopback routing
 - **TLS support** via BearSSL
-- Userspace utilities: `ping`, `ifconfig`, `arp`, `dhcp`, `dns`, `wget`, `ftp`, `curl`
+- **FTP server** (`ftpd`) with PASV/EPSV, user shares, anonymous access, MLSD/FEAT/SIZE/MDTM
+- **SSH server/client** (`sshd`/`ssh`/`scp`)
+- **HTTP server** (`httpd`)
+- Userspace utilities: `ping`, `ifconfig`, `arp`, `dhcp`, `dns`, `wget`, `ftp`, `curl`, `netstat`
 
 ### USB
 
@@ -185,29 +190,30 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 
 ### User Programs
 
-127+ command-line and GUI applications:
+150+ command-line and GUI applications:
 
-**GUI Applications (16):** anyOS Code (IDE), Calculator, Clock, Diagnostics, Font Viewer, GL Demo (3D), Image Viewer, Minesweeper, Notepad, Paint, Screenshot, Surf (web browser prototype), Video Player, **VM Manager** (virtual machine manager), Web Manager, anyui Demo
+**GUI Applications (29):** anyOS Code (IDE), anyMail (email client), anyZilla (FTP client), App Store, Benchmark, Calculator, Clipboard Manager, Clock, Diagnostics, Diff/Merge (Meld-like), Font Viewer, Forger (3D voxel world), FTP Settings, GL Demo (3D), Icon Viewer, Image Viewer, Markdown Viewer, Minesweeper, Notepad, Notifications, Paint, Screenshot, Surf (web browser), Video Player, **VM Manager** (virtual machine), VNC Settings, Web Manager, anyui Demo, Button Demo
 
-**System Applications (15):** Init, Login, Compositor, Terminal, Finder, Settings, Activity Monitor, Permission Dialog, Shell (dash), Audio Monitor, Network Monitor, Input Monitor, Event Viewer, Disk Utility, amid (statistics daemon)
+**System Services (18):** Init, Login, Compositor, Terminal, Finder, Settings, Activity Monitor, Permission Dialog, Shell (dash), Audio Monitor, Network Monitor, Input Monitor, Event Viewer, Disk Utility, amid (statistics daemon), notifyd (notifications), anybout (about), anytrace (tracing)
 
 **Games (2):** DOOM (doomgeneric port), Quake (WinQuake software renderer port)
 
-**CLI Utilities (96):**
+**CLI Utilities (105):**
 
 | Category | Programs |
 |----------|----------|
-| File Management | `ls` `cat` `cp` `mv` `rm` `mkdir` `touch` `ln` `readlink` `find` `stat` `df` `mount` `umount` `fdisk` `zip` `unzip` |
-| Text Processing | `echo` `grep` `sed` `awk` `wc` `head` `tail` `sort` `uniq` `rev` `strings` `base64` `xargs` |
-| System Info | `sysinfo` `dmesg` `devlist` `ps` `top` `htop` `free` `uptime` `uname` `hostname` `whoami` `which` `date` `cal` |
-| Networking | `ping` `dhcp` `dns` `ifconfig` `arp` `wget` `ftp` `curl` `netstat` `echoserver` `httpd` |
+| File Management | `ls` `cat` `cp` `mv` `rm` `mkdir` `touch` `ln` `readlink` `find` `stat` `df` `mount` `umount` `fdisk` `zip` `unzip` `tar` `gzip` |
+| Text Processing | `echo` `grep` `sed` `awk` `wc` `head` `tail` `sort` `uniq` `rev` `strings` `base64` `xargs` `banner` |
+| System Info | `sysinfo` `dmesg` `devlist` `ps` `top` `htop` `free` `uptime` `uname` `hostname` `whoami` `which` `date` `cal` `neofetch` |
+| Networking | `ping` `dhcp` `dns` `ifconfig` `arp` `wget` `ftp` `ftpd` `curl` `netstat` `echoserver` `httpd` `ssh` `sshd` `scp` `vncd` |
 | User Mgmt | `chmod` `chown` `su` `listuser` `listgroups` `adduser` `deluser` `addgroup` `delgroup` `passwd` |
-| Shell & Process | `env` `set` `export` `pwd` `clear` `sleep` `seq` `yes` `true` `false` `nice` `kill` |
+| Shell & Process | `env` `set` `export` `pwd` `clear` `sleep` `seq` `yes` `true` `false` `nice` `kill` `killall` |
 | Shell Builtins | `alias` `unalias` `eval` (via dash) |
-| System Admin | `svc` `logd` `crond` `crontab` `ami` |
+| System Admin | `svc` `logd` `crond` `crontab` `ami` `apkg` |
 | Binary/Hex | `hexdump` `xxd` |
-| Multimedia | `play` `pipes` |
-| Dev Tools | `cc` (TCC) `nasm` `make` `git` `open` `vi` `nano` |
+| Multimedia | `play` `pipes` `jp2a` |
+| Dev Tools | `cc` (TCC) `nasm` `make` `git` `open` `vi` `nvi` `nano` `jscript` |
+| VM/Daemon | `vmd` (CoreVM daemon) |
 
 ---
 
@@ -380,17 +386,17 @@ anyos/
       memory/              Physical allocator, virtual memory, heap
       net/                 Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS
       sync/                Spinlock, mutex
-      syscall/             140 syscall handlers
+      syscall/             184 syscall handlers
       task/                Mach-style scheduler, context switch, ELF loader, DLL loader, KDRV loader
       crypto/              MD5 hash
   libs/                  Libraries
     stdlib/                anyos_std — Rust standard library for user programs
     libc/                  POSIX C library (35 headers, i686-elf-gcc)
-    uisys/                 uisys.dlib — UI component DLL (31 components, 80 exports)
-    uisys_client/          Client stub crate for uisys
+    uisys/                 uisys.dlib — Legacy UI (deprecated, replaced by libanyui)
+    uisys_client/          Client stub crate for uisys (deprecated)
     libimage/              libimage.dlib — Image decoding DLL (PNG, BMP, JPEG, ICO, MJV)
     libimage_client/       Client stub crate for libimage
-    libanyui/              libanyui.so — anyui UI framework (41 controls, 112 exports)
+    libanyui/              libanyui.so — anyui UI framework (44 controls, 178 exports)
     libanyui_client/       Client crate for libanyui (dynlink-based)
     libfont/               libfont.so — TrueType font rendering (embedded system fonts in .rodata)
     libfont_client/        Client crate for libfont (dynlink-based)
@@ -398,22 +404,49 @@ anyos/
     libgl_client/          Client crate for libgl (dynlink-based)
     libcorevm/             libcorevm.so — CoreVM x86 virtual machine engine (CPU, devices, JIT, BIOS)
     libcorevm_client/      Client crate for libcorevm (dynlink-based)
+    libhttp/               libhttp.so — HTTP client/server library
+    libhttp_client/        Client crate for libhttp
+    libdb/                 libdb.so — Key-value database
+    libdb_client/          Client crate for libdb
+    libzip/                libzip.so — ZIP/TAR/GZIP archive handling
+    libzip_client/         Client crate for libzip
+    libsvg/                libsvg.so — SVG rasterizer
+    libsvg_client/         Client crate for libsvg
+    libjs/                 libjs.so — JavaScript engine
+    libwebview/            libwebview.so — HTML/CSS/JS rendering engine
+    libm/                  libm.so — Hardware-accelerated math (SSE2 + x87 FPU)
+    libm_client/           Client crate for libm
+    libcxx/                libcxx — C++20 standard library
+    libcxxabi/             C++ ABI support
     dynlink/               Minimal user-space dynamic linker (dl_open/dl_sym for .so files)
     librender/             librender.dlib — 2D graphics primitives DLL
     librender_client/      Client stub crate for librender
     libcompositor/         libcompositor.dlib — Compositor client API DLL
     libcompositor_client/  Client stub crate for libcompositor
-  bin/                   CLI program sources (88 Rust programs)
+    libheap/               Heap allocator
+    libsyscall/            Low-level syscall interface
+    libunwind/             Stack unwinding support
+  bin/                   CLI program sources (105 Rust programs)
     vmd/                   CoreVM daemon — VM execution loop, IPC bridge to libcorevm
-  apps/                  GUI application sources (16 .app bundles)
+    ftpd/                  FTP server daemon
+    vncd/                  VNC server daemon
+    sshd/                  SSH server daemon
+  apps/                  GUI application sources (29 .app bundles)
     vmmanager/             VM Manager — GUI for creating, configuring, and running VMs
-  system/                System programs (15)
+    anymail/               Email client with IMAP/SMTP, address book, autocomplete
+    anyzilla/              FTP client (FileZilla-like, dual-pane, PASV transfers)
+    diff/                  Diff/merge tool (Meld-like, syntax highlighting, themes)
+    store/                 App Store
+  system/                System programs (18)
     init/                  Init system (PID 1)
     login/                 Login manager
     shell/                 POSIX shell (dash)
     audiomon/              Audio monitor daemon
     netmon/                Network monitor daemon
     inputmon/              Input event monitor
+    notifyd/               Notification daemon
+    anybout/               About dialog
+    anytrace/              System tracing
     compositor/            Window compositor + dock
     terminal/              Terminal emulator
     finder/                File browser
@@ -432,7 +465,9 @@ anyos/
     curl/                  curl HTTP client
     bearssl/               BearSSL TLS library
     libgit2/               Git library
-    minigit/               Mini git CLI
+    ssh/                   SSH library
+    tinygl/                TinyGL 3D rendering
+    gcc-12.4.0/            GCC cross-compiler sources
   buildsystem/           Native C build tools (compiled at build start)
     anyelf/                ELF conversion tool (bin, dlib, kdrv modes)
     mkimage/               Disk image builder (BIOS/UEFI/ISO, exFAT/FAT16/GPT, incremental updates)
@@ -455,36 +490,51 @@ anyOS uses two shared library formats with **dynamic kernel-managed addressing**
 - **DLIB v3**: Custom format with `DLIB` magic header + `#[repr(C)]` function pointer export table. Loaded by the kernel at boot into every process. `.rodata`/`.text` pages are shared read-only; `.data` pages are copied on demand per process.
 - **.so (ELF64 ET_DYN)**: Standard ELF shared objects with `.dynsym`/`.hash` sections, linked by `anyld`. Base-0 `.so` files receive a dynamically allocated address and are relocated at load time (`R_X86_64_RELATIVE`). Loaded on demand via `SYS_DLL_LOAD`, symbols resolved via `dl_open`/`dl_sym`.
 
+All new libraries use the `.so` format. The DLIB format is maintained for backward compatibility with existing system libraries (libimage, librender, libcompositor).
+
 | Library | Format | Exports | Purpose |
 |---------|--------|---------|---------|
-| uisys | DLIB | 80 | UI controls (buttons, text fields, scroll views, context menus, toolbars, ...) |
-| libimage | DLIB | 7 | Image decoding (PNG, BMP, JPEG, ICO) and scaling |
+| libimage | DLIB | 7 | Image decoding (PNG, BMP, JPEG, GIF, ICO) and scaling |
 | librender | DLIB | 18 | 2D drawing primitives (lines, rects, circles, gradients) |
 | libcompositor | DLIB | 16 | Window creation, event handling, IPC with compositor |
-| libanyui | .so | 112 | anyui UI framework (41 controls, Windows Forms-style) |
+| libanyui | .so | 178 | anyui UI framework (44 controls, Windows Forms-style) |
 | libfont | .so | 7 | TrueType font rendering with LCD subpixel AA (system fonts embedded in .rodata) |
-| libgl | .so | 68 | OpenGL ES 2.0 3D engine with GLSL compiler and software rasterizer |
+| libgl | .so | 105 | OpenGL ES 2.0 3D engine with GLSL compiler, software rasterizer, and physics engine |
 | libcorevm | .so | 58 | CoreVM x86 virtual machine engine (CPU emulator, devices, JIT, BIOS) |
+| libm | .so | 56 | Hardware-accelerated math (SSE2 + x87 FPU) |
+| libhttp | .so | — | HTTP client/server library |
+| libdb | .so | — | Key-value database |
+| libzip | .so | — | ZIP/TAR/GZIP archive handling |
+| libsvg | .so | — | SVG rasterizer |
+| libjs | .so | — | JavaScript engine |
+| libwebview | .so | — | HTML/CSS/JS rendering engine |
 
-DLIB programs link against lightweight client stub crates (e.g. `uisys_client`) that read the export table at the kernel-assigned base address. `.so` programs use `dynlink` crate (`dl_open`/`dl_sym`) for ELF symbol resolution.
+DLIB programs link against lightweight client stub crates (e.g. `libimage_client`) that read the export table at the kernel-assigned base address. `.so` programs use `dynlink` crate (`dl_open`/`dl_sym`) for ELF symbol resolution.
 
 ---
 
 ## Documentation
 
 - **[Architecture Overview](docs/architecture.md)** — Boot process, memory layout, scheduling, IPC, USB, user identity
-- **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 140 system calls
+- **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 184 system calls
 - **[Standard Library API](docs/stdlib-api.md)** — `anyos_std` crate reference for Rust user programs
-- **[UI System API](docs/uisys-api.md)** — `uisys` DLL component reference (31 components, 80 exports)
-- **[anyui Controls API](docs/anyui-api.md)** — anyui framework reference (41 controls, 112 exports)
+- **[anyui Controls API](docs/anyui-api.md)** — anyui framework reference (44 controls, 178 exports)
 - **[C Library API](docs/libc-api.md)** — POSIX libc reference (35 headers) for C programs
+- **[C++20 / libc64 API](docs/libcxx-api.md)** — 64-bit C and C++20 standard library reference
 - **[libimage API](docs/libimage-api.md)** — Image decoding, scaling, ICO, and video (MJV)
 - **[libfont API](docs/libfont-api.md)** — TrueType font rendering with subpixel LCD anti-aliasing
 - **[librender API](docs/librender-api.md)** — 2D graphics primitives (fill, stroke, gradient, AA)
 - **[libcompositor API](docs/libcompositor-api.md)** — Window management and compositor IPC
-- **[libgl API](docs/libgl-api.md)** — OpenGL ES 2.0 3D engine with GLSL compiler and software rasterizer
+- **[libgl API](docs/libgl-api.md)** — OpenGL ES 2.0 3D engine with GLSL compiler, software rasterizer, and physics engine (105 exports)
 - **[libm API](docs/libm-api.md)** — Hardware-accelerated math (SSE2 + x87 FPU, 56 exports)
 - **[CoreVM API](docs/corevm-api.md)** — Pure-software x86 virtual machine (CPU emulator, JIT, 11 devices, BIOS, 58 exports)
+- **[libdb API](docs/libdb-api.md)** — Key-value database
+- **[libzip API](docs/libzip-api.md)** — ZIP/TAR/GZIP archive handling
+- **[libsvg API](docs/libsvg-api.md)** — SVG rasterizer
+- **[libjs API](docs/libjs-api.md)** — JavaScript engine
+- **[libwebview API](docs/libwebview-api.md)** — HTML/CSS/JS rendering engine
+- **[Services](docs/services.md)** — System services documentation
+- **[Package Manager](docs/ami.md)** — AMI package manager / system info daemon
 
 ---
 
@@ -515,39 +565,37 @@ See [stdlib API docs](docs/stdlib-api.md) for the full syscall and library refer
 
 ### GUI Programs
 
-GUI programs use the `uisys_client` crate for macOS-style UI components:
+GUI programs use the `libanyui_client` crate for macOS-style UI components:
 
 ```rust
 #![no_std]
 #![no_main]
 
-use anyos_std::*;
-use uisys_client::*;
+use anyos_std::{String, Vec};
+use libanyui_client as anyui;
 
 anyos_std::entry!(main);
 
 fn main() {
-    let win = ui::window::create("My App", 100, 100, 400, 300);
+    if !anyui::init() { return; }
 
-    let mut btn = button::UiButton::new(20, 20, 120, 32, types::ButtonStyle::Primary);
-    let mut event = [0u32; 5];
+    let win = anyui::Window::new("My App", -1, -1, 400, 300);
 
-    loop {
-        if ui::window::get_event(win, &mut event) == 1 {
-            let ev = types::UiEvent::from_raw(&event);
-            if ev.event_type == 0 { break; } // window closed
-            if btn.handle_event(&ev) {
-                println!("Button clicked!");
-            }
-        }
-        btn.render(win, "Click Me");
-        ui::window::present(win);
-        process::yield_cpu();
-    }
+    let btn = anyui::Button::new("Click Me");
+    btn.set_size(120, 32);
+    win.add(&btn);
+
+    btn.on_click(|_| {
+        anyos_std::println!("Button clicked!");
+    });
+
+    win.on_close(|_| { anyui::quit(); });
+
+    anyui::run();
 }
 ```
 
-See [uisys API docs](docs/uisys-api.md) for all 31 UI components.
+See [anyui API docs](docs/anyui-api.md) for all 44 UI controls.
 
 ### C Programs
 

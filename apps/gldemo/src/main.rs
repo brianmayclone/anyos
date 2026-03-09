@@ -62,7 +62,7 @@ uniform vec4 uMatColor;
 void main() {
     vec4 texColor = texture2D(uTexture, vTexCoord);
     vec3 baseColor = texColor.rgb * uMatColor.rgb;
-    gl_FragColor = vec4(vLighting * baseColor, 1.0);
+    gl_FragColor = vec4(vLighting * baseColor, uMatColor.a);
 }
 ";
 
@@ -131,6 +131,38 @@ fn mat4_rotate_x(angle: f32) -> Mat4 {
         0.0,   c,   s, 0.0,
         0.0,  -s,   c, 0.0,
         0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+/// Look-at view matrix (column-major).
+fn mat4_look_at(eye: &[f32; 3], target: &[f32; 3], up: &[f32; 3]) -> Mat4 {
+    let fx = target[0] - eye[0];
+    let fy = target[1] - eye[1];
+    let fz = target[2] - eye[2];
+    let flen = gl::sqrt(fx * fx + fy * fy + fz * fz);
+    let (fx, fy, fz) = if flen > 0.0001 { (fx / flen, fy / flen, fz / flen) } else { (0.0, 0.0, -1.0) };
+
+    // s = f × up
+    let sx = fy * up[2] - fz * up[1];
+    let sy = fz * up[0] - fx * up[2];
+    let sz = fx * up[1] - fy * up[0];
+    let slen = gl::sqrt(sx * sx + sy * sy + sz * sz);
+    let (sx, sy, sz) = if slen > 0.0001 { (sx / slen, sy / slen, sz / slen) } else { (1.0, 0.0, 0.0) };
+
+    // u = s × f
+    let ux = sy * fz - sz * fy;
+    let uy = sz * fx - sx * fz;
+    let uz = sx * fy - sy * fx;
+
+    // Column-major: [col0, col1, col2, col3]
+    [
+         sx,  ux, -fx, 0.0,  // column 0
+         sy,  uy, -fy, 0.0,  // column 1
+         sz,  uz, -fz, 0.0,  // column 2
+        -(sx * eye[0] + sy * eye[1] + sz * eye[2]),
+        -(ux * eye[0] + uy * eye[1] + uz * eye[2]),
+         (fx * eye[0] + fy * eye[1] + fz * eye[2]),
+        1.0,                  // column 3
     ]
 }
 
@@ -270,6 +302,27 @@ fn generate_checkerboard(size: u32, check_size: u32) -> Vec<u8> {
     data
 }
 
+/// Generate the classic Amiga Boing Ball texture (red & white checkerboard on sphere UV).
+/// The pattern has `cols` longitudinal and `rows` latitudinal tiles.
+fn generate_boing_texture(size: u32, rows: u32, cols: u32) -> Vec<u8> {
+    let mut data = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let u = x as f32 / size as f32;
+            let v = y as f32 / size as f32;
+            let col = (u * cols as f32) as u32;
+            let row = (v * rows as f32) as u32;
+            let is_red = (col + row) % 2 == 0;
+            if is_red {
+                data.extend_from_slice(&[220, 20, 20, 255]); // red
+            } else {
+                data.extend_from_slice(&[255, 255, 255, 255]); // white
+            }
+        }
+    }
+    data
+}
+
 /// Generate a gradient texture for the sphere (RGBA8).
 fn generate_gradient(size: u32) -> Vec<u8> {
     let mut data = Vec::with_capacity((size * size * 4) as usize);
@@ -284,6 +337,128 @@ fn generate_gradient(size: u32) -> Vec<u8> {
             data.extend_from_slice(&[r, g, b, 255]);
         }
     }
+    data
+}
+
+/// 5×7 pixel bitmap font for uppercase + digits + dot + space.
+/// Each glyph is 5 columns × 7 rows, stored as 7 bytes (one per row, lower 5 bits = pixels).
+fn glyph_data(ch: u8) -> [u8; 7] {
+    match ch {
+        b'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        b'B' => [0b11110, 0b10001, 0b11110, 0b10001, 0b10001, 0b10001, 0b11110],
+        b'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        b'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+        b'E' => [0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b11111],
+        b'F' => [0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b10000],
+        b'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
+        b'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        b'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        b'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
+        b'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+        b'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        b'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+        b'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+        b'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        b'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        b'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
+        b'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+        b'S' => [0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110],
+        b'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        b'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        b'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+        b'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
+        b'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
+        b'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+        b'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+        b'a' => [0b00000, 0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111],
+        b'n' => [0b00000, 0b00000, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001],
+        b'y' => [0b00000, 0b00000, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110],
+        b'0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+        b'1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        b'2' => [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
+        b'3' => [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110],
+        b'4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+        b'5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+        b'6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+        b'7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+        b'8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+        b'9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+        b'.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100],
+        b' ' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
+        _    => [0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111], // box
+    }
+}
+
+/// Render a text string into an RGBA pixel buffer at (ox, oy) with given scale and color.
+fn draw_text_into(data: &mut [u8], tex_w: u32, text: &[u8], ox: u32, oy: u32, scale: u32, r: u8, g: u8, b: u8) {
+    let glyph_w = 5;
+    let glyph_h = 7;
+    let spacing = 1; // 1 pixel gap between glyphs
+    for (ci, &ch) in text.iter().enumerate() {
+        let glyph = glyph_data(ch);
+        let base_x = ox + ci as u32 * (glyph_w + spacing) * scale;
+        for row in 0..glyph_h {
+            for col in 0..glyph_w {
+                if glyph[row as usize] & (1 << (glyph_w - 1 - col)) != 0 {
+                    // Draw a scale×scale block
+                    for sy in 0..scale {
+                        for sx in 0..scale {
+                            let px = base_x + col * scale + sx;
+                            let py = oy + row * scale + sy;
+                            if px < tex_w && py < tex_w {
+                                let idx = ((py * tex_w + px) * 4) as usize;
+                                if idx + 3 < data.len() {
+                                    data[idx] = r;
+                                    data[idx + 1] = g;
+                                    data[idx + 2] = b;
+                                    data[idx + 3] = 255;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Generate a floor texture with checkerboard and "anyOS" logo + version.
+fn generate_floor_texture(size: u32) -> Vec<u8> {
+    let mut data = Vec::with_capacity((size * size * 4) as usize);
+    let check_size = size / 8; // 8×8 checkerboard grid
+
+    // Base checkerboard
+    for y in 0..size {
+        for x in 0..size {
+            let cx = x / check_size;
+            let cy = y / check_size;
+            let white = (cx + cy) % 2 == 0;
+            if white {
+                data.extend_from_slice(&[180, 185, 195, 255]);
+            } else {
+                data.extend_from_slice(&[60, 65, 80, 255]);
+            }
+        }
+    }
+
+    // "anyOS" in large text, centered
+    let text = b"anyOS";
+    let scale = size / 64 * 3; // scale factor based on texture size
+    let glyph_w_total = text.len() as u32 * 6 * scale; // (5+1) pixels per glyph
+    let glyph_h_total = 7 * scale;
+    let tx = (size - glyph_w_total) / 2;
+    let ty = size / 2 - glyph_h_total - scale;
+    draw_text_into(&mut data, size, text, tx, ty, scale, 40, 140, 255);
+
+    // Version below
+    let ver = b"0.3.134";
+    let ver_scale = scale * 2 / 3;
+    let ver_scale = if ver_scale < 1 { 1 } else { ver_scale };
+    let ver_w = ver.len() as u32 * 6 * ver_scale;
+    let vx = (size - ver_w) / 2;
+    let vy = ty + glyph_h_total + scale;
+    draw_text_into(&mut data, size, ver, vx, vy, ver_scale, 30, 110, 200);
+
     data
 }
 
@@ -326,6 +501,8 @@ struct RenderState {
     // Textures
     checker_tex: u32,
     gradient_tex: u32,
+    boing_tex: u32,
+    floor_tex: u32,
     // Uniform locations
     loc_mvp: i32,
     loc_model: i32,
@@ -334,6 +511,23 @@ struct RenderState {
     loc_eye_pos: i32,
     loc_texture: i32,
     loc_mat_color: i32,
+    // Physics body IDs
+    phys_sphere: u32,
+    phys_cube: u32,
+    phys_boing: u32,
+    phys_wall_l: u32,
+    phys_wall_r: u32,
+    phys_wall_f: u32,
+    phys_wall_b: u32,
+    boing_active: bool,
+    // Camera
+    camera_dist: f32,
+    camera_yaw: f32,
+    camera_pitch: f32,
+    // Mouse drag state
+    drag_button: u32,   // 0=none, 1=left(orbit), 2=right(zoom)
+    drag_last_x: i32,
+    drag_last_y: i32,
     // Animation
     frame: u32,
     // FPS counter
@@ -359,7 +553,6 @@ fn render_frame() {
         s.fps_last_ms = now_ms;
         let mut buf = [0u8; 16];
         let n = fmt_u32(s.fps_display, &mut buf);
-        // Build "XX FPS" string
         let mut fps_str = [0u8; 20];
         fps_str[..n].copy_from_slice(&buf[..n]);
         fps_str[n] = b' ';
@@ -371,7 +564,7 @@ fn render_frame() {
         }
     }
 
-    // Dynamic resize: query actual canvas dimensions each frame
+    // Dynamic resize
     let cur_w = s.canvas.get_stride();
     let cur_h = s.canvas.get_height();
     if cur_w == 0 || cur_h == 0 { return; }
@@ -382,32 +575,47 @@ fn render_frame() {
         gl::viewport(0, 0, cur_w as i32, cur_h as i32);
     }
 
-    let t = s.frame as f32 * 0.02; // time in pseudo-seconds
+    let t = s.frame as f32 * 0.02;
+
+    // ── Update wall boundaries based on camera distance ─────────────────
+    let wall_d = -(s.camera_dist * 0.55);
+    gl::physics_set_plane_d(s.phys_wall_l, wall_d);
+    gl::physics_set_plane_d(s.phys_wall_r, wall_d);
+    gl::physics_set_plane_d(s.phys_wall_f, wall_d);
+    gl::physics_set_plane_d(s.phys_wall_b, wall_d);
+
+    // ── Step physics ────────────────────────────────────────────────────
+    gl::physics_step(0.016); // ~60fps timestep
 
     // ── Setup ────────────────────────────────────────────────────────────
     gl::clear_color(0.05, 0.05, 0.12, 1.0);
     gl::clear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
 
-    // Camera — view = Rx(pitch) * T(-eye), positive pitch tilts down
-    let eye = [0.0f32, 1.8, 4.5];
+    let d = s.camera_dist;
+    let eye = [
+        d * gl::sin(s.camera_yaw) * gl::cos(s.camera_pitch),
+        d * gl::sin(s.camera_pitch),
+        d * gl::cos(s.camera_yaw) * gl::cos(s.camera_pitch),
+    ];
     let aspect = s.fb_w as f32 / s.fb_h as f32;
     let proj = mat4_perspective(0.9, aspect, 0.1, 50.0);
-    let view = mat4_mul(&mat4_rotate_x(0.38), &mat4_translate(-eye[0], -eye[1], -eye[2]));
+    // Look-at: camera at `eye`, looking at origin (0,0,0), up = (0,1,0)
+    let view = mat4_look_at(&eye, &[0.0, 0.0, 0.0], &[0.0, 1.0, 0.0]);
 
-    // ── Animated light ────────────────────────────────────────────────
-    // Warm white light orbiting horizontally at height 2.0
+    // Animated light
     let l0_x = gl::sin(t * 0.7) * 3.0;
     let l0_z = gl::cos(t * 0.7) * 3.0;
     gl::uniform3f(s.loc_light_pos0, l0_x, 2.0, l0_z);
     gl::uniform3f(s.loc_light_color0, 1.0, 0.95, 0.8);
-
     gl::uniform3f(s.loc_eye_pos, eye[0], eye[1], eye[2]);
 
-    // ── Draw sphere ──────────────────────────────────────────────────────
+    // ── Draw sphere (physics-driven) ────────────────────────────────────
     {
+        let (px, py, pz) = gl::physics_get_position(s.phys_sphere);
+        let rot_y = gl::physics_get_rotation_y(s.phys_sphere);
         let model = mat4_mul(
-            &mat4_translate(-1.0, 0.5, 0.0),
-            &mat4_mul(&mat4_rotate_y(t * 0.5), &mat4_scale(0.8, 0.8, 0.8)),
+            &mat4_translate(px, py, pz),
+            &mat4_mul(&mat4_rotate_y(rot_y), &mat4_scale(0.8, 0.8, 0.8)),
         );
         let mvp = mat4_mul(&proj, &mat4_mul(&view, &model));
 
@@ -415,7 +623,6 @@ fn render_frame() {
         gl::uniform_matrix4fv(s.loc_model, false, &model);
         gl::uniform4f(s.loc_mat_color, 1.0, 1.0, 1.0, 1.0);
 
-        // Bind sphere texture + VBO/EBO
         gl::active_texture(gl::GL_TEXTURE0);
         gl::bind_texture(gl::GL_TEXTURE_2D, s.gradient_tex);
         gl::uniform1i(s.loc_texture, 0);
@@ -423,16 +630,17 @@ fn render_frame() {
         gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.sphere_vbo);
         gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, s.sphere_ebo);
         setup_vertex_attribs(s.program);
-
         gl::draw_elements(gl::GL_TRIANGLES, s.sphere_num_indices, gl::GL_UNSIGNED_SHORT, 0);
     }
 
-    // ── Draw cube ────────────────────────────────────────────────────────
+    // ── Draw cube (physics-driven) ──────────────────────────────────────
     {
+        let (px, py, pz) = gl::physics_get_position(s.phys_cube);
+        let rot_y = gl::physics_get_rotation_y(s.phys_cube);
         let model = mat4_mul(
-            &mat4_translate(1.2, 0.5, 0.0),
+            &mat4_translate(px, py, pz),
             &mat4_mul(
-                &mat4_rotate_y(t * 0.8),
+                &mat4_rotate_y(rot_y),
                 &mat4_mul(&mat4_rotate_x(t * 0.3), &mat4_scale(0.9, 0.9, 0.9)),
             ),
         );
@@ -449,29 +657,60 @@ fn render_frame() {
         gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.cube_vbo);
         gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, s.cube_ebo);
         setup_vertex_attribs(s.program);
-
         gl::draw_elements(gl::GL_TRIANGLES, s.cube_num_indices, gl::GL_UNSIGNED_SHORT, 0);
     }
 
-    // ── Draw floor plane ─────────────────────────────────────────────────
-    {
+    // ── Draw Amiga Boing Ball (physics-driven) ──────────────────────────
+    if s.boing_active {
+        let (px, py, pz) = gl::physics_get_position(s.phys_boing);
+        let rot_y = gl::physics_get_rotation_y(s.phys_boing);
         let model = mat4_mul(
-            &mat4_translate(0.0, -0.5, 0.0),
-            &mat4_scale(5.0, 1.0, 5.0),
+            &mat4_translate(px, py, pz),
+            &mat4_mul(
+                &mat4_rotate_y(rot_y),
+                &mat4_mul(&mat4_rotate_x(0.4), &mat4_scale(0.6, 0.6, 0.6)),
+            ),
         );
         let mvp = mat4_mul(&proj, &mat4_mul(&view, &model));
 
         gl::uniform_matrix4fv(s.loc_mvp, false, &mvp);
         gl::uniform_matrix4fv(s.loc_model, false, &model);
-        gl::uniform4f(s.loc_mat_color, 0.6, 0.6, 0.7, 1.0);
+        gl::uniform4f(s.loc_mat_color, 1.0, 1.0, 1.0, 1.0);
 
         gl::active_texture(gl::GL_TEXTURE0);
-        gl::bind_texture(gl::GL_TEXTURE_2D, s.checker_tex);
+        gl::bind_texture(gl::GL_TEXTURE_2D, s.boing_tex);
+        gl::uniform1i(s.loc_texture, 0);
+
+        gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.sphere_vbo);
+        gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, s.sphere_ebo);
+        setup_vertex_attribs(s.program);
+        gl::draw_elements(gl::GL_TRIANGLES, s.sphere_num_indices, gl::GL_UNSIGNED_SHORT, 0);
+    }
+
+    // ── Draw floor plane ───────────────────────────────────────────────
+    {
+        gl::disable(gl::GL_CULL_FACE); // floor visible from both sides
+
+        let floor_scale = d * 1.2 + 2.0;
+        let model = mat4_mul(
+            &mat4_translate(0.0, -0.5, 0.0),
+            &mat4_scale(floor_scale, 1.0, floor_scale),
+        );
+        let mvp = mat4_mul(&proj, &mat4_mul(&view, &model));
+
+        gl::uniform_matrix4fv(s.loc_mvp, false, &mvp);
+        gl::uniform_matrix4fv(s.loc_model, false, &model);
+        gl::uniform4f(s.loc_mat_color, 1.0, 1.0, 1.0, 1.0);
+
+        gl::active_texture(gl::GL_TEXTURE0);
+        gl::bind_texture(gl::GL_TEXTURE_2D, s.floor_tex);
+        gl::uniform1i(s.loc_texture, 0);
 
         gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.floor_vbo);
         setup_vertex_attribs(s.program);
-
         gl::draw_arrays(gl::GL_TRIANGLES, 0, 6);
+
+        gl::enable(gl::GL_CULL_FACE);
     }
 
     // ── Swap to canvas ───────────────────────────────────────────────────
@@ -633,11 +872,11 @@ fn main() {
     let floor_data: [f32; 48] = [
         // pos          normal       uv
         -0.5, 0.0, -0.5,  0.0, 1.0, 0.0,  0.0, 0.0,
-         0.5, 0.0, -0.5,  0.0, 1.0, 0.0,  3.0, 0.0,
-         0.5, 0.0,  0.5,  0.0, 1.0, 0.0,  3.0, 3.0,
+         0.5, 0.0, -0.5,  0.0, 1.0, 0.0,  1.0, 0.0,
+         0.5, 0.0,  0.5,  0.0, 1.0, 0.0,  1.0, 1.0,
         -0.5, 0.0, -0.5,  0.0, 1.0, 0.0,  0.0, 0.0,
-         0.5, 0.0,  0.5,  0.0, 1.0, 0.0,  3.0, 3.0,
-        -0.5, 0.0,  0.5,  0.0, 1.0, 0.0,  0.0, 3.0,
+         0.5, 0.0,  0.5,  0.0, 1.0, 0.0,  1.0, 1.0,
+        -0.5, 0.0,  0.5,  0.0, 1.0, 0.0,  0.0, 1.0,
     ];
     let mut floor_vbo = [0u32; 1];
     gl::gen_buffers(1, &mut floor_vbo);
@@ -663,6 +902,26 @@ fn main() {
         gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, &gradient_data);
     gl::tex_parameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, gl::GL_LINEAR as i32);
 
+    // Boing ball texture (red/white checkerboard, 8 cols × 8 rows like the Amiga original)
+    let boing_data = generate_boing_texture(64, 8, 8);
+    let mut boing_tex = [0u32; 1];
+    gl::gen_textures(1, &mut boing_tex);
+    gl::bind_texture(gl::GL_TEXTURE_2D, boing_tex[0]);
+    gl::tex_image_2d(gl::GL_TEXTURE_2D, 0, gl::GL_RGBA as i32, 64, 64, 0,
+        gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, &boing_data);
+    gl::tex_parameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, gl::GL_NEAREST as i32);
+
+    // Floor texture with checkerboard + "anyOS" logo
+    let floor_tex_size = 256;
+    let floor_data = generate_floor_texture(floor_tex_size);
+    let mut floor_tex = [0u32; 1];
+    gl::gen_textures(1, &mut floor_tex);
+    gl::bind_texture(gl::GL_TEXTURE_2D, floor_tex[0]);
+    gl::tex_image_2d(gl::GL_TEXTURE_2D, 0, gl::GL_RGBA as i32, floor_tex_size as i32, floor_tex_size as i32, 0,
+        gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, &floor_data);
+    gl::tex_parameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, gl::GL_LINEAR as i32);
+    gl::tex_parameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, gl::GL_LINEAR as i32);
+
     anyos_std::println!("gldemo: textures created");
 
     // ── FPS counter label (top-right area) ──────────────────────────────
@@ -671,6 +930,100 @@ fn main() {
     fps_label.set_text_color(0xFF00FF88);
     fps_label.set_font_size(13);
     window.add(&fps_label);
+
+    // ── Initialize physics world ────────────────────────────────────────
+    gl::physics_create_world();
+    gl::physics_set_gravity(0.0, -9.81, 0.0);
+
+    // Floor plane: y = -0.5, normal pointing up
+    let _phys_floor = gl::physics_add_plane(0.0, 1.0, 0.0, -0.5);
+    gl::physics_set_restitution(_phys_floor, 0.6);
+
+    // Wall planes (invisible boundaries, scaled with camera distance)
+    let wall_d = -2.5;
+    let phys_wall_l = gl::physics_add_plane(1.0, 0.0, 0.0, wall_d);  // left wall at x=-2.5
+    gl::physics_set_restitution(phys_wall_l, 0.8);
+    let phys_wall_r = gl::physics_add_plane(-1.0, 0.0, 0.0, wall_d); // right wall at x=2.5
+    gl::physics_set_restitution(phys_wall_r, 0.8);
+    let phys_wall_f = gl::physics_add_plane(0.0, 0.0, -1.0, wall_d); // front wall at z=2.5
+    gl::physics_set_restitution(phys_wall_f, 0.8);
+    let phys_wall_b = gl::physics_add_plane(0.0, 0.0, 1.0, wall_d);  // back wall at z=-2.5
+    gl::physics_set_restitution(phys_wall_b, 0.8);
+
+    // Gold sphere: mass=2.0 kg, radius=0.8, resting on floor (y = -0.5 + 0.8 = 0.3)
+    let phys_sphere = gl::physics_add_sphere(2.0, 0.8, -1.0, 0.3, 0.0);
+    gl::physics_set_restitution(phys_sphere, 0.7);
+    gl::physics_set_use_gravity(phys_sphere, true);
+
+    // Cube: mass=1.5 kg, half-extents=0.45, resting on floor (y = -0.5 + 0.45 = -0.05)
+    let phys_cube = gl::physics_add_box(1.5, 0.45, 0.45, 0.45, 1.2, -0.05, 0.0);
+    gl::physics_set_restitution(phys_cube, 0.4);
+
+    // Boing ball: mass=1.0 kg, radius=0.6, starts inactive (off-screen)
+    let phys_boing = gl::physics_add_sphere(1.0, 0.6, -5.0, 0.0, 0.5);
+    gl::physics_set_restitution(phys_boing, 0.92);
+    gl::physics_set_active(phys_boing, false);
+
+    anyos_std::println!("gldemo: physics world created ({} bodies)", gl::physics_body_count());
+
+    // ── Boing Ball button ─────────────────────────────────────────────────
+    let boing_btn = libanyui_client::Button::new("Boing!");
+    boing_btn.set_position(140, 2);
+    boing_btn.set_size(60, 22);
+    boing_btn.on_click(move |_| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.boing_active = true;
+
+        // Simple PRNG based on uptime for randomness
+        let seed = anyos_std::sys::uptime_ms();
+        let r1 = ((seed.wrapping_mul(1103515245).wrapping_add(12345)) >> 8) & 0xFFFF;
+        let r2 = ((r1.wrapping_mul(1103515245).wrapping_add(12345)) >> 8) & 0xFFFF;
+        let r3 = ((r2.wrapping_mul(1103515245).wrapping_add(12345)) >> 8) & 0xFFFF;
+        let r4 = ((r3.wrapping_mul(1103515245).wrapping_add(12345)) >> 8) & 0xFFFF;
+
+        // Random start edge: 0=left, 1=right, 2=back
+        let edge = (r1 % 3) as i32;
+        let (start_x, start_z) = match edge {
+            0 => (-2.4f32, (r2 as f32 / 65535.0) * 4.0 - 2.0),  // left wall
+            1 => (2.4f32, (r2 as f32 / 65535.0) * 4.0 - 2.0),   // right wall
+            _ => ((r2 as f32 / 65535.0) * 4.0 - 2.0, -2.4f32),  // back wall
+        };
+        let start_y = 1.0 + (r3 as f32 / 65535.0) * 2.0; // height 1.0..3.0
+
+        // Velocity aimed roughly toward center, with randomness
+        let dir_x = -start_x * 0.5 + (r3 as f32 / 65535.0 - 0.5) * 1.5;
+        let dir_z = -start_z * 0.5 + (r4 as f32 / 65535.0 - 0.5) * 1.5;
+        let speed = 2.0 + (r4 as f32 / 65535.0) * 3.0; // speed 2.0..5.0
+        let len = gl::sqrt(dir_x * dir_x + dir_z * dir_z);
+        let vx = if len > 0.01 { dir_x / len * speed } else { speed };
+        let vz = if len > 0.01 { dir_z / len * speed } else { 0.0 };
+        let vy = (r1 as f32 / 65535.0) * 2.0; // slight upward 0..2
+
+        gl::physics_set_active(s.phys_boing, true);
+        gl::physics_set_position(s.phys_boing, start_x, start_y, start_z);
+        gl::physics_set_velocity(s.phys_boing, vx, vy, vz);
+        gl::physics_set_angular_vel_y(s.phys_boing, speed * 0.5);
+    });
+    window.add(&boing_btn);
+
+    // ── Zoom buttons ──────────────────────────────────────────────────────
+    let zoom_in_btn = libanyui_client::Button::new("+");
+    zoom_in_btn.set_position(210, 2);
+    zoom_in_btn.set_size(28, 22);
+    zoom_in_btn.on_click(move |_| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.camera_dist = (s.camera_dist - 0.5).max(1.5);
+    });
+    window.add(&zoom_in_btn);
+
+    let zoom_out_btn = libanyui_client::Button::new("-");
+    zoom_out_btn.set_position(242, 2);
+    zoom_out_btn.set_size(28, 22);
+    zoom_out_btn.on_click(move |_| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.camera_dist = (s.camera_dist + 0.5).min(12.0);
+    });
+    window.add(&zoom_out_btn);
 
     // ── Store render state ───────────────────────────────────────────────
     unsafe {
@@ -688,6 +1041,8 @@ fn main() {
             floor_vbo: floor_vbo[0],
             checker_tex: checker_tex[0],
             gradient_tex: gradient_tex[0],
+            boing_tex: boing_tex[0],
+            floor_tex: floor_tex[0],
             loc_mvp,
             loc_model,
             loc_light_pos0,
@@ -695,6 +1050,20 @@ fn main() {
             loc_eye_pos,
             loc_texture,
             loc_mat_color,
+            phys_sphere,
+            phys_cube,
+            phys_boing,
+            phys_wall_l,
+            phys_wall_r,
+            phys_wall_f,
+            phys_wall_b,
+            boing_active: false,
+            camera_dist: 4.5,
+            camera_yaw: 0.0,
+            camera_pitch: 0.38,
+            drag_button: 0,
+            drag_last_x: 0,
+            drag_last_y: 0,
             frame: 0,
             fps_label,
             fps_frame_count: 0,
@@ -702,6 +1071,41 @@ fn main() {
             fps_display: 0,
         });
     }
+
+    // ── Mouse camera controls ────────────────────────────────────────────
+    // Left-drag = orbit, right-drag = zoom
+    let canvas_handle = canvas;
+    canvas_handle.on_mouse_down(|x, y, button| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.drag_button = button;
+        s.drag_last_x = x;
+        s.drag_last_y = y;
+    });
+    canvas_handle.on_mouse_up(|_x, _y, _button| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.drag_button = 0;
+    });
+    canvas_handle.on_mouse_move(|x, y| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        if s.drag_button == 0 { return; }
+        let dx = x - s.drag_last_x;
+        let dy = y - s.drag_last_y;
+        s.drag_last_x = x;
+        s.drag_last_y = y;
+        if s.drag_button == 1 {
+            // Left-drag: orbit
+            s.camera_yaw += dx as f32 * 0.01;
+            s.camera_pitch += dy as f32 * 0.01;
+            // Clamp pitch to avoid flipping
+            if s.camera_pitch < 0.05 { s.camera_pitch = 0.05; }
+            if s.camera_pitch > 1.5 { s.camera_pitch = 1.5; }
+        } else if s.drag_button == 2 {
+            // Right-drag: zoom (drag up = zoom in, drag down = zoom out)
+            s.camera_dist += dy as f32 * 0.03;
+            if s.camera_dist < 1.5 { s.camera_dist = 1.5; }
+            if s.camera_dist > 12.0 { s.camera_dist = 12.0; }
+        }
+    });
 
     // ── 60fps animation timer ────────────────────────────────────────────
     libanyui_client::set_timer(16, || {

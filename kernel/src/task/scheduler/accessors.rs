@@ -95,7 +95,7 @@ pub fn check_current_stack_canary(syscall_num: u32) {
     let tid = match sched.per_cpu[cpu_id].current_tid { Some(t) => t, None => return };
     let idx = match sched.current_idx(cpu_id) { Some(i) => i, None => return };
     if !sched.threads[idx].check_stack_canary() {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "STACK OVERFLOW after syscall {} in '{}' (TID={}) — killing",
             syscall_num, sched.threads[idx].name_str(), tid,
         );

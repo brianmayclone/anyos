@@ -85,7 +85,7 @@ pub fn init_bsp(lapic_phys: u32) {
 
     let id = lapic_id();
     let version = unsafe { read(LAPIC_VERSION) } & 0xFF;
-    crate::serial_println!("  LAPIC: BSP id={} version={:#x} at virt {:#010x}",
+    crate::serial_verbose_println!("  LAPIC: BSP id={} version={:#x} at virt {:#010x}",
         id, version, LAPIC_VIRT_BASE);
 
     LAPIC_INITIALIZED.store(true, Ordering::SeqCst);
@@ -109,15 +109,15 @@ pub fn init_ap() {
         let count = timer_initial_count();
         if count > 0 {
             start_timer_with_count(count);
-            crate::serial_println!("  LAPIC: AP id={} timer started (count={})", lapic_id(), count);
+            crate::serial_verbose_println!("  LAPIC: AP id={} timer started (count={})", lapic_id(), count);
         } else {
             write(LAPIC_TIMER, TIMER_MASKED);
-            crate::serial_println!("  LAPIC: AP id={} timer masked (BSP not yet calibrated)", lapic_id());
+            crate::serial_verbose_println!("  LAPIC: AP id={} timer masked (BSP not yet calibrated)", lapic_id());
         }
     }
 
     let id = lapic_id();
-    crate::serial_println!("  LAPIC: AP id={} initialized", id);
+    crate::serial_verbose_println!("  LAPIC: AP id={} initialized", id);
 }
 
 /// Calibrate and start the LAPIC timer for periodic scheduling.
@@ -128,7 +128,7 @@ pub fn init_ap() {
 pub fn calibrate_timer(target_hz: u32) {
     let tsc_hz = crate::arch::x86::pit::tsc_hz();
     if tsc_hz == 0 {
-        crate::serial_println!("  LAPIC timer: WARNING - TSC not calibrated, skipping");
+        crate::serial_verbose_println!("  LAPIC timer: WARNING - TSC not calibrated, skipping");
         return;
     }
 
@@ -158,7 +158,7 @@ pub fn calibrate_timer(target_hz: u32) {
         let ticks_per_second = elapsed as u64 * 100;
         let initial_count = (ticks_per_second / target_hz as u64) as u32;
 
-        crate::serial_println!("  LAPIC timer: {} ticks/10ms, initial_count={} for {}Hz",
+        crate::serial_verbose_println!("  LAPIC timer: {} ticks/10ms, initial_count={} for {}Hz",
             elapsed, initial_count, target_hz);
 
         // Store calibrated value for APs

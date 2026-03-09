@@ -30,7 +30,7 @@ pub fn load_hosts() {
     let data = match crate::fs::vfs::read_file_to_vec(HOSTS_PATH) {
         Ok(d) => d,
         Err(_) => {
-            crate::serial_println!("[NET] hosts file not found: {}", HOSTS_PATH);
+            crate::serial_verbose_println!("[NET] hosts file not found: {}", HOSTS_PATH);
             return;
         }
     };
@@ -38,7 +38,7 @@ pub fn load_hosts() {
     let text = match core::str::from_utf8(&data) {
         Ok(t) => t,
         Err(_) => {
-            crate::serial_println!("[NET] hosts file is not valid UTF-8");
+            crate::serial_verbose_println!("[NET] hosts file is not valid UTF-8");
             return;
         }
     };
@@ -81,7 +81,7 @@ pub fn load_hosts() {
         let mut table = HOSTS_TABLE.lock();
         *table = entries;
     }
-    crate::serial_println!("[OK] Loaded {} hosts entries from {}", count, HOSTS_PATH);
+    crate::serial_verbose_println!("[OK] Loaded {} hosts entries from {}", count, HOSTS_PATH);
 }
 
 /// Look up a hostname in the static hosts table.

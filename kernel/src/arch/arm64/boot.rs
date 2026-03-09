@@ -32,7 +32,7 @@ pub fn detect_memory() -> (u64, u64) {
     // TODO: Parse DTB to get actual memory regions
     // For now, QEMU -m 512M gives us this range.
 
-    crate::serial_println!("  Memory: {:#010x} - {:#010x} ({} MiB)",
+    crate::serial_verbose_println!("  Memory: {:#010x} - {:#010x} ({} MiB)",
         base, base + size, size / (1024 * 1024));
 
     (base, size)

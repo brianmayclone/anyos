@@ -252,7 +252,7 @@ impl<'a, T> Deref for SpinlockGuard<'a, T> {
         let addr = ptr as usize;
         let align = core::mem::align_of::<T>();
         if addr % align != 0 {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "BUG: Spinlock Deref misaligned ptr={:#x} align={} lock={:#x}",
                 addr, align, self.lock as *const _ as usize,
             );
@@ -271,7 +271,7 @@ impl<'a, T> DerefMut for SpinlockGuard<'a, T> {
         let addr = ptr as usize;
         let align = core::mem::align_of::<T>();
         if addr % align != 0 {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "BUG: Spinlock DerefMut misaligned ptr={:#x} align={} lock={:#x}",
                 addr, align, self.lock as *const _ as usize,
             );

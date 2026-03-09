@@ -182,6 +182,27 @@ struct LibGl {
     math_ceil: extern "C" fn(f32) -> f32,
     math_clamp: extern "C" fn(f32, f32, f32) -> f32,
     math_lerp: extern "C" fn(f32, f32, f32) -> f32,
+    // Physics
+    physics_create_world: extern "C" fn() -> u32,
+    physics_set_gravity: extern "C" fn(f32, f32, f32),
+    physics_step: extern "C" fn(f32),
+    physics_add_sphere: extern "C" fn(f32, f32, f32, f32, f32) -> u32,
+    physics_add_plane: extern "C" fn(f32, f32, f32, f32) -> u32,
+    physics_add_box: extern "C" fn(f32, f32, f32, f32, f32, f32, f32) -> u32,
+    physics_set_velocity: extern "C" fn(u32, f32, f32, f32),
+    physics_set_position: extern "C" fn(u32, f32, f32, f32),
+    physics_get_position: extern "C" fn(u32, *mut f32, *mut f32, *mut f32),
+    physics_get_velocity: extern "C" fn(u32, *mut f32, *mut f32, *mut f32),
+    physics_set_restitution: extern "C" fn(u32, f32),
+    physics_set_mass: extern "C" fn(u32, f32),
+    physics_apply_force: extern "C" fn(u32, f32, f32, f32),
+    physics_apply_impulse: extern "C" fn(u32, f32, f32, f32),
+    physics_set_angular_vel_y: extern "C" fn(u32, f32),
+    physics_get_rotation_y: extern "C" fn(u32) -> f32,
+    physics_set_use_gravity: extern "C" fn(u32, u32),
+    physics_set_active: extern "C" fn(u32, u32),
+    physics_set_plane_d: extern "C" fn(u32, f32),
+    physics_body_count: extern "C" fn() -> u32,
 }
 
 static mut LIB: Option<LibGl> = None;
@@ -293,6 +314,26 @@ pub fn init() -> bool {
             math_ceil: resolve(&handle, "gl_math_ceil"),
             math_clamp: resolve(&handle, "gl_math_clamp"),
             math_lerp: resolve(&handle, "gl_math_lerp"),
+            physics_create_world: resolve(&handle, "gl_physics_create_world"),
+            physics_set_gravity: resolve(&handle, "gl_physics_set_gravity"),
+            physics_step: resolve(&handle, "gl_physics_step"),
+            physics_add_sphere: resolve(&handle, "gl_physics_add_sphere"),
+            physics_add_plane: resolve(&handle, "gl_physics_add_plane"),
+            physics_add_box: resolve(&handle, "gl_physics_add_box"),
+            physics_set_velocity: resolve(&handle, "gl_physics_set_velocity"),
+            physics_set_position: resolve(&handle, "gl_physics_set_position"),
+            physics_get_position: resolve(&handle, "gl_physics_get_position"),
+            physics_get_velocity: resolve(&handle, "gl_physics_get_velocity"),
+            physics_set_restitution: resolve(&handle, "gl_physics_set_restitution"),
+            physics_set_mass: resolve(&handle, "gl_physics_set_mass"),
+            physics_apply_force: resolve(&handle, "gl_physics_apply_force"),
+            physics_apply_impulse: resolve(&handle, "gl_physics_apply_impulse"),
+            physics_set_angular_vel_y: resolve(&handle, "gl_physics_set_angular_vel_y"),
+            physics_get_rotation_y: resolve(&handle, "gl_physics_get_rotation_y"),
+            physics_set_use_gravity: resolve(&handle, "gl_physics_set_use_gravity"),
+            physics_set_active: resolve(&handle, "gl_physics_set_active"),
+            physics_set_plane_d: resolve(&handle, "gl_physics_set_plane_d"),
+            physics_body_count: resolve(&handle, "gl_physics_body_count"),
             _handle: handle,
         };
         LIB = Some(lib);
@@ -518,6 +559,11 @@ pub fn draw_elements(mode: GLenum, count: i32, type_: GLenum, offset: usize) {
     (lib().draw_elements)(mode, count, type_, offset as *const u8);
 }
 
+/// Set color write mask (which RGBA channels are written).
+pub fn color_mask(r: bool, g: bool, b: bool, a: bool) {
+    (lib().color_mask)(r as u8, g as u8, b as u8, a as u8);
+}
+
 /// Flush.
 pub fn flush() { (lib().flush)(); }
 
@@ -586,3 +632,105 @@ pub fn clamp(x: f32, lo: f32, hi: f32) -> f32 { (lib().math_clamp)(x, lo, hi) }
 
 /// Linear interpolation.
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 { (lib().math_lerp)(a, b, t) }
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Physics Engine
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Create/reset the physics world.
+pub fn physics_create_world() { (lib().physics_create_world)(); }
+
+/// Set the gravity vector (default: 0, -9.81, 0).
+pub fn physics_set_gravity(gx: f32, gy: f32, gz: f32) { (lib().physics_set_gravity)(gx, gy, gz); }
+
+/// Step the physics simulation by `dt` seconds.
+pub fn physics_step(dt: f32) { (lib().physics_step)(dt); }
+
+/// Add a sphere body with given mass, radius, and position. Returns body ID.
+pub fn physics_add_sphere(mass: f32, radius: f32, x: f32, y: f32, z: f32) -> u32 {
+    (lib().physics_add_sphere)(mass, radius, x, y, z)
+}
+
+/// Add an infinite plane (static). Returns body ID.
+pub fn physics_add_plane(nx: f32, ny: f32, nz: f32, d: f32) -> u32 {
+    (lib().physics_add_plane)(nx, ny, nz, d)
+}
+
+/// Add an axis-aligned box body. Returns body ID.
+pub fn physics_add_box(mass: f32, hx: f32, hy: f32, hz: f32, x: f32, y: f32, z: f32) -> u32 {
+    (lib().physics_add_box)(mass, hx, hy, hz, x, y, z)
+}
+
+/// Set body velocity.
+pub fn physics_set_velocity(id: u32, vx: f32, vy: f32, vz: f32) {
+    (lib().physics_set_velocity)(id, vx, vy, vz);
+}
+
+/// Set body position.
+pub fn physics_set_position(id: u32, x: f32, y: f32, z: f32) {
+    (lib().physics_set_position)(id, x, y, z);
+}
+
+/// Get body position. Returns (x, y, z).
+pub fn physics_get_position(id: u32) -> (f32, f32, f32) {
+    let (mut x, mut y, mut z) = (0.0f32, 0.0f32, 0.0f32);
+    (lib().physics_get_position)(id, &mut x, &mut y, &mut z);
+    (x, y, z)
+}
+
+/// Get body velocity. Returns (vx, vy, vz).
+pub fn physics_get_velocity(id: u32) -> (f32, f32, f32) {
+    let (mut vx, mut vy, mut vz) = (0.0f32, 0.0f32, 0.0f32);
+    (lib().physics_get_velocity)(id, &mut vx, &mut vy, &mut vz);
+    (vx, vy, vz)
+}
+
+/// Set coefficient of restitution (bounciness, 0.0 = no bounce, 1.0 = perfect bounce).
+pub fn physics_set_restitution(id: u32, e: f32) {
+    (lib().physics_set_restitution)(id, e);
+}
+
+/// Set body mass (0.0 = static/immovable).
+pub fn physics_set_mass(id: u32, mass: f32) {
+    (lib().physics_set_mass)(id, mass);
+}
+
+/// Apply a force to a body (accumulated until next step).
+pub fn physics_apply_force(id: u32, fx: f32, fy: f32, fz: f32) {
+    (lib().physics_apply_force)(id, fx, fy, fz);
+}
+
+/// Apply an impulse (instant velocity change).
+pub fn physics_apply_impulse(id: u32, ix: f32, iy: f32, iz: f32) {
+    (lib().physics_apply_impulse)(id, ix, iy, iz);
+}
+
+/// Set angular velocity around Y axis (rad/s).
+pub fn physics_set_angular_vel_y(id: u32, omega: f32) {
+    (lib().physics_set_angular_vel_y)(id, omega);
+}
+
+/// Get current Y rotation angle (rad).
+pub fn physics_get_rotation_y(id: u32) -> f32 {
+    (lib().physics_get_rotation_y)(id)
+}
+
+/// Set whether body is affected by gravity.
+pub fn physics_set_use_gravity(id: u32, use_grav: bool) {
+    (lib().physics_set_use_gravity)(id, if use_grav { 1 } else { 0 });
+}
+
+/// Set body active/inactive.
+pub fn physics_set_active(id: u32, active: bool) {
+    (lib().physics_set_active)(id, if active { 1 } else { 0 });
+}
+
+/// Update the distance parameter of a plane collider.
+pub fn physics_set_plane_d(id: u32, d: f32) {
+    (lib().physics_set_plane_d)(id, d);
+}
+
+/// Get number of bodies in the world.
+pub fn physics_body_count() -> u32 {
+    (lib().physics_body_count)()
+}

@@ -64,7 +64,7 @@ pub fn write_stored_perms(uid: u16, app_id: &str, granted: CapSet) -> bool {
             true
         }
         Err(e) => {
-            crate::serial_println!("PERM: write_stored_perms failed: path='{}' err={:?}", path, e);
+            crate::serial_verbose_println!("PERM: write_stored_perms failed: path='{}' err={:?}", path, e);
             false
         }
     }

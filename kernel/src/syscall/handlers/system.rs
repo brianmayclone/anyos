@@ -675,3 +675,13 @@ pub fn sys_shutdown(mode: u32) -> u32 {
         crate::arch::hal::halt();
     }
 }
+
+/// SYS_SET_SERIAL_VERBOSE (283): Enable or disable verbose serial output.
+/// arg1: 0 = disable (default, kernel-only output), 1 = enable (all driver/subsystem messages).
+/// Returns 0 on success.
+pub fn sys_set_serial_verbose(enable: u32) -> u32 {
+    let enabled = enable != 0;
+    crate::drivers::serial::set_verbose(enabled);
+    crate::serial_println!("kernel: serial verbose mode {}", if enabled { "enabled" } else { "disabled" });
+    0
+}

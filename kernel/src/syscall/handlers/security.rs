@@ -41,11 +41,11 @@ pub fn sys_authenticate(username_ptr: u32, password_ptr: u32) -> u32 {
         Some((uid, gid)) => {
             let tid = crate::task::scheduler::current_tid();
             crate::task::scheduler::set_process_identity(tid, uid, gid);
-            crate::serial_println!("  AUTH: T{} authenticated as {}(uid={}, gid={})", tid, username, uid, gid);
+            crate::serial_verbose_println!("  AUTH: T{} authenticated as {}(uid={}, gid={})", tid, username, uid, gid);
             0
         }
         None => {
-            crate::serial_println!("  AUTH: Failed authentication for '{}'", username);
+            crate::serial_verbose_println!("  AUTH: Failed authentication for '{}'", username);
             u32::MAX
         }
     }
@@ -149,7 +149,7 @@ pub fn sys_adduser(data_ptr: u32) -> u32 {
         let _ = crate::fs::vfs::set_owner(homedir, uid, gid);
         let _ = crate::fs::vfs::set_mode(homedir, 0xFF0); // owner+group full, others none
 
-        crate::serial_println!("  ADDUSER: Created user '{}' uid={} gid={} home={}", username, uid, gid, homedir);
+        crate::serial_verbose_println!("  ADDUSER: Created user '{}' uid={} gid={} home={}", username, uid, gid, homedir);
         uid as u32
     } else {
         u32::MAX
@@ -214,10 +214,10 @@ pub fn sys_chpasswd(data_ptr: u32) -> u32 {
     };
     let hash_str = core::str::from_utf8(&hash).unwrap_or("");
 
-    crate::serial_println!("  CHPASSWD: user='{}' new_pass='{}' hash='{}'", username, new_password, hash_str);
+    crate::serial_verbose_println!("  CHPASSWD: user='{}' new_pass='{}' hash='{}'", username, new_password, hash_str);
 
     if crate::task::users::change_password(username, hash_str) {
-        crate::serial_println!("  CHPASSWD: Password changed for '{}'", username);
+        crate::serial_verbose_println!("  CHPASSWD: Password changed for '{}'", username);
         0
     } else {
         u32::MAX
@@ -340,7 +340,7 @@ pub fn sys_perm_store(app_id_ptr: u32, granted: u32, uid_arg: u32) -> u32 {
     };
 
     if crate::task::permissions::write_stored_perms(uid, app_id, granted) {
-        crate::serial_println!("PERM_STORE: uid={} app='{}' granted={:#x}", uid, app_id, granted);
+        crate::serial_verbose_println!("PERM_STORE: uid={} app='{}' granted={:#x}", uid, app_id, granted);
         0
     } else {
         u32::MAX
@@ -389,7 +389,7 @@ pub fn sys_perm_delete(app_id_ptr: u32) -> u32 {
     let uid = crate::task::scheduler::current_thread_uid();
 
     if crate::task::permissions::delete_stored_perms(uid, app_id) {
-        crate::serial_println!("PERM_DELETE: uid={} app='{}'", uid, app_id);
+        crate::serial_verbose_println!("PERM_DELETE: uid={} app='{}'", uid, app_id);
         0
     } else {
         u32::MAX
@@ -433,7 +433,7 @@ static SESSIONHOST_TID: AtomicU32 = AtomicU32::new(0);
 pub fn sys_register_sessionhost() -> u32 {
     let tid = crate::task::scheduler::current_tid();
     if SESSIONHOST_TID.compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-        crate::serial_println!("[OK] Sessionhost registered (TID={})", tid);
+        crate::serial_verbose_println!("[OK] Sessionhost registered (TID={})", tid);
         0
     } else {
         u32::MAX

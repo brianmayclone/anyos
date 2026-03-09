@@ -1,6 +1,6 @@
 # anyOS Syscall Reference
 
-Complete reference for all 170+ system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
+Complete reference for all 184 system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
 
 ## Calling Conventions
 
@@ -54,8 +54,8 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 10 | `fork` | — | child_tid (parent) / 0 (child) | Fork current process. Child gets copy of address space, returns 0. Parent returns child TID |
 | 11 | `exec` | path_ptr, args_ptr | never returns / 0xFFFFFFFF | Replace current process image with new program. On failure returns error |
 | 12 | `waitpid` | tid | exit_code | Block until process exits; returns its exit code |
-| 13 | `kill` | tid | 0 or error | Terminate thread by TID |
-| 29 | `try_waitpid` | tid | code, 0xFFFFFFFE, or 0xFFFFFFFF | Non-blocking: exit code if done, `STILL_RUNNING` if alive, `NOT_FOUND` if invalid |
+| 13 | `kill` | tid, sig | 0 or error | Send signal to thread. sig=0 or 9→SIGKILL (force-kill), 20→SIGTSTP (stop), 18→SIGCONT (continue), others→queued for delivery |
+| 29 | `try_waitpid` | tid | code, 0xFFFFFFFD, 0xFFFFFFFE, or 0xFFFFFFFF | Non-blocking: exit code if done, `STOPPED` (0xFFFFFFFD) if stopped by signal, `STILL_RUNNING` (0xFFFFFFFE) if alive, `NOT_FOUND` (0xFFFFFFFF) if invalid |
 | 247 | `getppid` | — | parent_tid | Get parent process/thread ID |
 
 ## Process Spawning
@@ -374,6 +374,50 @@ Runtime per-user, per-app permission management. Apps declare capabilities in th
 | 245 | `sigprocmask` | how, set | old_mask | Modify signal mask. how: 0=SIG_BLOCK, 1=SIG_UNBLOCK, 2=SIG_SETMASK. SIGKILL/SIGSTOP cannot be blocked |
 | 246 | `sigreturn` | — | — | Return from signal handler (called by trampoline, not user code). Restores saved register context |
 
+### Signal Numbers
+
+| Signal | # | Default Action | Description |
+|--------|---|---------------|-------------|
+| SIGHUP | 1 | Terminate | Hangup |
+| SIGINT | 2 | Terminate | Interrupt (Ctrl+C) |
+| SIGQUIT | 3 | Terminate | Quit |
+| SIGKILL | 9 | Terminate | Force kill (cannot be caught/blocked) |
+| SIGPIPE | 13 | Terminate | Broken pipe |
+| SIGALRM | 14 | Terminate | Alarm clock |
+| SIGTERM | 15 | Terminate | Termination request |
+| SIGCHLD | 17 | Ignore | Child status changed |
+| SIGCONT | 18 | Continue | Resume stopped process (clears pending SIGTSTP/SIGSTOP) |
+| SIGSTOP | 19 | Stop | Force stop (cannot be caught/blocked) |
+| SIGTSTP | 20 | Stop | Terminal stop (Ctrl+Z) |
+| SIGTTIN | 21 | Stop | Background read from terminal |
+| SIGTTOU | 22 | Stop | Background write to terminal |
+
+### Job Control Flow
+
+```
+Terminal Ctrl+Z → send_signal(tid, SIGTSTP=20)
+  → Kernel sets ThreadState::Stopped, thread removed from scheduler
+  → try_waitpid() returns STOPPED (0xFFFFFFFD)
+  → Terminal moves process to stopped job list
+
+Terminal "fg" → send_signal(tid, SIGCONT=18)
+  → Kernel sets ThreadState::Ready, re-enqueues in run queue
+  → Terminal re-attaches process as foreground
+
+Terminal "bg" → send_signal(tid, SIGCONT=18)
+  → Process resumes in background
+```
+
+### Thread States
+
+| State | Value | Description |
+|-------|-------|-------------|
+| Ready | 0 | Eligible for scheduling |
+| Running | 1 | Currently on CPU |
+| Blocked | 2 | Waiting for event (waitpid, sleep) |
+| Terminated | 3 | Exited, awaiting reaping |
+| Stopped | 4 | Stopped by signal, not schedulable until SIGCONT |
+
 ## Crash Diagnostics
 
 | # | Name | Args | Return | Description |
@@ -404,6 +448,7 @@ Runtime per-user, per-app permission management. Apps declare capabilities in th
 | # | Name | Args | Return | Description |
 |---|------|------|--------|-------------|
 | 282 | `shutdown` | cmd | — | Power management. cmd: 0=shutdown, 1=reboot |
+| 283 | `set_serial_verbose` | enable | 0 | Enable (1) or disable (0) verbose serial output. When enabled, driver and subsystem debug messages are printed to serial console |
 
 ## Debug / Trace (anyTrace)
 

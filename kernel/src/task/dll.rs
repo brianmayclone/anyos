@@ -473,19 +473,19 @@ fn apply_elf_relocations(
 fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     // ── Validate ELF64 header ──
     if data.len() < 64 {
-        crate::serial_println!("  dload: ELF too small");
+        crate::serial_verbose_println!("  dload: ELF too small");
         return None;
     }
     if data[EI_CLASS] != ELFCLASS64 {
-        crate::serial_println!("  dload: not ELF64");
+        crate::serial_verbose_println!("  dload: not ELF64");
         return None;
     }
     if data[EI_DATA] != ELFDATA2LSB {
-        crate::serial_println!("  dload: not little-endian");
+        crate::serial_verbose_println!("  dload: not little-endian");
         return None;
     }
     if read_u16_le(data, E_TYPE) != ET_DYN {
-        crate::serial_println!("  dload: not ET_DYN");
+        crate::serial_verbose_println!("  dload: not ET_DYN");
         return None;
     }
     #[cfg(target_arch = "x86_64")]
@@ -493,7 +493,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     #[cfg(target_arch = "aarch64")]
     let expected_machine = EM_AARCH64;
     if read_u16_le(data, E_MACHINE) != expected_machine {
-        crate::serial_println!("  dload: wrong architecture (expected {})", expected_machine);
+        crate::serial_verbose_println!("  dload: wrong architecture (expected {})", expected_machine);
         return None;
     }
 
@@ -502,7 +502,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     let phnum = read_u16_le(data, E_PHNUM) as usize;
 
     if phentsize < 56 || phoff + phnum * phentsize > data.len() {
-        crate::serial_println!("  dload: invalid program headers");
+        crate::serial_verbose_println!("  dload: invalid program headers");
         return None;
     }
 
@@ -554,7 +554,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     }
 
     if !has_ro {
-        crate::serial_println!("  dload: no RX PT_LOAD segment");
+        crate::serial_verbose_println!("  dload: no RX PT_LOAD segment");
         return None;
     }
 
@@ -567,7 +567,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
             match rw_vaddr.checked_add(rw_memsz) {
                 Some(v) => v,
                 None => {
-                    crate::serial_println!("  dload: rw_vaddr+rw_memsz overflow");
+                    crate::serial_verbose_println!("  dload: rw_vaddr+rw_memsz overflow");
                     return None;
                 }
             }
@@ -577,7 +577,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         let aligned_size = (total_vsize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let b = NEXT_DYNAMIC_BASE.fetch_add(aligned_size, Ordering::SeqCst);
         if b.checked_add(aligned_size).map_or(true, |end| end > 0x0800_0000) {
-            crate::serial_println!("  dload: address space exhausted");
+            crate::serial_verbose_println!("  dload: address space exhausted");
             return None;
         }
         (b, b) // load_bias = actual_base since link_base = 0
@@ -606,7 +606,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
 
     let end_vaddr = actual_base + (total_pages as u64) * PAGE_SIZE;
     if end_vaddr > 0x0800_0000 {
-        crate::serial_println!("  dload: .so at {:#x} exceeds DLIB range", actual_base);
+        crate::serial_verbose_println!("  dload: .so at {:#x} exceeds DLIB range", actual_base);
         return None;
     }
 
@@ -616,7 +616,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         for dll in dlls.iter() {
             let dll_end = dll.base_vaddr + (dll.total_pages as u64) * PAGE_SIZE;
             if actual_base < dll_end && end_vaddr > dll.base_vaddr {
-                crate::serial_println!(
+                crate::serial_verbose_println!(
                     "  dload: address conflict: .so at {:#x} overlaps {} at {:#x}",
                     actual_base,
                     core::str::from_utf8(&dll.name).unwrap_or("?"),
@@ -725,7 +725,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     });
 
     if load_bias != 0 {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "[OK] dload ELF64 ET_DYN: '{}' at {:#010x} (relocated, {} relocs, {} RO + {} data + {} BSS pages)",
             name,
             actual_base,
@@ -735,7 +735,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
             bss_page_count
         );
     } else {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "[OK] dload ELF64 ET_DYN: '{}' at {:#010x} ({} RO + {} data + {} BSS pages)",
             name,
             actual_base,
@@ -804,7 +804,7 @@ pub fn load_dll(path: &str, expected_base: u64) -> Result<u32, &'static str> {
         total_pages: total,
     });
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "[OK] DLIB v3: {} at {:#010x} ({} RO + {} data + {} BSS pages)",
         name,
         base_vaddr,
@@ -928,7 +928,7 @@ pub fn handle_dll_demand_page(vaddr: u64) -> bool {
 pub fn load_dll_dynamic(path: &str) -> Option<u64> {
     // Validate extension
     if !path.ends_with(".dlib") && !path.ends_with(".so") {
-        crate::serial_println!("  dload: unsupported extension: '{}'", path);
+        crate::serial_verbose_println!("  dload: unsupported extension: '{}'", path);
         return None;
     }
 
@@ -941,7 +941,7 @@ pub fn load_dll_dynamic(path: &str) -> Option<u64> {
     let data = match crate::fs::vfs::read_file_to_vec(path) {
         Ok(d) => d,
         Err(_) => {
-            crate::serial_println!("  dload: failed to read '{}'", path);
+            crate::serial_verbose_println!("  dload: failed to read '{}'", path);
             return None;
         }
     };
@@ -954,7 +954,7 @@ pub fn load_dll_dynamic(path: &str) -> Option<u64> {
         return load_dlib_v3_dynamic(&data, path);
     }
 
-    crate::serial_println!("  dload: unrecognized file format in '{}'", path);
+    crate::serial_verbose_println!("  dload: unrecognized file format in '{}'", path);
     None
 }
 
@@ -963,7 +963,7 @@ fn load_dlib_v3_dynamic(data: &[u8], path: &str) -> Option<u64> {
     let (base_vaddr, ro_count, data_count, bss_count, total) = match parse_dlib_header(data) {
         Ok(h) => h,
         Err(e) => {
-            crate::serial_println!("  dload: header error in '{}': {}", path, e);
+            crate::serial_verbose_println!("  dload: header error in '{}': {}", path, e);
             return None;
         }
     };
@@ -976,7 +976,7 @@ fn load_dlib_v3_dynamic(data: &[u8], path: &str) -> Option<u64> {
         let aligned_size = (total as u64) * PAGE_SIZE;
         let b = NEXT_DYNAMIC_BASE.fetch_add(aligned_size, Ordering::SeqCst);
         if b + aligned_size > 0x0800_0000 {
-            crate::serial_println!("  dload: DLIB address space exhausted at {:#x}", b);
+            crate::serial_verbose_println!("  dload: DLIB address space exhausted at {:#x}", b);
             return None;
         }
         b
@@ -984,7 +984,7 @@ fn load_dlib_v3_dynamic(data: &[u8], path: &str) -> Option<u64> {
 
     // Sanity check: stay within DLIB range
     if base + (total as u64) * PAGE_SIZE > 0x0800_0000 {
-        crate::serial_println!("  dload: DLIB at {:#x} exceeds range", base);
+        crate::serial_verbose_println!("  dload: DLIB at {:#x} exceeds range", base);
         return None;
     }
 
@@ -994,7 +994,7 @@ fn load_dlib_v3_dynamic(data: &[u8], path: &str) -> Option<u64> {
     let ro_pages = match alloc_and_copy_pages(data, content_base, ro_count as usize, temp_virt) {
         Ok(p) => p,
         Err(_) => {
-            crate::serial_println!("  dload: OOM allocating RO pages for '{}'", path);
+            crate::serial_verbose_println!("  dload: OOM allocating RO pages for '{}'", path);
             return None;
         }
     };
@@ -1004,7 +1004,7 @@ fn load_dlib_v3_dynamic(data: &[u8], path: &str) -> Option<u64> {
         match alloc_and_copy_pages(data, data_offset, data_count as usize, temp_virt) {
             Ok(p) => p,
             Err(_) => {
-                crate::serial_println!("  dload: OOM allocating data template for '{}'", path);
+                crate::serial_verbose_println!("  dload: OOM allocating data template for '{}'", path);
                 return None;
             }
         };
@@ -1026,7 +1026,7 @@ fn load_dlib_v3_dynamic(data: &[u8], path: &str) -> Option<u64> {
         total_pages: total,
     });
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "[OK] dload DLIB v3: '{}' at {:#010x} ({} RO + {} data + {} BSS pages)",
         name,
         base,

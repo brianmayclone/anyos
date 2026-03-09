@@ -97,6 +97,18 @@ pub fn kill(tid: u32) -> u32 {
     syscall2(SYS_KILL, tid as u64, 9) // 9 = SIGKILL
 }
 
+/// Send a specific signal to a thread. Returns 0 on success, u32::MAX on failure.
+pub fn send_signal(tid: u32, sig: u32) -> u32 {
+    syscall2(SYS_KILL, tid as u64, sig as u64)
+}
+
+/// Process is stopped by signal (SIGTSTP/SIGSTOP).
+pub const STOPPED: u32 = u32::MAX - 2;
+
+/// Signal numbers for job control.
+pub const SIGTSTP: u32 = 20;
+pub const SIGCONT: u32 = 18;
+
 /// Power off the system. Requires `CAP_SYSTEM`.
 ///
 /// This function does not return.

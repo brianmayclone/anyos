@@ -32,5 +32,5 @@ pub fn init() {
             options(nomem, nostack, preserves_flags),
         );
     }
-    crate::serial_println!("[OK] PAT programmed (PAT1=WC)");
+    crate::serial_verbose_println!("[OK] PAT programmed (PAT1=WC)");
 }

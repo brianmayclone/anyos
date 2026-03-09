@@ -173,7 +173,7 @@ pub fn init() {
     // Log results
     let max_mhz = MAX_FREQ_MHZ.load(Ordering::Relaxed);
     let base_mhz = BASE_FREQ_MHZ.load(Ordering::Relaxed);
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "[OK] CPU Power: HWP={} Turbo={} APERF={} AMD={} max={}MHz base={}MHz C-states=C0..C{}",
         has_hwp(), has_turbo(), has_aperf(), is_amd, max_mhz, base_mhz,
         MAX_CSTATE.load(Ordering::Relaxed)
@@ -227,7 +227,7 @@ fn init_intel_hwp() {
         MAX_FREQ_MHZ.store(max_mhz, Ordering::Relaxed);
         BASE_FREQ_MHZ.store(efficient * 100, Ordering::Relaxed);
 
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  HWP: highest={} efficient={} → max={}MHz",
             highest, efficient, max_mhz
         );
@@ -251,13 +251,13 @@ fn init_intel_legacy_pstate() {
             // Request max performance
             wrmsr(MSR_PERF_CTL, (max_ratio as u64) << 8);
 
-            crate::serial_println!("  Legacy P-state: ratio={} → max={}MHz", max_ratio, max_mhz);
+            crate::serial_verbose_println!("  Legacy P-state: ratio={} → max={}MHz", max_ratio, max_mhz);
         } else {
             // Fallback: use TSC frequency
             let tsc_mhz = (crate::arch::x86::pit::tsc_hz() / 1_000_000) as u32;
             MAX_FREQ_MHZ.store(tsc_mhz, Ordering::Relaxed);
             BASE_FREQ_MHZ.store(tsc_mhz, Ordering::Relaxed);
-            crate::serial_println!("  Legacy P-state: using TSC={}MHz (no PLATFORM_INFO)", tsc_mhz);
+            crate::serial_verbose_println!("  Legacy P-state: using TSC={}MHz (no PLATFORM_INFO)", tsc_mhz);
         }
     }
 }
@@ -273,13 +273,13 @@ fn init_amd_pstates() {
             let freq = amd_pstate_frequency(pstate0);
             MAX_FREQ_MHZ.store(freq, Ordering::Relaxed);
             BASE_FREQ_MHZ.store(freq, Ordering::Relaxed);
-            crate::serial_println!("  AMD P-state 0: {}MHz", freq);
+            crate::serial_verbose_println!("  AMD P-state 0: {}MHz", freq);
         } else {
             // Fallback to TSC
             let tsc_mhz = (crate::arch::x86::pit::tsc_hz() / 1_000_000) as u32;
             MAX_FREQ_MHZ.store(tsc_mhz, Ordering::Relaxed);
             BASE_FREQ_MHZ.store(tsc_mhz, Ordering::Relaxed);
-            crate::serial_println!("  AMD: using TSC={}MHz (no P-state info)", tsc_mhz);
+            crate::serial_verbose_println!("  AMD: using TSC={}MHz (no P-state info)", tsc_mhz);
         }
     }
 }

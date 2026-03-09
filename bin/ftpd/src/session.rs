@@ -241,9 +241,14 @@ impl<'a> Session<'a> {
             }
 
             let n = net::tcp_recv(self.ctrl, &mut recv_buf);
-            if n == 0 || n == u32::MAX {
+            if n == 0 {
                 self.log_info("connection closed");
                 break;
+            }
+            if n == u32::MAX {
+                // Timeout (tcp_recv has ~3s kernel timeout) — just retry.
+                // Real disconnects are caught by the idle timeout at loop top.
+                continue;
             }
             self.last_activity_ms = sys::uptime_ms();
             acc.extend_from_slice(&recv_buf[..n as usize]);
@@ -1111,7 +1116,6 @@ impl<'a> Session<'a> {
 
         let mut dir_buf = [0u8; 64 * 256];
         let count = fs::readdir(&cwd, &mut dir_buf);
-        anyos_std::println!("ftpd: LIST cwd='{}' readdir count={}", cwd, count);
         let mut output: Vec<u8> = Vec::new();
         for i in 0..count as usize {
             let entry_offset = i * 64;
@@ -1153,7 +1157,6 @@ impl<'a> Session<'a> {
             output.push(b'\n');
         }
         let _ = arg; // NLST variant would use path, LIST ignores it
-        anyos_std::println!("ftpd: LIST sending {} bytes on data socket", output.len());
         net::tcp_send(data_sock, &output);
         net::tcp_close(data_sock);
         self.reply("226", "Transfer complete.");

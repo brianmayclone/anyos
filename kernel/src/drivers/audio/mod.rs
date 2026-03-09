@@ -36,7 +36,7 @@ static AUDIO: Spinlock<Option<Box<dyn AudioDriver>>> = Spinlock::new(None);
 
 /// Register an audio driver (called from driver init during PCI probe).
 pub fn register(driver: Box<dyn AudioDriver>) {
-    crate::serial_println!("  Audio: registered '{}'", driver.name());
+    crate::serial_verbose_println!("  Audio: registered '{}'", driver.name());
     let mut audio = AUDIO.lock();
     *audio = Some(driver);
 }

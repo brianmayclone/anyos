@@ -258,7 +258,7 @@ pub fn sys_register_compositor() -> u32 {
 
         // Boost compositor to realtime priority so UI never stutters
         crate::task::scheduler::set_thread_priority(tid, 127);
-        crate::serial_println!("[OK] Compositor registered (TID={}, priority=127)", tid);
+        crate::serial_verbose_println!("[OK] Compositor registered (TID={}, priority=127)", tid);
         0
     } else {
         u32::MAX // Already registered
@@ -277,7 +277,7 @@ pub fn sys_cursor_takeover() -> u32 {
     let (x, y) = crate::drivers::gpu::splash_cursor_position();
     crate::drivers::gpu::disable_splash_cursor();
     crate::drivers::input::mouse::clear_buffer();
-    crate::serial_println!("Compositor cursor takeover: splash pos ({}, {})", x, y);
+    crate::serial_verbose_println!("Compositor cursor takeover: splash pos ({}, {})", x, y);
     ((x as u16 as u32) << 16) | (y as u16 as u32)
 }
 
@@ -329,7 +329,7 @@ pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
         info[3] = pitch;
     }
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "[OK] Framebuffer mapped to compositor at {:#010x} ({}x{}, pitch={}, phys={:#x})",
         fb_user_base, width, height, pitch, fb_phys
     );
@@ -419,7 +419,7 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
                     } else if count != (w * h) as usize {
                         false
                     } else if !is_valid_user_ptr(ptr, (count * 4) as u64) {
-                        crate::serial_println!("GPU DEFINE_CURSOR: invalid pixel ptr {:#x} count={}", ptr, count);
+                        crate::serial_verbose_println!("GPU DEFINE_CURSOR: invalid pixel ptr {:#x} count={}", ptr, count);
                         false
                     } else {
                         let pixels = unsafe {
@@ -596,7 +596,7 @@ pub fn sys_input_poll(_buf_ptr: u32, _max_events: u32) -> u32 {
 
 /// SYS_BOOT_READY: Signal from the compositor that the desktop is fully up.
 pub fn sys_boot_ready() -> u32 {
-    crate::serial_println!("[OK] Boot ready signal received from compositor");
+    crate::serial_verbose_println!("[OK] Boot ready signal received from compositor");
     0
 }
 
@@ -716,7 +716,7 @@ pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
     let pd_phys = match crate::task::scheduler::thread_page_directory(target_tid) {
         Some(pd) => pd,
         None => {
-            crate::serial_println!("VRAM_MAP: thread {} has no page directory", target_tid);
+            crate::serial_verbose_println!("VRAM_MAP: thread {} has no page directory", target_tid);
             return 0;
         }
     };
@@ -738,7 +738,7 @@ pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
         crate::memory::virtual_mem::map_page_in_pd(pd_phys, virt, phys, flags);
     }
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "VRAM_MAP: mapped {} pages at VA {:#x} for T{} (fb_phys={:#x}, offset={:#x})",
         pages, user_va_base, target_tid, fb_phys, vram_offset
     );
@@ -786,7 +786,7 @@ pub fn sys_gpu_register_backbuffer(buf_ptr: u32, buf_size: u32) -> u32 {
         );
         if pte & 1 == 0 {
             // Page not present — cannot register
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "GPU_REGISTER_BACKBUFFER: page {} not present (va={:#x})",
                 i, va
             );
@@ -804,14 +804,14 @@ pub fn sys_gpu_register_backbuffer(buf_ptr: u32, buf_size: u32) -> u32 {
 
     match ok {
         Some(true) => {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "GPU_REGISTER_BACKBUFFER: registered {} pages (buf={:#x}, size={})",
                 pages, buf_ptr, buf_size
             );
             0
         }
         _ => {
-            crate::serial_println!("GPU_REGISTER_BACKBUFFER: GPU driver rejected registration");
+            crate::serial_verbose_println!("GPU_REGISTER_BACKBUFFER: GPU driver rejected registration");
             u32::MAX
         }
     }

@@ -101,7 +101,7 @@ pub fn find_capabilities(pci: &PciDevice) -> Option<VirtioPciCaps> {
     // Check if device has capabilities list (Status register bit 4)
     let status = pci::pci_config_read16(pci.bus, pci.device, pci.function, 0x06);
     if status & (1 << 4) == 0 {
-        crate::serial_println!("  VirtIO: device has no capabilities list");
+        crate::serial_verbose_println!("  VirtIO: device has no capabilities list");
         return None;
     }
 
@@ -146,7 +146,7 @@ pub fn find_capabilities(pci: &PciDevice) -> Option<VirtioPciCaps> {
                     caps.common_offset = bar_offset;
                     caps.common_len = length;
                     found_common = true;
-                    crate::serial_println!("    COMMON_CFG: BAR{} offset={:#x} len={}", bar, bar_offset, length);
+                    crate::serial_verbose_println!("    COMMON_CFG: BAR{} offset={:#x} len={}", bar, bar_offset, length);
                 }
                 VIRTIO_PCI_CAP_NOTIFY_CFG => {
                     caps.notify_bar = bar;
@@ -156,7 +156,7 @@ pub fn find_capabilities(pci: &PciDevice) -> Option<VirtioPciCaps> {
                         pci.bus, pci.device, pci.function, cap_offset + 16
                     );
                     found_notify = true;
-                    crate::serial_println!(
+                    crate::serial_verbose_println!(
                         "    NOTIFY_CFG: BAR{} offset={:#x} mul={}",
                         bar, bar_offset, caps.notify_off_multiplier
                     );
@@ -165,14 +165,14 @@ pub fn find_capabilities(pci: &PciDevice) -> Option<VirtioPciCaps> {
                     caps.isr_bar = bar;
                     caps.isr_offset = bar_offset;
                     found_isr = true;
-                    crate::serial_println!("    ISR_CFG: BAR{} offset={:#x}", bar, bar_offset);
+                    crate::serial_verbose_println!("    ISR_CFG: BAR{} offset={:#x}", bar, bar_offset);
                 }
                 VIRTIO_PCI_CAP_DEVICE_CFG => {
                     caps.device_bar = bar;
                     caps.device_offset = bar_offset;
                     caps.device_len = length;
                     _found_device = true;
-                    crate::serial_println!("    DEVICE_CFG: BAR{} offset={:#x} len={}", bar, bar_offset, length);
+                    crate::serial_verbose_println!("    DEVICE_CFG: BAR{} offset={:#x} len={}", bar, bar_offset, length);
                 }
                 _ => {}
             }
@@ -184,7 +184,7 @@ pub fn find_capabilities(pci: &PciDevice) -> Option<VirtioPciCaps> {
     if found_common && found_notify && found_isr {
         Some(caps)
     } else {
-        crate::serial_println!("  VirtIO: missing required capabilities (common={} notify={} isr={})",
+        crate::serial_verbose_println!("  VirtIO: missing required capabilities (common={} notify={} isr={})",
             found_common, found_notify, found_isr);
         None
     }
@@ -243,7 +243,7 @@ pub fn map_bar(pci: &PciDevice, bar_idx: u8) -> u64 {
         MAPPED_BARS[idx] = virt_base;
     }
 
-    crate::serial_println!("  VirtIO: BAR{} phys={:#x} mapped to virt={:#x} ({} pages)",
+    crate::serial_verbose_println!("  VirtIO: BAR{} phys={:#x} mapped to virt={:#x} ({} pages)",
         bar_idx, phys_base, virt_base, VIRTIO_MMIO_MAX_PAGES);
 
     virt_base
@@ -433,14 +433,14 @@ impl VirtioDevice {
         let dev_feat_hi = self.read_device_features(1) as u64;
         let device_features = dev_feat_lo | (dev_feat_hi << 32);
 
-        crate::serial_println!("  VirtIO: device features = {:#018x}", device_features);
+        crate::serial_verbose_println!("  VirtIO: device features = {:#018x}", device_features);
 
         // 5. Negotiate features
         let negotiated = device_features & desired_features;
 
         // VIRTIO_F_VERSION_1 is mandatory for modern devices
         if negotiated & VIRTIO_F_VERSION_1 == 0 {
-            crate::serial_println!("  VirtIO: VIRTIO_F_VERSION_1 not available!");
+            crate::serial_verbose_println!("  VirtIO: VIRTIO_F_VERSION_1 not available!");
             self.write_device_status(STATUS_FAILED);
             return Err("VIRTIO_F_VERSION_1 not available");
         }
@@ -448,7 +448,7 @@ impl VirtioDevice {
         self.write_driver_features(0, negotiated as u32);
         self.write_driver_features(1, (negotiated >> 32) as u32);
 
-        crate::serial_println!("  VirtIO: negotiated features = {:#018x}", negotiated);
+        crate::serial_verbose_println!("  VirtIO: negotiated features = {:#018x}", negotiated);
 
         // 6. Set FEATURES_OK
         self.write_device_status(STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK);
@@ -456,7 +456,7 @@ impl VirtioDevice {
         // 7. Verify FEATURES_OK stuck
         let status = self.read_device_status();
         if status & STATUS_FEATURES_OK == 0 {
-            crate::serial_println!("  VirtIO: FEATURES_OK not accepted by device");
+            crate::serial_verbose_println!("  VirtIO: FEATURES_OK not accepted by device");
             self.write_device_status(STATUS_FAILED);
             return Err("FEATURES_OK rejected");
         }
@@ -477,7 +477,7 @@ impl VirtioDevice {
 
         let max_size = self.read_queue_size();
         if max_size == 0 {
-            crate::serial_println!("  VirtIO: queue {} not available (max_size=0)", queue_idx);
+            crate::serial_verbose_println!("  VirtIO: queue {} not available (max_size=0)", queue_idx);
             return None;
         }
 
@@ -497,7 +497,7 @@ impl VirtioDevice {
         // Enable
         self.enable_queue();
 
-        crate::serial_println!("  VirtIO: queue {} enabled (size={})", queue_idx, queue_size);
+        crate::serial_verbose_println!("  VirtIO: queue {} enabled (size={})", queue_idx, queue_size);
 
         Some(vq)
     }

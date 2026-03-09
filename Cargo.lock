@@ -830,6 +830,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "notifications"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
 name = "notifyd"
 version = "0.1.0"
 dependencies = [
@@ -1098,6 +1107,8 @@ name = "terminal"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "dynlink",
+ "libanyui_client",
 ]
 
 [[package]]
@@ -1153,6 +1164,13 @@ dependencies = [
 
 [[package]]
 name = "uptime"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "vdagent"
 version = "0.1.0"
 dependencies = [
  "anyos_std",

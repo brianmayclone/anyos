@@ -153,7 +153,7 @@ pub fn init(boot_info: &BootInfo) {
     };
     // _kernel_end already covers BSS + the 512 KiB .boot_stack section.
     let kernel_end = PhysAddr::new(kernel_end_phys).frame_align_up();
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "Reserving kernel region: {:#010x} - {:#010x} (includes BSS + stack)",
         kernel_start.as_u64(), kernel_end.as_u64()
     );
@@ -164,7 +164,7 @@ pub fn init(boot_info: &BootInfo) {
         }
     }
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "Physical memory: {} MiB total, {} frames free ({} MiB)",
         alloc.total_frames * FRAME_SIZE / (1024 * 1024),
         alloc.free_frames,
@@ -362,7 +362,7 @@ pub fn init_arm64(ram_base: u64, ram_size: u64) {
 
     alloc.next_search = kernel_end_frame;
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "Physical memory: {} MiB RAM ({:#010x}-{:#010x}), {} frames free ({} MiB)",
         ram_size / (1024 * 1024),
         ram_base,
@@ -370,7 +370,7 @@ pub fn init_arm64(ram_base: u64, ram_size: u64) {
         alloc.free_frames,
         alloc.free_frames * FRAME_SIZE / (1024 * 1024)
     );
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  Kernel region reserved: {:#010x}-{:#010x}",
         ram_base,
         kernel_end_phys

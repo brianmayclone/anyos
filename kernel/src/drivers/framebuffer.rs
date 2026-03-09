@@ -32,7 +32,7 @@ pub fn init(boot_info: &BootInfo) {
     let bpp = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_bpp).read_unaligned() };
 
     if addr == 0 || width == 0 || height == 0 {
-        crate::serial_println!("  Framebuffer: not available (no VESA mode set)");
+        crate::serial_verbose_println!("  Framebuffer: not available (no VESA mode set)");
         return;
     }
 
@@ -46,7 +46,7 @@ pub fn init(boot_info: &BootInfo) {
         });
     }
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "[OK] Framebuffer: {}x{}x{} at {:#010x}, pitch={}",
         width, height, bpp, addr, pitch
     );

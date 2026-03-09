@@ -123,7 +123,7 @@ pub fn init(rsdp_hint: u32) -> Option<AcpiInfo> {
     let rsdp = find_rsdp(rsdp_hint)?;
 
     let rsdt_phys = unsafe { core::ptr::addr_of!((*rsdp).rsdt_address).read_unaligned() };
-    crate::serial_println!("  ACPI: RSDP found, RSDT at {:#010x}", rsdt_phys);
+    crate::serial_verbose_println!("  ACPI: RSDP found, RSDT at {:#010x}", rsdt_phys);
 
     // Map the RSDT region (map 16 pages = 64 KiB to cover RSDT + nearby tables)
     let rsdt_virt = acpi_map(rsdt_phys, 0x10000);
@@ -132,7 +132,7 @@ pub fn init(rsdp_hint: u32) -> Option<AcpiInfo> {
     // Verify RSDT signature
     let sig = unsafe { core::ptr::addr_of!((*rsdt).signature).read_unaligned() };
     if &sig != b"RSDT" {
-        crate::serial_println!("  ACPI: RSDT signature mismatch");
+        crate::serial_verbose_println!("  ACPI: RSDT signature mismatch");
         acpi_unmap(16);
         return None;
     }
@@ -141,7 +141,7 @@ pub fn init(rsdp_hint: u32) -> Option<AcpiInfo> {
     let header_size = core::mem::size_of::<AcpiSdtHeader>() as u32;
     let num_entries = (rsdt_len - header_size) / 4;
 
-    crate::serial_println!("  ACPI: RSDT has {} table entries", num_entries);
+    crate::serial_verbose_println!("  ACPI: RSDT has {} table entries", num_entries);
 
     // Pre-read all RSDT entry addresses into a local array BEFORE any
     // remapping. acpi_map() reuses the same virtual window, so remapping
@@ -169,7 +169,7 @@ pub fn init(rsdp_hint: u32) -> Option<AcpiInfo> {
 
         if &table_sig == b"APIC" {
             let table_len = unsafe { core::ptr::addr_of!((*table).length).read_unaligned() };
-            crate::serial_println!("  ACPI: MADT found at phys {:#010x} (len={})", table_phys, table_len);
+            crate::serial_verbose_println!("  ACPI: MADT found at phys {:#010x} (len={})", table_phys, table_len);
 
             // Remap to ensure the full MADT is accessible
             let madt_virt = acpi_map(table_phys, table_len);
@@ -181,7 +181,7 @@ pub fn init(rsdp_hint: u32) -> Option<AcpiInfo> {
         acpi_unmap(1);
     }
 
-    crate::serial_println!("  ACPI: MADT not found");
+    crate::serial_verbose_println!("  ACPI: MADT not found");
     None
 }
 
@@ -197,11 +197,11 @@ fn find_rsdp(hint: u32) -> Option<*const Rsdp> {
         let rsdp = rsdp_virt as *const Rsdp;
         let sig = unsafe { core::ptr::addr_of!((*rsdp).signature).read_unaligned() };
         if sig == RSDP_SIGNATURE && validate_rsdp_checksum(rsdp) {
-            crate::serial_println!("  ACPI: Using RSDP from bootloader at phys {:#010x} (virt {:#018x})", hint, rsdp_virt);
+            crate::serial_verbose_println!("  ACPI: Using RSDP from bootloader at phys {:#010x} (virt {:#018x})", hint, rsdp_virt);
             // Don't unmap — caller (init) will use rsdp pointer and remap as needed
             return Some(rsdp);
         }
-        crate::serial_println!("  ACPI: Bootloader RSDP hint {:#010x} invalid, falling back to scan", hint);
+        crate::serial_verbose_println!("  ACPI: Bootloader RSDP hint {:#010x} invalid, falling back to scan", hint);
         acpi_unmap(1);
     }
 
@@ -263,7 +263,7 @@ fn parse_madt(madt_virt: u64, table_len: u32) -> Option<AcpiInfo> {
     let lapic_address = unsafe { ((madt_virt + header_size) as *const u32).read_unaligned() };
     let _flags = unsafe { ((madt_virt + header_size + 4) as *const u32).read_unaligned() };
 
-    crate::serial_println!("  ACPI: LAPIC address = {:#010x}", lapic_address);
+    crate::serial_verbose_println!("  ACPI: LAPIC address = {:#010x}", lapic_address);
 
     let mut processors = Vec::new();
     let mut io_apics = Vec::new();
@@ -289,7 +289,7 @@ fn parse_madt(madt_virt: u64, table_len: u32) -> Option<AcpiInfo> {
                     let enabled = flags & 1 != 0;
 
                     processors.push(ProcessorInfo { acpi_id, apic_id, enabled });
-                    crate::serial_println!("  ACPI: Processor #{} APIC_ID={} enabled={}",
+                    crate::serial_verbose_println!("  ACPI: Processor #{} APIC_ID={} enabled={}",
                         acpi_id, apic_id, enabled);
                 }
             }
@@ -300,7 +300,7 @@ fn parse_madt(madt_virt: u64, table_len: u32) -> Option<AcpiInfo> {
                     let gsi_base = unsafe { ((off + 8) as *const u32).read_unaligned() };
 
                     io_apics.push(IoApicInfo { id, address, gsi_base });
-                    crate::serial_println!("  ACPI: I/O APIC #{} at {:#010x} GSI_base={}",
+                    crate::serial_verbose_println!("  ACPI: I/O APIC #{} at {:#010x} GSI_base={}",
                         id, address, gsi_base);
                 }
             }
@@ -312,7 +312,7 @@ fn parse_madt(madt_virt: u64, table_len: u32) -> Option<AcpiInfo> {
                     let flags = unsafe { ((off + 8) as *const u16).read_unaligned() };
 
                     isos.push(IsoInfo { bus, source, gsi, flags });
-                    crate::serial_println!("  ACPI: ISO IRQ{} -> GSI{} flags={:#x}",
+                    crate::serial_verbose_println!("  ACPI: ISO IRQ{} -> GSI{} flags={:#x}",
                         source, gsi, flags);
                 }
             }

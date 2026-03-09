@@ -65,7 +65,7 @@ impl FatFs {
     pub fn new(device_id: u32, partition_start_lba: u32) -> Result<Self, FsError> {
         let mut buf = [0u8; 512];
         if !Self::storage_read_sectors(partition_start_lba, 1, &mut buf) {
-            crate::serial_println!("  FAT: Failed to read boot sector at LBA {}", partition_start_lba);
+            crate::serial_verbose_println!("  FAT: Failed to read boot sector at LBA {}", partition_start_lba);
             return Err(FsError::IoError);
         }
 
@@ -85,11 +85,11 @@ impl FatFs {
         let total_sectors = if total_sectors_16 != 0 { total_sectors_16 } else { total_sectors_32 };
 
         if bytes_per_sector != 512 {
-            crate::serial_println!("  FAT: Unsupported sector size: {}", bytes_per_sector);
+            crate::serial_verbose_println!("  FAT: Unsupported sector size: {}", bytes_per_sector);
             return Err(FsError::IoError);
         }
         if sectors_per_cluster == 0 || fat_size == 0 {
-            crate::serial_println!("  FAT: Invalid BPB (spc={}, fat_size={})", sectors_per_cluster, fat_size);
+            crate::serial_verbose_println!("  FAT: Invalid BPB (spc={}, fat_size={})", sectors_per_cluster, fat_size);
             return Err(FsError::IoError);
         }
 
@@ -122,18 +122,18 @@ impl FatFs {
 
         let oem = core::str::from_utf8(&buf[3..11]).unwrap_or("?");
 
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "[OK] FAT{} filesystem: {} clusters, {} sec/cluster, OEM='{}'",
             match fat_type { FatType::Fat12 => "12", FatType::Fat16 => "16", FatType::Fat32 => "32" },
             total_clusters, sectors_per_cluster, oem.trim(),
         );
         if fat_type == FatType::Fat32 {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "  FAT32: root_cluster={}, fsinfo_sector={}, fat_size={} sectors",
                 root_cluster, fsinfo_sector, fat_size,
             );
         }
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  FAT: first_fat={}, root_dir={}, data={}, total_sectors={}",
             first_fat_sector, first_root_dir_sector, first_data_sector, total_sectors
         );
@@ -142,16 +142,16 @@ impl FatFs {
         // FAT16: ~64 KB typical. FAT32: up to ~4 MB for a 4 GB disk (4KB clusters).
         let fat_cache_size = (fat_size * 512) as usize;
         if fat_cache_size > 8 * 1024 * 1024 {
-            crate::serial_println!("  FAT: FAT table too large to cache ({} KB)", fat_cache_size / 1024);
+            crate::serial_verbose_println!("  FAT: FAT table too large to cache ({} KB)", fat_cache_size / 1024);
             return Err(FsError::IoError);
         }
         let mut fat_cache = vec![0u8; fat_cache_size];
         let abs_fat_lba = partition_start_lba + first_fat_sector;
         if !Self::storage_read_sectors(abs_fat_lba, fat_size, &mut fat_cache) {
-            crate::serial_println!("  FAT: Failed to cache FAT table");
+            crate::serial_verbose_println!("  FAT: Failed to cache FAT table");
             return Err(FsError::IoError);
         }
-        crate::serial_println!("  FAT: cached {} KB FAT table in memory", fat_cache_size / 1024);
+        crate::serial_verbose_println!("  FAT: cached {} KB FAT table in memory", fat_cache_size / 1024);
 
         Ok(FatFs {
             device_id,

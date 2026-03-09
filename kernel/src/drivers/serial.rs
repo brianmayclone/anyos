@@ -18,6 +18,21 @@ const COM1: u16 = 0x3F8;
 pub struct SerialPort;
 
 static mut SERIAL_INITIALIZED: bool = false;
+
+/// When false (default), only kernel core messages (`serial_println!`) are emitted.
+/// When true, verbose driver/subsystem messages (`serial_verbose_println!`) are also shown.
+static SERIAL_VERBOSE: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable verbose serial output (driver/subsystem messages).
+pub fn set_verbose(enabled: bool) {
+    SERIAL_VERBOSE.store(enabled, Ordering::Relaxed);
+}
+
+/// Check if verbose serial output is enabled.
+#[inline]
+pub fn is_verbose() -> bool {
+    SERIAL_VERBOSE.load(Ordering::Relaxed)
+}
 /// When true, `write_byte` uses the async TX buffer + IRQ 4 path (x86 only).
 #[cfg(target_arch = "x86_64")]
 static ASYNC_TX: AtomicBool = AtomicBool::new(false);
@@ -461,6 +476,29 @@ macro_rules! serial_println {
         let _ms = _ticks as u64 * 1000 / $crate::arch::hal::timer_frequency_hz();
         let _ = write!($crate::drivers::serial::SerialPort, "[{}] {}\n", _ms, format_args!($($arg)*));
         $crate::drivers::serial::output_lock_release(_lock_state);
+    }};
+}
+
+/// Like `serial_println!`, but only prints when verbose serial mode is enabled.
+/// Used for driver/subsystem messages that are not essential during normal operation.
+/// Enable at runtime via `set_verbose(true)` or `SYS_SET_SERIAL_VERBOSE` syscall.
+#[macro_export]
+macro_rules! serial_verbose_println {
+    () => {};
+    ($($arg:tt)*) => {{
+        if $crate::drivers::serial::is_verbose() {
+            $crate::serial_println!($($arg)*);
+        }
+    }};
+}
+
+/// Like `serial_print!`, but only prints when verbose serial mode is enabled.
+#[macro_export]
+macro_rules! serial_verbose_print {
+    ($($arg:tt)*) => {{
+        if $crate::drivers::serial::is_verbose() {
+            $crate::serial_print!($($arg)*);
+        }
     }};
 }
 

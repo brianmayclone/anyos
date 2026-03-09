@@ -180,7 +180,7 @@ static GPU: Spinlock<Option<Box<dyn GpuDriver>>> = Spinlock::new(None);
 
 /// Register a GPU driver (called from HAL driver factory during PCI probe).
 pub fn register(driver: Box<dyn GpuDriver>) {
-    crate::serial_println!("  GPU: registered '{}'", driver.name());
+    crate::serial_verbose_println!("  GPU: registered '{}'", driver.name());
     let mut gpu = GPU.lock();
     *gpu = Some(driver);
 }
@@ -370,11 +370,11 @@ pub(crate) fn create_hal_driver(name: &'static str) -> Option<Box<dyn Driver>> {
 /// Auto-detect and initialize VirtualBox GPU (VBoxSVGA vs VBoxVGA based on BAR0).
 pub fn vbox_probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
     if pci.bars[0] & 1 != 0 {
-        crate::serial_println!("  GPU: VBoxSVGA detected (SVGA II mode)");
+        crate::serial_verbose_println!("  GPU: VBoxSVGA detected (SVGA II mode)");
         vmware_svga::init_and_register(pci);
         create_hal_driver("VBoxSVGA")
     } else {
-        crate::serial_println!("  GPU: VBoxVGA detected (HGSMI mode)");
+        crate::serial_verbose_println!("  GPU: VBoxVGA detected (HGSMI mode)");
         vbox_vga::init_and_register(pci);
         create_hal_driver("VBoxVGA (HGSMI)")
     }

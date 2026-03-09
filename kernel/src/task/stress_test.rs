@@ -20,7 +20,7 @@ extern "C" fn stress_worker() {
 /// Master thread: spawns workers in a tight loop, waits for each to complete.
 /// Prints progress every 100 iterations along with scheduler state.
 pub extern "C" fn stress_master() {
-    crate::serial_println!("STRESS: thread lifecycle test started (spawn+exit+reap loop)");
+    crate::serial_verbose_println!("STRESS: thread lifecycle test started (spawn+exit+reap loop)");
     let mut iter: u32 = 0;
     loop {
         // Spawn a worker
@@ -34,7 +34,7 @@ pub extern "C" fn stress_master() {
             let completed = WORKERS_COMPLETED.load(Ordering::Relaxed);
             let total = crate::task::scheduler::total_sched_ticks();
             let idle = crate::task::scheduler::idle_sched_ticks();
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "STRESS: iter={} done={} ticks={}/{} ({}% idle)",
                 iter, completed, idle, total,
                 if total > 0 { idle as u64 * 100 / total as u64 } else { 0 },

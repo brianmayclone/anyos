@@ -129,7 +129,7 @@ pub fn send_ipv4(dst: Ipv4Addr, protocol: u8, payload: &[u8]) -> bool {
         match super::arp::resolve(next_hop, 200) { // 2 second timeout at 100Hz
             Some(mac) => mac,
             None => {
-                crate::serial_println!("  IPv4: ARP resolve failed for {}", next_hop);
+                crate::serial_verbose_println!("  IPv4: ARP resolve failed for {}", next_hop);
                 return false;
             }
         }

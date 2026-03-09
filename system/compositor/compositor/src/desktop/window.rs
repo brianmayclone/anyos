@@ -127,6 +127,9 @@ pub(crate) struct DragState {
     pub window_id: u32,
     pub offset_x: i32,
     pub offset_y: i32,
+    /// True once the mouse has actually moved during the drag.
+    /// Edge-snapping only activates when this is true (prevents snap on click-release).
+    pub moved: bool,
 }
 
 pub(crate) struct ResizeState {
@@ -565,17 +568,21 @@ impl Desktop {
     }
 
     /// Re-raise always-on-top windows, modal children, and the menubar.
+    /// Order: modal children first, then always-on-top windows (popups),
+    /// so that dropdown/context-menu popups appear above modal dialogs.
     pub(crate) fn ensure_top_layers(&mut self) {
-        for win in &self.windows {
-            if win.is_always_on_top() {
-                self.compositor.raise_layer(win.layer_id);
-            }
-        }
         // Raise modal children above their owners (iterate in order so chains
         // A→B→C raise correctly: B above A, then C above B).
         for i in 0..self.windows.len() {
             if self.windows[i].modal_owner != 0 {
                 self.compositor.raise_layer(self.windows[i].layer_id);
+            }
+        }
+        // Raise always-on-top windows above modals (includes dropdown/context
+        // menu popups which are borderless + always-on-top).
+        for win in &self.windows {
+            if win.is_always_on_top() {
+                self.compositor.raise_layer(win.layer_id);
             }
         }
         self.compositor.raise_layer(self.menubar_layer_id);
@@ -893,6 +900,117 @@ impl Desktop {
                 self.compositor.resize_layer(layer_id, new_w, full_h);
                 self.render_window(win_id);
             }
+        }
+    }
+
+    /// Tile all visible windows evenly across the desktop.
+    pub(crate) fn tile_all_windows(&mut self) {
+        // Collect IDs of visible, framed windows (not minimized, not borderless)
+        // Borderless windows (dock, toolbar, notifications, overlays) are never rearranged.
+        let mut visible_ids: Vec<u32> = Vec::new();
+        for win in &self.windows {
+            if win.x >= 0 && !win.is_borderless() {
+                visible_ids.push(win.id);
+            }
+        }
+        let count = visible_ids.len();
+        if count == 0 { return; }
+
+        let area_x = 0i32;
+        let area_y = menubar_height() as i32 + 1;
+        let area_w = self.screen_width;
+        let area_h = self.screen_height - menubar_height() - 1;
+
+        // Compute grid: cols x rows
+        let cols = if count <= 1 { 1u32 }
+            else if count <= 2 { 2 }
+            else if count <= 4 { 2 }
+            else if count <= 6 { 3 }
+            else if count <= 9 { 3 }
+            else { 4 };
+        let rows = ((count as u32) + cols - 1) / cols;
+
+        let cell_w = area_w / cols;
+        let cell_h = area_h / rows;
+
+        for (i, &win_id) in visible_ids.iter().enumerate() {
+            let col = (i as u32) % cols;
+            let row = (i as u32) / cols;
+
+            let wx = area_x + (col * cell_w) as i32;
+            let wy = area_y + (row * cell_h) as i32;
+
+            if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                let borderless = self.windows[idx].is_borderless();
+                let tb = if borderless { 0 } else { title_bar_height() };
+                let content_w = cell_w;
+                let content_h = cell_h.saturating_sub(tb);
+
+                self.windows[idx].x = wx;
+                self.windows[idx].y = wy;
+                self.windows[idx].content_width = content_w;
+                self.windows[idx].content_height = content_h;
+                self.windows[idx].maximized = false;
+                self.windows[idx].saved_bounds = None;
+
+                let layer_id = self.windows[idx].layer_id;
+                let full_h = self.windows[idx].full_height();
+                self.compositor.move_layer(layer_id, wx, wy);
+                self.compositor.resize_layer(layer_id, content_w, full_h);
+                // Re-render chrome and blit existing SHM content into new layer size
+                self.render_window(win_id);
+                // Notify app so it re-renders at the new size
+                self.push_event(win_id, [EVENT_RESIZE, content_w, content_h, 0, 0]);
+            }
+        }
+        // Mark entire screen dirty so old window positions are repainted
+        self.compositor.damage_all();
+    }
+
+    /// Snap a window to the left or right half of the screen.
+    /// `edge`: 0 = left, 1 = right, 2 = top (full width top half), 3 = bottom (full width bottom half).
+    pub(crate) fn snap_window_to_half(&mut self, win_id: u32, edge: u32) {
+        if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+            let area_y = menubar_height() as i32 + 1;
+            let area_h = self.screen_height - menubar_height() - 1;
+            let area_w = self.screen_width;
+
+            // Save original bounds for restore
+            if self.windows[idx].saved_bounds.is_none() {
+                self.windows[idx].saved_bounds = Some((
+                    self.windows[idx].x,
+                    self.windows[idx].y,
+                    self.windows[idx].content_width,
+                    self.windows[idx].content_height,
+                ));
+            }
+
+            let borderless = self.windows[idx].is_borderless();
+            let tb = if borderless { 0 } else { title_bar_height() };
+
+            let (wx, wy, cw, ch) = match edge {
+                0 => (0i32, area_y, area_w / 2, area_h.saturating_sub(tb)),           // left
+                1 => ((area_w / 2) as i32, area_y, area_w / 2, area_h.saturating_sub(tb)), // right
+                2 => (0i32, area_y, area_w, (area_h / 2).saturating_sub(tb)),          // top
+                _ => (0i32, area_y + (area_h / 2) as i32, area_w, (area_h / 2).saturating_sub(tb)), // bottom
+            };
+
+            self.windows[idx].x = wx;
+            self.windows[idx].y = wy;
+            self.windows[idx].content_width = cw;
+            self.windows[idx].content_height = ch;
+            self.windows[idx].maximized = false;
+
+            let layer_id = self.windows[idx].layer_id;
+            let full_h = self.windows[idx].full_height();
+            self.compositor.move_layer(layer_id, wx, wy);
+            self.compositor.resize_layer(layer_id, cw, full_h);
+            // Re-render chrome and blit existing SHM content into new layer size
+            self.render_window(win_id);
+            // Notify app so it re-renders at the new size
+            self.push_event(win_id, [EVENT_RESIZE, cw, ch, 0, 0]);
+            // Mark entire screen dirty so old window position is repainted
+            self.compositor.damage_all();
         }
     }
 

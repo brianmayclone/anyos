@@ -76,7 +76,7 @@ pub fn calibrate_tsc() {
             TSC_BOOT.store(tsc_boot_value, Ordering::Relaxed);
             TSC_HZ.store(hv_tsc_hz, Ordering::Release);
 
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "TSC calibrated: {} MHz (hypervisor CPUID)",
                 hv_tsc_hz / 1_000_000,
             );
@@ -90,7 +90,7 @@ pub fn calibrate_tsc() {
     // Sanity check: a real x86 CPU runs at ≥100 MHz.
     // If the result is below that, PIT emulation is likely broken.
     if tsc_hz_value < 100_000_000 {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "[WARN] TSC calibration returned {} MHz — suspiciously low! Falling back to PIT IRQ ticks.",
             tsc_hz_value / 1_000_000,
         );
@@ -107,7 +107,7 @@ pub fn calibrate_tsc() {
     // other CPUs read TSC_HZ != 0 and use TSC-based get_ticks().
     TSC_HZ.store(tsc_hz_value, Ordering::Release);
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "TSC calibrated: {} MHz (PIT ch2 polled)",
         tsc_hz_value / 1_000_000,
     );
@@ -148,7 +148,7 @@ unsafe fn calibrate_tsc_pit() -> u64 {
             break;
         }
         if rdtsc() - tsc_start > timeout_cycles {
-            crate::serial_println!("[WARN] PIT ch2 OUT2 poll timed out — emulation broken?");
+            crate::serial_verbose_println!("[WARN] PIT ch2 OUT2 poll timed out — emulation broken?");
             outb(0x61, port61_saved);
             return 0; // Signal failure
         }
@@ -166,7 +166,7 @@ unsafe fn calibrate_tsc_pit() -> u64 {
     let tsc_hz_value = tsc_delta * PIT_FREQUENCY as u64 / 0xFFFF;
 
     let cal_ms = 0xFFFFu64 * 1000 / PIT_FREQUENCY as u64;
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  PIT ch2: {} TSC cycles in ~{}ms → {} MHz",
         tsc_delta, cal_ms, tsc_hz_value / 1_000_000,
     );

@@ -109,7 +109,8 @@ impl Desktop {
         self.mouse_y = (self.mouse_y + dy).clamp(0, self.screen_height as i32 - 1);
 
         // Handle window drag — clamp Y so windows can never go under the menubar.
-        if let Some(ref drag) = self.dragging {
+        if let Some(ref mut drag) = self.dragging {
+            drag.moved = true;
             let win_id = drag.window_id;
             let new_x = self.mouse_x - drag.offset_x;
             let min_y = menubar_height() as i32 + 1;
@@ -460,6 +461,7 @@ impl Desktop {
                                     window_id: win_id,
                                     offset_x: mx - self.windows[idx].x,
                                     offset_y: my - self.windows[idx].y,
+                                    moved: false,
                                 });
                                 let layer_id = self.windows[idx].layer_id;
                                 let old_shadow = {
@@ -565,7 +567,7 @@ impl Desktop {
                 }
             }
 
-            // End drag — re-enable shadow
+            // End drag — re-enable shadow + edge snapping
             if let Some(ref drag) = self.dragging {
                 let win_id = drag.window_id;
                 if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
@@ -582,6 +584,26 @@ impl Desktop {
                         if let Some(sb) = new_shadow {
                             self.compositor.add_damage(sb);
                         }
+                    }
+                }
+                // Edge snapping: snap to half-screen when dragged to screen edge.
+                // Only activate if the mouse actually moved during the drag —
+                // otherwise a simple click on the title bar near a screen edge
+                // would trigger an unwanted snap (e.g. after "Fenster anordnen").
+                if drag.moved {
+                    let snap_margin = 20i32;
+                    let mx = self.mouse_x;
+                    let my = self.mouse_y;
+                    let sw = self.screen_width as i32;
+                    let sh = self.screen_height as i32;
+                    if mx <= snap_margin {
+                        self.snap_window_to_half(win_id, 0); // left half
+                    } else if mx >= sw - snap_margin - 1 {
+                        self.snap_window_to_half(win_id, 1); // right half
+                    } else if my <= menubar_height() as i32 + snap_margin + 1 {
+                        self.snap_window_to_half(win_id, 2); // top half
+                    } else if my >= sh - snap_margin - 1 {
+                        self.snap_window_to_half(win_id, 3); // bottom half
                     }
                 }
                 self.set_cursor_shape(CursorShape::Arrow);
@@ -782,6 +804,12 @@ impl Desktop {
             }
             crate::menu::SYS_MENU_ABOUT => {
                 anyos_std::process::spawn("/Applications/About anyOS.app", "");
+            }
+            crate::menu::types::SYS_MENU_NOTIFICATIONS => {
+                anyos_std::process::spawn("/Applications/Notifications.app", "");
+            }
+            crate::menu::types::SYS_MENU_TILE_WINDOWS => {
+                self.tile_all_windows();
             }
             crate::menu::SYS_MENU_SETTINGS
             | crate::menu::SYS_MENU_SLEEP => {

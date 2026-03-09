@@ -85,6 +85,8 @@ pub const SYS_MENU_LOGOUT: u32 = 0xFFE2;
 pub const SYS_MENU_SLEEP: u32 = 0xFFE3;
 pub const SYS_MENU_RESTART: u32 = 0xFFE4;
 pub const SYS_MENU_SHUTDOWN: u32 = 0xFFE5;
+pub const SYS_MENU_TILE_WINDOWS: u32 = 0xFFE6;
+pub const SYS_MENU_NOTIFICATIONS: u32 = 0xFFE7;
 
 // ── Data Structures ──────────────────────────────────────────────────────────
 

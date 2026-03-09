@@ -97,7 +97,7 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                             let iss = tcb.snd_iss;
                             let rcv_nxt = tcb.rcv_nxt;
                             let use_wscale = tcb.rcv_wnd_shift > 0;
-                            crate::serial_println!("TCP: SYN on listener {} -> new conn slot {} from {}:{} (wscale={})",
+                            crate::serial_verbose_println!("TCP: SYN on listener {} -> new conn slot {} from {}:{} (wscale={})",
                                 lid, ns, seg.src_ip, seg.src_port,
                                 if use_wscale { tcb.snd_wnd_shift } else { 0 });
                             drop(conns);
@@ -120,7 +120,7 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
 
         // RST handling — always process
         if seg.flags & RST != 0 {
-            crate::serial_println!("TCP: RST received on socket {}", idx);
+            crate::serial_verbose_println!("TCP: RST received on socket {}", idx);
             let tcb = table[idx].as_mut().unwrap();
             tcb.reset_received = true;
             tcb.state = TcpState::Closed;
@@ -280,7 +280,7 @@ fn handle_syn_sent(tcb: &mut Tcb, seg: &TcpSegment) -> Option<DeferredSend> {
                 window: tcb.advertised_window(),
             })
         } else {
-            crate::serial_println!("TCP: SYN-ACK bad ACK {} expected {}", seg.ack, tcb.snd_nxt);
+            crate::serial_verbose_println!("TCP: SYN-ACK bad ACK {} expected {}", seg.ack, tcb.snd_nxt);
             None
         }
     } else if seg.flags & ACK != 0 {
@@ -392,7 +392,7 @@ fn fast_retransmit(tcb: &mut Tcb) {
     send_segment(tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
                  tcb.snd_una, tcb.rcv_nxt, PSH | ACK, win, &data[..len]);
 
-    crate::serial_println!("TCP: fast retransmit seq={} len={}", tcb.snd_una, len);
+    crate::serial_verbose_println!("TCP: fast retransmit seq={} len={}", tcb.snd_una, len);
 }
 
 /// Handle SynReceived state (server-side 3-way handshake completion).
@@ -417,7 +417,7 @@ fn handle_syn_received(
             tcb.retransmit_count = 0;
             tcb.dup_ack_count = 0;
             let parent = tcb.parent_listener;
-            crate::serial_println!("TCP: SynReceived -> Established on socket {}", idx);
+            crate::serial_verbose_println!("TCP: SynReceived -> Established on socket {}", idx);
             // Wake the accept() thread on the parent listener
             if let Some(lid) = parent {
                 if let Some(listener) = table[lid as usize].as_mut() {
@@ -427,7 +427,7 @@ fn handle_syn_received(
             }
             None
         } else {
-            crate::serial_println!("TCP: SynReceived bad ACK {} expected {}", seg.ack, tcb.snd_nxt);
+            crate::serial_verbose_println!("TCP: SynReceived bad ACK {} expected {}", seg.ack, tcb.snd_nxt);
             None
         }
     } else if seg.flags & SYN != 0 {

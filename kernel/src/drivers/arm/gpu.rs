@@ -164,7 +164,7 @@ fn virt_to_phys(virt: usize) -> u64 {
 pub fn init(dev: &VirtioMmioDevice) {
     // Feature negotiation (no special features needed)
     if dev.init_device(0).is_none() {
-        crate::serial_println!("  virtio-gpu: feature negotiation failed");
+        crate::serial_verbose_println!("  virtio-gpu: feature negotiation failed");
         return;
     }
 
@@ -172,14 +172,14 @@ pub fn init(dev: &VirtioMmioDevice) {
     let controlq = match VirtQueue::new(0, DEFAULT_QUEUE_SIZE) {
         Some(q) => q,
         None => {
-            crate::serial_println!("  virtio-gpu: failed to allocate controlq");
+            crate::serial_verbose_println!("  virtio-gpu: failed to allocate controlq");
             return;
         }
     };
 
     let (desc_phys, avail_phys, used_phys) = controlq.phys_addrs();
     if !dev.setup_queue_raw(0, DEFAULT_QUEUE_SIZE, desc_phys, avail_phys, used_phys) {
-        crate::serial_println!("  virtio-gpu: failed to setup controlq");
+        crate::serial_verbose_println!("  virtio-gpu: failed to setup controlq");
         return;
     }
 
@@ -187,7 +187,7 @@ pub fn init(dev: &VirtioMmioDevice) {
     let cmd_frame = match physical::alloc_frame() {
         Some(f) => f,
         None => {
-            crate::serial_println!("  virtio-gpu: failed to allocate command buffer");
+            crate::serial_verbose_println!("  virtio-gpu: failed to allocate command buffer");
             return;
         }
     };
@@ -212,22 +212,22 @@ pub fn init(dev: &VirtioMmioDevice) {
     // Get display info
     let (width, height) = get_display_info(&mut gpu, dev);
     if width == 0 || height == 0 {
-        crate::serial_println!("  virtio-gpu: no display detected, using 1024x768");
+        crate::serial_verbose_println!("  virtio-gpu: no display detected, using 1024x768");
         gpu.width = 1024;
         gpu.height = 768;
     } else {
         gpu.width = width;
         gpu.height = height;
-        crate::serial_println!("  virtio-gpu: display {}x{}", width, height);
+        crate::serial_verbose_println!("  virtio-gpu: display {}x{}", width, height);
     }
 
     // Setup framebuffer
     if !setup_framebuffer(&mut gpu, dev) {
-        crate::serial_println!("  virtio-gpu: framebuffer setup failed");
+        crate::serial_verbose_println!("  virtio-gpu: framebuffer setup failed");
         return;
     }
 
-    crate::serial_println!("  virtio-gpu: framebuffer at virt={:#x}, {}x{}",
+    crate::serial_verbose_println!("  virtio-gpu: framebuffer at virt={:#x}, {}x{}",
         gpu.fb_virt, gpu.width, gpu.height);
 
     // Register framebuffer with the global framebuffer module
@@ -304,7 +304,7 @@ fn send_cmd(gpu: &mut VirtioGpu, dev: &VirtioMmioDevice, cmd_size: usize, resp_s
         core::hint::spin_loop();
         timeout -= 1;
         if timeout == 0 {
-            crate::serial_println!("  virtio-gpu: command timeout");
+            crate::serial_verbose_println!("  virtio-gpu: command timeout");
             return false;
         }
     }
@@ -371,7 +371,7 @@ fn setup_framebuffer(gpu: &mut VirtioGpu, dev: &VirtioMmioDevice) -> bool {
     }
     let resp_type = unsafe { (*(( gpu.cmd_virt + 2048) as *const GpuCtrlHdr)).type_ };
     if resp_type != VIRTIO_GPU_RESP_OK_NODATA {
-        crate::serial_println!("  virtio-gpu: RESOURCE_CREATE_2D failed: {:#x}", resp_type);
+        crate::serial_verbose_println!("  virtio-gpu: RESOURCE_CREATE_2D failed: {:#x}", resp_type);
         return false;
     }
 

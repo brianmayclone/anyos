@@ -20,7 +20,7 @@ pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
     // Debug output OUTSIDE the lock — serial I/O takes ~3ms at 115200 baud
     // and holding the lock that long starves CPU 0's reap_terminated.
     #[cfg(feature = "debug_verbose")]
-    crate::serial_println!("  Spawned thread '{}' (TID={})", name, tid);
+    crate::serial_verbose_println!("  Spawned thread '{}' (TID={})", name, tid);
     emit_spawn_event(tid, name);
     tid
 }
@@ -39,7 +39,7 @@ pub fn spawn_blocked(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
     };
     // Debug output OUTSIDE the lock (serial I/O is slow).
     #[cfg(feature = "debug_verbose")]
-    crate::serial_println!("  Spawned thread '{}' (TID={}, blocked)", name, tid);
+    crate::serial_verbose_println!("  Spawned thread '{}' (TID={}, blocked)", name, tid);
     emit_spawn_event(tid, name);
     tid
 }

@@ -12,7 +12,7 @@ static mut FREQ_PIPE_ID: u32 = 0;
 
 /// Entry point for the cpu_monitor kernel thread.
 pub extern "C" fn start() {
-    crate::serial_println!("  cpu_monitor started");
+    crate::serial_verbose_println!("  cpu_monitor started");
 
     // Create named pipes for CPU load and frequency data
     let pipe_id = pipe::create("sys:cpu_load");

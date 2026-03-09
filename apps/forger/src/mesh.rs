@@ -5,7 +5,7 @@ use crate::block;
 use crate::textures::{self, Face};
 use crate::world::World;
 
-pub const FLOATS_PER_VERTEX: usize = 9;
+pub const FLOATS_PER_VERTEX: usize = 6;
 
 const FACE_DIRS: [(i32, i32, i32); 6] = [
     (0, 1, 0),
@@ -14,15 +14,6 @@ const FACE_DIRS: [(i32, i32, i32); 6] = [
     (-1, 0, 0),
     (0, 0, 1),
     (0, 0, -1),
-];
-
-const FACE_NORMALS: [[f32; 3]; 6] = [
-    [0.0, 1.0, 0.0],
-    [0.0, -1.0, 0.0],
-    [1.0, 0.0, 0.0],
-    [-1.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0],
-    [0.0, 0.0, -1.0],
 ];
 
 const FACE_LIGHT: [f32; 6] = [1.0, 0.5, 0.8, 0.8, 0.7, 0.7];
@@ -39,11 +30,13 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
     let base_x = cx * 16;
     let base_z = cz * 16;
 
-    for ly in 0..256 {
+    let max_y = world.chunks.get(&(cx, cz)).map_or(0, |c| c.max_y + 1).min(256);
+
+    for ly in 0..max_y {
         for lz in 0..16 {
             for lx in 0..16 {
                 let wx = base_x + lx;
-                let wy = ly;
+                let wy = ly as i32;
                 let wz = base_z + lz;
 
                 let id = world.get_block(wx, wy, wz);
@@ -88,7 +81,6 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
                         (u1, v1),
                         (u0, v1),
                     ];
-                    let normal = FACE_NORMALS[face];
                     let light = FACE_LIGHT[face];
 
                     for i in 0..6 {
@@ -97,9 +89,6 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
                         vertices.push(positions[i][2]);
                         vertices.push(uvs[i].0);
                         vertices.push(uvs[i].1);
-                        vertices.push(normal[0]);
-                        vertices.push(normal[1]);
-                        vertices.push(normal[2]);
                         vertices.push(light);
                     }
                     vertex_count += 6;

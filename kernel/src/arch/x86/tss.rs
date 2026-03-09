@@ -60,7 +60,7 @@ static mut TSS_ARRAY: [Tss64; MAX_CPUS] = {
 /// Initialize the TSS for CPU 0 (BSP), install its descriptor in the GDT, and load TR.
 pub fn init() {
     init_for_cpu(0);
-    crate::serial_println!("[OK] TSS initialized (CPU 0, selector {:#06x}, 64-bit)", super::gdt::TSS_SEL);
+    crate::serial_verbose_println!("[OK] TSS initialized (CPU 0, selector {:#06x}, 64-bit)", super::gdt::TSS_SEL);
 }
 
 /// Initialize the TSS for a specific CPU, install the GDT descriptor, and load TR.
@@ -224,7 +224,7 @@ pub fn enable_rsp0_watchpoint(cpu_id: usize) {
         asm!("mov dr7, {}", in(reg) dr7, options(nostack, preserves_flags));
     }
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  TSS.RSP0 watchpoint enabled on CPU{}: DR0={:#018x} (8-byte write)",
         cpu_id, addr
     );

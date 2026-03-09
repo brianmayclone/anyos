@@ -14,7 +14,7 @@ use alloc::boxed::Box;
 use crate::memory::address::PhysAddr;
 use crate::memory::{physical, virtual_mem};
 use crate::drivers::pci::PciDevice;
-use crate::serial_println;
+use crate::serial_verbose_println;
 use crate::sync::spinlock::Spinlock;
 
 // No hardcoded MMIO address — uses dynamic virtual_mem::map_mmio() allocator.
@@ -237,11 +237,11 @@ fn codec_command(state: &mut HdaState, nid: u16, verb: u32) -> Option<u32> {
 pub fn init_from_pci(pci: &PciDevice) {
     let bar0 = pci.bars[0] & 0xFFFFFFF0;
     if bar0 == 0 {
-        serial_println!("HDA: BAR0 is zero");
+        serial_verbose_println!("HDA: BAR0 is zero");
         return;
     }
 
-    serial_println!("HDA: BAR0 phys = {:#010x}, IRQ = {}", bar0, pci.interrupt_line);
+    serial_verbose_println!("HDA: BAR0 phys = {:#010x}, IRQ = {}", bar0, pci.interrupt_line);
 
     // Enable bus mastering
     crate::drivers::pci::enable_bus_master(pci);
@@ -250,21 +250,21 @@ pub fn init_from_pci(pci: &PciDevice) {
     let mmio = match virtual_mem::map_mmio(PhysAddr::new(bar0 as u64), 4) {
         Some(v) => v.as_u64(),
         None => {
-            serial_println!("HDA: Failed to map BAR0 MMIO");
+            serial_verbose_println!("HDA: Failed to map BAR0 MMIO");
             return;
         }
     };
 
     let gcap = unsafe { mmio_read16(mmio, REG_GCAP) };
-    serial_println!("HDA: GCAP = {:#06x}", gcap);
+    serial_verbose_println!("HDA: GCAP = {:#06x}", gcap);
 
     // Parse GCAP: number of input/output/bidirectional streams
     let num_iss = ((gcap >> 8) & 0x0F) as u32;  // Input streams
     let num_oss = ((gcap >> 12) & 0x0F) as u32;  // Output streams
-    serial_println!("HDA: {} input stream(s), {} output stream(s)", num_iss, num_oss);
+    serial_verbose_println!("HDA: {} input stream(s), {} output stream(s)", num_iss, num_oss);
 
     if num_oss == 0 {
-        serial_println!("HDA: No output streams available");
+        serial_verbose_println!("HDA: No output streams available");
         return;
     }
 
@@ -304,13 +304,13 @@ pub fn init_from_pci(pci: &PciDevice) {
     // Check for codecs
     let statests = unsafe { mmio_read16(mmio, REG_STATESTS) };
     if statests == 0 {
-        serial_println!("HDA: No codecs detected (STATESTS=0)");
+        serial_verbose_println!("HDA: No codecs detected (STATESTS=0)");
         return;
     }
 
     // Find first codec address (bit position in STATESTS)
     let codec_addr = statests.trailing_zeros() as u8;
-    serial_println!("HDA: Codec found at address {}", codec_addr);
+    serial_verbose_println!("HDA: Codec found at address {}", codec_addr);
 
     // Clear STATESTS
     unsafe {
@@ -322,11 +322,11 @@ pub fn init_from_pci(pci: &PciDevice) {
     // RIRB: 256 entries × 8 bytes = 2 KiB (fits in one 4 KiB frame)
     let corb_frame = match physical::alloc_frame() {
         Some(f) => f,
-        None => { serial_println!("HDA: Failed to alloc CORB"); return; }
+        None => { serial_verbose_println!("HDA: Failed to alloc CORB"); return; }
     };
     let rirb_frame = match physical::alloc_frame() {
         Some(f) => f,
-        None => { serial_println!("HDA: Failed to alloc RIRB"); return; }
+        None => { serial_verbose_println!("HDA: Failed to alloc RIRB"); return; }
     };
     let corb_phys = corb_frame.as_u64();
     let rirb_phys = rirb_frame.as_u64();
@@ -334,11 +334,11 @@ pub fn init_from_pci(pci: &PciDevice) {
     // Map CORB + RIRB into virtual space for CPU access (dynamic allocation)
     let corb_virt = match virtual_mem::map_mmio(corb_frame, 1) {
         Some(v) => v.as_u64(),
-        None => { serial_println!("HDA: Failed to map CORB"); return; }
+        None => { serial_verbose_println!("HDA: Failed to map CORB"); return; }
     };
     let rirb_virt = match virtual_mem::map_mmio(rirb_frame, 1) {
         Some(v) => v.as_u64(),
-        None => { serial_println!("HDA: Failed to map RIRB"); return; }
+        None => { serial_verbose_println!("HDA: Failed to map RIRB"); return; }
     };
 
     // Zero CORB and RIRB
@@ -431,7 +431,7 @@ pub fn init_from_pci(pci: &PciDevice) {
 
     // Get codec vendor ID
     if let Some(vendor_id) = codec_command(&mut state, 0, VERB_GET_PARAM | PARAM_VENDOR_ID) {
-        serial_println!("HDA: Codec vendor/device = {:#010x}", vendor_id);
+        serial_verbose_println!("HDA: Codec vendor/device = {:#010x}", vendor_id);
     }
 
     // Get root node count to find function groups
@@ -440,7 +440,7 @@ pub fn init_from_pci(pci: &PciDevice) {
     let start_nid = ((node_count >> 16) & 0xFF) as u16;
     let num_nodes = (node_count & 0xFF) as u16;
 
-    serial_println!("HDA: Root has {} sub-node(s) starting at NID {}", num_nodes, start_nid);
+    serial_verbose_println!("HDA: Root has {} sub-node(s) starting at NID {}", num_nodes, start_nid);
 
     // Find Audio Function Group
     let mut afg_nid: u16 = 0;
@@ -449,14 +449,14 @@ pub fn init_from_pci(pci: &PciDevice) {
             if fg_type & 0xFF == 0x01 {
                 // Audio Function Group
                 afg_nid = nid;
-                serial_println!("HDA: Audio Function Group at NID {}", nid);
+                serial_verbose_println!("HDA: Audio Function Group at NID {}", nid);
                 break;
             }
         }
     }
 
     if afg_nid == 0 {
-        serial_println!("HDA: No Audio Function Group found");
+        serial_verbose_println!("HDA: No Audio Function Group found");
         return;
     }
 
@@ -469,7 +469,7 @@ pub fn init_from_pci(pci: &PciDevice) {
     let w_start = ((widget_count >> 16) & 0xFF) as u16;
     let w_num = (widget_count & 0xFF) as u16;
 
-    serial_println!("HDA: AFG has {} widget(s) starting at NID {}", w_num, w_start);
+    serial_verbose_println!("HDA: AFG has {} widget(s) starting at NID {}", w_num, w_start);
 
     // Find DAC (Audio Output) and output Pin widgets
     let mut dac_nid: u16 = 0;
@@ -482,7 +482,7 @@ pub fn init_from_pci(pci: &PciDevice) {
                 WIDGET_TYPE_AUDIO_OUTPUT => {
                     if dac_nid == 0 {
                         dac_nid = nid;
-                        serial_println!("HDA: DAC (Audio Output) at NID {}", nid);
+                        serial_verbose_println!("HDA: DAC (Audio Output) at NID {}", nid);
                     }
                 }
                 WIDGET_TYPE_PIN_COMPLEX => {
@@ -490,7 +490,7 @@ pub fn init_from_pci(pci: &PciDevice) {
                     // For simplicity, take the first pin we find after the DAC
                     if pin_nid == 0 {
                         pin_nid = nid;
-                        serial_println!("HDA: Pin Complex at NID {}", nid);
+                        serial_verbose_println!("HDA: Pin Complex at NID {}", nid);
                     }
                 }
                 _ => {}
@@ -499,7 +499,7 @@ pub fn init_from_pci(pci: &PciDevice) {
     }
 
     if dac_nid == 0 {
-        serial_println!("HDA: No DAC widget found");
+        serial_verbose_println!("HDA: No DAC widget found");
         return;
     }
 
@@ -538,14 +538,14 @@ pub fn init_from_pci(pci: &PciDevice) {
     // ── Allocate BDL + PCM buffers ──
     let bdl_frame = match physical::alloc_frame() {
         Some(f) => f,
-        None => { serial_println!("HDA: Failed to alloc BDL"); return; }
+        None => { serial_verbose_println!("HDA: Failed to alloc BDL"); return; }
     };
     state.bdl_phys = bdl_frame.as_u64();
 
     // Map BDL for CPU access (dynamic allocation)
     let bdl_virt = match virtual_mem::map_mmio(bdl_frame, 1) {
         Some(v) => v.as_u64(),
-        None => { serial_println!("HDA: Failed to map BDL"); return; }
+        None => { serial_verbose_println!("HDA: Failed to map BDL"); return; }
     };
     state.bdl_virt = bdl_virt;
     unsafe { core::ptr::write_bytes(bdl_virt as *mut u8, 0, 4096); }
@@ -555,7 +555,7 @@ pub fn init_from_pci(pci: &PciDevice) {
         let buf_frame = match physical::alloc_frame() {
             Some(f) => f,
             None => {
-                serial_println!("HDA: Failed to alloc PCM buffer {}", i);
+                serial_verbose_println!("HDA: Failed to alloc PCM buffer {}", i);
                 return;
             }
         };
@@ -628,7 +628,7 @@ pub fn init_from_pci(pci: &PciDevice) {
         crate::arch::x86::pic::unmask(irq);
     }
 
-    serial_println!("[OK] Intel HDA initialized (48 kHz, 16-bit stereo, IRQ {})", irq);
+    serial_verbose_println!("[OK] Intel HDA initialized (48 kHz, 16-bit stereo, IRQ {})", irq);
 
     // Store state and register with generic audio subsystem
     {

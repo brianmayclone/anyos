@@ -58,6 +58,16 @@ pub fn run() {
             }
         }
 
+        // Tooltip delay: wake up when tooltip should appear
+        if st.tooltip_pending_id.is_some() {
+            let elapsed = now.wrapping_sub(st.tooltip_hover_start);
+            if elapsed >= 500 {
+                min_wait = 0;
+            } else {
+                min_wait = min_wait.min(500 - elapsed);
+            }
+        }
+
         // VSync back-pressure: poll faster when a frame is pending ACK
         if st.comp_windows.iter().any(|cw| cw.frame_presented) {
             min_wait = min_wait.min(8);
@@ -99,6 +109,23 @@ pub fn run_once() -> u32 {
                     userdata: slot.userdata,
                 });
                 slot.last_fired_ms = now;
+            }
+        }
+    }
+
+    // ── Phase 0.75: Show pending tooltip after hover delay ─────────
+    {
+        const TOOLTIP_DELAY_MS: u32 = 500;
+        if let Some(pending_id) = st.tooltip_pending_id {
+            let now = crate::syscall::uptime_ms();
+            if now.wrapping_sub(st.tooltip_hover_start) >= TOOLTIP_DELAY_MS {
+                // Still hovering the same control?
+                if st.hovered == Some(pending_id) {
+                    st.tooltip_pending_id = None;
+                    show_tooltip(st, pending_id);
+                } else {
+                    st.tooltip_pending_id = None;
+                }
             }
         }
     }
@@ -439,50 +466,19 @@ pub fn run_once() -> u32 {
                                 }
                             }
                         }
-                        // Show tooltip if newly hovered control has tooltip_text
+                        // Schedule tooltip after delay if newly hovered control has tooltip_text
                         if let Some(new_id) = new_hover {
                             let has_tip = control::find_idx(&st.controls, new_id)
                                 .map(|i| !st.controls[i].base().tooltip_text.is_empty())
                                 .unwrap_or(false);
                             if has_tip {
-                                let idx2 = control::find_idx(&st.controls, new_id).unwrap();
-                                let text = st.controls[idx2].base().tooltip_text.clone();
-                                let (ax, ay) = control::abs_position(&st.controls, new_id);
-                                let ctrl_h = st.controls[idx2].base().h;
-                                // Estimate tooltip width: ~8px per char + 16px padding
-                                let tip_w = (text.len() as u32 * 8 + 16).max(40);
-
-                                // Lazily create the tooltip or reuse existing one
-                                let tip_id = if let Some(tid) = st.active_tooltip {
-                                    tid
-                                } else {
-                                    let tid = st.next_id;
-                                    st.next_id += 1;
-                                    let ctrl = crate::controls::create_control(
-                                        control::ControlKind::Tooltip, tid, win_id,
-                                        0, 0, 200, 28, &text,
-                                    );
-                                    st.controls.push(ctrl);
-                                    if let Some(p) = st.controls.iter_mut().find(|c| c.id() == win_id) {
-                                        p.add_child(tid);
-                                    }
-                                    st.active_tooltip = Some(tid);
-                                    tid
-                                };
-
-                                if let Some(ti) = control::find_idx(&st.controls, tip_id) {
-                                    // Update text
-                                    if let Some(tb) = st.controls[ti].text_base_mut() {
-                                        tb.text = text;
-                                    }
-                                    // Position below the hovered control
-                                    st.controls[ti].set_position(ax, ay + ctrl_h as i32 + 4);
-                                    st.controls[ti].base_mut().w = tip_w;
-                                    st.controls[ti].base_mut().h = 28;
-                                    st.controls[ti].base_mut().visible = true;
-                                    st.controls[ti].base_mut().mark_dirty();
-                                }
+                                st.tooltip_pending_id = Some(new_id);
+                                st.tooltip_hover_start = crate::syscall::uptime_ms();
+                            } else {
+                                st.tooltip_pending_id = None;
                             }
+                        } else {
+                            st.tooltip_pending_id = None;
                         }
                     }
 
@@ -927,10 +923,9 @@ pub fn run_once() -> u32 {
                         // Tab: cycle focus to next focusable control
                         if keycode == control::KEY_TAB {
                             cycle_focus(st, win_id, &mut pending_cbs);
-                        } else {
-                            // Bubble unhandled key events to the window
-                            fire_event_callback(&st.controls, win_id, control::EVENT_KEY, &mut pending_cbs);
                         }
+                        // Always bubble unhandled key events to the window
+                        fire_event_callback(&st.controls, win_id, control::EVENT_KEY, &mut pending_cbs);
                     }
                 }
 
@@ -1009,6 +1004,10 @@ pub fn run_once() -> u32 {
                     if let Some(idx) = control::find_idx(&st.controls, win_id) {
                         // Control tree uses logical dimensions.
                         st.controls[idx].set_size(logical_w, logical_h);
+                        // Run layout BEFORE the resize callback so that
+                        // children (e.g. DOCK_FILL canvas) already have
+                        // their updated sizes when app code queries them.
+                        crate::layout::perform_layout(&mut st.controls, win_id);
                         fire_event_callback(&st.controls, win_id, control::EVENT_RESIZE, &mut pending_cbs);
                     }
                     st.needs_layout = true;
@@ -1375,6 +1374,65 @@ fn is_point_in_control(
     }
 }
 
+
+/// Show the tooltip for the given control (called after hover delay).
+fn show_tooltip(st: &mut crate::AnyuiState, ctrl_id: ControlId) {
+    let idx2 = match control::find_idx(&st.controls, ctrl_id) {
+        Some(i) => i,
+        None => return,
+    };
+    if st.controls[idx2].base().tooltip_text.is_empty() { return; }
+    let text = st.controls[idx2].base().tooltip_text.clone();
+    let win_id = st.controls[idx2].base().parent;
+    let (ax, ay) = control::abs_position(&st.controls, ctrl_id);
+    let ctrl_h = st.controls[idx2].base().h;
+    // Estimate tooltip width: ~8px per char + 16px padding
+    let tip_w = (text.len() as u32 * 8 + 16).max(40);
+
+    // Lazily create the tooltip or reuse existing one
+    let tip_id = if let Some(tid) = st.active_tooltip {
+        tid
+    } else {
+        let tid = st.next_id;
+        st.next_id += 1;
+        let ctrl = crate::controls::create_control(
+            control::ControlKind::Tooltip, tid, win_id,
+            0, 0, 200, 28, &text,
+        );
+        st.controls.push(ctrl);
+        // Add tooltip as child of the top-level window
+        let top_win = find_top_window(&st.controls, ctrl_id).unwrap_or(win_id);
+        if let Some(p) = st.controls.iter_mut().find(|c| c.id() == top_win) {
+            p.add_child(tid);
+        }
+        st.active_tooltip = Some(tid);
+        tid
+    };
+
+    if let Some(ti) = control::find_idx(&st.controls, tip_id) {
+        // Update text
+        if let Some(tb) = st.controls[ti].text_base_mut() {
+            tb.text = text;
+        }
+        // Position below the hovered control
+        st.controls[ti].set_position(ax, ay + ctrl_h as i32 + 4);
+        st.controls[ti].base_mut().w = tip_w;
+        st.controls[ti].base_mut().h = 28;
+        st.controls[ti].base_mut().visible = true;
+        st.controls[ti].base_mut().mark_dirty();
+    }
+}
+
+/// Walk up the parent chain to find the top-level window control.
+fn find_top_window(controls: &[Box<dyn control::Control>], id: ControlId) -> Option<ControlId> {
+    let mut cur = id;
+    loop {
+        let parent = control::find_idx(controls, cur)
+            .map(|i| controls[i].base().parent)?;
+        if parent == 0 || parent == cur { return Some(cur); }
+        cur = parent;
+    }
+}
 
 fn clear_tracking_for(st: &mut crate::AnyuiState, id: ControlId) {
     if st.focused == Some(id) { st.focused = None; }

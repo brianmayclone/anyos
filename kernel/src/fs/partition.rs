@@ -4,7 +4,7 @@
 //! then parses the partition entries and returns a structured table.
 
 use alloc::vec::Vec;
-use crate::serial_println;
+use crate::serial_verbose_println;
 
 /// Partition table scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,13 +125,13 @@ where
 
     // Read MBR (LBA 0)
     if !read_sector_fn(0, &mut sector) {
-        serial_println!("[partition] failed to read LBA 0");
+        serial_verbose_println!("[partition] failed to read LBA 0");
         return DiskPartitionTable { scheme: PartitionScheme::None, partitions: Vec::new() };
     }
 
     // Check MBR signature
     if sector[510] != 0x55 || sector[511] != 0xAA {
-        serial_println!("[partition] no MBR signature (0x55AA) found");
+        serial_verbose_println!("[partition] no MBR signature (0x55AA) found");
         return DiskPartitionTable { scheme: PartitionScheme::None, partitions: Vec::new() };
     }
 
@@ -151,7 +151,7 @@ where
         if let Some(table) = parse_gpt(&read_sector_fn) {
             return table;
         }
-        serial_println!("[partition] GPT indicator found but GPT parsing failed, falling back to MBR");
+        serial_verbose_println!("[partition] GPT indicator found but GPT parsing failed, falling back to MBR");
     }
 
     // Parse MBR partition entries
@@ -180,7 +180,7 @@ fn parse_mbr(mbr: &[u8; 512]) -> DiskPartitionTable {
             bootable: status == 0x80,
             scheme: PartitionScheme::Mbr,
         };
-        serial_println!(
+        serial_verbose_println!(
             "[partition] MBR[{}]: type=0x{:02X} start={} size={} {}",
             i, ptype, start, size,
             if status == 0x80 { "(bootable)" } else { "" }
@@ -202,13 +202,13 @@ where
 
     // Read GPT header at LBA 1
     if !read_sector_fn(1, &mut sector) {
-        serial_println!("[partition] failed to read GPT header at LBA 1");
+        serial_verbose_println!("[partition] failed to read GPT header at LBA 1");
         return None;
     }
 
     // Verify "EFI PART" signature
     if &sector[0..8] != b"EFI PART" {
-        serial_println!("[partition] no EFI PART signature at LBA 1");
+        serial_verbose_println!("[partition] no EFI PART signature at LBA 1");
         return None;
     }
 
@@ -216,7 +216,7 @@ where
     let entry_count = le32(&sector, 80);
     let entry_size = le32(&sector, 84);
 
-    serial_println!(
+    serial_verbose_println!(
         "[partition] GPT: entries_lba={} count={} entry_size={}",
         entries_lba, entry_count, entry_size
     );
@@ -231,7 +231,7 @@ where
 
     for s in 0..sectors_needed {
         if !read_sector_fn(entries_lba + s as u64, &mut sector) {
-            serial_println!("[partition] failed to read GPT entry sector {}", entries_lba + s as u64);
+            serial_verbose_println!("[partition] failed to read GPT entry sector {}", entries_lba + s as u64);
             break;
         }
 
@@ -261,7 +261,7 @@ where
                 bootable: false,
                 scheme: PartitionScheme::Gpt,
             };
-            serial_println!(
+            serial_verbose_println!(
                 "[partition] GPT[{}]: type={:?} start={} end={} size={}",
                 idx, ptype, first_lba, last_lba, last_lba - first_lba + 1
             );

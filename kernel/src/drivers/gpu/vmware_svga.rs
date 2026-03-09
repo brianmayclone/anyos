@@ -564,12 +564,12 @@ impl VmwareSvgaGpu {
         }
         let gmr_id = self.next_gmr_id;
         if gmr_id >= self.gmr_max_ids {
-            crate::serial_println!("  SVGA: GMR ID limit reached ({})", self.gmr_max_ids);
+            crate::serial_verbose_println!("  SVGA: GMR ID limit reached ({})", self.gmr_max_ids);
             return None;
         }
         let num_pages = phys_pages.len() as u32;
         if num_pages > self.gmr_max_pages {
-            crate::serial_println!("  SVGA: GMR too large ({} > {} pages)", num_pages, self.gmr_max_pages);
+            crate::serial_verbose_println!("  SVGA: GMR too large ({} > {} pages)", num_pages, self.gmr_max_pages);
             return None;
         }
         self.next_gmr_id += 1;
@@ -691,7 +691,7 @@ impl GpuDriver for VmwareSvgaGpu {
         self.pitch = pitch;
         self.fb_phys = fb;
 
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  SVGA II: mode set to {}x{}x{} (pitch={}, fb={:#x})",
             actual_w, actual_h, bpp, pitch, fb
         );
@@ -889,7 +889,7 @@ impl GpuDriver for VmwareSvgaGpu {
                 self.gmr_pages = phys_pages.to_vec();
                 self.back_buffer_gmr = Some(gmr_id);
                 self.back_buffer_offset = sub_page_offset;
-                crate::serial_println!("  SVGA: GMR {} defined ({} pages, offset={})", gmr_id, phys_pages.len(), sub_page_offset);
+                crate::serial_verbose_println!("  SVGA: GMR {} defined ({} pages, offset={})", gmr_id, phys_pages.len(), sub_page_offset);
                 true
             }
             None => false,
@@ -1053,7 +1053,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // BAR0 = I/O port base
     let bar0 = pci_dev.bars[0];
     if bar0 == 0 || bar0 & 1 == 0 {
-        crate::serial_println!("  SVGA II: BAR0 is not I/O space ({:#x})", bar0);
+        crate::serial_verbose_println!("  SVGA II: BAR0 is not I/O space ({:#x})", bar0);
         return false;
     }
     let io_base = (bar0 & !0x3) as u16;
@@ -1061,14 +1061,14 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // BAR1 = Framebuffer physical address
     let fb_phys = pci_dev.bars[1] & !0xF;
     if fb_phys == 0 {
-        crate::serial_println!("  SVGA II: BAR1 (framebuffer) is zero");
+        crate::serial_verbose_println!("  SVGA II: BAR1 (framebuffer) is zero");
         return false;
     }
 
     // BAR2 = FIFO physical address
     let fifo_phys = pci_dev.bars[2] & !0xF;
     if fifo_phys == 0 {
-        crate::serial_println!("  SVGA II: BAR2 (FIFO) is zero");
+        crate::serial_verbose_println!("  SVGA II: BAR2 (FIFO) is zero");
         return false;
     }
 
@@ -1117,13 +1117,13 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     gpu.reg_write(SVGA_REG_ID, SVGA_ID_2);
     let id = gpu.reg_read(SVGA_REG_ID);
     if id != SVGA_ID_2 {
-        crate::serial_println!("  SVGA II: version negotiation failed (got {:#x})", id);
+        crate::serial_verbose_println!("  SVGA II: version negotiation failed (got {:#x})", id);
         return false;
     }
 
     // 2. Read capabilities
     gpu.capabilities = gpu.reg_read(SVGA_REG_CAPABILITIES);
-    crate::serial_println!("  SVGA II: capabilities = {:#010x}", gpu.capabilities);
+    crate::serial_verbose_println!("  SVGA II: capabilities = {:#010x}", gpu.capabilities);
 
     // Log all capability flags
     let cap_flags: &[(u32, &str)] = &[
@@ -1145,7 +1145,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     ];
     for &(flag, name) in cap_flags {
         if gpu.capabilities & flag != 0 {
-            crate::serial_println!("    - {}", name);
+            crate::serial_verbose_println!("    - {}", name);
         }
     }
 
@@ -1165,12 +1165,12 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     gpu.pitch = gpu.reg_read(SVGA_REG_BYTES_PER_LINE);
     gpu.fb_phys = gpu.reg_read(SVGA_REG_FB_START);
     gpu.vram_size_bytes = gpu.reg_read(SVGA_REG_VRAM_SIZE);
-    crate::serial_println!("  SVGA II: VRAM size = {} KiB ({} MiB)", gpu.vram_size_bytes / 1024, gpu.vram_size_bytes / (1024 * 1024));
+    crate::serial_verbose_println!("  SVGA II: VRAM size = {} KiB ({} MiB)", gpu.vram_size_bytes / 1024, gpu.vram_size_bytes / (1024 * 1024));
 
     // 6. Query hardware max resolution and build supported mode list
     let max_w = gpu.reg_read(SVGA_REG_MAX_WIDTH);
     let max_h = gpu.reg_read(SVGA_REG_MAX_HEIGHT);
-    crate::serial_println!("  SVGA II: max resolution {}x{}", max_w, max_h);
+    crate::serial_verbose_println!("  SVGA II: max resolution {}x{}", max_w, max_h);
     gpu.supported = super::COMMON_MODES.iter()
         .copied()
         .filter(|&(w, h)| w <= max_w && h <= max_h)
@@ -1178,7 +1178,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
 
     // 7. Read FIFO info and map FIFO memory
     gpu.fifo_size = gpu.reg_read(SVGA_REG_FIFO_SIZE);
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  SVGA II: IO={:#x} FB={:#x} FIFO={:#x} (size={}K)",
         io_base, fb_phys, fifo_phys, gpu.fifo_size / 1024
     );
@@ -1199,23 +1199,23 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     SVGA_FIFO_VIRT.store(gpu.fifo_virt, Ordering::Relaxed);
     let fifo_caps = gpu.fifo_read(SVGA_FIFO_CAPABILITIES);
     gpu.fifo_caps = fifo_caps;
-    crate::serial_println!("  SVGA II: FIFO caps = {:#06x}", fifo_caps);
+    crate::serial_verbose_println!("  SVGA II: FIFO caps = {:#06x}", fifo_caps);
 
     if fifo_caps & SVGA_FIFO_CAP_CURSOR_BYPASS_3 != 0 {
         CURSOR_BYPASS_ACTIVE.store(true, Ordering::Relaxed);
-        crate::serial_println!("    - CURSOR_BYPASS_3");
+        crate::serial_verbose_println!("    - CURSOR_BYPASS_3");
     }
 
     // 8a. Fence support
     gpu.has_fences = fifo_caps & SVGA_FIFO_CAP_FENCE != 0;
     if gpu.has_fences {
-        crate::serial_println!("    - FENCE");
+        crate::serial_verbose_println!("    - FENCE");
     }
 
     // 8b. FIFO reserve/commit support + bounce buffer allocation
     gpu.has_fifo_reserve = fifo_caps & SVGA_FIFO_CAP_RESERVE != 0;
     if gpu.has_fifo_reserve {
-        crate::serial_println!("    - RESERVE");
+        crate::serial_verbose_println!("    - RESERVE");
     }
     // Always allocate bounce buffer (needed for large commands even without RESERVE)
     match crate::memory::physical::alloc_contiguous(FIFO_BOUNCE_PAGES) {
@@ -1226,7 +1226,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
             gpu.bounce_virt = phys; // identity-mapped
         }
         None => {
-            crate::serial_println!("    SVGA: bounce buffer alloc failed");
+            crate::serial_verbose_println!("    SVGA: bounce buffer alloc failed");
             gpu.has_fifo_reserve = false;
         }
     }
@@ -1237,13 +1237,13 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     if gpu.has_gmr2 {
         gpu.gmr_max_ids = gpu.reg_read(SVGA_REG_GMR_MAX_IDS);
         gpu.gmr_max_pages = gpu.reg_read(SVGA_REG_GMRS_MAX_PAGES);
-        crate::serial_println!("    - GMR2 (max {} IDs, {} pages)", gpu.gmr_max_ids, gpu.gmr_max_pages);
+        crate::serial_verbose_println!("    - GMR2 (max {} IDs, {} pages)", gpu.gmr_max_ids, gpu.gmr_max_pages);
     }
 
     // Log SVGA3D hardware version (FIFO is now initialized)
     if gpu.has_3d() {
         let hw_ver = gpu.hw_version_3d();
-        crate::serial_println!("  SVGA II: 3D hardware version = {:#x} (has_gmr2={})", hw_ver, gpu.has_gmr2);
+        crate::serial_verbose_println!("  SVGA II: 3D hardware version = {:#x} (has_gmr2={})", hw_ver, gpu.has_gmr2);
     }
 
     // 8c2. Pre-allocate DMA staging buffer (for 3D surface uploads)
@@ -1264,11 +1264,11 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
                         gpu.dma_staging_phys = phys;
                         gpu.dma_staging_pages = DMA_STAGING_PAGES;
                         gpu.dma_staging_gmr = Some(gmr_id);
-                        crate::serial_println!("    - DMA staging: {} KiB (GMR {})",
+                        crate::serial_verbose_println!("    - DMA staging: {} KiB (GMR {})",
                             DMA_STAGING_PAGES * 4, gmr_id);
                     }
                     None => {
-                        crate::serial_println!("    SVGA: DMA staging GMR define failed");
+                        crate::serial_verbose_println!("    SVGA: DMA staging GMR define failed");
                         // Free the pages
                         for i in 0..DMA_STAGING_PAGES {
                             crate::memory::physical::free_frame(
@@ -1279,7 +1279,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
                 }
             }
             None => {
-                crate::serial_println!("    SVGA: DMA staging alloc failed ({} pages)", DMA_STAGING_PAGES);
+                crate::serial_verbose_println!("    SVGA: DMA staging alloc failed ({} pages)", DMA_STAGING_PAGES);
             }
         }
     }
@@ -1289,7 +1289,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         || (fifo_caps & SVGA_FIFO_CAP_SCREEN_OBJECT_2 != 0);
     if gpu.has_screen_object {
         let ver = if fifo_caps & SVGA_FIFO_CAP_SCREEN_OBJECT_2 != 0 { "v2" } else { "v1" };
-        crate::serial_println!("    - SCREEN_OBJECT ({})", ver);
+        crate::serial_verbose_println!("    - SCREEN_OBJECT ({})", ver);
         gpu.define_screen_0();
     }
 
@@ -1325,14 +1325,14 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
 
         gpu.irq_active = true;
         SVGA_IRQ_ENABLED.store(true, Ordering::Release);
-        crate::serial_println!("    SVGA IRQ {} registered (fence-driven sync)", irq);
+        crate::serial_verbose_println!("    SVGA IRQ {} registered (fence-driven sync)", irq);
     }
 
     // 10. Initial full-screen UPDATE
     gpu.fifo_write_cmd(&[SVGA_CMD_UPDATE, 0, 0, gpu.width, gpu.height]);
     gpu.sync_fifo();
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  SVGA II: initialized {}x{} (pitch={}, fb={:#x})",
         gpu.width, gpu.height, gpu.pitch, gpu.fb_phys
     );

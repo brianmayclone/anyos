@@ -204,7 +204,7 @@ unsafe fn admin_submit(ctrl: &mut NvmeController, cmd: &NvmeCommand) -> Option<N
         }
         core::hint::spin_loop();
     }
-    crate::serial_println!("NVMe: admin command timeout");
+    crate::serial_verbose_println!("NVMe: admin command timeout");
     None
 }
 
@@ -230,14 +230,14 @@ unsafe fn io_submit(ctrl: &mut NvmeController, cmd: &NvmeCommand) -> Option<Nvme
             // Check status (bits 1-15, shift right 1)
             let sc = (cqe.status >> 1) & 0x7FFF;
             if sc != 0 {
-                crate::serial_println!("NVMe: I/O error, status={:#06x}", sc);
+                crate::serial_verbose_println!("NVMe: I/O error, status={:#06x}", sc);
                 return None;
             }
             return Some(cqe);
         }
         core::hint::spin_loop();
     }
-    crate::serial_println!("NVMe: I/O command timeout");
+    crate::serial_verbose_println!("NVMe: I/O command timeout");
     None
 }
 
@@ -349,7 +349,7 @@ pub fn init_and_register(pci: &PciDevice) {
     // BAR0 = MMIO registers
     let bar0 = pci.bars[0];
     if bar0 & 1 != 0 {
-        crate::serial_println!("  NVMe: BAR0 is I/O port (expected MMIO)");
+        crate::serial_verbose_println!("  NVMe: BAR0 is I/O port (expected MMIO)");
         return;
     }
     let mmio_phys = (bar0 & 0xFFFFF000) as u64;
@@ -374,7 +374,7 @@ pub fn init_and_register(pci: &PciDevice) {
     let dstrd = 4 << ((cap >> 32) & 0xF);  // Doorbell Stride (bytes)
     let timeout = ((cap >> 24) & 0xFF) as u32 * 500; // Timeout in ms
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  NVMe: version {}.{}.{}, MQES={}, DSTRD={}, timeout={}ms",
         (vs >> 16) & 0xFF, (vs >> 8) & 0xFF, vs & 0xFF,
         mqes, dstrd, timeout
@@ -397,12 +397,12 @@ pub fn init_and_register(pci: &PciDevice) {
     // Admin SQ: ADMIN_QUEUE_SIZE * 64 bytes (1 page)
     let asq_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_println!("  NVMe: alloc ASQ failed"); return; }
+        None => { crate::serial_verbose_println!("  NVMe: alloc ASQ failed"); return; }
     };
     // Admin CQ: ADMIN_QUEUE_SIZE * 16 bytes (1 page)
     let acq_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_println!("  NVMe: alloc ACQ failed"); return; }
+        None => { crate::serial_verbose_println!("  NVMe: alloc ACQ failed"); return; }
     };
 
     // Identity-map queue pages
@@ -439,19 +439,19 @@ pub fn init_and_register(pci: &PciDevice) {
         core::hint::spin_loop();
     }
     if unsafe { mmio_read32(base, REG_CSTS) } & CSTS_RDY == 0 {
-        crate::serial_println!("  NVMe: controller failed to become ready");
+        crate::serial_verbose_println!("  NVMe: controller failed to become ready");
         return;
     }
-    crate::serial_println!("  NVMe: controller enabled and ready");
+    crate::serial_verbose_println!("  NVMe: controller enabled and ready");
 
     // Allocate I/O queues
     let iosq_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_println!("  NVMe: alloc IOSQ failed"); return; }
+        None => { crate::serial_verbose_println!("  NVMe: alloc IOSQ failed"); return; }
     };
     let iocq_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_println!("  NVMe: alloc IOCQ failed"); return; }
+        None => { crate::serial_verbose_println!("  NVMe: alloc IOCQ failed"); return; }
     };
     for &phys in &[iosq_phys, iocq_phys] {
         virtual_mem::map_page(VirtAddr::new(phys), PhysAddr::new(phys), 0x03);
@@ -464,7 +464,7 @@ pub fn init_and_register(pci: &PciDevice) {
     // Allocate bounce buffer (identity-mapped)
     let bounce_phys = match physical::alloc_contiguous(BOUNCE_PAGES) {
         Some(p) => p.as_u64(),
-        None => { crate::serial_println!("  NVMe: alloc bounce buffer failed"); return; }
+        None => { crate::serial_verbose_println!("  NVMe: alloc bounce buffer failed"); return; }
     };
     for i in 0..BOUNCE_PAGES {
         let p = bounce_phys + (i as u64) * 4096;
@@ -494,7 +494,7 @@ pub fn init_and_register(pci: &PciDevice) {
     // Identify Controller (admin command)
     let identify_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_println!("  NVMe: alloc identify failed"); return; }
+        None => { crate::serial_verbose_println!("  NVMe: alloc identify failed"); return; }
     };
     virtual_mem::map_page(VirtAddr::new(identify_phys), PhysAddr::new(identify_phys), 0x03);
     unsafe { core::ptr::write_bytes(identify_phys as *mut u8, 0, 4096); }
@@ -507,7 +507,7 @@ pub fn init_and_register(pci: &PciDevice) {
     cmd.cdw10 = 1; // CNS=1 → Identify Controller
 
     if unsafe { admin_submit(&mut ctrl, &cmd) }.is_none() {
-        crate::serial_println!("  NVMe: Identify Controller failed");
+        crate::serial_verbose_println!("  NVMe: Identify Controller failed");
         return;
     }
 
@@ -521,7 +521,7 @@ pub fn init_and_register(pci: &PciDevice) {
         }
         core::str::from_utf8_unchecked(&slice[..end])
     };
-    crate::serial_println!("  NVMe: Controller: {}", model);
+    crate::serial_verbose_println!("  NVMe: Controller: {}", model);
 
     // Identify Namespace 1 (CNS=0, NSID=1)
     unsafe { core::ptr::write_bytes(identify_phys as *mut u8, 0, 4096); }
@@ -534,7 +534,7 @@ pub fn init_and_register(pci: &PciDevice) {
     cmd.cdw10 = 0; // CNS=0 → Identify Namespace
 
     if unsafe { admin_submit(&mut ctrl, &cmd) }.is_none() {
-        crate::serial_println!("  NVMe: Identify Namespace 1 failed");
+        crate::serial_verbose_println!("  NVMe: Identify Namespace 1 failed");
         return;
     }
 
@@ -551,7 +551,7 @@ pub fn init_and_register(pci: &PciDevice) {
     ctrl.sector_size = sector_size;
 
     let size_mb = nsze * sector_size as u64 / (1024 * 1024);
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  NVMe: NS1: {} sectors, {} bytes/sector, {} MiB",
         nsze, sector_size, size_mb
     );
@@ -566,7 +566,7 @@ pub fn init_and_register(pci: &PciDevice) {
     cmd.cdw11 = 1; // Physically contiguous
 
     if unsafe { admin_submit(&mut ctrl, &cmd) }.is_none() {
-        crate::serial_println!("  NVMe: Create I/O CQ failed");
+        crate::serial_verbose_println!("  NVMe: Create I/O CQ failed");
         return;
     }
 
@@ -580,17 +580,17 @@ pub fn init_and_register(pci: &PciDevice) {
     cmd.cdw11 = (1 << 16) | 1; // CQID=1, Physically contiguous
 
     if unsafe { admin_submit(&mut ctrl, &cmd) }.is_none() {
-        crate::serial_println!("  NVMe: Create I/O SQ failed");
+        crate::serial_verbose_println!("  NVMe: Create I/O SQ failed");
         return;
     }
 
-    crate::serial_println!("[OK] NVMe: I/O queues created (SQ={}, CQ={})", IO_QUEUE_SIZE, IO_QUEUE_SIZE);
+    crate::serial_verbose_println!("[OK] NVMe: I/O queues created (SQ={}, CQ={})", IO_QUEUE_SIZE, IO_QUEUE_SIZE);
 
     // Store controller and switch backend
     unsafe { CTRL = Some(ctrl); }
     AVAILABLE.store(true, Ordering::Release);
     super::set_backend_nvme();
-    crate::serial_println!("[OK] NVMe storage backend active");
+    crate::serial_verbose_println!("[OK] NVMe storage backend active");
 }
 
 /// Probe: initialize NVMe and return a HAL driver.

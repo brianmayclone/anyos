@@ -432,6 +432,46 @@ impl FtpClient {
         println!("{}", resp.trim_end());
     }
 
+    /// List remote entries via LIST for tab completion.
+    /// Returns (name, is_dir) pairs.
+    fn list_entries(&mut self) -> Vec<(String, bool)> {
+        let data_sock = match self.open_data_connection() {
+            Some(s) => s,
+            None => return Vec::new(),
+        };
+        self.send_cmd_only("LIST");
+        let resp = self.read_response();
+        if !resp.starts_with("150") && !resp.starts_with("125") {
+            net::tcp_close(data_sock);
+            return Vec::new();
+        }
+        let mut raw = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = net::tcp_recv(data_sock, &mut buf);
+            if n == 0 || n == u32::MAX { break; }
+            raw.extend_from_slice(&buf[..n as usize]);
+        }
+        net::tcp_close(data_sock);
+        let _ = self.read_response();
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let mut entries = Vec::new();
+        for line in text.lines() {
+            let t = line.trim();
+            // LIST format: "drwxrwxrwx ... name" or "-rwxrwxrwx ... name"
+            if t.len() < 10 { continue; }
+            let is_dir = t.as_bytes()[0] == b'd';
+            // Name is after the last whitespace-separated field
+            // Skip permissions, links, owner, group, size, month, day, time/year
+            if let Some(name) = parse_list_name(t) {
+                if name != "." && name != ".." {
+                    entries.push((String::from(name), is_dir));
+                }
+            }
+        }
+        entries
+    }
+
     fn disconnect(&mut self) {
         self.send_cmd_only("QUIT");
         let _ = self.read_response();
@@ -446,17 +486,11 @@ impl FtpClient {
         loop {
             // Print prompt
             print_str("ftp> ");
-
-            // Read line from stdin (fd 0)
-            let n = fs::read(0, &mut line_buf);
-            if n == 0 || n == u32::MAX {
+            let line_pos = read_line_with_tab(&mut line_buf, self);
+            if line_pos == usize::MAX {
                 break;
             }
-            // Ctrl+C (0x03) or Ctrl+D (0x04) → quit
-            if n > 0 && (line_buf[0] == 0x03 || line_buf[0] == 0x04) {
-                break;
-            }
-            let line = core::str::from_utf8(&line_buf[..n as usize])
+            let line = core::str::from_utf8(&line_buf[..line_pos])
                 .unwrap_or("")
                 .trim();
             if line.is_empty() {
@@ -569,8 +603,65 @@ impl FtpClient {
                     let resp = self.read_response();
                     println!("{}", resp.trim_end());
                 }
+                "lpwd" => {
+                    let mut buf = [0u8; 256];
+                    let len = fs::getcwd(&mut buf);
+                    if len > 0 && (len as usize) <= buf.len() {
+                        if let Ok(s) = core::str::from_utf8(&buf[..len as usize]) {
+                            println!("{}", s);
+                        }
+                    } else {
+                        println!("/");
+                    }
+                }
+                "lcd" => {
+                    if args.is_empty() {
+                        println!("Usage: lcd <path>");
+                    } else if fs::chdir(args) != 0 {
+                        println!("lcd: {}: No such directory", args);
+                    }
+                }
+                "lls" | "ldir" => {
+                    let dir = if args.is_empty() { "." } else { args };
+                    let mut dir_buf = [0u8; 64 * 128];
+                    let count = fs::readdir(dir, &mut dir_buf);
+                    if count == u32::MAX {
+                        println!("lls: cannot read directory");
+                    } else {
+                        for i in 0..count as usize {
+                            let off = i * 64;
+                            if off + 8 > dir_buf.len() { break; }
+                            let entry_type = dir_buf[off];
+                            let name_len = dir_buf[off + 1] as usize;
+                            if name_len == 0 || name_len > 56 { break; }
+                            if off + 8 + name_len > dir_buf.len() { break; }
+                            if let Ok(name) = core::str::from_utf8(&dir_buf[off + 8..off + 8 + name_len]) {
+                                let size = u32::from_le_bytes([dir_buf[off+4], dir_buf[off+5], dir_buf[off+6], dir_buf[off+7]]);
+                                if entry_type == 1 {
+                                    println!("  [{}]", name);
+                                } else {
+                                    println!("  {:>8}  {}", size, name);
+                                }
+                            }
+                        }
+                    }
+                }
+                "lmkdir" => {
+                    if args.is_empty() {
+                        println!("Usage: lmkdir <path>");
+                    } else if fs::mkdir(args) != 0 {
+                        println!("lmkdir: failed to create {}", args);
+                    }
+                }
+                "lrm" => {
+                    if args.is_empty() {
+                        println!("Usage: lrm <file>");
+                    } else if fs::unlink(args) != 0 {
+                        println!("lrm: failed to delete {}", args);
+                    }
+                }
                 "help" | "?" => {
-                    println!("Commands:");
+                    println!("Remote commands:");
                     println!("  ls / dir / list         List remote directory");
                     println!("  pwd                     Print working directory");
                     println!("  cd <path>               Change directory");
@@ -585,6 +676,13 @@ impl FtpClient {
                     println!("  active                  Switch to active mode");
                     println!("  binary                  Set binary transfer mode");
                     println!("  ascii                   Set ASCII transfer mode");
+                    println!("Local commands:");
+                    println!("  lpwd                    Print local directory");
+                    println!("  lcd <path>              Change local directory");
+                    println!("  lls [path]              List local directory");
+                    println!("  lmkdir <path>           Create local directory");
+                    println!("  lrm <file>              Delete local file");
+                    println!("Other:");
                     println!("  bye / quit / exit       Disconnect and exit");
                 }
                 "bye" | "quit" | "exit" | "q" => {
@@ -621,6 +719,34 @@ fn is_complete_response(data: &[u8]) -> bool {
         }
     }
     false
+}
+
+/// Extract filename from a LIST line.
+/// Format: "drwxrwxrwx  user  group  size  month day time  name"
+/// We skip the first 8 whitespace-separated fields, rest is the filename.
+fn parse_list_name(line: &str) -> Option<&str> {
+    let mut fields = 0;
+    let mut in_space = true;
+    for (i, b) in line.bytes().enumerate() {
+        if b == b' ' || b == b'\t' {
+            if !in_space {
+                in_space = true;
+            }
+        } else {
+            if in_space {
+                fields += 1;
+                if fields == 9 {
+                    let name = line[i..].trim_end();
+                    if !name.is_empty() {
+                        return Some(name);
+                    }
+                    return None;
+                }
+                in_space = false;
+            }
+        }
+    }
+    None
 }
 
 /// Parse PASV response: "227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)"
@@ -679,6 +805,245 @@ fn write_u32(s: &mut String, val: u32) {
 
 fn print_str(s: &str) {
     anyos_std::fs::write(1, s.as_bytes());
+}
+
+// All FTP commands for command-name completion
+const FTP_COMMANDS: &[&str] = &[
+    "ls", "dir", "list", "pwd", "cd", "get", "put", "upload",
+    "mkdir", "md", "rmdir", "rd", "delete", "del", "rm",
+    "rename", "ren", "mv", "size", "passive", "pasv",
+    "active", "port", "binary", "bin", "ascii",
+    "lpwd", "lcd", "lls", "ldir", "lmkdir", "lrm",
+    "help", "bye", "quit", "exit",
+];
+
+// Commands that take remote file arguments (all entries)
+fn needs_remote_files(cmd: &str) -> bool {
+    matches!(cmd, "get" | "delete" | "del" | "rm" | "size" | "rename" | "ren" | "mv")
+}
+
+// Commands that take remote directory arguments (dirs only)
+fn needs_remote_dirs(cmd: &str) -> bool {
+    matches!(cmd, "cd" | "rmdir" | "rd")
+}
+
+// Commands that take local file arguments (all entries)
+fn needs_local_files(cmd: &str) -> bool {
+    matches!(cmd, "put" | "upload" | "lls" | "ldir" | "lrm")
+}
+
+// Commands that take local directory arguments (dirs only)
+fn needs_local_dirs(cmd: &str) -> bool {
+    matches!(cmd, "lcd" | "lmkdir")
+}
+
+/// List local filenames in a directory for tab completion.
+/// If `dirs_only`, only return directories.
+fn local_file_names(dir: &str, dirs_only: bool) -> Vec<String> {
+    let d = if dir.is_empty() { "." } else { dir };
+    let mut dir_buf = [0u8; 64 * 128];
+    let count = fs::readdir(d, &mut dir_buf);
+    if count == u32::MAX { return Vec::new(); }
+    let mut names = Vec::new();
+    for i in 0..count as usize {
+        let off = i * 64;
+        if off + 8 > dir_buf.len() { break; }
+        let name_len = dir_buf[off + 1] as usize;
+        if name_len == 0 || name_len > 56 { break; }
+        if off + 8 + name_len > dir_buf.len() { break; }
+        if let Ok(name) = core::str::from_utf8(&dir_buf[off + 8..off + 8 + name_len]) {
+            if name != "." && name != ".." {
+                let is_dir = dir_buf[off] == 1;
+                if dirs_only && !is_dir { continue; }
+                let mut entry = String::from(name);
+                if is_dir { entry.push('/'); }
+                names.push(entry);
+            }
+        }
+    }
+    names
+}
+
+/// Erase `n` characters on screen (backspace + space + backspace).
+fn erase_chars(n: usize) {
+    for _ in 0..n {
+        print_str("\x08 \x08");
+    }
+}
+
+/// Read a line with tab completion. Returns length, or usize::MAX on EOF.
+fn read_line_with_tab(buf: &mut [u8], ftp: &mut FtpClient) -> usize {
+    let mut pos = 0usize;
+    // Cache remote entries (fetched lazily on first remote-tab)
+    let mut remote_entries: Option<Vec<(String, bool)>> = None;
+
+    loop {
+        let mut byte = [0u8; 1];
+        let n = fs::read(0, &mut byte);
+        if n == u32::MAX {
+            return usize::MAX;
+        }
+        if n == 0 {
+            anyos_std::process::sleep(10);
+            continue;
+        }
+        match byte[0] {
+            0x03 | 0x04 => {
+                print_str("\n");
+                return usize::MAX;
+            }
+            b'\n' => {
+                print_str("\n");
+                return pos;
+            }
+            b'\r' => {
+                // Ignore CR — terminal sends \n for Enter.
+                // Stray \r from VNC or other sources should not trigger line submit.
+                continue;
+            }
+            8 | 127 => {
+                if pos > 0 {
+                    pos -= 1;
+                    print_str("\x08 \x08");
+                }
+            }
+            // Tab
+            b'\t' => {
+                let line = core::str::from_utf8(&buf[..pos]).unwrap_or("");
+                if let Some(completion) = tab_complete(line, ftp, &mut remote_entries) {
+                    // Erase current line on screen, replace with completed version
+                    erase_chars(pos);
+                    let clen = completion.len().min(buf.len());
+                    buf[..clen].copy_from_slice(&completion.as_bytes()[..clen]);
+                    pos = clen;
+                    print_str(&completion[..clen]);
+                }
+            }
+            c if c >= b' ' => {
+                if pos < buf.len() {
+                    buf[pos] = c;
+                    pos += 1;
+                    fs::write(1, &[c]);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Find a tab completion for the current line.
+fn tab_complete(line: &str, ftp: &mut FtpClient, remote_cache: &mut Option<Vec<(String, bool)>>) -> Option<String> {
+    let trimmed = line.trim_start();
+    if let Some(space_pos) = trimmed.find(' ') {
+        // Command + partial argument
+        let cmd = &trimmed[..space_pos];
+        let arg_part = &trimmed[space_pos + 1..];
+
+        // Remote completion
+        if needs_remote_files(cmd) || needs_remote_dirs(cmd) {
+            let dirs_only = needs_remote_dirs(cmd);
+            if remote_cache.is_none() {
+                *remote_cache = Some(ftp.list_entries());
+            }
+            let entries = remote_cache.as_ref()?;
+            // Build candidate names (dirs get trailing /)
+            let candidates: Vec<String> = entries.iter()
+                .filter(|(_, is_dir)| !dirs_only || *is_dir)
+                .map(|(name, is_dir)| {
+                    if *is_dir {
+                        let mut s = name.clone();
+                        if !s.ends_with('/') { s.push('/'); }
+                        s
+                    } else {
+                        name.clone()
+                    }
+                })
+                .collect();
+            return complete_from_list(cmd, arg_part, &candidates, line);
+        }
+
+        // Local completion
+        if needs_local_files(cmd) || needs_local_dirs(cmd) {
+            let dirs_only = needs_local_dirs(cmd);
+            let dir = if let Some(slash) = arg_part.rfind('/') {
+                &arg_part[..slash + 1]
+            } else {
+                ""
+            };
+            let names = local_file_names(dir, dirs_only);
+            let full: Vec<String> = names.iter().map(|n| format!("{}{}", dir, n)).collect();
+            return complete_from_list(cmd, arg_part, &full, line);
+        }
+
+        None
+    } else {
+        // Command name completion
+        let matches: Vec<&&str> = FTP_COMMANDS.iter().filter(|c| c.starts_with(trimmed)).collect();
+        if matches.len() == 1 {
+            let mut result = String::from(*matches[0]);
+            result.push(' ');
+            return Some(result);
+        } else if matches.len() > 1 {
+            let strs: Vec<&str> = matches.iter().map(|s| **s).collect();
+            let common = common_prefix(&strs);
+            if common.len() > trimmed.len() {
+                return Some(String::from(common));
+            }
+            show_candidates_str(&strs, line);
+        }
+        None
+    }
+}
+
+/// Complete arg_part from a list of candidates. Returns full line if matched.
+fn complete_from_list(cmd: &str, prefix: &str, candidates: &[String], line: &str) -> Option<String> {
+    let matches: Vec<&String> = candidates.iter().filter(|n| n.starts_with(prefix)).collect();
+    if matches.len() == 1 {
+        return Some(format!("{} {}", cmd, matches[0]));
+    } else if matches.len() > 1 {
+        let strs: Vec<&str> = matches.iter().map(|s| s.as_str()).collect();
+        let common = common_prefix(&strs);
+        if common.len() > prefix.len() {
+            return Some(format!("{} {}", cmd, common));
+        }
+        // Show short names (after last /)
+        print_str("\n");
+        for m in &matches {
+            let name = m.rsplit('/').next().unwrap_or(m);
+            print_str(name);
+            print_str("  ");
+        }
+        print_str("\nftp> ");
+        print_str(line);
+    }
+    None
+}
+
+fn show_candidates_str(candidates: &[&str], line: &str) {
+    print_str("\n");
+    for m in candidates {
+        print_str(m);
+        print_str("  ");
+    }
+    print_str("\nftp> ");
+    print_str(line);
+}
+
+/// Find the longest common prefix of a set of strings.
+fn common_prefix<'a>(strings: &[&'a str]) -> &'a str {
+    if strings.is_empty() { return ""; }
+    let first = strings[0];
+    let mut len = first.len();
+    for s in &strings[1..] {
+        len = len.min(s.len());
+        for (i, (a, b)) in first.bytes().zip(s.bytes()).enumerate() {
+            if a != b {
+                len = len.min(i);
+                break;
+            }
+        }
+    }
+    &first[..len]
 }
 
 fn parse_ip(s: &str) -> Option<[u8; 4]> {

@@ -318,7 +318,7 @@ pub fn probe_all() -> alloc::vec::Vec<VirtioMmioDevice> {
 
         let irq = VIRTIO_MMIO_IRQ_BASE + slot as u32;
 
-        crate::serial_println!("    slot {}: id={} version={} base={:#x}", slot, dev_id, version, base);
+        crate::serial_verbose_println!("    slot {}: id={} version={} base={:#x}", slot, dev_id, version, base);
         devices.push(VirtioMmioDevice { base, dev_id, irq });
     }
 

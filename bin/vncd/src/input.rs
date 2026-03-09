@@ -92,6 +92,17 @@ pub struct KeyMapping {
 /// Returns `None` for keysyms that should be silently dropped (e.g. dead
 /// keys, compose, or anything we don't support yet).
 pub fn map_keysym(keysym: u32, mods: &ModifierState) -> Option<KeyMapping> {
+    // ── ASCII control characters (0x01–0x1F) ────────────────────────────
+    // Some VNC clients send the control code instead of the plain letter
+    // when Ctrl is held (e.g. Ctrl+Z → keysym 0x1A instead of 0x7A).
+    // Map these back to the corresponding lowercase letter so the
+    // compositor/apps receive the expected (scancode, char_val) pair.
+    if keysym >= 0x0001 && keysym <= 0x001A {
+        let letter = (keysym as u8) + b'a' - 1; // 0x01→'a', 0x1A→'z'
+        let scancode = char_to_scancode(letter, false)?;
+        return Some(KeyMapping { scancode, char_val: letter as u32 });
+    }
+
     // ── ASCII printable (0x20 Space … 0x7E ~) ─────────────────────────────
     if keysym >= 0x0020 && keysym <= 0x007E {
         let ch = keysym as u8;

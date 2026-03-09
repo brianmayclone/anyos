@@ -8,7 +8,7 @@ const PSCI_SYSTEM_RESET: u64 = 0x8400_0009;
 
 /// Shut down the system via PSCI SYSTEM_OFF.
 pub fn shutdown() -> ! {
-    crate::serial_println!("PSCI: System shutdown...");
+    crate::serial_verbose_println!("PSCI: System shutdown...");
     unsafe {
         core::arch::asm!(
             "mov x0, {fn_id}",
@@ -21,7 +21,7 @@ pub fn shutdown() -> ! {
 
 /// Reset the system via PSCI SYSTEM_RESET.
 pub fn reset() -> ! {
-    crate::serial_println!("PSCI: System reset...");
+    crate::serial_verbose_println!("PSCI: System reset...");
     unsafe {
         core::arch::asm!(
             "mov x0, {fn_id}",
@@ -34,5 +34,5 @@ pub fn reset() -> ! {
 
 /// Initialize power management.
 pub fn init() {
-    crate::serial_println!("[OK] Power management: PSCI available");
+    crate::serial_verbose_println!("[OK] Power management: PSCI available");
 }

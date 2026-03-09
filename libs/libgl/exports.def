@@ -85,3 +85,23 @@ EXPORTS
     gl_math_ceil
     gl_math_clamp
     gl_math_lerp
+    gl_physics_create_world
+    gl_physics_set_gravity
+    gl_physics_step
+    gl_physics_add_sphere
+    gl_physics_add_plane
+    gl_physics_add_box
+    gl_physics_set_velocity
+    gl_physics_set_position
+    gl_physics_get_position
+    gl_physics_get_velocity
+    gl_physics_set_restitution
+    gl_physics_set_mass
+    gl_physics_apply_force
+    gl_physics_apply_impulse
+    gl_physics_set_angular_vel_y
+    gl_physics_get_rotation_y
+    gl_physics_set_use_gravity
+    gl_physics_set_active
+    gl_physics_set_plane_d
+    gl_physics_body_count

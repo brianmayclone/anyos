@@ -103,7 +103,7 @@ extern struct var varinit[];
 extern char defifsvar[];
 #define defifs (defifsvar + 4)
 extern const char defpathvar[];
-#define defpath (defpathvar + 36)
+#define defpath (defpathvar + 5)
 
 extern int lineno;
 extern char linenovar[];

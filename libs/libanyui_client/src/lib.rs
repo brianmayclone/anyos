@@ -203,6 +203,7 @@ struct AnyuiLib {
     canvas_get_pixel: extern "C" fn(u32, i32, i32) -> u32,
     canvas_copy_from: extern "C" fn(u32, *const u32, u32),
     canvas_copy_to: extern "C" fn(u32, *mut u32, u32) -> u32,
+    canvas_draw_text: extern "C" fn(u32, i32, i32, u32, u32, u16, *const u8, u32),
     // TextField-specific
     textfield_set_prefix: extern "C" fn(u32, u32),
     textfield_set_postfix: extern "C" fn(u32, u32),
@@ -457,6 +458,7 @@ pub fn init() -> bool {
             canvas_get_pixel: resolve(&handle, "anyui_canvas_get_pixel"),
             canvas_copy_from: resolve(&handle, "anyui_canvas_copy_from"),
             canvas_copy_to: resolve(&handle, "anyui_canvas_copy_to"),
+            canvas_draw_text: resolve(&handle, "anyui_canvas_draw_text"),
             // TextField-specific
             textfield_set_prefix: resolve(&handle, "anyui_textfield_set_prefix"),
             textfield_set_postfix: resolve(&handle, "anyui_textfield_set_postfix"),
@@ -842,6 +844,12 @@ impl Control {
 
     pub fn on_double_click_raw(&self, cb: Callback, userdata: u64) {
         self.on_event_raw(EVENT_DOUBLE_CLICK, cb, userdata);
+    }
+
+    /// Register a closure for double-click events.
+    pub fn on_double_click(&self, mut f: impl FnMut(u32) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(id));
+        self.on_double_click_raw(thunk, ud);
     }
 
     pub fn on_focus_raw(&self, cb: Callback, userdata: u64) {

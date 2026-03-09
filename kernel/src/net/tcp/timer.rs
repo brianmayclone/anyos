@@ -154,7 +154,7 @@ pub fn check_retransmissions() {
             let win = tcb.advertised_window();
             let (lip, lp, rip, rp) = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port);
 
-            crate::serial_println!("TCP: retransmit #{} socket {} seq={} len={}", tcb.retransmit_count, i, seq, len);
+            crate::serial_verbose_println!("TCP: retransmit #{} socket {} seq={} len={}", tcb.retransmit_count, i, seq, len);
 
             drop(conns);
             send_segment(lip, lp, rip, rp, seq, ack_num, PSH | ACK, win, &data[..len]);

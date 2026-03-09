@@ -171,7 +171,7 @@ fn phys_to_virt(phys: u64) -> usize {
 pub fn init(dev: &VirtioMmioDevice) {
     // Feature negotiation
     if dev.init_device(0).is_none() {
-        crate::serial_println!("  virtio-input: feature negotiation failed");
+        crate::serial_verbose_println!("  virtio-input: feature negotiation failed");
         return;
     }
 
@@ -197,14 +197,14 @@ pub fn init(dev: &VirtioMmioDevice) {
     let eventq = match VirtQueue::new(0, 64) {
         Some(q) => q,
         None => {
-            crate::serial_println!("  virtio-input({}): failed to allocate eventq", kind);
+            crate::serial_verbose_println!("  virtio-input({}): failed to allocate eventq", kind);
             return;
         }
     };
 
     let (desc_phys, avail_phys, used_phys) = eventq.phys_addrs();
     if !dev.setup_queue_raw(0, 64, desc_phys, avail_phys, used_phys) {
-        crate::serial_println!("  virtio-input({}): failed to setup eventq", kind);
+        crate::serial_verbose_println!("  virtio-input({}): failed to setup eventq", kind);
         return;
     }
 
@@ -254,7 +254,7 @@ pub fn init(dev: &VirtioMmioDevice) {
     }
 
     INITIALIZED.store(true, Ordering::Relaxed);
-    crate::serial_println!("  virtio-input({}): initialized, {} event buffers, IRQ {}",
+    crate::serial_verbose_println!("  virtio-input({}): initialized, {} event buffers, IRQ {}",
         kind, max_events, irq);
 }
 

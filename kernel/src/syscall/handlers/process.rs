@@ -285,14 +285,14 @@ pub fn sys_mmap(size: u32) -> u32 {
     let pd = match crate::task::scheduler::current_thread_page_directory() {
         Some(pd) => pd,
         None => {
-            crate::serial_println!("sys_mmap: no page directory for current thread");
+            crate::serial_verbose_println!("sys_mmap: no page directory for current thread");
             return u32::MAX;
         }
     };
     let base = match crate::memory::vma::alloc_region(pd, aligned_size) {
         Some(addr) => addr,
         None => {
-            crate::serial_println!("sys_mmap: out of mmap virtual address space");
+            crate::serial_verbose_println!("sys_mmap: out of mmap virtual address space");
             return u32::MAX;
         }
     };
@@ -320,7 +320,7 @@ pub fn sys_mmap(size: u32) -> u32 {
                 cleanup += PAGE_SIZE;
             }
             crate::memory::vma::free_region(pd, base, aligned_size);
-            crate::serial_println!("sys_mmap: out of physical memory");
+            crate::serial_verbose_println!("sys_mmap: out of physical memory");
             return u32::MAX;
         }
         addr += PAGE_SIZE;
@@ -448,7 +448,7 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
             || super::is_sessionhost(caller_tid)
             || super::is_compositor();
         if !is_allowed {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "sys_spawn: DENIED .app spawn from TID {} (not sessionhost) path='{}'",
                 caller_tid, path
             );
@@ -481,7 +481,7 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
                         app_id, app_name, caps_hex, path
                     );
                     crate::task::scheduler::set_current_perm_pending(pending.as_bytes());
-                    crate::serial_println!(
+                    crate::serial_verbose_println!(
                         "sys_spawn: PERM_NEEDED for '{}' (app_id={}, caps={:#x})",
                         path, app_id, declared
                     );
@@ -527,7 +527,7 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
             tid
         }
         Err(e) => {
-            crate::serial_println!("sys_spawn: FAILED: {}", e);
+            crate::serial_verbose_println!("sys_spawn: FAILED: {}", e);
             u32::MAX
         }
     }
@@ -563,7 +563,7 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
     let snap = match scheduler::current_thread_fork_snapshot() {
         Some(s) => s,
         None => {
-            crate::serial_println!("sys_fork: failed to snapshot current thread");
+            crate::serial_verbose_println!("sys_fork: failed to snapshot current thread");
             return u32::MAX;
         }
     };
@@ -575,7 +575,7 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
     let child_pd = match virtual_mem::clone_user_page_directory(snap.pd) {
         Some(pd) => pd,
         None => {
-            crate::serial_println!("sys_fork: clone_user_page_directory failed (OOM)");
+            crate::serial_verbose_println!("sys_fork: clone_user_page_directory failed (OOM)");
             return u32::MAX;
         }
     };
@@ -692,7 +692,7 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
     // 9. Wake child — it will run fork_child_trampoline and IRETQ with RAX=0
     scheduler::wake_thread(child_tid);
     let t_fork_total = crate::arch::hal::timer_current_ticks();
-    crate::serial_println!("sys_fork: T{} → T{} clone={}ms total={}ms",
+    crate::serial_verbose_println!("sys_fork: T{} → T{} clone={}ms total={}ms",
         parent_tid, child_tid,
         t_fork_cloned.wrapping_sub(t_fork0),
         t_fork_total.wrapping_sub(t_fork0));
@@ -715,7 +715,7 @@ pub fn sys_exec(path_ptr: u32, args_ptr: u32) -> u32 {
         ""
     };
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "sys_exec: T{} path='{}' args='{}'",
         crate::task::scheduler::current_tid(), path, args
     );
@@ -724,14 +724,14 @@ pub fn sys_exec(path_ptr: u32, args_ptr: u32) -> u32 {
     let data = match crate::fs::vfs::read_file_to_vec(&path) {
         Ok(d) => d,
         Err(e) => {
-            crate::serial_println!("sys_exec: read_file_to_vec('{}') failed: {:?}", path, e);
+            crate::serial_verbose_println!("sys_exec: read_file_to_vec('{}') failed: {:?}", path, e);
             return u32::MAX;
         }
     };
 
     // exec_current_process only returns on error (on success it jumps to user mode)
     let err = crate::task::loader::exec_current_process(&data, args);
-    crate::serial_println!("sys_exec: FAILED: {}", err);
+    crate::serial_verbose_println!("sys_exec: FAILED: {}", err);
     u32::MAX
 }
 

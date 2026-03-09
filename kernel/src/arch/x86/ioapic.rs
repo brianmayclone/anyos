@@ -33,7 +33,7 @@ static mut IRQ_TO_GSI: [u32; 16] = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15];
 /// Initialize the I/O APIC.
 pub fn init(io_apic_info: &[IoApicInfo], isos: &[IsoInfo]) {
     if io_apic_info.is_empty() {
-        crate::serial_println!("  IOAPIC: No I/O APICs found");
+        crate::serial_verbose_println!("  IOAPIC: No I/O APICs found");
         return;
     }
 
@@ -54,7 +54,7 @@ pub fn init(io_apic_info: &[IoApicInfo], isos: &[IsoInfo]) {
     let max_entries = ((version >> 16) & 0xFF) + 1;
     unsafe { IOAPIC_MAX_ENTRIES = max_entries; }
 
-    crate::serial_println!("  IOAPIC: id={} at {:#010x} (virt {:#010x}), {} entries",
+    crate::serial_verbose_println!("  IOAPIC: id={} at {:#010x} (virt {:#010x}), {} entries",
         info.id, info.address, IOAPIC_VIRT_BASE, max_entries);
 
     // Mask all entries initially
@@ -219,5 +219,5 @@ pub fn disable_legacy_pic() {
         crate::arch::x86::port::outb(0x21, 0xFF);
         crate::arch::x86::port::outb(0xA1, 0xFF);
     }
-    crate::serial_println!("  Legacy 8259 PIC disabled");
+    crate::serial_verbose_println!("  Legacy 8259 PIC disabled");
 }

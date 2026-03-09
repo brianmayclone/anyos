@@ -49,7 +49,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
         table[slot_id].as_ref().unwrap().snd_iss
     };
 
-    crate::serial_println!("TCP: connecting to {}:{} from port {}", remote_ip, remote_port, local_port);
+    crate::serial_verbose_println!("TCP: connecting to {}:{} from port {}", remote_ip, remote_port, local_port);
     TCP_ACTIVE_OPENS.fetch_add(1, Ordering::Relaxed);
     send_syn_segment(cfg.ip, local_port, remote_ip, remote_port, iss, 0, SYN);
 
@@ -67,12 +67,12 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
                 match tcb.state {
                     TcpState::Established => {
                         tcb.waiting_tid = 0;
-                        crate::serial_println!("TCP: connected socket {}", slot_id);
+                        crate::serial_verbose_println!("TCP: connected socket {}", slot_id);
                         return slot_id as u32;
                     }
                     TcpState::Closed => {
                         tcb.waiting_tid = 0;
-                        crate::serial_println!("TCP: connection refused");
+                        crate::serial_verbose_println!("TCP: connection refused");
                         return u32::MAX;
                     }
                     _ => {}
@@ -84,7 +84,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
 
                 let now = crate::arch::hal::timer_current_ticks();
                 if now.wrapping_sub(start) >= timeout_ticks {
-                    crate::serial_println!("TCP: connect timeout");
+                    crate::serial_verbose_println!("TCP: connect timeout");
                     table[slot_id] = None;
                     return u32::MAX;
                 }
@@ -115,7 +115,7 @@ pub fn listen(port: u16, _backlog: u16) -> u32 {
     for (i, slot) in table.iter().enumerate() {
         if let Some(tcb) = slot {
             if tcb.local_port == port && tcb.state == TcpState::Listen {
-                crate::serial_println!("TCP: port {} already listening (slot {} owner_tid={})",
+                crate::serial_verbose_println!("TCP: port {} already listening (slot {} owner_tid={})",
                     port, i, tcb.owner_tid);
                 return u32::MAX;
             }
@@ -137,11 +137,11 @@ pub fn listen(port: u16, _backlog: u16) -> u32 {
 
     match found {
         Some(id) => {
-            crate::serial_println!("TCP: listening on port {} (socket {})", port, id);
+            crate::serial_verbose_println!("TCP: listening on port {} (socket {})", port, id);
             id as u32
         }
         None => {
-            crate::serial_println!("TCP: no free slots for listen");
+            crate::serial_verbose_println!("TCP: no free slots for listen");
             u32::MAX
         }
     }
@@ -198,7 +198,7 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
                     if let Some(listener) = table[lid].as_mut() {
                         listener.waiting_tid = 0;
                     }
-                    crate::serial_println!("TCP: accepted socket {} from {}:{}", i, rip, rport);
+                    crate::serial_verbose_println!("TCP: accepted socket {} from {}:{}", i, rip, rport);
                     TCP_PASSIVE_OPENS.fetch_add(1, Ordering::Relaxed);
                     return (i as u32, rip, rport);
                 }
@@ -256,7 +256,7 @@ pub fn close_listener(socket_id: u32) -> u32 {
     }
 
     table[id] = None;
-    crate::serial_println!("TCP: listener socket {} closed", id);
+    crate::serial_verbose_println!("TCP: listener socket {} closed", id);
     0
 }
 

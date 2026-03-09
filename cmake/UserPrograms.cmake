@@ -629,6 +629,7 @@ if(NOT ANYOS_ARCH STREQUAL "arm64")
 endif()
 add_app(anymail     ${CMAKE_SOURCE_DIR}/apps/anymail       "anyMail")
 add_app(anyzilla    ${CMAKE_SOURCE_DIR}/apps/anyzilla      "anyzilla")
+add_app(notifications ${CMAKE_SOURCE_DIR}/apps/notifications "Notifications")
 
 # ============================================================
 # Session host, Desktop shell, Crash dialog

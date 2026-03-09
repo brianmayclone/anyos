@@ -258,7 +258,7 @@ impl VirtioGpu {
     fn send_ctrl_cmd(&mut self, cmd: &[u8]) -> u32 {
         let cmd_len = cmd.len();
         if cmd_len > 4096 {
-            crate::serial_println!("  VirtIO GPU: command too large ({} bytes)", cmd_len);
+            crate::serial_verbose_println!("  VirtIO GPU: command too large ({} bytes)", cmd_len);
             return 0;
         }
 
@@ -290,7 +290,7 @@ impl VirtioGpu {
         );
 
         if result.is_none() {
-            crate::serial_println!("  VirtIO GPU: command timeout (type={:#x})", {
+            crate::serial_verbose_println!("  VirtIO GPU: command timeout (type={:#x})", {
                 let hdr = unsafe { &*(cmd.as_ptr() as *const GpuCtrlHdr) };
                 hdr.type_
             });
@@ -350,7 +350,7 @@ impl VirtioGpu {
 
         let resp_type = self.send_ctrl_cmd(cmd_bytes);
         if resp_type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO {
-            crate::serial_println!("  VirtIO GPU: GET_DISPLAY_INFO failed (resp={:#x})", resp_type);
+            crate::serial_verbose_println!("  VirtIO GPU: GET_DISPLAY_INFO failed (resp={:#x})", resp_type);
             return None;
         }
 
@@ -360,7 +360,7 @@ impl VirtioGpu {
             if resp.pmodes[i].enabled != 0 {
                 let w = resp.pmodes[i].r_width;
                 let h = resp.pmodes[i].r_height;
-                crate::serial_println!("  VirtIO GPU: scanout {} enabled: {}x{}", i, w, h);
+                crate::serial_verbose_println!("  VirtIO GPU: scanout {} enabled: {}x{}", i, w, h);
                 if w > 0 && h > 0 {
                     return Some((w, h));
                 }
@@ -586,7 +586,7 @@ impl VirtioGpu {
         let fb_phys = match physical::alloc_contiguous(num_pages) {
             Some(p) => p.as_u64(),
             None => {
-                crate::serial_println!("  VirtIO GPU: failed to allocate {} pages for framebuffer", num_pages);
+                crate::serial_verbose_println!("  VirtIO GPU: failed to allocate {} pages for framebuffer", num_pages);
                 return false;
             }
         };
@@ -604,27 +604,27 @@ impl VirtioGpu {
         self.next_resource_id += 1;
 
         if !self.cmd_resource_create_2d(res_id, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, width, height) {
-            crate::serial_println!("  VirtIO GPU: RESOURCE_CREATE_2D failed");
+            crate::serial_verbose_println!("  VirtIO GPU: RESOURCE_CREATE_2D failed");
             return false;
         }
 
         // Attach backing store
         if !self.cmd_attach_backing(res_id, fb_phys, num_pages) {
-            crate::serial_println!("  VirtIO GPU: RESOURCE_ATTACH_BACKING failed");
+            crate::serial_verbose_println!("  VirtIO GPU: RESOURCE_ATTACH_BACKING failed");
             self.cmd_resource_unref(res_id);
             return false;
         }
 
         // Set scanout
         if !self.cmd_set_scanout(0, res_id, width, height) {
-            crate::serial_println!("  VirtIO GPU: SET_SCANOUT failed");
+            crate::serial_verbose_println!("  VirtIO GPU: SET_SCANOUT failed");
             self.cmd_resource_unref(res_id);
             return false;
         }
 
         self.scanout_resource_id = res_id;
 
-        crate::serial_println!("  VirtIO GPU: display {}x{} resource={} fb={:#x} ({} pages)",
+        crate::serial_verbose_println!("  VirtIO GPU: display {}x{} resource={} fb={:#x} ({} pages)",
             width, height, res_id, fb_phys, num_pages);
 
         true
@@ -908,7 +908,7 @@ impl GpuDriver for VirtioGpu {
 /// Initialize and register the VirtIO GPU driver.
 /// Called from HAL factory during PCI probe.
 pub fn init_and_register(pci_dev: &PciDevice) -> bool {
-    crate::serial_println!("  VirtIO GPU: initializing (PCI {:02x}:{:02x}.{})",
+    crate::serial_verbose_println!("  VirtIO GPU: initializing (PCI {:02x}:{:02x}.{})",
         pci_dev.bus, pci_dev.device, pci_dev.function);
 
     // 1. Find PCI capabilities
@@ -924,10 +924,10 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     let desired = VIRTIO_F_VERSION_1;
     match device.init_device(desired) {
         Ok(_negotiated) => {
-            crate::serial_println!("  VirtIO GPU: features negotiated OK");
+            crate::serial_verbose_println!("  VirtIO GPU: features negotiated OK");
         }
         Err(e) => {
-            crate::serial_println!("  VirtIO GPU: init failed: {}", e);
+            crate::serial_verbose_println!("  VirtIO GPU: init failed: {}", e);
             return false;
         }
     }
@@ -936,7 +936,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     let controlq = match device.setup_queue(0) {
         Some(q) => q,
         None => {
-            crate::serial_println!("  VirtIO GPU: failed to set up controlq");
+            crate::serial_verbose_println!("  VirtIO GPU: failed to set up controlq");
             return false;
         }
     };
@@ -944,7 +944,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     let cursorq = match device.setup_queue(1) {
         Some(q) => q,
         None => {
-            crate::serial_println!("  VirtIO GPU: failed to set up cursorq");
+            crate::serial_verbose_println!("  VirtIO GPU: failed to set up cursorq");
             return false;
         }
     };
@@ -956,7 +956,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
             p.as_u64()
         }
         None => {
-            crate::serial_println!("  VirtIO GPU: failed to allocate cmd buffer");
+            crate::serial_verbose_println!("  VirtIO GPU: failed to allocate cmd buffer");
             return false;
         }
     };
@@ -967,7 +967,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
             p.as_u64()
         }
         None => {
-            crate::serial_println!("  VirtIO GPU: failed to allocate resp buffer");
+            crate::serial_verbose_println!("  VirtIO GPU: failed to allocate resp buffer");
             return false;
         }
     };
@@ -978,7 +978,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // Clear any pending interrupt from device initialization
     let _ = virtio::mmio_read8(device.isr_addr);
 
-    crate::serial_println!("  VirtIO GPU: device ready (DRIVER_OK)");
+    crate::serial_verbose_println!("  VirtIO GPU: device ready (DRIVER_OK)");
 
     // Pre-allocate cursor backing store (64x64x4 = 16 KiB = 4 pages).
     // MUST be allocated here during boot (kernel CR3 active, full 128 MiB identity map).
@@ -990,7 +990,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
             p.as_u64()
         }
         None => {
-            crate::serial_println!("  VirtIO GPU: failed to allocate cursor buffer");
+            crate::serial_verbose_println!("  VirtIO GPU: failed to allocate cursor buffer");
             0
         }
     };
@@ -1027,13 +1027,13 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // Retry up to 5 times with 50ms delays to give the host time to populate EDID.
     let mut native = gpu.cmd_get_display_info().unwrap_or((1024, 768));
     if native == (640, 480) {
-        crate::serial_println!("  VirtIO GPU: got 640x480 (VGA default), retrying for EDID...");
+        crate::serial_verbose_println!("  VirtIO GPU: got 640x480 (VGA default), retrying for EDID...");
         for attempt in 1..=5 {
             crate::arch::x86::pit::delay_ms(50);
             if let Some(res) = gpu.cmd_get_display_info() {
                 if res != (640, 480) {
                     native = res;
-                    crate::serial_println!("  VirtIO GPU: EDID ready after {}ms: {}x{}",
+                    crate::serial_verbose_println!("  VirtIO GPU: EDID ready after {}ms: {}x{}",
                         attempt * 50, res.0, res.1);
                     break;
                 }
@@ -1042,11 +1042,11 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     }
     // Enforce minimum 1024x768 — never start with a smaller resolution.
     if native.0 < 1024 || native.1 < 768 {
-        crate::serial_println!("  VirtIO GPU: {}x{} below minimum, forcing 1024x768",
+        crate::serial_verbose_println!("  VirtIO GPU: {}x{} below minimum, forcing 1024x768",
             native.0, native.1);
         native = (1024, 768);
     }
-    crate::serial_println!("  VirtIO GPU: native display {}x{}", native.0, native.1);
+    crate::serial_verbose_println!("  VirtIO GPU: native display {}x{}", native.0, native.1);
 
     // Build supported modes: start with COMMON_MODES, add native if not already present
     let mut modes: Vec<(u32, u32)> = super::COMMON_MODES.to_vec();
@@ -1062,7 +1062,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
 
     // 10-13. Set up display pipeline
     if !gpu.setup_display(width, height) {
-        crate::serial_println!("  VirtIO GPU: failed to set up display");
+        crate::serial_verbose_println!("  VirtIO GPU: failed to set up display");
         return false;
     }
 
@@ -1081,7 +1081,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     gpu.cmd_transfer_to_host_2d(gpu.scanout_resource_id, 0, 0, width, height);
     gpu.cmd_resource_flush(gpu.scanout_resource_id, 0, 0, width, height);
 
-    crate::serial_println!("[OK] VirtIO GPU: {}x{} (fb={:#x})", width, height, gpu.fb_phys);
+    crate::serial_verbose_println!("[OK] VirtIO GPU: {}x{} (fb={:#x})", width, height, gpu.fb_phys);
 
     // Register as the active GPU driver
     super::register(Box::new(gpu));

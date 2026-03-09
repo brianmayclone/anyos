@@ -48,7 +48,7 @@ pub fn set_thread_critical(tid: u32) {
     let sched = match guard.as_mut() { Some(s) => s, None => return };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.critical = true;
-        crate::serial_println!("  Thread '{}' (TID={}) marked as critical", thread.name_str(), tid);
+        crate::serial_verbose_println!("  Thread '{}' (TID={}) marked as critical", thread.name_str(), tid);
     }
 }
 

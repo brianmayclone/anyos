@@ -524,11 +524,11 @@ fn enumerate_device(ctrl: &EhciController, port: u8, speed: UsbSpeed) {
     match control_transfer(ctrl, 0, speed, mps, &setup, true, 8) {
         Ok(n) if n >= 8 => {}
         Ok(_) => {
-            crate::serial_println!("  EHCI: port {} — short device descriptor", port);
+            crate::serial_verbose_println!("  EHCI: port {} — short device descriptor", port);
             return;
         }
         Err(e) => {
-            crate::serial_println!("  EHCI: port {} — GET_DESCRIPTOR(8) failed: {}", port, e);
+            crate::serial_verbose_println!("  EHCI: port {} — GET_DESCRIPTOR(8) failed: {}", port, e);
             return;
         }
     }
@@ -549,7 +549,7 @@ fn enumerate_device(ctrl: &EhciController, port: u8, speed: UsbSpeed) {
     };
 
     if let Err(e) = control_transfer(ctrl, 0, speed, max_packet, &setup_addr, false, 0) {
-        crate::serial_println!("  EHCI: port {} — SET_ADDRESS failed: {}", port, e);
+        crate::serial_verbose_println!("  EHCI: port {} — SET_ADDRESS failed: {}", port, e);
         return;
     }
     delay_ms(2);
@@ -566,11 +566,11 @@ fn enumerate_device(ctrl: &EhciController, port: u8, speed: UsbSpeed) {
     match control_transfer(ctrl, new_addr, speed, max_packet, &setup_full, true, 18) {
         Ok(n) if n >= 18 => {}
         Ok(n) => {
-            crate::serial_println!("  EHCI: device {} — short descriptor ({} bytes)", new_addr, n);
+            crate::serial_verbose_println!("  EHCI: device {} — short descriptor ({} bytes)", new_addr, n);
             return;
         }
         Err(e) => {
-            crate::serial_println!("  EHCI: device {} — GET_DESCRIPTOR(18) failed: {}", new_addr, e);
+            crate::serial_verbose_println!("  EHCI: device {} — GET_DESCRIPTOR(18) failed: {}", new_addr, e);
             return;
         }
     }
@@ -594,7 +594,7 @@ fn enumerate_device(ctrl: &EhciController, port: u8, speed: UsbSpeed) {
             u16::from_le_bytes([hdr[2], hdr[3]])
         }
         _ => {
-            crate::serial_println!("  EHCI: device {} — config descriptor header failed", new_addr);
+            crate::serial_verbose_println!("  EHCI: device {} — config descriptor header failed", new_addr);
             return;
         }
     };
@@ -615,7 +615,7 @@ fn enumerate_device(ctrl: &EhciController, port: u8, speed: UsbSpeed) {
             read_transfer_data(ctrl, &mut config_buf, n);
         }
         _ => {
-            crate::serial_println!("  EHCI: device {} — full config descriptor failed", new_addr);
+            crate::serial_verbose_println!("  EHCI: device {} — full config descriptor failed", new_addr);
             return;
         }
     }
@@ -633,7 +633,7 @@ fn enumerate_device(ctrl: &EhciController, port: u8, speed: UsbSpeed) {
     };
 
     if let Err(e) = control_transfer(ctrl, new_addr, speed, max_packet, &setup_setcfg, false, 0) {
-        crate::serial_println!("  EHCI: device {} — SET_CONFIGURATION failed: {}", new_addr, e);
+        crate::serial_verbose_println!("  EHCI: device {} — SET_CONFIGURATION failed: {}", new_addr, e);
         return;
     }
 
@@ -706,7 +706,7 @@ fn reset_port(ctrl: &EhciController, port_idx: u8) -> Option<UsbSpeed> {
         // Not high-speed — release to companion controller
         let portsc = mmio_read32(ctrl.op_base, port_offset);
         mmio_write32(ctrl.op_base, port_offset, portsc | PORTSC_PO);
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  EHCI: port {} — not high-speed, released to companion",
             port_idx + 1
         );
@@ -720,14 +720,14 @@ fn scan_ports(ctrl: &EhciController) {
         let portsc = mmio_read32(ctrl.op_base, port_offset);
 
         if portsc & PORTSC_CCS == 0 {
-            crate::serial_println!("  EHCI: port {} — no device", i + 1);
+            crate::serial_verbose_println!("  EHCI: port {} — no device", i + 1);
             continue;
         }
 
-        crate::serial_println!("  EHCI: port {} — device connected, resetting...", i + 1);
+        crate::serial_verbose_println!("  EHCI: port {} — device connected, resetting...", i + 1);
 
         if let Some(speed) = reset_port(ctrl, i) {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "  EHCI: port {} — enabled (High-Speed)",
                 i + 1
             );
@@ -742,12 +742,12 @@ fn scan_ports(ctrl: &EhciController) {
 pub fn init_controller(pci: &PciDevice) {
     let bar0 = pci.bars[0];
     if bar0 == 0 {
-        crate::serial_println!("  EHCI: BAR0 is zero, cannot initialize");
+        crate::serial_verbose_println!("  EHCI: BAR0 is zero, cannot initialize");
         return;
     }
     let phys_base = (bar0 & 0xFFFFF000) as u64;
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  EHCI: controller at phys {:#010x}, IRQ {}",
         phys_base, pci.interrupt_line
     );
@@ -770,7 +770,7 @@ pub fn init_controller(pci: &PciDevice) {
     let hcsparams = mmio_read32(mmio_base, CAP_HCSPARAMS);
     let n_ports = ((hcsparams & 0x0F) as u8).min(EHCI_MAX_PORTS as u8);
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  EHCI: CAPLENGTH={}, {} port(s)",
         caplength, n_ports
     );
@@ -829,7 +829,7 @@ pub fn init_controller(pci: &PciDevice) {
     let frame_list_phys = match physical::alloc_contiguous(1) {
         Some(p) => p.as_u64(),
         None => {
-            crate::serial_println!("  EHCI: failed to allocate frame list");
+            crate::serial_verbose_println!("  EHCI: failed to allocate frame list");
             return;
         }
     };
@@ -838,7 +838,7 @@ pub fn init_controller(pci: &PciDevice) {
     let qh_page_phys = match physical::alloc_contiguous(1) {
         Some(p) => p.as_u64(),
         None => {
-            crate::serial_println!("  EHCI: failed to allocate QH/qTD pool");
+            crate::serial_verbose_println!("  EHCI: failed to allocate QH/qTD pool");
             return;
         }
     };
@@ -847,7 +847,7 @@ pub fn init_controller(pci: &PciDevice) {
     let data_buf_phys = match physical::alloc_contiguous(1) {
         Some(p) => p.as_u64(),
         None => {
-            crate::serial_println!("  EHCI: failed to allocate data buffer");
+            crate::serial_verbose_println!("  EHCI: failed to allocate data buffer");
             return;
         }
     };
@@ -903,14 +903,14 @@ pub fn init_controller(pci: &PciDevice) {
 
     let sts = mmio_read32(op_base, OP_USBSTS);
     if sts & STS_HALTED != 0 {
-        crate::serial_println!("  EHCI: controller failed to start (STS={:#010x})", sts);
+        crate::serial_verbose_println!("  EHCI: controller failed to start (STS={:#010x})", sts);
         return;
     }
 
     // Allow ports to settle after CONFIGFLAG
     delay_ms(100);
 
-    crate::serial_println!("  EHCI: controller running");
+    crate::serial_verbose_println!("  EHCI: controller running");
 
     let mut ctrl = EhciController {
         mmio_base,
@@ -951,7 +951,7 @@ pub fn poll_ports() {
 
         if connected && !was_connected {
             // New device connected
-            crate::serial_println!("  EHCI: hot-plug — device connected on port {}", i + 1);
+            crate::serial_verbose_println!("  EHCI: hot-plug — device connected on port {}", i + 1);
             ctrl.port_connected[i] = true;
 
             // Clear status change bits (write-1-to-clear)
@@ -963,7 +963,7 @@ pub fn poll_ports() {
             }
         } else if !connected && was_connected {
             // Device disconnected
-            crate::serial_println!("  EHCI: hot-unplug — device removed from port {}", i + 1);
+            crate::serial_verbose_println!("  EHCI: hot-unplug — device removed from port {}", i + 1);
             ctrl.port_connected[i] = false;
 
             // Clear status change bits

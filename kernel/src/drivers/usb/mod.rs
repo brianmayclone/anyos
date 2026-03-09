@@ -82,14 +82,14 @@ pub fn alloc_address() -> u8 {
 }
 
 pub fn register_device(dev: UsbDevice) {
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  USB: device {} — {:04x}:{:04x} class={:02x}:{:02x} proto={:02x} ({}) [{}]",
         dev.address, dev.vendor_id, dev.product_id,
         dev.class, dev.subclass, dev.protocol,
         class_name(dev.class), speed_name(dev.speed),
     );
     for iface in &dev.interfaces {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "    Interface {}: class={:02x}:{:02x} proto={:02x} ({}) endpoints={}",
             iface.number, iface.class, iface.subclass, iface.protocol,
             class_name(iface.class), iface.endpoints.len(),
@@ -123,7 +123,7 @@ pub fn remove_device(port: u8, controller: ControllerType) {
     let mut devs = USB_DEVICES.lock();
     if let Some(pos) = devs.iter().position(|d| d.port == port && d.controller == controller) {
         let dev = devs.remove(pos);
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  USB: removed device {} (port {}, {:04x}:{:04x})",
             dev.address, port, dev.vendor_id, dev.product_id,
         );
@@ -473,21 +473,21 @@ pub fn smbus_probe(_pci: &PciDevice) -> Option<Box<dyn Driver>> {
 pub fn init(pci: &PciDevice) {
     match pci.prog_if {
         0x00 => {
-            crate::serial_println!("  USB: UHCI controller detected (prog_if=0x00)");
+            crate::serial_verbose_println!("  USB: UHCI controller detected (prog_if=0x00)");
             uhci::init_controller(pci);
         }
         0x20 => {
-            crate::serial_println!("  USB: EHCI controller detected (prog_if=0x20)");
+            crate::serial_verbose_println!("  USB: EHCI controller detected (prog_if=0x20)");
             ehci::init_controller(pci);
         }
         0x10 => {
-            crate::serial_println!("  USB: OHCI controller detected (prog_if=0x10) — not supported");
+            crate::serial_verbose_println!("  USB: OHCI controller detected (prog_if=0x10) — not supported");
         }
         0x30 => {
-            crate::serial_println!("  USB: xHCI controller detected (prog_if=0x30) — not supported");
+            crate::serial_verbose_println!("  USB: xHCI controller detected (prog_if=0x30) — not supported");
         }
         _ => {
-            crate::serial_println!("  USB: unknown controller type (prog_if={:#04x})", pci.prog_if);
+            crate::serial_verbose_println!("  USB: unknown controller type (prog_if={:#04x})", pci.prog_if);
         }
     }
 }

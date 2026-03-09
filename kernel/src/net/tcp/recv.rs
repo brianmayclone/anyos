@@ -38,8 +38,10 @@ pub(crate) fn accept_data_deferred(tcb: &mut Tcb, seg: &TcpSegment) -> Option<De
         let buf_pressure = tcb.recv_buf.len() > (RECV_BUF_SIZE * 3 / 4);
         let batch_full = tcb.ack_seg_count >= DELAYED_ACK_SEGMENTS;
         let had_ooo = !tcb.ooo_buf.is_empty();
+        // Loopback: always ACK immediately (no timer to flush delayed ACKs)
+        let is_loopback = tcb.remote_ip.0[0] == 127;
 
-        if batch_full || buf_pressure || had_ooo {
+        if batch_full || buf_pressure || had_ooo || is_loopback {
             tcb.pending_ack = false;
             tcb.ack_seg_count = 0;
             tcb.last_ack_tick = crate::arch::hal::timer_current_ticks();

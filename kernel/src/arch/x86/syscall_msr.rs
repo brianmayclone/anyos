@@ -124,7 +124,7 @@ fn setup_msrs(cpu_id: usize) {
         wrmsr(MSR_KERNEL_GS_BASE, percpu_addr);
     }
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "[OK] SYSCALL/SYSRET configured on CPU{} (LAPIC_ID={})",
         cpu_id, lapic_id,
     );
@@ -210,7 +210,7 @@ pub fn refresh_kernel_gs_base() {
         let correct_base = &PERCPU[cpu_id] as *const SyscallPerCpu as u64;
         let actual_base = rdmsr(MSR_KERNEL_GS_BASE);
         if actual_base != correct_base {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "KERNEL_GS_BASE repair: CPU{} had {:#x}, expected {:#x}",
                 cpu_id, actual_base, correct_base,
             );

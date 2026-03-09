@@ -35,7 +35,7 @@ pub fn init() {
         core::arch::asm!("isb", options(nostack));
     }
 
-    crate::serial_println!("[OK] ARM Generic Timer: freq={}Hz, tick={}Hz", freq, TICK_HZ);
+    crate::serial_verbose_println!("[OK] ARM Generic Timer: freq={}Hz, tick={}Hz", freq, TICK_HZ);
 }
 
 /// Timer IRQ handler — reprogram timer and increment tick count.
@@ -52,7 +52,7 @@ pub fn irq_handler() {
 
     // Diagnostic: confirm timer ticks are firing (first few + every second)
     if tick == 1 || tick == 10 || tick == 100 || tick % 1000 == 0 {
-        crate::serial_println!("  [TIMER] tick={}", tick);
+        crate::serial_verbose_println!("  [TIMER] tick={}", tick);
     }
 }
 

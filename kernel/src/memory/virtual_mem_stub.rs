@@ -377,7 +377,7 @@ pub fn map_page_in_pd(
     let l3_phys = match walk_to_l3(pd_phys.as_u64(), va, true) {
         Some(l3) => l3,
         None => {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "map_page_in_pd: alloc failed for VA {:#018x}",
                 va
             );

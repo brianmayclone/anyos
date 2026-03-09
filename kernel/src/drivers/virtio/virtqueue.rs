@@ -331,7 +331,7 @@ impl VirtQueue {
             core::hint::spin_loop();
             timeout += 1;
             if timeout > 10_000_000 {
-                crate::serial_println!("  VirtQueue: timeout waiting for device response");
+                crate::serial_verbose_println!("  VirtQueue: timeout waiting for device response");
                 return None;
             }
         }

@@ -99,6 +99,10 @@ pub fn lower(ast: &TranslationUnit, shader_type: GLenum) -> Result<Program, Stri
     // Emit load instructions for inputs
     for (i, attr) in ctx.attributes.iter().enumerate() {
         ctx.insts.push(Inst::LoadAttribute(attr.reg, i as u32));
+        // Broadcast scalar attributes so that float * vec3 works correctly
+        if attr.components == 1 {
+            ctx.insts.push(Inst::Swizzle(attr.reg, attr.reg, [0, 0, 0, 0], 4));
+        }
     }
     // Use running offset to match collect_uniforms layout (mat4 = 4 slots, others = 1).
     let mut uni_offset = 0u32;
@@ -116,6 +120,12 @@ pub fn lower(ast: &TranslationUnit, shader_type: GLenum) -> Result<Program, Stri
     if shader_type == GL_FRAGMENT_SHADER {
         for (i, vary) in ctx.varyings.iter().enumerate() {
             ctx.insts.push(Inst::LoadVarying(vary.reg, i as u32));
+            // Broadcast scalar varyings (float) so that vec3 * float works correctly.
+            // Without this, float varyings are [val, 0, 0, 0] and component-wise
+            // multiply kills all but the first component.
+            if vary.components == 1 {
+                ctx.insts.push(Inst::Swizzle(vary.reg, vary.reg, [0, 0, 0, 0], 4));
+            }
         }
     }
 
@@ -461,7 +471,7 @@ fn lower_call(ctx: &mut LowerCtx, name: &str, args: &[Expr]) -> Result<u32, Stri
                     ctx.insts.push(Inst::LoadConst(r, [0.0; 4]));
                     ctx.insts.push(Inst::WriteMask(r, a, 0x1));
                     let tmp = ctx.alloc_reg();
-                    ctx.insts.push(Inst::Swizzle(tmp, b, [0, 0, 0, 0], 1));
+                    ctx.insts.push(Inst::Swizzle(tmp, b, [0, 0, 0, 0], 4));
                     ctx.insts.push(Inst::WriteMask(r, tmp, 0x2));
                 }
                 _ => { ctx.insts.push(Inst::LoadConst(r, [0.0; 4])); }
@@ -484,10 +494,10 @@ fn lower_call(ctx: &mut LowerCtx, name: &str, args: &[Expr]) -> Result<u32, Stri
                     ctx.insts.push(Inst::LoadConst(r, [0.0; 4]));
                     ctx.insts.push(Inst::WriteMask(r, x, 0x1));
                     let tmp_y = ctx.alloc_reg();
-                    ctx.insts.push(Inst::Swizzle(tmp_y, y, [0, 0, 0, 0], 1));
+                    ctx.insts.push(Inst::Swizzle(tmp_y, y, [0, 0, 0, 0], 4));
                     ctx.insts.push(Inst::WriteMask(r, tmp_y, 0x2));
                     let tmp_z = ctx.alloc_reg();
-                    ctx.insts.push(Inst::Swizzle(tmp_z, z, [0, 0, 0, 0], 1));
+                    ctx.insts.push(Inst::Swizzle(tmp_z, z, [0, 0, 0, 0], 4));
                     ctx.insts.push(Inst::WriteMask(r, tmp_z, 0x4));
                 }
                 _ => {
@@ -497,7 +507,7 @@ fn lower_call(ctx: &mut LowerCtx, name: &str, args: &[Expr]) -> Result<u32, Stri
                     if args.len() > 1 {
                         let b = lower_expr(ctx, &args[1])?;
                         let tmp = ctx.alloc_reg();
-                        ctx.insts.push(Inst::Swizzle(tmp, b, [0, 0, 0, 0], 1));
+                        ctx.insts.push(Inst::Swizzle(tmp, b, [0, 0, 0, 0], 4));
                         ctx.insts.push(Inst::WriteMask(r, tmp, 0x4));
                     }
                 }
@@ -521,13 +531,13 @@ fn lower_call(ctx: &mut LowerCtx, name: &str, args: &[Expr]) -> Result<u32, Stri
                     ctx.insts.push(Inst::LoadConst(r, [0.0; 4]));
                     ctx.insts.push(Inst::WriteMask(r, x, 0x1));
                     let ty = ctx.alloc_reg();
-                    ctx.insts.push(Inst::Swizzle(ty, y, [0, 0, 0, 0], 1));
+                    ctx.insts.push(Inst::Swizzle(ty, y, [0, 0, 0, 0], 4));
                     ctx.insts.push(Inst::WriteMask(r, ty, 0x2));
                     let tz = ctx.alloc_reg();
-                    ctx.insts.push(Inst::Swizzle(tz, z, [0, 0, 0, 0], 1));
+                    ctx.insts.push(Inst::Swizzle(tz, z, [0, 0, 0, 0], 4));
                     ctx.insts.push(Inst::WriteMask(r, tz, 0x4));
                     let tw = ctx.alloc_reg();
-                    ctx.insts.push(Inst::Swizzle(tw, w, [0, 0, 0, 0], 1));
+                    ctx.insts.push(Inst::Swizzle(tw, w, [0, 0, 0, 0], 4));
                     ctx.insts.push(Inst::WriteMask(r, tw, 0x8));
                 }
                 2 => {
@@ -536,7 +546,7 @@ fn lower_call(ctx: &mut LowerCtx, name: &str, args: &[Expr]) -> Result<u32, Stri
                     let b = lower_expr(ctx, &args[1])?;
                     ctx.insts.push(Inst::Mov(r, a));
                     let tw = ctx.alloc_reg();
-                    ctx.insts.push(Inst::Swizzle(tw, b, [0, 0, 0, 0], 1));
+                    ctx.insts.push(Inst::Swizzle(tw, b, [0, 0, 0, 0], 4));
                     ctx.insts.push(Inst::WriteMask(r, tw, 0x8));
                 }
                 3 => {
@@ -546,10 +556,10 @@ fn lower_call(ctx: &mut LowerCtx, name: &str, args: &[Expr]) -> Result<u32, Stri
                     let c = lower_expr(ctx, &args[2])?;
                     ctx.insts.push(Inst::Mov(r, a));
                     let tz = ctx.alloc_reg();
-                    ctx.insts.push(Inst::Swizzle(tz, b, [0, 0, 0, 0], 1));
+                    ctx.insts.push(Inst::Swizzle(tz, b, [0, 0, 0, 0], 4));
                     ctx.insts.push(Inst::WriteMask(r, tz, 0x4));
                     let tw = ctx.alloc_reg();
-                    ctx.insts.push(Inst::Swizzle(tw, c, [0, 0, 0, 0], 1));
+                    ctx.insts.push(Inst::Swizzle(tw, c, [0, 0, 0, 0], 4));
                     ctx.insts.push(Inst::WriteMask(r, tw, 0x8));
                 }
                 _ => { ctx.insts.push(Inst::LoadConst(r, [0.0; 4])); }

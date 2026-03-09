@@ -88,10 +88,6 @@ fn main() {
             return;
         }
         let old_password = args.opt(b'o').unwrap_or("");
-        if !is_root && old_password.is_empty() {
-            anyos_std::println!("passwd: non-root users must provide -o <old_password>");
-            return;
-        }
         let ret = anyos_std::users::chpasswd(username, old_password, new_password);
         if ret == 0 {
             anyos_std::println!("passwd: password updated for '{}'", username);
@@ -112,10 +108,6 @@ fn main() {
     if !is_root {
         anyos_std::print!("Current password: ");
         old_pw_len = read_line(&mut old_pw_buf, true);
-        if old_pw_len == 0 {
-            anyos_std::println!("passwd: aborted");
-            return;
-        }
     } else {
         old_pw_len = 0;
     }

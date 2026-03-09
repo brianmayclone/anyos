@@ -97,7 +97,7 @@ fn build_path(parent: &str, name: &str) -> anyos_std::String {
 
 /// List the contents of a single directory, optionally recursing into subdirectories.
 fn list_directory(path: &str, long: bool, all: bool, one_per_line: bool,
-                  human: bool, sort_size: bool, reverse: bool, recursive: bool) {
+                  human: bool, sort_size: bool, reverse: bool, recursive: bool, color: bool) {
     let mut buf = [0u8; 64 * 128];
     let count = anyos_std::fs::readdir(path, &mut buf);
 
@@ -153,7 +153,7 @@ fn list_directory(path: &str, long: bool, all: bool, one_per_line: bool,
         entries.reverse();
     }
 
-    print_entries(&entries, path, long, one_per_line, human);
+    print_entries(&entries, path, long, one_per_line, human, color);
 
     // Recurse into subdirectories
     if recursive {
@@ -163,7 +163,7 @@ fn list_directory(path: &str, long: bool, all: bool, one_per_line: bool,
                 if name_str == "." || name_str == ".." { continue; }
                 let child = build_path(path, name_str);
                 anyos_std::println!("\n{}:", child);
-                list_directory(&child, long, all, one_per_line, human, sort_size, reverse, recursive);
+                list_directory(&child, long, all, one_per_line, human, sort_size, reverse, recursive, color);
             }
         }
     }
@@ -232,8 +232,17 @@ fn format_mode(buf: &mut [u8; 9], mode: u32) {
     buf[8] = if mode & 0o001 != 0 { b'x' } else { b'-' };
 }
 
+/// Return the ANSI color prefix for an entry, or "" if color is off.
+fn entry_color(e: &Entry, color: bool) -> &'static str {
+    if !color { return ""; }
+    if e.is_symlink { return ANSI_CYAN; }
+    if e.entry_type == 1 { return ANSI_BLUE; }
+    if e.mode & 0o111 != 0 { return ANSI_GREEN; }
+    ""
+}
+
 /// Print a list of entries in the requested format.
-fn print_entries(entries: &[Entry], base_path: &str, long: bool, one_per_line: bool, human: bool) {
+fn print_entries(entries: &[Entry], base_path: &str, long: bool, one_per_line: bool, human: bool, color: bool) {
     if long {
         // Pre-load group list once for all entries
         let mut groups_raw = [0u8; 1024];
@@ -243,6 +252,8 @@ fn print_entries(entries: &[Entry], base_path: &str, long: bool, one_per_line: b
         for e in entries {
             let type_char = if e.is_symlink { 'l' } else { match e.entry_type { 1 => 'd', 2 => 'c', _ => '-' } };
             let name_str = core::str::from_utf8(&e.name[..e.name_len]).unwrap_or("???");
+            let col = entry_color(e, color);
+            let rst = if col.is_empty() { "" } else { ANSI_RESET };
 
             // Permission string
             let mut mode_buf = [b'-'; 9];
@@ -284,32 +295,36 @@ fn print_entries(entries: &[Entry], base_path: &str, long: bool, one_per_line: b
                 let size_str = core::str::from_utf8(&sbuf[..slen]).unwrap_or("?");
                 if link_len > 0 {
                     let tgt = core::str::from_utf8(&link_target[..link_len]).unwrap_or("?");
-                    anyos_std::println!("{}{} {:<8} {:<8} {:>6}  {} -> {}", type_char, mode_str, user_name, group_name, size_str, name_str, tgt);
+                    anyos_std::println!("{}{} {:<8} {:<8} {:>6}  {}{}{} -> {}", type_char, mode_str, user_name, group_name, size_str, col, name_str, rst, tgt);
                 } else {
-                    anyos_std::println!("{}{} {:<8} {:<8} {:>6}  {}", type_char, mode_str, user_name, group_name, size_str, name_str);
+                    anyos_std::println!("{}{} {:<8} {:<8} {:>6}  {}{}{}", type_char, mode_str, user_name, group_name, size_str, col, name_str, rst);
                 }
             } else {
                 if link_len > 0 {
                     let tgt = core::str::from_utf8(&link_target[..link_len]).unwrap_or("?");
-                    anyos_std::println!("{}{} {:<8} {:<8} {:>8}  {} -> {}", type_char, mode_str, user_name, group_name, e.size, name_str, tgt);
+                    anyos_std::println!("{}{} {:<8} {:<8} {:>8}  {}{}{} -> {}", type_char, mode_str, user_name, group_name, e.size, col, name_str, rst, tgt);
                 } else {
-                    anyos_std::println!("{}{} {:<8} {:<8} {:>8}  {}", type_char, mode_str, user_name, group_name, e.size, name_str);
+                    anyos_std::println!("{}{} {:<8} {:<8} {:>8}  {}{}{}", type_char, mode_str, user_name, group_name, e.size, col, name_str, rst);
                 }
             }
         }
     } else if one_per_line {
         for e in entries {
             let name_str = core::str::from_utf8(&e.name[..e.name_len]).unwrap_or("???");
-            anyos_std::println!("{}", name_str);
+            let col = entry_color(e, color);
+            let rst = if col.is_empty() { "" } else { ANSI_RESET };
+            anyos_std::println!("{}{}{}", col, name_str, rst);
         }
     } else {
         // Columnar output: names separated by spaces
         for (i, e) in entries.iter().enumerate() {
             let name_str = core::str::from_utf8(&e.name[..e.name_len]).unwrap_or("???");
+            let col = entry_color(e, color);
+            let rst = if col.is_empty() { "" } else { ANSI_RESET };
             if i > 0 {
                 anyos_std::print!("  ");
             }
-            anyos_std::print!("{}", name_str);
+            anyos_std::print!("{}{}{}", col, name_str, rst);
         }
         if !entries.is_empty() {
             anyos_std::println!("");
@@ -319,7 +334,7 @@ fn print_entries(entries: &[Entry], base_path: &str, long: bool, one_per_line: b
 
 /// List paths as entries without descending into directories (for -d flag).
 fn list_as_entries(paths: &[&str], long: bool, one_per_line: bool,
-                   human: bool, sort_size: bool, reverse: bool) {
+                   human: bool, sort_size: bool, reverse: bool, color: bool) {
     let mut entries = anyos_std::Vec::new();
     for &p in paths {
         let mut stat_buf = [0u32; 7];
@@ -343,12 +358,12 @@ fn list_as_entries(paths: &[&str], long: bool, one_per_line: bool,
         entries.sort_unstable_by(|a, b| cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len));
     }
     if reverse { entries.reverse(); }
-    print_entries(&entries, ".", long, one_per_line, human);
+    print_entries(&entries, ".", long, one_per_line, human, color);
 }
 
 /// List individual files (from glob expansion or explicit file args).
 fn list_files(args: &anyos_std::args::ParsedArgs, long: bool, one_per_line: bool,
-              human: bool, sort_size: bool, reverse: bool) {
+              human: bool, sort_size: bool, reverse: bool, color: bool) {
     let mut entries = anyos_std::Vec::new();
 
     for idx in 0..args.pos_count {
@@ -394,13 +409,43 @@ fn list_files(args: &anyos_std::args::ParsedArgs, long: bool, one_per_line: bool
         entries.reverse();
     }
 
-    print_entries(&entries, ".", long, one_per_line, human);
+    print_entries(&entries, ".", long, one_per_line, human, color);
 }
+
+// ANSI color codes for --color output
+const ANSI_BLUE: &str = "\x1B[1;34m";    // directories
+const ANSI_CYAN: &str = "\x1B[1;36m";    // symlinks
+const ANSI_GREEN: &str = "\x1B[1;32m";   // executables
+const ANSI_RESET: &str = "\x1B[0m";
 
 fn main() {
     let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
-    let args = anyos_std::args::parse(raw, b"");
+
+    // Check for --color before standard arg parsing (parser only handles single-char flags)
+    let color = raw.contains("--color");
+    // Strip --color from args so the standard parser doesn't choke on it
+    let mut cleaned_buf = [0u8; 256];
+    let parse_raw = if color {
+        // Remove "--color" from the raw string by copying without it
+        let mut dst = 0;
+        let src = raw.as_bytes();
+        let mut i = 0;
+        while i < src.len() {
+            if i + 7 <= src.len() && &src[i..i + 7] == b"--color" {
+                i += 7;
+                // skip trailing space
+                if i < src.len() && src[i] == b' ' { i += 1; }
+            } else {
+                if dst < cleaned_buf.len() { cleaned_buf[dst] = src[i]; dst += 1; }
+                i += 1;
+            }
+        }
+        core::str::from_utf8(&cleaned_buf[..dst]).unwrap_or(raw)
+    } else {
+        raw
+    };
+    let args = anyos_std::args::parse(parse_raw, b"");
 
     let long = args.has(b'l');
     let all = args.has(b'a');
@@ -413,26 +458,26 @@ fn main() {
 
     if args.pos_count == 0 {
         if dir_itself {
-            list_as_entries(&["."], long, one_per_line, human, sort_size, reverse);
+            list_as_entries(&["."], long, one_per_line, human, sort_size, reverse, color);
         } else {
             if recursive { anyos_std::println!(".:");}
-            list_directory(".", long, all, one_per_line, human, sort_size, reverse, recursive);
+            list_directory(".", long, all, one_per_line, human, sort_size, reverse, recursive, color);
         }
     } else if dir_itself {
         let mut paths: anyos_std::Vec<&str> = anyos_std::Vec::new();
         for idx in 0..args.pos_count {
             paths.push(args.positional[idx]);
         }
-        list_as_entries(&paths, long, one_per_line, human, sort_size, reverse);
+        list_as_entries(&paths, long, one_per_line, human, sort_size, reverse, color);
     } else if args.pos_count == 1 {
         let path = args.positional[0];
         let mut buf = [0u8; 64 * 4];
         let count = anyos_std::fs::readdir(path, &mut buf);
         if count != u32::MAX {
             if recursive { anyos_std::println!("{}:", path); }
-            list_directory(path, long, all, one_per_line, human, sort_size, reverse, recursive);
+            list_directory(path, long, all, one_per_line, human, sort_size, reverse, recursive, color);
         } else {
-            list_files(&args, long, one_per_line, human, sort_size, reverse);
+            list_files(&args, long, one_per_line, human, sort_size, reverse, color);
         }
     } else {
         let mut files: anyos_std::Vec<&str> = anyos_std::Vec::new();
@@ -477,7 +522,7 @@ fn main() {
                 entries.sort_unstable_by(|a, b| cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len));
             }
             if reverse { entries.reverse(); }
-            print_entries(&entries, ".", long, one_per_line, human);
+            print_entries(&entries, ".", long, one_per_line, human, color);
         }
 
         for (i, dir) in dirs.iter().enumerate() {
@@ -487,7 +532,7 @@ fn main() {
             if dirs.len() > 1 || !files.is_empty() || recursive {
                 anyos_std::println!("{}:", dir);
             }
-            list_directory(dir, long, all, one_per_line, human, sort_size, reverse, recursive);
+            list_directory(dir, long, all, one_per_line, human, sort_size, reverse, recursive, color);
         }
     }
 }

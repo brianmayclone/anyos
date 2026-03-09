@@ -73,6 +73,13 @@ pub fn random(buf: &mut [u8]) -> u32 {
     syscall2(SYS_RANDOM, buf.as_mut_ptr() as u64, len as u64)
 }
 
+/// Enable or disable verbose serial output (driver/subsystem messages).
+/// When disabled (default), only core kernel messages appear on the serial console.
+/// When enabled, all driver and subsystem messages are also shown.
+pub fn set_serial_verbose(enable: bool) -> u32 {
+    syscall1(SYS_SET_SERIAL_VERBOSE, if enable { 1 } else { 0 })
+}
+
 /// List devices. Each 64-byte entry:
 ///   [0..32]  path (null-terminated)
 ///   [32..56] driver name (null-terminated)

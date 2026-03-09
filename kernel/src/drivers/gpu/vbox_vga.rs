@@ -230,7 +230,7 @@ impl VBoxVgaGpu {
         let (virt, vram_off) = match self.hgsmi_alloc(data_size) {
             Some(v) => v,
             None => {
-                crate::serial_println!("  VBoxVGA: hgsmi_alloc FAILED for cmd={}", channel_info);
+                crate::serial_verbose_println!("  VBoxVGA: hgsmi_alloc FAILED for cmd={}", channel_info);
                 return;
             }
         };
@@ -240,7 +240,7 @@ impl VBoxVgaGpu {
             static HGSMI_DBG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
             let n = HGSMI_DBG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             if n < 10 {
-                crate::serial_println!(
+                crate::serial_verbose_println!(
                     "  VBoxVGA: hgsmi_submit cmd={} data_size={} vram_off={:#x} heap_off={}",
                     channel_info, data_size, vram_off, self.hgsmi_heap_offset,
                 );
@@ -333,7 +333,7 @@ impl VBoxVgaGpu {
     /// flag would suppress the overlay while the compositor skips SW cursor
     /// drawing → no cursor visible at all.
     fn send_info_caps(&mut self) {
-        crate::serial_println!("  VBoxVGA: send_info_caps flags=0x0 (cursor integration ENABLED)");
+        crate::serial_verbose_println!("  VBoxVGA: send_info_caps flags=0x0 (cursor integration ENABLED)");
         let caps = VbvaInfoCaps {
             rc: 0,
             flags: 0, // no DISABLE_CURSOR_INTEGRATION — let VBox show HGSMI-defined cursor overlay
@@ -395,7 +395,7 @@ impl GpuDriver for VBoxVgaGpu {
             self.send_info_screen();
         }
 
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  VBoxVGA: mode set to {}x{}x{} (pitch={}, dblbuf={})",
             actual_w, actual_h, actual_bpp, pitch, self.double_buffered
         );
@@ -540,7 +540,7 @@ impl GpuDriver for VBoxVgaGpu {
             );
         }
 
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  VBoxVGA: define_cursor {}x{} hot=({},{}) flags={:#x} and_mask={} px={} total={}",
             w, h, hotx, hoty,
             VBOX_MOUSE_POINTER_VISIBLE | VBOX_MOUSE_POINTER_ALPHA | VBOX_MOUSE_POINTER_SHAPE,
@@ -549,7 +549,7 @@ impl GpuDriver for VBoxVgaGpu {
         // Dump first 4 ARGB pixels to verify data integrity
         let px_off = shape_size + and_mask_size;
         if total_payload >= px_off + 16 {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "  VBoxVGA: cursor px[0..4] = {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x}",
                 payload[px_off], payload[px_off+1], payload[px_off+2], payload[px_off+3],
                 payload[px_off+4], payload[px_off+5], payload[px_off+6], payload[px_off+7],
@@ -560,7 +560,7 @@ impl GpuDriver for VBoxVgaGpu {
 
         self.hgsmi_submit(VBVA_MOUSE_POINTER_SHAPE, &payload);
         self.cursor_defined = true;
-        crate::serial_println!("  VBoxVGA: define_cursor submitted OK");
+        crate::serial_verbose_println!("  VBoxVGA: define_cursor submitted OK");
     }
 
     fn move_cursor(&mut self, x: u32, y: u32) {
@@ -572,7 +572,7 @@ impl GpuDriver for VBoxVgaGpu {
         static MOVE_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
         let n = MOVE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         if n < 5 {
-            crate::serial_println!("  VBoxVGA: move_cursor({}, {}) [#{}]", x, y, n);
+            crate::serial_verbose_println!("  VBoxVGA: move_cursor({}, {}) [#{}]", x, y, n);
         }
 
         // Send cursor position via HGSMI
@@ -594,7 +594,7 @@ impl GpuDriver for VBoxVgaGpu {
         if !self.hgsmi_supported {
             return;
         }
-        crate::serial_println!("  VBoxVGA: show_cursor(visible={}) cursor_defined={}", visible, self.cursor_defined);
+        crate::serial_verbose_println!("  VBoxVGA: show_cursor(visible={}) cursor_defined={}", visible, self.cursor_defined);
         // define_cursor() already sets VISIBLE; only send when hiding
         if visible && self.cursor_defined {
             return;
@@ -690,18 +690,18 @@ pub fn init_and_register(pci_dev: &PciDevice) {
     // Read BAR0 = framebuffer physical address
     let fb_phys = pci_dev.bars[0] & !0xF;
     if fb_phys == 0 {
-        crate::serial_println!("  VBoxVGA: BAR0 is zero, cannot init");
+        crate::serial_verbose_println!("  VBoxVGA: BAR0 is zero, cannot init");
         return;
     }
 
     // Detect VRAM size from BAR0
     let vram_size = detect_bar0_size(pci_dev.bus, pci_dev.device, pci_dev.function);
     if vram_size == 0 {
-        crate::serial_println!("  VBoxVGA: Could not detect VRAM size, using 16 MiB default");
+        crate::serial_verbose_println!("  VBoxVGA: Could not detect VRAM size, using 16 MiB default");
     }
     let vram_size = if vram_size > 0 { vram_size } else { 16 * 1024 * 1024 };
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  VBoxVGA: fb_phys={:#010x}, vram_size={} MiB",
         fb_phys, vram_size / (1024 * 1024)
     );
@@ -723,23 +723,23 @@ pub fn init_and_register(pci_dev: &PciDevice) {
     let id = dispi_read(VBE_DISPI_INDEX_ID);
     if id == VBE_DISPI_ID_ANYX {
         hgsmi_supported = true;
-        crate::serial_println!("  VBoxVGA: DISPI ID {:#06x} (ANYX + HGSMI)", id);
+        crate::serial_verbose_println!("  VBoxVGA: DISPI ID {:#06x} (ANYX + HGSMI)", id);
     } else {
         // Try HGSMI
         dispi_write(VBE_DISPI_INDEX_ID, VBE_DISPI_ID_HGSMI);
         let id = dispi_read(VBE_DISPI_INDEX_ID);
         if id == VBE_DISPI_ID_HGSMI {
             hgsmi_supported = true;
-            crate::serial_println!("  VBoxVGA: DISPI ID {:#06x} (HGSMI)", id);
+            crate::serial_verbose_println!("  VBoxVGA: DISPI ID {:#06x} (HGSMI)", id);
         } else {
             // Try VBOX_VIDEO
             dispi_write(VBE_DISPI_INDEX_ID, VBE_DISPI_ID_VBOX_VIDEO);
             let id = dispi_read(VBE_DISPI_INDEX_ID);
             if id == VBE_DISPI_ID_VBOX_VIDEO {
                 hgsmi_supported = true;
-                crate::serial_println!("  VBoxVGA: DISPI ID {:#06x} (VBOX_VIDEO)", id);
+                crate::serial_verbose_println!("  VBoxVGA: DISPI ID {:#06x} (VBOX_VIDEO)", id);
             } else {
-                crate::serial_println!("  VBoxVGA: DISPI ID {:#06x} (standard BGA, no HGSMI)", id);
+                crate::serial_verbose_println!("  VBoxVGA: DISPI ID {:#06x} (standard BGA, no HGSMI)", id);
             }
         }
     }
@@ -749,7 +749,7 @@ pub fn init_and_register(pci_dev: &PciDevice) {
     let heap_phys = fb_phys + heap_offset;
 
     if hgsmi_supported {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  VBoxVGA: Mapping HGSMI heap: phys={:#010x}, virt={:#018x}, {} pages",
             heap_phys, HGSMI_HEAP_VIRT_BASE, HGSMI_HEAP_PAGES
         );
@@ -777,7 +777,7 @@ pub fn init_and_register(pci_dev: &PciDevice) {
     let pitch = width * (bpp / 8);
     let double_buffered = virt_height >= height * 2;
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  VBoxVGA: Current mode {}x{}x{} (pitch={}, dblbuf={})",
         width, height, bpp, pitch, double_buffered
     );
@@ -801,7 +801,7 @@ pub fn init_and_register(pci_dev: &PciDevice) {
     if hgsmi_supported {
         gpu.send_info_caps();
         gpu.send_info_screen();
-        crate::serial_println!("  VBoxVGA: HGSMI initialized (hw_cursor + update_rect)");
+        crate::serial_verbose_println!("  VBoxVGA: HGSMI initialized (hw_cursor + update_rect)");
     }
 
     // Register with GPU subsystem

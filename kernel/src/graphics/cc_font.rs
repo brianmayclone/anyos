@@ -44,10 +44,10 @@ pub fn init() {
     if let Some(font) = parse_ccf(CCF_DATA) {
         let mut guard = FONT.lock();
         *guard = Some(font);
-        crate::serial_println!("[OK] Cape Coral font initialized ({} sizes)",
+        crate::serial_verbose_println!("[OK] Cape Coral font initialized ({} sizes)",
             guard.as_ref().unwrap().sizes.len());
     } else {
-        crate::serial_println!("[WARN] Failed to parse Cape Coral font data");
+        crate::serial_verbose_println!("[WARN] Failed to parse Cape Coral font data");
     }
 }
 

@@ -123,7 +123,7 @@ pub fn init() {
     *hal = Some(HalRegistry {
         devices: Vec::new(),
     });
-    crate::serial_println!("[OK] HAL initialized");
+    crate::serial_verbose_println!("[OK] HAL initialized");
 }
 
 /// Register a device with the HAL (x86 variant with PCI info).
@@ -132,7 +132,7 @@ pub fn register_device(path: &str, driver: Box<dyn Driver>, pci: Option<PciDevic
     let driver_type = driver.driver_type() as u32;
     let mut hal = HAL.lock();
     if let Some(registry) = hal.as_mut() {
-        crate::serial_println!("  HAL: registered {} ({})", path, driver.name());
+        crate::serial_verbose_println!("  HAL: registered {} ({})", path, driver.name());
         registry.devices.push(HalDevice {
             path: String::from(path),
             driver,
@@ -152,7 +152,7 @@ pub fn register_device(path: &str, driver: Box<dyn Driver>, _pci: Option<u64>) {
     let driver_type = driver.driver_type() as u32;
     let mut hal = HAL.lock();
     if let Some(registry) = hal.as_mut() {
-        crate::serial_println!("  HAL: registered {} ({})", path, driver.name());
+        crate::serial_verbose_println!("  HAL: registered {} ({})", path, driver.name());
         registry.devices.push(HalDevice {
             path: String::from(path),
             driver,
@@ -249,9 +249,9 @@ pub fn bound_pci_devices() -> Vec<PciDevice> {
 /// Print all registered devices to serial
 pub fn print_devices() {
     let devices = list_devices();
-    crate::serial_println!("  HAL: {} device(s) registered:", devices.len());
+    crate::serial_verbose_println!("  HAL: {} device(s) registered:", devices.len());
     for (path, name, dtype) in &devices {
-        crate::serial_println!("    {} - {} ({:?})", path, name, dtype);
+        crate::serial_verbose_println!("    {} - {} ({:?})", path, name, dtype);
     }
 }
 
@@ -297,7 +297,7 @@ pub fn probe_and_bind_all() {
     let mut bound = 0u32;
     let mut type_counters = [0usize; 10]; // indexed by DriverType discriminant (10 variants)
 
-    crate::serial_println!("  HAL: Probing {} PCI device(s) for drivers...", pci_devices.len());
+    crate::serial_verbose_println!("  HAL: Probing {} PCI device(s) for drivers...", pci_devices.len());
 
     for pci_dev in &pci_devices {
         // Skip bridges — they don't need a user-facing driver
@@ -326,7 +326,7 @@ pub fn probe_and_bind_all() {
 
                 // Initialize the driver
                 if let Err(e) = driver.init() {
-                    crate::serial_println!(
+                    crate::serial_verbose_println!(
                         "  HAL: WARN - driver '{}' init failed: {:?}",
                         driver.name(), e
                     );
@@ -345,7 +345,7 @@ pub fn probe_and_bind_all() {
         }
     }
 
-    crate::serial_println!("  HAL: Bound {} PCI driver(s)", bound);
+    crate::serial_verbose_println!("  HAL: Bound {} PCI driver(s)", bound);
 }
 
 // ──────────────────────────────────────────────

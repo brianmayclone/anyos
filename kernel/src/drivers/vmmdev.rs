@@ -194,7 +194,7 @@ pub fn poll_mouse() -> Option<(i32, i32, u32)> {
     static POLL_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     let n = POLL_COUNT.fetch_add(1, Ordering::Relaxed);
     if n < 10 || (n % 500 == 0) {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "[vmmdev] GetMouseStatus #{}: rc={} features={:#06x} pos=({},{}) screen={}x{}",
             n, resp.header.rc, resp.mouse_features, resp.pointer_x, resp.pointer_y,
             SCREEN_WIDTH.load(Ordering::Relaxed), SCREEN_HEIGHT.load(Ordering::Relaxed),
@@ -235,20 +235,20 @@ pub fn init_and_register(pci: &PciDevice) {
     // BAR0 = I/O port base
     let bar0 = pci.bars[0];
     if bar0 & 1 == 0 {
-        crate::serial_println!("  VMMDev: BAR0 is not I/O port — aborting");
+        crate::serial_verbose_println!("  VMMDev: BAR0 is not I/O port — aborting");
         return;
     }
     let io_base = (bar0 & 0xFFFC) as u16;
-    crate::serial_println!("  VMMDev: I/O port base = {:#06x}", io_base);
+    crate::serial_verbose_println!("  VMMDev: I/O port base = {:#06x}", io_base);
 
     // BAR1 = MMIO (shared memory area)
     let bar1 = pci.bars[1];
     if bar1 & 1 != 0 {
-        crate::serial_println!("  VMMDev: BAR1 is I/O port (expected MMIO) — aborting");
+        crate::serial_verbose_println!("  VMMDev: BAR1 is I/O port (expected MMIO) — aborting");
         return;
     }
     let mmio_phys = (bar1 & 0xFFFFF000) as u64;
-    crate::serial_println!("  VMMDev: MMIO phys = {:#010x}", mmio_phys);
+    crate::serial_verbose_println!("  VMMDev: MMIO phys = {:#010x}", mmio_phys);
 
     // Enable PCI bus mastering + I/O + memory
     let cmd = crate::drivers::pci::pci_config_read32(pci.bus, pci.device, pci.function, 0x04);
@@ -265,7 +265,7 @@ pub fn init_and_register(pci: &PciDevice) {
     let req_phys = match crate::memory::physical::alloc_frame() {
         Some(p) => p.as_u64(),
         None => {
-            crate::serial_println!("  VMMDev: failed to allocate DMA page");
+            crate::serial_verbose_println!("  VMMDev: failed to allocate DMA page");
             return;
         }
     };
@@ -298,9 +298,9 @@ pub fn init_and_register(pci: &PciDevice) {
     };
     let resp: VMMDevReqGuestInfo = unsafe { submit_request(&guest_info) };
     if resp.header.rc < 0 {
-        crate::serial_println!("  VMMDev: ReportGuestInfo failed (rc={})", resp.header.rc);
+        crate::serial_verbose_println!("  VMMDev: ReportGuestInfo failed (rc={})", resp.header.rc);
     } else {
-        crate::serial_println!("  VMMDev: ReportGuestInfo OK");
+        crate::serial_verbose_println!("  VMMDev: ReportGuestInfo OK");
     }
 
     // Step 2: Get host version
@@ -317,7 +317,7 @@ pub fn init_and_register(pci: &PciDevice) {
     };
     let ver_resp: VMMDevReqHostVersion = unsafe { submit_request(&ver_req) };
     if ver_resp.header.rc >= 0 {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  VMMDev: Host version {}.{}.{} (rev {})",
             ver_resp.major, ver_resp.minor, ver_resp.build, ver_resp.revision
         );
@@ -342,11 +342,11 @@ pub fn init_and_register(pci: &PciDevice) {
     };
     let mouse_resp: VMMDevReqMouseStatus = unsafe { submit_request(&mouse_req) };
     if mouse_resp.header.rc < 0 {
-        crate::serial_println!("  VMMDev: SetMouseStatus failed (rc={})", mouse_resp.header.rc);
+        crate::serial_verbose_println!("  VMMDev: SetMouseStatus failed (rc={})", mouse_resp.header.rc);
         ABSOLUTE_AVAILABLE.store(false, Ordering::Relaxed);
     } else {
         ABSOLUTE_AVAILABLE.store(true, Ordering::Relaxed);
-        crate::serial_println!("  VMMDev: Absolute mouse enabled (GUEST_CAN_ABSOLUTE)");
+        crate::serial_verbose_println!("  VMMDev: Absolute mouse enabled (GUEST_CAN_ABSOLUTE)");
     }
 
     // Step 4: Set event filter (enable mouse capability change events)
@@ -364,11 +364,11 @@ pub fn init_and_register(pci: &PciDevice) {
     if let Some(fb) = crate::drivers::framebuffer::info() {
         SCREEN_WIDTH.store(fb.width as u16, Ordering::Relaxed);
         SCREEN_HEIGHT.store(fb.height as u16, Ordering::Relaxed);
-        crate::serial_println!("  VMMDev: Screen size = {}x{}", fb.width, fb.height);
+        crate::serial_verbose_println!("  VMMDev: Screen size = {}x{}", fb.width, fb.height);
     }
 
     AVAILABLE.store(true, Ordering::Release);
-    crate::serial_println!("[OK] VMMDev initialized (abs mouse, event filter)");
+    crate::serial_verbose_println!("[OK] VMMDev initialized (abs mouse, event filter)");
 }
 
 // ── Low-level request submission ────────────────────

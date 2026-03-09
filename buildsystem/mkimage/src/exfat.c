@@ -171,6 +171,32 @@ static void exfat_write_contiguous(ExFat *fs, uint32_t first_cluster,
     }
 }
 
+/* ── Timestamp helpers ────────────────────────────────────────────────────── */
+
+/*
+ * Convert Unix timestamp to exFAT 32-bit timestamp.
+ * Format: [31:25]=year-1980, [24:21]=month, [20:16]=day,
+ *         [15:11]=hour, [10:5]=minute, [4:0]=2-second intervals
+ */
+static uint32_t unix_to_exfat_timestamp(time_t t)
+{
+    struct tm *tm;
+    uint32_t ts;
+
+    if (t == 0) return 0;
+    tm = gmtime(&t);
+    if (!tm) return 0;
+
+    ts  = (uint32_t)((tm->tm_year + 1900 - 1980) & 0x7F) << 25;
+    ts |= (uint32_t)((tm->tm_mon + 1) & 0xF) << 21;
+    ts |= (uint32_t)(tm->tm_mday & 0x1F) << 16;
+    ts |= (uint32_t)(tm->tm_hour & 0x1F) << 11;
+    ts |= (uint32_t)(tm->tm_min & 0x3F) << 5;
+    ts |= (uint32_t)((tm->tm_sec / 2) & 0x1F);
+
+    return ts;
+}
+
 /* ── Entry set helpers ────────────────────────────────────────────────────── */
 
 /*
@@ -228,6 +254,7 @@ static void exfat_build_entry_set(const char *name, uint16_t attrs,
                                   uint32_t first_cluster, uint64_t data_length,
                                   int contiguous,
                                   uint16_t uid, uint16_t gid, uint16_t mode,
+                                  time_t mtime,
                                   uint8_t *out_buf, uint32_t *out_len)
 {
     /* Build UTF-16 array from name (ASCII only) */
@@ -263,6 +290,8 @@ static void exfat_build_entry_set(const char *name, uint16_t attrs,
     write_le16(out_buf + 6,  uid);
     write_le16(out_buf + 8,  gid);
     write_le16(out_buf + 10, mode);
+    /* LastModifiedTimestamp at [12..15] (exFAT packed format) */
+    write_le32(out_buf + 12, unix_to_exfat_timestamp(mtime));
 
     /* ── Stream Extension (0xC0) ──────────────────────────────────── */
     {
@@ -677,7 +706,8 @@ void exfat_init_fs(ExFat *fs)
  * Mirrors ExFatFormatter.create_directory().
  */
 uint32_t exfat_create_dir(ExFat *fs, uint32_t parent, const char *name,
-                          uint16_t uid, uint16_t gid, uint16_t mode)
+                          uint16_t uid, uint16_t gid, uint16_t mode,
+                          time_t mtime)
 {
     uint32_t dir_cluster;
     uint8_t  entry_buf[32 * (1 + 1 + ((255 + 14) / 15))];
@@ -695,7 +725,7 @@ uint32_t exfat_create_dir(ExFat *fs, uint32_t parent, const char *name,
     }
 
     exfat_build_entry_set(name, EXFAT_ATTR_DIR, dir_cluster, 0,
-                          0 /* not contiguous */, uid, gid, mode,
+                          0 /* not contiguous */, uid, gid, mode, mtime,
                           entry_buf, &entry_len);
 
     if (parent == 0)
@@ -712,7 +742,8 @@ uint32_t exfat_create_dir(ExFat *fs, uint32_t parent, const char *name,
  */
 void exfat_add_file(ExFat *fs, uint32_t parent, const char *name,
                     const uint8_t *data, size_t size,
-                    uint16_t uid, uint16_t gid, uint16_t mode)
+                    uint16_t uid, uint16_t gid, uint16_t mode,
+                    time_t mtime)
 {
     uint8_t  entry_buf[32 * (1 + 1 + ((255 + 14) / 15))];
     uint32_t entry_len;
@@ -722,7 +753,7 @@ void exfat_add_file(ExFat *fs, uint32_t parent, const char *name,
 
     if (size == 0) {
         exfat_build_entry_set(name, EXFAT_ATTR_ARCHIVE, 0, 0,
-                              1 /* contiguous */, uid, gid, mode,
+                              1 /* contiguous */, uid, gid, mode, mtime,
                               entry_buf, &entry_len);
         exfat_add_entry_to_dir(fs, parent, entry_buf, entry_len);
         return;
@@ -737,7 +768,7 @@ void exfat_add_file(ExFat *fs, uint32_t parent, const char *name,
 
         exfat_build_entry_set(name, EXFAT_ATTR_ARCHIVE, first_cluster,
                               (uint64_t)size,
-                              1 /* contiguous */, uid, gid, mode,
+                              1 /* contiguous */, uid, gid, mode, mtime,
                               entry_buf, &entry_len);
         exfat_add_entry_to_dir(fs, parent, entry_buf, entry_len);
 
@@ -859,7 +890,8 @@ static void exfat_populate_dir(ExFat *fs, const char *host_path,
 
         if (S_ISDIR(st.st_mode)) {
             uint32_t dir_cluster = exfat_create_dir(fs, parent_cluster,
-                                                    entry_name, uid, gid, mode);
+                                                    entry_name, uid, gid, mode,
+                                                    st.st_mtime);
             printf("    Dir:  %s/ (cluster=%u)%s\n",
                    entry_name, dir_cluster,
                    (mode == 0xF00) ? " [root-only]" : "");
@@ -868,7 +900,8 @@ static void exfat_populate_dir(ExFat *fs, const char *host_path,
             size_t   file_size;
             uint8_t *file_data = read_file(full_path, &file_size);
             exfat_add_file(fs, parent_cluster, entry_name,
-                           file_data, file_size, uid, gid, mode);
+                           file_data, file_size, uid, gid, mode,
+                           st.st_mtime);
             free(file_data);
         }
 
@@ -1374,7 +1407,8 @@ static void exfat_sync_dir(ExFat *fs, const char *host_path,
             } else {
                 /* New directory */
                 uint32_t dir_cl = exfat_create_dir(fs, parent_cluster,
-                                                    names[i], uid, gid, mode);
+                                                    names[i], uid, gid, mode,
+                                                    st.st_mtime);
                 printf("    Dir+: %s/ (cluster=%u)\n", names[i], dir_cl);
                 /* Populate new directory fully */
                 exfat_populate_dir(fs, full_path, dir_cl, child_virt);
@@ -1393,13 +1427,15 @@ static void exfat_sync_dir(ExFat *fs, const char *host_path,
                     exfat_free_clusters(fs, child);
                     exfat_delete_entry(fs, child);
                     exfat_add_file(fs, parent_cluster, names[i],
-                                   file_data, file_size, uid, gid, mode);
+                                   file_data, file_size, uid, gid, mode,
+                                   st.st_mtime);
                     (*n_updated)++;
                 }
             } else {
                 /* New file */
                 exfat_add_file(fs, parent_cluster, names[i],
-                               file_data, file_size, uid, gid, mode);
+                               file_data, file_size, uid, gid, mode,
+                               st.st_mtime);
                 (*n_added)++;
             }
             free(file_data);

@@ -36,7 +36,7 @@ pub fn detect() {
     let part = (midr >> 4) & 0xFFF;
     let revision = midr & 0xF;
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "CPU: impl={:#04x} part={:#05x} variant={} revision={}",
         implementer, part, variant, revision,
     );
@@ -57,7 +57,7 @@ pub fn detect() {
     let rndr = (isar0 >> 60) & 0xF;
     HAS_RNG.store(rndr >= 1, Ordering::Relaxed);
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  Features: LSE={} CRC32={} SHA256={} AES={} RNG={}",
         HAS_LSE.load(Ordering::Relaxed),
         HAS_CRC32.load(Ordering::Relaxed),

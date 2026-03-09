@@ -59,7 +59,7 @@ pub fn load_interfaces() {
     let data = match crate::fs::vfs::read_file_to_vec(INTERFACES_PATH) {
         Ok(d) => d,
         Err(_) => {
-            crate::serial_println!("[NET] interfaces file not found: {}", INTERFACES_PATH);
+            crate::serial_verbose_println!("[NET] interfaces file not found: {}", INTERFACES_PATH);
             return;
         }
     };
@@ -67,7 +67,7 @@ pub fn load_interfaces() {
     let text = match core::str::from_utf8(&data) {
         Ok(t) => t,
         Err(_) => {
-            crate::serial_println!("[NET] interfaces file is not valid UTF-8");
+            crate::serial_verbose_println!("[NET] interfaces file is not valid UTF-8");
             return;
         }
     };
@@ -92,7 +92,7 @@ pub fn load_interfaces() {
         let mut table = IFACE_CONFIGS.lock();
         *table = configs;
     }
-    crate::serial_println!("[OK] Loaded {} interface configs from {}", count, INTERFACES_PATH);
+    crate::serial_verbose_println!("[OK] Loaded {} interface configs from {}", count, INTERFACES_PATH);
 }
 
 /// Parse the interfaces config text into a list of interface configurations.
@@ -314,7 +314,7 @@ pub fn apply_and_save(buf: &[u8], count: u32) -> u32 {
         }
         if cfg.method == IfaceMethod::Static {
             super::set_config(cfg.address, cfg.netmask, cfg.gateway, cfg.dns);
-            crate::serial_println!("[NET] Applied static config for {}: {}", cfg.name, cfg.address);
+            crate::serial_verbose_println!("[NET] Applied static config for {}: {}", cfg.name, cfg.address);
         }
         // DHCP is handled by the dhcp binary at boot; no immediate action here
         break;

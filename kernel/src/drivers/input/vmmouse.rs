@@ -114,7 +114,7 @@ pub fn disable() {
     if VMMOUSE_ACTIVE.load(Ordering::Relaxed) {
         backdoor(CMD_ABSPOINTER_COMMAND, ABSPOINTER_RELATIVE);
         VMMOUSE_ACTIVE.store(false, Ordering::Release);
-        crate::serial_println!("[vmmouse] disabled, reverting to PS/2");
+        crate::serial_verbose_println!("[vmmouse] disabled, reverting to PS/2");
     }
 }
 
@@ -122,14 +122,14 @@ pub fn disable() {
 /// Returns true if the backdoor was detected and vmmouse is now active.
 pub fn init() -> bool {
     if !detect() {
-        crate::serial_println!("[vmmouse] VMware backdoor not detected, using PS/2");
+        crate::serial_verbose_println!("[vmmouse] VMware backdoor not detected, using PS/2");
         return false;
     }
 
-    crate::serial_println!("[vmmouse] VMware backdoor detected");
+    crate::serial_verbose_println!("[vmmouse] VMware backdoor detected");
 
     if !enable() {
-        crate::serial_println!("[WARN] vmmouse: enable failed, using PS/2");
+        crate::serial_verbose_println!("[WARN] vmmouse: enable failed, using PS/2");
         return false;
     }
 
@@ -142,7 +142,7 @@ pub fn init() -> bool {
     }
 
     VMMOUSE_ACTIVE.store(true, Ordering::Release);
-    crate::serial_println!("[OK] vmmouse: absolute mouse enabled via VMware backdoor ({}x{})",
+    crate::serial_verbose_println!("[OK] vmmouse: absolute mouse enabled via VMware backdoor ({}x{})",
         SCREEN_W.load(Ordering::Relaxed), SCREEN_H.load(Ordering::Relaxed));
     true
 }

@@ -189,7 +189,7 @@ extern "C" fn api_log(msg: *const u8, len: u32) {
     if msg.is_null() { return; }
     let slice = unsafe { core::slice::from_raw_parts(msg, len as usize) };
     if let Ok(s) = core::str::from_utf8(slice) {
-        crate::serial_println!("  KDRV: {}", s);
+        crate::serial_verbose_println!("  KDRV: {}", s);
     }
 }
 extern "C" fn api_delay_ms(ms: u32) {
@@ -303,7 +303,7 @@ fn parse_driver_info_conf(bundle_path: &str) -> Option<DriverBundleInfo> {
 
     // Security: exec must be a plain filename — no path separators or ".."
     if exec_name.contains('/') || exec_name.contains("..") {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  KDRV: SECURITY - rejected exec '{}' in {} (path traversal)",
             exec_name, bundle_path
         );
@@ -360,29 +360,29 @@ fn load_kdrv(bundle_path: &str, exec_name: &str) -> Option<&'static DriverExport
     let data = match crate::fs::vfs::read_file_to_vec(&binary_path) {
         Ok(d) => d,
         Err(_) => {
-            crate::serial_println!("  KDRV: failed to read {}", binary_path);
+            crate::serial_verbose_println!("  KDRV: failed to read {}", binary_path);
             return None;
         }
     };
 
     if data.len() < 4096 {
-        crate::serial_println!("  KDRV: {} too small ({}B, need >=4096)", binary_path, data.len());
+        crate::serial_verbose_println!("  KDRV: {} too small ({}B, need >=4096)", binary_path, data.len());
         return None;
     }
 
     // Validate header
     let header = unsafe { &*(data.as_ptr() as *const KdrvHeader) };
     if header.magic != KDRV_MAGIC {
-        crate::serial_println!("  KDRV: {} bad magic", binary_path);
+        crate::serial_verbose_println!("  KDRV: {} bad magic", binary_path);
         return None;
     }
     if header.version != KDRV_VERSION {
-        crate::serial_println!("  KDRV: {} version mismatch (got {}, need {})",
+        crate::serial_verbose_println!("  KDRV: {} version mismatch (got {}, need {})",
             binary_path, header.version, KDRV_VERSION);
         return None;
     }
     if header.abi_version != KDRV_ABI_VERSION {
-        crate::serial_println!("  KDRV: {} ABI mismatch (got {}, need {})",
+        crate::serial_verbose_println!("  KDRV: {} ABI mismatch (got {}, need {})",
             binary_path, header.abi_version, KDRV_ABI_VERSION);
         return None;
     }
@@ -398,7 +398,7 @@ fn load_kdrv(bundle_path: &str, exec_name: &str) -> Option<&'static DriverExport
     let load_base = *next_va;
     let needed = total_pages * PAGE_SIZE;
     if load_base + needed > KDRV_LOAD_END {
-        crate::serial_println!("  KDRV: out of virtual address space for {}", binary_path);
+        crate::serial_verbose_println!("  KDRV: out of virtual address space for {}", binary_path);
         return None;
     }
     *next_va = load_base + needed;
@@ -490,7 +490,7 @@ fn load_kdrv(bundle_path: &str, exec_name: &str) -> Option<&'static DriverExport
     let exports_addr = load_base + exports_offset;
     let exports = unsafe { &*(exports_addr as *const DriverExports) };
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  KDRV: loaded {} at {:#x} ({} code + {} data + {} bss pages)",
         binary_path, load_base, code_pages, data_pages, bss_pages
     );
@@ -579,11 +579,11 @@ pub fn probe_external_drivers() {
         .collect();
 
     if unbound.is_empty() {
-        crate::serial_println!("  KDRV: all PCI devices already bound, skipping external probe");
+        crate::serial_verbose_println!("  KDRV: all PCI devices already bound, skipping external probe");
         return;
     }
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  KDRV: {} unbound PCI device(s), scanning /System/Drivers/ ...",
         unbound.len()
     );
@@ -624,7 +624,7 @@ pub fn probe_external_drivers() {
                     continue;
                 }
 
-                crate::serial_println!(
+                crate::serial_verbose_println!(
                     "  KDRV: matched {} for PCI {:04x}:{:04x}",
                     name, pci_dev.vendor_id, pci_dev.device_id
                 );
@@ -639,7 +639,7 @@ pub fn probe_external_drivers() {
                 let pci_c = PciDeviceC::from(*pci_dev);
                 let ret = (exports.init)(&KERNEL_API as *const _, &pci_c as *const _);
                 if ret != 0 {
-                    crate::serial_println!(
+                    crate::serial_verbose_println!(
                         "  KDRV: {} init() failed (returned {})",
                         name, ret
                     );
@@ -679,5 +679,5 @@ pub fn probe_external_drivers() {
         }
     }
 
-    crate::serial_println!("  KDRV: loaded {} external driver(s)", loaded);
+    crate::serial_verbose_println!("  KDRV: loaded {} external driver(s)", loaded);
 }

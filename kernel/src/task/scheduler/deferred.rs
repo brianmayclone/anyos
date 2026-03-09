@@ -26,7 +26,7 @@ impl DeferredPdQueue {
         }
         // Queue full (64 pending PDs) — drain one slot synchronously.
         // This is a last-resort fallback for pathological fork storms.
-        crate::serial_println!("WARNING: deferred PD queue full, destroying one synchronously");
+        crate::serial_verbose_println!("WARNING: deferred PD queue full, destroying one synchronously");
         if let Some(Some((old_pd, old_tid))) = self.entries.iter_mut().find(|s| s.is_some()).map(|s| s.take()) {
             if old_tid != 0 {
                 let rflags = crate::arch::hal::save_and_disable_interrupts();

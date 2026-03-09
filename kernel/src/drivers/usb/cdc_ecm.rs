@@ -107,7 +107,7 @@ fn hex_nibble(b: u8) -> Option<u8> {
 
 /// Called when a CDC Communication Interface (class=0x02, subclass=0x06) is detected.
 pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  CDC-ECM: probing (addr={}, iface={})",
         dev.address, iface.number
     );
@@ -116,7 +116,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     let mac_str_idx = match find_mac_string_index(&dev.config_raw) {
         Some(idx) if idx != 0 => idx,
         _ => {
-            crate::serial_println!("  CDC-ECM: no Ethernet Functional Descriptor found");
+            crate::serial_verbose_println!("  CDC-ECM: no Ethernet Functional Descriptor found");
             return;
         }
     };
@@ -128,20 +128,20 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         Ok(s) => {
             match parse_mac_string(&s) {
                 Some(m) => {
-                    crate::serial_println!(
+                    crate::serial_verbose_println!(
                         "  CDC-ECM: MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                         m[0], m[1], m[2], m[3], m[4], m[5]
                     );
                     m
                 }
                 None => {
-                    crate::serial_println!("  CDC-ECM: bad MAC string '{}'", s);
+                    crate::serial_verbose_println!("  CDC-ECM: bad MAC string '{}'", s);
                     return;
                 }
             }
         }
         Err(e) => {
-            crate::serial_println!("  CDC-ECM: failed to read MAC string: {}", e);
+            crate::serial_verbose_println!("  CDC-ECM: failed to read MAC string: {}", e);
             return;
         }
     };
@@ -150,7 +150,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     let data_iface = match dev.interfaces.iter().find(|i| i.class == 0x0A) {
         Some(di) => di,
         None => {
-            crate::serial_println!("  CDC-ECM: no Data Interface (class 0x0A) found");
+            crate::serial_verbose_println!("  CDC-ECM: no Data Interface (class 0x0A) found");
             return;
         }
     };
@@ -165,14 +165,14 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
 
     let (ep_in, ep_out) = match (bulk_in, bulk_out) {
         (Some(i), Some(o)) => {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "  CDC-ECM: bulk IN ep={:#04x} (max={}), bulk OUT ep={:#04x} (max={})",
                 i.address, i.max_packet_size, o.address, o.max_packet_size
             );
             (i, o)
         }
         _ => {
-            crate::serial_println!("  CDC-ECM: missing bulk endpoints on Data Interface");
+            crate::serial_verbose_println!("  CDC-ECM: missing bulk endpoints on Data Interface");
             return;
         }
     };
@@ -181,14 +181,14 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     let rx_bounce_phys = match physical::alloc_frame() {
         Some(f) => f.as_u64(),
         None => {
-            crate::serial_println!("  CDC-ECM: failed to allocate RX DMA page");
+            crate::serial_verbose_println!("  CDC-ECM: failed to allocate RX DMA page");
             return;
         }
     };
     let tx_bounce_phys = match physical::alloc_frame() {
         Some(f) => f.as_u64(),
         None => {
-            crate::serial_println!("  CDC-ECM: failed to allocate TX DMA page");
+            crate::serial_verbose_println!("  CDC-ECM: failed to allocate TX DMA page");
             return;
         }
     };
@@ -229,7 +229,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         rx_queue: VecDeque::new(),
     };
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  CDC-ECM: registered USB Ethernet (addr={})",
         dev.address
     );
@@ -242,7 +242,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
             alloc::boxed::Box::new(CdcEcmNetworkDriver),
         );
     } else {
-        crate::serial_println!("  CDC-ECM: NetworkDriver already registered, skipping");
+        crate::serial_verbose_println!("  CDC-ECM: NetworkDriver already registered, skipping");
     }
 }
 
@@ -321,7 +321,7 @@ pub fn disconnect(port: u8, controller: ControllerType) {
     let mut devs = CDC_ECM_DEVICES.lock();
     if let Some(idx) = devs.iter().position(|d| d.port == port && d.controller == controller) {
         let dev = devs.remove(idx);
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  CDC-ECM: USB Ethernet removed (addr={})",
             dev.usb_addr
         );

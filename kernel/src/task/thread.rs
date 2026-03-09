@@ -96,6 +96,8 @@ pub enum ThreadState {
     Blocked,
     /// Finished execution; awaiting reaping by the scheduler.
     Terminated,
+    /// Stopped by a signal (SIGTSTP/SIGSTOP). Not schedulable until SIGCONT.
+    Stopped,
 }
 
 /// Size of the FPU/SSE/AVX save area.
@@ -393,14 +395,14 @@ impl Thread {
         let fpu_off = self.fpu_state.data.as_ptr() as usize - base;
         let name_off = self.name.as_ptr() as usize - base;
         let size = core::mem::size_of::<Self>();
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  Thread layout: size={}, context@+{:#x}({}B), fpu@+{:#x}({}B), name@+{:#x}(32B)",
             size, ctx_off, core::mem::size_of::<CpuContext>(), fpu_off, FPU_STATE_SIZE, name_off,
         );
         // Check if xsave/fxsave area could overwrite context
         let fpu_end = fpu_off + FPU_STATE_SIZE;
         if (fpu_off < ctx_off + core::mem::size_of::<CpuContext>()) && (fpu_end > ctx_off) {
-            crate::serial_println!("  WARNING: fpu_state and context OVERLAP in Thread layout!");
+            crate::serial_verbose_println!("  WARNING: fpu_state and context OVERLAP in Thread layout!");
         }
         let gap = if fpu_off > ctx_off + core::mem::size_of::<CpuContext>() {
             fpu_off - (ctx_off + core::mem::size_of::<CpuContext>())
@@ -409,7 +411,7 @@ impl Thread {
         } else {
             0
         };
-        crate::serial_println!("  Gap between fpu_state and context: {} bytes", gap);
+        crate::serial_verbose_println!("  Gap between fpu_state and context: {} bytes", gap);
     }
 }
 

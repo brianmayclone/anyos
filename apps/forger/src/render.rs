@@ -17,19 +17,15 @@ type Mat4 = [f32; 16];
 const VS_BLOCK: &str =
 "attribute vec3 aPosition;
 attribute vec2 aTexCoord;
-attribute vec3 aNormal;
 attribute float aLight;
 uniform mat4 uMVP;
-uniform vec3 uSunDir;
-uniform float uAmbient;
 varying vec2 vTexCoord;
 varying float vLighting;
 varying float vDist;
 void main() {
     gl_Position = uMVP * vec4(aPosition, 1.0);
     vTexCoord = aTexCoord;
-    float sun = max(dot(aNormal, uSunDir), 0.0);
-    vLighting = aLight * (uAmbient + (1.0 - uAmbient) * sun);
+    vLighting = aLight;
     vDist = gl_Position.w;
 }
 ";
@@ -44,12 +40,10 @@ uniform float uFogStart;
 uniform float uFogEnd;
 void main() {
     vec4 tex = texture2D(uTexture, vTexCoord);
-    if (tex.a < 0.1) discard;
     vec3 color = tex.rgb * vLighting;
     float t = clamp((vDist - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
-    float fog = t * t * (3.0 - 2.0 * t);
-    color = mix(color, uFogColor, fog);
-    gl_FragColor = vec4(color, tex.a);
+    color = mix(color, uFogColor, t);
+    gl_FragColor = vec4(color, 1.0);
 }
 ";
 
@@ -66,13 +60,9 @@ const FS_SKY: &str =
 "varying vec2 vPos;
 uniform vec3 uSkyTop;
 uniform vec3 uSkyHorizon;
-uniform vec3 uSunDir;
 void main() {
     float t = clamp(vPos.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 color = mix(uSkyHorizon, uSkyTop, t);
-    vec3 dir = normalize(vec3(vPos, 1.0));
-    float sun = pow(max(dot(dir, uSunDir), 0.0), 64.0);
-    color = color + vec3(1.0, 0.9, 0.7) * sun;
     gl_FragColor = vec4(color, 1.0);
 }
 ";
@@ -88,20 +78,16 @@ pub struct Renderer {
     pub sky_vbo: u32,
     // Block shader uniform/attrib locations
     pub u_mvp: i32,
-    pub u_sun_dir: i32,
-    pub u_ambient: i32,
     pub u_fog_color: i32,
     pub u_fog_start: i32,
     pub u_fog_end: i32,
     pub u_texture: i32,
     pub a_position: i32,
     pub a_texcoord: i32,
-    pub a_normal: i32,
     pub a_light: i32,
     // Sky shader locations
     pub u_sky_top: i32,
     pub u_sky_horizon: i32,
-    pub u_sky_sun_dir: i32,
     pub a_sky_pos: i32,
     // Chunk VBOs: (vbo_id, vertex_count)
     pub chunk_vbos: BTreeMap<(i32, i32), (u32, u32)>,
@@ -111,8 +97,6 @@ pub struct Renderer {
     // Fog
     pub fog_distance: f32,
     pub target_fog_distance: f32,
-    // Day/night
-    pub time_of_day: f32,
 }
 
 impl Renderer {
@@ -159,8 +143,6 @@ impl Renderer {
 
         // -- Query locations --
         let u_mvp = gl::get_uniform_location(block_program, "uMVP");
-        let u_sun_dir = gl::get_uniform_location(block_program, "uSunDir");
-        let u_ambient = gl::get_uniform_location(block_program, "uAmbient");
         let u_fog_color = gl::get_uniform_location(block_program, "uFogColor");
         let u_fog_start = gl::get_uniform_location(block_program, "uFogStart");
         let u_fog_end = gl::get_uniform_location(block_program, "uFogEnd");
@@ -168,17 +150,15 @@ impl Renderer {
 
         let a_position = gl::get_attrib_location(block_program, "aPosition");
         let a_texcoord = gl::get_attrib_location(block_program, "aTexCoord");
-        let a_normal = gl::get_attrib_location(block_program, "aNormal");
         let a_light = gl::get_attrib_location(block_program, "aLight");
 
         let u_sky_top = gl::get_uniform_location(sky_program, "uSkyTop");
         let u_sky_horizon = gl::get_uniform_location(sky_program, "uSkyHorizon");
-        let u_sky_sun_dir = gl::get_uniform_location(sky_program, "uSunDir");
         let a_sky_pos = gl::get_attrib_location(sky_program, "aPosition");
 
         anyos_std::println!("forger: block prog={} sky prog={}", block_program, sky_program);
-        anyos_std::println!("forger: u_mvp={} u_sun={} u_amb={} u_fog_c={} u_fog_s={} u_fog_e={} u_tex={}", u_mvp, u_sun_dir, u_ambient, u_fog_color, u_fog_start, u_fog_end, u_texture);
-        anyos_std::println!("forger: a_pos={} a_uv={} a_norm={} a_light={}", a_position, a_texcoord, a_normal, a_light);
+        anyos_std::println!("forger: u_mvp={} u_fog_c={} u_fog_s={} u_fog_e={} u_tex={}", u_mvp, u_fog_color, u_fog_start, u_fog_end, u_texture);
+        anyos_std::println!("forger: a_pos={} a_uv={} a_light={}", a_position, a_texcoord, a_light);
 
         Renderer {
             block_program,
@@ -186,26 +166,21 @@ impl Renderer {
             atlas_tex,
             sky_vbo,
             u_mvp,
-            u_sun_dir,
-            u_ambient,
             u_fog_color,
             u_fog_start,
             u_fog_end,
             u_texture,
             a_position,
             a_texcoord,
-            a_normal,
             a_light,
             u_sky_top,
             u_sky_horizon,
-            u_sky_sun_dir,
             a_sky_pos,
             chunk_vbos: BTreeMap::new(),
             yaw: 0.0,
             pitch: 0.0,
-            fog_distance: 96.0,
-            target_fog_distance: 96.0,
-            time_of_day: 0.25,
+            fog_distance: 32.0,
+            target_fog_distance: 32.0,
         }
     }
 
@@ -237,26 +212,9 @@ impl Renderer {
     }
 
     pub fn render(&mut self, cam_x: f32, cam_y: f32, cam_z: f32, width: u32, height: u32) {
-        // -- Time-of-day calculations --
-        let sun_angle = self.time_of_day * 2.0 * gl::PI;
-        let sun_y = gl::cos(sun_angle);
-        let sun_z = gl::sin(sun_angle);
-        let sun_dir = [0.0f32, sun_y, sun_z];
-
-        // Day factor: 1.0 at noon, 0.0 at night
-        let day_factor = (sun_y * 2.0).clamp(0.0, 1.0);
-
-        let sky_top = [
-            lerp(0.01, 0.3, day_factor),
-            lerp(0.01, 0.5, day_factor),
-            lerp(0.05, 0.9, day_factor),
-        ];
-        let sky_horizon = [
-            lerp(0.02, 0.6, day_factor),
-            lerp(0.02, 0.7, day_factor),
-            lerp(0.05, 0.9, day_factor),
-        ];
-        let ambient = lerp(0.15, 0.4, day_factor);
+        // Fixed noon lighting (no day/night cycle for performance)
+        let sky_top = [0.3f32, 0.5, 0.9];
+        let sky_horizon = [0.6f32, 0.7, 0.9];
 
         // Smooth fog distance
         let fog_speed = 0.02;
@@ -277,7 +235,6 @@ impl Renderer {
 
         gl::uniform3f(self.u_sky_top, sky_top[0], sky_top[1], sky_top[2]);
         gl::uniform3f(self.u_sky_horizon, sky_horizon[0], sky_horizon[1], sky_horizon[2]);
-        gl::uniform3f(self.u_sky_sun_dir, sun_dir[0], sun_dir[1], sun_dir[2]);
 
         gl::bind_buffer(gl::GL_ARRAY_BUFFER, self.sky_vbo);
         gl::enable_vertex_attrib_array(self.a_sky_pos as u32);
@@ -285,12 +242,11 @@ impl Renderer {
         gl::draw_arrays(gl::GL_TRIANGLES, 0, 6);
         gl::disable_vertex_attrib_array(self.a_sky_pos as u32);
 
-        // -- Block pass --
+        // -- Block pass (no blending — all fragments output alpha=1.0) --
         gl::depth_mask(true);
         gl::enable(gl::GL_DEPTH_TEST);
         gl::depth_func(gl::GL_LESS);
-        gl::enable(gl::GL_BLEND);
-        gl::blend_func(gl::GL_SRC_ALPHA, gl::GL_ONE_MINUS_SRC_ALPHA);
+        gl::disable(gl::GL_BLEND);
 
         gl::use_program(self.block_program);
 
@@ -305,21 +261,27 @@ impl Renderer {
         unsafe {
             if DBG_ONCE {
                 DBG_ONCE = false;
-                anyos_std::println!("forger: mvp[0]={} mvp[5]={} mvp[10]={} mvp[15]={}", mvp[0] as i32, mvp[5] as i32, mvp[10] as i32, mvp[15] as i32);
-                anyos_std::println!("forger: mvp[12]={} mvp[13]={} mvp[14]={}", mvp[12] as i32, mvp[13] as i32, mvp[14] as i32);
-                anyos_std::println!("forger: chunks to draw: {}", self.chunk_vbos.len());
+                anyos_std::println!("forger: block_prog={} sky_prog={}", self.block_program, self.sky_program);
+                anyos_std::println!("forger: u_mvp={} a_pos={} a_uv={} a_light={}", self.u_mvp, self.a_position, self.a_texcoord, self.a_light);
+                anyos_std::println!("forger: mvp diag: {},{},{},{}", mvp[0] as i32, mvp[5] as i32, mvp[10] as i32, mvp[15] as i32);
+                anyos_std::println!("forger: cam=({},{},{}) fog_s={} fog_e={}", cam_x as i32, cam_y as i32, cam_z as i32, fog_start as i32, fog_end as i32);
                 let mut total_verts = 0u32;
-                let mut first_verts = 0u32;
-                for (i, (_, &(_, vc))) in self.chunk_vbos.iter().enumerate() {
-                    total_verts += vc;
-                    if i == 0 { first_verts = vc; }
+                let mut drawn_chunks = 0u32;
+                for (&(cx, cz), &(_, vc)) in &self.chunk_vbos {
+                    let ccx = cx as f32 * 16.0 + 8.0;
+                    let ccz = cz as f32 * 16.0 + 8.0;
+                    let dx = ccx - cam_x;
+                    let dz = ccz - cam_z;
+                    let d = dx * dx + dz * dz;
+                    if d <= self.fog_distance * self.fog_distance {
+                        total_verts += vc;
+                        drawn_chunks += 1;
+                    }
                 }
-                anyos_std::println!("forger: total verts={} first chunk verts={}", total_verts, first_verts);
+                anyos_std::println!("forger: drawing {} chunks, {} verts (fog_dist={})", drawn_chunks, total_verts, self.fog_distance as i32);
             }
         }
         gl::uniform_matrix4fv(self.u_mvp, false, &mvp);
-        gl::uniform3f(self.u_sun_dir, sun_dir[0], sun_dir[1], sun_dir[2]);
-        gl::uniform1f(self.u_ambient, ambient);
         gl::uniform3f(self.u_fog_color, sky_horizon[0], sky_horizon[1], sky_horizon[2]);
         gl::uniform1f(self.u_fog_start, fog_start);
         gl::uniform1f(self.u_fog_end, fog_end);
@@ -328,8 +290,12 @@ impl Renderer {
         gl::bind_texture(gl::GL_TEXTURE_2D, self.atlas_tex);
         gl::uniform1i(self.u_texture, 0);
 
-        // Stride: FLOATS_PER_VERTEX * 4 bytes = 36 bytes (9 floats)
+        // Stride: FLOATS_PER_VERTEX * 4 bytes = 24 bytes (6 floats)
         let stride = (FLOATS_PER_VERTEX * 4) as i32;
+
+        // Camera forward vector for frustum culling
+        let fwd_x = gl::sin(self.yaw);
+        let fwd_z = -gl::cos(self.yaw);
 
         for (&(cx, cz), &(vbo, vert_count)) in &self.chunk_vbos {
             // Rough distance check for fog culling
@@ -342,6 +308,14 @@ impl Renderer {
                 continue;
             }
 
+            // Frustum culling: skip chunks behind camera (with margin for nearby chunks)
+            if dist_sq > 256.0 {
+                let dot = dx * fwd_x + dz * fwd_z;
+                if dot < -12.0 {
+                    continue;
+                }
+            }
+
             gl::bind_buffer(gl::GL_ARRAY_BUFFER, vbo);
 
             // aPosition: vec3 at offset 0
@@ -352,30 +326,23 @@ impl Renderer {
             gl::enable_vertex_attrib_array(self.a_texcoord as u32);
             gl::vertex_attrib_pointer(self.a_texcoord as u32, 2, gl::GL_FLOAT, false, stride, 12);
 
-            // aNormal: vec3 at offset 20
-            gl::enable_vertex_attrib_array(self.a_normal as u32);
-            gl::vertex_attrib_pointer(self.a_normal as u32, 3, gl::GL_FLOAT, false, stride, 20);
-
-            // aLight: float at offset 32
+            // aLight: float at offset 20
             gl::enable_vertex_attrib_array(self.a_light as u32);
-            gl::vertex_attrib_pointer(self.a_light as u32, 1, gl::GL_FLOAT, false, stride, 32);
+            gl::vertex_attrib_pointer(self.a_light as u32, 1, gl::GL_FLOAT, false, stride, 20);
 
             gl::draw_arrays(gl::GL_TRIANGLES, 0, vert_count as i32);
         }
 
         gl::disable_vertex_attrib_array(self.a_position as u32);
         gl::disable_vertex_attrib_array(self.a_texcoord as u32);
-        gl::disable_vertex_attrib_array(self.a_normal as u32);
         gl::disable_vertex_attrib_array(self.a_light as u32);
-
-        gl::disable(gl::GL_BLEND);
     }
 
     pub fn adapt_view_distance(&mut self, fps: f32) {
-        if fps < 50.0 {
-            self.target_fog_distance = (self.target_fog_distance - 8.0).max(64.0);
-        } else if fps > 55.0 {
-            self.target_fog_distance = (self.target_fog_distance + 8.0).min(192.0);
+        if fps < 8.0 {
+            self.target_fog_distance = (self.target_fog_distance - 8.0).max(24.0);
+        } else if fps > 12.0 {
+            self.target_fog_distance = (self.target_fog_distance + 4.0).min(64.0);
         }
     }
 }
@@ -495,6 +462,3 @@ fn look_matrix(x: f32, y: f32, z: f32, yaw: f32, pitch: f32) -> Mat4 {
     m
 }
 
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}

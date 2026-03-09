@@ -116,6 +116,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_GET_HOSTNAME, "get_hostname"),
     (SYS_SET_HOSTNAME, "set_hostname"),
     (SYS_SHUTDOWN, "shutdown"),
+    (SYS_SET_SERIAL_VERBOSE, "set_serial_verbose"),
     // Debug / trace (anyTrace)
     (SYS_DEBUG_ATTACH, "debug_attach"),
     (SYS_DEBUG_DETACH, "debug_detach"),

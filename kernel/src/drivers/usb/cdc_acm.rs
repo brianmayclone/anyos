@@ -166,7 +166,7 @@ pub fn write_data(tty_index: u8, data: &[u8]) -> Result<usize, &'static str> {
 
 /// Called when a CDC Communication Interface (class=0x02, subclass=0x02) is detected.
 pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "  CDC-ACM: probing (addr={}, iface={})",
         dev.address, iface.number
     );
@@ -175,7 +175,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     let data_iface = match dev.interfaces.iter().find(|i| i.class == 0x0A) {
         Some(di) => di,
         None => {
-            crate::serial_println!("  CDC-ACM: no Data Interface (class 0x0A) found");
+            crate::serial_verbose_println!("  CDC-ACM: no Data Interface (class 0x0A) found");
             return;
         }
     };
@@ -190,14 +190,14 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
 
     let (ep_in, ep_out) = match (bulk_in, bulk_out) {
         (Some(i), Some(o)) => {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "  CDC-ACM: bulk IN ep={:#04x} (max={}), bulk OUT ep={:#04x} (max={})",
                 i.address, i.max_packet_size, o.address, o.max_packet_size
             );
             (i, o)
         }
         _ => {
-            crate::serial_println!("  CDC-ACM: missing bulk endpoints on Data Interface");
+            crate::serial_verbose_println!("  CDC-ACM: missing bulk endpoints on Data Interface");
             return;
         }
     };
@@ -206,7 +206,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     let bounce_phys = match physical::alloc_frame() {
         Some(f) => f.as_u64(),
         None => {
-            crate::serial_println!("  CDC-ACM: failed to allocate DMA page");
+            crate::serial_verbose_println!("  CDC-ACM: failed to allocate DMA page");
             return;
         }
     };
@@ -236,7 +236,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     let _ = set_line_coding(&acm_dev);
     let _ = set_control_line_state(&acm_dev, true, true); // DTR + RTS
 
-    crate::serial_println!("  CDC-ACM: registered as /dev/ttyUSB{}", tty_index);
+    crate::serial_verbose_println!("  CDC-ACM: registered as /dev/ttyUSB{}", tty_index);
 
     // Register as HAL character device
     let path = alloc::format!("/dev/ttyUSB{}", tty_index);
@@ -280,7 +280,7 @@ pub fn disconnect(port: u8, controller: ControllerType) {
     let mut devs = CDC_ACM_DEVICES.lock();
     if let Some(idx) = devs.iter().position(|d| d.port == port && d.controller == controller) {
         let dev = devs.remove(idx);
-        crate::serial_println!("  CDC-ACM: /dev/ttyUSB{} removed", dev.tty_index);
+        crate::serial_verbose_println!("  CDC-ACM: /dev/ttyUSB{} removed", dev.tty_index);
     }
 }
 

@@ -318,7 +318,7 @@ unsafe fn issue_command(
         if ci & 1 == 0 {
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
             if tfd & 0x01 != 0 {
-                crate::serial_println!("AHCI: command error, TFD={:#x}", tfd);
+                crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
                 return false;
             }
             return true;
@@ -341,7 +341,7 @@ unsafe fn issue_command(
         if ci & 1 == 0 {
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
             if tfd & 0x01 != 0 {
-                crate::serial_println!("AHCI: command error, TFD={:#x}", tfd);
+                crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
                 return false;
             }
             return true;
@@ -359,7 +359,7 @@ unsafe fn poll_completion(ahci: &AhciController) -> bool {
         if ci & 1 == 0 {
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
             if tfd & 0x01 != 0 {
-                crate::serial_println!("AHCI: command error, TFD={:#x}", tfd);
+                crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
                 return false;
             }
             return true;
@@ -367,14 +367,14 @@ unsafe fn poll_completion(ahci: &AhciController) -> bool {
 
         let is = port_read(ahci.mmio_base, ahci.active_port, PORT_IS);
         if is & (1 << 30) != 0 {
-            crate::serial_println!("AHCI: task file error, IS={:#x}", is);
+            crate::serial_verbose_println!("AHCI: task file error, IS={:#x}", is);
             return false;
         }
 
         core::hint::spin_loop();
     }
 
-    crate::serial_println!("AHCI: command timeout");
+    crate::serial_verbose_println!("AHCI: command timeout");
     false
 }
 
@@ -488,7 +488,7 @@ pub fn init_and_register(pci: &PciDevice) {
     // BAR5 = ABAR (AHCI Base Address Register)
     let abar_raw = pci.bars[5];
     if abar_raw == 0 {
-        crate::serial_println!("  AHCI: BAR5 is zero, cannot initialize");
+        crate::serial_verbose_println!("  AHCI: BAR5 is zero, cannot initialize");
         return;
     }
     let abar_phys = (abar_raw & !0xF) as u64;
@@ -518,7 +518,7 @@ pub fn init_and_register(pci: &PciDevice) {
         let vs_major = (vs >> 16) & 0xFFFF;
         let vs_minor = vs & 0xFFFF;
 
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "  AHCI: version {}.{:02x}, {} ports, PI={:#06x}",
             vs_major, vs_minor, num_ports, pi
         );
@@ -537,7 +537,7 @@ pub fn init_and_register(pci: &PciDevice) {
             }
 
             let sig = port_read(mmio_base, port, PORT_SIG);
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "  AHCI: port {} — device present (sig={:#010x}, {})",
                 port,
                 sig,
@@ -552,7 +552,7 @@ pub fn init_and_register(pci: &PciDevice) {
         let active_port = match found_port {
             Some(p) => p,
             None => {
-                crate::serial_println!("  AHCI: No SATA disk found");
+                crate::serial_verbose_println!("  AHCI: No SATA disk found");
                 return;
             }
         };
@@ -566,7 +566,7 @@ pub fn init_and_register(pci: &PciDevice) {
         let clb_phys = match physical::alloc_frame() {
             Some(f) => f.as_u64(),
             None => {
-                crate::serial_println!("  AHCI: Failed to allocate CLB frame");
+                crate::serial_verbose_println!("  AHCI: Failed to allocate CLB frame");
                 return;
             }
         };
@@ -575,7 +575,7 @@ pub fn init_and_register(pci: &PciDevice) {
         let fb_phys = match physical::alloc_frame() {
             Some(f) => f.as_u64(),
             None => {
-                crate::serial_println!("  AHCI: Failed to allocate FB frame");
+                crate::serial_verbose_println!("  AHCI: Failed to allocate FB frame");
                 return;
             }
         };
@@ -584,7 +584,7 @@ pub fn init_and_register(pci: &PciDevice) {
         let ctba_phys = match physical::alloc_frame() {
             Some(f) => f.as_u64(),
             None => {
-                crate::serial_println!("  AHCI: Failed to allocate CT frame");
+                crate::serial_verbose_println!("  AHCI: Failed to allocate CT frame");
                 return;
             }
         };
@@ -593,7 +593,7 @@ pub fn init_and_register(pci: &PciDevice) {
         let bounce_phys = match physical::alloc_contiguous(BOUNCE_BUF_FRAMES) {
             Some(f) => f.as_u64(),
             None => {
-                crate::serial_println!("  AHCI: Failed to allocate bounce buffer ({} frames)", BOUNCE_BUF_FRAMES);
+                crate::serial_verbose_println!("  AHCI: Failed to allocate bounce buffer ({} frames)", BOUNCE_BUF_FRAMES);
                 return;
             }
         };
@@ -673,14 +673,14 @@ pub fn init_and_register(pci: &PciDevice) {
             }
 
             let model_str = core::str::from_utf8(&model).unwrap_or("???").trim();
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "  AHCI: '{}', {} sectors ({} MiB)",
                 model_str,
                 total_sectors,
                 total_sectors / 2048
             );
         } else {
-            crate::serial_println!("  AHCI: IDENTIFY DEVICE failed");
+            crate::serial_verbose_println!("  AHCI: IDENTIFY DEVICE failed");
         }
 
         // Enable interrupt-driven I/O
@@ -703,15 +703,15 @@ pub fn init_and_register(pci: &PciDevice) {
             } else {
                 crate::arch::x86::pic::unmask(irq);
             }
-            crate::serial_println!("  AHCI: IRQ {} registered (interrupt-driven I/O)", irq);
+            crate::serial_verbose_println!("  AHCI: IRQ {} registered (interrupt-driven I/O)", irq);
         } else {
-            crate::serial_println!("  AHCI: No valid IRQ ({}), using polled I/O", irq);
+            crate::serial_verbose_println!("  AHCI: No valid IRQ ({}), using polled I/O", irq);
         }
 
         // Switch storage backend to AHCI
         super::set_backend_ahci();
 
-        crate::serial_println!("[OK] AHCI initialized (port {}, DMA mode)", active_port);
+        crate::serial_verbose_println!("[OK] AHCI initialized (port {}, DMA mode)", active_port);
     }
 }
 

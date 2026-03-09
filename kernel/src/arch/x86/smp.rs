@@ -85,7 +85,7 @@ pub fn init_bsp() {
     HAS_RDPID.store(has_rdpid, Ordering::Release);
     if has_rdpid {
         unsafe { write_tsc_aux(0); }
-        crate::serial_println!("  SMP: RDPID available — fast cpu_id path enabled");
+        crate::serial_verbose_println!("  SMP: RDPID available — fast cpu_id path enabled");
     }
 }
 
@@ -119,12 +119,12 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
             continue; // Skip BSP
         }
 
-        crate::serial_println!("  SMP: Starting AP (APIC_ID={})...", proc_info.apic_id);
+        crate::serial_verbose_println!("  SMP: Starting AP (APIC_ID={})...", proc_info.apic_id);
 
         // Allocate stack for this AP (16 KiB) — returns virtual stack top
         let stack_top = alloc_ap_stack_top();
         if stack_top == 0 {
-            crate::serial_println!("  SMP: Failed to allocate AP stack");
+            crate::serial_verbose_println!("  SMP: Failed to allocate AP stack");
             continue;
         }
 
@@ -137,7 +137,7 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
             core::ptr::write_volatile(AP_COMM_CPUID as *mut u32, cpu_id as u32);
         }
 
-        crate::serial_println!("  SMP: stack_top={:#018x}, CR3={:#018x}", stack_top, cr3);
+        crate::serial_verbose_println!("  SMP: stack_top={:#018x}, CR3={:#018x}", stack_top, cr3);
 
         // Send INIT IPI
         crate::arch::x86::apic::send_init(proc_info.apic_id);
@@ -147,7 +147,7 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
 
         // Send SIPI (twice, as per Intel spec)
         let vector_page = (AP_TRAMPOLINE_PHYS >> 12) as u8;
-        crate::serial_println!("  SMP: Sending SIPI (vector_page={:#x})", vector_page);
+        crate::serial_verbose_println!("  SMP: Sending SIPI (vector_page={:#x})", vector_page);
         crate::arch::x86::apic::send_sipi(proc_info.apic_id, vector_page);
         delay_ms(1);
         crate::arch::x86::apic::send_sipi(proc_info.apic_id, vector_page);
@@ -159,7 +159,7 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
             if flag != 0 { break true; }
             let elapsed = crate::arch::x86::pit::get_ticks().wrapping_sub(start);
             if elapsed > 50 {
-                crate::serial_println!("  SMP: Timeout after {} ticks waiting for AP", elapsed);
+                crate::serial_verbose_println!("  SMP: Timeout after {} ticks waiting for AP", elapsed);
                 break false;
             }
             core::hint::spin_loop();
@@ -172,14 +172,14 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
             // may already be calling current_cpu_id() → reading CPU_DATA.
             AP_STARTED.fetch_add(1, Ordering::SeqCst);
             CPU_COUNT.store(cpu_id + 1, Ordering::SeqCst);
-            crate::serial_println!("  SMP: AP (APIC_ID={}) started as CPU#{}", proc_info.apic_id, cpu_id);
+            crate::serial_verbose_println!("  SMP: AP (APIC_ID={}) started as CPU#{}", proc_info.apic_id, cpu_id);
             cpu_id += 1;
         } else {
-            crate::serial_println!("  SMP: AP (APIC_ID={}) failed to start", proc_info.apic_id);
+            crate::serial_verbose_println!("  SMP: AP (APIC_ID={}) failed to start", proc_info.apic_id);
         }
     }
 
-    crate::serial_println!("  SMP: {} CPU(s) online ({} APs)",
+    crate::serial_verbose_println!("  SMP: {} CPU(s) online ({} APs)",
         cpu_count(), AP_STARTED.load(Ordering::SeqCst));
 }
 
@@ -210,7 +210,7 @@ extern "C" fn ap_entry() -> ! {
     crate::arch::x86::apic::init_ap();
     crate::debug_println!("  [SMP] AP#{}: LAPIC initialized", cpu_id);
 
-    crate::serial_println!("  SMP: AP#{} entry point reached, LAPIC+TSS initialized", cpu_id);
+    crate::serial_verbose_println!("  SMP: AP#{} entry point reached, LAPIC+TSS initialized", cpu_id);
 
     // Configure SYSCALL/SYSRET MSRs for this AP
     crate::arch::x86::syscall_msr::init_ap(cpu_id);
@@ -285,7 +285,7 @@ fn install_trampoline() {
     // Include the pre-assembled trampoline binary (NASM flat binary)
     let trampoline: &[u8] = include_bytes!(env!("ANYOS_AP_TRAMPOLINE"));
 
-    crate::serial_println!("  SMP: Trampoline size = {} bytes", trampoline.len());
+    crate::serial_verbose_println!("  SMP: Trampoline size = {} bytes", trampoline.len());
 
     // Copy to physical address 0x8000 (identity-mapped)
     let dest = AP_TRAMPOLINE_PHYS as *mut u8;
