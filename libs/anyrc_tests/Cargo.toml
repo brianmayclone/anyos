@@ -1,0 +1,13 @@
+[package]
+name = "anyrc_tests"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+name = "anyrc_tests"
+path = "src/lib.rs"
+
+[dependencies]
+anyrc = { path = "../anyrc" }
