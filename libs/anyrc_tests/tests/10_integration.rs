@@ -1,4 +1,39 @@
 use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
+use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Compile source, write to a temp file, execute, return exit code.
+fn compile_and_run(source: &str) -> i32 {
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Exe,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+    };
+    let exe_bytes = compile(source, "test.rs", &options)
+        .expect("compilation failed");
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("anyrc_test_{}_{}", std::process::id(), id));
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe_path = dir.join("test_exe");
+    {
+        let mut f = std::fs::File::create(&exe_path).unwrap();
+        f.write_all(&exe_bytes).unwrap();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let status = std::process::Command::new(&exe_path)
+        .status()
+        .expect("failed to execute compiled binary");
+    let _ = std::fs::remove_dir_all(&dir);
+    status.code().unwrap_or(-1)
+}
 
 #[test]
 fn compile_returns_ok() {
@@ -110,4 +145,69 @@ fn compile_enum_and_match() {
     };
     let result = compile(source, "test.rs", &options);
     assert!(result.is_ok(), "failed: {:?}", result.err().unwrap().iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+// ── Runtime tests ──
+
+#[test]
+fn run_return_literal() {
+    assert_eq!(compile_and_run("fn main() -> i32 { 42 }"), 42);
+}
+
+#[test]
+fn run_arithmetic() {
+    assert_eq!(compile_and_run("fn main() -> i32 { 10 + 20 + 12 }"), 42);
+}
+
+#[test]
+fn run_function_call() {
+    let src = r#"
+        fn add(a: i32, b: i32) -> i32 { a + b }
+        fn main() -> i32 { add(10, 32) }
+    "#;
+    assert_eq!(compile_and_run(src), 42);
+}
+
+#[test]
+fn run_struct_field_access() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        fn main() -> i32 {
+            let p: Point = Point { x: 10, y: 20 };
+            p.y
+        }
+    "#;
+    assert_eq!(compile_and_run(src), 20);
+}
+
+#[test]
+fn run_struct_field_sum() {
+    let src = r#"
+        struct Pair { a: i32, b: i32 }
+        fn main() -> i32 {
+            let p: Pair = Pair { a: 3, b: 7 };
+            p.a + p.b
+        }
+    "#;
+    assert_eq!(compile_and_run(src), 10);
+}
+
+#[test]
+fn run_if_else() {
+    let src = r#"
+        fn main() -> i32 {
+            let x: i32 = 5;
+            if x > 3 { 1 } else { 0 }
+        }
+    "#;
+    assert_eq!(compile_and_run(src), 1);
+}
+
+#[test]
+fn run_nested_calls() {
+    let src = r#"
+        fn double(x: i32) -> i32 { x + x }
+        fn main() -> i32 { double(double(5)) }
+    "#;
+    assert_eq!(compile_and_run(src), 20);
 }

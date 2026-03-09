@@ -151,6 +151,35 @@ impl<'a> CodeEmitter<'a> {
     fn emit_statement(&mut self, stmt: &Statement) {
         match &stmt.kind {
             StatementKind::Assign(place, rvalue) => {
+                // Special-case aggregates: store each field directly into the place
+                if let Rvalue::Aggregate(_, operands) = rvalue {
+                    if place.projections.is_empty() {
+                        let base_slot = self.alloc.stack_slots[place.local.0];
+                        for (i, op) in operands.iter().enumerate() {
+                            self.load_operand(op, Reg::RAX);
+                            self.asm.mov_mr(Reg::RBP, base_slot + (i as i32) * 8, Reg::RAX);
+                        }
+                        return;
+                    }
+                }
+                // Special-case multi-slot copies (struct = struct)
+                if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rvalue {
+                    if place.projections.is_empty() && src.projections.is_empty() {
+                        let dst_size = self.alloc.local_sizes[place.local.0];
+                        let src_size = self.alloc.local_sizes[src.local.0];
+                        let copy_size = dst_size.min(src_size);
+                        if copy_size > 8 {
+                            let dst_slot = self.alloc.stack_slots[place.local.0];
+                            let src_slot = self.alloc.stack_slots[src.local.0];
+                            let n_slots = copy_size / 8;
+                            for i in 0..n_slots {
+                                self.asm.mov_rm(Reg::RAX, Reg::RBP, src_slot + i * 8);
+                                self.asm.mov_mr(Reg::RBP, dst_slot + i * 8, Reg::RAX);
+                            }
+                            return;
+                        }
+                    }
+                }
                 self.emit_rvalue(rvalue, Reg::RAX);
                 self.store_place(place, Reg::RAX);
             }

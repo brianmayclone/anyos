@@ -50,6 +50,7 @@ pub enum FloatTy { F32, F64 }
 
 pub struct TypeckResult {
     pub expr_types: HashMap<HirId, TyKind>,
+    pub struct_defs: HashMap<DefId, Vec<(Symbol, TyKind)>>,
     pub errors: Vec<Diagnostic>,
 }
 
@@ -123,6 +124,7 @@ impl<'a> TypeChecker<'a> {
 
         TypeckResult {
             expr_types,
+            struct_defs: std::mem::take(&mut self.struct_defs),
             errors: std::mem::take(&mut self.errors),
         }
     }
