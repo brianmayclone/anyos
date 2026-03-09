@@ -13,3 +13,5 @@ pub mod mir_build;
 pub mod borrowck;
 pub mod mir_opt;
 pub mod codegen;
+pub mod linker;
+pub mod driver;
