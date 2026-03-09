@@ -87,6 +87,27 @@ fn kernel_phys_addr() {
     "#, 112);  // 2 + 10 + 100
 }
 
+#[test]
+fn debug_phys_addr_minimal() {
+    // Minimal reproduction of failing kernel_phys_addr
+    assert_run_returns(r#"
+        const FRAME_SIZE: u64 = 4096;
+        struct PhysAddr { val: u64 }
+        impl PhysAddr {
+            fn new(addr: u64) -> PhysAddr { PhysAddr { val: addr } }
+            fn as_u64(self) -> u64 { self.val }
+            fn frame_align_down(self) -> PhysAddr {
+                PhysAddr { val: self.val & !(FRAME_SIZE - 1) }
+            }
+        }
+        fn main() -> i32 {
+            let a = PhysAddr::new(8193);
+            let down = a.frame_align_down();
+            if down.as_u64() == 8192 { 1 } else { 0 }
+        }
+    "#, 1);
+}
+
 // ── Kernel hex output pattern ──
 
 #[test]
