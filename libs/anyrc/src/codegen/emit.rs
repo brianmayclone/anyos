@@ -168,8 +168,24 @@ impl<'a> CodeEmitter<'a> {
                     base = Base::Reg; // after loading a value, further projections from reg
                 }
                 Projection::Index(idx_local) => {
-                    self.asm.mov_rm(Reg::RCX, Reg::RBP, self.alloc.stack_slots[idx_local.0]);
-                    // simplified for now
+                    // Load index into R11 (scratch, won't conflict with dst)
+                    self.asm.mov_rm(Reg::R11, Reg::RBP, self.alloc.stack_slots[idx_local.0]);
+                    // Compute base address into dst
+                    match base {
+                        Base::Stack(off) => {
+                            self.asm.lea(dst, Reg::RBP, off);
+                        }
+                        Base::Reg => {
+                            // dst already holds the address
+                        }
+                    }
+                    // Scale index by 8: R11 = R11 * 8
+                    self.asm.shl_ri(Reg::R11, 3);
+                    // dst = dst + R11 (base + index*8)
+                    self.asm.add_rr(dst, Reg::R11);
+                    // Load the value at [dst]
+                    self.asm.mov_rm(dst, dst, 0);
+                    base = Base::Reg;
                 }
             }
         }
@@ -193,8 +209,14 @@ impl<'a> CodeEmitter<'a> {
                         self.asm.mov_mr(Reg::R11, 0, src);
                         return;
                     }
-                    Projection::Index(_) => {
-                        // Simplified: store to base
+                    Projection::Index(idx_local) => {
+                        // Compute address: base + index * 8
+                        self.asm.lea(Reg::R11, Reg::RBP, offset);
+                        self.asm.mov_rm(Reg::RCX, Reg::RBP, self.alloc.stack_slots[idx_local.0]);
+                        self.asm.shl_ri(Reg::RCX, 3);
+                        self.asm.add_rr(Reg::R11, Reg::RCX);
+                        self.asm.mov_mr(Reg::R11, 0, src);
+                        return;
                     }
                 }
             }
@@ -362,8 +384,21 @@ impl<'a> CodeEmitter<'a> {
                                     }
                                 }
                             }
-                            Projection::Index(_) => {
-                                // Simplified
+                            Projection::Index(idx_local) => {
+                                // Compute base address first
+                                match base {
+                                    Base::Stack(off) => {
+                                        self.asm.lea(dst, Reg::RBP, off);
+                                    }
+                                    Base::Reg => {
+                                        // dst already holds the address
+                                    }
+                                }
+                                // Load index, scale by 8, add to base
+                                self.asm.mov_rm(Reg::R11, Reg::RBP, self.alloc.stack_slots[idx_local.0]);
+                                self.asm.shl_ri(Reg::R11, 3);
+                                self.asm.add_rr(dst, Reg::R11);
+                                base = Base::Reg;
                             }
                         }
                     }
@@ -397,8 +432,14 @@ impl<'a> CodeEmitter<'a> {
                 // For C-like enums, the value is the discriminant (first word)
                 self.load_place(place, dst);
             }
-            Rvalue::Len(_) => {
-                self.asm.xor_rr(dst, dst);
+            Rvalue::Len(place) => {
+                // For fixed-size arrays, look up the type to get the length
+                let local_ty = &self.body.locals[place.local.0].ty;
+                let len = match local_ty {
+                    crate::typeck::TyKind::Array(_, n) => *n as i64,
+                    _ => 0,
+                };
+                self.asm.mov_ri(dst, len);
             }
             Rvalue::MakeVtable(_) => {
                 // Handled in emit_statement special-case; shouldn't reach here

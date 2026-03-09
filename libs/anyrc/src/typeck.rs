@@ -809,6 +809,14 @@ impl<'a> TypeChecker<'a> {
                     other => other.clone(),
                 };
 
+                // Handle .len() on arrays and slices
+                let method_str = self.interner.resolve(*method_name);
+                if method_str == "len" && args.is_empty() {
+                    if matches!(&inner_ty, TyKind::Array(_, _) | TyKind::Slice(_)) {
+                        return TyKind::Uint(UintTy::Usize);
+                    }
+                }
+
                 // Handle dyn Trait method calls
                 if let TyKind::DynTrait(trait_def_id) = &inner_ty {
                     if let Some(methods) = self.trait_methods.get(trait_def_id).cloned() {
@@ -1207,8 +1215,9 @@ impl<'a> TypeChecker<'a> {
                 let inner: Vec<TyKind> = tys.iter().map(|t| self.hir_ty_to_ty(t)).collect();
                 if inner.is_empty() { TyKind::Unit } else { TyKind::Tuple(inner) }
             }
-            HirTy::Array(inner, _, _) => {
-                TyKind::Array(Box::new(self.hir_ty_to_ty(inner)), 0)
+            HirTy::Array(inner, len_expr, _) => {
+                let n = self.eval_const_usize(len_expr);
+                TyKind::Array(Box::new(self.hir_ty_to_ty(inner)), n)
             }
             HirTy::Slice(inner, _) => {
                 TyKind::Slice(Box::new(self.hir_ty_to_ty(inner)))
@@ -1231,6 +1240,14 @@ impl<'a> TypeChecker<'a> {
             }
             HirTy::Never(_) => TyKind::Never,
             HirTy::Infer(_) => TyKind::Error,
+        }
+    }
+
+    /// Evaluate a const expression to a usize (for array lengths).
+    fn eval_const_usize(&self, expr: &HirExpr) -> usize {
+        match &expr.kind {
+            HirExprKind::Lit(Literal::Int(n)) => *n as usize,
+            _ => 0,
         }
     }
 }
