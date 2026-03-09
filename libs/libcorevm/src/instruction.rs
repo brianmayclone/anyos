@@ -120,7 +120,7 @@ pub struct PrefixState {
     pub address_size_override: bool,
     /// LOCK prefix (0xF0).
     pub lock: bool,
-    /// REX prefix byte (0 if no REX). Bits: [3]=W, [2]=R, [1]=X, [0]=B.
+    /// REX prefix state (0 if no REX). Bit [4]=REX present, [3]=W, [2]=R, [1]=X, [0]=B.
     pub rex: u8,
 }
 

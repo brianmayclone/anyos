@@ -300,8 +300,12 @@ impl DecodeCursor {
 
                 // -- REX prefix (only valid in Long64 mode) --
                 0x40..=0x4F if self.mode == CpuMode::Long64 => {
-                    // Store the raw REX byte; bits [3:0] = W R X B.
-                    self.inst.prefix.rex = b & 0x0F;
+                    // Store REX W/R/X/B in bits [3:0] and set bit 4 as
+                    // a "REX present" flag so that a bare 0x40 prefix
+                    // (no W/R/X/B bits) still makes `has_rex()` true.
+                    // This is critical for selecting SIL/DIL/SPL/BPL
+                    // over AH/CH/DH/BH in 8-bit register encoding.
+                    self.inst.prefix.rex = (b & 0x0F) | 0x10;
                 }
 
                 // Not a prefix -- rewind one byte and exit the loop.

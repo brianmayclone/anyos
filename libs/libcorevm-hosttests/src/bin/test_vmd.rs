@@ -17,7 +17,7 @@ use libcorevm::{
     corevm_jit_enable, corevm_jit_stats, corevm_lapic_diag_state, corevm_irq_pending_word,
     corevm_ioapic_redir_entry,
     corevm_pic_diag_state, corevm_read_linear_u8, corevm_read_phys_u8, corevm_read_phys_u32,
-    corevm_fw_cfg_add_file, corevm_ide_attach_slave, corevm_ide_clear_irq, corevm_ide_irq_raised,
+    corevm_fw_cfg_add_file, corevm_ide_attach_disk, corevm_ide_attach_slave, corevm_ide_clear_irq, corevm_ide_irq_raised,
     corevm_load_binary, corevm_load_rom, corevm_pic_raise_irq,
     corevm_ps2_key_press, corevm_ps2_key_release, corevm_set_rip,
     corevm_reset, corevm_run, corevm_serial_take_output,
@@ -96,6 +96,7 @@ struct Config {
     vgabios: PathBuf,
     bios_base: u64,
     iso: PathBuf,
+    disk: PathBuf,
     ram_mb: u32,
     cores: u32,
     batch: u64,
@@ -188,6 +189,7 @@ fn parse_args() -> Result<Config, String> {
         vgabios: default_vgabios_path(),
         bios_base: 0xC0000,
         iso: PathBuf::new(),
+        disk: PathBuf::new(),
         ram_mb: 256,
         cores: 1,
         batch: 1_000_000,
@@ -225,6 +227,7 @@ fn parse_args() -> Result<Config, String> {
                 cfg.bios_base = 0xF0000;
             }
             "--iso" => cfg.iso = PathBuf::from(args.next().ok_or("missing value for --iso")?),
+            "--disk" => cfg.disk = PathBuf::from(args.next().ok_or("missing value for --disk")?),
             "--ram-mb" => {
                 cfg.ram_mb = args
                     .next()
@@ -282,15 +285,15 @@ fn parse_args() -> Result<Config, String> {
         }
     }
 
-    if cfg.iso.as_os_str().is_empty() {
-        return Err("missing required --iso <path>".to_string());
+    if cfg.iso.as_os_str().is_empty() && cfg.disk.as_os_str().is_empty() {
+        return Err("missing required --iso <path> or --disk <path>".to_string());
     }
     Ok(cfg)
 }
 
 fn usage(program: &str) {
     eprintln!(
-        "Usage: {program} --iso <path> [--seabios|--corevm-bios] [--bios <path>] [--vgabios <path>] [--bios-base <addr>] [--ram-mb <mb>] [--cores <n>] [--batch <n>] [--max-seconds <n>] [--max-instructions <n>] [--stdin-kbd] [--no-vga-text] [--plain] [--auto-enter-ms <ms>] [--jit]"
+        "Usage: {program} [--iso <path>] [--disk <path>] [--seabios|--corevm-bios] [--bios <path>] [--vgabios <path>] [--bios-base <addr>] [--ram-mb <mb>] [--cores <n>] [--batch <n>] [--max-seconds <n>] [--max-instructions <n>] [--stdin-kbd] [--no-vga-text] [--plain] [--auto-enter-ms <ms>] [--jit]"
     );
 }
 
@@ -1350,9 +1353,11 @@ fn main() {
             std::process::exit(2);
         }
     }
-    if let Err(e) = ensure_exists(&cfg.iso, "iso") {
-        eprintln!("{e}");
-        std::process::exit(2);
+    if !cfg.iso.as_os_str().is_empty() {
+        if let Err(e) = ensure_exists(&cfg.iso, "iso") {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
     }
 
     let bios = match fs::read(&cfg.bios) {
@@ -1370,21 +1375,38 @@ fn main() {
     } else {
         None
     };
-    let iso = match fs::read(&cfg.iso) {
-        Ok(i) => i,
-        Err(e) => {
-            eprintln!("failed to read iso {}: {e}", cfg.iso.display());
-            std::process::exit(2);
+    let iso = if !cfg.iso.as_os_str().is_empty() {
+        match fs::read(&cfg.iso) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("failed to read iso {}: {e}", cfg.iso.display());
+                std::process::exit(2);
+            }
         }
+    } else {
+        Vec::new()
+    };
+    let disk = if !cfg.disk.as_os_str().is_empty() {
+        match fs::read(&cfg.disk) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("failed to read disk {}: {e}", cfg.disk.display());
+                std::process::exit(2);
+            }
+        }
+    } else {
+        Vec::new()
     };
 
     eprintln!(
-        "[test-vmd] bios_kind={:?} bios={} ({} bytes) iso={} ({} bytes) ram={}MiB cores={} stdin_kbd={} vga_text={}",
+        "[test-vmd] bios_kind={:?} bios={} ({} bytes) iso={} ({} bytes) disk={} ({} bytes) ram={}MiB cores={} stdin_kbd={} vga_text={}",
         cfg.bios_kind,
         cfg.bios.display(),
         bios.len(),
         cfg.iso.display(),
         iso.len(),
+        cfg.disk.display(),
+        disk.len(),
         cfg.ram_mb,
         cfg.cores,
         cfg.stdin_keyboard,
@@ -1403,7 +1425,12 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(1);
     }
-    corevm_ide_attach_slave(vm.0, iso.as_ptr(), iso.len() as u32);
+    if !disk.is_empty() {
+        corevm_ide_attach_disk(vm.0, disk.as_ptr(), disk.len() as u32);
+    }
+    if !iso.is_empty() {
+        corevm_ide_attach_slave(vm.0, iso.as_ptr(), iso.len() as u32);
+    }
     if cfg.jit {
         corevm_jit_enable(vm.0, 1);
     }
