@@ -1207,10 +1207,109 @@ impl<'a> MirBuilder<'a> {
                 })
             }
 
+            HirExprKind::For(pat, iter, body, _label) => {
+                // Desugar `for pat in start..end { body }` to:
+                //   let mut __i = start;
+                //   loop { if __i >= end { break; } let pat = __i; body; __i += 1; }
+                match &iter.kind {
+                    HirExprKind::Range(Some(start), Some(end), _inclusive) => {
+                        let start_op = self.lower_expr(start);
+                        let end_op = self.lower_expr(end);
+
+                        // Determine element type from start expression
+                        let elem_ty = self.get_expr_ty(start);
+
+                        // Allocate the loop counter variable
+                        let counter_name = match pat {
+                            HirPattern::Ident(_, sym, _, _, _) => Some(*sym),
+                            _ => None,
+                        };
+                        let counter = self.alloc_local(elem_ty.clone(), counter_name, expr.span);
+                        self.locals[counter.0].mutability = Mutability::Mut;
+
+                        // Map the pattern's DefId to this local
+                        if let HirPattern::Ident(hir_id, _, _, _, _) = pat {
+                            if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
+                                self.var_map.insert(def_id, counter);
+                            }
+                        }
+
+                        // Initialize counter = start
+                        self.emit_assign(Place::local(counter), Rvalue::Use(start_op), expr.span);
+
+                        // Store end value in a temp
+                        let end_tmp = self.alloc_temp(elem_ty.clone(), expr.span);
+                        self.emit_assign(Place::local(end_tmp), Rvalue::Use(end_op), expr.span);
+
+                        // Loop header: compare counter < end
+                        let loop_header = self.push_block();
+                        let loop_body = self.push_block();
+                        let loop_exit = self.push_block();
+                        self.terminate(Terminator::Goto(loop_header));
+                        self.current_block = loop_header;
+
+                        // cond = counter < end
+                        let cond_tmp = self.alloc_temp(TyKind::Bool, expr.span);
+                        self.emit_assign(
+                            Place::local(cond_tmp),
+                            Rvalue::BinaryOp(
+                                BinOp::Lt,
+                                Operand::Copy(Place::local(counter)),
+                                Operand::Copy(Place::local(end_tmp)),
+                            ),
+                            expr.span,
+                        );
+
+                        // SwitchInt: if cond == 0 goto exit, else goto body
+                        self.terminate(Terminator::SwitchInt {
+                            operand: Operand::Copy(Place::local(cond_tmp)),
+                            targets: vec![(0, loop_exit)],
+                            default: loop_body,
+                        });
+
+                        // Body block
+                        self.current_block = loop_body;
+                        self.loop_stack.push((loop_header, loop_exit));
+                        let _ = self.lower_block(body);
+                        self.loop_stack.pop();
+
+                        // Increment counter: counter = counter + 1
+                        let one = self.alloc_temp(elem_ty.clone(), expr.span);
+                        self.emit_assign(
+                            Place::local(one),
+                            Rvalue::Use(Operand::Constant(Constant {
+                                ty: elem_ty,
+                                value: ConstValue::Int(1),
+                            })),
+                            expr.span,
+                        );
+                        let inc_tmp = self.alloc_temp(self.locals[counter.0].ty.clone(), expr.span);
+                        self.emit_assign(
+                            Place::local(inc_tmp),
+                            Rvalue::BinaryOp(
+                                BinOp::Add,
+                                Operand::Copy(Place::local(counter)),
+                                Operand::Copy(Place::local(one)),
+                            ),
+                            expr.span,
+                        );
+                        self.emit_assign(Place::local(counter), Rvalue::Use(Operand::Copy(Place::local(inc_tmp))), expr.span);
+
+                        // Back edge
+                        self.terminate(Terminator::Goto(loop_header));
+
+                        self.current_block = loop_exit;
+                    }
+                    _ => {
+                        // Unsupported for-loop iterable, emit as unit
+                    }
+                }
+                Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+            }
+
             HirExprKind::ArrayRepeat(_, _) |
             HirExprKind::Range(_, _, _) |
-            HirExprKind::Try(_) |
-            HirExprKind::For(_, _, _, _) => {
+            HirExprKind::Try(_) => {
                 Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
             }
         }
