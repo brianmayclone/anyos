@@ -949,6 +949,10 @@ impl<'a> TypeChecker<'a> {
             }
 
             (TyKind::Ref(a, am), TyKind::Ref(b, bm)) if am == bm => {
+                // Allow &T -> &dyn Trait coercion
+                if matches!(a.as_ref(), TyKind::DynTrait(_)) && matches!(b.as_ref(), TyKind::Adt(_, _)) {
+                    return;
+                }
                 self.unify(a, b, span);
                 return;
             }
@@ -966,6 +970,7 @@ impl<'a> TypeChecker<'a> {
             }
 
             (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a == b => return,
+            (TyKind::DynTrait(a), TyKind::DynTrait(b)) if a == b => return,
 
             // Allow coercion from FnDef to FnPtr if signatures match
             (TyKind::FnPtr(expected_params, expected_ret), TyKind::FnDef(def_id, _)) => {

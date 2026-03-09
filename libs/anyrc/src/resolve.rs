@@ -756,6 +756,9 @@ impl<'a> Resolver<'a> {
                 for p in params { self.resolve_ty(p); }
                 if let Some(r) = ret { self.resolve_ty(r); }
             }
+            HirTy::DynTrait(path, _) => {
+                self.resolve_path(path, Namespace::Type, HirId(u32::MAX));
+            }
             HirTy::Infer(_) | HirTy::Never(_) => {}
         }
     }

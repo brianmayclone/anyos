@@ -46,6 +46,7 @@ fn compile_and_run(source: &str) -> i32 {
     {
         let mut f = std::fs::File::create(&exe_path).unwrap();
         f.write_all(&exe_bytes).unwrap();
+        f.sync_all().unwrap();
     }
     #[cfg(unix)]
     {

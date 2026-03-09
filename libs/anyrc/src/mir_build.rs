@@ -384,22 +384,46 @@ impl<'a> MirBuilder<'a> {
                                             _ => None,
                                         };
                                         if let Some(type_name) = concrete_ty_name {
-                                            let trait_name = self.typeck.trait_names.get(trait_def_id)
-                                                .map(|s| self.interner.resolve(*s).to_string())
-                                                .unwrap_or_default();
-                                            let type_name_str = self.interner.resolve(type_name).to_string();
-                                            let vtable_sym_str = format!("__vtable_{type_name_str}_{trait_name}");
-                                            let vtable_sym = self.interner.intern(&vtable_sym_str);
+                                            // Build vtable: get impl method names in trait method order
+                                            let trait_methods = self.typeck.trait_methods.get(trait_def_id).cloned().unwrap_or_default();
+                                            let impl_methods = self.typeck.trait_impls.get(&(type_name, *trait_def_id)).cloned().unwrap_or_default();
+
+                                            let mut vtable_fn_names = Vec::new();
+                                            for (method_name, _) in &trait_methods {
+                                                // Find matching impl method
+                                                if let Some((_, impl_def_id)) = impl_methods.iter().find(|(n, _)| n == method_name) {
+                                                    // Get the function symbol name from fn_sigs
+                                                    let _ = impl_def_id;
+                                                    vtable_fn_names.push(*method_name);
+                                                }
+                                            }
+
+                                            // Create vtable on stack
+                                            let vtable_ty = TyKind::Array(Box::new(TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable)), vtable_fn_names.len());
+                                            let vtable_local = self.alloc_temp(vtable_ty, expr.span);
+                                            self.emit_assign(
+                                                Place::local(vtable_local),
+                                                Rvalue::MakeVtable(vtable_fn_names),
+                                                expr.span,
+                                            );
+
+                                            // Get pointer to vtable
+                                            let vtable_ptr_ty = TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable);
+                                            let vtable_ptr_local = self.alloc_temp(vtable_ptr_ty, expr.span);
+                                            self.emit_assign(
+                                                Place::local(vtable_ptr_local),
+                                                Rvalue::Ref(BorrowKind::Shared, Place::local(vtable_local)),
+                                                expr.span,
+                                            );
+
+                                            // Build fat pointer: (data_ptr, vtable_ptr)
                                             let fat_ptr_ty = TyKind::Ref(Box::new(TyKind::DynTrait(*trait_def_id)), Mutability::Immutable);
                                             let fat_ptr_local = self.alloc_temp(fat_ptr_ty, expr.span);
                                             self.emit_assign(
                                                 Place::local(fat_ptr_local),
                                                 Rvalue::Aggregate(AggregateKind::Tuple, vec![
                                                     arg_op,
-                                                    Operand::Constant(Constant {
-                                                        ty: TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable),
-                                                        value: ConstValue::StaticRef(vtable_sym),
-                                                    }),
+                                                    Operand::Copy(Place::local(vtable_ptr_local)),
                                                 ]),
                                                 expr.span,
                                             );

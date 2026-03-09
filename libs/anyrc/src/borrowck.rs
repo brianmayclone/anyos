@@ -151,7 +151,7 @@ fn check_rvalue_operands(
                 check_operand_not_moved(op, moved, locals, errors, span);
             }
         }
-        Rvalue::Ref(_, _) | Rvalue::Discriminant(_) | Rvalue::Len(_) => {}
+        Rvalue::Ref(_, _) | Rvalue::Discriminant(_) | Rvalue::Len(_) | Rvalue::MakeVtable(_) => {}
     }
 }
 

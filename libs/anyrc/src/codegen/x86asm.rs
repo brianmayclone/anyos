@@ -387,6 +387,13 @@ impl X86Assembler {
         });
     }
 
+    /// CALL r64: FF /2 (indirect call through register)
+    pub fn call_reg(&mut self, reg: Reg) {
+        self.rex_single(true, reg);
+        self.code.push(0xFF);
+        self.code.push(Self::modrm(3, 2, Self::reg_code(reg)));
+    }
+
     pub fn ret(&mut self) {
         self.code.push(0xC3);
     }
