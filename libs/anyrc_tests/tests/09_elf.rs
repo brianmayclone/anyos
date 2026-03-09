@@ -25,8 +25,9 @@ fn compile_to_object(src: &str) -> Vec<u8> {
     let mut text_data = Vec::new();
     let mut symbols = Vec::new();
 
+    let struct_sizes = std::collections::HashMap::new();
     for body in &bodies {
-        let alloc = regalloc::allocate(body);
+        let alloc = regalloc::allocate(body, &struct_sizes);
         let (code, _relocs) = CodeEmitter::emit_fn(body, &alloc, &interner);
         let fn_offset = text_data.len() as u64;
         let fn_size = code.len() as u64;

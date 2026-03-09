@@ -26,7 +26,8 @@ fn compile_fn_with_relocs(src: &str) -> (Vec<u8>, Vec<anyrc::codegen::x86asm::Re
     let typeck_result = checker.check_crate(&hir);
     let bodies = MirBuilder::build_crate(&interner, &resolve_result, &typeck_result, &hir);
     let body = &bodies[0];
-    let alloc = regalloc::allocate(body);
+    let struct_sizes = std::collections::HashMap::new();
+    let alloc = regalloc::allocate(body, &struct_sizes);
     CodeEmitter::emit_fn(body, &alloc, &interner)
 }
 

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use crate::hir::DefId;
 use crate::mir::MirBody;
 use crate::typeck::TyKind;
 
@@ -10,27 +12,30 @@ pub struct RegAlloc {
     pub frame_size: i32,
 }
 
+/// Map from struct DefId to number of fields.
+pub type StructSizes = HashMap<DefId, usize>;
+
 /// Return the size in bytes for a type on the stack (each field/element = 8 bytes).
-pub fn ty_size(ty: &TyKind) -> i32 {
+pub fn ty_size(ty: &TyKind, struct_sizes: &StructSizes) -> i32 {
     match ty {
         TyKind::Tuple(elems) => {
             if elems.is_empty() { 8 } else { elems.len() as i32 * 8 }
         }
-        TyKind::Adt(_, _) => {
-            // We don't know field count from TyKind alone; handled via MIR Aggregate.
-            // The MIR builder stores the aggregate into a local whose type is Adt.
-            // We'll use a conservative default of 8 and let aggregate emit handle multi-slot.
-            // Actually, we need to know the field count. We'll over-allocate later via patch.
-            8
+        TyKind::Adt(def_id, _) => {
+            if let Some(&field_count) = struct_sizes.get(def_id) {
+                (field_count as i32).max(1) * 8
+            } else {
+                8
+            }
         }
         TyKind::Array(_, len) => (*len as i32).max(1) * 8,
         _ => 8,
     }
 }
 
-pub fn allocate(body: &MirBody) -> RegAlloc {
+pub fn allocate(body: &MirBody, struct_sizes: &StructSizes) -> RegAlloc {
     // First pass: determine sizes, looking at Aggregate assignments to find struct sizes
-    let mut local_sizes: Vec<i32> = body.locals.iter().map(|l| ty_size(&l.ty)).collect();
+    let mut local_sizes: Vec<i32> = body.locals.iter().map(|l| ty_size(&l.ty, struct_sizes)).collect();
 
     // Scan statements for Aggregate assignments to learn actual field counts
     for bb in &body.basic_blocks {
