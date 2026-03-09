@@ -210,6 +210,8 @@ pub enum Expr {
     Unsafe(Block, Span),
     Paren(Box<Expr>, Span),
     InlineAsm(InlineAsm),
+    IfLet(Pattern, Box<Expr>, Block, Option<Box<Expr>>, Span),
+    WhileLet(Pattern, Box<Expr>, Block, Option<Symbol>, Span),
 }
 
 pub struct InlineAsm {
