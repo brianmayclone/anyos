@@ -7,3 +7,4 @@ pub mod macros;
 pub mod hir;
 pub mod hir_lower;
 pub mod resolve;
+pub mod typeck;
