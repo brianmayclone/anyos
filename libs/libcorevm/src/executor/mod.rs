@@ -106,7 +106,14 @@ fn exec_primary(
 
         // ── PUSH SS / POP SS ──
         0x16 => stack::exec_push_seg(cpu, inst, memory, mmu),
-        0x17 => stack::exec_pop_seg(cpu, inst, memory, mmu),
+        0x17 => {
+            // Intel SDM: POP SS sets interrupt shadow for one instruction.
+            let result = stack::exec_pop_seg(cpu, inst, memory, mmu);
+            if result.is_ok() {
+                interrupts.interrupt_shadow = true;
+            }
+            return result;
+        }
 
         // ── SBB ──
         0x18..=0x1D => arith::exec_sbb(cpu, inst, memory, mmu),
@@ -282,7 +289,17 @@ fn exec_primary(
         0x8D => data::exec_lea(cpu, inst),
 
         // ── MOV Sreg, r/m16 ──
-        0x8E => data::exec_mov_seg(cpu, inst, memory, mmu),
+        0x8E => {
+            // Intel SDM: MOV to SS sets interrupt shadow for one instruction.
+            let is_ss = matches!(&inst.operands[0],
+                crate::instruction::Operand::Register(
+                    crate::instruction::RegOperand::Seg(crate::registers::SegReg::Ss)));
+            let result = data::exec_mov_seg(cpu, inst, memory, mmu);
+            if result.is_ok() && is_ss {
+                interrupts.interrupt_shadow = true;
+            }
+            return result;
+        }
 
         // ── POP r/m ──
         0x8F => stack::exec_pop_rm(cpu, inst, memory, mmu),

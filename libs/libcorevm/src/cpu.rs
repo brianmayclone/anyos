@@ -544,6 +544,7 @@ impl Cpu {
             }
             // Sync MMU state from control registers (fast-path: skips if unchanged).
             mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
+            mmu.rflags_ac = (self.regs.rflags & crate::flags::AC) != 0;
 
             crate::poll_external_irqs(interrupts, self.regs.rflags);
 
@@ -719,6 +720,8 @@ impl Cpu {
                     let isz = memory.read_u32(ntdll_pa + oo + 56).unwrap_or(0);
                     if isz < 0xC0000 || isz > 0x100000 { continue; } // filter to ntdll-sized
                     let image_base = memory.read_u32(ntdll_pa + oo + 28).unwrap_or(0);
+                    let sect_align = memory.read_u32(ntdll_pa + oo + 32).unwrap_or(0);
+                    let file_align = memory.read_u32(ntdll_pa + oo + 36).unwrap_or(0);
                     let stored = memory.read_u32(ntdll_pa + oo + 64).unwrap_or(0);
                     let cs_off = oo + 64;
                     let mut s: u32 = 0;
@@ -766,9 +769,66 @@ impl Cpu {
                         sf += raw_end as u32;
                         eprintln!("[HANG-TRAP]   raw_end={:X} raw_cksum={:08X}", raw_end, sf);
                     }
-                    eprintln!("[HANG-TRAP] ntdll@PA{:X} isz={:X} imgbase={:08X} checksum: computed={:08X} stored={:08X} {}",
-                        ntdll_pa, isz, image_base, s, stored, if s == stored { "OK" } else { "MISMATCH" });
+                    eprintln!("[HANG-TRAP] ntdll@PA{:X} isz={:X} imgbase={:08X} sa={:X} fa={:X} checksum: computed={:08X} stored={:08X} {}",
+                        ntdll_pa, isz, image_base, sect_align, file_align, s, stored, if s == stored { "OK" } else { "MISMATCH" });
                     // don't break — check all copies
+                }
+                // Scan for flat-file ntdll mappings (sec0 rawptr != VA)
+                {
+                    let ram_end = memory.ram_size().min(256 * 1024 * 1024) as u64;
+                    let mut flat_count = 0u32;
+                    let mut pa = 0u64;
+                    while pa < ram_end {
+                        let mz2 = memory.read_u16(pa).unwrap_or(0);
+                        if mz2 == 0x5A4D {
+                            let pe_o2 = memory.read_u32(pa + 0x3C).unwrap_or(0) as u64;
+                            if pe_o2 < 0x400 {
+                                let sig2 = memory.read_u32(pa + pe_o2).unwrap_or(0);
+                                if sig2 == 0x4550 {
+                                    let oo2 = pe_o2 + 24;
+                                    let isz2 = memory.read_u32(pa + oo2 + 56).unwrap_or(0);
+                                    if isz2 >= 0xC0000 && isz2 <= 0xD0000 {
+                                        let stored2 = memory.read_u32(pa + oo2 + 64).unwrap_or(0);
+                                        let num_s2 = memory.read_u16(pa + pe_o2 + 6).unwrap_or(0) as u64;
+                                        let osz2 = memory.read_u16(pa + pe_o2 + 20).unwrap_or(0) as u64;
+                                        let sb2 = pe_o2 + 24 + osz2;
+                                        let s0_va = memory.read_u32(pa + sb2 + 12).unwrap_or(0);
+                                        let s0_rp = memory.read_u32(pa + sb2 + 20).unwrap_or(0);
+                                        let ib2 = memory.read_u32(pa + oo2 + 28).unwrap_or(0);
+                                        if s0_va != s0_rp {
+                                            flat_count += 1;
+                                            eprintln!("[HANG-TRAP] FLAT ntdll@PA{:X} isz={:X} ib={:08X} stored={:08X} s0va={:X} s0rp={:X}",
+                                                pa, isz2, ib2, stored2, s0_va, s0_rp);
+                                            // Compute raw-file checksum
+                                            let mut re2 = 0u64;
+                                            for si in 0..num_s2.min(20) {
+                                                let so = sb2 + si * 40;
+                                                let rp = memory.read_u32(pa + so + 20).unwrap_or(0) as u64;
+                                                let rs = memory.read_u32(pa + so + 16).unwrap_or(0) as u64;
+                                                if rp + rs > re2 { re2 = rp + rs; }
+                                            }
+                                            let cs_off2 = oo2 + 64;
+                                            let mut sf2: u32 = 0;
+                                            for i in (0..re2).step_by(2) {
+                                                if i >= cs_off2 && i < cs_off2 + 4 { continue; }
+                                                let w = memory.read_u16(pa + i).unwrap_or(0) as u32;
+                                                sf2 = sf2.wrapping_add(w);
+                                                sf2 = (sf2 >> 16) + (sf2 & 0xFFFF);
+                                            }
+                                            sf2 = (sf2 >> 16) + (sf2 & 0xFFFF);
+                                            sf2 += re2 as u32;
+                                            eprintln!("[HANG-TRAP]   flat raw_end={:X} cksum={:08X} stored={:08X} {}",
+                                                re2, sf2, stored2, if sf2 == stored2 { "OK" } else { "MISMATCH" });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        pa += 0x1000;
+                    }
+                    if flat_count == 0 {
+                        eprintln!("[HANG-TRAP] No flat-file ntdll mappings found");
+                    }
                 }
                 // Compare first two ntdll copies byte-by-byte to find differences
                 {
@@ -1349,6 +1409,7 @@ impl Cpu {
         let mut inst_phys = block_phys;
         for inst in instructions {
             mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
+            mmu.rflags_ac = (self.regs.rflags & crate::flags::AC) != 0;
             crate::poll_external_irqs(interrupts, self.regs.rflags);
             if let Some(vector) = interrupts.pending_interrupt(self.regs.rflags) {
                 interrupts.acknowledge(vector);
@@ -1474,6 +1535,7 @@ impl Cpu {
 
         loop {
             mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
+            mmu.rflags_ac = (self.regs.rflags & crate::flags::AC) != 0;
 
             let reason = unsafe {
                 let func = self.jit_session.dispatcher_fn();
@@ -1770,10 +1832,11 @@ impl Cpu {
                     vector, error_code, cr2_val.unwrap_or(0)));
         }
 
-        // Double fault detection: if we're already handling an exception and
-        // another contributory exception occurs, deliver #DF (vector 8) instead.
-        // Only #PF, #GP, #SS, #NP, #TS, #DF, #AC are contributory; others nest normally.
-        let is_contributory = matches!(vector, 0 | 8 | 10 | 11 | 12 | 13 | 14 | 17);
+        // Double fault detection (Intel SDM Vol. 3A §6.15):
+        // Contributory exceptions: #DE(0), #TS(10), #NP(11), #SS(12), #GP(13).
+        // #PF(14) is special: contributory-during-#PF or #PF-during-#PF → #DF.
+        // #DF(8), #AC(17) are NOT contributory.
+        let is_contributory = matches!(vector, 0 | 10 | 11 | 12 | 13 | 14);
         if interrupts.handling_exception && is_contributory {
             if vector == 8 || interrupts.handling_double_fault {
                 // Triple fault: #DF during #DF handling → shutdown
@@ -1798,6 +1861,17 @@ impl Cpu {
         #[cfg(feature = "host_test")]
         let orig_rip = self.regs.rip;
 
+        // Intel SDM Vol. 3A §6.8.3: For fault-type exceptions (#DE, #DB, #UD,
+        // #GP, #PF, etc.), RF is set in the EFLAGS image pushed on the stack
+        // so that IRET returns with RF=1, preventing re-triggering for #DB.
+        // For trap-type exceptions (#BP, #OF) and interrupts, RF is cleared.
+        let is_fault = matches!(vector, 0 | 1 | 5 | 6 | 7 | 10 | 11 | 12 | 13 | 14 | 17);
+        if is_fault {
+            self.regs.rflags |= crate::flags::RF;
+        } else {
+            self.regs.rflags &= !crate::flags::RF;
+        }
+
         let result = self.deliver_interrupt(
             vector,
             error_code.is_some(),
@@ -1806,6 +1880,9 @@ impl Cpu {
             mmu,
             interrupts,
         );
+
+        // Clear RF after delivery — the pushed image already has it set/cleared.
+        self.regs.rflags &= !crate::flags::RF;
 
         match result {
             Ok(()) => {
@@ -2534,6 +2611,7 @@ impl Cpu {
         self.regs.cr3 = new_cr3 as u64;
         mmu.flush_tlb();
         mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
+            mmu.rflags_ac = (self.regs.rflags & crate::flags::AC) != 0;
 
         // ── 7. Load registers ──
         self.regs.rip = new_eip as u64;

@@ -430,6 +430,18 @@ pub(crate) fn poll_external_irqs(
     let ctx = unsafe { EXTERNAL_IRQ_CONTEXT };
     drain_lapic_eois_raw(ctx.lapic_ptr, ctx.ioapic_ptr);
 
+    // Advance the LAPIC timer inline so that it fires even when the guest
+    // programs and reads it within a single run slice.  We use TSC-based
+    // sync so each call is cheap (one RDTSC + compare).
+    if !ctx.lapic_ptr.is_null() {
+        let lapic = unsafe { &mut *ctx.lapic_ptr };
+        lapic.sync_timer_from_tsc();
+        if lapic.take_timer_irq() {
+            let vec = lapic.timer_vector();
+            lapic.raise_vector(vec, false);
+        }
+    }
+
     if interrupts.interrupt_shadow || (rflags & flags::IF) == 0 {
         return;
     }
@@ -2035,7 +2047,12 @@ fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
     let mut ioapic_routed = false;
     if !vm.ioapic_ptr.is_null() {
         let ioapic = unsafe { &mut *vm.ioapic_ptr };
-        if let Some((vector, level_triggered)) = ioapic.route_irq(irq) {
+        // On real hardware the PIT (ISA IRQ 0) is wired to IOAPIC pin 2.
+        // Try the remapped pin first, then fall back to the original line.
+        let try_pin = if irq == 0 { 2 } else { irq };
+        let route_result = ioapic.route_irq(try_pin)
+            .or_else(|| if try_pin != irq { ioapic.route_irq(irq) } else { None });
+        if let Some((vector, level_triggered)) = route_result {
             ioapic_routed = true;
             #[cfg(feature = "host_test")]
             if irq == 8 && IRQ_TRACE_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok() {

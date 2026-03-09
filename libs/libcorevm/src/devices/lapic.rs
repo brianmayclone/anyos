@@ -378,7 +378,22 @@ impl Lapic {
         }
     }
 
-    fn sync_timer_from_tsc(&mut self) {
+    /// Check and consume a pending timer IRQ flag.
+    pub fn take_timer_irq(&mut self) -> bool {
+        if self.timer_irq_pending {
+            self.timer_irq_pending = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Return the vector configured in the LVT timer entry.
+    pub fn timer_vector(&self) -> u8 {
+        (self.lvt_timer & 0xFF) as u8
+    }
+
+    pub fn sync_timer_from_tsc(&mut self) {
         if self.host_tsc_freq == 0 || self.timer_cur_count == 0 {
             return;
         }

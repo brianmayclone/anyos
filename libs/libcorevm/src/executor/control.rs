@@ -564,10 +564,14 @@ pub fn exec_iret(
                     flags_val & 0xFFFF_FFFF
                 };
                 new_flags |= flags::RFLAGS_FIXED;
+                // Intel SDM: IRET clears RF in protected mode.
+                new_flags &= !flags::RF;
                 if new_cpl > 0 {
+                    // CPL > 0 cannot modify IOPL.
                     new_flags = (new_flags & !flags::IOPL_MASK) | (old_flags & flags::IOPL_MASK);
                     let iopl = ((old_flags & flags::IOPL_MASK) >> flags::IOPL_SHIFT) as u8;
                     if new_cpl > iopl {
+                        // CPL > IOPL cannot modify IF.
                         new_flags = (new_flags & !flags::IF) | (old_flags & flags::IF);
                     }
                 }
