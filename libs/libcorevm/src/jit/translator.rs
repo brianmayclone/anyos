@@ -371,7 +371,7 @@ impl Translator {
             0x88 => self.try_mov_rm8_r8(emit, inst, state),
             0x8A => self.try_mov_r8_rm8(emit, inst, state),
             0xA1 => self.try_mov_eax_moffs(emit, inst, state),
-            0xA3 => false,
+            0xA3 => self.try_mov_moffs_eax(emit, inst, state),
             0xC2 => {
                 if self.current_mode != CpuMode::Real16 {
                     self.try_ret_near_imm(emit, inst, state)
@@ -379,10 +379,22 @@ impl Translator {
                     false
                 }
             }
-            0xC7 => false,
+            0xC7 => self.try_mov_rm_imm(emit, inst, state),
             0x3C => self.try_cmp_al_imm8(emit, inst, state),
             0x80 => self.try_group1_8bit(emit, inst, state),
             0x84 => self.try_test_rm8_r8(emit, inst, state),
+
+            // MOV r8, imm8 (0xB0-0xB7)
+            0xB0..=0xB7 => self.try_mov_r8_imm8(emit, inst),
+
+            // MOV r/m8, imm8 (0xC6)
+            0xC6 => self.try_mov_rm8_imm8(emit, inst, state),
+
+            // Shift Group 2: r/m, CL (0xD3)
+            0xD3 => self.try_shift_rcl(emit, inst, state),
+
+            // Group 3: TEST/NOT/NEG (0xF7)
+            0xF7 => self.try_group3(emit, inst, state),
 
             // ALU r/m8, r8 (CMP/SUB/ADD/OR/AND/XOR)
             0x38 => self.try_alu_rm8_r8(emit, inst, AluOp::Cmp, state),
@@ -416,12 +428,23 @@ impl Translator {
                 true
             }
 
+            // CMOVcc r, r/m (0F 40-4F)
+            0x40..=0x4F => self.try_cmovcc(emit, inst, op, state),
+
+            // SETcc r/m8 (0F 90-9F)
+            0x90..=0x9F => self.try_setcc(emit, inst, op, state),
+
+            // IMUL r, r/m (0F AF)
+            0xAF => self.try_imul_r_rm(emit, inst, state),
+
             // MOVZX r, r/m8
             0xB6 => self.try_movzx_r_rm8(emit, inst, state),
             // MOVZX r, r/m16
             0xB7 => self.try_movzx_r_rm16(emit, inst),
             // MOVSX r, r/m8
             0xBE => self.try_movsx_r_rm8(emit, inst, state),
+            // MOVSX r, r/m16
+            0xBF => self.try_movsx_r_rm16(emit, inst, state),
 
             _ => false,
         }
@@ -1995,6 +2018,260 @@ impl Translator {
         }
         emit_mask_rip(emit, self.current_mode);
         emit.mov_mr(OpSize::S64, GPR_BASE, RIP_OFFSET, Reg::Rax);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Native Translation: MOV r8, imm8 / MOV r/m8, imm8
+    // ════════════════════════════════════════════════════════════════════
+
+    /// MOV r8, imm8 (0xB0-0xB7)
+    fn try_mov_r8_imm8(&self, emit: &mut Emitter, inst: &DecodedInst) -> bool {
+        let raw_idx = (inst.opcode as u8 & 7) | if inst.prefix.rex_b() { 8 } else { 0 };
+        let imm = inst.immediate as u8;
+        let has_rex = inst.prefix.has_rex();
+        emit.mov_ri32(TEMP1, imm as u32);
+        self.emit_store_gpr8(emit, raw_idx, TEMP1, has_rex);
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    /// MOV r/m8, imm8 (0xC6)
+    fn try_mov_rm8_imm8(&self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState) -> bool {
+        let has_rex = inst.prefix.has_rex();
+        let imm = inst.immediate as u8;
+        if inst.modrm_mod() == 3 {
+            let dst_idx = inst.modrm_rm();
+            emit.mov_ri32(TEMP1, imm as u32);
+            self.emit_store_gpr8(emit, dst_idx, TEMP1, has_rex);
+            self.emit_advance_rip(emit, inst.length);
+            true
+        } else {
+            let mem_op = match &inst.operands[0] {
+                Operand::Memory(m) => m,
+                _ => return false,
+            };
+            self.flush_lazy_flags(emit, state);
+            emit.mov_ri32(TEMP2, imm as u32);
+            self.emit_compute_linear(emit, mem_op, inst);
+            emit.push(TEMP2);
+            emit.sub_ri(OpSize::S64, Reg::Rsp, 8);
+            emit.mov_rr(OpSize::S64, Reg::Rdi, CPU_PTR);
+            emit.mov_rr(OpSize::S64, Reg::Rsi, MEM_PTR);
+            emit.mov_rr(OpSize::S64, Reg::Rdx, MMU_PTR);
+            emit.mov_rr(OpSize::S64, Reg::Rcx, Reg::Rax);
+            emit.mov_ri32(Reg::R8, 1);
+            emit.mov_rm(OpSize::S64, TEMP1, Reg::Rsp, 8);
+            let wr = helpers::jit_mem_write as *const () as usize as u64;
+            emit.call_abs(wr);
+            emit.add_ri(OpSize::S64, Reg::Rsp, 8);
+            emit.pop(TEMP2);
+            let ok = emit.new_label();
+            emit.cmp_ri(OpSize::S32, Reg::Rax, helpers::JIT_EXIT_BLOCK as i32);
+            emit.jcc_label(Cc::Ne, ok);
+            emit.mov_ri32(Reg::Rax, helpers::JIT_EXIT_BLOCK);
+            self.emit_exit_to_dispatcher(emit, self.dispatch_loop_addr);
+            emit.bind_label(ok);
+            self.emit_advance_rip(emit, inst.length);
+            true
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Native Translation: Shift by CL
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Shift r/m by CL (0xD3), reg-reg only
+    fn try_shift_rcl(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        if inst.modrm_mod() != 3 { return false; }
+        let size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        let digit = inst.modrm_reg() & 7;
+        let reg_idx = inst.modrm_rm();
+        match digit { 4 | 5 | 7 => {} _ => return false }
+
+        state.flags_dirty = false;
+        self.emit_load_gpr(emit, TEMP1, reg_idx, size);
+        // Load CL (gpr[1] low byte) into RCX for variable shift
+        emit.mov_rm(OpSize::S64, Reg::Rcx, GPR_BASE, GPR_OFFSET + 1 * 8);
+        match digit {
+            4 => emit.shl_cl(size, TEMP1),
+            5 => emit.shr_cl(size, TEMP1),
+            7 => emit.sar_cl(size, TEMP1),
+            _ => unreachable!(),
+        }
+        self.emit_capture_flags(emit, state);
+        self.emit_store_gpr(emit, reg_idx, TEMP1, size);
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Native Translation: Group 3 (TEST/NOT/NEG)
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Group 3: TEST r/m, imm (digit 0), NOT r/m (digit 2), NEG r/m (digit 3) — 0xF7
+    fn try_group3(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        if inst.modrm_mod() != 3 { return false; }
+        let size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        let digit = inst.modrm_reg() & 7;
+        let reg_idx = inst.modrm_rm();
+
+        match digit {
+            0 => {
+                // TEST r/m, imm
+                state.flags_dirty = false;
+                self.emit_load_gpr(emit, TEMP1, reg_idx, size);
+                let imm = inst.immediate as i64 as i32;
+                emit.mov_ri32(TEMP2, imm as u32);
+                emit.test_rr(size, TEMP1, TEMP2);
+                self.emit_capture_flags(emit, state);
+                self.emit_advance_rip(emit, inst.length);
+                true
+            }
+            2 => {
+                // NOT r/m
+                self.emit_load_gpr(emit, TEMP1, reg_idx, size);
+                emit.not(size, TEMP1);
+                self.emit_store_gpr(emit, reg_idx, TEMP1, size);
+                self.emit_advance_rip(emit, inst.length);
+                true
+            }
+            3 => {
+                // NEG r/m
+                state.flags_dirty = false;
+                self.emit_load_gpr(emit, TEMP1, reg_idx, size);
+                emit.neg(size, TEMP1);
+                self.emit_capture_flags(emit, state);
+                self.emit_store_gpr(emit, reg_idx, TEMP1, size);
+                self.emit_advance_rip(emit, inst.length);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Native Translation: CMOVcc / SETcc / IMUL / MOVSX r16
+    // ════════════════════════════════════════════════════════════════════
+
+    /// CMOVcc r, r/m (0F 40-4F), reg-reg only
+    fn try_cmovcc(
+        &self, emit: &mut Emitter, inst: &DecodedInst, op: u8, state: &mut BlockState,
+    ) -> bool {
+        if inst.modrm_mod() != 3 { return false; }
+        let size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        let cc = (op - 0x40) as u8;
+        let dst_idx = inst.modrm_reg();
+        let src_idx = inst.modrm_rm();
+
+        self.flush_lazy_flags(emit, state);
+
+        // Restore host flags from guest RFLAGS
+        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RFLAGS_OFFSET);
+        emit.and_ri(OpSize::S64, Reg::Rax, ARITH_MASK | 0x02);
+        emit.push(Reg::Rax);
+        emit.popfq();
+
+        self.emit_load_gpr(emit, TEMP1, dst_idx, size);
+        self.emit_load_gpr(emit, TEMP2, src_idx, size);
+        emit.cmovcc(map_cc(cc), size, TEMP1, TEMP2);
+        self.emit_store_gpr(emit, dst_idx, TEMP1, size);
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    /// SETcc r/m8 (0F 90-9F), reg only
+    fn try_setcc(
+        &self, emit: &mut Emitter, inst: &DecodedInst, op: u8, state: &mut BlockState,
+    ) -> bool {
+        if inst.modrm_mod() != 3 { return false; }
+        let cc = (op - 0x90) as u8;
+        let dst_idx = inst.modrm_rm();
+        let has_rex = inst.prefix.has_rex();
+
+        self.flush_lazy_flags(emit, state);
+
+        // Restore host flags from guest RFLAGS
+        emit.mov_rm(OpSize::S64, Reg::Rax, GPR_BASE, RFLAGS_OFFSET);
+        emit.and_ri(OpSize::S64, Reg::Rax, ARITH_MASK | 0x02);
+        emit.push(Reg::Rax);
+        emit.popfq();
+
+        emit.setcc(map_cc(cc), TEMP1);
+        self.emit_store_gpr8(emit, dst_idx, TEMP1, has_rex);
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    /// IMUL r, r/m (0F AF), reg-reg only
+    fn try_imul_r_rm(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        if inst.modrm_mod() != 3 { return false; }
+        let size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        let dst_idx = inst.modrm_reg();
+        let src_idx = inst.modrm_rm();
+
+        state.flags_dirty = false;
+        self.emit_load_gpr(emit, TEMP1, dst_idx, size);
+        self.emit_load_gpr(emit, TEMP2, src_idx, size);
+        emit.imul_rr(size, TEMP1, TEMP2);
+        self.emit_capture_flags(emit, state);
+        self.emit_store_gpr(emit, dst_idx, TEMP1, size);
+        self.emit_advance_rip(emit, inst.length);
+        true
+    }
+
+    /// MOVSX r, r/m16 (0F BF)
+    fn try_movsx_r_rm16(
+        &self, emit: &mut Emitter, inst: &DecodedInst, state: &mut BlockState,
+    ) -> bool {
+        let dst_size = match map_operand_size(inst.operand_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        let dst_idx = inst.modrm_reg();
+        if inst.modrm_mod() == 3 {
+            let src_idx = inst.modrm_rm();
+            // Load 16-bit value, sign-extend manually
+            emit.mov_rm(OpSize::S64, TEMP1, GPR_BASE, src_idx as i32 * 8);
+            emit.and_ri(OpSize::S64, TEMP1, 0xFFFF);
+            // Sign-extend from 16 bits: shift left 48, arithmetic shift right 48
+            emit.shl_ri(OpSize::S64, TEMP1, 48);
+            emit.sar_ri(OpSize::S64, TEMP1, 48);
+            self.emit_store_gpr(emit, dst_idx, TEMP1, dst_size);
+            self.emit_advance_rip(emit, inst.length);
+            true
+        } else {
+            let mem_op = match &inst.operands[1] {
+                Operand::Memory(m) => m,
+                _ => return false,
+            };
+            self.flush_lazy_flags(emit, state);
+            self.emit_compute_linear(emit, mem_op, inst);
+            self.emit_call_mem_read_with_linear_and_fault_check(emit, Reg::Rax, OpSize::S16);
+            emit.and_ri(OpSize::S64, Reg::Rax, 0xFFFF);
+            emit.shl_ri(OpSize::S64, Reg::Rax, 48);
+            emit.sar_ri(OpSize::S64, Reg::Rax, 48);
+            self.emit_store_gpr(emit, dst_idx, Reg::Rax, dst_size);
+            self.emit_advance_rip(emit, inst.length);
+            true
+        }
     }
 }
 

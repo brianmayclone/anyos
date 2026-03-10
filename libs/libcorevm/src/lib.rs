@@ -394,6 +394,27 @@ fn drain_lapic_eois_raw(
     while let Some(vector) = lapic.take_eoi_vector() {
         ioapic.eoi_vector(vector);
     }
+    // Forward any vectors queued by IOAPIC service() — e.g. after an
+    // EOI cleared Remote IRR and re-serviced, or after a redir-table
+    // write unmasked a pin with a pending IRR bit.
+    drain_ioapic_service(lapic_ptr, ioapic_ptr);
+}
+
+/// Forward IOAPIC service output to the LAPIC.
+fn drain_ioapic_service(
+    lapic_ptr: *mut devices::lapic::Lapic,
+    ioapic_ptr: *mut devices::ioapic::IoApic,
+) {
+    if lapic_ptr.is_null() || ioapic_ptr.is_null() {
+        return;
+    }
+    let ioapic = unsafe { &mut *ioapic_ptr };
+    let lapic = unsafe { &mut *lapic_ptr };
+    let out = ioapic.take_service_output();
+    for &(vector, level_triggered) in out {
+        lapic.raise_vector(vector, level_triggered);
+    }
+    ioapic.clear_service_output();
 }
 
 #[inline]
@@ -836,6 +857,14 @@ pub extern "C" fn corevm_run(handle: u64, max_instructions: u64) -> u32 {
             let ide = unsafe { &mut *vm.ide_ptr };
             if ide.irq_raised() {
                 inject_irq_line(vm, 14);
+            }
+        }
+
+        // Deliver AHCI IRQ 11 (PCI interrupt line).
+        if !vm.ahci_ptr.is_null() {
+            let ahci = unsafe { &mut *vm.ahci_ptr };
+            if ahci.irq_raised() {
+                inject_irq_line(vm, 11);
             }
         }
 
@@ -1419,9 +1448,9 @@ fn generate_acpi_tables(fw_cfg: &mut devices::fw_cfg::FwCfg) {
     //       Device(PCI0) {
     //         Name(_HID, EisaId("PNP0A03"))
     //         Name(_PRT, Package() {
-    //           Package(){0x0001FFFF, 0, 0, 14},  // Slot 1 IDE → GSI 14
-    //           Package(){0x0002FFFF, 0, 0, 10},  // Slot 2 VGA → GSI 10
-    //           Package(){0x0003FFFF, 0, 0, 11},  // Slot 3 NIC → GSI 11
+    //           Package(){0x0001FFFF, 0, 0, 14},  // Slot 1 IDE  → GSI 14
+    //           Package(){0x0002FFFF, 0, 0, 10},  // Slot 2 VGA  → GSI 10
+    //           Package(){0x0004FFFF, 0, 0, 11},  // Slot 4 AHCI → GSI 11
     //         })
     //       }
     //     }
@@ -1473,16 +1502,54 @@ fn generate_acpi_tables(fw_cfg: &mut devices::fw_cfg::FwCfg) {
             aml.extend_from_slice(&wrap_pkg(&body));
         }
 
-        // Scope(\_SB_) { Device(PCI0) { _HID } }
-        // No _PRT — ISA IRQs are hardwired, PCI interrupt routing not needed yet.
+        // Scope(\_SB_) { Device(PCI0) { _HID, _PRT } }
         {
-            // PCI0 body: _HID only
             let mut pci0_body = Vec::new();
             // Name(_HID, EisaId("PNP0A03")) = 0x030AD041
             pci0_body.push(0x08);
             pci0_body.extend_from_slice(b"_HID");
             pci0_body.push(0x0C);
             pci0_body.extend_from_slice(&0x030AD041u32.to_le_bytes());
+
+            // Name(_PRT, Package(N) { ... })
+            // Each entry: Package(4){DWord addr, Byte pin, Zero source, DWord/Byte GSI}
+            // Direct GSI routing (Source=0) — works for both PIC and APIC modes.
+            let prt_entries: &[(u32, u8, u8)] = &[
+                // (slot << 16 | 0xFFFF, pin, GSI)
+                (0x0001_FFFF, 0, 14), // Slot 1, INTA# → GSI 14 (IDE)
+                (0x0002_FFFF, 0, 10), // Slot 2, INTA# → GSI 10 (VGA)
+                (0x0004_FFFF, 0, 11), // Slot 4, INTA# → GSI 11 (AHCI)
+            ];
+            // Build each inner Package(4){addr, pin, 0, gsi}
+            let mut prt_inner_pkgs = Vec::new();
+            for &(addr, pin, gsi) in prt_entries {
+                let mut elem = Vec::new();
+                // DWordPrefix addr
+                elem.push(0x0C);
+                elem.extend_from_slice(&addr.to_le_bytes());
+                // BytePrefix pin
+                if pin == 0 { elem.push(0x00); } else { elem.push(0x0A); elem.push(pin); }
+                // Zero (no link device)
+                elem.push(0x00);
+                // BytePrefix GSI
+                elem.push(0x0A);
+                elem.push(gsi);
+                // Package(4)
+                let mut inner_pkg = alloc::vec![0x12]; // PackageOp
+                let mut inner_content = alloc::vec![4u8]; // NumElements=4 (VarPackage element count)
+                inner_content.extend_from_slice(&elem);
+                inner_pkg.extend_from_slice(&wrap_pkg(&inner_content));
+                prt_inner_pkgs.extend_from_slice(&inner_pkg);
+            }
+            // Outer Package(N)
+            let mut prt_pkg_content = alloc::vec![prt_entries.len() as u8]; // NumElements
+            prt_pkg_content.extend_from_slice(&prt_inner_pkgs);
+            let mut prt_pkg = alloc::vec![0x12]; // PackageOp
+            prt_pkg.extend_from_slice(&wrap_pkg(&prt_pkg_content));
+            // Name(_PRT, <package>)
+            pci0_body.push(0x08); // NameOp
+            pci0_body.extend_from_slice(b"_PRT");
+            pci0_body.extend_from_slice(&prt_pkg);
 
             // Device(PCI0)
             let mut dev_body = Vec::new();

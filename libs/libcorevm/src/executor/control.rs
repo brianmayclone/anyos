@@ -402,6 +402,11 @@ fn dispatch_software_interrupt(
                 return Err(VmError::SegmentNotPresent(vector as u32 * 8 + 2));
             }
 
+            // Software INT: CPL must be ≤ gate DPL (Intel SDM Vol. 3A §5.11.1).
+            if cpu.regs.cpl > entry.dpl {
+                return Err(VmError::GeneralProtection(vector as u32 * 8 + 2));
+            }
+
             let size = OperandSize::Dword;
             let eflags = cpu.regs.rflags as u32;
             let cs = cpu.regs.segment(SegReg::Cs).selector;
@@ -439,6 +444,11 @@ fn dispatch_software_interrupt(
 
             if !entry.present {
                 return Err(VmError::SegmentNotPresent(vector as u32 * 16 + 2));
+            }
+
+            // Software INT: CPL must be ≤ gate DPL.
+            if cpu.regs.cpl > entry.dpl {
+                return Err(VmError::GeneralProtection(vector as u32 * 16 + 2));
             }
 
             let size = OperandSize::Qword;

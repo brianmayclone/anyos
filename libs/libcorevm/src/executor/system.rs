@@ -189,27 +189,105 @@ pub fn exec_str(
 }
 
 /// LLDT: load the Local Descriptor Table Register from r/m16.
+///
+/// Reads the LDT descriptor from the GDT, validates it is type 0x2 (LDT),
+/// checks present bit, and caches the base/limit for use by segment loads.
 pub fn exec_lldt(
     cpu: &mut Cpu,
     inst: &DecodedInst,
     memory: &mut GuestMemory,
     mmu: &Mmu,
 ) -> Result<()> {
-    let val = super::read_operand(cpu, inst, &inst.operands[0], memory, mmu)? as u16;
-    cpu.regs.ldtr = val;
+    let selector = super::read_operand(cpu, inst, &inst.operands[0], memory, mmu)? as u16;
+
+    if (selector & 0xFFFC) == 0 {
+        // Null selector: clear LDTR, which is valid.
+        cpu.regs.ldtr = 0;
+        cpu.regs.ldt_base = 0;
+        cpu.regs.ldt_limit = 0;
+        cpu.regs.rip += inst.length as u64;
+        return Ok(());
+    }
+
+    // Read descriptor from GDT (LDT descriptors are always in the GDT).
+    let desc = cpu.read_gdt_descriptor(selector, memory, mmu)?;
+
+    // Must be present.
+    if !desc.present {
+        return Err(VmError::SegmentNotPresent(selector as u32));
+    }
+
+    // Must be system descriptor (S=0), type = 0x2 (LDT).
+    let seg_type = desc.access & 0x0F;
+    let is_system = (desc.access & 0x10) == 0;
+    if !is_system || seg_type != 0x02 {
+        return Err(VmError::GeneralProtection(selector as u32));
+    }
+
+    cpu.regs.ldtr = selector;
+    cpu.regs.ldt_base = desc.base;
+    cpu.regs.ldt_limit = desc.limit;
     cpu.regs.rip += inst.length as u64;
     Ok(())
 }
 
 /// LTR: load the Task Register from r/m16.
+///
+/// Reads the TSS descriptor from the GDT, validates it is an available TSS
+/// (type 0x1 = 16-bit, 0x9 = 32-bit, 0xB = 64-bit in long mode), checks
+/// the present bit, and sets the Busy bit in the GDT entry.
 pub fn exec_ltr(
     cpu: &mut Cpu,
     inst: &DecodedInst,
     memory: &mut GuestMemory,
     mmu: &Mmu,
 ) -> Result<()> {
-    let val = super::read_operand(cpu, inst, &inst.operands[0], memory, mmu)? as u16;
-    cpu.regs.tr = val;
+    let selector = super::read_operand(cpu, inst, &inst.operands[0], memory, mmu)? as u16;
+
+    // Null selector: clear TR.
+    if (selector & 0xFFFC) == 0 {
+        return Err(VmError::GeneralProtection(0));
+    }
+
+    // Read descriptor from GDT.
+    let desc = cpu.read_gdt_descriptor(selector, memory, mmu)?;
+
+    // Must be present.
+    if !desc.present {
+        return Err(VmError::SegmentNotPresent(selector as u32));
+    }
+
+    // Validate TSS type: must be an available (not busy) TSS.
+    // System descriptor (S=0): access & 0x10 == 0
+    // Type field: access & 0x0F
+    //   0x1 = 16-bit TSS (available)
+    //   0x9 = 32-bit/64-bit TSS (available)
+    // Busy variants (0x3, 0xB) must be rejected.
+    let seg_type = desc.access & 0x0F;
+    let is_system = (desc.access & 0x10) == 0;
+    if !is_system || (seg_type != 0x01 && seg_type != 0x09) {
+        return Err(VmError::GeneralProtection(selector as u32));
+    }
+
+    // Set the Busy bit (bit 1 of type field) in the GDT entry.
+    // This changes type 0x9 → 0xB (32-bit) or 0x1 → 0x3 (16-bit).
+    let gdt_base = cpu.regs.gdtr.base;
+    let entry_offset = (selector & 0xFFF8) as u64;
+    let entry_linear = gdt_base + entry_offset;
+    // Access byte is at byte 5 of the 8-byte descriptor.
+    let access_linear = entry_linear + 5;
+    let access_phys = mmu.translate_linear(
+        access_linear,
+        cpu.regs.cr3,
+        crate::memory::AccessType::Write,
+        0,
+        memory,
+    )?;
+    use crate::memory::MemoryBus;
+    let old_access = memory.read_u8(access_phys)?;
+    memory.write_u8(access_phys, old_access | 0x02)?;
+
+    cpu.regs.tr = selector;
     cpu.regs.rip += inst.length as u64;
     Ok(())
 }

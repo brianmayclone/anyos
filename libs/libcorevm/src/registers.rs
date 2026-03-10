@@ -221,6 +221,11 @@ pub struct RegisterFile {
     /// Task Register (selector).
     pub tr: u16,
 
+    /// Cached LDT base address (from GDT descriptor when LLDT is executed).
+    pub ldt_base: u64,
+    /// Cached LDT limit (from GDT descriptor when LLDT is executed).
+    pub ldt_limit: u32,
+
     /// Model-Specific Registers (sparse storage).
     pub msr: BTreeMap<u32, u64>,
 
@@ -367,6 +372,8 @@ impl RegisterFile {
             idtr: TableRegister { base: 0, limit: 0x3FF }, // Real-mode IVT
             ldtr: 0,
             tr: 0,
+            ldt_base: 0,
+            ldt_limit: 0,
             msr: BTreeMap::new(),
             efer: 0,
             xcr0: 1, // x87 state enabled by default

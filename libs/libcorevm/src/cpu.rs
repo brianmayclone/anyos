@@ -471,7 +471,72 @@ impl Cpu {
         Ok(desc)
     }
 
-    /// Load a segment register by reading its descriptor from the GDT.
+    /// Read a segment descriptor from the LDT.
+    ///
+    /// Similar to `read_gdt_descriptor` but uses the cached LDT base/limit.
+    pub fn read_ldt_descriptor(
+        &self,
+        selector: u16,
+        memory: &GuestMemory,
+        mmu: &Mmu,
+    ) -> Result<SegmentDescriptor> {
+        if self.regs.ldtr == 0 {
+            return Err(VmError::GeneralProtection(selector as u32 & 0xFFFC));
+        }
+        let index = (selector & 0xFFF8) as u64;
+        if index + 7 > self.regs.ldt_limit as u64 {
+            return Err(VmError::GeneralProtection(selector as u32 & 0xFFFC));
+        }
+        let addr = self.regs.ldt_base.wrapping_add(index);
+        let phys = mmu.translate_linear(
+            addr,
+            self.regs.cr3,
+            AccessType::Read,
+            0,
+            memory,
+        )?;
+        let raw = memory.read_u64(phys)?;
+        let mut desc = SegmentDescriptor::from_raw(selector, raw);
+
+        // Long-mode system descriptors are 16 bytes.
+        let is_system = (desc.access & 0x10) == 0;
+        let lma = (self.regs.efer & crate::registers::EFER_LMA) != 0;
+        if lma && is_system && desc.present {
+            if index + 15 > self.regs.ldt_limit as u64 {
+                return Err(VmError::GeneralProtection(selector as u32 & 0xFFFC));
+            }
+            let addr_hi = self.regs.ldt_base.wrapping_add(index + 8);
+            let phys_hi = mmu.translate_linear(
+                addr_hi,
+                self.regs.cr3,
+                AccessType::Read,
+                0,
+                memory,
+            )?;
+            let raw_hi = memory.read_u64(phys_hi)?;
+            desc.base |= (raw_hi & 0xFFFF_FFFF) << 32;
+        }
+
+        Ok(desc)
+    }
+
+    /// Read a segment descriptor from GDT or LDT based on selector TI bit.
+    pub fn read_descriptor(
+        &self,
+        selector: u16,
+        memory: &GuestMemory,
+        mmu: &Mmu,
+    ) -> Result<SegmentDescriptor> {
+        if (selector & 0x04) != 0 {
+            // TI=1: read from LDT
+            self.read_ldt_descriptor(selector, memory, mmu)
+        } else {
+            // TI=0: read from GDT
+            self.read_gdt_descriptor(selector, memory, mmu)
+        }
+    }
+
+    /// Load a segment register by reading its descriptor from the GDT or LDT.
     ///
     /// For null selectors (index 0), loads a null descriptor. Null selectors
     /// are allowed for DS, ES, FS, GS but not for CS or SS.
@@ -502,8 +567,24 @@ impl Cpu {
             desc.writable = false;
             return Ok(());
         }
-        // LDT selectors (TI=1) not supported — use GDT regardless.
-        let desc = self.read_gdt_descriptor(selector, memory, mmu)?;
+
+        // Read from GDT or LDT based on TI bit.
+        let desc = self.read_descriptor(selector, memory, mmu)?;
+
+        // Validate presence for non-null selectors.
+        // CS/SS: #GP if not present (Intel SDM Vol. 3A §5.4).
+        // DS/ES/FS/GS: #NP if not present.
+        if !desc.present {
+            match seg {
+                SegReg::Cs | SegReg::Ss => {
+                    return Err(VmError::GeneralProtection(selector as u32 & 0xFFFC));
+                }
+                _ => {
+                    return Err(VmError::SegmentNotPresent(selector as u32 & 0xFFFC));
+                }
+            }
+        }
+
         self.regs.seg[seg as usize] = desc;
         Ok(())
     }
@@ -1470,20 +1551,20 @@ impl Cpu {
                         let val = memory.fast_read_u32(phys);
                         eprintln!("[SPIN-DUMP] [0x801AA2A0] = {:#x}", val);
                     }
-                    // Dump IOAPIC redirection table
+                    // Dump ALL IOAPIC redirection table entries + IRR
                     let ioapic_ptr = unsafe { crate::EXTERNAL_IRQ_CONTEXT.ioapic_ptr };
                     if !ioapic_ptr.is_null() {
                         let ioapic = unsafe { &*ioapic_ptr };
+                        eprintln!("[SPIN-DUMP] IOAPIC IRR={:#010x}", ioapic.diag_irr());
                         for pin in 0..24u8 {
                             let entry = ioapic.diag_entry(pin);
-                            if entry != (1u64 << 16) { // skip default masked entries
-                                let masked = (entry >> 16) & 1;
-                                let vec = entry & 0xFF;
-                                let dm = (entry >> 8) & 7;
-                                let lt = (entry >> 15) & 1;
-                                eprintln!("[SPIN-DUMP] IOAPIC pin={}: vec={:#x} dm={} lt={} masked={} raw={:#018x}",
-                                    pin, vec, dm, lt, masked, entry);
-                            }
+                            let masked = (entry >> 16) & 1;
+                            let vec = entry & 0xFF;
+                            let dm = (entry >> 8) & 7;
+                            let lt = (entry >> 15) & 1;
+                            let irr_bit = (ioapic.diag_irr() >> pin) & 1;
+                            eprintln!("[SPIN-DUMP] IOAPIC pin={:2}: vec={:#04x} dm={} lt={} masked={} irr={} raw={:#018x}",
+                                pin, vec, dm, lt, masked, irr_bit, entry);
                         }
                     }
                     // Dump LAPIC state
@@ -1699,6 +1780,11 @@ impl Cpu {
         loop {
             mmu.update_from_regs(self.regs.cr0, self.regs.cr4, self.regs.efer);
             mmu.rflags_ac = (self.regs.rflags & crate::flags::AC) != 0;
+
+            // Poll external IRQs so LAPIC timer, PIC, and device interrupts
+            // are forwarded to the InterruptController before the dispatcher
+            // checks for pending vectors.
+            crate::poll_external_irqs(interrupts, self.regs.rflags);
 
             let reason = unsafe {
                 let func = self.jit_session.dispatcher_fn();
@@ -2275,7 +2361,7 @@ impl Cpu {
         mmu: &mut Mmu,
         interrupts: &mut InterruptController,
     ) -> Result<()> {
-        self.is_hw_interrupt = vector < 32;
+        self.is_hw_interrupt = true;
         let r = self.deliver_interrupt(vector, false, None, memory, mmu, interrupts);
         self.is_hw_interrupt = false;
         r

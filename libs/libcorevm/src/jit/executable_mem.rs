@@ -1,10 +1,8 @@
 //! Executable memory management for JIT-compiled code.
 //!
-//! In `host_test` builds we allocate RWX memory via `mmap`. No mprotect
-//! toggling — the buffer is always readable, writable, and executable.
-
-#[cfg(not(feature = "host_test"))]
-use alloc::vec::Vec;
+//! In `host_test` builds we allocate RWX memory via `mmap`/`VirtualAlloc`.
+//! In production (anyOS) builds we use `libsyscall::mmap` for a fixed-size
+//! anonymous mapping that does not relocate.
 
 /// Default JIT buffer size (4 MiB).
 const DEFAULT_JIT_BUFFER_SIZE: usize = 4 * 1024 * 1024;
@@ -50,15 +48,17 @@ const MEM_RELEASE: u32 = 0x8000;
 const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 
 /// A buffer that holds JIT-compiled machine code.
+///
+/// Uses a fixed-size memory mapping that never relocates, ensuring all
+/// embedded absolute addresses remain valid for the buffer's lifetime.
 pub struct JitBuffer {
-    #[cfg(not(feature = "host_test"))]
-    data: Vec<u8>,
-    #[cfg(feature = "host_test")]
+    /// Pointer to the start of the buffer.
     ptr: *mut u8,
-    #[cfg(feature = "host_test")]
+    /// Total capacity in bytes.
     capacity: usize,
-
+    /// Number of bytes currently used.
     used: usize,
+    /// Whether the buffer is ready for execution.
     executable: bool,
 }
 
@@ -76,6 +76,15 @@ impl Drop for JitBuffer {
     fn drop(&mut self) {
         if !self.ptr.is_null() && self.capacity != 0 {
             unsafe { VirtualFree(self.ptr as *mut core::ffi::c_void, 0, MEM_RELEASE); }
+        }
+    }
+}
+
+#[cfg(not(feature = "host_test"))]
+impl Drop for JitBuffer {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() && self.capacity != 0 {
+            let _ = libsyscall::munmap(self.ptr as u64, self.capacity as u32);
         }
     }
 }
@@ -121,32 +130,39 @@ impl JitBuffer {
         }
         #[cfg(not(feature = "host_test"))]
         {
+            // Use anyOS mmap syscall for a fixed anonymous mapping.
+            // This gives us a stable address that never relocates.
+            let addr = libsyscall::mmap(size as u32);
+            if addr == u64::MAX || addr == 0 {
+                // Fallback: return a disabled buffer.
+                return JitBuffer {
+                    ptr: core::ptr::null_mut(),
+                    capacity: 0,
+                    used: 0,
+                    executable: false,
+                };
+            }
             JitBuffer {
-                data: Vec::with_capacity(size),
+                ptr: addr as *mut u8,
+                capacity: size,
                 used: 0,
-                executable: false,
+                executable: true,
             }
         }
     }
 
     pub fn emit(&mut self, code: &[u8]) -> Option<usize> {
+        if self.ptr.is_null() {
+            return None;
+        }
         let offset = self.used;
         let new_used = self.used + code.len();
-        if new_used > self.capacity() {
+        if new_used > self.capacity {
             return None;
         }
 
-        #[cfg(feature = "host_test")]
         unsafe {
             core::ptr::copy_nonoverlapping(code.as_ptr(), self.ptr.add(offset), code.len());
-        }
-
-        #[cfg(not(feature = "host_test"))]
-        {
-            if new_used > self.data.len() {
-                self.data.resize(new_used, 0);
-            }
-            self.data[offset..new_used].copy_from_slice(code);
         }
 
         self.used = new_used;
@@ -154,14 +170,7 @@ impl JitBuffer {
     }
 
     pub unsafe fn code_ptr(&self, offset: usize) -> *const u8 {
-        #[cfg(feature = "host_test")]
-        {
-            self.ptr.add(offset) as *const u8
-        }
-        #[cfg(not(feature = "host_test"))]
-        {
-            self.data.as_ptr().add(offset)
-        }
+        self.ptr.add(offset) as *const u8
     }
 
     /// No-op with RWX mapping; kept for API compatibility.
@@ -175,14 +184,11 @@ impl JitBuffer {
     }
 
     pub fn is_executable(&self) -> bool {
-        self.executable
+        self.executable && !self.ptr.is_null()
     }
 
     pub fn capacity(&self) -> usize {
-        #[cfg(feature = "host_test")]
-        { self.capacity }
-        #[cfg(not(feature = "host_test"))]
-        { self.data.capacity() }
+        self.capacity
     }
 
     pub fn used(&self) -> usize {
@@ -190,7 +196,7 @@ impl JitBuffer {
     }
 
     pub fn remaining(&self) -> usize {
-        self.capacity().saturating_sub(self.used)
+        self.capacity.saturating_sub(self.used)
     }
 
     pub fn reset(&mut self) {

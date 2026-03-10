@@ -390,6 +390,10 @@ fn walk_pae(
 
     // 2 MiB huge page: PDE.PS=1 — PDE is the final level.
     if (pde & PTE_PS) != 0 {
+        // Reserved bit check for PAE 2MB pages (bits [20:13] must be 0).
+        if has_reserved_bits_64(pde, true) {
+            return Err(pf_rsvd(access, cpl, linear));
+        }
         check_final_permissions(
             (pde & PTE_US) != 0,
             (pde & PTE_RW) != 0,

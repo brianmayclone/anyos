@@ -1,92 +1,78 @@
 //! IO-APIC (I/O Advanced Programmable Interrupt Controller) emulation.
 //!
-//! The IO-APIC routes hardware interrupts from external devices to local
-//! APICs in a multi-processor system. It replaces the legacy 8259A PIC
-//! for interrupt routing in modern x86 systems.
+//! Port of QEMU's `hw/intc/ioapic.c` to Rust.  Key behaviours:
 //!
-//! # MMIO Region
-//!
-//! | Offset | Size | Register |
-//! |--------|------|----------|
-//! | 0x00 | 4 | IOREGSEL — register select |
-//! | 0x10 | 4 | IOWIN — register read/write window |
-//!
-//! # Indirect Registers (via IOREGSEL/IOWIN)
-//!
-//! | Index | Register |
-//! |-------|----------|
-//! | 0x00 | IOAPIC ID |
-//! | 0x01 | IOAPIC Version |
-//! | 0x02 | IOAPIC Arbitration ID |
-//! | 0x10-0x3F | Redirection table (24 entries × 2 dwords each) |
+//! - **IRR** tracks pending interrupts per pin, even when masked (level) or
+//!   unmasked (edge).
+//! - **Level tracking** (`irq_level`): level-triggered IRR is set on assert,
+//!   cleared on deassert.  Edge-triggered IRR is only set if pin is unmasked.
+//! - **Read-only bits** (Remote IRR, Delivery Status) are preserved on writes.
+//! - **`ioapic_fix_edge_remote_irr`**: switching trigger mode to edge clears
+//!   Remote IRR (Linux kernel workaround).
+//! - **service()** after every redir-table write and EOI.
 
 use crate::error::Result;
 use crate::memory::mmio::MmioHandler;
 
-/// Number of interrupt redirection entries (IRQ 0-23).
 const NUM_REDIR_ENTRIES: usize = 24;
+
+// Redirection entry bit positions
+const REDIR_DELIV_MODE_SHIFT: u32 = 8;
+const REDIR_DEST_MODE_BIT: u64 = 1 << 11;
+const REDIR_DELIV_STATUS: u64 = 1 << 12;
+const REDIR_POLARITY_BIT: u64 = 1 << 13;
 const REDIR_REMOTE_IRR: u64 = 1 << 14;
 const REDIR_LEVEL_TRIGGERED: u64 = 1 << 15;
+const REDIR_MASKED: u64 = 1 << 16;
 
-/// IO-APIC device with register-indirect MMIO access.
-///
-/// The guest selects a register via IOREGSEL (offset 0x00), then
-/// reads or writes the value via IOWIN (offset 0x10).
+/// Read-only bits that the guest cannot modify via MMIO writes.
+/// Matches QEMU's IOAPIC_RO_BITS = REMOTE_IRR | DELIV_STATUS.
+const REDIR_RO_BITS: u64 = REDIR_REMOTE_IRR | REDIR_DELIV_STATUS;
+
 #[derive(Debug)]
 pub struct IoApic {
-    /// IOREGSEL — selects which internal register to access via IOWIN.
     reg_select: u32,
-    /// IOAPIC ID register (bits 27:24 hold the 4-bit APIC ID).
     id: u32,
-    /// Redirection table: 24 entries, each 64 bits.
-    ///
-    /// Each entry controls routing for one interrupt line:
-    /// - Bits 7:0   — interrupt vector
-    /// - Bits 10:8  — delivery mode (0=Fixed, 1=LowestPri, 2=SMI, etc.)
-    /// - Bit 11     — destination mode (0=physical, 1=logical)
-    /// - Bit 12     — delivery status (read-only, 0=idle)
-    /// - Bit 13     — pin polarity (0=active high, 1=active low)
-    /// - Bit 14     — remote IRR (read-only)
-    /// - Bit 15     — trigger mode (0=edge, 1=level)
-    /// - Bit 16     — mask (1=masked, 0=unmasked)
-    /// - Bits 63:56 — destination APIC ID
     redir_table: [u64; NUM_REDIR_ENTRIES],
+    /// Interrupt Request Register — one bit per pin.
+    irr: u32,
+    /// Pin level state for level-triggered handling.
+    /// Matches QEMU's `irq_level[IOAPIC_NUM_PINS]`.
+    irq_level: [bool; NUM_REDIR_ENTRIES],
+    /// Service output buffer — vectors to forward to LAPIC.
+    service_out: [(u8, bool); NUM_REDIR_ENTRIES],
+    service_out_count: usize,
 }
 
 impl IoApic {
-    /// Create a new IO-APIC with all interrupts masked.
     pub fn new() -> Self {
-        // Default: all entries masked (bit 16 = 1), vector 0.
         let mut redir_table = [0u64; NUM_REDIR_ENTRIES];
         for entry in redir_table.iter_mut() {
-            *entry = 1 << 16; // masked
+            *entry = REDIR_MASKED;
         }
         IoApic {
             reg_select: 0,
             id: 0,
             redir_table,
+            irr: 0,
+            irq_level: [false; NUM_REDIR_ENTRIES],
+            service_out: [(0, false); NUM_REDIR_ENTRIES],
+            service_out_count: 0,
         }
     }
 
-    /// Read from an indirect register selected by IOREGSEL.
+    // ── Register access ───────────────────────────────────────────────
+
     fn read_reg(&self, index: u32) -> u32 {
         match index {
-            // IOAPIC ID: bits 27:24 = ID.
             0x00 => self.id,
-            // IOAPIC Version: bits 23:16 = max redir entry (23), bits 7:0 = version (0x20).
             0x01 => ((NUM_REDIR_ENTRIES as u32 - 1) << 16) | 0x20,
-            // IOAPIC Arbitration ID.
             0x02 => self.id,
-            // Redirection table entries (low dword at even index, high at odd).
             0x10..=0x3F => {
-                let entry_index = ((index - 0x10) / 2) as usize;
-                if entry_index < NUM_REDIR_ENTRIES {
-                    let entry = self.redir_table[entry_index];
-                    if (index & 1) == 0 {
-                        entry as u32 // low 32 bits
-                    } else {
-                        (entry >> 32) as u32 // high 32 bits
-                    }
+                let idx = ((index - 0x10) / 2) as usize;
+                if idx < NUM_REDIR_ENTRIES {
+                    let entry = self.redir_table[idx];
+                    if (index & 1) == 0 { entry as u32 } else { (entry >> 32) as u32 }
                 } else {
                     0
                 }
@@ -95,124 +81,212 @@ impl IoApic {
         }
     }
 
-    /// Write to an indirect register selected by IOREGSEL.
     fn write_reg(&mut self, index: u32, val: u32) {
         match index {
-            // IOAPIC ID: only bits 27:24 are writable.
             0x00 => self.id = val & 0x0F000000,
-            // Version and arbitration ID are read-only.
             0x01 | 0x02 => {}
-            // Redirection table entries.
             0x10..=0x3F => {
-                let entry_index = ((index - 0x10) / 2) as usize;
-                if entry_index < NUM_REDIR_ENTRIES {
-                    let entry = &mut self.redir_table[entry_index];
+                let idx = ((index - 0x10) / 2) as usize;
+                if idx < NUM_REDIR_ENTRIES {
+                    let entry = &mut self.redir_table[idx];
+                    // Preserve read-only bits (Remote IRR, Delivery Status)
+                    let ro_bits = *entry & REDIR_RO_BITS;
                     if (index & 1) == 0 {
-                        // Low 32 bits (preserve high 32).
-                        *entry = (*entry & 0xFFFFFFFF_00000000) | (val as u64);
+                        // Low 32 bits: merge new value, restore RO bits
+                        let new_lo = (val as u64) & !REDIR_RO_BITS;
+                        *entry = (*entry & 0xFFFFFFFF_00000000) | new_lo | ro_bits;
                     } else {
-                        // High 32 bits (preserve low 32).
+                        // High 32 bits (no RO bits in upper half)
                         *entry = (*entry & 0x00000000_FFFFFFFF) | ((val as u64) << 32);
+                    }
+                    // QEMU: ioapic_fix_edge_remote_irr — if trigger mode is
+                    // now edge, clear Remote IRR (Linux kernel workaround for
+                    // IOAPICs without EOI register).
+                    if (*entry & REDIR_LEVEL_TRIGGERED) == 0 {
+                        *entry &= !REDIR_REMOTE_IRR;
                     }
                     #[cfg(feature = "host_test")]
                     {
                         let masked = (*entry >> 16) & 1;
                         let vec = *entry & 0xFF;
                         let dm = (*entry >> 8) & 7;
-                        eprintln!("[ioapic] write pin={} reg=0x{:02X} val=0x{:08X} -> entry=0x{:016X} masked={} vec=0x{:02X} dm={}",
-                            entry_index, index, val, *entry, masked, vec, dm);
+                        eprintln!("[ioapic] redir write pin={} reg=0x{:02X} val=0x{:08X} -> entry=0x{:016X} masked={} vec=0x{:02X} dm={} irr={:#x}",
+                            idx, index, val, *entry, masked, vec, dm, self.irr);
                     }
+                    // After every redir-table write, try to deliver pending IRQs.
+                    self.service();
                 }
             }
             _ => {}
         }
     }
-}
 
-impl IoApic {
-    fn routed_entry(&self, irq: u8) -> Option<(u8, bool)> {
-        let idx = irq as usize;
-        if idx >= NUM_REDIR_ENTRIES {
-            return None;
+    // ── IRQ assertion / deassertion (QEMU: ioapic_set_irq) ───────────
+
+    /// Assert (level=true) or deassert (level=false) an IRQ pin.
+    /// Matches QEMU's `ioapic_set_irq(opaque, vector, level)`.
+    pub fn set_irq(&mut self, pin: u8, level: bool) {
+        let i = pin as usize;
+        if i >= NUM_REDIR_ENTRIES {
+            return;
         }
-        let entry = self.redir_table[idx];
-        // Bit 16: mask (1 = masked).
-        if (entry & (1 << 16)) != 0 {
-            return None;
+        let entry = self.redir_table[i];
+        let is_level = (entry & REDIR_LEVEL_TRIGGERED) != 0;
+
+        if is_level {
+            // Level-triggered: track line state
+            if level {
+                self.irr |= 1 << pin;
+                self.irq_level[i] = true;
+                // Only service if Remote IRR is clear (QEMU behaviour)
+                if (entry & REDIR_REMOTE_IRR) == 0 {
+                    self.service();
+                }
+            } else {
+                self.irq_level[i] = false;
+                // Note: don't clear IRR on deassert — QEMU clears it in
+                // ioapic_set_irq via `s->irr &= ~(1 << vector)`.
+                // Actually QEMU DOES clear IRR on deassert for level.
+                self.irr &= !(1 << pin);
+            }
+        } else {
+            // Edge-triggered
+            if level {
+                // QEMU: edge-triggered on masked pin is ignored (not recorded)
+                if (entry & REDIR_MASKED) != 0 {
+                    return;
+                }
+                // Set IRR and service
+                self.irr |= 1 << pin;
+                self.service();
+            }
+            // Deassertion for edge-triggered is a no-op
         }
-        // Bits 10:8: delivery mode.
-        // 0 = Fixed, 1 = Lowest Priority — both deliver to vector.
-        // For single-CPU, lowest priority behaves like fixed.
-        let delivery_mode = ((entry >> 8) & 0x7) as u8;
-        if delivery_mode > 1 {
-            return None;
-        }
-        let vector = (entry & 0xFF) as u8;
-        let level_triggered = ((entry >> 15) & 1) != 0;
-        Some((vector, level_triggered))
     }
 
-    /// Whether the given IRQ line is actively routed through the IO-APIC.
+    /// Simple assert-only API for backward compatibility.
+    /// Calls `set_irq(pin, true)`.
+    pub fn assert_irq(&mut self, pin: u8) {
+        self.set_irq(pin, true);
+    }
+
+    // ── Service loop (QEMU: ioapic_service) ───────────────────────────
+
+    fn service(&mut self) {
+        for i in 0..NUM_REDIR_ENTRIES {
+            if (self.irr & (1 << i)) == 0 {
+                continue;
+            }
+            let entry = self.redir_table[i];
+            if (entry & REDIR_MASKED) != 0 {
+                continue;
+            }
+            let dm = ((entry >> REDIR_DELIV_MODE_SHIFT) & 7) as u8;
+            if dm > 1 {
+                continue; // only Fixed (0) and LowestPri (1)
+            }
+            let vector = (entry & 0xFF) as u8;
+            let is_level = (entry & REDIR_LEVEL_TRIGGERED) != 0;
+
+            if is_level {
+                if (entry & REDIR_REMOTE_IRR) != 0 {
+                    continue; // coalesce — waiting for EOI
+                }
+                self.redir_table[i] |= REDIR_REMOTE_IRR;
+                // Level: keep IRR set
+            } else {
+                // Edge: clear IRR on delivery
+                self.irr &= !(1 << i);
+            }
+
+            if self.service_out_count < self.service_out.len() {
+                self.service_out[self.service_out_count] = (vector, is_level);
+                self.service_out_count += 1;
+            }
+        }
+    }
+
+    pub fn take_service_output(&mut self) -> &[(u8, bool)] {
+        &self.service_out[..self.service_out_count]
+    }
+
+    pub fn clear_service_output(&mut self) {
+        self.service_out_count = 0;
+    }
+
+    // ── Legacy route_irq API ──────────────────────────────────────────
+
+    /// Route an external IRQ pin.  Asserts the pin and returns the first
+    /// queued vector if delivery succeeded.
+    pub fn route_irq(&mut self, pin: u8) -> Option<(u8, bool)> {
+        self.service_out_count = 0;
+        self.set_irq(pin, true);
+        if self.service_out_count > 0 {
+            let result = self.service_out[0];
+            self.service_out_count = 0;
+            Some(result)
+        } else {
+            None
+        }
+    }
+
+    // ── EOI (QEMU: ioapic_eoi_broadcast) ──────────────────────────────
+
+    /// Handle EOI broadcast from LAPIC.  Clears Remote IRR on matching
+    /// level-triggered entries and re-services if IRR is still set.
+    pub fn eoi_vector(&mut self, vector: u8) {
+        for i in 0..NUM_REDIR_ENTRIES {
+            let entry = &mut self.redir_table[i];
+            if (*entry & REDIR_LEVEL_TRIGGERED) == 0 {
+                continue;
+            }
+            if (*entry & 0xFF) as u8 != vector {
+                continue;
+            }
+            if (*entry & REDIR_REMOTE_IRR) == 0 {
+                continue;
+            }
+            *entry &= !REDIR_REMOTE_IRR;
+        }
+        // Re-service: if the line is still asserted, the IRR bit is still
+        // set, and now that Remote IRR is cleared, it can be delivered again.
+        self.service();
+    }
+
+    // ── Diagnostics ───────────────────────────────────────────────────
+
     pub fn has_route(&self, irq: u8) -> bool {
-        self.routed_entry(irq).is_some()
+        let idx = irq as usize;
+        if idx >= NUM_REDIR_ENTRIES { return false; }
+        let entry = self.redir_table[idx];
+        (entry & REDIR_MASKED) == 0 && ((entry >> REDIR_DELIV_MODE_SHIFT) & 7) <= 1
     }
 
-    /// Raw redir table entry for diagnostics.
     pub fn diag_entry(&self, irq: u8) -> u64 {
         self.redir_table.get(irq as usize).copied().unwrap_or(0)
     }
 
-    /// Return the programmed vector for an IRQ, even if the entry is masked.
-    /// Returns None if the entry was never programmed (vector == 0).
     pub fn programmed_vector(&self, irq: u8) -> Option<u8> {
         let idx = irq as usize;
-        if idx >= NUM_REDIR_ENTRIES {
-            return None;
-        }
+        if idx >= NUM_REDIR_ENTRIES { return None; }
         let vector = (self.redir_table[idx] & 0xFF) as u8;
         if vector == 0 { None } else { Some(vector) }
     }
 
-    /// Route an external IRQ pin through the redirection table.
-    ///
-    /// Returns `(vector, level_triggered)` when the entry is unmasked and
-    /// uses fixed delivery mode (0). Unsupported delivery modes are ignored.
-    pub fn route_irq(&mut self, irq: u8) -> Option<(u8, bool)> {
-        let idx = irq as usize;
-        let (vector, level_triggered) = self.routed_entry(irq)?;
-        if level_triggered {
-            let entry = &mut self.redir_table[idx];
-            if (*entry & REDIR_REMOTE_IRR) != 0 {
-                return None;
-            }
-            *entry |= REDIR_REMOTE_IRR;
-        }
-        Some((vector, level_triggered))
-    }
-
-    /// Complete delivery of a level-triggered vector after LAPIC EOI.
-    pub fn eoi_vector(&mut self, vector: u8) {
-        for entry in self.redir_table.iter_mut() {
-            if (*entry & REDIR_LEVEL_TRIGGERED) == 0 {
-                continue;
-            }
-            if (*entry & 0xFF) as u8 == vector {
-                *entry &= !REDIR_REMOTE_IRR;
-            }
-        }
-    }
-
-    /// Return a raw redirection table entry for diagnostics.
     pub fn redir_entry(&self, irq: u8) -> u64 {
-        let idx = irq as usize;
-        if idx < NUM_REDIR_ENTRIES {
-            self.redir_table[idx]
+        if (irq as usize) < NUM_REDIR_ENTRIES {
+            self.redir_table[irq as usize]
         } else {
             0
         }
     }
 
-    /// Read the raw 32-bit value of an MMIO register by its base offset.
+    pub fn diag_irr(&self) -> u32 {
+        self.irr
+    }
+
+    // ── MMIO helpers ──────────────────────────────────────────────────
+
     fn read_mmio_register(&self, reg_base: u64) -> u32 {
         match reg_base {
             0x00 => self.reg_select,
@@ -221,7 +295,6 @@ impl IoApic {
         }
     }
 
-    /// Write a 32-bit value to an MMIO register by its base offset.
     fn write_mmio_register(&mut self, reg_base: u64, v: u32) {
         match reg_base {
             0x00 => self.reg_select = v,
@@ -232,10 +305,6 @@ impl IoApic {
 }
 
 impl MmioHandler for IoApic {
-    /// Read from IO-APIC MMIO registers.
-    ///
-    /// IOREGSEL (offset 0x00) and IOWIN (offset 0x10) are both 32-bit
-    /// registers. Sub-dword accesses extract the correct byte(s).
     fn read(&mut self, offset: u64, size: u8) -> Result<u64> {
         #[cfg(feature = "host_test")]
         {
@@ -245,8 +314,6 @@ impl MmioHandler for IoApic {
                 eprintln!("[ioapic] MMIO read offset={:#x} size={} regsel={:#x}", offset, size, self.reg_select);
             }
         }
-        // IOREGSEL is at 0x00-0x03, IOWIN at 0x10-0x13.
-        // Determine which register and the byte offset within it.
         let (reg_base, byte_off) = match offset {
             0x00..=0x03 => (0x00u64, (offset & 0x3) as u32),
             0x10..=0x13 => (0x10u64, (offset & 0x3) as u32),
@@ -259,9 +326,6 @@ impl MmioHandler for IoApic {
         Ok(shifted & mask)
     }
 
-    /// Write to IO-APIC MMIO registers.
-    ///
-    /// Sub-dword writes perform a read-modify-write to merge partial bytes.
     fn write(&mut self, offset: u64, size: u8, val: u64) -> Result<()> {
         #[cfg(feature = "host_test")]
         {
