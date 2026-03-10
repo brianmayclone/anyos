@@ -323,6 +323,15 @@ impl Lapic {
     pub fn diag_tpr(&self) -> u32 {
         self.tpr
     }
+    pub fn diag_lint0(&self) -> u32 {
+        self.lvt_lint0
+    }
+    pub fn diag_lint1(&self) -> u32 {
+        self.lvt_lint1
+    }
+    pub fn diag_lvt_timer(&self) -> u32 {
+        self.lvt_timer
+    }
     pub fn diag_cur_count(&self) -> u32 {
         self.timer_cur_count
     }

@@ -241,7 +241,7 @@ impl MmioHandler for IoApic {
         {
             static IOAPIC_ACCESS_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
             let cnt = IOAPIC_ACCESS_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if cnt < 40 {
+            if cnt < 200 {
                 eprintln!("[ioapic] MMIO read offset={:#x} size={} regsel={:#x}", offset, size, self.reg_select);
             }
         }
@@ -267,7 +267,7 @@ impl MmioHandler for IoApic {
         {
             static IOAPIC_WCOUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
             let cnt = IOAPIC_WCOUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if cnt < 40 {
+            if cnt < 200 {
                 eprintln!("[ioapic] MMIO write offset={:#x} size={} val={:#x}", offset, size, val);
             }
         }

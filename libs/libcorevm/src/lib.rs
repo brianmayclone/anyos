@@ -1473,50 +1473,16 @@ fn generate_acpi_tables(fw_cfg: &mut devices::fw_cfg::FwCfg) {
             aml.extend_from_slice(&wrap_pkg(&body));
         }
 
-        // Scope(\_SB_) { Device(PCI0) { _HID, _PRT } }
+        // Scope(\_SB_) { Device(PCI0) { _HID } }
+        // No _PRT — ISA IRQs are hardwired, PCI interrupt routing not needed yet.
         {
-            // _PRT entries: Package(4){DWordConst addr, ByteConst pin, Zero, ByteConst/DWordConst gsi}
-            fn prt_entry(slot: u32, pin: u8, gsi: u8) -> Vec<u8> {
-                let addr: u32 = (slot << 16) | 0xFFFF;
-                let mut elem = Vec::new();
-                elem.push(0x0C); elem.extend_from_slice(&addr.to_le_bytes()); // DWordConst addr
-                elem.push(0x0A); elem.push(pin);  // ByteConst pin
-                elem.push(0x00);                   // Zero (no link device)
-                elem.push(0x0A); elem.push(gsi);  // ByteConst GSI
-                let mut body = alloc::vec![4u8]; // NumElements=4
-                body.extend_from_slice(&elem);
-                let mut pkg = alloc::vec![0x12u8]; // PackageOp
-                pkg.extend_from_slice(&wrap_pkg(&body));
-                pkg
-            }
-
-            let mut prt_elems = Vec::new();
-            // Slot 1: IDE → GSI 14 (hardwired, but telling the OS about it)
-            prt_elems.extend_from_slice(&prt_entry(1, 0, 14));
-            // Slot 2: VGA → GSI 10
-            prt_elems.extend_from_slice(&prt_entry(2, 0, 10));
-            // Slot 3: NIC → GSI 11
-            prt_elems.extend_from_slice(&prt_entry(3, 0, 11));
-
-            // _PRT outer package
-            let mut prt_body = alloc::vec![3u8]; // NumElements=3
-            prt_body.extend_from_slice(&prt_elems);
-            let mut prt_pkg = alloc::vec![0x12u8]; // PackageOp
-            prt_pkg.extend_from_slice(&wrap_pkg(&prt_body));
-
-            // Name(_PRT, <pkg>)
-            let mut name_prt = alloc::vec![0x08u8];
-            name_prt.extend_from_slice(b"_PRT");
-            name_prt.extend_from_slice(&prt_pkg);
-
-            // PCI0 body: _HID + _PRT
+            // PCI0 body: _HID only
             let mut pci0_body = Vec::new();
             // Name(_HID, EisaId("PNP0A03")) = 0x030AD041
             pci0_body.push(0x08);
             pci0_body.extend_from_slice(b"_HID");
             pci0_body.push(0x0C);
             pci0_body.extend_from_slice(&0x030AD041u32.to_le_bytes());
-            pci0_body.extend_from_slice(&name_prt);
 
             // Device(PCI0)
             let mut dev_body = Vec::new();
@@ -1948,10 +1914,10 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     // controller uses the fixed ISA ports backed by `devices::ide::Ide`.
     let mut ide_pci = devices::bus::PciDevice::new(
         0x8086,  // Vendor ID: Intel
-        0x2920,  // Device ID: ICH9 SATA/IDE compatibility function
+        0x7010,  // Device ID: PIIX3 IDE (same as QEMU i440FX)
         0x01,    // Class: Mass storage
         0x01,    // Subclass: IDE controller
-        0x00,    // Prog IF: compatibility-mode IDE only; no bus mastering until BMIDE exists
+        0x80,    // Prog IF: bus master capable, both channels compatibility mode
     );
     ide_pci.bus = 0;
     ide_pci.device = 1;
@@ -2058,7 +2024,7 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) {
     let count = vm.engine.memory.mmio_region_count();
     let (lo, hi) = vm.engine.memory.mmio_bounds();
     vm_log!("MMIO setup: {} regions, bounds=[0x{:X}, 0x{:X})", count, lo, hi);
-    vm_log!("PCI bus: 4 devices (Q35 MCH 0:0.0, ICH9 LPC 0:1F.0, IDE 0:1F.1, VGA 0:2.0)");
+    vm_log!("PCI bus: 4 devices (Q35 MCH 0:0.0, ICH9 LPC 0:1F.0, PIIX3 IDE 0:1.1, VGA 0:2.0)");
 }
 
 /// Register a PCI bus at the standard configuration ports (0xCF8-0xCFF).

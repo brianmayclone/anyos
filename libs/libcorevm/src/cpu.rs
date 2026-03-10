@@ -1470,18 +1470,62 @@ impl Cpu {
                         let val = memory.fast_read_u32(phys);
                         eprintln!("[SPIN-DUMP] [0x801AA2A0] = {:#x}", val);
                     }
-                    // Dump stack
+                    // Dump IOAPIC redirection table
+                    let ioapic_ptr = unsafe { crate::EXTERNAL_IRQ_CONTEXT.ioapic_ptr };
+                    if !ioapic_ptr.is_null() {
+                        let ioapic = unsafe { &*ioapic_ptr };
+                        for pin in 0..24u8 {
+                            let entry = ioapic.diag_entry(pin);
+                            if entry != (1u64 << 16) { // skip default masked entries
+                                let masked = (entry >> 16) & 1;
+                                let vec = entry & 0xFF;
+                                let dm = (entry >> 8) & 7;
+                                let lt = (entry >> 15) & 1;
+                                eprintln!("[SPIN-DUMP] IOAPIC pin={}: vec={:#x} dm={} lt={} masked={} raw={:#018x}",
+                                    pin, vec, dm, lt, masked, entry);
+                            }
+                        }
+                    }
+                    // Dump LAPIC state
+                    if let Some(lapic) = unsafe { crate::EXTERNAL_IRQ_CONTEXT.lapic_ptr.as_ref() } {
+                        eprintln!("[SPIN-DUMP] LAPIC: enabled={} lint0={:#x} lint1={:#x} lvt_timer={:#x} init_count={} cur_count={}",
+                            lapic.software_enabled(), lapic.diag_lint0(), lapic.diag_lint1(),
+                            lapic.diag_lvt_timer(), lapic.diag_init_count(), lapic.diag_cur_count());
+                    }
+                    // Dump all GPRs
+                    eprintln!("[SPIN-DUMP] EAX={:#010x} EBX={:#010x} ECX={:#010x} EDX={:#010x}",
+                        self.regs.gpr[0], self.regs.gpr[3], self.regs.gpr[1], self.regs.gpr[2]);
+                    eprintln!("[SPIN-DUMP] ESI={:#010x} EDI={:#010x}",
+                        self.regs.gpr[6], self.regs.gpr[7]);
+                    // Dump stack (64 dwords = 256 bytes)
                     let esp = self.regs.gpr[crate::registers::GprIndex::Rsp as usize];
                     let ebp = self.regs.gpr[crate::registers::GprIndex::Rbp as usize];
                     eprintln!("[SPIN-DUMP] ESP={:#x} EBP={:#x}", esp, ebp);
-                    for i in 0..16u64 {
-                        let addr = esp + i * 4;
-                        if let Ok(phys) = mmu.translate_linear(addr, self.regs.cr3, crate::memory::AccessType::Read, 0, memory) {
-                            let val = memory.fast_read_u32(phys);
-                            eprint!(" {:08X}", val);
+                    for row in 0..8u64 {
+                        let mut line = alloc::format!("[SPIN-STACK] {:08X}:", (esp + row * 32) as u32);
+                        for col in 0..8u64 {
+                            let addr = esp + row * 32 + col * 4;
+                            if let Ok(phys) = mmu.translate_linear(addr, self.regs.cr3, crate::memory::AccessType::Read, 0, memory) {
+                                let val = memory.fast_read_u32(phys);
+                                line.push_str(&alloc::format!(" {:08X}", val));
+                            }
                         }
+                        eprintln!("{}", line);
                     }
-                    eprintln!();
+                    // Walk EBP chain for return addresses
+                    let mut fp = ebp;
+                    let mut frames = alloc::vec::Vec::new();
+                    for _ in 0..16 {
+                        if fp < 0x80000000 || fp > 0xFFFFFFFF { break; }
+                        if let Ok(phys) = mmu.translate_linear(fp + 4, self.regs.cr3, crate::memory::AccessType::Read, 0, memory) {
+                            let ret = memory.fast_read_u32(phys);
+                            frames.push(ret);
+                        } else { break; }
+                        if let Ok(phys) = mmu.translate_linear(fp, self.regs.cr3, crate::memory::AccessType::Read, 0, memory) {
+                            fp = memory.fast_read_u32(phys) as u64;
+                        } else { break; }
+                    }
+                    eprintln!("[SPIN-DUMP] call chain: {:08X?}", frames);
                 }
             }
 
