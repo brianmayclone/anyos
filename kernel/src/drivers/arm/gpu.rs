@@ -7,7 +7,6 @@
 //! After initialization, registers the framebuffer via `drivers::framebuffer::update()`.
 
 use core::ptr;
-use core::sync::atomic::{fence, Ordering};
 
 use crate::memory::physical;
 use crate::memory::FRAME_SIZE;

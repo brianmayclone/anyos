@@ -60,10 +60,24 @@ pub(super) fn is_compositor() -> bool {
     if comp_pd == 0 {
         return false;
     }
-    let current_cr3: u64;
-    unsafe {
-        core::arch::asm!("mov {}, cr3", out(reg) current_cr3);
+    #[cfg(target_arch = "x86_64")]
+    {
+        let current_cr3: u64;
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) current_cr3);
+        }
+        // CR3 bits [12..] are the physical page directory address; mask off flags in low 12 bits
+        return (current_cr3 & !0xFFF) == comp_pd;
     }
-    // CR3 bits [12..] are the physical page directory address; mask off flags in low 12 bits
-    (current_cr3 & !0xFFF) == comp_pd
+    #[cfg(target_arch = "aarch64")]
+    {
+        // On AArch64 use TTBR0_EL1 as the equivalent page-directory identifier
+        let ttbr0: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0);
+        }
+        return (ttbr0 & !0xFFF) == comp_pd;
+    }
+    #[allow(unreachable_code)]
+    false
 }

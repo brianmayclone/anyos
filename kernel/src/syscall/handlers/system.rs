@@ -670,9 +670,12 @@ pub fn sys_shutdown(mode: u32) -> u32 {
     }
 
     // Fallback: halt indefinitely if above methods didn't work
-    crate::serial_println!("kernel: halt (shutdown method did not take effect)");
-    loop {
-        crate::arch::hal::halt();
+    #[allow(unreachable_code)]
+    {
+        crate::serial_println!("kernel: halt (shutdown method did not take effect)");
+        loop {
+            crate::arch::hal::halt();
+        }
     }
 }
 

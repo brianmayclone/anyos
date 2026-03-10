@@ -23,6 +23,7 @@ mod sync;
 mod syscall;
 mod task;
 
+#[cfg(target_arch = "x86_64")]
 use boot_info::BootInfo;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering};
 
@@ -443,6 +444,17 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         serial_println!("  [Phase 7e] ARM64 filesystem init...");
         drivers::arm::storage::init_filesystem();
 
+        // Phase 8b: Start Application Processors (SMP)
+        {
+            let num_cpus = 4; // QEMU virt default; DTB CPU count would refine this
+            if num_cpus > 1 {
+                serial_println!("");
+                serial_println!("  [Phase 8b] Starting {} application processors...", num_cpus - 1);
+                arch::arm64::smp::start_aps(num_cpus);
+                serial_println!("  Online CPUs: {}", arch::arm64::smp::cpu_count());
+            }
+        }
+
         // Phase 8c: Load shared DLIBs (if filesystem is mounted)
         if fs::vfs::has_root_fs() {
             serial_println!("");
@@ -481,18 +493,20 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         serial_println!("");
         serial_println!("========================================");
         serial_println!("  anyOS ARM64 boot complete");
-        serial_println!("  Filesystem: {}", fs_ok);
-        serial_println!("  Display: {}x{}",
+        serial_println!("  CPUs online:  {}", arch::hal::cpu_count());
+        serial_println!("  Filesystem:   {}", fs_ok);
+        serial_println!("  Display:      {}x{}",
             drivers::arm::gpu::framebuffer_info().map_or(0, |f| f.1),
             drivers::arm::gpu::framebuffer_info().map_or(0, |f| f.2));
-        serial_println!("  Input: {} device(s)", drivers::arm::input::device_count());
+        serial_println!("  Input:        {} device(s)", drivers::arm::input::device_count());
         serial_println!("  Entering scheduler...");
         serial_println!("========================================");
         serial_println!("");
         task::scheduler::run();
     }
 
-    // Fallback idle loop
+    // Fallback idle loop (unreachable on architectures that call scheduler::run())
+    #[allow(unreachable_code)]
     loop { arch::hal::halt(); }
 }
 

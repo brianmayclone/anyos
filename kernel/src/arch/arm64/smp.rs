@@ -2,13 +2,37 @@
 //!
 //! Uses PSCI CPU_ON to start secondary processors on QEMU virt.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Maximum number of CPUs supported.
 pub const MAX_CPUS: usize = 16;
 
 /// Number of online CPUs (starts at 1 for BSP).
 static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(1);
+
+/// Per-CPU kernel stack top pointers (SP_EL1 value for each CPU).
+static KERNEL_STACKS: [AtomicU64; MAX_CPUS] = {
+    const INIT: AtomicU64 = AtomicU64::new(0);
+    [INIT; MAX_CPUS]
+};
+
+/// Set the kernel stack top for a CPU (called during task setup and AP init).
+#[inline]
+pub fn set_kernel_stack(cpu: usize, stack_top: u64) {
+    if cpu < MAX_CPUS {
+        KERNEL_STACKS[cpu].store(stack_top, Ordering::Relaxed);
+    }
+}
+
+/// Get the kernel stack top for a CPU.
+#[inline]
+pub fn get_kernel_stack(cpu: usize) -> u64 {
+    if cpu < MAX_CPUS {
+        KERNEL_STACKS[cpu].load(Ordering::Relaxed)
+    } else {
+        0
+    }
+}
 
 /// PSCI function IDs (SMCCC calling convention).
 const PSCI_CPU_ON_64: u64 = 0xC400_0003;
@@ -85,9 +109,37 @@ pub fn start_aps(num_cpus: usize) {
     crate::serial_verbose_println!("[OK] SMP: {} CPUs online", ONLINE_CPUS.load(Ordering::Relaxed));
 }
 
-/// Register the current AP as online (called from ap_startup.S → Rust AP entry).
-pub fn register_ap() {
-    // AP-specific init will be done here
-    let cpu = current_cpu_id();
-    crate::serial_verbose_println!("  AP CPU {} entered Rust code", cpu);
+/// Full AP initialization — called from ap_startup.S as `arm64_ap_init(cpu_id)`.
+///
+/// Performs the same per-CPU setup that `kernel_main` does for the BSP:
+/// - Installs exception vectors (VBAR_EL1)
+/// - Initializes the GIC CPU interface
+/// - Enables the generic timer
+/// - Registers the AP in the scheduler run-queue
+/// - Enables interrupts and enters the scheduler idle loop
+#[no_mangle]
+pub extern "C" fn arm64_ap_init(cpu_id: usize) {
+    // 1. Exception vectors
+    super::exceptions::init();
+
+    // 2. GIC CPU interface
+    super::gic::init_cpu(cpu_id);
+
+    // 3. Generic timer (enables PPI 30 on this CPU)
+    super::generic_timer::init();
+
+    // 4. Register IRQ handler for the timer
+    super::exceptions::register_irq(
+        30,
+        super::generic_timer::irq_handler_with_schedule,
+    );
+
+    // 5. Syscall support for this AP
+    super::syscall::init_cpu(cpu_id);
+
+    crate::serial_verbose_println!("[OK] AP CPU {} online", cpu_id);
+
+    // 6. Enable interrupts and enter scheduler
+    crate::arch::hal::enable_interrupts();
+    crate::task::scheduler::run();
 }

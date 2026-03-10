@@ -5,7 +5,7 @@
 //! Stores events in ring buffers accessible by the compositor/shell.
 
 use core::ptr;
-use core::sync::atomic::{AtomicU32, AtomicBool, Ordering, fence};
+use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 
 use crate::memory::physical;
 use crate::memory::FRAME_SIZE;

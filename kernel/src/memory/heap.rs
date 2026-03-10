@@ -8,7 +8,9 @@
 //! This prevents deadlock when `reap_terminated()` frees a kernel stack from
 //! within the timer ISR while the preempted thread was holding the heap lock.
 
-use crate::memory::address::{PhysAddr, VirtAddr};
+use crate::memory::address::PhysAddr;
+#[cfg(target_arch = "x86_64")]
+use crate::memory::address::VirtAddr;
 use crate::memory::physical;
 use crate::memory::virtual_mem;
 use crate::memory::FRAME_SIZE;

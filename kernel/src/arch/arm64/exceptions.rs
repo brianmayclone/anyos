@@ -93,18 +93,40 @@ pub extern "C" fn arm64_sync_handler(esr: u64, far: u64, elr: u64) {
         }
         EC_DATA_ABORT_LOWER | EC_DATA_ABORT_SAME => {
             FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
+            // ISS bits [5:0] = DFSC (Data Fault Status Code)
+            // ISS bit  [6]   = WnR (1 = write fault, 0 = read fault)
+            // ISS bit  [9]   = EA  (External abort)
+            let dfsc = iss & 0x3F;
+            let write_fault = (iss >> 6) & 1 != 0;
+            let fault_type = match dfsc & 0x3C {
+                0x04 => "translation fault",
+                0x08 => "access flag fault",
+                0x0C => "permission fault",
+                0x10 => "synchronous external abort",
+                0x20 => "alignment fault",
+                _    => "unknown",
+            };
             crate::serial_verbose_println!(
-                "DATA ABORT: FAR={:#018x} ELR={:#018x} ESR={:#018x} ISS={:#010x}",
-                far, elr, esr, iss,
+                "DATA ABORT ({}{}): FAR={:#018x} ELR={:#018x} ESR={:#018x}",
+                if write_fault { "write " } else { "read " },
+                fault_type, far, elr, esr,
             );
-            // TODO: page fault handling (demand paging, CoW)
             handle_fault(ec, far, elr);
         }
         EC_INST_ABORT_LOWER | EC_INST_ABORT_SAME => {
             FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
+            // ISS bits [5:0] = IFSC (Instruction Fault Status Code)
+            let ifsc = iss & 0x3F;
+            let fault_type = match ifsc & 0x3C {
+                0x04 => "translation fault",
+                0x08 => "access flag fault",
+                0x0C => "permission fault",
+                0x10 => "synchronous external abort",
+                _    => "unknown",
+            };
             crate::serial_verbose_println!(
-                "INSTRUCTION ABORT: FAR={:#018x} ELR={:#018x} ESR={:#018x}",
-                far, elr, esr,
+                "INSTRUCTION ABORT ({}): FAR={:#018x} ELR={:#018x} ESR={:#018x}",
+                fault_type, far, elr, esr,
             );
             handle_fault(ec, far, elr);
         }
@@ -113,12 +135,19 @@ pub extern "C" fn arm64_sync_handler(esr: u64, far: u64, elr: u64) {
             crate::task::scheduler::handle_device_not_available();
         }
         EC_BREAKPOINT_LOWER => {
-            crate::serial_verbose_println!("BREAKPOINT at ELR={:#018x}", elr);
-            // TODO: debug trap handling
+            crate::serial_verbose_println!("BREAKPOINT at ELR={:#018x} — killing thread", elr);
+            // No debugger attached; kill the user thread (SIGTRAP = 5)
+            if !crate::task::scheduler::try_exit_current(5) {
+                crate::task::scheduler::fault_kill_and_idle(5);
+            }
         }
         EC_SS_LOWER => {
-            crate::serial_verbose_println!("SINGLE STEP at ELR={:#018x}", elr);
-            // TODO: single-step handling for debugger
+            // Single-step from user space: no debugger, just resume (clear MDSCR SS bit)
+            // For now, kill the thread to avoid an infinite loop.
+            crate::serial_verbose_println!("SINGLE STEP at ELR={:#018x} — killing thread", elr);
+            if !crate::task::scheduler::try_exit_current(5) {
+                crate::task::scheduler::fault_kill_and_idle(5);
+            }
         }
         _ => {
             crate::serial_verbose_println!(

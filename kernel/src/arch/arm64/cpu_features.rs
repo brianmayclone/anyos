@@ -21,14 +21,10 @@ pub static HAS_RNG: AtomicBool = AtomicBool::new(false);
 pub fn detect() {
     let midr: u64;
     let isar0: u64;
-    let isar1: u64;
-    let pfr0: u64;
 
     unsafe {
         core::arch::asm!("mrs {}, midr_el1", out(reg) midr, options(nomem, nostack));
         core::arch::asm!("mrs {}, id_aa64isar0_el1", out(reg) isar0, options(nomem, nostack));
-        core::arch::asm!("mrs {}, id_aa64isar1_el1", out(reg) isar1, options(nomem, nostack));
-        core::arch::asm!("mrs {}, id_aa64pfr0_el1", out(reg) pfr0, options(nomem, nostack));
     }
 
     let implementer = (midr >> 24) & 0xFF;

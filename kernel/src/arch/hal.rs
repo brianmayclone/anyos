@@ -46,8 +46,8 @@ pub fn cpu_count() -> usize {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn cpu_count() -> usize {
-    // ARM64: will be set during SMP init via PSCI/DTB
-    1 // TODO: implement for ARM64
+    let n = crate::arch::arm64::smp::cpu_count();
+    if n == 0 { 1 } else { n }
 }
 
 /// Enable interrupts on the current CPU.
@@ -219,9 +219,15 @@ pub fn set_kernel_stack_for_cpu(cpu: usize, stack_top: u64) {
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
-pub fn set_kernel_stack_for_cpu(_cpu: usize, _stack_top: u64) {
-    // ARM64: kernel stack is managed via SP_EL1; set during context switch
-    // TODO: implement for ARM64
+pub fn set_kernel_stack_for_cpu(cpu: usize, stack_top: u64) {
+    crate::arch::arm64::smp::set_kernel_stack(cpu, stack_top);
+    // Also update SP_EL1 directly if this is the current CPU
+    let cur = cpu_id();
+    if cpu == cur {
+        unsafe {
+            core::arch::asm!("msr sp_el0, {}", in(reg) stack_top, options(nostack));
+        }
+    }
 }
 
 /// Get the kernel stack pointer for a CPU (e.g., TSS.RSP0 on x86).
@@ -233,9 +239,8 @@ pub fn get_kernel_stack_for_cpu(cpu: usize) -> u64 {
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
-pub fn get_kernel_stack_for_cpu(_cpu: usize) -> u64 {
-    // ARM64: SP_EL1 per-CPU; TODO: implement
-    0
+pub fn get_kernel_stack_for_cpu(cpu: usize) -> u64 {
+    crate::arch::arm64::smp::get_kernel_stack(cpu)
 }
 
 // =============================================================================
@@ -294,9 +299,8 @@ pub fn send_ipi(cpu: usize, vector: u8) {
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
-pub fn send_ipi(_cpu: usize, _vector: u8) {
-    // ARM64: ICC_SGI1R_EL1 for Software Generated Interrupt
-    // TODO: implement for ARM64 GICv3
+pub fn send_ipi(cpu: usize, vector: u8) {
+    crate::arch::arm64::gic::send_sgi(cpu, vector & 0xF);
 }
 
 /// Halt all other CPUs (for panic/fatal error handling).
@@ -309,7 +313,14 @@ pub fn halt_other_cpus() {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn halt_other_cpus() {
-    // ARM64: TODO — send SGI to halt other CPUs
+    // Send SGI 0 (HALT_IPI) to all other online CPUs
+    let bsp = cpu_id();
+    let count = cpu_count();
+    for cpu in 0..count {
+        if cpu != bsp {
+            crate::arch::arm64::gic::send_sgi(cpu, 0);
+        }
+    }
 }
 
 // =============================================================================
@@ -472,9 +483,44 @@ pub fn fpu_save(buf: *mut u8) {
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
-pub fn fpu_save(_buf: *mut u8) {
-    // ARM64: save Q0-Q31 + FPCR + FPSR
-    // TODO: implement for ARM64
+pub fn fpu_save(buf: *mut u8) {
+    // Save 32 × 128-bit NEON/FP registers (Q0-Q31) + FPCR + FPSR.
+    // Buffer layout: 32 × 16 bytes = 512 bytes for Q-regs,
+    //               then 8 bytes FPCR + 8 bytes FPSR = 528 bytes total.
+    // Caller must ensure buf is at least 528 bytes and 16-byte aligned.
+    unsafe {
+        core::arch::asm!(
+            // Save Q0-Q7
+            "stp q0,  q1,  [{buf}, #0]",
+            "stp q2,  q3,  [{buf}, #32]",
+            "stp q4,  q5,  [{buf}, #64]",
+            "stp q6,  q7,  [{buf}, #96]",
+            // Save Q8-Q15
+            "stp q8,  q9,  [{buf}, #128]",
+            "stp q10, q11, [{buf}, #160]",
+            "stp q12, q13, [{buf}, #192]",
+            "stp q14, q15, [{buf}, #224]",
+            // Save Q16-Q23
+            "stp q16, q17, [{buf}, #256]",
+            "stp q18, q19, [{buf}, #288]",
+            "stp q20, q21, [{buf}, #320]",
+            "stp q22, q23, [{buf}, #352]",
+            // Save Q24-Q31
+            "stp q24, q25, [{buf}, #384]",
+            "stp q26, q27, [{buf}, #416]",
+            "stp q28, q29, [{buf}, #448]",
+            "stp q30, q31, [{buf}, #480]",
+            // Save FPCR and FPSR
+            "mrs {tmp0}, fpcr",
+            "mrs {tmp1}, fpsr",
+            "str {tmp0}, [{buf}, #512]",
+            "str {tmp1}, [{buf}, #520]",
+            buf = in(reg) buf,
+            tmp0 = out(reg) _,
+            tmp1 = out(reg) _,
+            options(nostack),
+        );
+    }
 }
 
 /// Restore FPU/SIMD state from a buffer.
@@ -498,9 +544,42 @@ pub fn fpu_restore(buf: *const u8) {
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
-pub fn fpu_restore(_buf: *const u8) {
-    // ARM64: restore Q0-Q31 + FPCR + FPSR
-    // TODO: implement for ARM64
+pub fn fpu_restore(buf: *const u8) {
+    // Restore 32 × 128-bit NEON/FP registers (Q0-Q31) + FPCR + FPSR.
+    // Buffer layout must match fpu_save().
+    unsafe {
+        core::arch::asm!(
+            // Restore FPCR and FPSR first
+            "ldr {tmp0}, [{buf}, #512]",
+            "ldr {tmp1}, [{buf}, #520]",
+            "msr fpcr, {tmp0}",
+            "msr fpsr, {tmp1}",
+            // Restore Q0-Q7
+            "ldp q0,  q1,  [{buf}, #0]",
+            "ldp q2,  q3,  [{buf}, #32]",
+            "ldp q4,  q5,  [{buf}, #64]",
+            "ldp q6,  q7,  [{buf}, #96]",
+            // Restore Q8-Q15
+            "ldp q8,  q9,  [{buf}, #128]",
+            "ldp q10, q11, [{buf}, #160]",
+            "ldp q12, q13, [{buf}, #192]",
+            "ldp q14, q15, [{buf}, #224]",
+            // Restore Q16-Q23
+            "ldp q16, q17, [{buf}, #256]",
+            "ldp q18, q19, [{buf}, #288]",
+            "ldp q20, q21, [{buf}, #320]",
+            "ldp q22, q23, [{buf}, #352]",
+            // Restore Q24-Q31
+            "ldp q24, q25, [{buf}, #384]",
+            "ldp q26, q27, [{buf}, #416]",
+            "ldp q28, q29, [{buf}, #448]",
+            "ldp q30, q31, [{buf}, #480]",
+            buf = in(reg) buf,
+            tmp0 = out(reg) _,
+            tmp1 = out(reg) _,
+            options(nostack),
+        );
+    }
 }
 
 // =============================================================================

@@ -4,10 +4,8 @@
 //! Each I/O operation uses a 3-descriptor chain: header → data → status.
 
 use core::ptr;
-use core::sync::atomic::{fence, Ordering};
 
 use crate::memory::physical;
-use crate::memory::FRAME_SIZE;
 use crate::sync::spinlock::Spinlock;
 
 use super::VirtioMmioDevice;

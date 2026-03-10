@@ -35,3 +35,11 @@ pub extern "C" fn arm64_syscall_dispatch(
 pub fn init_bsp() {
     crate::serial_verbose_println!("[OK] Syscall: SVC #0 handler active (via VBAR_EL1)");
 }
+
+/// Initialize syscall handling for an Application Processor.
+///
+/// VBAR_EL1 is already set by `exceptions::init()` called from `arm64_ap_init`.
+/// Nothing additional is needed per-CPU on ARM64.
+pub fn init_cpu(_cpu_id: usize) {
+    // VBAR_EL1 set by exceptions::init() — syscalls via SVC #0 are ready.
+}
