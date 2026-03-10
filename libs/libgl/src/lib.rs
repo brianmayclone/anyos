@@ -1318,6 +1318,14 @@ pub extern "C" fn gl_physics_set_angular_damping(id: u32, damping: f32) {
     }
 }
 
+/// Set linear damping factor (air resistance).
+#[no_mangle]
+pub extern "C" fn gl_physics_set_linear_damping(id: u32, damping: f32) {
+    if let Some(b) = phys().bodies.get_mut(id as usize) {
+        b.linear_damping = damping;
+    }
+}
+
 /// Set whether body is affected by gravity.
 #[no_mangle]
 pub extern "C" fn gl_physics_set_use_gravity(id: u32, use_grav: u32) {

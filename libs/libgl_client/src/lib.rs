@@ -202,6 +202,7 @@ struct LibGl {
     physics_set_angular_velocity: extern "C" fn(u32, f32, f32, f32),
     physics_get_orientation: extern "C" fn(u32, *mut f32, *mut f32, *mut f32, *mut f32),
     physics_set_angular_damping: extern "C" fn(u32, f32),
+    physics_set_linear_damping: extern "C" fn(u32, f32),
     physics_set_use_gravity: extern "C" fn(u32, u32),
     physics_set_active: extern "C" fn(u32, u32),
     physics_set_plane_d: extern "C" fn(u32, f32),
@@ -336,6 +337,7 @@ pub fn init() -> bool {
             physics_set_angular_velocity: resolve(&handle, "gl_physics_set_angular_velocity"),
             physics_get_orientation: resolve(&handle, "gl_physics_get_orientation"),
             physics_set_angular_damping: resolve(&handle, "gl_physics_set_angular_damping"),
+            physics_set_linear_damping: resolve(&handle, "gl_physics_set_linear_damping"),
             physics_set_use_gravity: resolve(&handle, "gl_physics_set_use_gravity"),
             physics_set_active: resolve(&handle, "gl_physics_set_active"),
             physics_set_plane_d: resolve(&handle, "gl_physics_set_plane_d"),
@@ -736,6 +738,11 @@ pub fn physics_get_orientation(id: u32) -> (f32, f32, f32, f32) {
 /// Set angular damping factor (0.0 = no damping).
 pub fn physics_set_angular_damping(id: u32, damping: f32) {
     (lib().physics_set_angular_damping)(id, damping);
+}
+
+/// Set linear damping factor (air resistance).
+pub fn physics_set_linear_damping(id: u32, damping: f32) {
+    (lib().physics_set_linear_damping)(id, damping);
 }
 
 /// Set whether body is affected by gravity.

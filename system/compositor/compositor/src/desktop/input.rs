@@ -675,7 +675,7 @@ impl Desktop {
 
     fn handle_scroll(&mut self, dz: i32) {
         if let Some(win_id) = self.focused_window {
-            self.push_event(win_id, [EVENT_MOUSE_SCROLL, dz as u32, 0, 0, 0]);
+            self.push_event(win_id, [EVENT_MOUSE_SCROLL, dz as u32, self.current_modifiers, 0, 0]);
         }
     }
 

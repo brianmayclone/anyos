@@ -108,3 +108,4 @@ EXPORTS
     gl_physics_set_angular_velocity
     gl_physics_get_orientation
     gl_physics_set_angular_damping
+    gl_physics_set_linear_damping

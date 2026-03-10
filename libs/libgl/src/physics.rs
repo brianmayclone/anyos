@@ -178,6 +178,8 @@ pub struct RigidBody {
     pub orientation: Quat,
     /// Angular damping factor (0.0 = no damping, higher = more friction). Applied per second.
     pub angular_damping: f32,
+    /// Linear damping (air resistance). 0.0 = none, ~0.5 = light drag.
+    pub linear_damping: f32,
     /// Whether this body is affected by gravity.
     pub use_gravity: bool,
 }
@@ -196,6 +198,7 @@ impl RigidBody {
             angular_vel: Vec3::ZERO,
             orientation: Quat::IDENTITY,
             angular_damping: 0.0,
+            linear_damping: 0.0,
             use_gravity: true,
         }
     }
@@ -232,6 +235,7 @@ impl PhysicsWorld {
             angular_vel: Vec3::ZERO,
             orientation: Quat::IDENTITY,
             angular_damping: 0.0,
+            linear_damping: 0.0,
             use_gravity: mass > 0.0,
         };
         let id = self.bodies.len() as u32;
@@ -254,6 +258,7 @@ impl PhysicsWorld {
             angular_vel: Vec3::ZERO,
             orientation: Quat::IDENTITY,
             angular_damping: 0.0,
+            linear_damping: 0.0,
             use_gravity: false,
         };
         let id = self.bodies.len() as u32;
@@ -276,6 +281,7 @@ impl PhysicsWorld {
             angular_vel: Vec3::ZERO,
             orientation: Quat::IDENTITY,
             angular_damping: 0.0,
+            linear_damping: 0.0,
             use_gravity: mass > 0.0,
         };
         let id = self.bodies.len() as u32;
@@ -349,6 +355,13 @@ impl PhysicsWorld {
         for b in self.bodies.iter_mut() {
             if !b.active || b.inv_mass == 0.0 { continue; }
             b.position = b.position.add(b.velocity.scale(dt));
+
+            // Linear damping (air resistance)
+            if b.linear_damping > 0.0 {
+                let f = 1.0 - b.linear_damping * dt;
+                let f = if f < 0.0 { 0.0 } else { f };
+                b.velocity = b.velocity.scale(f);
+            }
 
             // Angular damping (exponential decay per second)
             if b.angular_damping > 0.0 {

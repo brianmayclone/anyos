@@ -28,6 +28,37 @@ use crate::serial_println;
 /// OpenGL ES 2.0 guarantees at least 8 vec4 varyings.
 pub const MAX_VARYINGS: usize = 8;
 
+/// Maximum number of uniform vec4 slots (mat4 = 4 slots, scalar = 1 slot).
+const MAX_UNIFORM_SLOTS: usize = 128;
+
+// ── Reusable per-frame buffers (avoid heap fragmentation) ───────────────
+
+static mut CLIP_VERTS_BUF: Option<Vec<ClipVertex>> = None;
+static mut CACHE_BUF: Option<Vec<Option<ClipVertex>>> = None;
+
+fn reuse_clip_verts() -> &'static mut Vec<ClipVertex> {
+    unsafe {
+        if CLIP_VERTS_BUF.is_none() {
+            CLIP_VERTS_BUF = Some(Vec::with_capacity(1024));
+        }
+        let v = CLIP_VERTS_BUF.as_mut().unwrap();
+        v.clear();
+        v
+    }
+}
+
+fn reuse_cache(size: usize) -> &'static mut Vec<Option<ClipVertex>> {
+    unsafe {
+        if CACHE_BUF.is_none() {
+            CACHE_BUF = Some(Vec::new());
+        }
+        let v = CACHE_BUF.as_mut().unwrap();
+        v.clear();
+        v.resize(size, None);
+        v
+    }
+}
+
 /// A processed vertex after the vertex shader.
 ///
 /// Uses fixed-size inline arrays for varyings to avoid heap allocation.
@@ -77,16 +108,17 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
         _ => return,
     };
 
-    let vs_ir = match &program.vs_ir {
-        Some(ir) => ir.clone(),
+    // Use raw pointers to avoid cloning IR (safe: IR is never modified during draw)
+    let vs_ir_ptr = match &program.vs_ir {
+        Some(ir) => ir as *const crate::compiler::ir::Program,
         None => return,
     };
-    let fs_ir = match &program.fs_ir {
-        Some(ir) => ir.clone(),
+    let fs_ir_ptr = match &program.fs_ir {
+        Some(ir) => ir as *const crate::compiler::ir::Program,
         None => return,
     };
     let num_varyings = program.varying_count.min(MAX_VARYINGS);
-    let uniforms = collect_uniforms(program);
+    let (uniforms, _uni_count) = collect_uniforms_stack(program);
 
     // Extract matColor early (before program borrow ends)
     let mat_color = program.uniforms.iter().rev()
@@ -115,12 +147,17 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
         crate::BOUND_TEXTURES_PTR = &ctx.bound_textures as *const _;
     }
 
+    // Safety: IR is stored in GlContext and never modified during draw.
+    let vs_ir = unsafe { &*vs_ir_ptr };
+    let fs_ir = unsafe { &*fs_ir_ptr };
+
     // ── Vertex Processing (one ShaderExec reused for all vertices) ────────
     let mut vs_exec = ShaderExec::new(vs_ir.num_regs, num_varyings);
     let mut attrib_buf = [[0.0f32, 0.0, 0.0, 1.0]; 16];
-    let mut clip_verts = Vec::with_capacity(count as usize);
+    let clip_verts = reuse_clip_verts();
 
     let tex_sample_addr = raster::real_tex_sample as usize;
+    let uni_slice = &uniforms[..];
 
     for i in first..(first + count) {
         vertex::fetch_attributes_into(ctx, &attrib_info[..num_attribs], i as u32, &mut attrib_buf);
@@ -128,7 +165,7 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
         if let Some(jit) = vs_jit {
             let mut jit_ctx = JitContext {
                 regs: vs_exec.regs.as_mut_ptr() as *mut f32,
-                uniforms: uniforms.as_ptr() as *const f32,
+                uniforms: uni_slice.as_ptr() as *const f32,
                 attributes: attrib_buf.as_ptr() as *const f32,
                 varyings_in: core::ptr::null(),
                 varyings_out: vs_exec.varyings.as_mut_ptr() as *mut f32,
@@ -140,7 +177,7 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
             };
             unsafe { jit(&mut jit_ctx); }
         } else {
-            vs_exec.execute(&vs_ir, &attrib_buf[..num_attribs], &uniforms, None, raster::real_tex_sample);
+            vs_exec.execute(vs_ir, &attrib_buf[..num_attribs], uni_slice, None, raster::real_tex_sample);
         }
         clip_verts.push(ClipVertex {
             position: vs_exec.position,
@@ -180,7 +217,6 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
                 v0.position[0] as i32, v0.position[1] as i32,
                 v0.position[2] as i32, v0.position[3] as i32,
                 fb_w, fb_h, fast.is_some());
-            // Check how many verts are trivially inside
             let inside = clip_verts.iter().filter(|v| trivially_inside(v)).count();
             serial_println!("[libgl] draw: {} of {} verts trivially inside", inside, clip_verts.len());
             if clip_verts.len() >= 3 {
@@ -198,7 +234,7 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
             let mut i = 0;
             while i + 2 < clip_verts.len() {
                 process_triangle(
-                    ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, fast.as_ref(),
+                    ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(),
                     &clip_verts[i], &clip_verts[i+1], &clip_verts[i+2],
                     num_varyings, fb_w, fb_h,
                 );
@@ -212,13 +248,13 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
                 } else {
                     (&clip_verts[i+1], &clip_verts[i], &clip_verts[i+2])
                 };
-                process_triangle(ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, fast.as_ref(), a, b, c, num_varyings, fb_w, fb_h);
+                process_triangle(ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(), a, b, c, num_varyings, fb_w, fb_h);
             }
         }
         GL_TRIANGLE_FAN => {
             for i in 1..clip_verts.len().saturating_sub(1) {
                 process_triangle(
-                    ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, fast.as_ref(),
+                    ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(),
                     &clip_verts[0], &clip_verts[i], &clip_verts[i+1],
                     num_varyings, fb_w, fb_h,
                 );
@@ -232,8 +268,15 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
 pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenum, offset: usize) {
     if count <= 0 { return; }
     let ebo_id = ctx.bound_element_buffer;
-    let index_data = match ctx.buffers.get(ebo_id) {
-        Some(buf) => buf.data.clone(),
+
+    // Use raw pointer to index data — avoid cloning the entire buffer
+    let index_data_ptr: *const u8;
+    let index_data_len: usize;
+    match ctx.buffers.get(ebo_id) {
+        Some(buf) => {
+            index_data_ptr = buf.data.as_ptr();
+            index_data_len = buf.data.len();
+        }
         None => return,
     };
 
@@ -243,16 +286,17 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
         _ => return,
     };
 
-    let vs_ir = match &program.vs_ir {
-        Some(ir) => ir.clone(),
+    // Use raw pointers to avoid cloning IR (safe: IR is never modified during draw)
+    let vs_ir_ptr = match &program.vs_ir {
+        Some(ir) => ir as *const crate::compiler::ir::Program,
         None => return,
     };
-    let fs_ir = match &program.fs_ir {
-        Some(ir) => ir.clone(),
+    let fs_ir_ptr = match &program.fs_ir {
+        Some(ir) => ir as *const crate::compiler::ir::Program,
         None => return,
     };
     let num_varyings = program.varying_count.min(MAX_VARYINGS);
-    let uniforms = collect_uniforms(program);
+    let (uniforms, _uni_count) = collect_uniforms_stack(program);
 
     // Extract matColor early (before program borrow ends)
     let mat_color = program.uniforms.iter().rev()
@@ -274,32 +318,42 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
         }
     }
 
-    // Fetch indices into a compact buffer
-    let mut indices = Vec::with_capacity(count as usize);
-    for i in 0..count as usize {
-        let idx = match type_ {
-            GL_UNSIGNED_SHORT => {
-                let off = offset + i * 2;
-                if off + 1 < index_data.len() {
-                    u32::from(index_data[off]) | (u32::from(index_data[off + 1]) << 8)
-                } else { 0 }
+    // Safety: index_data is stored in GlContext buffer and never modified during draw.
+    let index_data = unsafe { core::slice::from_raw_parts(index_data_ptr, index_data_len) };
+
+    // Safety: IR is stored in GlContext and never modified during draw.
+    let vs_ir = unsafe { &*vs_ir_ptr };
+    let fs_ir = unsafe { &*fs_ir_ptr };
+    let uni_slice = &uniforms[..];
+
+    // Parse indices directly without allocating a Vec — find max_idx in the same pass
+    // Use a stack buffer for small counts, reusable static for larger ones
+    static mut INDICES_BUF: Option<Vec<u32>> = None;
+    let indices: &[u32];
+    // Stack buffer for small draw calls (covers most cases: cubes, simple meshes)
+    let mut stack_indices = [0u32; 4096];
+    let count_usize = count as usize;
+
+    if count_usize <= 4096 {
+        let mut max_idx = 0u32;
+        for i in 0..count_usize {
+            let idx = read_index(index_data, type_, offset, i);
+            stack_indices[i] = idx;
+            if idx > max_idx { max_idx = idx; }
+        }
+        indices = &stack_indices[..count_usize];
+    } else {
+        unsafe {
+            if INDICES_BUF.is_none() {
+                INDICES_BUF = Some(Vec::with_capacity(count_usize));
             }
-            GL_UNSIGNED_INT => {
-                let off = offset + i * 4;
-                if off + 3 < index_data.len() {
-                    u32::from(index_data[off])
-                    | (u32::from(index_data[off + 1]) << 8)
-                    | (u32::from(index_data[off + 2]) << 16)
-                    | (u32::from(index_data[off + 3]) << 24)
-                } else { 0 }
+            let buf = INDICES_BUF.as_mut().unwrap();
+            buf.clear();
+            for i in 0..count_usize {
+                buf.push(read_index(index_data, type_, offset, i));
             }
-            GL_UNSIGNED_BYTE => {
-                let off = offset + i;
-                if off < index_data.len() { index_data[off] as u32 } else { 0 }
-            }
-            _ => 0,
-        };
-        indices.push(idx);
+            indices = core::slice::from_raw_parts(buf.as_ptr(), buf.len());
+        }
     }
 
     // Set raw texture pointers before draw — avoids &CTX / &mut CTX aliasing UB.
@@ -314,14 +368,11 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
     let tex_sample_addr = raster::real_tex_sample as usize;
 
     let max_idx = indices.iter().copied().max().unwrap_or(0) as usize;
-    let mut cache: Vec<Option<ClipVertex>> = Vec::new();
     let use_cache = max_idx < 65536;
-    if use_cache {
-        cache.resize(max_idx + 1, None);
-    }
+    let cache = if use_cache { reuse_cache(max_idx + 1) } else { reuse_cache(0) };
 
-    let mut clip_verts = Vec::with_capacity(count as usize);
-    for &idx in &indices {
+    let clip_verts = reuse_clip_verts();
+    for &idx in indices {
         if use_cache {
             if let Some(cached) = &cache[idx as usize] {
                 clip_verts.push(*cached);
@@ -333,7 +384,7 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
         if let Some(jit) = vs_jit {
             let mut jit_ctx = JitContext {
                 regs: vs_exec.regs.as_mut_ptr() as *mut f32,
-                uniforms: uniforms.as_ptr() as *const f32,
+                uniforms: uni_slice.as_ptr() as *const f32,
                 attributes: attrib_buf.as_ptr() as *const f32,
                 varyings_in: core::ptr::null(),
                 varyings_out: vs_exec.varyings.as_mut_ptr() as *mut f32,
@@ -345,7 +396,7 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
             };
             unsafe { jit(&mut jit_ctx); }
         } else {
-            vs_exec.execute(&vs_ir, &attrib_buf[..num_attribs], &uniforms, None, raster::real_tex_sample);
+            vs_exec.execute(vs_ir, &attrib_buf[..num_attribs], uni_slice, None, raster::real_tex_sample);
         }
         let cv = ClipVertex {
             position: vs_exec.position,
@@ -380,7 +431,7 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
         let mut i = 0;
         while i + 2 < clip_verts.len() {
             process_triangle(
-                ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, fast.as_ref(),
+                ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(),
                 &clip_verts[i], &clip_verts[i+1], &clip_verts[i+2],
                 num_varyings, fb_w, fb_h,
             );
@@ -393,16 +444,43 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
             } else {
                 (&clip_verts[i+1], &clip_verts[i], &clip_verts[i+2])
             };
-            process_triangle(ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, fast.as_ref(), a, b, c, num_varyings, fb_w, fb_h);
+            process_triangle(ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(), a, b, c, num_varyings, fb_w, fb_h);
         }
     } else if mode == GL_TRIANGLE_FAN {
         for i in 1..clip_verts.len().saturating_sub(1) {
             process_triangle(
-                ctx, &fs_ir, &uniforms, &mut fs_exec, fs_jit, fast.as_ref(),
+                ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(),
                 &clip_verts[0], &clip_verts[i], &clip_verts[i+1],
                 num_varyings, fb_w, fb_h,
             );
         }
+    }
+}
+
+/// Read a single index from the element buffer without allocation.
+#[inline(always)]
+fn read_index(data: &[u8], type_: GLenum, offset: usize, i: usize) -> u32 {
+    match type_ {
+        GL_UNSIGNED_SHORT => {
+            let off = offset + i * 2;
+            if off + 1 < data.len() {
+                u32::from(data[off]) | (u32::from(data[off + 1]) << 8)
+            } else { 0 }
+        }
+        GL_UNSIGNED_INT => {
+            let off = offset + i * 4;
+            if off + 3 < data.len() {
+                u32::from(data[off])
+                | (u32::from(data[off + 1]) << 8)
+                | (u32::from(data[off + 2]) << 16)
+                | (u32::from(data[off + 3]) << 24)
+            } else { 0 }
+        }
+        GL_UNSIGNED_BYTE => {
+            let off = offset + i;
+            if off < data.len() { data[off] as u32 } else { 0 }
+        }
+        _ => 0,
     }
 }
 
@@ -504,25 +582,38 @@ fn to_screen(clip: &[f32; 4], vx: i32, vy: i32, vw: i32, vh: i32) -> [f32; 3] {
     ]
 }
 
-/// Collect uniform values from program into a flat array.
+/// Collect uniform values into a Vec (for SVGA backend — not called per-frame).
 pub fn collect_uniforms(program: &crate::shader::GlProgram) -> Vec<[f32; 4]> {
-    let mut unis = Vec::new();
+    let (arr, n) = collect_uniforms_stack(program);
+    arr[..n].to_vec()
+}
+
+/// Collect uniform values from program into a fixed-size stack array.
+/// Returns the array and the number of slots used.
+pub fn collect_uniforms_stack(program: &crate::shader::GlProgram) -> ([[f32; 4]; MAX_UNIFORM_SLOTS], usize) {
+    let mut unis = [[0.0f32; 4]; MAX_UNIFORM_SLOTS];
+    let mut n = 0usize;
     for u in &program.uniforms {
         if u.size == 16 {
-            // mat4: 4 vec4 columns
             for col in 0..4 {
-                unis.push([
-                    u.value[col * 4],
-                    u.value[col * 4 + 1],
-                    u.value[col * 4 + 2],
-                    u.value[col * 4 + 3],
-                ]);
+                if n < MAX_UNIFORM_SLOTS {
+                    unis[n] = [
+                        u.value[col * 4],
+                        u.value[col * 4 + 1],
+                        u.value[col * 4 + 2],
+                        u.value[col * 4 + 3],
+                    ];
+                    n += 1;
+                }
             }
         } else {
-            unis.push([u.value[0], u.value[1], u.value[2], u.value[3]]);
+            if n < MAX_UNIFORM_SLOTS {
+                unis[n] = [u.value[0], u.value[1], u.value[2], u.value[3]];
+                n += 1;
+            }
         }
     }
-    unis
+    (unis, n)
 }
 
 /// Signed area of a triangle (positive = CCW).

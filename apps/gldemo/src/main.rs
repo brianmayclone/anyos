@@ -968,11 +968,12 @@ fn main() {
     gl::physics_set_angular_damping(phys_sphere, 1.0);
 
     // Cube: mass=1.5 kg, half-extents=0.45, starts elevated for a drop
-    let phys_cube = gl::physics_add_box(1.5, 0.45, 0.45, 0.45, 1.2, 2.0, 0.0);
-    gl::physics_set_restitution(phys_cube, 0.5);
-    // Initial tumbling rotation (X + Y + Z) and angular damping so it slows down
-    gl::physics_set_angular_velocity(phys_cube, 4.0, 2.0, 1.5);
-    gl::physics_set_angular_damping(phys_cube, 1.5);
+    let phys_cube = gl::physics_add_box(1.5, 0.45, 0.45, 0.45, 1.2, 1.5, 0.0);
+    gl::physics_set_restitution(phys_cube, 0.35);
+    // Initial tumbling rotation and damping so it settles
+    gl::physics_set_angular_velocity(phys_cube, 3.0, 1.5, 1.0);
+    gl::physics_set_angular_damping(phys_cube, 2.0);
+    gl::physics_set_linear_damping(phys_cube, 0.3);
 
     // Boing ball: mass=1.0 kg, radius=0.6, starts inactive (off-screen)
     let phys_boing = gl::physics_add_sphere(1.0, 0.6, -5.0, 0.0, 0.5);

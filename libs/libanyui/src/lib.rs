@@ -186,6 +186,10 @@ pub(crate) struct AnyuiState {
     pub click_count: u32,
     /// Which mouse button was pressed (for right-click detection).
     pub pressed_button: u32,
+    /// Last known mouse position (logical pixels, window-relative).
+    pub last_mouse_x: i32,
+    /// Last known mouse position (logical pixels, window-relative).
+    pub last_mouse_y: i32,
 
     // ── Tooltip ──────────────────────────────────────────────────────
     /// Framework-managed tooltip control ID (created lazily on first use).
@@ -322,6 +326,8 @@ pub extern "C" fn anyui_init() -> u32 {
             last_click_tick: 0,
             click_count: 0,
             pressed_button: 0,
+            last_mouse_x: 0,
+            last_mouse_y: 0,
             active_tooltip: None,
             tooltip_pending_id: None,
             tooltip_hover_start: 0,

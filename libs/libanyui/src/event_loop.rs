@@ -434,6 +434,8 @@ pub fn run_once() -> u32 {
                     // Convert to logical pixels for the control tree.
                     let mx = crate::theme::unscale(ev[2] as i32);
                     let my = crate::theme::unscale(ev[3] as i32);
+                    st.last_mouse_x = mx;
+                    st.last_mouse_y = my;
 
                     // Update hover tracking (MouseEnter / MouseLeave)
                     let new_hover = control::hit_test_any(&st.controls, win_id, mx, my, 0, 0);
@@ -944,10 +946,13 @@ pub fn run_once() -> u32 {
                 }
 
                 compositor::EVT_MOUSE_SCROLL => {
-                    // arg1=dz (signed), arg2=0, arg3=0
+                    // arg1=dz (signed), arg2=modifiers, arg3=0
                     let dz = ev[2] as i32;
+                    let modifiers = ev[3];
+                    st.last_modifiers = modifiers;
 
                     // Dispatch to hovered control, bubbling up to ScrollView if needed
+                    let mut consumed = false;
                     if let Some(target_id) = st.hovered {
                         let mut cur = target_id;
                         loop {
@@ -959,6 +964,7 @@ pub fn run_once() -> u32 {
                                     if resp.fire_change {
                                         fire_event_callback(&st.controls, cur, control::EVENT_CHANGE, &mut pending_cbs);
                                     }
+                                    consumed = true;
                                     break;
                                 }
                                 // Bubble up to parent
@@ -967,6 +973,22 @@ pub fn run_once() -> u32 {
                                 cur = parent;
                             } else {
                                 break;
+                            }
+                        }
+                    }
+
+                    // If scroll was not consumed (e.g. Canvas), convert to mouse_down
+                    // with button 2 (scroll up) or 3 (scroll down) for raw controls
+                    if !consumed {
+                        if let Some(target_id) = st.hovered {
+                            if let Some(idx) = control::find_idx(&st.controls, target_id) {
+                                let button = if dz < 0 { 2u32 } else { 3u32 };
+                                let (ax, ay) = control::abs_position(&st.controls, target_id);
+                                let local_x = st.last_mouse_x - ax;
+                                let local_y = st.last_mouse_y - ay;
+                                st.controls[idx].handle_mouse_down(local_x, local_y, button);
+                                st.controls[idx].base_mut().mark_dirty();
+                                fire_event_callback(&st.controls, target_id, control::EVENT_MOUSE_DOWN, &mut pending_cbs);
                             }
                         }
                     }

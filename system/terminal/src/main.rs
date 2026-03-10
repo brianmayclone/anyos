@@ -289,10 +289,9 @@ impl Selection {
 // ─── Selection Helpers ───────────────────────────────────────────────────────
 
 /// Convert pixel coordinates to a cell position in the buffer.
-fn pixel_to_cell_in_rect(px: u32, py: u32, buf: &TerminalBuffer, rect: Rect) -> CellPos {
-    let a = app();
-    let cell_w = a.cell_w as u32;
-    let cell_h = a.cell_h as u32;
+fn pixel_to_cell_in_rect(px: u32, py: u32, buf: &TerminalBuffer, rect: Rect, cell_w: u16, cell_h: u16) -> CellPos {
+    let cell_w = cell_w as u32;
+    let cell_h = cell_h as u32;
     let local_x = px.saturating_sub(rect.x as u32);
     let local_y = py.saturating_sub(rect.y as u32);
     let col = if local_x > TEXT_PAD as u32 {
@@ -2026,7 +2025,7 @@ fn load_profiles() -> Vec<Profile> {
     if fd == u32::MAX {
         return alloc::vec![Profile::default_profile()];
     }
-    let mut buf = [0u8; 8192];
+    let mut buf = [0u8; 32768];
     let n = fs::read(fd, &mut buf);
     fs::close(fd);
     if n == 0 || n == u32::MAX {
@@ -2054,20 +2053,29 @@ fn load_profiles() -> Vec<Profile> {
     profiles
 }
 
+/// Recursively create directories (like mkdir -p).
+fn mkdir_p(path: &str) {
+    let mut accumulated = String::new();
+    for component in path.split('/') {
+        if component.is_empty() {
+            accumulated.push('/');
+            continue;
+        }
+        if !accumulated.is_empty() && !accumulated.ends_with('/') {
+            accumulated.push('/');
+        }
+        accumulated.push_str(component);
+        fs::mkdir(&accumulated);
+    }
+}
+
 fn save_profiles(profiles: &[Profile]) {
     use anyos_std::json::Value;
     let path = profiles_config_path();
 
-    // Ensure directory exists
-    let dir = {
-        let mut d = String::new();
-        if let Some(pos) = path.rfind('/') {
-            d.push_str(&path[..pos]);
-        }
-        d
-    };
-    if !dir.is_empty() {
-        fs::mkdir(&dir);
+    // Ensure directory exists (recursive)
+    if let Some(pos) = path.rfind('/') {
+        mkdir_p(&path[..pos]);
     }
 
     let mut root = Value::new_object();
@@ -2080,9 +2088,9 @@ fn save_profiles(profiles: &[Profile]) {
     let _ = fs::write_bytes(&path, json.as_bytes());
 }
 
-// ─── Scrollback Persistence ──────────────────────────────────────────────────
+// ─── Scrollback Persistence (per tab/split) ─────────────────────────────────
 
-fn scrollback_file_path() -> String {
+fn recovery_file_path() -> String {
     let mut home_buf = [0u8; 128];
     let hlen = anyos_std::env::get("HOME", &mut home_buf);
     let home = if hlen != u32::MAX {
@@ -2090,100 +2098,46 @@ fn scrollback_file_path() -> String {
     } else {
         "/"
     };
-    format!("{}/.config/terminal/scrollback.txt", home)
+    format!("{}/.config/terminal/recovery.json", home)
 }
 
-/// Save the visible terminal buffer content (last N lines) to disk.
-fn save_scrollback(a: &TerminalApp) {
-    let path = scrollback_file_path();
+/// Extract scrollback text from a terminal buffer (last MAX_SCROLLBACK lines).
+fn extract_scrollback(buf: &TerminalBuffer) -> String {
     let mut text = String::new();
-
-    // Save all sessions from active tab
-    for tab in &a.tabs {
-        let sessions = tab.root.collect_sessions();
-        for sess in sessions {
-            // Collect all lines as text
-            for line in &sess.buf.lines {
-                for cell in line {
-                    if cell.ch != '\0' && cell.width > 0 {
-                        text.push(cell.ch);
-                    }
-                    if cell.combining != '\0' {
-                        text.push(cell.combining);
-                    }
-                }
-                // Trim trailing spaces
-                while text.ends_with(' ') {
-                    text.pop();
-                }
-                text.push('\n');
+    for line in &buf.lines {
+        for cell in line {
+            if cell.ch != '\0' && cell.width > 0 {
+                text.push(cell.ch);
             }
-            text.push_str("───\n");
+            if cell.combining != '\0' {
+                text.push(cell.combining);
+            }
         }
-    }
-
-    // Ensure directory exists
-    let dir = {
-        let mut d = String::new();
-        if let Some(pos) = path.rfind('/') {
-            d.push_str(&path[..pos]);
+        // Trim trailing spaces
+        while text.ends_with(' ') {
+            text.pop();
         }
-        d
-    };
-    if !dir.is_empty() {
-        fs::mkdir(&dir);
+        text.push('\n');
     }
-    let _ = fs::write_bytes(&path, text.as_bytes());
+    // Trim trailing empty lines
+    while text.ends_with("\n\n") {
+        text.pop();
+    }
+    text
 }
 
-/// Load previous scrollback and display it in the terminal buffer.
-fn load_scrollback(buf: &mut TerminalBuffer) {
-    let path = scrollback_file_path();
-    let fd = fs::open(&path, 0);
-    if fd == u32::MAX {
-        return;
-    }
+/// Display restored scrollback text in a terminal buffer as dim text.
+fn restore_scrollback_into(buf: &mut TerminalBuffer, scrollback: &str) {
+    if scrollback.is_empty() { return; }
 
-    // Read up to 128KB of scrollback
-    let mut data = alloc::vec![0u8; 128 * 1024];
-    let n = fs::read(fd, &mut data);
-    fs::close(fd);
-    if n == 0 || n == u32::MAX {
-        return;
-    }
-
-    let text = match core::str::from_utf8(&data[..n as usize]) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    // Display previous scrollback as dim text
     let saved_fg = buf.current_fg;
     buf.current_fg = 0xFF606060; // dim gray for old output
 
-    // Add header
     buf.write_str("── Vorherige Sitzung ──\n");
 
-    // Find the last section (after last ───) or use all text
-    let sections: Vec<&str> = text.split("───\n").collect();
-    let content = if sections.len() > 1 {
-        // Take the second-to-last section (last non-empty)
-        let mut last = "";
-        for s in sections.iter().rev() {
-            let trimmed = s.trim();
-            if !trimmed.is_empty() {
-                last = s;
-                break;
-            }
-        }
-        last
-    } else {
-        text
-    };
-
-    // Only show last visible_rows lines to not overwhelm the buffer
-    let all_lines: Vec<&str> = content.lines().collect();
-    let max_lines = buf.visible_rows.saturating_sub(2); // leave room for header + prompt
+    // Only show last visible_rows lines
+    let all_lines: Vec<&str> = scrollback.lines().collect();
+    let max_lines = buf.visible_rows.saturating_sub(2);
     let start = if all_lines.len() > max_lines {
         all_lines.len() - max_lines
     } else {
@@ -2197,9 +2151,93 @@ fn load_scrollback(buf: &mut TerminalBuffer) {
 
     buf.write_str("───────────────────────\n");
     buf.current_fg = saved_fg;
+}
 
-    // Delete the scrollback file after loading (one-shot recovery)
+/// Save full recovery state: all tabs with their splits, cwd, and scrollback.
+fn save_recovery(a: &TerminalApp) {
+    use anyos_std::json::Value;
+
+    let path = recovery_file_path();
+    let mut root = Value::new_object();
+    let mut tabs_arr = Value::new_array();
+
+    for tab in &a.tabs {
+        let mut tab_obj = Value::new_object();
+        tab_obj.set("title", Value::from(tab.title.as_str()));
+        tab_obj.set("layout", pane_to_json_with_scrollback(&tab.root));
+        tabs_arr.push(tab_obj);
+    }
+
+    root.set("tabs", tabs_arr);
+    root.set("active_tab", Value::from(a.active_tab as i64));
+
+    let json = root.to_json_string_pretty();
+
+    // Ensure directory exists (recursive)
+    if let Some(pos) = path.rfind('/') {
+        mkdir_p(&path[..pos]);
+    }
+    let _ = fs::write_bytes(&path, json.as_bytes());
+}
+
+/// Serialize a PaneNode to JSON including scrollback text per leaf.
+fn pane_to_json_with_scrollback(node: &PaneNode) -> anyos_std::json::Value {
+    use anyos_std::json::Value;
+    match node {
+        PaneNode::Leaf { session, .. } => {
+            let mut obj = Value::new_object();
+            obj.set("type", Value::from("leaf"));
+            obj.set("cwd", Value::from(session.shell.cwd.as_str()));
+            obj.set("scrollback", Value::from(extract_scrollback(&session.buf).as_str()));
+            obj
+        }
+        PaneNode::HSplit { left, right, ratio } => {
+            let mut obj = Value::new_object();
+            obj.set("type", Value::from("hsplit"));
+            obj.set("ratio", Value::from((*ratio as f64 * 1000.0) as i64));
+            obj.set("left", pane_to_json_with_scrollback(left));
+            obj.set("right", pane_to_json_with_scrollback(right));
+            obj
+        }
+        PaneNode::VSplit { top, bottom, ratio } => {
+            let mut obj = Value::new_object();
+            obj.set("type", Value::from("vsplit"));
+            obj.set("ratio", Value::from((*ratio as f64 * 1000.0) as i64));
+            obj.set("top", pane_to_json_with_scrollback(top));
+            obj.set("bottom", pane_to_json_with_scrollback(bottom));
+            obj
+        }
+    }
+}
+
+/// Load recovery state. Returns saved tabs if recovery file exists.
+fn load_recovery() -> Option<Vec<SavedTab>> {
+    let path = recovery_file_path();
+    let fd = fs::open(&path, 0);
+    if fd == u32::MAX { return None; }
+
+    // Read up to 512KB recovery data
+    let mut data = alloc::vec![0u8; 512 * 1024];
+    let n = fs::read(fd, &mut data);
+    fs::close(fd);
+    if n == 0 || n == u32::MAX { return None; }
+
+    let text = core::str::from_utf8(&data[..n as usize]).ok()?;
+    let val = anyos_std::json::Value::parse(text.trim()).ok()?;
+    let tabs_arr = val["tabs"].as_array()?;
+
+    let mut tabs = Vec::new();
+    for item in tabs_arr {
+        tabs.push(SavedTab {
+            title: String::from(item["title"].as_str().unwrap_or("Tab")),
+            layout: item["layout"].clone(),
+        });
+    }
+
+    // Delete recovery file after loading
     fs::unlink(&path);
+
+    if tabs.is_empty() { None } else { Some(tabs) }
 }
 
 fn find_default_profile(profiles: &[Profile]) -> Profile {
@@ -2228,10 +2266,22 @@ struct Session {
     dirty: bool,
     scrollbar_dragging: bool,
     heredoc: Option<HereDocState>,
+    font_size: u16,
+    cell_w: u16,
+    cell_h: u16,
+}
+
+/// Compute cell dimensions from font size.
+fn cell_dims_for_font(font_size: u16) -> (u16, u16) {
+    let cw = ((font_size as u32 * 8 + 6) / 13) as u16;
+    let ch = ((font_size as u32 * 16 + 6) / 13) as u16;
+    (cw.max(4), ch.max(8))
 }
 
 impl Session {
     fn new(cols: usize, rows: usize, aliases: Vec<(String, String)>) -> Self {
+        let font_size = app().active_profile.font_size;
+        let (cell_w, cell_h) = cell_dims_for_font(font_size);
         let mut shell = Shell::new();
         shell.aliases = aliases;
         Session {
@@ -2244,7 +2294,17 @@ impl Session {
             dirty: false,
             scrollbar_dragging: false,
             heredoc: None,
+            font_size,
+            cell_w,
+            cell_h,
         }
+    }
+
+    fn set_font_size(&mut self, size: u16) {
+        self.font_size = size.max(MIN_FONT_SIZE).min(MAX_FONT_SIZE);
+        let (cw, ch) = cell_dims_for_font(self.font_size);
+        self.cell_w = cw;
+        self.cell_h = ch;
     }
 
     fn show_prompt(&mut self) {
@@ -2302,6 +2362,16 @@ impl PaneNode {
                 } else {
                     right.find_session_mut(pane_id)
                 }
+            }
+        }
+    }
+
+    fn for_each_session_mut(&mut self, f: impl Fn(&mut Session) + Copy) {
+        match self {
+            PaneNode::Leaf { session, .. } => f(session),
+            PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => {
+                left.for_each_session_mut(f);
+                right.for_each_session_mut(f);
             }
         }
     }
@@ -2413,9 +2483,10 @@ impl PaneNode {
     fn layout_to_json(&self) -> anyos_std::json::Value {
         use anyos_std::json::Value;
         match self {
-            PaneNode::Leaf { .. } => {
+            PaneNode::Leaf { session, .. } => {
                 let mut obj = Value::new_object();
                 obj.set("type", Value::from("leaf"));
+                obj.set("cwd", Value::from(session.shell.cwd.as_str()));
                 obj
             }
             PaneNode::HSplit { left, right, ratio } => {
@@ -2494,6 +2565,16 @@ fn rebuild_pane_tree(
             *next_id += 1;
             let aliases_vec: Vec<(String, String)> = aliases.iter().map(|(a, b)| (a.clone(), b.clone())).collect();
             let mut session = Session::new(cols.max(1), rows.max(1), aliases_vec);
+            // Restore cwd if saved
+            if let Some(cwd) = layout["cwd"].as_str() {
+                if !cwd.is_empty() {
+                    session.shell.cwd = String::from(cwd);
+                }
+            }
+            // Restore scrollback if saved
+            if let Some(scrollback) = layout["scrollback"].as_str() {
+                restore_scrollback_into(&mut session.buf, scrollback);
+            }
             session.show_prompt();
             PaneNode::Leaf { id, session }
         }
@@ -2780,9 +2861,6 @@ struct TerminalApp {
     next_pane_id: PaneId,
     profiles: Vec<Profile>,
     active_profile: Profile,
-    font_size: u16,
-    cell_w: u16,
-    cell_h: u16,
     search: SearchState,
     reverse_search: ReverseSearchState,
     bg_alpha: u8,           // 0-255 (255 = fully opaque)
@@ -2804,10 +2882,30 @@ impl TerminalApp {
 
     fn content_cols_rows(&self) -> (usize, usize) {
         let area = self.content_area();
+        let (cw, ch) = self.active_cell_dims();
         let usable_w = area.w.saturating_sub(SCROLLBAR_WIDTH as u16);
-        let cols = (usable_w.saturating_sub(TEXT_PAD * 2) / self.cell_w) as usize;
-        let rows = (area.h.saturating_sub(TEXT_PAD * 2) / self.cell_h) as usize;
+        let cols = (usable_w.saturating_sub(TEXT_PAD * 2) / cw) as usize;
+        let rows = (area.h.saturating_sub(TEXT_PAD * 2) / ch) as usize;
         (cols.max(1), rows.max(1))
+    }
+
+    /// Get font_size/cell_w/cell_h of the active pane's session (fallback to profile default).
+    fn active_cell_dims(&self) -> (u16, u16) {
+        let tab = &self.tabs[self.active_tab];
+        if let Some(sess) = tab.root.find_session(tab.active_pane_id) {
+            (sess.cell_w, sess.cell_h)
+        } else {
+            cell_dims_for_font(self.active_profile.font_size)
+        }
+    }
+
+    fn active_font_size(&self) -> u16 {
+        let tab = &self.tabs[self.active_tab];
+        if let Some(sess) = tab.root.find_session(tab.active_pane_id) {
+            sess.font_size
+        } else {
+            self.active_profile.font_size
+        }
     }
 
     fn active_tab(&self) -> &Tab {
@@ -2908,26 +3006,26 @@ impl TerminalApp {
         let pane_id = self.tabs[self.active_tab].active_pane_id;
         let (cols, rows) = self.content_cols_rows();
         let new_id = self.alloc_pane_id();
-        let mut new_session = self.new_session(cols / 2, rows);
-        new_session.show_prompt();
-        let mut opt = Some(new_session);
-
-        let tab = &mut self.tabs[self.active_tab];
-        Self::split_node(&mut tab.root, pane_id, new_id, &mut opt, true);
-        tab.active_pane_id = new_id;
-    }
-
-    /// Split the active pane vertically (stacked).
-    fn split_vertical(&mut self) {
-        let pane_id = self.tabs[self.active_tab].active_pane_id;
-        let (cols, rows) = self.content_cols_rows();
-        let new_id = self.alloc_pane_id();
         let mut new_session = self.new_session(cols, rows / 2);
         new_session.show_prompt();
         let mut opt = Some(new_session);
 
         let tab = &mut self.tabs[self.active_tab];
         Self::split_node(&mut tab.root, pane_id, new_id, &mut opt, false);
+        tab.active_pane_id = new_id;
+    }
+
+    /// Split the active pane vertically (side by side).
+    fn split_vertical(&mut self) {
+        let pane_id = self.tabs[self.active_tab].active_pane_id;
+        let (cols, rows) = self.content_cols_rows();
+        let new_id = self.alloc_pane_id();
+        let mut new_session = self.new_session(cols / 2, rows);
+        new_session.show_prompt();
+        let mut opt = Some(new_session);
+
+        let tab = &mut self.tabs[self.active_tab];
+        Self::split_node(&mut tab.root, pane_id, new_id, &mut opt, true);
         tab.active_pane_id = new_id;
     }
 
@@ -3016,12 +3114,12 @@ impl TerminalApp {
     /// Update cols/rows for all panes after resize or split.
     fn update_pane_sizes(&mut self) {
         let area = self.content_area();
-        let cw = self.cell_w;
-        let ch = self.cell_h;
         for tab in &mut self.tabs {
             let layout = tab.root.layout(area);
             for (pane_id, rect) in layout {
                 if let Some(sess) = tab.root.find_session_mut(pane_id) {
+                    let cw = sess.cell_w;
+                    let ch = sess.cell_h;
                     // Reserve space for scrollbar on the right
                     let usable_w = rect.w.saturating_sub(SCROLLBAR_WIDTH as u16);
                     let new_cols = (usable_w.saturating_sub(TEXT_PAD * 2) / cw) as usize;
@@ -3035,15 +3133,21 @@ impl TerminalApp {
         }
     }
 
-    /// Change font size and recalculate cell dimensions.
+    /// Change font size for the active pane and recalculate.
     fn set_font_size(&mut self, size: u16) {
-        self.font_size = size.max(MIN_FONT_SIZE).min(MAX_FONT_SIZE);
-        // Approximate cell dimensions based on font size
-        // Base: size 13 = 8x16. Scale proportionally.
-        self.cell_w = ((self.font_size as u32 * 8 + 6) / 13) as u16;
-        self.cell_h = ((self.font_size as u32 * 16 + 6) / 13) as u16;
-        if self.cell_w < 4 { self.cell_w = 4; }
-        if self.cell_h < 8 { self.cell_h = 8; }
+        if let Some(sess) = self.active_session_mut() {
+            sess.set_font_size(size);
+        }
+        self.update_pane_sizes();
+    }
+
+    /// Set font size on ALL sessions (used when switching profiles).
+    fn set_font_size_all(&mut self, size: u16) {
+        for tab in &mut self.tabs {
+            tab.root.for_each_session_mut(|sess| {
+                sess.set_font_size(size);
+            });
+        }
         self.update_pane_sizes();
     }
 
@@ -4730,7 +4834,7 @@ fn cmd_profile(args: &str, buf: &mut TerminalBuffer) {
             if let Some(p) = a.profiles.iter().find(|p| p.name == rest) {
                 let profile = p.clone();
                 a.active_profile = profile.clone();
-                a.set_font_size(profile.font_size);
+                a.set_font_size_all(profile.font_size);
                 a.bg_alpha = profile.bg_alpha;
                 a.theme_name = profile.theme_name.clone();
                 if a.bg_alpha < 255 { a.apply_bg_alpha(); }
@@ -4761,7 +4865,7 @@ fn cmd_profile(args: &str, buf: &mut TerminalBuffer) {
             // Snapshot current tabs into profile
             let saved_tabs = a.snapshot_tabs();
             a.active_profile.saved_tabs = saved_tabs;
-            a.active_profile.font_size = a.font_size;
+            a.active_profile.font_size = a.active_font_size();
             a.active_profile.bg_alpha = a.bg_alpha;
             a.active_profile.theme_name = a.theme_name.clone();
             // Update or add to profiles list
@@ -5028,7 +5132,7 @@ fn scrollbar_geometry(buf: &TerminalBuffer, rect: Rect) -> (u16, u16, u32, u32, 
 }
 
 /// Render a single pane's terminal content into a Canvas pixel buffer.
-fn render_pane_to_canvas(canvas: &anyui::Canvas, buf: &TerminalBuffer, rect: Rect, sel: Option<&Selection>, is_active: bool) {
+fn render_pane_to_canvas(canvas: &anyui::Canvas, buf: &TerminalBuffer, rect: Rect, sel: Option<&Selection>, is_active: bool, font_size: u16, cell_w: u16, cell_h: u16) {
     let pixels = canvas.get_buffer();
     if pixels.is_null() { return; }
     let stride = canvas.get_stride();
@@ -5038,9 +5142,6 @@ fn render_pane_to_canvas(canvas: &anyui::Canvas, buf: &TerminalBuffer, rect: Rec
     let bg = prof.color_bg;
     let sel_bg = prof.color_select_bg;
     let sel_fg = prof.color_select_fg;
-    let cell_w = a.cell_w;
-    let cell_h = a.cell_h;
-    let font_size = a.font_size;
 
     // Clear pane background
     fill_rect_buf(pixels, stride, buf_h, rect.x as i32, rect.y as i32, rect.w, rect.h, bg);
@@ -5294,13 +5395,19 @@ fn render_to_canvas(app: &TerminalApp, canvas: &anyui::Canvas) {
     let pixels = canvas.get_buffer();
     let stride = canvas.get_stride();
     let buf_h = canvas.get_height();
-    let cell_h = app.cell_h;
-    let font_size = app.font_size;
+
+    // Track active pane's font metrics for search/status bars
+    let mut active_cell_h: u16 = DEFAULT_CELL_H;
+    let mut active_font_size: u16 = DEFAULT_FONT_SIZE;
 
     for (pane_id, rect) in &layout {
         if let Some(sess) = tab.root.find_session(*pane_id) {
             let is_active = *pane_id == tab.active_pane_id;
-            render_pane_to_canvas(canvas, &sess.buf, *rect, sess.selection.as_ref(), is_active);
+            if is_active {
+                active_cell_h = sess.cell_h;
+                active_font_size = sess.font_size;
+            }
+            render_pane_to_canvas(canvas, &sess.buf, *rect, sess.selection.as_ref(), is_active, sess.font_size, sess.cell_w, sess.cell_h);
 
             // Draw active pane border highlight
             if is_active && layout.len() > 1 && !pixels.is_null() {
@@ -5317,23 +5424,23 @@ fn render_to_canvas(app: &TerminalApp, canvas: &anyui::Canvas) {
 
     // Draw search bar if active
     if app.search.active && !pixels.is_null() {
-        let bar_h = cell_h + 4;
+        let bar_h = active_cell_h + 4;
         let bar_y = (buf_h as u16).saturating_sub(bar_h);
         fill_rect_buf(pixels, stride, buf_h, 0, bar_y as i32, area.w, bar_h, 0xE0333333);
         let label = format!("Suche: {}  ({}/{})", app.search.query,
             if app.search.matches.is_empty() { 0 } else { app.search.current_match + 1 },
             app.search.matches.len());
-        canvas.draw_text(4, bar_y as i32 + 2, 0xFFFFFFFF, FONT_ID_MONO, font_size, &label);
+        canvas.draw_text(4, bar_y as i32 + 2, 0xFFFFFFFF, FONT_ID_MONO, active_font_size, &label);
     }
 
     // Draw reverse search indicator if active
     if app.reverse_search.active && !pixels.is_null() {
-        let bar_h = cell_h + 4;
+        let bar_h = active_cell_h + 4;
         let bar_y = (buf_h as u16).saturating_sub(bar_h);
         fill_rect_buf(pixels, stride, buf_h, 0, bar_y as i32, area.w, bar_h, 0xE0333355);
         let result_str = app.reverse_search.result.as_deref().unwrap_or("");
         let label = format!("(reverse-i-search)`{}': {}", app.reverse_search.query, result_str);
-        canvas.draw_text(4, bar_y as i32 + 2, 0xFFFFFFFF, FONT_ID_MONO, font_size, &label);
+        canvas.draw_text(4, bar_y as i32 + 2, 0xFFFFFFFF, FONT_ID_MONO, active_font_size, &label);
     }
 }
 
@@ -6115,7 +6222,7 @@ fn open_settings_dialog(win_id: u32) {
     let tf_font = anyui::TextField::new();
     tf_font.set_position(16 + lbl_w as i32, y);
     tf_font.set_size(80, 26);
-    tf_font.set_text(&format!("{}", a.font_size));
+    tf_font.set_text(&format!("{}", a.active_font_size()));
     p_general.add(&tf_font);
 
     let lbl_font_hint = anyui::Label::new("(8-32)");
@@ -6403,7 +6510,7 @@ fn open_settings_dialog(win_id: u32) {
         if idx < a.profiles.len() {
             let profile = a.profiles[idx].clone();
             a.active_profile = profile.clone();
-            a.set_font_size(profile.font_size);
+            a.set_font_size_all(profile.font_size);
             a.bg_alpha = profile.bg_alpha;
             a.theme_name = profile.theme_name.clone();
             if a.bg_alpha < 255 { a.apply_bg_alpha(); }
@@ -6425,7 +6532,7 @@ fn open_settings_dialog(win_id: u32) {
             let name = a.profiles[idx].name.clone();
             let saved_tabs = a.snapshot_tabs();
             a.active_profile.saved_tabs = saved_tabs;
-            a.active_profile.font_size = a.font_size;
+            a.active_profile.font_size = a.active_font_size();
             a.active_profile.bg_alpha = a.bg_alpha;
             a.active_profile.theme_name = a.theme_name.clone();
             a.profiles[idx] = a.active_profile.clone();
@@ -6768,10 +6875,10 @@ fn open_settings_dialog(win_id: u32) {
     btn_ok.on_click(move |_| {
         let a = app();
 
-        // Apply font size
+        // Apply font size (to all panes)
         let font_str = read_ctrl_text(tf_font_id);
         if let Ok(sz) = font_str.parse::<u16>() {
-            a.set_font_size(sz);
+            a.set_font_size_all(sz);
         }
 
         // Apply opacity
@@ -6891,9 +6998,10 @@ fn main() {
     anyos_std::env::set("PWD", "/");
     fs::chdir("/");
 
-    // Compute initial grid size from canvas
-    let cols = (init_w.saturating_sub(TEXT_PAD as u32 * 2) / DEFAULT_CELL_W as u32) as usize;
-    let rows = (canvas_h.saturating_sub(TEXT_PAD as u32 * 2) / DEFAULT_CELL_H as u32) as usize;
+    // Compute initial grid size from canvas (using profile font size)
+    let (init_cw, init_ch) = cell_dims_for_font(active_profile.font_size);
+    let cols = (init_w.saturating_sub(TEXT_PAD as u32 * 2) / init_cw as u32) as usize;
+    let rows = (canvas_h.saturating_sub(TEXT_PAD as u32 * 2) / init_ch as u32) as usize;
 
     anyos_std::env::set("COLUMNS", &format!("{}", cols));
     anyos_std::env::set("LINES", &format!("{}", rows));
@@ -6908,9 +7016,6 @@ fn main() {
         next_pane_id: 2,
         profiles,
         active_profile,
-        font_size: DEFAULT_FONT_SIZE,
-        cell_w: DEFAULT_CELL_W,
-        cell_h: DEFAULT_CELL_H,
         search: SearchState::new(),
         reverse_search: ReverseSearchState::new(),
         bg_alpha: 255,
@@ -6920,15 +7025,7 @@ fn main() {
         autosave_counter: 0,
     };
 
-    // Apply profile font/theme/opacity settings
-    let prof_font = term_app.active_profile.font_size;
-    if prof_font >= MIN_FONT_SIZE && prof_font <= MAX_FONT_SIZE && prof_font != DEFAULT_FONT_SIZE {
-        term_app.font_size = prof_font;
-        term_app.cell_w = ((prof_font as u32 * 8 + 6) / 13) as u16;
-        term_app.cell_h = ((prof_font as u32 * 16 + 6) / 13) as u16;
-        if term_app.cell_w < 4 { term_app.cell_w = 4; }
-        if term_app.cell_h < 8 { term_app.cell_h = 8; }
-    }
+    // Apply profile theme/opacity settings (font_size is per-session, applied via Session::new)
     term_app.bg_alpha = term_app.active_profile.bg_alpha;
     term_app.theme_name = term_app.active_profile.theme_name.clone();
     if term_app.bg_alpha < 255 {
@@ -6937,14 +7034,22 @@ fn main() {
         term_app.active_profile.color_bg = (alpha << 24) | (bg & 0x00FFFFFF);
     }
 
-    // Check if the default profile has saved tabs to restore
-    let has_saved_tabs = !term_app.active_profile.saved_tabs.is_empty();
+    // Try recovery file first (crash recovery with scrollback per pane),
+    // then profile saved tabs, then create fresh session.
+    let recovery_tabs = load_recovery();
+    let has_saved_tabs = recovery_tabs.is_some() || !term_app.active_profile.saved_tabs.is_empty();
 
-    if has_saved_tabs {
-        // Restore tabs from saved profile layout
-        let saved_tabs = term_app.active_profile.saved_tabs.clone();
+    let restore_tabs = if let Some(ref tabs) = recovery_tabs {
+        tabs
+    } else if !term_app.active_profile.saved_tabs.is_empty() {
+        &term_app.active_profile.saved_tabs
+    } else {
+        &[] as &[SavedTab]
+    };
+
+    if !restore_tabs.is_empty() {
         let alias_pairs: Vec<(String, String)> = aliases;
-        for st in &saved_tabs {
+        for st in restore_tabs {
             let mut next_id = term_app.next_pane_id;
             let root = rebuild_pane_tree(&st.layout, &mut next_id, cols.max(1), rows.max(1), &alias_pairs);
             term_app.next_pane_id = next_id;
@@ -6968,16 +7073,13 @@ fn main() {
 
     unsafe { APP = Some(term_app); }
 
-    // Load previous scrollback (crash recovery) + write welcome message
+    // Write welcome message (only for fresh sessions without recovery/saved tabs)
     {
         let a = app();
         let color_title = a.active_profile.color_title;
         let color_dim = a.active_profile.color_dim;
         if !has_saved_tabs {
             if let Some(sess) = a.active_session_mut() {
-                // Load previous session scrollback if available
-                load_scrollback(&mut sess.buf);
-
                 sess.buf.current_fg = color_title;
                 sess.buf.write_str(".anyOS Terminal v");
                 sess.buf.write_str(env!("ANYOS_VERSION"));
@@ -6989,7 +7091,7 @@ fn main() {
         }
     }
 
-    // Update tab bar labels if profile was restored
+    // Update tab bar labels if tabs were restored
     if has_saved_tabs {
         update_tab_labels();
     }
@@ -7082,12 +7184,12 @@ fn main() {
                 redraw();
             }
             9 => { // Font +
-                let new_size = a.font_size + 1;
+                let new_size = a.active_font_size() + 1;
                 a.set_font_size(new_size);
                 redraw();
             }
             10 => { // Font -
-                let new_size = a.font_size.saturating_sub(1);
+                let new_size = a.active_font_size().saturating_sub(1);
                 a.set_font_size(new_size);
                 redraw();
             }
@@ -7113,14 +7215,12 @@ fn main() {
         let mods = anyui::get_modifiers();
 
         // Forward mouse events to child process if mouse tracking is enabled
-        let cw = a.cell_w;
-        let ch = a.cell_h;
         if let Some(sess) = a.active_session_mut() {
             if sess.buf.mouse_mode > 0 {
                 if let Some(ref fp) = sess.fg_proc {
                     if fp.stdin_pipe != 0 {
-                        let cell_x = ((x as u16).saturating_sub(TEXT_PAD) / cw) as u32 + 1;
-                        let cell_y = ((y as u16).saturating_sub(TEXT_PAD) / ch) as u32 + 1;
+                        let cell_x = ((x as u16).saturating_sub(TEXT_PAD) / sess.cell_w) as u32 + 1;
+                        let cell_y = ((y as u16).saturating_sub(TEXT_PAD) / sess.cell_h) as u32 + 1;
                         let btn = button.saturating_sub(1); // 0=left, 1=mid, 2=right
                         if sess.buf.mouse_sgr {
                             let seq = format!("\x1b[<{};{};{}M", btn, cell_x, cell_y);
@@ -7143,7 +7243,7 @@ fn main() {
             let layout = tab.root.layout(area);
             let pane_rect = layout.iter().find(|(id, _)| *id == active_pane).map(|(_, r)| *r).unwrap_or(area);
             if let Some(sess) = tab.root.find_session(active_pane) {
-                let pos = pixel_to_cell_in_rect(x as u32, y as u32, &sess.buf, pane_rect);
+                let pos = pixel_to_cell_in_rect(x as u32, y as u32, &sess.buf, pane_rect, sess.cell_w, sess.cell_h);
                 let word = word_at_cell(&sess.buf, pos.row, pos.col);
                 if !word.is_empty() {
                     // Resolve path relative to cwd
@@ -7168,7 +7268,7 @@ fn main() {
             let layout = tab.root.layout(area);
             let pane_rect = layout.iter().find(|(id, _)| *id == active_pane).map(|(_, r)| *r).unwrap_or(area);
             if let Some(sess) = tab.root.find_session(active_pane) {
-                let pos = pixel_to_cell_in_rect(x as u32, y as u32, &sess.buf, pane_rect);
+                let pos = pixel_to_cell_in_rect(x as u32, y as u32, &sess.buf, pane_rect, sess.cell_w, sess.cell_h);
                 if pos.row < sess.buf.lines.len() {
                     let line = &sess.buf.lines[pos.row];
                     // Check OSC 8 hyperlink first
@@ -7219,7 +7319,7 @@ fn main() {
                     // Start text selection
                     if let Some(sess) = tab.root.find_session_mut(clicked_pane) {
                         sess.scrollbar_dragging = false;
-                        let pos = pixel_to_cell_in_rect(x as u32, y as u32, &sess.buf, pane_rect);
+                        let pos = pixel_to_cell_in_rect(x as u32, y as u32, &sess.buf, pane_rect, sess.cell_w, sess.cell_h);
                         sess.selection = Some(Selection {
                             dragging: true,
                             anchor: pos,
@@ -7233,7 +7333,7 @@ fn main() {
         } else if button == 2 { // Scroll up (button 2 = scroll up in anyui)
             if (mods & MOD_SHIFT) != 0 {
                 // Shift+Scroll Up = increase font size
-                let new_size = a.font_size + 1;
+                let new_size = a.active_font_size() + 1;
                 a.set_font_size(new_size);
                 redraw();
             } else {
@@ -7246,7 +7346,7 @@ fn main() {
         } else if button == 3 { // Scroll down (button 3 = scroll down in anyui)
             if (mods & MOD_SHIFT) != 0 {
                 // Shift+Scroll Down = decrease font size
-                let new_size = a.font_size.saturating_sub(1);
+                let new_size = a.active_font_size().saturating_sub(1);
                 a.set_font_size(new_size);
                 redraw();
             } else {
@@ -7279,14 +7379,12 @@ fn main() {
     canvas.on_mouse_move(|x, y| {
         let a = app();
         // Forward mouse move to child process if tracking button/any events
-        let cw = a.cell_w;
-        let ch = a.cell_h;
         if let Some(sess) = a.active_session_mut() {
             if sess.buf.mouse_mode >= 1002 {
                 if let Some(ref fp) = sess.fg_proc {
                     if fp.stdin_pipe != 0 {
-                        let cell_x = ((x as u16).saturating_sub(TEXT_PAD) / cw) as u32 + 1;
-                        let cell_y = ((y as u16).saturating_sub(TEXT_PAD) / ch) as u32 + 1;
+                        let cell_x = ((x as u16).saturating_sub(TEXT_PAD) / sess.cell_w) as u32 + 1;
+                        let cell_y = ((y as u16).saturating_sub(TEXT_PAD) / sess.cell_h) as u32 + 1;
                         if sess.buf.mouse_sgr {
                             let seq = format!("\x1b[<35;{};{}M", cell_x, cell_y);
                             ipc::pipe_write(fp.stdin_pipe, seq.as_bytes());
@@ -7322,7 +7420,7 @@ fn main() {
             // Text selection drag
             if let Some(ref mut sel) = sess.selection {
                 if sel.dragging {
-                    sel.active = pixel_to_cell_in_rect(x as u32, y as u32, &sess.buf, pane_rect);
+                    sel.active = pixel_to_cell_in_rect(x as u32, y as u32, &sess.buf, pane_rect, sess.cell_w, sess.cell_h);
                     sess.dirty = true;
                     let canvas = get_canvas();
                     render_to_canvas(app(), &canvas);
@@ -7334,14 +7432,12 @@ fn main() {
     canvas.on_mouse_up(|_x, _y, _button| {
         let a = app();
         // Forward mouse up to child process if mouse tracking enabled
-        let cw = a.cell_w;
-        let ch = a.cell_h;
         if let Some(sess) = a.active_session_mut() {
             if sess.buf.mouse_mode > 0 {
                 if let Some(ref fp) = sess.fg_proc {
                     if fp.stdin_pipe != 0 {
-                        let cell_x = ((_x as u16).saturating_sub(TEXT_PAD) / cw) as u32 + 1;
-                        let cell_y = ((_y as u16).saturating_sub(TEXT_PAD) / ch) as u32 + 1;
+                        let cell_x = ((_x as u16).saturating_sub(TEXT_PAD) / sess.cell_w) as u32 + 1;
+                        let cell_y = ((_y as u16).saturating_sub(TEXT_PAD) / sess.cell_h) as u32 + 1;
                         if sess.buf.mouse_sgr {
                             let btn = _button.saturating_sub(1);
                             let seq = format!("\x1b[<{};{};{}m", btn, cell_x, cell_y);
@@ -7567,25 +7663,25 @@ fn main() {
             return;
         }
 
-        // Ctrl+Plus / Ctrl+Minus: Font zoom
+        // Ctrl+Plus / Ctrl+Minus: Font zoom (per pane)
         if ke.ctrl() && !ke.shift() {
             // Plus key (= on most keyboards, scancode 0x0D)
             if char_val == '+' as u32 || char_val == '=' as u32 || key_code == 0x0D {
-                let new_size = a.font_size + 1;
+                let new_size = a.active_font_size() + 1;
                 a.set_font_size(new_size);
                 redraw();
                 return;
             }
             // Minus key (scancode 0x0C)
             if char_val == '-' as u32 || key_code == 0x0C {
-                let new_size = a.font_size.saturating_sub(1);
+                let new_size = a.active_font_size().saturating_sub(1);
                 a.set_font_size(new_size);
                 redraw();
                 return;
             }
             // Ctrl+0: Reset font size
             if char_val == '0' as u32 {
-                a.set_font_size(DEFAULT_FONT_SIZE);
+                a.set_font_size(a.active_profile.font_size);
                 redraw();
                 return;
             }
@@ -7705,7 +7801,7 @@ fn main() {
     });
 
     win.on_close(|_| {
-        save_scrollback(app());
+        save_recovery(app());
         anyui::quit();
     });
 
@@ -7763,7 +7859,7 @@ fn main() {
         a.autosave_counter += 1;
         if a.autosave_counter >= 600 {
             a.autosave_counter = 0;
-            save_scrollback(a);
+            save_recovery(a);
         }
     });
 

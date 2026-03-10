@@ -875,6 +875,7 @@ impl Desktop {
                     self.compositor.move_layer(layer_id, sx, sy);
                     self.compositor.resize_layer(layer_id, sw, full_h);
                     self.render_window(win_id);
+                    self.push_event(win_id, [EVENT_RESIZE, sw, sh, 0, 0]);
                 }
             } else {
                 let x = self.windows[idx].x;
@@ -899,6 +900,7 @@ impl Desktop {
                 self.compositor.move_layer(layer_id, new_x, new_y);
                 self.compositor.resize_layer(layer_id, new_w, full_h);
                 self.render_window(win_id);
+                self.push_event(win_id, [EVENT_RESIZE, new_w, new_ch, 0, 0]);
             }
         }
     }
