@@ -124,6 +124,8 @@ pub fn check_borrows(body: &MirBody, interner: &Interner, struct_defs: &HashMap<
                         }
                     }
                 }
+                // Temporary borrows for call args end when the call returns
+                borrows.clear();
             }
             _ => {}
         }

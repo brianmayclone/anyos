@@ -1,8 +1,10 @@
 use crate::ast::BinOp;
-use crate::codegen::regalloc::RegAlloc;
+use crate::codegen::regalloc::{RegAlloc, StructFieldOffsets};
 use crate::codegen::x86asm::{CondCode, Label, Reg, Relocation, X86Assembler};
+use crate::hir::DefId;
 use crate::intern::Interner;
 use crate::mir::*;
+use crate::typeck::TyKind;
 
 /// System V AMD64 argument registers
 const ARG_REGS: [Reg; 6] = [Reg::RDI, Reg::RSI, Reg::RDX, Reg::RCX, Reg::R8, Reg::R9];
@@ -12,6 +14,7 @@ pub struct CodeEmitter<'a> {
     alloc: &'a RegAlloc,
     body: &'a MirBody,
     interner: &'a Interner,
+    field_offsets: &'a StructFieldOffsets,
     block_labels: Vec<Label>,
 }
 
@@ -20,6 +23,7 @@ impl<'a> CodeEmitter<'a> {
         body: &MirBody,
         alloc: &RegAlloc,
         interner: &Interner,
+        field_offsets: &StructFieldOffsets,
     ) -> (Vec<u8>, Vec<Relocation>) {
         let mut asm = X86Assembler::new();
 
@@ -33,6 +37,7 @@ impl<'a> CodeEmitter<'a> {
             alloc,
             body,
             interner,
+            field_offsets,
             block_labels,
         };
 
@@ -51,6 +56,56 @@ impl<'a> CodeEmitter<'a> {
 
         let relocations = core::mem::take(&mut emitter.asm.relocations);
         (emitter.asm.code().to_vec(), relocations)
+    }
+
+    /// Get the byte offset of a field within its parent struct.
+    /// Walks the projection chain up to the Field to determine the struct type.
+    fn field_byte_offset(&self, place: &Place, field_proj_index: usize) -> i32 {
+        let field_idx = match &place.projections[field_proj_index] {
+            Projection::Field(idx) => *idx,
+            _ => return 0,
+        };
+        // Walk type through projections up to (but not including) the Field
+        let mut ty = self.body.locals[place.local.0].ty.clone();
+        for proj in &place.projections[..field_proj_index] {
+            match proj {
+                Projection::Deref => {
+                    ty = match ty {
+                        TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => *inner,
+                        _ => ty,
+                    };
+                }
+                Projection::Field(idx) => {
+                    ty = match &ty {
+                        TyKind::Adt(def_id, _) => {
+                            // We don't easily have field types here; approximate
+                            TyKind::Error
+                        }
+                        TyKind::Tuple(elems) => {
+                            elems.get(*idx).cloned().unwrap_or(TyKind::Error)
+                        }
+                        _ => TyKind::Error,
+                    };
+                }
+                Projection::Index(_) => {
+                    ty = match ty {
+                        TyKind::Array(elem, _) => *elem,
+                        _ => TyKind::Error,
+                    };
+                }
+            }
+        }
+        // Now ty is the struct type at the point of the Field projection
+        match &ty {
+            TyKind::Adt(def_id, _) => {
+                if let Some(offsets) = self.field_offsets.get(def_id) {
+                    offsets.get(field_idx).copied().unwrap_or(field_idx as i32 * 8)
+                } else {
+                    field_idx as i32 * 8
+                }
+            }
+            _ => field_idx as i32 * 8,
+        }
     }
 
     fn emit_prologue(&mut self) {
@@ -155,17 +210,31 @@ impl<'a> CodeEmitter<'a> {
                     }
                     base = Base::Reg;
                 }
-                Projection::Field(idx) => {
-                    let field_offset = (*idx as i32) * 8;
+                Projection::Field(_) => {
+                    let field_offset = self.field_byte_offset(place, i);
+                    // Check if the next projection needs an address (Index)
+                    let next_needs_addr = place.projections.get(i + 1)
+                        .map(|p| matches!(p, Projection::Index(_)))
+                        .unwrap_or(false);
                     match base {
                         Base::Stack(off) => {
-                            self.asm.mov_rm(dst, Reg::RBP, off + field_offset);
+                            if next_needs_addr {
+                                self.asm.lea(dst, Reg::RBP, off + field_offset);
+                            } else {
+                                self.asm.mov_rm(dst, Reg::RBP, off + field_offset);
+                            }
                         }
                         Base::Reg => {
-                            self.asm.mov_rm(dst, dst, field_offset);
+                            if next_needs_addr {
+                                if field_offset != 0 {
+                                    self.asm.add_ri(dst, field_offset);
+                                }
+                            } else {
+                                self.asm.mov_rm(dst, dst, field_offset);
+                            }
                         }
                     }
-                    base = Base::Reg; // after loading a value, further projections from reg
+                    base = Base::Reg;
                 }
                 Projection::Index(idx_local) => {
                     // Load index into R11 (scratch, won't conflict with dst)
@@ -195,31 +264,56 @@ impl<'a> CodeEmitter<'a> {
         let slot = self.alloc.stack_slots[place.local.0];
         if place.projections.is_empty() {
             self.asm.mov_mr(Reg::RBP, slot, src);
-        } else {
-            // For field projections on stack-allocated aggregates
-            let mut offset = slot;
-            for proj in &place.projections {
-                match proj {
-                    Projection::Field(idx) => {
-                        offset += (*idx as i32) * 8;
-                    }
-                    Projection::Deref => {
-                        // Load the pointer from [rbp+offset] into a scratch reg
+            return;
+        }
+
+        // Build the target address in R11, then store src there.
+        // We track whether R11 holds a computed address (via_reg=true)
+        // or we're still relative to RBP+offset (via_reg=false).
+        let mut offset = slot;
+        let mut via_reg = false;
+
+        for (i, proj) in place.projections.iter().enumerate() {
+            match proj {
+                Projection::Deref => {
+                    // Load pointer from current location into R11
+                    if via_reg {
+                        self.asm.mov_rm(Reg::R11, Reg::R11, 0);
+                    } else {
                         self.asm.mov_rm(Reg::R11, Reg::RBP, offset);
-                        self.asm.mov_mr(Reg::R11, 0, src);
-                        return;
                     }
-                    Projection::Index(idx_local) => {
-                        // Compute address: base + index * 8
-                        self.asm.lea(Reg::R11, Reg::RBP, offset);
-                        self.asm.mov_rm(Reg::RCX, Reg::RBP, self.alloc.stack_slots[idx_local.0]);
-                        self.asm.shl_ri(Reg::RCX, 3);
-                        self.asm.add_rr(Reg::R11, Reg::RCX);
-                        self.asm.mov_mr(Reg::R11, 0, src);
-                        return;
+                    via_reg = true;
+                    offset = 0;
+                }
+                Projection::Field(_) => {
+                    let field_offset = self.field_byte_offset(place, i);
+                    if via_reg {
+                        if field_offset != 0 {
+                            self.asm.add_ri(Reg::R11, field_offset);
+                        }
+                    } else {
+                        offset += field_offset;
                     }
                 }
+                Projection::Index(idx_local) => {
+                    // Compute base address into R11 if not already
+                    if !via_reg {
+                        self.asm.lea(Reg::R11, Reg::RBP, offset);
+                        via_reg = true;
+                        offset = 0;
+                    }
+                    // Add index * 8
+                    self.asm.mov_rm(Reg::RCX, Reg::RBP, self.alloc.stack_slots[idx_local.0]);
+                    self.asm.shl_ri(Reg::RCX, 3);
+                    self.asm.add_rr(Reg::R11, Reg::RCX);
+                }
             }
+        }
+
+        // Final store
+        if via_reg {
+            self.asm.mov_mr(Reg::R11, 0, src);
+        } else {
             self.asm.mov_mr(Reg::RBP, offset, src);
         }
     }
@@ -228,12 +322,39 @@ impl<'a> CodeEmitter<'a> {
         match &stmt.kind {
             StatementKind::Assign(place, rvalue) => {
                 // Special-case aggregates: store each field directly into the place
-                if let Rvalue::Aggregate(_, operands) = rvalue {
+                if let Rvalue::Aggregate(agg_kind, operands) = rvalue {
                     if place.projections.is_empty() {
                         let base_slot = self.alloc.stack_slots[place.local.0];
+                        let def_id = match agg_kind {
+                            AggregateKind::Adt(did, _) => Some(*did),
+                            _ => None,
+                        };
                         for (i, op) in operands.iter().enumerate() {
-                            self.load_operand(op, Reg::RAX);
-                            self.asm.mov_mr(Reg::RBP, base_slot + (i as i32) * 8, Reg::RAX);
+                            let field_off = def_id
+                                .and_then(|did| self.field_offsets.get(&did))
+                                .and_then(|offs| offs.get(i).copied())
+                                .unwrap_or((i as i32) * 8);
+                            // Check if operand is multi-slot (e.g. an array field)
+                            let op_size = match op {
+                                Operand::Copy(p) | Operand::Move(p) if p.projections.is_empty() => {
+                                    self.alloc.local_sizes[p.local.0]
+                                }
+                                _ => 8,
+                            };
+                            if op_size > 8 {
+                                // Multi-slot copy
+                                if let Operand::Copy(p) | Operand::Move(p) = op {
+                                    let src_slot = self.alloc.stack_slots[p.local.0];
+                                    let n_slots = op_size / 8;
+                                    for s in 0..n_slots {
+                                        self.asm.mov_rm(Reg::RAX, Reg::RBP, src_slot + s * 8);
+                                        self.asm.mov_mr(Reg::RBP, base_slot + field_off + s * 8, Reg::RAX);
+                                    }
+                                }
+                            } else {
+                                self.load_operand(op, Reg::RAX);
+                                self.asm.mov_mr(Reg::RBP, base_slot + field_off, Reg::RAX);
+                            }
                         }
                         return;
                     }
@@ -339,7 +460,20 @@ impl<'a> CodeEmitter<'a> {
                 self.load_operand(operand, dst);
                 match op {
                     crate::ast::UnOp::Neg => self.asm.neg_r(dst),
-                    crate::ast::UnOp::Not => self.asm.not_r(dst),
+                    crate::ast::UnOp::Not => {
+                        // For bools, use XOR 1 (logical NOT); for integers, bitwise NOT
+                        let is_bool = match operand {
+                            Operand::Copy(p) | Operand::Move(p) => {
+                                matches!(self.body.locals[p.local.0].ty, TyKind::Bool)
+                            }
+                            Operand::Constant(c) => matches!(c.ty, TyKind::Bool),
+                        };
+                        if is_bool {
+                            self.asm.xor_ri(dst, 1);
+                        } else {
+                            self.asm.not_r(dst);
+                        }
+                    }
                     crate::ast::UnOp::Deref => {
                         // dst has pointer, load from it
                         self.asm.mov_rm(dst, dst, 0);
@@ -355,7 +489,7 @@ impl<'a> CodeEmitter<'a> {
                     // Walk projections, computing the effective address
                     enum Base { Stack(i32), Reg }
                     let mut base = Base::Stack(slot);
-                    for proj in &place.projections {
+                    for (i, proj) in place.projections.iter().enumerate() {
                         match proj {
                             Projection::Deref => {
                                 // Load the pointer from current location
@@ -370,8 +504,8 @@ impl<'a> CodeEmitter<'a> {
                                 // dst now holds the pointer; future ops relative to it
                                 base = Base::Reg;
                             }
-                            Projection::Field(idx) => {
-                                let field_offset = (*idx as i32) * 8;
+                            Projection::Field(_) => {
+                                let field_offset = self.field_byte_offset(place, i);
                                 match base {
                                     Base::Stack(ref mut off) => {
                                         *off += field_offset;
@@ -380,7 +514,6 @@ impl<'a> CodeEmitter<'a> {
                                         if field_offset != 0 {
                                             self.asm.add_ri(dst, field_offset);
                                         }
-                                        // dst now points to the field
                                     }
                                 }
                             }

@@ -72,6 +72,8 @@ pub struct TypeckResult {
     pub trait_impls: HashMap<(Symbol, DefId), Vec<(Symbol, DefId)>>,
     /// Trait DefId -> trait name Symbol
     pub trait_names: HashMap<DefId, Symbol>,
+    /// Reverse map: DefId -> type name Symbol (for looking up impl_methods by DefId)
+    pub type_def_to_name: HashMap<DefId, Symbol>,
 }
 
 /// Compile-time evaluated constant value
@@ -234,6 +236,10 @@ impl<'a> TypeChecker<'a> {
             trait_methods: std::mem::take(&mut self.trait_methods),
             trait_impls: std::mem::take(&mut self.trait_impls),
             trait_names: std::mem::take(&mut self.trait_names),
+            type_def_to_name: self.type_name_to_def.iter()
+                .filter(|(name, _)| self.interner.resolve(**name) != "Self")
+                .map(|(name, &def_id)| (def_id, *name))
+                .collect(),
         }
     }
 

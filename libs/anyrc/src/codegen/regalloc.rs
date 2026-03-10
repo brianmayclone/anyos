@@ -12,8 +12,11 @@ pub struct RegAlloc {
     pub frame_size: i32,
 }
 
-/// Map from struct DefId to number of fields.
+/// Map from struct DefId to size in 8-byte slots.
 pub type StructSizes = HashMap<DefId, usize>;
+
+/// Map from struct DefId to byte offset of each field.
+pub type StructFieldOffsets = HashMap<DefId, Vec<i32>>;
 
 /// Return the size in bytes for a type on the stack (each field/element = 8 bytes).
 pub fn ty_size(ty: &TyKind, struct_sizes: &StructSizes) -> i32 {

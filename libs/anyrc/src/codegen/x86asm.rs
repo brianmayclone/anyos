@@ -259,6 +259,10 @@ impl X86Assembler {
         self.alu_rr(0x31, dst, src);
     }
 
+    pub fn xor_ri(&mut self, dst: Reg, imm: i32) {
+        self.alu_ri(6, dst, imm);
+    }
+
     pub fn shl_ri(&mut self, dst: Reg, imm: u8) {
         // SHL r/m64, imm8: REX.W C1 /4 imm8
         self.rex_single(true, dst);
