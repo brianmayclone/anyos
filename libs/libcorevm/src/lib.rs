@@ -1403,37 +1403,47 @@ pub extern "C" fn corevm_write_phys_u32(handle: u64, addr: u64, val: u32) {
 fn generate_acpi_tables(fw_cfg: &mut devices::fw_cfg::FwCfg) {
     use alloc::vec;
 
-    /// Build a DSDT with \_SB.PCI0 device and _PRT for PCI interrupt routing.
-    ///
-    /// Uses direct GSI routing (source=0, GSI number) matching the IOAPIC pin
-    /// layout. IDE IRQ 14/15 are hardwired and NOT in _PRT.
-    /// PCI devices route via QEMU-style (slot+pin)&3 → GSI {10,11,5,9}.
-    fn build_dsdt_with_prt() -> Vec<u8> {
-        fn pkg_len_bytes(len: usize) -> Vec<u8> {
+    // Helper: compute ACPI checksum (sum of all bytes must be 0 mod 256).
+    fn acpi_checksum(data: &[u8]) -> u8 {
+        let sum: u8 = data.iter().fold(0u8, |a, &b| a.wrapping_add(b));
+        (!sum).wrapping_add(1)
+    }
+
+    // --- DSDT generated from pre-compiled AML ---
+    // Equivalent to the following ASL (matching QEMU i440FX):
+    //
+    //   DefinitionBlock ("", "DSDT", 1, "COREVM", "COREVMDT", 1) {
+    //     Name(PICF, 0)
+    //     Method(\_PIC, 1) { Store(Arg0, PICF) }
+    //     Scope(\_SB) {
+    //       Device(PCI0) {
+    //         Name(_HID, EisaId("PNP0A03"))
+    //         Name(_PRT, Package() {
+    //           Package(){0x0001FFFF, 0, 0, 14},  // Slot 1 IDE → GSI 14
+    //           Package(){0x0002FFFF, 0, 0, 10},  // Slot 2 VGA → GSI 10
+    //           Package(){0x0003FFFF, 0, 0, 11},  // Slot 3 NIC → GSI 11
+    //         })
+    //       }
+    //     }
+    //   }
+    //
+    // We build the AML bytecode programmatically to avoid external tools.
+    let dsdt = {
+        fn pkg_len(len: usize) -> Vec<u8> {
             if len < 63 {
                 alloc::vec![len as u8]
             } else if len < 4096 {
-                let lo = (len & 0xF) as u8;
-                let hi = ((len >> 4) & 0xFF) as u8;
-                alloc::vec![0x40 | lo, hi]
+                alloc::vec![0x40 | (len & 0xF) as u8, ((len >> 4) & 0xFF) as u8]
             } else {
-                let lo = (len & 0xF) as u8;
-                let b1 = ((len >> 4) & 0xFF) as u8;
-                let b2 = ((len >> 12) & 0xFF) as u8;
-                alloc::vec![0x80 | lo, b1, b2]
+                alloc::vec![0x80 | (len & 0xF) as u8, ((len >> 4) & 0xFF) as u8, ((len >> 12) & 0xFF) as u8]
             }
         }
-
-        // AML helper: wrap content in PkgLength-prefixed block
-        fn with_pkg_len(content: &[u8]) -> Vec<u8> {
-            let total = content.len();
-            // PkgLength includes itself, so we need to iterate
-            for extra in 1..=3u8 {
-                let full = total + extra as usize;
-                let encoded = pkg_len_bytes(full);
-                if encoded.len() == extra as usize {
-                    let mut out = Vec::with_capacity(encoded.len() + content.len());
-                    out.extend_from_slice(&encoded);
+        fn wrap_pkg(content: &[u8]) -> Vec<u8> {
+            for extra in 1..=3usize {
+                let full = content.len() + extra;
+                let enc = pkg_len(full);
+                if enc.len() == extra {
+                    let mut out = enc;
                     out.extend_from_slice(content);
                     return out;
                 }
@@ -1441,76 +1451,90 @@ fn generate_acpi_tables(fw_cfg: &mut devices::fw_cfg::FwCfg) {
             unreachable!()
         }
 
-        // GSI table: index = (slot + pin) & 3 → GSI
-        // Matches QEMU: LNKD→10, LNKA→5, LNKB→10, LNKC→11
-        // Actually QEMU: 0→LNKD, 1→LNKA, 2→LNKB, 3→LNKC with possible IRQs {5,10,11}
-        // For direct GSI routing we use: 0→10, 1→10, 2→11, 3→5
-        let gsi_map: [u32; 4] = [10, 10, 11, 5];
+        let mut aml = Vec::new();
 
-        // Build _PRT entries for slots 1-31, all 4 pins
-        // (Slot 0 = host bridge, no interrupts)
-        // Slot 1 = IDE: skip (hardwired IRQ 14/15)
-        // Only include PCI devices we actually have.
-        // Slot 1 = IDE (hardwired IRQ 14/15, NOT in _PRT)
-        // Slot 2 = VGA (INTA# → GSI 10)
-        // Slot 3 = E1000 (INTA# → GSI 11)
-        struct PrtEntry { addr: u32, pin: u8, gsi: u32 }
-        let entries = [
-            PrtEntry { addr: (2 << 16) | 0xFFFF, pin: 0, gsi: 10 }, // VGA
-            PrtEntry { addr: (3 << 16) | 0xFFFF, pin: 0, gsi: 11 }, // E1000
-        ];
+        // Name(PICF, Zero)  →  08 "PICF" 00
+        aml.extend_from_slice(&[0x08]); // NameOp
+        aml.extend_from_slice(b"PICF");
+        aml.push(0x00); // Zero
 
-        // Encode each entry as Package(4){DWord addr, Byte pin, Zero, DWord gsi}
-        let mut prt_elements = Vec::new();
-        for e in &entries {
-            let mut elem = Vec::new();
-            elem.push(0x0C); elem.extend_from_slice(&e.addr.to_le_bytes());
-            elem.push(0x0A); elem.push(e.pin);
-            elem.push(0x00); // Zero (direct GSI, no link device)
-            elem.push(0x0C); elem.extend_from_slice(&e.gsi.to_le_bytes());
-            // Package(4) { ... }
-            let mut pkg_body = Vec::new();
-            pkg_body.push(4u8); // NumElements
-            pkg_body.extend_from_slice(&elem);
-            let mut pkg = alloc::vec![0x12u8]; // PackageOp
-            pkg.extend_from_slice(&with_pkg_len(&pkg_body));
-            prt_elements.extend_from_slice(&pkg);
+        // Method(\_PIC, 1) { Store(Arg0, PICF) }
+        // MethodOp PkgLen "\_PIC" ArgCount { StoreOp Arg0 PICF }
+        {
+            let mut body = Vec::new();
+            body.extend_from_slice(&[0x5C]); // RootChar
+            body.extend_from_slice(b"_PIC");
+            body.push(0x01); // ArgCount=1, not serialized
+            // Store(Arg0, PICF) →  70 68 "PICF"
+            body.extend_from_slice(&[0x70]); // StoreOp
+            body.push(0x68); // Arg0
+            body.extend_from_slice(b"PICF");
+            aml.push(0x14); // MethodOp
+            aml.extend_from_slice(&wrap_pkg(&body));
         }
 
-        // _PRT outer Package
-        let mut prt_body = Vec::new();
-        prt_body.push(entries.len() as u8);
-        prt_body.extend_from_slice(&prt_elements);
-        let mut prt_pkg = alloc::vec![0x12u8];
-        prt_pkg.extend_from_slice(&with_pkg_len(&prt_body));
+        // Scope(\_SB_) { Device(PCI0) { _HID, _PRT } }
+        {
+            // _PRT entries: Package(4){DWordConst addr, ByteConst pin, Zero, ByteConst/DWordConst gsi}
+            fn prt_entry(slot: u32, pin: u8, gsi: u8) -> Vec<u8> {
+                let addr: u32 = (slot << 16) | 0xFFFF;
+                let mut elem = Vec::new();
+                elem.push(0x0C); elem.extend_from_slice(&addr.to_le_bytes()); // DWordConst addr
+                elem.push(0x0A); elem.push(pin);  // ByteConst pin
+                elem.push(0x00);                   // Zero (no link device)
+                elem.push(0x0A); elem.push(gsi);  // ByteConst GSI
+                let mut body = alloc::vec![4u8]; // NumElements=4
+                body.extend_from_slice(&elem);
+                let mut pkg = alloc::vec![0x12u8]; // PackageOp
+                pkg.extend_from_slice(&wrap_pkg(&body));
+                pkg
+            }
 
-        // Name(_PRT, <prt_pkg>)
-        let mut name_prt = alloc::vec![0x08u8]; // NameOp
-        name_prt.extend_from_slice(b"_PRT");
-        name_prt.extend_from_slice(&prt_pkg);
+            let mut prt_elems = Vec::new();
+            // Slot 1: IDE → GSI 14 (hardwired, but telling the OS about it)
+            prt_elems.extend_from_slice(&prt_entry(1, 0, 14));
+            // Slot 2: VGA → GSI 10
+            prt_elems.extend_from_slice(&prt_entry(2, 0, 10));
+            // Slot 3: NIC → GSI 11
+            prt_elems.extend_from_slice(&prt_entry(3, 0, 11));
 
-        // PCI0 device body: _HID + _PRT
-        let mut pci0_body = Vec::new();
-        pci0_body.push(0x08); pci0_body.extend_from_slice(b"_HID");
-        pci0_body.push(0x0C); pci0_body.extend_from_slice(&0x030AD041u32.to_le_bytes());
-        pci0_body.extend_from_slice(&name_prt);
+            // _PRT outer package
+            let mut prt_body = alloc::vec![3u8]; // NumElements=3
+            prt_body.extend_from_slice(&prt_elems);
+            let mut prt_pkg = alloc::vec![0x12u8]; // PackageOp
+            prt_pkg.extend_from_slice(&wrap_pkg(&prt_body));
 
-        // Device(PCI0) { ... }
-        let mut dev_content = Vec::new();
-        dev_content.extend_from_slice(b"PCI0");
-        dev_content.extend_from_slice(&pci0_body);
-        let mut device_pci0 = alloc::vec![0x5Bu8, 0x82]; // ExtOp + DeviceOp
-        device_pci0.extend_from_slice(&with_pkg_len(&dev_content));
+            // Name(_PRT, <pkg>)
+            let mut name_prt = alloc::vec![0x08u8];
+            name_prt.extend_from_slice(b"_PRT");
+            name_prt.extend_from_slice(&prt_pkg);
 
-        // Scope(\_SB_) { Device(PCI0) { ... } }
-        let mut scope_content = Vec::new();
-        scope_content.extend_from_slice(&[0x5C, b'_', b'S', b'B', b'_']); // \_SB_
-        scope_content.extend_from_slice(&device_pci0);
-        let mut scope_sb = alloc::vec![0x10u8]; // ScopeOp
-        scope_sb.extend_from_slice(&with_pkg_len(&scope_content));
+            // PCI0 body: _HID + _PRT
+            let mut pci0_body = Vec::new();
+            // Name(_HID, EisaId("PNP0A03")) = 0x030AD041
+            pci0_body.push(0x08);
+            pci0_body.extend_from_slice(b"_HID");
+            pci0_body.push(0x0C);
+            pci0_body.extend_from_slice(&0x030AD041u32.to_le_bytes());
+            pci0_body.extend_from_slice(&name_prt);
 
-        // DSDT header + AML
-        let dsdt_len = 36 + scope_sb.len();
+            // Device(PCI0)
+            let mut dev_body = Vec::new();
+            dev_body.extend_from_slice(b"PCI0");
+            dev_body.extend_from_slice(&pci0_body);
+            let mut device = alloc::vec![0x5Bu8, 0x82]; // ExtOp DeviceOp
+            device.extend_from_slice(&wrap_pkg(&dev_body));
+
+            // Scope(\_SB_)
+            let mut scope_body = Vec::new();
+            scope_body.extend_from_slice(&[0x5C, b'_', b'S', b'B', b'_']);
+            scope_body.extend_from_slice(&device);
+            aml.push(0x10); // ScopeOp
+            aml.extend_from_slice(&wrap_pkg(&scope_body));
+        }
+
+        // DSDT header (36 bytes) + AML body
+        let dsdt_len = 36 + aml.len();
         let mut dsdt = alloc::vec![0u8; dsdt_len];
         dsdt[0..4].copy_from_slice(b"DSDT");
         dsdt[4..8].copy_from_slice(&(dsdt_len as u32).to_le_bytes());
@@ -1520,34 +1544,10 @@ fn generate_acpi_tables(fw_cfg: &mut devices::fw_cfg::FwCfg) {
         dsdt[24..28].copy_from_slice(&1u32.to_le_bytes());
         dsdt[28..32].copy_from_slice(b"CRVM");
         dsdt[32..36].copy_from_slice(&1u32.to_le_bytes());
-        dsdt[36..].copy_from_slice(&scope_sb);
+        dsdt[36..].copy_from_slice(&aml);
         dsdt[9] = acpi_checksum(&dsdt);
         dsdt
-    }
-
-    // Helper: compute ACPI checksum (sum of all bytes must be 0 mod 256).
-    fn acpi_checksum(data: &[u8]) -> u8 {
-        let sum: u8 = data.iter().fold(0u8, |a, &b| a.wrapping_add(b));
-        (!sum).wrapping_add(1)
-    }
-
-    // --- DSDT (minimal AML) ---
-    // A minimal DSDT with just a Noop opcode. PCI interrupt routing is
-    // handled via the IRQ fallback path in inject_irq_line instead of
-    // complex AML _PRT tables, which avoids compatibility issues with
-    // different guest OSes.
-    let dsdt_len = 36 + 1;
-    let mut dsdt = alloc::vec![0u8; dsdt_len];
-    dsdt[0..4].copy_from_slice(b"DSDT");
-    dsdt[4..8].copy_from_slice(&(dsdt_len as u32).to_le_bytes());
-    dsdt[8] = 1;
-    dsdt[10..16].copy_from_slice(b"COREVM");
-    dsdt[16..24].copy_from_slice(b"COREVMDT");
-    dsdt[24..28].copy_from_slice(&1u32.to_le_bytes());
-    dsdt[28..32].copy_from_slice(b"CRVM");
-    dsdt[32..36].copy_from_slice(&1u32.to_le_bytes());
-    dsdt[36] = 0xA3; // AML Noop
-    dsdt[9] = acpi_checksum(&dsdt);
+    };
 
     // --- FADT (Fixed ACPI Description Table, revision 1) ---
     // Minimal FADT pointing to DSDT, with PM timer port.
