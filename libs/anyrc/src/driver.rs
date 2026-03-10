@@ -99,37 +99,61 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         }
     }
 
-    // 9. Build struct size map from HIR (includes enum tagged union sizes)
+    // 9. Build struct size map: DefId → size in 8-byte slots
+    //    Uses typeck struct_defs for field types to compute accurate sizes.
     let struct_sizes = {
         use crate::hir::{HirItemKind, HirVariantFields, HirItem};
-        fn collect_struct_sizes(items: &[HirItem], map: &mut std::collections::HashMap<crate::hir::DefId, usize>) {
+        use crate::codegen::regalloc::ty_size;
+
+        // First pass: collect field counts as fallback for structs not in typeck
+        let mut map: std::collections::HashMap<crate::hir::DefId, usize> = std::collections::HashMap::new();
+        fn collect_struct_counts(items: &[HirItem], map: &mut std::collections::HashMap<crate::hir::DefId, usize>) {
             for item in items {
                 match &item.kind {
-                    HirItemKind::Struct(s) => {
-                        map.insert(s.def_id, s.fields.len());
-                    }
+                    HirItemKind::Struct(s) => { map.insert(s.def_id, s.fields.len()); }
                     HirItemKind::Enum(e) => {
                         let max_fields = e.variants.iter().map(|v| match &v.fields {
                             HirVariantFields::Unit => 0,
                             HirVariantFields::Tuple(tys) => tys.len(),
                             HirVariantFields::Struct(fields) => fields.len(),
                         }).max().unwrap_or(0);
-                        if max_fields > 0 {
-                            map.insert(e.def_id, 1 + max_fields);
-                        }
+                        if max_fields > 0 { map.insert(e.def_id, 1 + max_fields); }
                     }
                     HirItemKind::Mod(m) => {
-                        if let Some(sub_items) = &m.items {
-                            collect_struct_sizes(sub_items, map);
-                        }
+                        if let Some(sub_items) = &m.items { collect_struct_counts(sub_items, map); }
                     }
                     _ => {}
                 }
             }
         }
-        let mut map = std::collections::HashMap::new();
-        collect_struct_sizes(&hir.items, &mut map);
+        collect_struct_counts(&hir.items, &mut map);
+
+        // Second pass: compute accurate sizes from field types
+        // We compute size as sum of field sizes (in 8-byte slots)
+        for (def_id, fields) in &typeck_result.struct_defs {
+            let total_bytes: i32 = fields.iter()
+                .map(|(_, ty)| ty_size(ty, &map))
+                .sum();
+            let slots = (total_bytes / 8).max(1) as usize;
+            map.insert(*def_id, slots);
+        }
         map
+    };
+
+    // 9a. Build struct field offset map
+    let field_offsets: regalloc::StructFieldOffsets = {
+        use crate::codegen::regalloc::ty_size;
+        let mut offsets = std::collections::HashMap::new();
+        for (def_id, fields) in &typeck_result.struct_defs {
+            let mut field_offsets_vec = Vec::new();
+            let mut offset = 0i32;
+            for (_, ty) in fields {
+                field_offsets_vec.push(offset);
+                offset += ty_size(ty, &struct_sizes);
+            }
+            offsets.insert(*def_id, field_offsets_vec);
+        }
+        offsets
     };
 
     // 9b. Collect static data from typeck results
@@ -146,11 +170,11 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     // 10. Emit based on type
     match options.emit {
         EmitKind::Obj => {
-            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &static_data);
+            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &static_data);
             Ok(elf::write_object(&obj))
         }
         EmitKind::Exe => {
-            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &static_data);
+            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &static_data);
             let obj_bytes = elf::write_object(&obj);
             let no_main_flag = no_main || options.crate_type == CrateType::StaticLib;
             let exe = link::link(&[obj_bytes], &options.output, no_main_flag);
@@ -167,8 +191,8 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     }
 }
 
-fn codegen_to_object(bodies: &[MirBody], interner: &Interner, struct_sizes: &regalloc::StructSizes) -> ObjectFile {
-    codegen_to_object_with_statics(bodies, interner, struct_sizes, &[])
+fn codegen_to_object(bodies: &[MirBody], interner: &Interner, struct_sizes: &regalloc::StructSizes, field_offsets: &regalloc::StructFieldOffsets) -> ObjectFile {
+    codegen_to_object_with_statics(bodies, interner, struct_sizes, field_offsets, &[])
 }
 
 /// Static data entry: (symbol_name, initial_bytes)
@@ -177,14 +201,14 @@ pub struct StaticData {
     pub data: Vec<u8>,
 }
 
-fn codegen_to_object_with_statics(bodies: &[MirBody], interner: &Interner, struct_sizes: &regalloc::StructSizes, statics: &[StaticData]) -> ObjectFile {
+fn codegen_to_object_with_statics(bodies: &[MirBody], interner: &Interner, struct_sizes: &regalloc::StructSizes, field_offsets: &regalloc::StructFieldOffsets, statics: &[StaticData]) -> ObjectFile {
     let mut text_data = Vec::new();
     let mut symbols = Vec::new();
     let mut relocations = Vec::new();
 
     for body in bodies {
         let alloc = regalloc::allocate(body, struct_sizes);
-        let (code, relocs) = CodeEmitter::emit_fn(body, &alloc, interner);
+        let (code, relocs) = CodeEmitter::emit_fn(body, &alloc, interner, field_offsets);
 
         let fn_offset = text_data.len() as u64;
         let fn_size = code.len() as u64;

@@ -358,6 +358,29 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
 
+                // Check if this is a tuple struct constructor call: PhysAddr(val)
+                if let HirExprKind::Path(path) = &callee.kind {
+                    let struct_name = path.segments.last().map(|s| s.ident).unwrap_or(path.segments[0].ident);
+                    if let Some(&struct_def_id) = self.typeck.type_def_to_name.iter()
+                        .find(|(_, name)| **name == struct_name)
+                        .map(|(did, _)| did)
+                    {
+                        if let Some(fields) = self.typeck.struct_defs.get(&struct_def_id) {
+                            // It's a struct — treat as tuple struct constructor
+                            let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
+                            let ty = TyKind::Adt(struct_def_id, vec![]);
+                            let tmp = self.alloc_temp(ty, expr.span);
+                            let _ = fields;
+                            self.emit_assign(
+                                Place::local(tmp),
+                                Rvalue::Aggregate(AggregateKind::Adt(struct_def_id, 0), arg_ops),
+                                expr.span,
+                            );
+                            return Operand::Copy(Place::local(tmp));
+                        }
+                    }
+                }
+
                 let func_op = self.lower_expr(callee);
                 let mut arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
 
@@ -802,17 +825,13 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 let method_def_id = if let TyKind::Adt(def_id, _) = &inner_ty {
-                    // Find type name for this DefId
-                    self.typeck.struct_defs.keys()
-                        .find(|&&did| did == *def_id)
-                        .and_then(|_| {
-                            // Search impl_methods by checking all type names
-                            self.resolve.impl_methods.iter()
-                                .find_map(|(ty_name, methods)| {
-                                    methods.iter()
-                                        .find(|(n, _)| *n == *method_name)
-                                        .map(|(_, did)| *did)
-                                })
+                    // Look up type name from DefId, then find method in impl_methods
+                    self.typeck.type_def_to_name.get(def_id)
+                        .and_then(|type_name| self.resolve.impl_methods.get(type_name))
+                        .and_then(|methods| {
+                            methods.iter()
+                                .find(|(n, _)| *n == *method_name)
+                                .map(|(_, did)| *did)
                         })
                 } else {
                     None
@@ -822,25 +841,61 @@ impl<'a> MirBuilder<'a> {
                     // Get method name symbol
                     let fn_name = *method_name;
 
-                    // Check if the method takes self by reference or by value
-                    let self_is_ref = self.typeck.fn_sigs.get(&method_did)
-                        .and_then(|(params, _)| params.first())
-                        .map(|first_param| matches!(first_param, TyKind::Ref(_, _)))
+                    // Check what self parameter the method expects
+                    let method_self_param = self.typeck.fn_sigs.get(&method_did)
+                        .and_then(|(params, _)| params.first().cloned());
+                    let self_is_ref = method_self_param.as_ref()
+                        .map(|p| matches!(p, TyKind::Ref(_, _)))
                         .unwrap_or(true);
+                    let method_wants_mut = match &method_self_param {
+                        Some(TyKind::Ref(_, Mutability::Mut)) => true,
+                        _ => false,
+                    };
 
-                    // Build receiver operand - auto-ref only if method takes &self
+                    // Build receiver operand
                     let recv_op = if self_is_ref {
                         match &recv_ty {
-                            TyKind::Ref(_, _) => {
-                                // Already a reference, just lower it
-                                self.lower_expr(recv)
+                            TyKind::Ref(inner, recv_mut) => {
+                                // Receiver is already a reference
+                                let place = self.lower_place(recv);
+                                if method_wants_mut || *recv_mut == Mutability::Immutable {
+                                    // Same mutability or method wants &mut and we have &mut — just copy the ref
+                                    let local = match &place {
+                                        Place { local, projections } if projections.is_empty() => *local,
+                                        _ => {
+                                            let tmp = self.alloc_temp(recv_ty.clone(), expr.span);
+                                            self.emit_assign(Place::local(tmp), Rvalue::Use(Operand::Copy(place)), expr.span);
+                                            tmp
+                                        }
+                                    };
+                                    Operand::Copy(Place::local(local))
+                                } else {
+                                    // Method wants &self but we have &mut self — reborrow as shared
+                                    let deref_place = Place {
+                                        local: match &place {
+                                            Place { local, projections } if projections.is_empty() => *local,
+                                            _ => {
+                                                let tmp = self.alloc_temp(recv_ty.clone(), expr.span);
+                                                self.emit_assign(Place::local(tmp), Rvalue::Use(Operand::Copy(place)), expr.span);
+                                                tmp
+                                            }
+                                        },
+                                        projections: vec![Projection::Deref],
+                                    };
+                                    let ref_ty = TyKind::Ref(inner.clone(), Mutability::Immutable);
+                                    let tmp = self.alloc_temp(ref_ty, expr.span);
+                                    self.emit_assign(Place::local(tmp), Rvalue::Ref(BorrowKind::Shared, deref_place), expr.span);
+                                    Operand::Copy(Place::local(tmp))
+                                }
                             }
                             _ => {
-                                // Need to take a reference: &recv
+                                // Need to take a reference: &recv or &mut recv
                                 let place = self.lower_place(recv);
-                                let ref_ty = TyKind::Ref(Box::new(recv_ty.clone()), Mutability::Immutable);
+                                let mutbl = if method_wants_mut { Mutability::Mut } else { Mutability::Immutable };
+                                let bk = if method_wants_mut { BorrowKind::Mutable } else { BorrowKind::Shared };
+                                let ref_ty = TyKind::Ref(Box::new(recv_ty.clone()), mutbl);
                                 let tmp = self.alloc_temp(ref_ty, expr.span);
-                                self.emit_assign(Place::local(tmp), Rvalue::Ref(BorrowKind::Shared, place), expr.span);
+                                self.emit_assign(Place::local(tmp), Rvalue::Ref(bk, place), expr.span);
                                 Operand::Copy(Place::local(tmp))
                             }
                         }
@@ -1365,6 +1420,10 @@ impl<'a> MirBuilder<'a> {
             }
             HirExprKind::Field(base, field_name) => {
                 let mut place = self.try_lower_to_place(base)?;
+                let base_ty = self.get_expr_ty(base);
+                if matches!(&base_ty, TyKind::Ref(_, _)) {
+                    place.projections.push(Projection::Deref);
+                }
                 let idx = self.resolve_field_index(base, *field_name);
                 place.projections.push(Projection::Field(idx));
                 Some(place)
