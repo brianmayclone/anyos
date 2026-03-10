@@ -2492,33 +2492,28 @@ pub extern "C" fn corevm_pic_raise_irq(handle: u64, irq: u8) {
 
 /// Route one external IRQ line through available interrupt controllers.
 ///
-/// We support both legacy PIC and IO-APIC routing because guests may switch
-/// from 8259 PIC to IO-APIC during early boot. Deliverable vectors from either
-/// path are queued into the CPU interrupt controller.
+/// Inject an ISA IRQ line into both PIC and IOAPIC simultaneously,
+/// matching QEMU's GSI handler behavior. The OS controls which path
+/// actually delivers interrupts to the CPU:
+///
+/// - **PIC mode**: LINT0 unmasked → PIC interrupts flow through LAPIC LINT0.
+///   IOAPIC entries are masked, so the IOAPIC path is a no-op.
+/// - **APIC mode**: OS programs IOAPIC entries, masks LINT0, masks 8259.
+///   IOAPIC delivers; PIC is latched but blocked from reaching CPU.
+///
+/// This dual-delivery model is how real hardware works: ISA IRQs are
+/// electrically wired to both the 8259 PIC and the IOAPIC.
 fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
-    // Prefer IO-APIC routing once the guest has actively programmed a redir
-    // entry for this line. Delivering the same source through both PIC and
-    // IO-APIC produces duplicate IRQs during APIC mode and confuses Windows.
-    let mut ioapic_routed = false;
+    // ── IOAPIC path ──
+    // Always try to route through IOAPIC. If the entry is masked or not
+    // programmed, route_irq returns None and nothing happens.
     if !vm.ioapic_ptr.is_null() {
         let ioapic = unsafe { &mut *vm.ioapic_ptr };
-        // On real hardware the PIT (ISA IRQ 0) is wired to IOAPIC pin 2.
-        // Try the remapped pin first, then fall back to the original line.
-        let try_pin = if irq == 0 { 2 } else { irq };
-        let route_result = ioapic.route_irq(try_pin)
-            .or_else(|| if try_pin != irq { ioapic.route_irq(irq) } else { None });
+        // ISA IRQ 0 (PIT) is wired to IOAPIC pin 2 on real hardware.
+        let pin = if irq == 0 { 2 } else { irq };
+        let route_result = ioapic.route_irq(pin)
+            .or_else(|| if pin != irq { ioapic.route_irq(irq) } else { None });
         if let Some((vector, level_triggered)) = route_result {
-            ioapic_routed = true;
-            #[cfg(feature = "host_test")]
-            if irq == 8 && IRQ_TRACE_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok() {
-                eprintln!(
-                    "[irq-route] irq={} via=ioapic vec={:02X} level={} ic={}",
-                    irq,
-                    vector,
-                    level_triggered as u8,
-                    vm.engine.instruction_count()
-                );
-            }
             if !vm.lapic_ptr.is_null() {
                 unsafe { (*vm.lapic_ptr).raise_vector(vector, level_triggered) };
                 route_deliverable_lapic_irq(vm);
@@ -2528,39 +2523,23 @@ fn inject_irq_line(vm: &mut VmInstance, irq: u8) {
         }
     }
 
-    // Always latch in PIC so the IRQ is preserved even if currently masked.
-    // Only attempt PIC delivery if IOAPIC didn't route it (avoids duplicates).
+    // ── PIC path ──
+    // Always latch in PIC. Whether it actually reaches the CPU depends on
+    // whether the LAPIC accepts PIC interrupts (LINT0 unmasked or APIC off).
     if !vm.pic_ptr.is_null() {
         let pic = unsafe { &mut *vm.pic_ptr };
         pic.raise_irq(irq);
 
-        if !ioapic_routed {
-            #[cfg(feature = "host_test")]
-            if irq == 8 && IRQ_TRACE_BUDGET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n > 0).then_some(n - 1)).is_ok() {
-                eprintln!(
-                    "[irq-route] irq={} via=pic ic={}",
-                    irq,
-                    vm.engine.instruction_count()
-                );
-            }
-            route_deliverable_pic_irq(vm);
+        // Only deliver PIC interrupt if LAPIC allows it (LINT0 unmasked
+        // or LAPIC disabled), matching QEMU's apic_accept_pic_intr().
+        let pic_accepted = if !vm.lapic_ptr.is_null() {
+            unsafe { (*vm.lapic_ptr).accepts_pic_intr() }
+        } else {
+            true // No LAPIC → PIC always reaches CPU
+        };
 
-            // Fallback for APIC mode: when the PIC is FULLY masked (both
-            // master and slave = 0xFF), the guest switched to APIC mode.
-            // Deliver via LAPIC using the PIC's configured vector.
-            let fully_masked = pic.master.imr == 0xFF && pic.slave.imr == 0xFF;
-            if fully_masked && !vm.lapic_ptr.is_null() {
-                let lapic = unsafe { &mut *vm.lapic_ptr };
-                if lapic.software_enabled() {
-                    let vector = if irq < 8 {
-                        pic.master.vector_offset + irq
-                    } else {
-                        pic.slave.vector_offset + (irq - 8)
-                    };
-                    lapic.raise_vector(vector, false);
-                    route_deliverable_lapic_irq(vm);
-                }
-            }
+        if pic_accepted {
+            route_deliverable_pic_irq(vm);
         }
     }
 }

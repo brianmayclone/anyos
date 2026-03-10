@@ -131,8 +131,8 @@ impl Lapic {
             icr_lo: 0,
             icr_hi: 0,
             lvt_timer: 1 << 16,   // masked
-            lvt_lint0: 1 << 16,   // masked
-            lvt_lint1: 1 << 16,   // masked
+            lvt_lint0: 0x00000700, // ExtINT, unmasked (BIOS default)
+            lvt_lint1: 0x00000400, // NMI, unmasked (BIOS default)
             lvt_error: 1 << 16,   // masked
             lvt_perf: 1 << 16,    // masked
             lvt_thermal: 1 << 16, // masked
@@ -217,6 +217,17 @@ impl Lapic {
 
     pub fn has_pending_vector(&self) -> bool {
         self.highest_irr_vector().is_some()
+    }
+
+    /// Whether the LAPIC accepts PIC interrupts via LINT0 (like QEMU's
+    /// `apic_accept_pic_intr`). PIC interrupts are accepted when either
+    /// the APIC is globally disabled OR LINT0 is unmasked.
+    pub fn accepts_pic_intr(&self) -> bool {
+        if !self.software_enabled() {
+            return true; // APIC disabled → PIC goes directly to CPU
+        }
+        // LINT0 unmasked → PIC interrupts flow through
+        (self.lvt_lint0 & (1 << 16)) == 0
     }
 
     pub fn raise_vector(&mut self, vector: u8, level_triggered: bool) {
