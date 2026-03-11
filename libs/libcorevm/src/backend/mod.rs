@@ -47,7 +47,7 @@ impl core::fmt::Display for VmError {
 pub enum VmExitReason {
     IoIn { port: u16, size: u8 },
     IoOut { port: u16, size: u8, data: u32 },
-    MmioRead { addr: u64, size: u8, dest_reg: u8 },
+    MmioRead { addr: u64, size: u8, dest_reg: u8, instr_len: u8 },
     MmioWrite { addr: u64, size: u8, data: u64 },
     MsrRead { index: u32 },
     MsrWrite { index: u32, value: u64 },

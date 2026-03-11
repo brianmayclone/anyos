@@ -690,6 +690,7 @@ impl VmBackend for KvmBackend {
                             addr: mmio.phys_addr,
                             size: mmio.len as u8,
                             dest_reg: 0,
+                            instr_len: 0,
                         })
                     }
                 }

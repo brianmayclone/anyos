@@ -60,6 +60,8 @@ pub struct PciDevice {
     /// all-ones to a BAR, the device returns the size mask so the guest
     /// can determine the BAR's required address space size.
     bar_sizes: [u32; 6],
+    /// Expansion ROM BAR size mask (offset 0x30). 0 = no ROM present.
+    pub rom_bar_size: u32,
 }
 
 impl PciDevice {
@@ -107,6 +109,7 @@ impl PciDevice {
             function: 0,
             config_space,
             bar_sizes: [0; 6],
+            rom_bar_size: 0,
         }
     }
 
@@ -246,6 +249,19 @@ impl PciBus {
                 }
             }
 
+            // Expansion ROM BAR size probing (offset 0x30).
+            if size == 4 && register == 0x30 {
+                let val32 = val as u32;
+                if val32 == 0xFFFFFFFE || val32 == 0xFFFFFFFF {
+                    // Size probe: return size mask (0 if no ROM)
+                    config_write_u32(&mut dev.config_space, 0x30, dev.rom_bar_size);
+                    return;
+                }
+                // Normal write: store base address with enable bit
+                config_write_u32(&mut dev.config_space, 0x30, val32);
+                return;
+            }
+
             // Read-only field protection.
             match register {
                 0x00..=0x03 | 0x08..=0x0B => { /* Vendor/Device ID, Class: read-only */ }
@@ -340,6 +356,16 @@ impl PciBus {
                     config_write_u32(&mut dev.config_space, register, new_val);
                     return;
                 }
+            }
+
+            // Expansion ROM BAR size probing (offset 0x30).
+            if register == 0x30 {
+                if val == 0xFFFFFFFE || val == 0xFFFFFFFF {
+                    config_write_u32(&mut dev.config_space, 0x30, dev.rom_bar_size);
+                    return;
+                }
+                config_write_u32(&mut dev.config_space, 0x30, val);
+                return;
             }
 
             // General config space write.

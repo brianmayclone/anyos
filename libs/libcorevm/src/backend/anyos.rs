@@ -403,7 +403,7 @@ impl VmBackend for AnyOsBackend {
                 let addr = exit_info.guest_phys_addr;
                 let size = exit_info.access_size;
                 if exit_info.is_read != 0 {
-                    Ok(VmExitReason::MmioRead { addr, size, dest_reg: 0 })
+                    Ok(VmExitReason::MmioRead { addr, size, dest_reg: 0, instr_len: 0 })
                 } else {
                     Ok(VmExitReason::MmioWrite { addr, size, data: exit_info.io_data })
                 }

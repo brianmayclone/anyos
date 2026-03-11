@@ -853,18 +853,22 @@ impl VmBackend for WhpBackend {
                         continue; // re-enter guest
                     }
 
-                    // WHP does not auto-advance RIP for MMIO exits
-                    let mut new_regs = regs;
-                    new_regs.rip += instr_len;
-                    self.set_vcpu_regs(id, &new_regs)?;
-
-                    return if is_write {
-                        Ok(VmExitReason::MmioWrite { addr: gpa, size: access_size, data: write_data })
+                    if is_write {
+                        // For writes, advance RIP here — no register result needed
+                        let mut new_regs = regs;
+                        new_regs.rip += instr_len;
+                        self.set_vcpu_regs(id, &new_regs)?;
+                        return Ok(VmExitReason::MmioWrite { addr: gpa, size: access_size, data: write_data });
                     } else {
-                        // Decode destination register from ModR/M byte
+                        // For reads, do NOT advance RIP here — the FFI handler will
+                        // advance RIP and set the dest register in a single set_vcpu_regs
+                        // call to avoid double-write issues.
                         let dest_reg = decode_mmio_dest_reg(instr_bytes);
-                        Ok(VmExitReason::MmioRead { addr: gpa, size: access_size, dest_reg })
-                    };
+                        return Ok(VmExitReason::MmioRead {
+                            addr: gpa, size: access_size, dest_reg,
+                            instr_len: instr_len as u8,
+                        });
+                    }
                 }
                 WHV_EXIT_REASON_MSR => {
                     // WHV_X64_MSR_ACCESS_CONTEXT layout:

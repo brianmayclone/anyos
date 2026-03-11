@@ -69,7 +69,8 @@ pub struct CExitReason {
     pub cpuid_fn: u32,
     pub cpuid_idx: u32,
     pub mmio_dest_reg: u8,
-    pub _reserved: [u8; 3],
+    pub mmio_instr_len: u8,
+    pub _reserved: [u8; 2],
 }
 
 fn fill_exit(e: &mut CExitReason, reason: VmExitReason) {
@@ -81,8 +82,9 @@ fn fill_exit(e: &mut CExitReason, reason: VmExitReason) {
         VmExitReason::IoOut { port, size, data } => {
             e.reason = 1; e.port = port; e.size = size; e.data_u32 = data;
         }
-        VmExitReason::MmioRead { addr, size, dest_reg } => {
-            e.reason = 2; e.addr = addr; e.size = size; e.mmio_dest_reg = dest_reg;
+        VmExitReason::MmioRead { addr, size, dest_reg, instr_len } => {
+            e.reason = 2; e.addr = addr; e.size = size;
+            e.mmio_dest_reg = dest_reg; e.mmio_instr_len = instr_len;
         }
         VmExitReason::MmioWrite { addr, size, data } => {
             e.reason = 3; e.addr = addr; e.size = size; e.data_u64 = data;
@@ -433,9 +435,11 @@ pub extern "C" fn corevm_handle_io_exit(
 /// For reads (`is_write`=0), `data` is filled with the result.
 /// For writes (`is_write`=1), `data` contains the guest-written value.
 /// `dest_reg` indicates which GP register receives the read result (0=RAX..7=RDI).
+/// `instr_len` is the instruction length for RIP advancement (WHP reads only).
 #[no_mangle]
 pub extern "C" fn corevm_handle_mmio_exit(
-    handle: u64, addr: u64, is_write: u8, size: u8, data: *mut u8, dest_reg: u8,
+    handle: u64, addr: u64, is_write: u8, size: u8, data: *mut u8,
+    dest_reg: u8, instr_len: u8,
 ) -> i32 {
     let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
     if data.is_null() { return -1; }
@@ -450,7 +454,9 @@ pub extern "C" fn corevm_handle_mmio_exit(
         }
         #[cfg(not(feature = "linux"))]
         {
-            // Write result into the correct guest register (decoded from instruction)
+            // Write result AND advance RIP in a single set_vcpu_regs call.
+            // This avoids the double-write issue where the first set_vcpu_regs
+            // (RIP advance) gets overwritten by the second (register set).
             if let Ok(mut regs) = vm.get_vcpu_regs(0) {
                 let val = match size {
                     1 => buf[0] as u64,
@@ -459,12 +465,16 @@ pub extern "C" fn corevm_handle_mmio_exit(
                     8 => u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]),
                     _ => 0,
                 };
+                // Advance RIP past the MMIO instruction
+                if instr_len > 0 {
+                    regs.rip += instr_len as u64;
+                }
+                // Set destination register
                 match dest_reg {
                     0 => regs.rax = val,
                     1 => regs.rcx = val,
                     2 => regs.rdx = val,
                     3 => regs.rbx = val,
-                    // 4=rsp unlikely for MMIO but handle it
                     4 => regs.rsp = val,
                     5 => regs.rbp = val,
                     6 => regs.rsi = val,
@@ -520,6 +530,11 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
     0
 }
 
+/// Base address for the AHCI MMIO catch-all region.
+/// Covers 0xFE000000-0xFEBFFFFF (12MB) to catch BAR5 wherever SeaBIOS puts it.
+const AHCI_MMIO_BASE: u64 = 0xFE00_0000;
+const AHCI_MMIO_SIZE: u64 = 0xC0_0000;
+
 /// MMIO wrapper that forwards accesses to AHCI based on current PCI BAR5 address.
 /// Registered over a wide range; only responds when the access falls within BAR5.
 struct AhciPciMmioWrapper {
@@ -543,7 +558,7 @@ impl crate::memory::mmio::MmioHandler for AhciPciMmioWrapper {
     fn read(&mut self, offset: u64, size: u8) -> crate::error::Result<u64> {
         let bar_base = self.bar5_base();
         // offset is relative to our MMIO registration base (0xFEBF_0000)
-        let abs_addr = 0xFEBF_0000 + offset;
+        let abs_addr = AHCI_MMIO_BASE + offset;
         if abs_addr < bar_base || abs_addr >= bar_base + 0x1000 {
             return Ok(0xFFFFFFFF); // not in BAR range
         }
@@ -554,7 +569,7 @@ impl crate::memory::mmio::MmioHandler for AhciPciMmioWrapper {
 
     fn write(&mut self, offset: u64, size: u8, val: u64) -> crate::error::Result<()> {
         let bar_base = self.bar5_base();
-        let abs_addr = 0xFEBF_0000 + offset;
+        let abs_addr = AHCI_MMIO_BASE + offset;
         if abs_addr < bar_base || abs_addr >= bar_base + 0x1000 {
             return Ok(()); // not in BAR range
         }
@@ -577,7 +592,7 @@ pub extern "C" fn corevm_setup_ahci(handle: u64, num_ports: u8) -> i32 {
         ahci: vm.ahci_ptr,
         pci_bus: vm.pci_bus_ptr,
     });
-    vm.memory.add_mmio(0xFEBF_0000, 0x1_0000, wrapper);
+    vm.memory.add_mmio(AHCI_MMIO_BASE, AHCI_MMIO_SIZE, wrapper);
 
     // Keep the AHCI Box alive by leaking it (wrapper uses raw pointer)
     core::mem::forget(ahci);
@@ -585,7 +600,7 @@ pub extern "C" fn corevm_setup_ahci(handle: u64, num_ports: u8) -> i32 {
     // Register AHCI as a PCI device so SeaBIOS can discover it
     if !vm.pci_bus_ptr.is_null() {
         let pci_bus = unsafe { &mut *vm.pci_bus_ptr };
-        let mut pci_dev = crate::devices::ahci::create_ahci_pci_device(0xFEBF_0000);
+        let mut pci_dev = crate::devices::ahci::create_ahci_pci_device(AHCI_MMIO_BASE as u32);
         pci_dev.device = 3; // PCI device 00:03.0 (00:01.0 is ISA bridge)
         pci_bus.add_device(pci_dev);
     }

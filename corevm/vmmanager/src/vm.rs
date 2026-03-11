@@ -21,7 +21,7 @@ use libcorevm::ffi::{
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
     corevm_last_error, corevm_last_error_len,
     corevm_pit_advance, corevm_debug_port_take_output,
-    corevm_fw_cfg_add_file,
+    corevm_fw_cfg_add_file, corevm_set_memory_region,
 };
 use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
 
@@ -384,7 +384,7 @@ fn vm_run_loop(
             2 => {
                 // MmioRead — dispatch to device
                 let mut data = [0u8; 8];
-                corevm_handle_mmio_exit(handle, exit.addr, 0, exit.size, data.as_mut_ptr(), exit.mmio_dest_reg);
+                corevm_handle_mmio_exit(handle, exit.addr, 0, exit.size, data.as_mut_ptr(), exit.mmio_dest_reg, exit.mmio_instr_len);
                 if diag_enabled {
                     diag.log(DiagCategory::Mmio, format!("MMIO RD addr=0x{:08X} size={}", exit.addr, exit.size));
                 }
@@ -395,7 +395,7 @@ fn vm_run_loop(
                     diag.log(DiagCategory::Mmio, format!("MMIO WR addr=0x{:08X} size={} data=0x{:X}", exit.addr, exit.size, exit.data_u64));
                 }
                 let mut data = exit.data_u64.to_le_bytes();
-                corevm_handle_mmio_exit(handle, exit.addr, 1, exit.size, data.as_mut_ptr(), 0);
+                corevm_handle_mmio_exit(handle, exit.addr, 1, exit.size, data.as_mut_ptr(), 0, 0);
             }
             7 => {
                 // Halted — sleep briefly
@@ -559,12 +559,33 @@ fn load_bios(handle: u64, bios_type: &BiosType) -> Result<(), String> {
             let vgabios = std::fs::read(&vgabios_path)
                 .map_err(|e| format!("Failed to read VGA BIOS: {}", e))?;
 
-            // Load BIOS at 0xC0000
+            // Load BIOS at 0xC0000 (within RAM region, works directly)
             corevm_load_binary(handle, 0xC0000, bios.as_ptr(), bios.len() as u32);
 
-            // Load ROM overlay at top of address space (0x100000 - bios_len)
+            // ROM overlay at top of 4GB address space.
+            // This is OUTSIDE the RAM region, so we must create a separate memory
+            // mapping. Allocate a 256KB buffer, copy BIOS into it, and register
+            // it as memory slot 1 at the high address.
             let rom_base = 0x1_0000_0000u64 - bios.len() as u64;
-            corevm_load_binary(handle, rom_base, bios.as_ptr(), bios.len() as u32);
+            let rom_size = bios.len();
+            // Round up to page boundary (4KB)
+            let rom_alloc = (rom_size + 0xFFF) & !0xFFF;
+            let layout = std::alloc::Layout::from_size_align(rom_alloc, 4096)
+                .map_err(|e| format!("ROM layout error: {}", e))?;
+            let rom_ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+            if rom_ptr.is_null() {
+                return Err("Failed to allocate ROM memory".into());
+            }
+            // Copy BIOS data into the ROM buffer
+            unsafe {
+                std::ptr::copy_nonoverlapping(bios.as_ptr(), rom_ptr, rom_size);
+            }
+            // Register as memory slot 1 with WHP
+            let ret = corevm_set_memory_region(handle, 1, rom_base, rom_alloc as u64, rom_ptr);
+            if ret != 0 {
+                return Err(format!("Failed to map ROM at 0x{:X}", rom_base));
+            }
+            // Note: rom_ptr is intentionally leaked — it must remain valid for VM lifetime
 
             // VGA BIOS: inject via fw_cfg so SeaBIOS loads it as option ROM
             {
