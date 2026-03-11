@@ -793,7 +793,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
 
             // Handle CPUID exits internally
             if reason == EXIT_REASON_CPUID {
-                handle_cpuid_exit(vm, vcpu);
+                handle_cpuid_exit(&vm.cpuid_table[..vm.cpuid_count], vcpu);
                 return Some(VmExitInfo {
                     reason,
                     qualification: 0,
@@ -817,14 +817,14 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
 }
 
 /// Handle a CPUID VM-exit by emulating the instruction.
-unsafe fn handle_cpuid_exit(vm: &VmxVm, vcpu: &mut VmxVcpu) {
+unsafe fn handle_cpuid_exit(cpuid_table: &[Option<CpuidEntry>], vcpu: &mut VmxVcpu) {
     let leaf = vcpu.guest_gprs.rax as u32;
     let subleaf = vcpu.guest_gprs.rcx as u32;
 
     // Check VM's CPUID table first
     let mut found = false;
-    for i in 0..vm.cpuid_count {
-        if let Some(entry) = &vm.cpuid_table[i] {
+    for entry_opt in cpuid_table {
+        if let Some(entry) = entry_opt {
             if entry.function == leaf && entry.index == subleaf {
                 vcpu.guest_gprs.rax = entry.eax as u64;
                 vcpu.guest_gprs.rbx = entry.ebx as u64;
