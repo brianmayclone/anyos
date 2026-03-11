@@ -1,30 +1,23 @@
-//! Guest memory subsystem for the x86 virtual machine.
+//! Guest memory subsystem for the virtual machine.
 //!
-//! This module provides the full address-translation pipeline that an x86
-//! CPU uses to convert a logical (segment:offset) reference into a physical
-//! address:
+//! This module provides:
 //!
-//! 1. **Segmentation** (`segment`) — applies the segment base, limit, and
-//!    access-rights checks to produce a linear address.
-//! 2. **Paging** (`paging`) — walks the guest page tables (2-level, PAE, or
-//!    4-level) to convert the linear address to a physical address.
-//! 3. **Physical memory** (`flat`) — the flat RAM backing store.
-//! 4. **MMIO dispatch** (`mmio`) — intercepts physical addresses that belong
+//! 1. **Physical memory** (`flat`) — the flat RAM backing store.
+//! 2. **MMIO dispatch** (`mmio`) — intercepts physical addresses that belong
 //!    to memory-mapped device regions.
+//! 3. **Segmentation** (`segment`) — segment descriptor utilities.
 //!
 //! [`GuestMemory`] ties everything together: it holds the flat RAM plus
 //! registered MMIO regions and implements [`MemoryBus`] with automatic MMIO
-//! routing. The [`Mmu`] struct tracks paging configuration derived from
-//! CR0/CR4/EFER and exposes the high-level `translate` method.
+//! routing.
 
 pub mod flat;
 pub mod mmio;
-pub mod paging;
 pub mod segment;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::cell::{Cell, UnsafeCell};
+use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::Result;
@@ -47,133 +40,8 @@ struct RomRegion {
 /// Diagnostic: count reads to unmapped memory (above RAM, no MMIO handler).
 static UNMAPPED_READ_COUNT: AtomicU32 = AtomicU32::new(0);
 
-/// Self-modifying code detection: tracks which 4 KiB pages have been written.
-/// The CPU loop drains this to invalidate decode-cache entries for those pages.
-///
-/// Uses a simple ring buffer with deduplication of the last page. Since the
-/// emulator is single-threaded, no locking is needed beyond the atomics.
-pub mod smc {
-    use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-
-    /// Maximum number of unique dirty pages we track before forcing a full flush.
-    const MAX_DIRTY: usize = 256;
-
-    /// Ring buffer of dirty page-aligned physical addresses.
-    static mut DIRTY_PAGES: [u64; MAX_DIRTY] = [0; MAX_DIRTY];
-    /// Number of dirty entries (saturates at MAX_DIRTY+1 to signal "flush all").
-    static DIRTY_COUNT: AtomicU32 = AtomicU32::new(0);
-    /// Last page marked dirty — used to deduplicate consecutive writes to the
-    /// same page (very common with REP STOS/MOVS).
-    static LAST_DIRTY_PAGE: AtomicU64 = AtomicU64::new(u64::MAX);
-
-    /// Bitmap of pages that contain decoded/JIT-compiled code.
-    /// Covers 256 MB (65536 pages × 4 KB). Writes to pages outside this range
-    /// or not in the bitmap skip the dirty tracking entirely.
-    const CODE_BITMAP_PAGES: usize = 65536;
-    static mut CODE_BITMAP: [u8; CODE_BITMAP_PAGES / 8] = [0; CODE_BITMAP_PAGES / 8];
-
-    /// Mark a page as containing code (called when decode cache or JIT inserts a block).
-    pub fn mark_code_page(phys_page: u64) {
-        let page_idx = (phys_page >> 12) as usize;
-        if page_idx < CODE_BITMAP_PAGES {
-            unsafe {
-                CODE_BITMAP[page_idx / 8] |= 1 << (page_idx & 7);
-            }
-        }
-    }
-
-    /// Unmark a code page (called when all blocks on that page are invalidated).
-    pub fn unmark_code_page(phys_page: u64) {
-        let page_idx = (phys_page >> 12) as usize;
-        if page_idx < CODE_BITMAP_PAGES {
-            unsafe {
-                CODE_BITMAP[page_idx / 8] &= !(1 << (page_idx & 7));
-            }
-        }
-    }
-
-    /// Check if a page contains code.
-    #[inline(always)]
-    fn is_code_page(page: u64) -> bool {
-        let page_idx = (page >> 12) as usize;
-        if page_idx >= CODE_BITMAP_PAGES {
-            return false;
-        }
-        unsafe { (CODE_BITMAP[page_idx / 8] >> (page_idx & 7)) & 1 != 0 }
-    }
-
-    /// Clear the entire code bitmap (called on full cache flush).
-    pub fn clear_code_bitmap() {
-        unsafe { CODE_BITMAP.fill(0); }
-    }
-
-    /// Record a write to physical address `phys`. Called from memory write paths.
-    #[inline]
-    pub fn mark_page_dirty(phys: u64) {
-        let page = phys & !0xFFF;
-        // Fast path: skip if same page as last write.
-        if LAST_DIRTY_PAGE.load(Ordering::Relaxed) == page {
-            return;
-        }
-        // Skip if this page doesn't contain any compiled code.
-        if !is_code_page(page) {
-            LAST_DIRTY_PAGE.store(page, Ordering::Relaxed);
-            return;
-        }
-        LAST_DIRTY_PAGE.store(page, Ordering::Relaxed);
-
-        let idx = DIRTY_COUNT.load(Ordering::Relaxed) as usize;
-        if idx < MAX_DIRTY {
-            unsafe { DIRTY_PAGES[idx] = page; }
-            DIRTY_COUNT.store((idx + 1) as u32, Ordering::Relaxed);
-        } else {
-            // Overflow — signal a full flush.
-            DIRTY_COUNT.store((MAX_DIRTY + 1) as u32, Ordering::Relaxed);
-        }
-    }
-
-    /// Result of draining the dirty page buffer.
-    pub enum DrainResult {
-        /// No pages were dirtied.
-        None,
-        /// `n` pages were dirtied (copied into the caller's buffer).
-        Pages(usize),
-        /// Too many pages — caller should flush the entire cache.
-        Overflow,
-    }
-
-    /// Quick check: are there any dirty pages pending?
-    #[inline(always)]
-    pub fn has_dirty() -> bool {
-        DIRTY_COUNT.load(Ordering::Relaxed) != 0
-    }
-
-    /// Drain dirty pages into `buf`. Returns how many were copied, or Overflow.
-    pub fn drain_to_buf(buf: &mut [u64; MAX_DIRTY]) -> DrainResult {
-        let count = DIRTY_COUNT.swap(0, Ordering::Relaxed) as usize;
-        if count == 0 {
-            return DrainResult::None;
-        }
-        LAST_DIRTY_PAGE.store(u64::MAX, Ordering::Relaxed);
-        if count > MAX_DIRTY {
-            return DrainResult::Overflow;
-        }
-        for i in 0..count {
-            buf[i] = unsafe { DIRTY_PAGES[i] };
-        }
-        DrainResult::Pages(count)
-    }
-}
-/// Diagnostic: count writes to SeaBIOS mmconfig variable at 0xF4DF8.
-static MMCFG_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
-use crate::registers::{
-    SegmentDescriptor, CR0_PG, CR0_WP, CR4_PAE, CR4_PSE, CR4_SMEP, CR4_SMAP,
-    EFER_LMA, EFER_NXE,
-};
-
 pub use flat::FlatMemory;
 pub use mmio::{MmioDispatch, MmioHandler, MmioRegion};
-pub use paging::walk_page_tables;
 pub use segment::segment_translate;
 
 // ── AccessType ──
@@ -415,7 +283,7 @@ impl GuestMemory {
         let a = addr as usize;
         if a < self.ram.size() && !self.is_possible_mmio(addr) {
             unsafe { *self.ram.as_mut_slice().as_mut_ptr().add(a) = val; }
-            smc::mark_page_dirty(addr);
+
         } else {
             let _ = self.write_u8(addr, val);
         }
@@ -427,7 +295,7 @@ impl GuestMemory {
         let a = addr as usize;
         if a + 2 <= self.ram.size() && !self.is_possible_mmio(addr) {
             unsafe { (self.ram.as_mut_slice().as_mut_ptr().add(a) as *mut u16).write_unaligned(val); }
-            smc::mark_page_dirty(addr);
+
         } else {
             let _ = self.write_u16(addr, val);
         }
@@ -439,7 +307,7 @@ impl GuestMemory {
         let a = addr as usize;
         if a + 4 <= self.ram.size() && !self.is_possible_mmio(addr) {
             unsafe { (self.ram.as_mut_slice().as_mut_ptr().add(a) as *mut u32).write_unaligned(val); }
-            smc::mark_page_dirty(addr);
+
         } else {
             let _ = self.write_u32(addr, val);
         }
@@ -609,7 +477,7 @@ impl MemoryBus for GuestMemory {
         }
         let result = self.ram.write_u8(addr, val);
         if result.is_ok() {
-            smc::mark_page_dirty(addr);
+
         }
         result
     }
@@ -623,7 +491,7 @@ impl MemoryBus for GuestMemory {
         }
         let result = self.ram.write_u16(addr, val);
         if result.is_ok() {
-            smc::mark_page_dirty(addr);
+
         }
         result
     }
@@ -637,7 +505,7 @@ impl MemoryBus for GuestMemory {
         }
         let result = self.ram.write_u32(addr, val);
         if result.is_ok() {
-            smc::mark_page_dirty(addr);
+
         }
         result
     }
@@ -651,7 +519,7 @@ impl MemoryBus for GuestMemory {
         }
         let result = self.ram.write_u64(addr, val);
         if result.is_ok() {
-            smc::mark_page_dirty(addr);
+
         }
         result
     }
@@ -681,219 +549,3 @@ impl MemoryBus for GuestMemory {
     }
 }
 
-// ── Mmu ──
-
-/// Memory Management Unit state derived from control registers.
-///
-/// Tracks the paging mode and protection flags that affect address
-/// translation. Updated whenever the guest writes to CR0, CR4, or EFER
-/// via the `update_from_regs` method.
-pub struct Mmu {
-    /// CR0.PG — paging is enabled.
-    pub paging_enabled: bool,
-    /// CR4.PSE — page size extensions (4 MiB pages in 32-bit mode).
-    pub pse: bool,
-    /// CR4.PAE — physical address extension.
-    pub pae: bool,
-    /// EFER.LMA — long mode active (64-bit paging).
-    pub long_mode: bool,
-    /// CR0.WP — write protect (supervisor writes to RO user pages fault).
-    pub wp: bool,
-    /// EFER.NXE — no-execute enable.
-    pub nxe: bool,
-    /// CR4.SMEP — supervisor mode execution prevention.
-    pub smep: bool,
-    /// CR4.SMAP — supervisor mode access prevention.
-    pub smap: bool,
-    /// Cached EFLAGS.AC for SMAP override. Updated per-instruction.
-    pub rflags_ac: bool,
-    /// Cached CR0/CR4/EFER for change detection.
-    cached_cr0: u64,
-    /// Cached CR4 value.
-    cached_cr4: u64,
-    /// Cached EFER value.
-    cached_efer: u64,
-    /// Last CR3 value seen by the translation fast path.
-    tlb_last_cr3: Cell<u64>,
-    /// Direct-mapped TLB validity/permission flags per entry.
-    tlb_valid: UnsafeCell<[u8; 4096]>,
-    /// Direct-mapped TLB tag: linear page number.
-    tlb_linear_page: UnsafeCell<[u64; 4096]>,
-    /// Direct-mapped TLB tag: CR3 value used for translation.
-    tlb_cr3: UnsafeCell<[u64; 4096]>,
-    /// Direct-mapped TLB payload: physical page number.
-    tlb_phys_page: UnsafeCell<[u64; 4096]>,
-    /// Raw pointer to guest RAM for setting PTE Accessed/Dirty bits.
-    ram_ptr: *mut u8,
-    /// Size of guest RAM in bytes.
-    ram_size: usize,
-}
-
-impl Mmu {
-    /// Create a new MMU with all features disabled (real-mode defaults).
-    pub fn new() -> Self {
-        Mmu {
-            paging_enabled: false,
-            pse: false,
-            pae: false,
-            long_mode: false,
-            wp: false,
-            nxe: false,
-            smep: false,
-            smap: false,
-            rflags_ac: false,
-            cached_cr0: 0,
-            cached_cr4: 0,
-            cached_efer: 0,
-            tlb_last_cr3: Cell::new(0),
-            tlb_valid: UnsafeCell::new([0; 4096]),
-            tlb_linear_page: UnsafeCell::new([0; 4096]),
-            tlb_cr3: UnsafeCell::new([0; 4096]),
-            tlb_phys_page: UnsafeCell::new([0; 4096]),
-            ram_ptr: core::ptr::null_mut(),
-            ram_size: 0,
-        }
-    }
-
-    /// Set the RAM pointer for PTE Accessed/Dirty bit updates.
-    /// Must be called after guest memory is allocated.
-    pub fn set_ram_ptr(&mut self, ptr: *mut u8, size: usize) {
-        self.ram_ptr = ptr;
-        self.ram_size = size;
-    }
-
-    /// Flush the internal linear→physical translation cache.
-    #[inline]
-    pub fn flush_tlb(&self) {
-        unsafe { (*self.tlb_valid.get()).fill(0) };
-    }
-
-    /// Synchronize MMU state from the current CR0, CR4, and EFER values.
-    ///
-    /// Uses cached values to skip the update when nothing changed (which
-    /// is the common case — control registers are written very rarely).
-    #[inline]
-    pub fn update_from_regs(&mut self, cr0: u64, cr4: u64, efer: u64) {
-        if cr0 == self.cached_cr0 && cr4 == self.cached_cr4 && efer == self.cached_efer {
-            return;
-        }
-        self.cached_cr0 = cr0;
-        self.cached_cr4 = cr4;
-        self.cached_efer = efer;
-        self.flush_tlb();
-        self.paging_enabled = (cr0 & CR0_PG) != 0;
-        self.wp = (cr0 & CR0_WP) != 0;
-        self.pse = (cr4 & CR4_PSE) != 0;
-        self.pae = (cr4 & CR4_PAE) != 0;
-        self.long_mode = (efer & EFER_LMA) != 0;
-        self.nxe = (efer & EFER_NXE) != 0;
-        self.smep = (cr4 & CR4_SMEP) != 0;
-        self.smap = (cr4 & CR4_SMAP) != 0;
-    }
-
-    /// Translate a logical address (segment descriptor + offset) to a physical address.
-    ///
-    /// This is the main entry point used by the instruction executor:
-    ///
-    /// 1. Apply segmentation to produce a linear address.
-    /// 2. If paging is enabled, walk the page tables to produce a physical address.
-    /// 3. Otherwise, the linear address *is* the physical address.
-    ///
-    /// # Parameters
-    ///
-    /// - `seg`: The cached segment descriptor for this access.
-    /// - `offset`: Offset within the segment.
-    /// - `cr3`: Page directory base register (only used when paging is on).
-    /// - `access`: Read, Write, or Execute.
-    /// - `cpl`: Current privilege level.
-    /// - `mem`: Guest physical memory bus (for reading page table entries).
-    pub fn translate(
-        &self,
-        seg: &SegmentDescriptor,
-        offset: u64,
-        cr3: u64,
-        access: AccessType,
-        cpl: u8,
-        mem: &dyn MemoryBus,
-    ) -> Result<u64> {
-        let linear = segment_translate(seg, offset, access, cpl, self.long_mode)?;
-        self.translate_linear(linear, cr3, access, cpl, mem)
-    }
-
-    /// Translate a linear (virtual) address to a physical address via paging.
-    ///
-    /// If paging is disabled, the linear address is returned unchanged.
-    /// Otherwise, the appropriate page-table walker is invoked.
-    ///
-    /// # Parameters
-    ///
-    /// - `linear`: Linear address (output of segmentation).
-    /// - `cr3`: Page directory base register.
-    /// - `access`: Read, Write, or Execute.
-    /// - `cpl`: Current privilege level.
-    /// - `mem`: Guest physical memory bus.
-    #[inline]
-    #[inline(always)]
-    pub fn translate_linear(
-        &self,
-        linear: u64,
-        cr3: u64,
-        access: AccessType,
-        cpl: u8,
-        mem: &dyn MemoryBus,
-    ) -> Result<u64> {
-        if !self.paging_enabled {
-            return Ok(linear);
-        }
-
-        // CR3 reload invalidates non-global TLB entries. We model this
-        // conservatively by flushing the full software TLB on CR3 change.
-        if self.tlb_last_cr3.get() != cr3 {
-            self.flush_tlb();
-            self.tlb_last_cr3.set(cr3);
-        }
-
-        let linear_page = linear >> 12;
-        let offset = linear & 0xFFF;
-        let idx = ((linear_page ^ (cr3 >> 12)) as usize) & 0xFFF;
-        let access_mask = match access {
-            AccessType::Read => 0x1,
-            AccessType::Write => 0x2,
-            AccessType::Execute => 0x4,
-        };
-
-        unsafe {
-            let valid = &*self.tlb_valid.get();
-            let lin = &*self.tlb_linear_page.get();
-            let tag_cr3 = &*self.tlb_cr3.get();
-            let phys = &*self.tlb_phys_page.get();
-
-            if (valid[idx] & access_mask) != 0 && lin[idx] == linear_page && tag_cr3[idx] == cr3 {
-                return Ok((phys[idx] << 12) | offset);
-            }
-        }
-
-        let translated = walk_page_tables(linear, cr3, access, cpl, self, mem, self.ram_ptr, self.ram_size, self.rflags_ac)?;
-        let phys_page = translated >> 12;
-
-        unsafe {
-            let valid = &mut *self.tlb_valid.get();
-            let lin = &mut *self.tlb_linear_page.get();
-            let tag_cr3 = &mut *self.tlb_cr3.get();
-            let phys = &mut *self.tlb_phys_page.get();
-
-            // Keep cached permission bits for the same mapping to avoid
-            // unnecessary walk repeats when access type varies.
-            if lin[idx] == linear_page && tag_cr3[idx] == cr3 && phys[idx] == phys_page {
-                valid[idx] |= access_mask;
-            } else {
-                lin[idx] = linear_page;
-                tag_cr3[idx] = cr3;
-                phys[idx] = phys_page;
-                valid[idx] = access_mask;
-            }
-        }
-
-        Ok(translated)
-    }
-}
