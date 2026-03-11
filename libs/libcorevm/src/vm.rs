@@ -66,6 +66,7 @@ impl Vm {
             ps2_ptr: core::ptr::null_mut(),
             svga_ptr: core::ptr::null_mut(),
             ahci_ptr: core::ptr::null_mut(),
+            pit_ptr: core::ptr::null_mut(),
         })
     }
 
