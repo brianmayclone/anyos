@@ -5,22 +5,12 @@ use crate::theme;
 /// Runtime metrics for the status bar
 pub struct VmMetrics {
     pub state_label: &'static str,
-    pub mips: f64,
-    pub ipc: f64,
-    pub cpu_mode: &'static str,
-    pub jit_blocks: u64,
-    pub jit_hit_rate: f64,
 }
 
 impl Default for VmMetrics {
     fn default() -> Self {
         Self {
             state_label: "Stopped",
-            mips: 0.0,
-            ipc: 0.0,
-            cpu_mode: "N/A",
-            jit_blocks: 0,
-            jit_hit_rate: 0.0,
         }
     }
 }
@@ -62,25 +52,6 @@ pub fn render_statusbar(
                         };
                         ui.colored_label(dot_color, "\u{25CF}");
                         ui.colored_label(value_color, egui::RichText::new(m.state_label).size(11.0));
-                        ui.add_space(12.0);
-
-                        ui.colored_label(label_color, egui::RichText::new(format!("{:.0} MIPS", m.mips)).size(11.0));
-                        ui.add_space(8.0);
-                        ui.colored_label(label_color, egui::RichText::new(format!("IPC {:.1}", m.ipc)).size(11.0));
-                        ui.add_space(8.0);
-                        ui.colored_label(label_color, egui::RichText::new(m.cpu_mode).size(11.0));
-
-                        if m.jit_blocks > 0 {
-                            ui.add_space(8.0);
-                            ui.colored_label(
-                                label_color,
-                                egui::RichText::new(format!(
-                                    "JIT {} blk ({:.0}%)",
-                                    m.jit_blocks,
-                                    m.jit_hit_rate * 100.0
-                                )).size(11.0),
-                            );
-                        }
                     }
                     None => {
                         let msg = if vm_selected { "Ready" } else { "No VM selected" };

@@ -158,11 +158,6 @@ impl SettingsDialog {
             ui.radio_value(&mut self.config.bios_type, BiosType::CoreVm, "CoreVM");
         });
 
-        section_heading(ui, "Acceleration");
-
-        labeled_row(ui, "JIT:", |ui| {
-            ui.checkbox(&mut self.config.jit_enabled, "Enable JIT Compiler");
-        });
     }
 
     fn devices_tab(&mut self, ui: &mut egui::Ui) {

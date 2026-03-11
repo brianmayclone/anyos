@@ -106,10 +106,10 @@ pub fn handle_keyboard_events(ctx: &egui::Context, vm_handle: u64, display_focus
                     }
                     if let Some((scancode, _extended)) = scancode_for_key(*key) {
                         if *pressed {
-                            libcorevm::corevm_ps2_key_press(vm_handle, scancode);
+                            libcorevm::ffi::corevm_ps2_key_press(vm_handle, scancode);
                             last_key = Some(format!("{:?} (0x{:02X})", key, scancode));
                         } else {
-                            libcorevm::corevm_ps2_key_release(vm_handle, scancode);
+                            libcorevm::ffi::corevm_ps2_key_release(vm_handle, scancode);
                         }
                     }
                 }
@@ -204,7 +204,7 @@ impl MouseCapture {
                             }
                             b
                         });
-                        libcorevm::corevm_ps2_mouse_move(vm_handle, dx, dy, buttons);
+                        libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, dx, dy, buttons);
                     }
                 }
                 self.last_pos = Some(pos);

@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use std::time::{Duration, Instant};
-use std::ffi::CString;
 
 use crate::app::{VmEntry, FrameBufferData};
 use crate::config::BiosType;
@@ -9,16 +8,25 @@ use crate::display;
 use crate::platform;
 use crate::sidebar::VmState;
 
-use std::sync::atomic::AtomicU64;
+use libcorevm::ffi::{
+    CExitReason,
+    corevm_create, corevm_create_vcpu, corevm_destroy,
+    corevm_run_vcpu, corevm_handle_io_exit, corevm_handle_mmio_exit,
+    corevm_setup_standard_devices, corevm_setup_ahci,
+    corevm_ahci_attach_disk, corevm_ahci_attach_cdrom,
+    corevm_load_binary,
+    corevm_get_vcpu_regs, corevm_set_vcpu_regs,
+    corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
+    corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
+};
+use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg};
 
-/// Shared control flags and metrics for the VM thread
+/// Shared control flags for the VM thread
 pub struct VmControl {
     pub stop: AtomicBool,
     pub pause: AtomicBool,
     pub exited: AtomicBool,
-    pub exit_reason: AtomicU64,
-    pub total_instructions: AtomicU64,
-    pub mips: AtomicU64, // stored as f64 bits
+    pub exit_reason: Mutex<String>,
 }
 
 /// Start a VM. Sets up libcorevm, spawns execution thread.
@@ -26,49 +34,45 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     let config = &entry.config;
 
     // Create VM
-    let handle = libcorevm::corevm_create_ex(config.ram_mb, config.cpu_cores);
+    let handle = corevm_create(config.ram_mb);
     if handle == 0 {
         return Err("Failed to create VM".into());
     }
 
-    // Setup devices
-    libcorevm::corevm_setup_standard_devices(handle);
-    libcorevm::corevm_setup_pci_bus(handle);
-    libcorevm::corevm_setup_ide(handle);
+    // Create vCPU
+    if corevm_create_vcpu(handle, 0) != 0 {
+        corevm_destroy(handle);
+        return Err("Failed to create vCPU".into());
+    }
+
+    // Setup devices (includes PCI bus)
+    corevm_setup_standard_devices(handle);
+
+    // Setup AHCI controller (replaces IDE)
+    corevm_setup_ahci(handle, 6);
 
     // Load BIOS
     load_bios(handle, &config.bios_type)?;
 
-    // Attach ISO if configured
+    // Attach ISO if configured (as AHCI CDROM on port 1)
     if !config.iso_image.is_empty() {
-        let iso_data = std::fs::read(&config.iso_image)
-            .map_err(|e| format!("Failed to read ISO: {}", e))?;
-        libcorevm::corevm_ide_attach_slave(handle, iso_data.as_ptr(), iso_data.len() as u32);
-        // VM needs the data for its lifetime
-        std::mem::forget(iso_data);
+        attach_image_to_ahci(handle, &config.iso_image, 1, true)?;
     }
 
-    // Attach disk if configured
+    // Attach disk if configured (as AHCI disk on port 0)
     if !config.disk_image.is_empty() {
-        let disk_data = std::fs::read(&config.disk_image)
-            .map_err(|e| format!("Failed to read disk: {}", e))?;
-        libcorevm::corevm_ide_attach_disk(handle, disk_data.as_ptr(), disk_data.len() as u32);
-        std::mem::forget(disk_data);
+        attach_image_to_ahci(handle, &config.disk_image, 0, false)?;
     }
 
-    // Enable JIT if configured
-    if config.jit_enabled {
-        libcorevm::corevm_jit_enable(handle, 1);
-    }
+    // Set initial CPU state: CS:IP = F000:FFF0 (real-mode reset vector)
+    set_initial_cpu_state(handle);
 
     // Setup shared state
     let control = Arc::new(VmControl {
         stop: AtomicBool::new(false),
         pause: AtomicBool::new(false),
         exited: AtomicBool::new(false),
-        exit_reason: AtomicU64::new(0),
-        total_instructions: AtomicU64::new(0),
-        mips: AtomicU64::new(0),
+        exit_reason: Mutex::new(String::new()),
     });
 
     let fb = entry.framebuffer.clone();
@@ -77,7 +81,7 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     // Spawn VM execution thread
     let thread = thread::spawn(move || {
         vm_run_loop(handle, fb, control_clone);
-        libcorevm::corevm_destroy(handle);
+        corevm_destroy(handle);
     });
 
     entry.vm_handle = Some(handle);
@@ -88,13 +92,96 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     Ok(())
 }
 
+/// Attach a disk or ISO image to an AHCI port via file descriptor.
+#[cfg(unix)]
+fn attach_image_to_ahci(handle: u64, path: &str, port: u32, is_cdrom: bool) -> Result<(), String> {
+    use std::os::unix::io::IntoRawFd;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(!is_cdrom)
+        .open(path)
+        .map_err(|e| format!("Failed to open {}: {}", path, e))?;
+    let size = file.metadata()
+        .map_err(|e| format!("Failed to stat {}: {}", path, e))?.len();
+    let fd = file.into_raw_fd();
+
+    let ret = if is_cdrom {
+        corevm_ahci_attach_cdrom(handle, port, fd, size)
+    } else {
+        corevm_ahci_attach_disk(handle, port, fd, size)
+    };
+
+    if ret != 0 {
+        // Close fd on failure by reclaiming ownership
+        unsafe { drop(std::fs::File::from_raw_fd(fd)); }
+        return Err(format!("Failed to attach {} to AHCI port {}", path, port));
+    }
+    // fd ownership transferred to AHCI, do NOT close it
+    Ok(())
+}
+
+#[cfg(windows)]
+fn attach_image_to_ahci(handle: u64, path: &str, port: u32, is_cdrom: bool) -> Result<(), String> {
+    use std::os::windows::io::IntoRawHandle;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(!is_cdrom)
+        .open(path)
+        .map_err(|e| format!("Failed to open {}: {}", path, e))?;
+    let size = file.metadata()
+        .map_err(|e| format!("Failed to stat {}: {}", path, e))?.len();
+    // On Windows, pass the raw handle as an i32 (narrowing cast)
+    let handle_raw = file.into_raw_handle();
+    let fd = handle_raw as isize as i32;
+
+    let ret = if is_cdrom {
+        corevm_ahci_attach_cdrom(handle, port, fd, size)
+    } else {
+        corevm_ahci_attach_disk(handle, port, fd, size)
+    };
+
+    if ret != 0 {
+        return Err(format!("Failed to attach {} to AHCI port {}", path, port));
+    }
+    Ok(())
+}
+
+/// Set initial CPU state to real-mode reset vector (F000:FFF0).
+fn set_initial_cpu_state(handle: u64) {
+    let mut sregs = VcpuSregs::default();
+    corevm_get_vcpu_sregs(handle, 0, &mut sregs);
+
+    // CS: base=0xF0000, selector=0xF000, limit=0xFFFF
+    sregs.cs = SegmentReg {
+        base: 0xF0000,
+        limit: 0xFFFF,
+        selector: 0xF000,
+        type_: 0x0B, // execute/read, accessed
+        present: 1,
+        dpl: 0,
+        db: 0,
+        s: 1,
+        l: 0,
+        g: 0,
+        avl: 0,
+    };
+
+    // CR0: PE=0 (real mode)
+    sregs.cr0 = 0x10; // ET bit set (FPU extension type)
+
+    corevm_set_vcpu_sregs(handle, 0, &sregs);
+
+    let mut regs = VcpuRegs::default();
+    corevm_get_vcpu_regs(handle, 0, &mut regs);
+    regs.rip = 0xFFF0;
+    regs.rflags = 0x02; // reserved bit
+    corevm_set_vcpu_regs(handle, 0, &regs);
+}
+
 /// Stop a running VM
 pub fn stop_vm(entry: &mut VmEntry) {
     if let Some(ref control) = entry.control {
         control.stop.store(true, Ordering::Relaxed);
-    }
-    if let Some(handle) = entry.vm_handle {
-        libcorevm::corevm_request_stop(handle);
     }
     if let Some(thread) = entry.vm_thread.take() {
         let _ = thread.join();
@@ -120,43 +207,14 @@ pub fn resume_vm(entry: &mut VmEntry) {
     entry.state = VmState::Running;
 }
 
-/// Run a batch of instructions, polling IDE IRQs between sub-batches.
-/// The IDE poll quantum must be large enough that the wall-clock overhead
-/// between corevm_run calls does not dominate — the PIT timer inside
-/// corevm_run only measures time *within* each call.
-fn run_batch_with_irq_poll(handle: u64, batch: u64) -> u32 {
-    const IDE_IRQ_POLL_QUANTUM: u64 = 500_000;
-    let mut remaining = batch.max(1);
-    let mut exit_code = 2;
-
-    while remaining > 0 {
-        let chunk = remaining.min(IDE_IRQ_POLL_QUANTUM);
-        exit_code = libcorevm::corevm_run(handle, chunk);
-        if libcorevm::corevm_ide_irq_raised(handle) != 0 {
-            libcorevm::corevm_pic_raise_irq(handle, 14);
-            libcorevm::corevm_ide_clear_irq(handle);
-        }
-        if exit_code != 2 {
-            break;
-        }
-        remaining -= chunk;
-    }
-
-    exit_code
-}
-
 /// The main VM execution loop (runs in dedicated thread)
 fn vm_run_loop(
     handle: u64,
     fb: Arc<Mutex<FrameBufferData>>,
     control: Arc<VmControl>,
 ) {
-    let batch_size: u64 = 500_000;
     let mut last_fb_update = Instant::now();
     let fb_interval = Duration::from_millis(16); // ~60fps
-    let mut last_metrics = Instant::now();
-    let mut instructions_since_last: u64 = 0;
-    let mut total: u64 = 0;
 
     loop {
         if control.stop.load(Ordering::Relaxed) {
@@ -168,89 +226,100 @@ fn vm_run_loop(
             continue;
         }
 
-        // Run a batch with frequent IDE IRQ polling (every 1024 instructions).
-        // Do NOT call corevm_pit_tick — corevm_run handles PIT internally
-        // via wall-clock time. Calling pit_tick sets pit_is_externally_clocked
-        // which disables the automatic PIT.
-        let exit_reason = run_batch_with_irq_poll(handle, batch_size);
-        instructions_since_last += batch_size;
-        total += batch_size;
+        let mut exit = CExitReason::default();
+        corevm_run_vcpu(handle, 0, &mut exit);
+
+        match exit.reason {
+            0 => {
+                // IoIn — dispatch to device, device fills data
+                let mut data = [0u8; 4];
+                corevm_handle_io_exit(handle, exit.port, 0, exit.size, data.as_mut_ptr());
+            }
+            1 => {
+                // IoOut — dispatch to device
+                let mut data = exit.data_u32.to_le_bytes();
+                corevm_handle_io_exit(handle, exit.port, 1, exit.size, data.as_mut_ptr());
+            }
+            2 => {
+                // MmioRead — dispatch to device
+                let mut data = [0u8; 8];
+                corevm_handle_mmio_exit(handle, exit.addr, 0, exit.size, data.as_mut_ptr());
+            }
+            3 => {
+                // MmioWrite — dispatch to device
+                let mut data = exit.data_u64.to_le_bytes();
+                corevm_handle_mmio_exit(handle, exit.addr, 1, exit.size, data.as_mut_ptr());
+            }
+            7 => {
+                // Halted — sleep briefly
+                thread::sleep(Duration::from_millis(1));
+            }
+            9 => {
+                // Shutdown — clean exit
+                update_framebuffer(handle, &fb);
+                if let Ok(mut r) = control.exit_reason.lock() {
+                    *r = "Shutdown".into();
+                }
+                control.exited.store(true, Ordering::Relaxed);
+                break;
+            }
+            11 => {
+                // Error — fatal
+                update_framebuffer(handle, &fb);
+                if let Ok(mut r) = control.exit_reason.lock() {
+                    *r = "Error".into();
+                }
+                control.exited.store(true, Ordering::Relaxed);
+                break;
+            }
+            _ => {
+                // Other exits (MsrRead/Write, Cpuid, InterruptWindow, Debug)
+                // For now, continue
+            }
+        }
 
         // Update framebuffer at ~60fps
         if last_fb_update.elapsed() >= fb_interval {
             update_framebuffer(handle, &fb);
             last_fb_update = Instant::now();
         }
-
-        // Update metrics every 500ms
-        let metrics_elapsed = last_metrics.elapsed();
-        if metrics_elapsed >= Duration::from_millis(500) {
-            let secs = metrics_elapsed.as_secs_f64();
-            let mips_val = (instructions_since_last as f64) / secs / 1_000_000.0;
-            control.mips.store(mips_val.to_bits(), Ordering::Relaxed);
-            control.total_instructions.store(total, Ordering::Relaxed);
-            instructions_since_last = 0;
-            last_metrics = Instant::now();
-        }
-
-        match exit_reason {
-            2 => {
-                // InstructionLimit — normal, batch completed, continue
-            }
-            0 => {
-                // HLT — sleep briefly, interrupts might wake it
-                thread::sleep(Duration::from_millis(1));
-            }
-            1 => {
-                // Exception — fatal, stop VM
-                update_framebuffer(handle, &fb);
-                control.exit_reason.store(exit_reason as u64, Ordering::Relaxed);
-                control.exited.store(true, Ordering::Relaxed);
-                break;
-            }
-            4 => {
-                // StopRequested — clean shutdown
-                update_framebuffer(handle, &fb);
-                control.exited.store(true, Ordering::Relaxed);
-                break;
-            }
-            _ => {
-                // Breakpoint, PS2Reset, etc.
-                update_framebuffer(handle, &fb);
-                control.exit_reason.store(exit_reason as u64, Ordering::Relaxed);
-                control.exited.store(true, Ordering::Relaxed);
-                break;
-            }
-        }
     }
 }
 
 /// Read VGA state and update the shared framebuffer
 fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>) {
-    let mut w: u32 = 0;
-    let mut h: u32 = 0;
-    let mut bpp: u8 = 0;
+    let mut fb_ptr: *const u8 = std::ptr::null();
+    let mut fb_len: u32 = 0;
 
-    let fb_ptr = libcorevm::corevm_vga_get_framebuffer(handle, &mut w, &mut h, &mut bpp);
+    let ret = corevm_vga_get_framebuffer(handle, &mut fb_ptr, &mut fb_len);
 
-    if !fb_ptr.is_null() && w > 0 && h > 0 {
-        let fb_size = (w as usize) * (h as usize) * (bpp as usize) / 8;
-        let raw_pixels = unsafe { std::slice::from_raw_parts(fb_ptr, fb_size) };
+    if ret == 0 && !fb_ptr.is_null() && fb_len > 0 {
+        // The framebuffer returns raw pixel data; we need width/height/bpp from SVGA.
+        // For now, assume 32bpp and derive dimensions from fb_len.
+        // TODO: expose width/height/bpp via FFI
+        let raw_pixels = unsafe { std::slice::from_raw_parts(fb_ptr, fb_len as usize) };
 
         if let Ok(mut fb_data) = fb.lock() {
-            fb_data.text_mode = false;
-            fb_data.width = w;
-            fb_data.height = h;
-            display::render_graphics_mode(raw_pixels, w, h, bpp, &mut fb_data.pixels);
-            fb_data.dirty = true;
+            // Try to determine dimensions from the data size
+            // Common resolutions: 640x480, 800x600, 1024x768, 1280x1024
+            let (w, h, bpp) = guess_resolution(fb_len as usize);
+            if w > 0 && h > 0 {
+                fb_data.text_mode = false;
+                fb_data.width = w;
+                fb_data.height = h;
+                display::render_graphics_mode(raw_pixels, w, h, bpp, &mut fb_data.pixels);
+                fb_data.dirty = true;
+            }
         }
     } else {
         // Try text mode
-        let mut count: u32 = 0;
-        let text_ptr = libcorevm::corevm_vga_get_text_buffer(handle, &mut count);
+        let mut text_ptr: *const u16 = std::ptr::null();
+        let mut text_len: u32 = 0;
 
-        if !text_ptr.is_null() && count > 0 {
-            let text_cells = unsafe { std::slice::from_raw_parts(text_ptr, count as usize) };
+        let ret = corevm_vga_get_text_buffer(handle, &mut text_ptr, &mut text_len);
+
+        if ret == 0 && !text_ptr.is_null() && text_len > 0 {
+            let text_cells = unsafe { std::slice::from_raw_parts(text_ptr, text_len as usize) };
 
             if let Ok(mut fb_data) = fb.lock() {
                 fb_data.text_mode = true;
@@ -265,6 +334,37 @@ fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>) {
     }
 }
 
+/// Guess framebuffer resolution from byte length.
+/// Returns (width, height, bpp).
+fn guess_resolution(len: usize) -> (u32, u32, u8) {
+    // Try common resolutions at 32bpp first, then 24bpp, then 16bpp
+    let common = [
+        (1280, 1024), (1024, 768), (800, 600), (640, 480),
+        (1920, 1080), (1600, 1200), (1280, 800), (1280, 720),
+    ];
+    for &(w, h) in &common {
+        if len == (w * h * 4) as usize { return (w, h, 32); }
+    }
+    for &(w, h) in &common {
+        if len == (w * h * 3) as usize { return (w, h, 24); }
+    }
+    for &(w, h) in &common {
+        if len == (w * h * 2) as usize { return (w, h, 16); }
+    }
+    // Fallback: assume 32bpp, try to find a reasonable width
+    let pixels = len / 4;
+    if pixels > 0 {
+        // Try 640-wide
+        if pixels % 640 == 0 {
+            return (640, (pixels / 640) as u32, 32);
+        }
+        if pixels % 800 == 0 {
+            return (800, (pixels / 800) as u32, 32);
+        }
+    }
+    (0, 0, 0)
+}
+
 /// Load BIOS files into the VM
 fn load_bios(handle: u64, bios_type: &BiosType) -> Result<(), String> {
     match bios_type {
@@ -276,23 +376,21 @@ fn load_bios(handle: u64, bios_type: &BiosType) -> Result<(), String> {
 
             let bios = std::fs::read(&bios_path)
                 .map_err(|e| format!("Failed to read BIOS: {}", e))?;
-            let vgabios = std::fs::read(&vgabios_path)
+            let _vgabios = std::fs::read(&vgabios_path)
                 .map_err(|e| format!("Failed to read VGA BIOS: {}", e))?;
 
             // Load BIOS at 0xC0000
-            libcorevm::corevm_load_binary(handle, 0xC0000, bios.as_ptr(), bios.len() as u32);
+            corevm_load_binary(handle, 0xC0000, bios.as_ptr(), bios.len() as u32);
 
-            // Load ROM overlay at top of address space
-            libcorevm::corevm_load_rom(handle, 0xFFFC_0000, bios.as_ptr(), bios.len() as u32);
+            // Load ROM overlay at top of address space (0x100000 - bios_len)
+            let rom_base = 0x1_0000_0000u64 - bios.len() as u64;
+            corevm_load_binary(handle, rom_base, bios.as_ptr(), bios.len() as u32);
 
-            // Add VGA BIOS via fw_cfg
-            let name = CString::new("vgaroms/vgabios.bin").unwrap();
-            libcorevm::corevm_fw_cfg_add_file(
-                handle,
-                name.as_ptr() as *const u8,
-                vgabios.as_ptr(),
-                vgabios.len() as u32,
-            );
+            // VGA BIOS: load at 0xC0000 area (typically separate from main BIOS)
+            // SeaBIOS expects VGA BIOS at 0xC0000 via fw_cfg, but without fw_cfg
+            // we load it directly at the option ROM area
+            // Note: fw_cfg is not available in the new API, so VGA BIOS
+            // initialization depends on SVGA device's built-in ROM support.
 
             Ok(())
         }
@@ -302,7 +400,7 @@ fn load_bios(handle: u64, bios_type: &BiosType) -> Result<(), String> {
             let bios = std::fs::read(&bios_path)
                 .map_err(|e| format!("Failed to read BIOS: {}", e))?;
 
-            libcorevm::corevm_load_rom(handle, 0xF0000, bios.as_ptr(), bios.len() as u32);
+            corevm_load_binary(handle, 0xF0000, bios.as_ptr(), bios.len() as u32);
 
             Ok(())
         }

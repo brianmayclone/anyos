@@ -49,9 +49,6 @@ pub struct VmEntry {
     pub control: Option<Arc<VmControl>>,
     pub framebuffer: Arc<Mutex<FrameBufferData>>,
     pub vm_thread: Option<JoinHandle<()>>,
-    pub instruction_count: u64,
-    pub mips: f64,
-    pub ipc: f64,
     pub cpu_mode: u32,  // 0=real, 1=protected, 2=long
 }
 
@@ -64,9 +61,6 @@ impl VmEntry {
             control: None,
             framebuffer: Arc::new(Mutex::new(FrameBufferData::default())),
             vm_thread: None,
-            instruction_count: 0,
-            mips: 0.0,
-            ipc: 0.0,
             cpu_mode: 0,
         }
     }
@@ -206,22 +200,8 @@ impl CoreVmApp {
         let vm = self.find_vm(uuid)?;
         if vm.state != VmState::Running { return None; }
 
-        let (mips, total_insn) = if let Some(ref ctl) = vm.control {
-            let mips_bits = ctl.mips.load(std::sync::atomic::Ordering::Relaxed);
-            let mips = f64::from_bits(mips_bits);
-            let total = ctl.total_instructions.load(std::sync::atomic::Ordering::Relaxed);
-            (mips, total)
-        } else {
-            (0.0, 0)
-        };
-
         Some(VmMetrics {
             state_label: "Running",
-            mips,
-            ipc: 0.0,
-            cpu_mode: "N/A",
-            jit_blocks: 0,
-            jit_hit_rate: 0.0,
         })
     }
 }
@@ -578,10 +558,12 @@ impl eframe::App for CoreVmApp {
             if vm.state == VmState::Running {
                 if let Some(ref ctl) = vm.control {
                     if ctl.exited.load(std::sync::atomic::Ordering::Relaxed) {
-                        let reason = ctl.exit_reason.load(std::sync::atomic::Ordering::Relaxed);
+                        let reason = ctl.exit_reason.lock()
+                            .map(|r| r.clone())
+                            .unwrap_or_default();
                         vm.state = VmState::Stopped;
                         self.error_message = Some(format!(
-                            "VM '{}' stopped unexpectedly (exit reason: {})",
+                            "VM '{}' stopped ({})",
                             vm.config.name, reason
                         ));
                     }
@@ -674,9 +656,6 @@ fn render_summary(ui: &mut egui::Ui, vm: &VmEntry, deferred_action: &mut Option<
             ("CPUs", format!("{}", vm.config.cpu_cores)),
             ("BIOS", format!("{:?}", vm.config.bios_type)),
         ];
-        if vm.config.jit_enabled {
-            items.push(("JIT", "Enabled".to_string()));
-        }
         if !vm.config.disk_image.is_empty() {
             let disk_name = std::path::Path::new(&vm.config.disk_image)
                 .file_name()
