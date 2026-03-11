@@ -596,6 +596,10 @@ pub extern "C" fn corevm_setup_ahci(handle: u64, num_ports: u8) -> i32 {
     });
     vm.memory.add_mmio(AHCI_MMIO_BASE, AHCI_MMIO_SIZE, wrapper);
 
+    // Give AHCI access to guest RAM for DMA transfers.
+    let (ram_ptr, ram_len) = vm.memory.ram_mut_ptr();
+    unsafe { &mut *vm.ahci_ptr }.set_guest_memory(ram_ptr, ram_len);
+
     // Keep the AHCI Box alive by leaking it (wrapper uses raw pointer)
     core::mem::forget(ahci);
 

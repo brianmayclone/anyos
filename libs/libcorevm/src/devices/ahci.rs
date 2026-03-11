@@ -199,16 +199,36 @@ impl AhciDrive {
 
     fn read_at(&self, offset: u64, buf: &mut [u8]) {
         if self.disk_fd >= 0 {
-            self.seek_to(offset);
+            #[cfg(feature = "std")]
+            {
+                use std::io::{Read, Seek, SeekFrom};
+                // Borrow the fd/handle as a File without taking ownership.
+                let mut file = unsafe { Self::borrow_file(self.disk_fd) };
+                let _ = file.seek(SeekFrom::Start(offset));
+                let mut total = 0usize;
+                while total < buf.len() {
+                    match file.read(&mut buf[total..]) {
+                        Ok(0) => break,
+                        Ok(n) => total += n,
+                        Err(_) => break,
+                    }
+                }
+                if total < buf.len() { buf[total..].fill(0); }
+                // Prevent File from closing the fd on drop.
+                core::mem::forget(file);
+                return;
+            }
             #[cfg(feature = "host_test")]
             {
+                self.seek_to(offset);
                 use crate::syscall;
                 let n = syscall::read(self.disk_fd as u32, buf);
                 let read_len = if n == u32::MAX { 0 } else { (n as usize).min(buf.len()) };
                 if read_len < buf.len() { buf[read_len..].fill(0); }
+                return;
             }
-            #[cfg(not(feature = "host_test"))]
-            { let _ = offset; for b in buf.iter_mut() { *b = 0; } }
+            #[allow(unreachable_code)]
+            { buf.fill(0); }
         } else {
             let s = offset as usize;
             let e = (s + buf.len()).min(self.disk.len());
@@ -223,11 +243,21 @@ impl AhciDrive {
 
     fn write_at(&mut self, offset: u64, buf: &[u8]) {
         if self.disk_fd >= 0 {
-            self.seek_to(offset);
+            #[cfg(feature = "std")]
+            {
+                use std::io::{Write, Seek, SeekFrom};
+                let mut file = unsafe { Self::borrow_file(self.disk_fd) };
+                let _ = file.seek(SeekFrom::Start(offset));
+                let _ = file.write_all(buf);
+                core::mem::forget(file);
+                return;
+            }
             #[cfg(feature = "host_test")]
             {
+                self.seek_to(offset);
                 use crate::syscall;
                 syscall::write(self.disk_fd as u32, buf);
+                return;
             }
         } else {
             let s = offset as usize;
@@ -238,6 +268,22 @@ impl AhciDrive {
                 let dl = self.disk.len();
                 self.disk[s..].copy_from_slice(&buf[..dl - s]);
             }
+        }
+    }
+
+    /// Borrow a file descriptor/handle as a `std::fs::File` without taking ownership.
+    /// Caller MUST `core::mem::forget` the returned File to prevent closing the fd.
+    #[cfg(feature = "std")]
+    unsafe fn borrow_file(fd: i32) -> std::fs::File {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::FromRawFd;
+            std::fs::File::from_raw_fd(fd)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::{FromRawHandle, RawHandle};
+            std::fs::File::from_raw_handle(fd as isize as RawHandle)
         }
     }
 

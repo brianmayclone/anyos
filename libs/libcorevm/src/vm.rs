@@ -125,13 +125,10 @@ impl Vm {
         let svga = Box::new(Svga::new(1024, 768));
         self.svga_ptr = &*svga as *const Svga as *mut Svga;
         self.io.register(0x3C0, 0x1B, svga);
+        // Bochs VBE ports (0x1CE-0x1CF) — same Svga device, accessed via svga_ptr
+        self.io.register(0x1CE, 2, Box::new(SvgaVbePortProxy(self.svga_ptr)));
         // VGA legacy framebuffer MMIO at 0xA0000 (128KB)
-        // Note: Svga implements both IoHandler and MmioHandler, but we gave
-        // ownership to IoDispatch. We need a separate MMIO registration.
-        // For the MMIO side, we use the svga_ptr to create a thin wrapper
-        // or register a second Svga. For now, register the MMIO region
-        // using a raw pointer wrapper.
-        // TODO: Wire VGA MMIO region (0xA0000, 0x20000) via svga_ptr wrapper.
+        self.memory.add_mmio(0xA0000, 0x20000, Box::new(SvgaMmioProxy(self.svga_ptr)));
 
         // Debug port (0x402)
         let dbg = Box::new(DebugPort::new());
@@ -415,5 +412,36 @@ impl Vm {
         } else {
             Some(unsafe { &mut *self.pit_ptr })
         }
+    }
+}
+
+// ── Proxy wrappers for VGA device ──
+// The Svga instance is owned by IoDispatch (ports 0x3C0-0x3DA).
+// These proxies delegate to the same instance via raw pointer for
+// additional port ranges and MMIO regions.
+
+/// Proxy for Bochs VBE I/O ports 0x1CE-0x1CF.
+struct SvgaVbePortProxy(*mut Svga);
+unsafe impl Send for SvgaVbePortProxy {}
+
+impl crate::io::IoHandler for SvgaVbePortProxy {
+    fn read(&mut self, port: u16, size: u8) -> crate::error::Result<u32> {
+        unsafe { &mut *self.0 }.read(port, size)
+    }
+    fn write(&mut self, port: u16, size: u8, val: u32) -> crate::error::Result<()> {
+        unsafe { &mut *self.0 }.write(port, size, val)
+    }
+}
+
+/// Proxy for VGA legacy framebuffer MMIO at 0xA0000 (128KB).
+struct SvgaMmioProxy(*mut Svga);
+unsafe impl Send for SvgaMmioProxy {}
+
+impl crate::memory::mmio::MmioHandler for SvgaMmioProxy {
+    fn read(&mut self, offset: u64, size: u8) -> crate::error::Result<u64> {
+        unsafe { &mut *self.0 }.read(offset, size)
+    }
+    fn write(&mut self, offset: u64, size: u8, val: u64) -> crate::error::Result<()> {
+        unsafe { &mut *self.0 }.write(offset, size, val)
     }
 }
