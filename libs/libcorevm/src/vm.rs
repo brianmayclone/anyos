@@ -508,3 +508,4 @@ impl crate::memory::mmio::MmioHandler for SvgaMmioProxy {
         unsafe { &mut *self.0 }.write(offset, size, val)
     }
 }
+

@@ -18,7 +18,7 @@ use libcorevm::ffi::{
     corevm_load_binary,
     corevm_get_vcpu_regs, corevm_set_vcpu_regs,
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
-    corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
+    corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode,
     corevm_last_error, corevm_last_error_len,
     corevm_pit_advance, corevm_pit_debug, corevm_poll_irqs, corevm_cancel_vcpu,
     corevm_read_phys, corevm_debug_port_take_output,
@@ -75,6 +75,18 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
 
     // Setup devices (includes PCI bus)
     corevm_setup_standard_devices(handle);
+
+    // Map VGA linear framebuffer at BAR0 address (0xFD000000, 16MB)
+    // This allows the guest to write directly to the framebuffer without MMIO trapping.
+    let vga_fb_size: usize = 0x100_0000; // 16MB
+    let vga_fb_layout = std::alloc::Layout::from_size_align(vga_fb_size, 4096).unwrap();
+    let vga_fb_ptr = unsafe { std::alloc::alloc_zeroed(vga_fb_layout) };
+    if !vga_fb_ptr.is_null() {
+        let ret = corevm_set_memory_region(handle, 10, 0xFD00_0000, vga_fb_size as u64, vga_fb_ptr);
+        if entry.config.diagnostics {
+            entry.diag_log.log(DiagCategory::Info, format!("VGA LFB mapped at 0xFD000000 (16MB): ret={}", ret));
+        }
+    }
 
     // Setup AHCI controller (replaces IDE)
     corevm_setup_ahci(handle, 6);
@@ -554,59 +566,27 @@ fn vm_run_loop(
 
 /// Read VGA state and update the shared framebuffer
 fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>, diag: &DiagLog, fb_debug_count: &mut u32) {
-    let mut fb_ptr: *const u8 = std::ptr::null();
-    let mut fb_len: u32 = 0;
+    // Query VGA mode to get exact dimensions
+    let mut vga_w: u32 = 0;
+    let mut vga_h: u32 = 0;
+    let mut vga_bpp: u8 = 0;
+    let mode_ret = corevm_vga_get_mode(handle, &mut vga_w, &mut vga_h, &mut vga_bpp);
 
-    let ret = corevm_vga_get_framebuffer(handle, &mut fb_ptr, &mut fb_len);
-
-    // Debug: log first few framebuffer update results
     if *fb_debug_count < 5 {
         *fb_debug_count += 1;
         diag.log(DiagCategory::Info, format!(
-            "update_fb #{}: get_fb ret={} ptr_null={} len={}",
-            fb_debug_count, ret, fb_ptr.is_null(), fb_len
+            "update_fb #{}: mode_ret={} {}x{}x{}",
+            fb_debug_count, mode_ret, vga_w, vga_h, vga_bpp
         ));
     }
 
-    if ret == 0 && !fb_ptr.is_null() && fb_len > 0 {
-        // The framebuffer returns raw pixel data; we need width/height/bpp from SVGA.
-        // For now, assume 32bpp and derive dimensions from fb_len.
-        // TODO: expose width/height/bpp via FFI
-        let raw_pixels = unsafe { std::slice::from_raw_parts(fb_ptr, fb_len as usize) };
-
-        if let Ok(mut fb_data) = fb.lock() {
-            // Try to determine dimensions from the data size
-            // Common resolutions: 640x480, 800x600, 1024x768, 1280x1024
-            let (w, h, bpp) = guess_resolution(fb_len as usize);
-            if w > 0 && h > 0 {
-                fb_data.text_mode = false;
-                fb_data.width = w;
-                fb_data.height = h;
-                display::render_graphics_mode(raw_pixels, w, h, bpp, &mut fb_data.pixels);
-                fb_data.dirty = true;
-            }
-        }
-    } else {
-        // Try text mode
+    if mode_ret == 1 {
+        // Text mode — read text buffer
         let mut text_ptr: *const u16 = std::ptr::null();
         let mut text_len: u32 = 0;
-
         let ret = corevm_vga_get_text_buffer(handle, &mut text_ptr, &mut text_len);
-
         if ret == 0 && !text_ptr.is_null() && text_len > 0 {
             let text_cells = unsafe { std::slice::from_raw_parts(text_ptr, text_len as usize) };
-
-            // Debug: log first non-zero text cells
-            if *fb_debug_count <= 6 {
-                *fb_debug_count = 6;
-                let non_zero = text_cells.iter().filter(|&&c| c != 0).count();
-                let first8: Vec<String> = text_cells.iter().take(8).map(|c| format!("{:04X}", c)).collect();
-                diag.log(DiagCategory::Info, format!(
-                    "text_buf: len={} non_zero={} first8=[{}]",
-                    text_len, non_zero, first8.join(" ")
-                ));
-            }
-
             if let Ok(mut fb_data) = fb.lock() {
                 fb_data.text_mode = true;
                 fb_data.text_buffer = text_cells.to_vec();
@@ -616,12 +596,36 @@ fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>, diag: &Diag
                 fb_data.height = th;
                 fb_data.dirty = true;
             }
-        } else if *fb_debug_count <= 6 {
-            *fb_debug_count = 6;
-            diag.log(DiagCategory::Info, format!(
-                "text_buf FAILED: ret={} ptr_null={} len={}",
-                ret, text_ptr.is_null(), text_len
-            ));
+        }
+    } else if mode_ret == 0 && vga_w > 0 && vga_h > 0 && vga_bpp > 0 {
+        // Graphics mode — read linear framebuffer from guest physical memory at BAR0
+        let bytes_per_pixel = (vga_bpp as usize + 7) / 8;
+        let fb_size = vga_w as usize * vga_h as usize * bytes_per_pixel;
+        let mut raw_pixels = vec![0u8; fb_size];
+        let ret = corevm_read_phys(handle, 0xFD00_0000, raw_pixels.as_mut_ptr(), fb_size as u32);
+        if ret == 0 {
+            if let Ok(mut fb_data) = fb.lock() {
+                fb_data.text_mode = false;
+                fb_data.width = vga_w;
+                fb_data.height = vga_h;
+                display::render_graphics_mode(&raw_pixels, vga_w, vga_h, vga_bpp, &mut fb_data.pixels);
+                fb_data.dirty = true;
+            }
+        } else {
+            // Fallback: try internal framebuffer (software emulation path)
+            let mut fb_ptr: *const u8 = std::ptr::null();
+            let mut fb_len: u32 = 0;
+            let ret = corevm_vga_get_framebuffer(handle, &mut fb_ptr, &mut fb_len);
+            if ret == 0 && !fb_ptr.is_null() && fb_len > 0 {
+                let raw = unsafe { std::slice::from_raw_parts(fb_ptr, fb_len as usize) };
+                if let Ok(mut fb_data) = fb.lock() {
+                    fb_data.text_mode = false;
+                    fb_data.width = vga_w;
+                    fb_data.height = vga_h;
+                    display::render_graphics_mode(raw, vga_w, vga_h, vga_bpp, &mut fb_data.pixels);
+                    fb_data.dirty = true;
+                }
+            }
         }
     }
 }

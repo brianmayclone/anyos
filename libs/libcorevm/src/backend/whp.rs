@@ -1186,15 +1186,10 @@ impl VmBackend for WhpBackend {
                         );
                     }
 
-                    // Filter out features we don't want to expose to guest
+                    // WHP runs on real hardware — most features work natively.
+                    // Only filter VMX (nested virtualization not supported).
                     if leaf == 1 {
-                        ecx &= !(1 << 26); // Remove XSAVE
-                        ecx &= !(1 << 27); // Remove OSXSAVE
                         ecx &= !(1 << 5);  // Remove VMX
-                    }
-                    if leaf == 7 && subleaf == 0 {
-                        ebx &= !(1 << 3);  // Remove BMI1
-                        ebx &= !(1 << 8);  // Remove BMI2
                     }
 
                     let mut regs = self.get_vcpu_regs(id)?;

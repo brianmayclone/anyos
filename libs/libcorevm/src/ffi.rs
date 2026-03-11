@@ -358,21 +358,30 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                 return 0;
             }
             // PS/2 keyboard → IRQ 1, mouse → IRQ 12
-            if let Some(ps2) = vm.ps2() {
-                let status = ps2.status;
-                let is_mouse = (status & 0x20) != 0; // STATUS_MOUSE_DATA
-                if (status & 0x01) != 0 { // STATUS_OUTPUT_FULL
-                    let irq = if is_mouse { 12 } else { 1 };
-                    let pic = unsafe { &mut *vm.pic_ptr };
-                    pic.raise_irq(irq);
+            // Only raise the IRQ once per new data; track with a static flag.
+            // The flag is cleared when the guest reads port 0x60 (handled by PS/2 device).
+            {
+                static mut PS2_IRQ_RAISED: bool = false;
+                if let Some(ps2) = vm.ps2() {
+                    let output_full = (ps2.status & 0x01) != 0;
+                    if output_full && !unsafe { PS2_IRQ_RAISED } {
+                        let is_mouse = (ps2.status & 0x20) != 0;
+                        let irq = if is_mouse { 12 } else { 1 };
+                        let pic = unsafe { &mut *vm.pic_ptr };
+                        pic.raise_irq(irq);
+                        unsafe { PS2_IRQ_RAISED = true; }
+                    } else if !output_full {
+                        unsafe { PS2_IRQ_RAISED = false; }
+                    }
                 }
             }
             // Try to inject ONE pending PIC interrupt.
-            // No acknowledge — the guest sends EOI via port 0x20.
             {
                 let pic = unsafe { &mut *vm.pic_ptr };
                 if let Some(vector) = pic.get_interrupt_vector() {
                     if vm.inject_interrupt(0, vector).is_ok() {
+                        let irq = pic.irq_for_vector(vector).unwrap_or(0);
+                        pic.lower_irq(irq);
                         injected += 1;
                     }
                 }
@@ -856,6 +865,41 @@ pub extern "C" fn corevm_vga_get_framebuffer(
                 *out_len = fb.len() as u32;
             }
             0
+        }
+        None => -1,
+    }
+}
+
+/// Get the current VGA display mode dimensions.
+/// Returns 0 on success and fills out_width, out_height, out_bpp.
+/// Returns 1 if in text mode (out_width=80, out_height=25, out_bpp=0).
+/// Returns -1 on error.
+#[no_mangle]
+pub extern "C" fn corevm_vga_get_mode(
+    handle: u64, out_width: *mut u32, out_height: *mut u32, out_bpp: *mut u8,
+) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+    if out_width.is_null() || out_height.is_null() || out_bpp.is_null() { return -1; }
+    match vm.svga() {
+        Some(svga) => {
+            match &svga.mode {
+                crate::devices::svga::VgaMode::Text80x25 => {
+                    unsafe { *out_width = 80; *out_height = 25; *out_bpp = 0; }
+                    1
+                }
+                crate::devices::svga::VgaMode::Graphics320x200x256 => {
+                    unsafe { *out_width = 320; *out_height = 200; *out_bpp = 8; }
+                    0
+                }
+                crate::devices::svga::VgaMode::Graphics640x480x16 => {
+                    unsafe { *out_width = 640; *out_height = 480; *out_bpp = 4; }
+                    0
+                }
+                crate::devices::svga::VgaMode::LinearFramebuffer { width, height, bpp } => {
+                    unsafe { *out_width = *width; *out_height = *height; *out_bpp = *bpp; }
+                    0
+                }
+            }
         }
         None => -1,
     }

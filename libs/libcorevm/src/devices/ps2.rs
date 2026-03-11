@@ -54,6 +54,8 @@ pub struct Ps2Controller {
     kbd_expecting_param: Option<u8>,
     /// Set when the guest sends the system reset command (0xFE to port 0x64).
     pub reset_requested: bool,
+    /// Last byte read from port 0x60 (latched; real hardware holds last value).
+    last_read: u8,
 }
 
 /// Status register bit masks.
@@ -77,6 +79,7 @@ impl Ps2Controller {
             write_to_mouse: false,
             kbd_expecting_param: None,
             reset_requested: false,
+            last_read: 0,
         }
     }
 
@@ -282,7 +285,8 @@ impl IoHandler for Ps2Controller {
     fn read(&mut self, port: u16, _size: u8) -> Result<u32> {
         let val = match port {
             0x60 => {
-                let byte = self.output_buffer.pop_front().unwrap_or(0);
+                let byte = self.output_buffer.pop_front().unwrap_or(self.last_read);
+                self.last_read = byte;
                 // Clear output buffer full flag.
                 self.status &= !STATUS_OUTPUT_FULL;
                 self.status &= !STATUS_MOUSE_DATA;
