@@ -330,7 +330,8 @@ unsafe impl Send for Ahci {}
 impl Ahci {
     pub fn new(num_ports: u8) -> Self {
         let np = (num_ports as usize).min(MAX_PORTS);
-        let pi = (1u32 << np) - 1;
+        // PI starts at 0; bits are set when drives are attached.
+        let pi = 0u32;
         let cap = (np as u32 - 1)
             | (31 << 8)        // 32 command slots
             | (1 << 13)        // PSC
@@ -355,12 +356,14 @@ impl Ahci {
         let total = image.len() as u64;
         self.ports[port].drive = AhciDrive { kind, disk: image, disk_fd: -1, total_bytes: total, present: true };
         self.ports[port].update_presence();
+        self.pi |= 1u32 << port;
     }
 
     pub fn attach_disk_fd(&mut self, port: usize, fd: i32, size: u64, kind: AhciDriveKind) {
         if port >= MAX_PORTS { return; }
         self.ports[port].drive = AhciDrive { kind, disk: Vec::new(), disk_fd: fd, total_bytes: size, present: true };
         self.ports[port].update_presence();
+        self.pi |= 1u32 << port;
     }
 
     pub fn irq_raised(&self) -> bool { self.irq_pending }
