@@ -480,6 +480,24 @@ pub extern "C" fn corevm_handle_mmio_exit(
 
 // ── Standard device setup ───────────────────────────────────────────────────
 
+/// Add a named file to the fw_cfg device (e.g., "vgaroms/vgabios.bin").
+#[no_mangle]
+pub extern "C" fn corevm_fw_cfg_add_file(
+    handle: u64, name: *const u8, name_len: u32, data: *const u8, data_len: u32,
+) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+    if name.is_null() || data.is_null() || vm.fw_cfg_ptr.is_null() { return -1; }
+    let name_slice = unsafe { core::slice::from_raw_parts(name, name_len as usize) };
+    let name_str = match core::str::from_utf8(name_slice) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let data_slice = unsafe { core::slice::from_raw_parts(data, data_len as usize) };
+    let fw_cfg = unsafe { &mut *vm.fw_cfg_ptr };
+    fw_cfg.add_file(name_str, data_slice.to_vec());
+    0
+}
+
 /// Register all standard chipset devices into the VM.
 #[no_mangle]
 pub extern "C" fn corevm_setup_standard_devices(handle: u64) -> i32 {
@@ -515,8 +533,8 @@ impl AhciPciMmioWrapper {
     fn bar5_base(&self) -> u64 {
         if self.pci_bus.is_null() { return 0; }
         let bus = unsafe { &mut *self.pci_bus };
-        // Read BAR5 (offset 0x24) from device 00:01.0
-        let val = bus.mmcfg_read(0, 1, 0, 0x24, 4);
+        // Read BAR5 (offset 0x24) from device 00:03.0
+        let val = bus.mmcfg_read(0, 3, 0, 0x24, 4);
         val & 0xFFFFFFF0 // mask type bits
     }
 }
@@ -568,7 +586,7 @@ pub extern "C" fn corevm_setup_ahci(handle: u64, num_ports: u8) -> i32 {
     if !vm.pci_bus_ptr.is_null() {
         let pci_bus = unsafe { &mut *vm.pci_bus_ptr };
         let mut pci_dev = crate::devices::ahci::create_ahci_pci_device(0xFEBF_0000);
-        pci_dev.device = 1; // PCI device 00:01.0
+        pci_dev.device = 3; // PCI device 00:03.0 (00:01.0 is ISA bridge)
         pci_bus.add_device(pci_dev);
     }
     0

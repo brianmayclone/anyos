@@ -40,6 +40,7 @@ pub struct Vm {
     pub pic_ptr: *mut crate::devices::pic::PicPair,
     pub debug_port_ptr: *mut crate::devices::debug_port::DebugPort,
     pub pci_bus_ptr: *mut crate::devices::bus::PciBus,
+    pub fw_cfg_ptr: *mut crate::devices::fw_cfg::FwCfg,
 }
 
 impl Vm {
@@ -73,6 +74,7 @@ impl Vm {
             pic_ptr: core::ptr::null_mut(),
             debug_port_ptr: core::ptr::null_mut(),
             pci_bus_ptr: core::ptr::null_mut(),
+            fw_cfg_ptr: core::ptr::null_mut(),
         })
     }
 
@@ -85,7 +87,7 @@ impl Vm {
         use crate::devices::acpi::AcpiPm;
         use crate::devices::apm::ApmControl;
         use crate::devices::fw_cfg::FwCfg;
-        use crate::devices::bus::{PciBus, PciMmcfgHandler};
+        use crate::devices::bus::{PciBus, PciDevice, PciMmcfgHandler};
         use crate::devices::ioapic::IoApic;
         use crate::devices::lapic::Lapic;
         use crate::devices::port61::Port61;
@@ -143,10 +145,51 @@ impl Vm {
         self.io.register(0xB2, 2, Box::new(ApmControl::new()));
 
         // fw_cfg (0x510-0x511)
-        self.io.register(0x510, 2, Box::new(FwCfg::new(ram_size as u64)));
+        let fw_cfg = Box::new(FwCfg::new(ram_size as u64));
+        self.fw_cfg_ptr = &*fw_cfg as *const FwCfg as *mut FwCfg;
+        self.io.register(0x510, 2, fw_cfg);
 
         // PCI bus (0xCF8-0xCFF)
-        let pci_bus = Box::new(PciBus::new());
+        // Add standard PCI devices before registering the bus with I/O dispatcher.
+        let mut pci_bus = Box::new(PciBus::new());
+
+        // PCI Host Bridge (i440FX) at 00:00.0 — required by SeaBIOS
+        {
+            let mut host = PciDevice::new(0x8086, 0x1237, 0x06, 0x00, 0x00);
+            host.device = 0;
+            pci_bus.add_device(host);
+        }
+
+        // ISA Bridge (PIIX3) at 00:01.0 — SeaBIOS uses this for PCI IRQ routing
+        {
+            let mut isa = PciDevice::new(0x8086, 0x7000, 0x06, 0x01, 0x00);
+            isa.device = 1;
+            // Header type 0x80 = multi-function device (SeaBIOS expects this)
+            isa.config_space[0x0E] = 0x80;
+            // PIRQ routing registers (offsets 0x60-0x63): map PIRQA-D to IRQs 10,10,11,11
+            isa.config_space[0x60] = 10;
+            isa.config_space[0x61] = 10;
+            isa.config_space[0x62] = 11;
+            isa.config_space[0x63] = 11;
+            pci_bus.add_device(isa);
+        }
+
+        // VGA (QEMU stdvga) at 00:02.0 — SeaBIOS needs a PCI VGA for option ROM
+        {
+            let mut vga = PciDevice::new(0x1234, 0x1111, 0x03, 0x00, 0x00);
+            vga.device = 2;
+            // BAR0: linear framebuffer (16MB)
+            vga.set_bar(0, 0xFD00_0000, 0x100_0000, true);
+            // BAR2: Bochs dispi MMIO registers (4KB)
+            vga.set_bar(2, 0xFEBE_0000, 0x1000, true);
+            // Expansion ROM BAR (0xC0000 VGA BIOS area)
+            vga.config_space[0x30] = 0x00; // ROM base (will be set by SeaBIOS)
+            vga.config_space[0x31] = 0x00;
+            vga.config_space[0x32] = 0x00;
+            vga.config_space[0x33] = 0x00;
+            pci_bus.add_device(vga);
+        }
+
         let pci_bus_ptr = &*pci_bus as *const PciBus as *mut PciBus;
         self.pci_bus_ptr = pci_bus_ptr;
         self.io.register(0xCF8, 8, pci_bus);

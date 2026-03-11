@@ -21,6 +21,7 @@ use libcorevm::ffi::{
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
     corevm_last_error, corevm_last_error_len,
     corevm_pit_advance, corevm_debug_port_take_output,
+    corevm_fw_cfg_add_file,
 };
 use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
 
@@ -555,7 +556,7 @@ fn load_bios(handle: u64, bios_type: &BiosType) -> Result<(), String> {
 
             let bios = std::fs::read(&bios_path)
                 .map_err(|e| format!("Failed to read BIOS: {}", e))?;
-            let _vgabios = std::fs::read(&vgabios_path)
+            let vgabios = std::fs::read(&vgabios_path)
                 .map_err(|e| format!("Failed to read VGA BIOS: {}", e))?;
 
             // Load BIOS at 0xC0000
@@ -565,11 +566,15 @@ fn load_bios(handle: u64, bios_type: &BiosType) -> Result<(), String> {
             let rom_base = 0x1_0000_0000u64 - bios.len() as u64;
             corevm_load_binary(handle, rom_base, bios.as_ptr(), bios.len() as u32);
 
-            // VGA BIOS: load at 0xC0000 area (typically separate from main BIOS)
-            // SeaBIOS expects VGA BIOS at 0xC0000 via fw_cfg, but without fw_cfg
-            // we load it directly at the option ROM area
-            // Note: fw_cfg is not available in the new API, so VGA BIOS
-            // initialization depends on SVGA device's built-in ROM support.
+            // VGA BIOS: inject via fw_cfg so SeaBIOS loads it as option ROM
+            {
+                let name = b"vgaroms/vgabios.bin";
+                corevm_fw_cfg_add_file(
+                    handle,
+                    name.as_ptr(), name.len() as u32,
+                    vgabios.as_ptr(), vgabios.len() as u32,
+                );
+            }
 
             Ok(())
         }
