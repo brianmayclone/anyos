@@ -120,6 +120,8 @@ pub const EVENT_MOUSE_DOWN: u32 = 14;
 pub const EVENT_MOUSE_UP: u32 = 15;
 pub const EVENT_MOUSE_MOVE: u32 = 16;
 pub const EVENT_SUBMIT: u32 = 17;
+pub const EVENT_FULLSCREEN_ENTER: u32 = 18;
+pub const EVENT_FULLSCREEN_EXIT: u32 = 19;
 
 /// Callback type: extern "C" fn(control_id: u32, event_type: u32, userdata: u64)
 pub type Callback = extern "C" fn(u32, u32, u64);
@@ -159,6 +161,8 @@ struct AnyuiLib {
     resize_window: extern "C" fn(u32, u32, u32),
     move_window: extern "C" fn(u32, i32, i32),
     minimize_window: extern "C" fn(u32),
+    set_fullscreen_capable: extern "C" fn(u32, u32),
+    get_fullscreen_info: extern "C" fn(*mut u32) -> u32,
     // Layout
     set_padding: extern "C" fn(u32, i32, i32, i32, i32),
     set_margin: extern "C" fn(u32, i32, i32, i32, i32),
@@ -414,6 +418,8 @@ pub fn init() -> bool {
             resize_window: resolve(&handle, "anyui_resize_window"),
             move_window: resolve(&handle, "anyui_move_window"),
             minimize_window: resolve(&handle, "anyui_minimize_window"),
+            set_fullscreen_capable: resolve(&handle, "anyui_set_fullscreen_capable"),
+            get_fullscreen_info: resolve(&handle, "anyui_get_fullscreen_info"),
             // Layout
             set_padding: resolve(&handle, "anyui_set_padding"),
             set_margin: resolve(&handle, "anyui_set_margin"),
@@ -1083,6 +1089,35 @@ pub fn screen_size() -> (u32, u32) {
     let mut h: u32 = 0;
     (lib().screen_size)(&mut w, &mut h);
     (w, h)
+}
+
+// ── Fullscreen API ──────────────────────────────────────────────────
+
+/// Fullscreen info returned by `get_fullscreen_info()`.
+#[derive(Clone, Copy, Debug)]
+pub struct FullscreenInfo {
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    /// Direct framebuffer pointer (0 if SHM compositing mode).
+    pub fb_ptr: u32,
+}
+
+/// Get fullscreen info from the last EVT_FULLSCREEN_ENTER event.
+/// Returns Some(info) if currently in fullscreen, None otherwise.
+pub fn get_fullscreen_info() -> Option<FullscreenInfo> {
+    let mut buf = [0u32; 4];
+    let result = (lib().get_fullscreen_info)(buf.as_mut_ptr());
+    if result != 0 {
+        Some(FullscreenInfo {
+            width: buf[0],
+            height: buf[1],
+            stride: buf[2],
+            fb_ptr: buf[3],
+        })
+    } else {
+        None
+    }
 }
 
 // ── Notification API ─────────────────────────────────────────────────

@@ -38,6 +38,8 @@ impl Desktop {
                     EVENT_STATUS_ICON_CLICK => proto::EVT_STATUS_ICON_CLICK,
                     EVENT_MOUSE_MOVE => proto::EVT_MOUSE_MOVE,
                     EVENT_FOCUS_LOST => proto::EVT_FOCUS_LOST,
+                    EVENT_FULLSCREEN_ENTER => proto::EVT_FULLSCREEN_ENTER,
+                    EVENT_FULLSCREEN_EXIT => proto::EVT_FULLSCREEN_EXIT,
                     _ => continue,
                 };
                 out.push((target_sub, [ipc_type, win.id, evt[1], evt[2], evt[3]]));
@@ -523,6 +525,52 @@ impl Desktop {
                 }
                 None
             }
+
+            // ── Fullscreen Commands ──────────────────────────────────────────
+
+            proto::CMD_SET_FULLSCREEN_CAP => {
+                let window_id = cmd[1];
+                let auto_enter = cmd[2] != 0;
+                if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
+                    self.windows[idx].fullscreen_capable = true;
+                    self.windows[idx].flags |= WIN_FLAG_FULLSCREEN_CAPABLE;
+                    if auto_enter && self.fullscreen_window.is_none() {
+                        let tid = self.windows[idx].owner_tid;
+                        let resp = self.enter_fullscreen(window_id, false);
+                        let target = self.get_sub_id_for_tid(tid);
+                        return resp.map(|r| (target, r));
+                    }
+                }
+                None
+            }
+            proto::CMD_REQUEST_FULLSCREEN => {
+                let window_id = cmd[1];
+                let want_direct_fb = cmd[2] != 0;
+                if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
+                    if !self.windows[idx].fullscreen_capable {
+                        return None;
+                    }
+                    let tid = self.windows[idx].owner_tid;
+                    let resp = self.enter_fullscreen(window_id, want_direct_fb);
+                    let target = self.get_sub_id_for_tid(tid);
+                    return resp.map(|r| (target, r));
+                }
+                None
+            }
+            proto::CMD_EXIT_FULLSCREEN => {
+                let window_id = cmd[1];
+                if self.fullscreen_window == Some(window_id) {
+                    let tid = self.windows.iter()
+                        .find(|w| w.id == window_id)
+                        .map(|w| w.owner_tid)
+                        .unwrap_or(0);
+                    self.exit_fullscreen();
+                    let target = self.get_sub_id_for_tid(tid);
+                    Some((target, [proto::RESP_FULLSCREEN_EXITED, window_id, 0, 0, 0]))
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -563,6 +611,139 @@ impl Desktop {
 
         let target = self.get_sub_id_for_tid(app_tid);
         Some((target, [proto::RESP_WINDOW_CREATED, win_id, shm_id, app_tid, 0]))
+    }
+
+    // ── Fullscreen Implementation ──────────────────────────────────────
+
+    /// Enter fullscreen mode for a window.
+    /// Saves current bounds, sets window to screen size (borderless), hides menubar.
+    /// Returns the RESP_FULLSCREEN_ENTERED response payload if successful.
+    pub fn enter_fullscreen(&mut self, window_id: u32, want_direct_fb: bool) -> Option<[u32; 5]> {
+        // Already in fullscreen?
+        if self.fullscreen_window.is_some() {
+            return None;
+        }
+
+        let idx = self.windows.iter().position(|w| w.id == window_id)?;
+
+        // Save current bounds and flags
+        let win = &mut self.windows[idx];
+        win.saved_bounds_fs = Some((win.x, win.y, win.content_width, win.content_height));
+        win.saved_flags_fs = win.flags;
+        win.fullscreen = true;
+
+        // Make borderless for fullscreen
+        let was_borderless = win.is_borderless();
+        win.flags |= WIN_FLAG_BORDERLESS;
+
+        // Set to screen size at position (0, 0)
+        let sw = self.screen_width;
+        let sh = self.screen_height;
+        let layer_id = win.layer_id;
+        win.x = 0;
+        win.y = 0;
+        win.content_width = sw;
+        win.content_height = sh;
+
+        // Resize layer to full screen
+        self.compositor.move_layer(layer_id, 0, 0);
+        self.compositor.resize_layer(layer_id, sw, sh);
+
+        // Mark as the fullscreen window
+        self.fullscreen_window = Some(window_id);
+
+        // Hide menubar layer
+        if let Some(mb) = self.compositor.get_layer_mut(self.menubar_layer_id) {
+            mb.visible = false;
+        }
+
+        // Hide all other window layers (don't destroy, just make invisible)
+        for w in &self.windows {
+            if w.id != window_id {
+                if let Some(layer) = self.compositor.get_layer_mut(w.layer_id) {
+                    layer.visible = false;
+                }
+            }
+        }
+
+        // Hide background layer (fullscreen window covers entire screen)
+        if let Some(bg) = self.compositor.get_layer_mut(self.bg_layer_id) {
+            bg.visible = false;
+        }
+
+        // Damage entire screen for recomposition
+        self.compositor.damage_all();
+
+        // Build response
+        let stride = self.compositor.fb_pitch / 4; // pitch in pixels
+        let fb_ptr: u32 = if want_direct_fb {
+            // TODO: Phase 5 — grant direct framebuffer access via kernel syscall
+            // For now, return 0 (SHM compositing mode)
+            0
+        } else {
+            0
+        };
+
+        Some([
+            proto::RESP_FULLSCREEN_ENTERED,
+            window_id,
+            (sw << 16) | (sh & 0xFFFF),
+            stride,
+            fb_ptr,
+        ])
+    }
+
+    /// Exit fullscreen mode, restoring the previous window state.
+    pub fn exit_fullscreen(&mut self) {
+        let window_id = match self.fullscreen_window.take() {
+            Some(id) => id,
+            None => return,
+        };
+
+        if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
+            let win = &mut self.windows[idx];
+            win.fullscreen = false;
+            win.fullscreen_direct_fb = false;
+
+            // Restore saved bounds
+            if let Some((sx, sy, sw, sh)) = win.saved_bounds_fs.take() {
+                win.x = sx;
+                win.y = sy;
+                win.content_width = sw;
+                win.content_height = sh;
+
+                // Restore original flags (borderless state etc.)
+                win.flags = win.saved_flags_fs;
+
+                let layer_id = win.layer_id;
+                let full_h = win.full_height();
+                self.compositor.move_layer(layer_id, sx, sy);
+                self.compositor.resize_layer(layer_id, sw, full_h);
+            }
+
+            // Re-render window chrome (title bar) if not borderless
+            self.render_window(window_id);
+        }
+
+        // Restore menubar layer visibility
+        if let Some(mb) = self.compositor.get_layer_mut(self.menubar_layer_id) {
+            mb.visible = true;
+        }
+
+        // Restore background layer visibility
+        if let Some(bg) = self.compositor.get_layer_mut(self.bg_layer_id) {
+            bg.visible = true;
+        }
+
+        // Restore all other window layers
+        for w in &self.windows {
+            if let Some(layer) = self.compositor.get_layer_mut(w.layer_id) {
+                layer.visible = true;
+            }
+        }
+
+        // Damage entire screen for full recomposition
+        self.compositor.damage_all();
     }
 
     /// Handle CMD_RESIZE_SHM with a pre-mapped new SHM address.

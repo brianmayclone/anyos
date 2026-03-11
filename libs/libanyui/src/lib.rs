@@ -111,6 +111,8 @@ pub(crate) struct CompWindow {
     /// then a single memcpy to SHM before present() — the compositor never sees
     /// a half-rendered frame (no background flash, no partial content).
     pub back_buffer: Vec<u32>,
+    /// Saved logical size before fullscreen (for restore on exit).
+    pub saved_logical_size_fs: Option<(u32, u32)>,
 }
 
 // ── Context menu popup window ─────────────────────────────────────────
@@ -276,6 +278,11 @@ pub(crate) fn state() -> &'static mut AnyuiState {
     unsafe { STATE.as_mut().expect("anyui not initialized") }
 }
 
+/// Fullscreen info: low 32 bits = (width<<16)|height, high 32 bits = stride.
+pub(crate) static FULLSCREEN_INFO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Fullscreen direct framebuffer pointer (0 if not in fullscreen or SHM mode).
+pub(crate) static FULLSCREEN_FB_PTR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 // ── Allocator ────────────────────────────────────────────────────────
 
 libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
@@ -438,6 +445,7 @@ pub extern "C" fn anyui_create_window(
         dirty: true,
         dirty_rect: None,
         back_buffer: alloc::vec![0u32; pixel_count],
+        saved_logical_size_fs: None,
     });
     id
 }
@@ -2547,6 +2555,40 @@ pub extern "C" fn anyui_resize_window(win_id: ControlId, new_w: u32, new_h: u32)
         ctrl.set_size(new_w, new_h);
     }
     mark_needs_layout();
+}
+
+/// Mark a window as fullscreen-capable.
+/// auto_enter: if non-zero, immediately enter fullscreen mode.
+#[no_mangle]
+pub extern "C" fn anyui_set_fullscreen_capable(win_id: ControlId, auto_enter: u32) {
+    let st = state();
+    if let Some(wi) = st.windows.iter().position(|&w| w == win_id) {
+        let comp_win_id = st.comp_windows[wi].window_id;
+        compositor::set_fullscreen_capable(st.channel_id, comp_win_id, auto_enter);
+    }
+}
+
+/// Get fullscreen info from the last EVT_FULLSCREEN_ENTER event.
+/// Returns: out[0] = width, out[1] = height, out[2] = stride, out[3] = fb_ptr.
+/// Returns 1 if in fullscreen, 0 if not.
+#[no_mangle]
+pub extern "C" fn anyui_get_fullscreen_info(out: *mut u32) -> u32 {
+    let info = FULLSCREEN_INFO.load(core::sync::atomic::Ordering::Relaxed);
+    if info == 0 {
+        return 0;
+    }
+    let packed_size = info as u32;
+    let stride = (info >> 32) as u32;
+    let fb_ptr = FULLSCREEN_FB_PTR.load(core::sync::atomic::Ordering::Relaxed);
+    if !out.is_null() {
+        unsafe {
+            *out = packed_size >> 16;           // width
+            *out.add(1) = packed_size & 0xFFFF; // height
+            *out.add(2) = stride;
+            *out.add(3) = fb_ptr;
+        }
+    }
+    1
 }
 
 /// Minimize a window (move off-screen, compositor saves bounds for later restore).

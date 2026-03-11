@@ -108,6 +108,21 @@ struct LibcompositorExports {
     minimize_window: extern "C" fn(channel_id: u32, window_id: u32),
 
     set_modal_owner: extern "C" fn(channel_id: u32, modal_window_id: u32, owner_window_id: u32),
+
+    set_fullscreen_capable: extern "C" fn(channel_id: u32, window_id: u32, auto_enter: u32),
+
+    request_fullscreen: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        window_id: u32,
+        want_direct_fb: u32,
+        out_width: *mut u32,
+        out_height: *mut u32,
+        out_stride: *mut u32,
+        out_fb_ptr: *mut usize,
+    ) -> u32,
+
+    exit_fullscreen: extern "C" fn(channel_id: u32, window_id: u32),
 }
 
 fn exports() -> &'static LibcompositorExports {
@@ -128,6 +143,8 @@ pub const EVT_FRAME_ACK: u32 = 0x300B;
 pub const EVT_FOCUS_LOST: u32 = 0x300C;
 pub const EVT_STATUS_ICON_CLICK: u32 = 0x3009;
 pub const EVT_MENU_ITEM: u32 = 0x3008;
+pub const EVT_FULLSCREEN_ENTER: u32 = 0x300D;
+pub const EVT_FULLSCREEN_EXIT: u32 = 0x300E;
 
 // ── High-level wrappers ──────────────────────────────────────────────
 
@@ -232,6 +249,12 @@ pub fn resize_shm(
 /// Minimize a window (move off-screen with saved bounds for restore).
 pub fn minimize_window(channel_id: u32, window_id: u32) {
     (exports().minimize_window)(channel_id, window_id);
+}
+
+/// Mark a window as fullscreen-capable.
+/// auto_enter: if non-zero, immediately enter fullscreen mode.
+pub fn set_fullscreen_capable(channel_id: u32, window_id: u32, auto_enter: u32) {
+    (exports().set_fullscreen_capable)(channel_id, window_id, auto_enter);
 }
 
 /// Enable or disable blur-behind on a compositor window.

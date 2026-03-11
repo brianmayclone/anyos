@@ -1,5 +1,84 @@
 # Release Notes
 
+## v0.4.0 — 2026-03-11
+
+### Features
+
+#### Fullscreen Mode Support
+- **Alt+Enter toggle**: Windows registered as fullscreen-capable can enter/exit fullscreen via Alt+Enter
+- **Ctrl+Alt+Del escape**: System-wide hotkey to force-exit fullscreen mode
+- **Compositor integration**: Full-screen window hides menubar, background, and other windows; `damage_all()` ensures correct redraw on exit
+- **Automatic SHM resize**: anyui automatically resizes window SHM buffer to screen dimensions on enter and restores original size on exit — no per-app resize code needed
+- **Direct framebuffer access** (kernel syscalls `sys_grant_framebuffer` / `sys_revoke_framebuffer`): Maps GPU framebuffer at VA 0x19000000 into fullscreen app for zero-copy rendering
+- **LibGL fullscreen rendering**: `gl_init_fullscreen()` / `gl_swap_buffers_fullscreen()` copy rendered frames directly to the mapped framebuffer, bypassing SHM compositing
+- **IPC protocol**: New commands CMD_SET_FULLSCREEN_CAP (0x1030), CMD_REQUEST_FULLSCREEN (0x1031), CMD_EXIT_FULLSCREEN (0x1032) with corresponding responses and events
+- **GLDemo**: First fullscreen-capable app — Phong-shaded 3D scene renders at native screen resolution in fullscreen
+
+#### Stack: Kernel -> Compositor -> libcompositor -> libanyui -> App
+- Kernel: `sys_grant_framebuffer` / `sys_revoke_framebuffer` syscalls (259/261), `unmap_page_in_pd` for foreign address space unmapping
+- Compositor: `enter_fullscreen()` / `exit_fullscreen()` with layer visibility management, `FullscreenCapability` per window
+- libcompositor: 3 new DLL exports (set_fullscreen_capable, request_fullscreen, exit_fullscreen)
+- libanyui: Fullscreen events (EVENT_FULLSCREEN_ENTER/EXIT), automatic window resize on transitions
+- libanyui_client: `Window::set_fullscreen_capable()`, `on_fullscreen_enter()`, `on_fullscreen_exit()`, `get_fullscreen_info()`
+- libgl: `gl_init_fullscreen()`, `gl_exit_fullscreen()`, `gl_swap_buffers_fullscreen()` with FXAA support
+
+### Statistics
+- **26 files changed**, ~1,087 lines added
+- Full-stack feature spanning kernel, compositor, 6 libraries, and 1 app
+
+---
+
+## v0.3.164 — 2026-03-11
+
+### Performance
+
+#### libgl Rasterizer — Heap Allocation Fix
+- Eliminated per-frame heap allocations in `draw()` and `draw_elements()` that caused gradual FPS degradation (60 FPS → 4 FPS over time)
+- Replaced `Vec` clones with raw pointers, stack-allocated arrays, and reusable static buffers
+- Prevents heap fragmentation in long-running 3D applications
+
+#### CoreVM Optimizations
+- Enhanced control flow and memory management in the x86 virtual machine engine
+
+### Features
+
+#### ARM64 Architecture (v0.3.164)
+- Improved exception handling with better fault diagnostics
+- Enhanced SMP initialization sequence
+- Improved syscall management for AArch64
+
+#### ACPI & Interrupt Routing
+- Implemented DSDT with `_SB.PCI0._PRT` for proper PCI interrupt routing
+- Direct GSI (Global System Interrupt) routing for PCI devices
+- Enhanced IOAPIC and LAPIC debugging output
+- LAPIC LINT0/LINT1 properly unmasked for PIC interrupt acceptance
+- Improved IRQ vector mapping with better LAPIC priority handling
+- Refactored LAPIC timer handling with proper IRQ fallback logic
+
+#### CoreVM x86 Emulation
+- Added `RDFSBASE`, `RDGSBASE`, `WRFSBASE`, `WRGSBASE` instruction support (FSGSBASE)
+
+#### Clock App
+- Migrated to modern anyui framework
+- Added countdown timer with desktop notifications
+
+#### Physics Engine (libgl)
+- Added `linear_damping` property for rigid bodies
+
+#### Settings App
+- Added toggle for serial verbose output
+
+### Bug Fixes
+- Fixed PIC delivery logic with proper fallback to LAPIC
+- Improved terminal rendering and input handling
+- Fixed compositor window input handling edge case
+
+### Statistics
+- **50 files changed**, ~3,100 lines added, ~1,000 lines removed
+- **18 commits** since v0.3.161
+
+---
+
 ## v0.3.161 — 2026-03-09
 
 ### Major Features

@@ -42,6 +42,8 @@ pub const EVENT_MOUSE_DOWN: u32 = 14;
 pub const EVENT_MOUSE_UP: u32 = 15;
 pub const EVENT_MOUSE_MOVE: u32 = 16;
 pub const EVENT_SUBMIT: u32 = 17;
+pub const EVENT_FULLSCREEN_ENTER: u32 = 18;
+pub const EVENT_FULLSCREEN_EXIT: u32 = 19;
 
 /// Number of callback slots (EVENT_CLICK=1 .. EVENT_SUBMIT=17, index 0 unused).
 const NUM_CALLBACK_SLOTS: usize = 18;

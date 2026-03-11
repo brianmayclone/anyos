@@ -1,4 +1,4 @@
-use crate::{Container, Control, Widget, lib, events, KIND_WINDOW, EVENT_CLOSE, EVENT_RESIZE, EVENT_KEY};
+use crate::{Container, Control, Widget, lib, events, KIND_WINDOW, EVENT_CLOSE, EVENT_RESIZE, EVENT_KEY, EVENT_FULLSCREEN_ENTER, EVENT_FULLSCREEN_EXIT};
 use crate::events::{EventArgs, ClickEvent};
 use crate::KeyEvent;
 
@@ -84,5 +84,24 @@ impl Window {
             f(&ke);
         });
         (lib().on_event_fn)(self.container.ctrl.id, EVENT_KEY, thunk, ud);
+    }
+
+    /// Mark this window as fullscreen-capable.
+    /// If `auto_enter` is true, immediately enter fullscreen mode.
+    pub fn set_fullscreen_capable(&self, auto_enter: bool) {
+        (lib().set_fullscreen_capable)(self.container.ctrl.id, if auto_enter { 1 } else { 0 });
+    }
+
+    /// Register a callback for when the window enters fullscreen mode.
+    /// Use `get_fullscreen_info()` inside the callback to get screen dimensions and FB pointer.
+    pub fn on_fullscreen_enter(&self, mut f: impl FnMut(&EventArgs) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(&EventArgs { id }));
+        (lib().on_event_fn)(self.container.ctrl.id, EVENT_FULLSCREEN_ENTER, thunk, ud);
+    }
+
+    /// Register a callback for when the window exits fullscreen mode.
+    pub fn on_fullscreen_exit(&self, mut f: impl FnMut(&EventArgs) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(&EventArgs { id }));
+        (lib().on_event_fn)(self.container.ctrl.id, EVENT_FULLSCREEN_EXIT, thunk, ud);
     }
 }

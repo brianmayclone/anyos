@@ -57,6 +57,12 @@ pub(crate) static mut USE_HW_BACKEND: bool = false;
 /// SVGA3D GPU state (only valid when USE_HW_BACKEND is true).
 pub(crate) static mut SVGA3D: Option<svga3d::Svga3dState> = None;
 
+/// Fullscreen direct framebuffer state.
+static mut FULLSCREEN_FB_PTR: *mut u32 = core::ptr::null_mut();
+static mut FULLSCREEN_WIDTH: u32 = 0;
+static mut FULLSCREEN_HEIGHT: u32 = 0;
+static mut FULLSCREEN_STRIDE: u32 = 0; // in pixels (pitch / 4)
+
 /// Frame counter for diagnostic output (first N frames only).
 pub(crate) static mut DIAG_FRAME: u32 = 0;
 
@@ -203,6 +209,89 @@ pub extern "C" fn gl_swap_buffers() -> *const u32 {
 pub extern "C" fn gl_get_backbuffer() -> *const u32 {
     let c = ctx();
     c.default_fb.color.as_ptr()
+}
+
+/// Initialize fullscreen direct framebuffer rendering.
+///
+/// `fb_ptr` is the mapped framebuffer address (from sys_grant_framebuffer).
+/// `width`/`height` are the screen dimensions.
+/// `stride` is the row stride in pixels (pitch / 4).
+///
+/// After calling this, use `gl_swap_buffers_fullscreen()` instead of `gl_swap_buffers()`.
+/// The rasterizer still renders to its internal buffer, but swap copies directly
+/// to the mapped framebuffer, bypassing the compositor.
+#[no_mangle]
+pub extern "C" fn gl_init_fullscreen(fb_ptr: *mut u32, width: u32, height: u32, stride: u32) {
+    unsafe {
+        FULLSCREEN_FB_PTR = fb_ptr;
+        FULLSCREEN_WIDTH = width;
+        FULLSCREEN_HEIGHT = height;
+        FULLSCREEN_STRIDE = stride;
+    }
+
+    // Resize the internal framebuffer to match the screen if needed
+    let c = ctx();
+    if c.default_fb.width != width || c.default_fb.height != height {
+        c.default_fb.resize(width, height);
+    }
+
+    serial_println!("[libgl] Fullscreen mode: fb_ptr={:#x}, {}x{}, stride={}",
+        fb_ptr as usize, width, height, stride);
+}
+
+/// Exit fullscreen mode — stop writing to the direct framebuffer.
+#[no_mangle]
+pub extern "C" fn gl_exit_fullscreen() {
+    unsafe {
+        FULLSCREEN_FB_PTR = core::ptr::null_mut();
+        FULLSCREEN_WIDTH = 0;
+        FULLSCREEN_HEIGHT = 0;
+        FULLSCREEN_STRIDE = 0;
+    }
+    serial_println!("[libgl] Fullscreen mode exited");
+}
+
+/// Swap buffers in fullscreen mode — copies the rendered frame directly to the
+/// mapped framebuffer. Handles stride != width (pitch-aligned rows).
+///
+/// Returns true if the copy was performed, false if not in fullscreen mode.
+#[no_mangle]
+pub extern "C" fn gl_swap_buffers_fullscreen() -> u32 {
+    let fb_ptr = unsafe { FULLSCREEN_FB_PTR };
+    if fb_ptr.is_null() {
+        return 0;
+    }
+
+    let c = ctx();
+
+    // Apply FXAA if enabled
+    if c.fxaa_enabled {
+        let w = c.default_fb.width;
+        let h = c.default_fb.height;
+        fxaa::apply(&mut c.default_fb.color, w, h);
+    }
+
+    let width = unsafe { FULLSCREEN_WIDTH } as usize;
+    let height = unsafe { FULLSCREEN_HEIGHT } as usize;
+    let stride = unsafe { FULLSCREEN_STRIDE } as usize;
+    let src = c.default_fb.color.as_ptr();
+
+    // Copy row-by-row if stride != width, or memcpy the whole thing if equal
+    unsafe {
+        if stride == width {
+            core::ptr::copy_nonoverlapping(src, fb_ptr, width * height);
+        } else {
+            let copy_w = width.min(c.default_fb.width as usize);
+            let copy_h = height.min(c.default_fb.height as usize);
+            for y in 0..copy_h {
+                let src_row = src.add(y * c.default_fb.width as usize);
+                let dst_row = fb_ptr.add(y * stride);
+                core::ptr::copy_nonoverlapping(src_row, dst_row, copy_w);
+            }
+        }
+    }
+
+    1
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

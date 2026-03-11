@@ -549,6 +549,8 @@ struct RenderState {
     fps_frame_count: u32,
     fps_last_ms: u32,
     fps_display: u32,
+    // Fullscreen state
+    fullscreen: bool,
 }
 
 static mut STATE: Option<RenderState> = None;
@@ -724,13 +726,19 @@ fn render_frame() {
         gl::enable(gl::GL_CULL_FACE);
     }
 
-    // ── Swap to canvas ───────────────────────────────────────────────────
-    let fb_ptr = gl::swap_buffers();
-    if !fb_ptr.is_null() {
-        let pixels = unsafe {
-            core::slice::from_raw_parts(fb_ptr, (s.fb_w * s.fb_h) as usize)
-        };
-        s.canvas.copy_pixels_from(pixels);
+    // ── Swap to canvas or direct framebuffer ────────────────────────────
+    if s.fullscreen {
+        // Fullscreen mode: copy directly to mapped framebuffer
+        gl::swap_buffers_fullscreen();
+    } else {
+        // Windowed mode: copy to anyui canvas
+        let fb_ptr = gl::swap_buffers();
+        if !fb_ptr.is_null() {
+            let pixels = unsafe {
+                core::slice::from_raw_parts(fb_ptr, (s.fb_w * s.fb_h) as usize)
+            };
+            s.canvas.copy_pixels_from(pixels);
+        }
     }
 }
 
@@ -1086,6 +1094,7 @@ fn main() {
             fps_frame_count: 0,
             fps_last_ms: anyos_std::sys::uptime_ms(),
             fps_display: 0,
+            fullscreen: false,
         });
     }
 
@@ -1121,6 +1130,48 @@ fn main() {
             s.camera_dist += dy as f32 * 0.03;
             if s.camera_dist < 1.5 { s.camera_dist = 1.5; }
             if s.camera_dist > 12.0 { s.camera_dist = 12.0; }
+        }
+    });
+
+    // ── Fullscreen support ────────────────────────────────────────────────
+    // Register as fullscreen-capable (Alt+Enter will toggle fullscreen)
+    window.set_fullscreen_capable(false);
+
+    window.on_fullscreen_enter(|_| {
+        if let Some(info) = libanyui_client::get_fullscreen_info() {
+            anyos_std::println!("gldemo: fullscreen ENTER {}x{} stride={} fb={:#x}",
+                info.width, info.height, info.stride, info.fb_ptr);
+            let s = unsafe { STATE.as_mut().unwrap() };
+            s.fullscreen = true;
+            s.fb_w = info.width;
+            s.fb_h = info.height;
+            gl::gl_resize(info.width, info.height);
+            gl::viewport(0, 0, info.width as i32, info.height as i32);
+            if info.fb_ptr != 0 {
+                // Direct framebuffer access mode
+                gl::gl_init_fullscreen(
+                    info.fb_ptr as *mut u32,
+                    info.width,
+                    info.height,
+                    info.stride,
+                );
+            }
+        }
+    });
+
+    window.on_fullscreen_exit(|_| {
+        anyos_std::println!("gldemo: fullscreen EXIT");
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.fullscreen = false;
+        gl::gl_exit_fullscreen();
+        // Restore canvas size
+        let w = s.canvas.get_stride();
+        let h = s.canvas.get_height();
+        if w > 0 && h > 0 {
+            s.fb_w = w;
+            s.fb_h = h;
+            gl::gl_resize(w, h);
+            gl::viewport(0, 0, w as i32, h as i32);
         }
     });
 

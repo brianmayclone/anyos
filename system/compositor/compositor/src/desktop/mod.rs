@@ -172,6 +172,9 @@ pub struct Desktop {
     /// Tracks which buttons were pressed on the last `inject_pointer_event` call
     /// so we can synthesise press/release pairs for changed bits only.
     pub(crate) vnc_buttons: u8,
+
+    /// Window ID of the currently fullscreen window, or None.
+    pub(crate) fullscreen_window: Option<u32>,
 }
 
 impl Desktop {
@@ -236,6 +239,7 @@ impl Desktop {
             last_click_x: 0,
             last_click_y: 0,
             vnc_buttons: 0,
+            fullscreen_window: None,
         };
 
         if desktop.has_gpu_accel {

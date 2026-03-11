@@ -390,6 +390,16 @@ pub fn map_page_in_pd(
     unsafe { write_entry(l3_phys, l3_index(va), desc); }
 }
 
+/// Unmap a single 4K page in a specific user page directory.
+pub fn unmap_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr) {
+    let va = virt.as_u64();
+    let l3_phys = match walk_to_l3(pd_phys.as_u64(), va, false) {
+        Some(l3) => l3,
+        None => return,
+    };
+    unsafe { write_entry(l3_phys, l3_index(va), 0); }
+}
+
 /// Map `count` pages starting at `virt_start`, allocating physical frames.
 /// When `zero` is true each frame is zeroed after mapping.
 pub fn map_pages_range_in_pd(

@@ -24,6 +24,8 @@ pub const WIN_FLAG_NO_MOVE: u32 = 0x100;
 /// DPI-aware: the app renders at physical resolution (libanyui windows).
 /// The compositor will not upscale the window's content.
 pub const WIN_FLAG_DPI_AWARE: u32 = 0x200;
+/// App supports fullscreen mode (set via CMD_SET_FULLSCREEN_CAP).
+pub const WIN_FLAG_FULLSCREEN_CAPABLE: u32 = 0x400;
 
 // ── Dimensions ─────────────────────────────────────────────────────────────
 
@@ -86,6 +88,8 @@ pub const EVENT_WINDOW_CLOSE: u32 = 8;
 pub const EVENT_MENU_ITEM: u32 = 9;
 pub const EVENT_STATUS_ICON_CLICK: u32 = 10;
 pub const EVENT_FOCUS_LOST: u32 = 11;
+pub const EVENT_FULLSCREEN_ENTER: u32 = 12;
+pub const EVENT_FULLSCREEN_EXIT: u32 = 13;
 
 // ── Hit Test ───────────────────────────────────────────────────────────────
 
@@ -177,6 +181,16 @@ pub struct WindowInfo {
     /// If this window is a modal child, the compositor window ID of its owner.
     /// 0 = no owner (normal window). Set via CMD_SET_MODAL_OWNER.
     pub modal_owner: u32,
+    /// Whether this window is currently in fullscreen mode.
+    pub fullscreen: bool,
+    /// Whether this window supports fullscreen (registered via CMD_SET_FULLSCREEN_CAP).
+    pub fullscreen_capable: bool,
+    /// Saved window bounds before entering fullscreen: (x, y, width, height).
+    pub saved_bounds_fs: Option<(i32, i32, u32, u32)>,
+    /// Whether this window has direct framebuffer access in fullscreen mode.
+    pub fullscreen_direct_fb: bool,
+    /// Original flags before fullscreen (to restore borderless state etc.).
+    pub saved_flags_fs: u32,
 }
 
 impl WindowInfo {
@@ -407,6 +421,11 @@ impl Desktop {
             shm_height: 0,
             needs_frame_ack: false,
             modal_owner: 0,
+            fullscreen: false,
+            fullscreen_capable: false,
+            saved_bounds_fs: None,
+            fullscreen_direct_fb: false,
+            saved_flags_fs: 0,
         };
 
         self.windows.push(win);
@@ -450,6 +469,13 @@ impl Desktop {
 
     /// Destroy all windows owned by a given thread (process exit cleanup).
     pub fn on_process_exit(&mut self, tid: u32) {
+        // If the exiting process owns the fullscreen window, exit fullscreen first
+        if let Some(fs_id) = self.fullscreen_window {
+            if self.windows.iter().any(|w| w.id == fs_id && w.owner_tid == tid) {
+                self.exit_fullscreen();
+            }
+        }
+
         let window_ids: Vec<u32> = self.windows.iter()
             .filter(|w| w.owner_tid == tid)
             .map(|w| w.id)
@@ -1140,6 +1166,11 @@ impl Desktop {
             shm_height: content_h,
             needs_frame_ack: false,
             modal_owner: 0,
+            fullscreen: false,
+            fullscreen_capable: false,
+            saved_bounds_fs: None,
+            fullscreen_direct_fb: false,
+            saved_flags_fs: 0,
         };
 
         self.windows.push(win);
@@ -1222,6 +1253,11 @@ impl Desktop {
             shm_height: content_h,
             needs_frame_ack: false,
             modal_owner: 0,
+            fullscreen: false,
+            fullscreen_capable: false,
+            saved_bounds_fs: None,
+            fullscreen_direct_fb: false,
+            saved_flags_fs: 0,
         };
 
         self.windows.push(win);
@@ -1313,6 +1349,11 @@ impl Desktop {
             shm_height: content_h,
             needs_frame_ack: false,
             modal_owner: 0,
+            fullscreen: false,
+            fullscreen_capable: false,
+            saved_bounds_fs: None,
+            fullscreen_direct_fb: false,
+            saved_flags_fs: 0,
         };
 
         self.windows.push(win);
