@@ -188,10 +188,92 @@ struct MemorySlot {
     host_ptr: *mut u8,
 }
 
+/// Minimal Local APIC state for handling MMIO at 0xFEE00000.
+struct SoftLapic {
+    regs: [u32; 64], // 64 registers at 16-byte spacing (offset >> 4)
+}
+
+impl SoftLapic {
+    fn new() -> Self {
+        let mut regs = [0u32; 64];
+        regs[0x02] = 0x20;       // ID = 0 (bits 24-27)
+        regs[0x03] = 0x00050014; // Version: max_lvt=5, version=20 (Pentium 4)
+        regs[0x0E] = 0x0FFFFFFF; // Logical Destination Format: flat model
+        regs[0x0F] = 0x000001FF; // Spurious Vector: APIC enabled (bit 8) + vector 0xFF
+        regs[0x08] = 0;          // Task Priority Register
+        SoftLapic { regs }
+    }
+
+    fn read(&self, offset: u64) -> u32 {
+        let idx = ((offset & 0xFFF) >> 4) as usize;
+        if idx < 64 { self.regs[idx] } else { 0 }
+    }
+
+    fn write(&mut self, offset: u64, val: u32) {
+        let idx = ((offset & 0xFFF) >> 4) as usize;
+        match idx {
+            0x0B => {} // EOI: write-only, acknowledge interrupt
+            0x30 => {} // ICR write (trigger IPI) - ignore for single CPU
+            0x0F => {  // SVR: preserve APIC enable bit
+                if idx < 64 { self.regs[idx] = val; }
+            }
+            _ => {
+                if idx < 64 { self.regs[idx] = val; }
+            }
+        }
+    }
+}
+
+/// Minimal IOAPIC state for indirect register access at 0xFEC00000.
+struct SoftIoapic {
+    ioregsel: u32,
+    regs: [u32; 64], // indirect registers
+}
+
+impl SoftIoapic {
+    fn new() -> Self {
+        let mut regs = [0u32; 64];
+        regs[0x00] = 0x00; // IOAPICID
+        regs[0x01] = 0x00170020; // IOAPICVER: version=0x20, max_redir=23 (24 entries)
+        regs[0x02] = 0x00; // IOAPICARB
+        // Redirection entries (2 regs each, starting at index 0x10):
+        // Default: all masked (bit 16 = 1)
+        for i in 0..24 {
+            regs[0x10 + i * 2] = 0x00010000; // masked, edge, fixed, physical
+            regs[0x10 + i * 2 + 1] = 0x00000000; // destination = 0
+        }
+        SoftIoapic { ioregsel: 0, regs }
+    }
+
+    fn read(&self, offset: u64) -> u32 {
+        match offset & 0xFF {
+            0x00 => self.ioregsel,
+            0x10 => {
+                let idx = self.ioregsel as usize;
+                if idx < 64 { self.regs[idx] } else { 0 }
+            }
+            _ => 0,
+        }
+    }
+
+    fn write(&mut self, offset: u64, val: u32) {
+        match offset & 0xFF {
+            0x00 => self.ioregsel = val,
+            0x10 => {
+                let idx = self.ioregsel as usize;
+                if idx < 64 { self.regs[idx] = val; }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub struct WhpBackend {
     partition: WHV_PARTITION_HANDLE,
     memory_slots: Vec<MemorySlot>,
     api: WhpApi,
+    lapic: SoftLapic,
+    ioapic: SoftIoapic,
 }
 
 unsafe impl Send for WhpBackend {}
@@ -278,6 +360,20 @@ impl WhpBackend {
                 // Non-fatal: some WHP versions may not support extended exits
             }
 
+            // Enable Local APIC emulation (XApic mode)
+            // WHvPartitionPropertyCodeLocalApicEmulationMode = 0x00001005
+            // WHvX64LocalApicEmulationModeXApic = 1
+            let apic_mode: u32 = 1;
+            let hr = (api.set_property)(
+                partition,
+                0x00001005, // WHvPartitionPropertyCodeLocalApicEmulationMode
+                &apic_mode as *const u32 as *const u8,
+                core::mem::size_of::<u32>() as u32,
+            );
+            if hr < 0 {
+                // Non-fatal: older WHP versions may not support APIC emulation
+            }
+
             let hr = (api.setup_partition)(partition);
             if hr < 0 {
                 (api.delete_partition)(partition);
@@ -288,6 +384,8 @@ impl WhpBackend {
                 partition,
                 memory_slots: Vec::new(),
                 api,
+                lapic: SoftLapic::new(),
+                ioapic: SoftIoapic::new(),
             })
         }
     }
@@ -623,6 +721,102 @@ impl VmBackend for WhpBackend {
                     // Decode instruction to get access size and write data
                     let regs = self.get_vcpu_regs(id)?;
                     let (access_size, write_data) = decode_mmio_instruction(instr_bytes, &regs);
+
+                    // Handle LAPIC MMIO internally (0xFEE00000-0xFEE00FFF)
+                    if gpa >= 0xFEE0_0000 && gpa < 0xFEE0_1000 {
+                        let mut new_regs = regs;
+                        new_regs.rip += instr_len;
+                        if is_write {
+                            self.lapic.write(gpa, write_data as u32);
+                        } else {
+                            // LAPIC read: put result in destination register
+                            // For MOV r, [mem] the destination is the reg field of ModR/M
+                            let val = self.lapic.read(gpa) as u64;
+                            // The most common pattern is MOV EAX, [addr] — put in RAX
+                            // More precisely, decode the dest reg from ModR/M
+                            if instr_byte_count > 0 {
+                                let mut pi = 0;
+                                while pi < instr_bytes.len() {
+                                    match instr_bytes[pi] {
+                                        0x66 | 0x67 | 0xF0 | 0xF2 | 0xF3
+                                        | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65
+                                        | 0x40..=0x4F => { pi += 1; }
+                                        _ => break,
+                                    }
+                                }
+                                if pi < instr_bytes.len() {
+                                    let op = instr_bytes[pi];
+                                    if (op == 0x8B || op == 0x8A) && pi + 1 < instr_bytes.len() {
+                                        let modrm = instr_bytes[pi + 1];
+                                        let dest = ((modrm >> 3) & 7) as usize;
+                                        match dest {
+                                            0 => new_regs.rax = val,
+                                            1 => new_regs.rcx = val,
+                                            2 => new_regs.rdx = val,
+                                            3 => new_regs.rbx = val,
+                                            4 => new_regs.rsp = val,
+                                            5 => new_regs.rbp = val,
+                                            6 => new_regs.rsi = val,
+                                            7 => new_regs.rdi = val,
+                                            _ => new_regs.rax = val,
+                                        }
+                                    } else {
+                                        new_regs.rax = val;
+                                    }
+                                } else {
+                                    new_regs.rax = val;
+                                }
+                            } else {
+                                new_regs.rax = val;
+                            }
+                        }
+                        self.set_vcpu_regs(id, &new_regs)?;
+                        continue; // re-enter guest
+                    }
+
+                    // Handle IOAPIC MMIO internally (0xFEC00000-0xFEC00FFF)
+                    if gpa >= 0xFEC0_0000 && gpa < 0xFEC0_1000 {
+                        let mmio_off = gpa - 0xFEC0_0000;
+                        let mut new_regs = regs;
+                        new_regs.rip += instr_len;
+                        if is_write {
+                            self.ioapic.write(mmio_off, write_data as u32);
+                        } else {
+                            let val = self.ioapic.read(mmio_off) as u64;
+                            // Decode dest register same as LAPIC
+                            if instr_byte_count > 0 {
+                                let mut pi = 0;
+                                while pi < instr_bytes.len() {
+                                    match instr_bytes[pi] {
+                                        0x66 | 0x67 | 0xF0 | 0xF2 | 0xF3
+                                        | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65
+                                        | 0x40..=0x4F => { pi += 1; }
+                                        _ => break,
+                                    }
+                                }
+                                if pi < instr_bytes.len() && (instr_bytes[pi] == 0x8B || instr_bytes[pi] == 0x8A) && pi + 1 < instr_bytes.len() {
+                                    let dest = ((instr_bytes[pi + 1] >> 3) & 7) as usize;
+                                    match dest {
+                                        0 => new_regs.rax = val,
+                                        1 => new_regs.rcx = val,
+                                        2 => new_regs.rdx = val,
+                                        3 => new_regs.rbx = val,
+                                        4 => new_regs.rsp = val,
+                                        5 => new_regs.rbp = val,
+                                        6 => new_regs.rsi = val,
+                                        7 => new_regs.rdi = val,
+                                        _ => new_regs.rax = val,
+                                    }
+                                } else {
+                                    new_regs.rax = val;
+                                }
+                            } else {
+                                new_regs.rax = val;
+                            }
+                        }
+                        self.set_vcpu_regs(id, &new_regs)?;
+                        continue; // re-enter guest
+                    }
 
                     // WHP does not auto-advance RIP for MMIO exits
                     let mut new_regs = regs;

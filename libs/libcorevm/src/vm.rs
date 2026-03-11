@@ -36,6 +36,7 @@ pub struct Vm {
     pub ps2_ptr: *mut Ps2Controller,
     pub svga_ptr: *mut Svga,
     pub ahci_ptr: *mut Ahci,
+    pub pit_ptr: *mut crate::devices::pit::Pit,
 }
 
 impl Vm {
