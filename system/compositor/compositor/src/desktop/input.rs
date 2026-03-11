@@ -395,7 +395,7 @@ impl Desktop {
                     return;
                 }
 
-                if self.mouse_y < menubar_height() as i32 {
+                if self.fullscreen_window.is_none() && self.mouse_y < menubar_height() as i32 {
                     self.handle_menubar_click();
                     return;
                 }
@@ -406,8 +406,8 @@ impl Desktop {
                 ));
             }
 
-            // Check menubar click
-            if self.mouse_y < menubar_height() as i32 {
+            // Check menubar click (skip in fullscreen — menubar is hidden)
+            if self.fullscreen_window.is_none() && self.mouse_y < menubar_height() as i32 {
                 self.handle_menubar_click();
                 return;
             }

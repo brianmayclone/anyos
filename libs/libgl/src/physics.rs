@@ -492,8 +492,14 @@ impl PhysicsWorld {
             self.bodies[j].position = self.bodies[j].position.sub(correction.scale(inv_mass_j));
         }
 
-        // Relative velocity along collision normal
-        let rel_vel = self.bodies[i].velocity.sub(self.bodies[j].velocity);
+        // Relative velocity at contact point (includes angular contribution)
+        // v_contact = v_linear + ω × r
+        let r_i = self.contact_radius(i, normal.scale(-1.0));
+        let r_j = self.contact_radius(j, normal);
+
+        let vel_i = self.bodies[i].velocity.add(self.bodies[i].angular_vel.cross(r_i));
+        let vel_j = self.bodies[j].velocity.add(self.bodies[j].angular_vel.cross(r_j));
+        let rel_vel = vel_i.sub(vel_j);
         let vel_along_normal = rel_vel.dot(normal);
 
         // Only resolve if bodies are approaching
@@ -506,10 +512,11 @@ impl PhysicsWorld {
             self.bodies[j].restitution
         };
 
-        // Impulse magnitude: j = -(1 + e) * v_rel.n / (1/m_i + 1/m_j)
+        // Normal impulse magnitude: j = -(1 + e) * v_rel.n / (1/m_i + 1/m_j)
         let impulse_mag = -(1.0 + e) * vel_along_normal / total_inv;
         let impulse = normal.scale(impulse_mag);
 
+        // Apply normal impulse (linear)
         if inv_mass_i > 0.0 {
             self.bodies[i].velocity = self.bodies[i].velocity.add(impulse.scale(inv_mass_i));
         }
@@ -517,75 +524,119 @@ impl PhysicsWorld {
             self.bodies[j].velocity = self.bodies[j].velocity.sub(impulse.scale(inv_mass_j));
         }
 
-        // 3D angular impulse from contact
-        // Contact point offset from center of mass (approximate)
-        // τ = r × J → Δω = I⁻¹ × τ
-        let spin_factor = 0.3; // friction coefficient for spin transfer
+        // ── Friction impulse (tangential) ─────────────────────────────────
+        // Friction is what causes rotation on collision. The tangential
+        // component of relative velocity at the contact point creates a
+        // friction force perpendicular to the collision normal.
+        let tangent_vel = rel_vel.sub(normal.scale(vel_along_normal));
+        let tangent_speed = tangent_vel.length();
+        let friction_coeff = 0.4; // Coulomb friction coefficient
 
-        if inv_mass_i > 0.0 {
-            let r_i = match self.bodies[i].collider {
-                Collider::Sphere { radius } => radius,
-                Collider::Box { half_x, half_y, half_z } => {
-                    // Use average half-extent for inertia approximation
-                    (half_x + half_y + half_z) / 3.0
-                }
-                _ => 0.5,
+        if tangent_speed > 1e-6 {
+            let tangent = tangent_vel.scale(-1.0 / tangent_speed);
+            // Friction impulse is clamped by Coulomb's law: |j_t| <= μ * |j_n|
+            let friction_mag = if tangent_speed * total_inv < friction_coeff * impulse_mag {
+                tangent_speed / total_inv // static friction: stop tangential motion
+            } else {
+                friction_coeff * impulse_mag // dynamic friction
             };
-            let (inertia_x, inertia_y, inertia_z) = match self.bodies[i].collider {
-                Collider::Sphere { radius } => {
-                    let i = 0.4 * self.bodies[i].mass * radius * radius;
-                    (i, i, i)
-                }
-                Collider::Box { half_x, half_y, half_z } => {
-                    let m = self.bodies[i].mass;
-                    let f = m / 3.0; // m/12 * 4 = m/3 (using full extents = 2*half)
-                    (f * (half_y * half_y + half_z * half_z),
-                     f * (half_x * half_x + half_z * half_z),
-                     f * (half_x * half_x + half_y * half_y))
-                }
-                _ => (1.0, 1.0, 1.0),
-            };
-            // Contact point is at surface in direction of -normal
-            let contact_r = normal.scale(-r_i);
-            let torque = contact_r.cross(impulse);
-            let ang_impulse = Vec3::new(
-                if inertia_x > 0.001 { torque.x * spin_factor / inertia_x } else { 0.0 },
-                if inertia_y > 0.001 { torque.y * spin_factor / inertia_y } else { 0.0 },
-                if inertia_z > 0.001 { torque.z * spin_factor / inertia_z } else { 0.0 },
-            );
-            self.bodies[i].angular_vel = self.bodies[i].angular_vel.add(ang_impulse);
+            let friction_impulse = tangent.scale(friction_mag);
+
+            // Apply friction impulse (linear + angular)
+            if inv_mass_i > 0.0 {
+                self.bodies[i].velocity = self.bodies[i].velocity.add(friction_impulse.scale(inv_mass_i));
+                let torque = r_i.cross(friction_impulse);
+                let inv_inertia = self.inv_inertia(i);
+                self.bodies[i].angular_vel = self.bodies[i].angular_vel.add(Vec3::new(
+                    torque.x * inv_inertia.0,
+                    torque.y * inv_inertia.1,
+                    torque.z * inv_inertia.2,
+                ));
+            }
+            if inv_mass_j > 0.0 {
+                self.bodies[j].velocity = self.bodies[j].velocity.sub(friction_impulse.scale(inv_mass_j));
+                let torque = r_j.cross(friction_impulse);
+                let inv_inertia = self.inv_inertia(j);
+                self.bodies[j].angular_vel = self.bodies[j].angular_vel.sub(Vec3::new(
+                    torque.x * inv_inertia.0,
+                    torque.y * inv_inertia.1,
+                    torque.z * inv_inertia.2,
+                ));
+            }
         }
 
+        // ── Normal angular impulse (from off-center impact) ──────────────
+        // This handles cases where the collision normal isn't through the
+        // center of mass (e.g., glancing sphere-sphere hits).
+        if inv_mass_i > 0.0 {
+            let torque = r_i.cross(impulse);
+            let inv_inertia = self.inv_inertia(i);
+            self.bodies[i].angular_vel = self.bodies[i].angular_vel.add(Vec3::new(
+                torque.x * inv_inertia.0,
+                torque.y * inv_inertia.1,
+                torque.z * inv_inertia.2,
+            ));
+        }
         if inv_mass_j > 0.0 {
-            let r_j = match self.bodies[j].collider {
-                Collider::Sphere { radius } => radius,
-                Collider::Box { half_x, half_y, half_z } => {
-                    (half_x + half_y + half_z) / 3.0
-                }
-                _ => 0.5,
-            };
-            let (inertia_x, inertia_y, inertia_z) = match self.bodies[j].collider {
-                Collider::Sphere { radius } => {
-                    let i = 0.4 * self.bodies[j].mass * radius * radius;
-                    (i, i, i)
-                }
-                Collider::Box { half_x, half_y, half_z } => {
-                    let m = self.bodies[j].mass;
-                    let f = m / 3.0;
-                    (f * (half_y * half_y + half_z * half_z),
-                     f * (half_x * half_x + half_z * half_z),
-                     f * (half_x * half_x + half_y * half_y))
-                }
-                _ => (1.0, 1.0, 1.0),
-            };
-            let contact_r = normal.scale(r_j);
-            let torque = contact_r.cross(impulse);
-            let ang_impulse = Vec3::new(
-                if inertia_x > 0.001 { torque.x * spin_factor / inertia_x } else { 0.0 },
-                if inertia_y > 0.001 { torque.y * spin_factor / inertia_y } else { 0.0 },
-                if inertia_z > 0.001 { torque.z * spin_factor / inertia_z } else { 0.0 },
-            );
-            self.bodies[j].angular_vel = self.bodies[j].angular_vel.sub(ang_impulse);
+            let torque = r_j.cross(impulse.scale(-1.0));
+            let inv_inertia = self.inv_inertia(j);
+            self.bodies[j].angular_vel = self.bodies[j].angular_vel.add(Vec3::new(
+                torque.x * inv_inertia.0,
+                torque.y * inv_inertia.1,
+                torque.z * inv_inertia.2,
+            ));
+        }
+    }
+
+    /// Contact point offset from body center toward the contact surface.
+    /// `toward_normal` points from the body center toward the contact.
+    fn contact_radius(&self, idx: usize, toward_normal: Vec3) -> Vec3 {
+        match self.bodies[idx].collider {
+            Collider::Sphere { radius } => toward_normal.normalized().scale(radius),
+            Collider::Box { half_x, half_y, half_z } => {
+                // For OBB: find the vertex closest to the contact plane.
+                // The contact vertex is the one whose local-space coordinates
+                // have signs matching the inverted collision normal (rotated
+                // into local space). This gives the actual corner that touches.
+                let orient = self.bodies[idx].orientation;
+                // Rotate toward_normal into local body space (inverse rotation)
+                let inv_orient = Quat {
+                    w: orient.w, x: -orient.x, y: -orient.y, z: -orient.z,
+                };
+                let local_n = inv_orient.rotate_vec(toward_normal);
+                // Pick vertex: sign of each axis matches the normal direction
+                let vx = if local_n.x >= 0.0 { half_x } else { -half_x };
+                let vy = if local_n.y >= 0.0 { half_y } else { -half_y };
+                let vz = if local_n.z >= 0.0 { half_z } else { -half_z };
+                // Rotate vertex back to world space
+                orient.rotate_vec(Vec3::new(vx, vy, vz))
+            }
+            _ => Vec3::ZERO,
+        }
+    }
+
+    /// Inverse inertia tensor (diagonal approximation) for body at index.
+    fn inv_inertia(&self, idx: usize) -> (f32, f32, f32) {
+        let mass = self.bodies[idx].mass;
+        if mass <= 0.0 { return (0.0, 0.0, 0.0); }
+        match self.bodies[idx].collider {
+            Collider::Sphere { radius } => {
+                let i = 0.4 * mass * radius * radius; // 2/5 * m * r²
+                let inv = if i > 0.001 { 1.0 / i } else { 0.0 };
+                (inv, inv, inv)
+            }
+            Collider::Box { half_x, half_y, half_z } => {
+                let f = mass / 3.0; // m/12 * 4 = m/3 (full extents = 2*half)
+                let ix = f * (half_y * half_y + half_z * half_z);
+                let iy = f * (half_x * half_x + half_z * half_z);
+                let iz = f * (half_x * half_x + half_y * half_y);
+                (
+                    if ix > 0.001 { 1.0 / ix } else { 0.0 },
+                    if iy > 0.001 { 1.0 / iy } else { 0.0 },
+                    if iz > 0.001 { 1.0 / iz } else { 0.0 },
+                )
+            }
+            _ => (1.0, 1.0, 1.0),
         }
     }
 }

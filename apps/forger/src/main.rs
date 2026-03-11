@@ -41,6 +41,8 @@ struct GameState {
     last_mouse_y: i32,
     mouse_captured: bool,
     fullscreen: bool,
+    fs_fb_ptr: *mut u32,
+    fs_stride: u32,
 }
 
 static mut STATE: Option<GameState> = None;
@@ -148,6 +150,8 @@ fn main() {
             last_mouse_y: 300,
             mouse_captured: false,
             fullscreen: false,
+            fs_fb_ptr: core::ptr::null_mut(),
+            fs_stride: 0,
         });
     }
 
@@ -233,8 +237,10 @@ fn main() {
             gl::gl_resize(s.fb_w, s.fb_h);
             gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
             if info.fb_ptr != 0 {
+                s.fs_fb_ptr = info.fb_ptr as *mut u32;
+                s.fs_stride = info.stride;
                 gl::gl_init_fullscreen(
-                    info.fb_ptr as *mut u32,
+                    s.fs_fb_ptr,
                     info.width,
                     info.height,
                     info.stride,
@@ -247,6 +253,8 @@ fn main() {
     window_ref.on_fullscreen_exit(|_| {
         let s = unsafe { STATE.as_mut().unwrap() };
         s.fullscreen = false;
+        s.fs_fb_ptr = core::ptr::null_mut();
+        s.fs_stride = 0;
         gl::gl_exit_fullscreen();
         // Restore canvas size from actual widget
         let w = s.canvas.get_stride();
@@ -280,16 +288,20 @@ fn main() {
 fn game_tick() {
     let s = unsafe { STATE.as_mut().unwrap() };
 
-    // Handle resize (render at half resolution)
-    let cur_w = s.canvas.get_stride();
-    let cur_h = s.canvas.get_height();
-    if cur_w != s.canvas_w || cur_h != s.canvas_h {
-        s.canvas_w = cur_w;
-        s.canvas_h = cur_h;
-        s.fb_w = cur_w / 2;
-        s.fb_h = cur_h / 2;
-        gl::gl_resize(s.fb_w, s.fb_h);
-        gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
+    // Handle resize (render at half resolution).
+    // In fullscreen mode, dimensions are managed by the fullscreen callback — skip widget query
+    // to avoid stale logical sizes overriding the physical fullscreen dimensions.
+    if !s.fullscreen {
+        let cur_w = s.canvas.get_stride();
+        let cur_h = s.canvas.get_height();
+        if cur_w > 0 && cur_h > 0 && (cur_w != s.canvas_w || cur_h != s.canvas_h) {
+            s.canvas_w = cur_w;
+            s.canvas_h = cur_h;
+            s.fb_w = cur_w / 2;
+            s.fb_h = cur_h / 2;
+            gl::gl_resize(s.fb_w, s.fb_h);
+            gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
+        }
     }
 
     // Physics/player update
@@ -342,17 +354,35 @@ fn game_tick() {
         let ch = s.canvas_h as usize;
         let rw = s.fb_w as usize;
         let rh = s.fb_h as usize;
-        let mut upscaled = vec![0u32; cw * ch];
-        for cy in 0..ch {
-            let sy = (cy * rh / ch).min(rh - 1);
-            let src_row = sy * rw;
-            let dst_row = cy * cw;
-            for cx in 0..cw {
-                let sx = (cx * rw / cw).min(rw - 1);
-                upscaled[dst_row + cx] = src[src_row + sx];
+        if s.fullscreen && !s.fs_fb_ptr.is_null() {
+            // In fullscreen: write directly to the compositor framebuffer,
+            // bypassing the Canvas widget whose pixel buffer may not match
+            // the physical screen dimensions (especially on first entry).
+            let stride = s.fs_stride as usize;
+            let dst = unsafe { core::slice::from_raw_parts_mut(s.fs_fb_ptr, stride * ch) };
+            for cy in 0..ch {
+                let sy = (cy * rh / ch).min(rh - 1);
+                let src_row = sy * rw;
+                let dst_row = cy * stride;
+                for cx in 0..cw {
+                    let sx = (cx * rw / cw).min(rw - 1);
+                    dst[dst_row + cx] = src[src_row + sx];
+                }
             }
+        } else {
+            // Windowed mode: upscale into a buffer and copy to the Canvas widget
+            let mut upscaled = vec![0u32; cw * ch];
+            for cy in 0..ch {
+                let sy = (cy * rh / ch).min(rh - 1);
+                let src_row = sy * rw;
+                let dst_row = cy * cw;
+                for cx in 0..cw {
+                    let sx = (cx * rw / cw).min(rw - 1);
+                    upscaled[dst_row + cx] = src[src_row + sx];
+                }
+            }
+            s.canvas.copy_pixels_from(&upscaled);
         }
-        s.canvas.copy_pixels_from(&upscaled);
     }
 
     // Debug: print camera and pixel samples once per second
