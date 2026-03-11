@@ -9,7 +9,7 @@ use libdb_client::Database;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const THREAD_ENTRY_SIZE: usize = 64;
+const THREAD_ENTRY_SIZE: usize = 60;
 const MAX_THREADS: usize = 256;
 const MAX_CPUS: usize = 16;
 
