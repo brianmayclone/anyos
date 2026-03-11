@@ -37,6 +37,8 @@ pub struct Vm {
     pub svga_ptr: *mut Svga,
     pub ahci_ptr: *mut Ahci,
     pub pit_ptr: *mut crate::devices::pit::Pit,
+    pub pic_ptr: *mut crate::devices::pic::PicPair,
+    pub debug_port_ptr: *mut crate::devices::debug_port::DebugPort,
 }
 
 impl Vm {
@@ -67,6 +69,8 @@ impl Vm {
             svga_ptr: core::ptr::null_mut(),
             ahci_ptr: core::ptr::null_mut(),
             pit_ptr: core::ptr::null_mut(),
+            pic_ptr: core::ptr::null_mut(),
+            debug_port_ptr: core::ptr::null_mut(),
         })
     }
 
@@ -87,8 +91,7 @@ impl Vm {
 
         let ram_size = self.memory.ram_size();
 
-        // PIC (master+slave: 0x20-0x21, 0xA0-0xA1 handled by single PicPair)
-        self.io.register(0x20, 2, Box::new(PicPair::new()));
+        // PIC comments: see wide-range registration at the end of this function.
         // Slave PIC at 0xA0 — PicPair handles both via port dispatch internally.
         // PicPair's IoHandler checks the port number to route to master or slave.
         // Register the same range approach: PicPair at 0x20/count=2 handles master.
@@ -139,6 +142,7 @@ impl Vm {
         let pit = Box::new(Pit::new());
         let pit_ptr = &*pit as *const Pit as *mut Pit;
         self.io.register(0x40, 4, pit);
+        self.pit_ptr = pit_ptr;
 
         // Port 61 (speaker gate, needs PIT pointer)
         self.io.register(0x61, 1, Box::new(Port61::new(pit_ptr)));
@@ -169,7 +173,9 @@ impl Vm {
         // TODO: Wire VGA MMIO region (0xA0000, 0x20000) via svga_ptr wrapper.
 
         // Debug port (0x402)
-        self.io.register(0x402, 1, Box::new(DebugPort::new()));
+        let dbg = Box::new(DebugPort::new());
+        self.debug_port_ptr = &*dbg as *const DebugPort as *mut DebugPort;
+        self.io.register(0x402, 1, dbg);
 
         // ACPI PM (0x600-0x607)
         self.io.register(0x600, 8, Box::new(AcpiPm::new()));
@@ -201,7 +207,9 @@ impl Vm {
         // Registered AFTER all other port-I/O devices so it has lowest priority.
         // Ports 0x20-0x21 and 0xA0-0xA1 are the only ones PicPair responds to;
         // all intermediate ports that already have handlers get matched first.
-        self.io.register(0x20, 0x82, Box::new(PicPair::new()));
+        let pic = Box::new(PicPair::new());
+        self.pic_ptr = &*pic as *const PicPair as *mut PicPair;
+        self.io.register(0x20, 0x82, pic);
     }
 
     // ── VmBackend delegations ──
@@ -388,6 +396,15 @@ impl Vm {
             None
         } else {
             Some(unsafe { &mut *self.ahci_ptr })
+        }
+    }
+
+    /// Get a mutable reference to the PIT timer, if set up.
+    pub fn pit_mut(&mut self) -> Option<&mut crate::devices::pit::Pit> {
+        if self.pit_ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *self.pit_ptr })
         }
     }
 }

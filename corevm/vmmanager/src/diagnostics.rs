@@ -61,6 +61,8 @@ struct DiagLogInner {
     mmio_count: u64,
     irq_count: u64,
     exit_count: u64,
+    /// Debug port (0x402) accumulated text output
+    debug_text: String,
 }
 
 impl DiagLog {
@@ -73,6 +75,7 @@ impl DiagLog {
                 mmio_count: 0,
                 irq_count: 0,
                 exit_count: 0,
+                debug_text: String::new(),
             })),
         }
     }
@@ -113,6 +116,16 @@ impl DiagLog {
         self.inner.lock().map(|i| (i.exit_count, i.io_count, i.mmio_count, i.irq_count)).unwrap_or_default()
     }
 
+    pub fn append_debug_text(&self, text: &str) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.debug_text.push_str(text);
+        }
+    }
+
+    pub fn debug_text(&self) -> String {
+        self.inner.lock().map(|i| i.debug_text.clone()).unwrap_or_default()
+    }
+
     pub fn clear(&self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.entries.clear();
@@ -131,6 +144,13 @@ pub struct DiagnosticsWindow {
     filter_err: bool,
     filter_info: bool,
     vm_name: String,
+    active_tab: DiagTab,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum DiagTab {
+    Log,
+    BiosLog,
 }
 
 impl DiagnosticsWindow {
@@ -145,6 +165,7 @@ impl DiagnosticsWindow {
             filter_err: true,
             filter_info: true,
             vm_name: vm_name.to_string(),
+            active_tab: DiagTab::Log,
         }
     }
 
@@ -172,61 +193,86 @@ impl DiagnosticsWindow {
             .min_height(200.0)
             .resizable(true)
             .show(ctx, |ui| {
-                // Summary bar
-                let (exits, ios, mmios, irqs) = log.counters();
+                // Tab bar
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("Exits: {}", exits)).small().color(egui::Color32::GRAY));
-                    ui.separator();
-                    ui.label(egui::RichText::new(format!("I/O: {}", ios)).small().color(DiagCategory::IoPort.color()));
-                    ui.separator();
-                    ui.label(egui::RichText::new(format!("MMIO: {}", mmios)).small().color(DiagCategory::Mmio.color()));
-                    ui.separator();
-                    ui.label(egui::RichText::new(format!("IRQ: {}", irqs)).small().color(DiagCategory::Interrupt.color()));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("Clear").clicked() {
-                            log.clear();
-                        }
-                        ui.checkbox(&mut self.auto_scroll, "Auto-scroll");
-                    });
+                    ui.selectable_value(&mut self.active_tab, DiagTab::Log, "VM Log");
+                    ui.selectable_value(&mut self.active_tab, DiagTab::BiosLog, "BIOS Log");
                 });
-
-                // Filter bar
-                ui.horizontal(|ui| {
-                    ui.label("Filter:");
-                    ui.checkbox(&mut self.filter_info, egui::RichText::new("INFO").small().color(DiagCategory::Info.color()));
-                    ui.checkbox(&mut self.filter_io, egui::RichText::new("I/O").small().color(DiagCategory::IoPort.color()));
-                    ui.checkbox(&mut self.filter_mmio, egui::RichText::new("MMIO").small().color(DiagCategory::Mmio.color()));
-                    ui.checkbox(&mut self.filter_irq, egui::RichText::new("IRQ").small().color(DiagCategory::Interrupt.color()));
-                    ui.checkbox(&mut self.filter_cpu, egui::RichText::new("CPU").small().color(DiagCategory::CpuState.color()));
-                    ui.checkbox(&mut self.filter_err, egui::RichText::new("ERR").small().color(DiagCategory::Error.color()));
-                });
-
                 ui.separator();
 
-                // Log entries
-                let entries = log.entries();
-                let row_height = 16.0;
-                let filtered: Vec<&DiagEntry> = entries.iter().filter(|e| self.is_visible(&e.category)).collect();
-
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .stick_to_bottom(self.auto_scroll)
-                    .show_rows(ui, row_height, filtered.len(), |ui, range| {
-                        ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
-                        for entry in &filtered[range] {
-                            ui.horizontal(|ui| {
-                                let ts = format!("{:>8.3}", entry.timestamp_ms as f64 / 1000.0);
-                                ui.label(egui::RichText::new(ts).small().color(egui::Color32::from_rgb(120, 120, 120)));
-                                ui.label(egui::RichText::new(format!("{:<4}", entry.category.label())).small().color(entry.category.color()));
-                                ui.label(egui::RichText::new(&entry.message).small());
-                                if entry.repeat_count > 1 {
-                                    ui.label(egui::RichText::new(format!(" x{}", entry.repeat_count)).small().color(egui::Color32::from_rgb(255, 200, 100)));
-                                }
-                            });
-                        }
-                    });
+                match self.active_tab {
+                    DiagTab::Log => self.show_log_tab(ui, log),
+                    DiagTab::BiosLog => self.show_bios_log_tab(ui, log),
+                }
             });
 
         self.open = still_open;
+    }
+
+    fn show_log_tab(&mut self, ui: &mut egui::Ui, log: &DiagLog) {
+        // Summary bar
+        let (exits, ios, mmios, irqs) = log.counters();
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("Exits: {}", exits)).small().color(egui::Color32::GRAY));
+            ui.separator();
+            ui.label(egui::RichText::new(format!("I/O: {}", ios)).small().color(DiagCategory::IoPort.color()));
+            ui.separator();
+            ui.label(egui::RichText::new(format!("MMIO: {}", mmios)).small().color(DiagCategory::Mmio.color()));
+            ui.separator();
+            ui.label(egui::RichText::new(format!("IRQ: {}", irqs)).small().color(DiagCategory::Interrupt.color()));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("Clear").clicked() {
+                    log.clear();
+                }
+                ui.checkbox(&mut self.auto_scroll, "Auto-scroll");
+            });
+        });
+
+        // Filter bar
+        ui.horizontal(|ui| {
+            ui.label("Filter:");
+            ui.checkbox(&mut self.filter_info, egui::RichText::new("INFO").small().color(DiagCategory::Info.color()));
+            ui.checkbox(&mut self.filter_io, egui::RichText::new("I/O").small().color(DiagCategory::IoPort.color()));
+            ui.checkbox(&mut self.filter_mmio, egui::RichText::new("MMIO").small().color(DiagCategory::Mmio.color()));
+            ui.checkbox(&mut self.filter_irq, egui::RichText::new("IRQ").small().color(DiagCategory::Interrupt.color()));
+            ui.checkbox(&mut self.filter_cpu, egui::RichText::new("CPU").small().color(DiagCategory::CpuState.color()));
+            ui.checkbox(&mut self.filter_err, egui::RichText::new("ERR").small().color(DiagCategory::Error.color()));
+        });
+
+        ui.separator();
+
+        // Log entries
+        let entries = log.entries();
+        let row_height = 16.0;
+        let filtered: Vec<&DiagEntry> = entries.iter().filter(|e| self.is_visible(&e.category)).collect();
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .stick_to_bottom(self.auto_scroll)
+            .show_rows(ui, row_height, filtered.len(), |ui, range| {
+                ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
+                for entry in &filtered[range] {
+                    ui.horizontal(|ui| {
+                        let ts = format!("{:>8.3}", entry.timestamp_ms as f64 / 1000.0);
+                        ui.label(egui::RichText::new(ts).small().color(egui::Color32::from_rgb(120, 120, 120)));
+                        ui.label(egui::RichText::new(format!("{:<4}", entry.category.label())).small().color(entry.category.color()));
+                        ui.label(egui::RichText::new(&entry.message).small());
+                        if entry.repeat_count > 1 {
+                            ui.label(egui::RichText::new(format!(" x{}", entry.repeat_count)).small().color(egui::Color32::from_rgb(255, 200, 100)));
+                        }
+                    });
+                }
+            });
+    }
+
+    fn show_bios_log_tab(&self, ui: &mut egui::Ui, log: &DiagLog) {
+        let text = log.debug_text();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
+                ui.label(egui::RichText::new(&text).color(egui::Color32::from_rgb(200, 220, 255)));
+            });
     }
 }

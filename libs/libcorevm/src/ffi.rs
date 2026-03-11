@@ -258,6 +258,33 @@ pub extern "C" fn corevm_inject_interrupt(handle: u64, vcpu_id: u32, vector: u8)
     }
 }
 
+/// Advance the PIT timer by `ticks` clock cycles.
+/// If channel 0 fires, raises IRQ0 on the PIC and injects the resulting
+/// interrupt vector into vCPU 0. Returns the number of IRQ0 fires.
+#[no_mangle]
+pub extern "C" fn corevm_pit_advance(handle: u64, ticks: u32) -> u32 {
+    match get_vm(handle) {
+        Some(vm) => {
+            let fires = if let Some(pit) = vm.pit_mut() {
+                pit.advance(ticks)
+            } else {
+                return 0;
+            };
+            if fires > 0 && !vm.pic_ptr.is_null() {
+                let pic = unsafe { &mut *vm.pic_ptr };
+                pic.raise_irq(0);
+                if let Some(vector) = pic.get_interrupt_vector() {
+                    let irq = pic.irq_for_vector(vector).unwrap_or(0);
+                    pic.acknowledge(irq);
+                    let _ = vm.inject_interrupt(0, vector);
+                }
+            }
+            fires
+        }
+        None => 0,
+    }
+}
+
 /// Inject an exception. Pass `error_code` < 0 for no error code.
 #[no_mangle]
 pub extern "C" fn corevm_inject_exception(handle: u64, vcpu_id: u32, vector: u8, error_code: i64) -> i32 {
@@ -536,6 +563,21 @@ pub extern "C" fn corevm_serial_take_output(handle: u64, buf: *mut u8, max_len: 
         }
         None => -1,
     }
+}
+
+/// Drain buffered debug port (0x402) output. Returns number of bytes copied,
+/// or -1 on error.
+#[no_mangle]
+pub extern "C" fn corevm_debug_port_take_output(handle: u64, buf: *mut u8, max_len: u32) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+    if buf.is_null() || vm.debug_port_ptr.is_null() { return -1; }
+    let dbg = unsafe { &mut *vm.debug_port_ptr };
+    let output = dbg.take_output();
+    let copy_len = output.len().min(max_len as usize);
+    if copy_len > 0 {
+        unsafe { core::ptr::copy_nonoverlapping(output.as_ptr(), buf, copy_len); }
+    }
+    copy_len as i32
 }
 
 /// Send a PS/2 key press scancode.

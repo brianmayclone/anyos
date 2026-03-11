@@ -20,6 +20,7 @@ use libcorevm::ffi::{
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
     corevm_last_error, corevm_last_error_len,
+    corevm_pit_advance, corevm_debug_port_take_output,
 };
 use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
 
@@ -327,8 +328,10 @@ fn vm_run_loop(
     diag_enabled: bool,
 ) {
     let mut last_fb_update = Instant::now();
+    let mut last_pit_tick = Instant::now();
     let fb_interval = Duration::from_millis(16); // ~60fps
     let mut consecutive_errors: u32 = 0;
+    const PIT_FREQ: u64 = 1_193_182; // 8254 PIT clock rate in Hz
 
     loop {
         if control.stop.load(Ordering::Relaxed) {
@@ -432,10 +435,30 @@ fn vm_run_loop(
             }
         }
 
+        // Advance PIT based on wall-clock elapsed time; IRQ0 injection handled internally
+        // Cap at ~1ms worth of ticks to avoid blocking on large time deltas
+        let pit_elapsed = last_pit_tick.elapsed();
+        if pit_elapsed.as_micros() > 0 {
+            let ticks = ((pit_elapsed.as_micros() as u64 * PIT_FREQ / 1_000_000) as u32).min(PIT_FREQ as u32 / 100);
+            if ticks > 0 {
+                last_pit_tick = Instant::now();
+                corevm_pit_advance(handle, ticks);
+            }
+        }
+
         // Update framebuffer at ~60fps
         if last_fb_update.elapsed() >= fb_interval {
             update_framebuffer(handle, &fb);
             last_fb_update = Instant::now();
+
+            // Drain debug port output
+            let mut dbg_buf = [0u8; 1024];
+            let n = corevm_debug_port_take_output(handle, dbg_buf.as_mut_ptr(), dbg_buf.len() as u32);
+            if n > 0 {
+                if let Ok(s) = std::str::from_utf8(&dbg_buf[..n as usize]) {
+                    diag.append_debug_text(s);
+                }
+            }
         }
     }
 }
