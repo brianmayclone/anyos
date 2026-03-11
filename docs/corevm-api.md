@@ -1,11 +1,11 @@
 # anyOS CoreVM (libcorevm) API Reference
 
-**CoreVM** is a pure-software x86 virtual machine built entirely in Rust (`#![no_std]`) and NASM assembly, running in anyOS userspace. It requires **no hardware virtualization extensions** (no VT-x, no AMD-V) — every x86 instruction is decoded and interpreted (or JIT-compiled) in software.
+**CoreVM** is an x86 virtual machine monitor built entirely in Rust (`#![no_std]`) and NASM assembly, running in anyOS userspace. VM creation now requires host hardware virtualization support and selects either **Intel VT-x** or **AMD-V** through a backend-neutral abstraction layer before the monitor starts.
 
 CoreVM can boot real operating systems: load a BIOS ROM, attach a disk image, and watch the guest transition from 16-bit real mode through 32-bit protected mode to 64-bit long mode — exactly as a physical PC does.
 
 **Format:** ELF64 shared object (.so), loaded via `dl_open("/Libraries/libcorevm.so")`
-**Exports:** 58
+**Exports:** 59
 **Client crate:** `libcorevm_client` (uses `dynlink::dl_open` / `dl_sym`)
 **ISA:** Intel x86 / IA-32 / x86-64 (AMD64)
 **BIOS:** Built-in CoreVM BIOS (64 KB, NASM) or SeaBIOS (256 KB)
@@ -108,8 +108,8 @@ CoreVM uses a **client-server architecture** split across three processes, conne
 
 | Component | Path | Description |
 |-----------|------|-------------|
-| **libcorevm** | `libs/libcorevm/` | VM engine shared library — CPU emulator, memory, MMU, devices, JIT, BIOS |
-| **libcorevm_client** | `libs/libcorevm_client/` | Typed Rust client wrapper — resolves 58 C ABI exports via `dl_open`/`dl_sym` |
+| **libcorevm** | `libs/libcorevm/` | VM engine shared library — machine monitor, memory, MMU, devices, JIT, BIOS |
+| **libcorevm_client** | `libs/libcorevm_client/` | Typed Rust client wrapper — resolves 59 C ABI exports via `dl_open`/`dl_sym` |
 | **vmd** | `bin/vmd/` | VM daemon — owns the execution loop, bridges IPC to/from libcorevm |
 | **vmmanager** | `apps/vmmanager/` | GUI application — VM list, live VGA display, settings, disk creation |
 
@@ -142,8 +142,9 @@ fn main() {
     // Load the shared library
     vm::init();
 
-    // Create a VM with 16 MiB guest RAM
-    let vm = VmHandle::new(16).unwrap();
+    // Create a VM with 16 MiB guest RAM.
+    // This now requires Intel VT-x or AMD-V support on the host.
+    let vm = VmHandle::new(16).expect("host hardware virtualization is required");
 
     // Load a BIOS ROM at the reset vector address
     let bios_rom = anyos_std::fs::read("/Libraries/libcorevm/bios/bios.bin").unwrap();
@@ -797,7 +798,7 @@ let rdi = vm.gpr(GPR_RDI);  // 7
 
 ## C ABI Exports
 
-All 58 functions exported by `libcorevm.so` (listed in `libs/libcorevm/exports.def`):
+All 59 functions exported by `libcorevm.so` (listed in `libs/libcorevm/exports.def`):
 
 ### VM Lifecycle (5)
 

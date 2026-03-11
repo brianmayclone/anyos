@@ -28,7 +28,12 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     // Create VM
     let handle = libcorevm::corevm_create_ex(config.ram_mb, config.cpu_cores);
     if handle == 0 {
-        return Err("Failed to create VM".into());
+        let msg = if libcorevm::corevm_host_virtualization_backend() == 0 {
+            "Failed to create VM: Intel VT-x or AMD-V hardware virtualization is required"
+        } else {
+            "Failed to create VM"
+        };
+        return Err(msg.into());
     }
 
     // Setup devices

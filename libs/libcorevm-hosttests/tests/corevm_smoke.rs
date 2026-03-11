@@ -11,7 +11,12 @@ use libcorevm::registers::{
     MSR_IA32_SYSENTER_ESP, MSR_TSC, SegReg, CR0_PE,
 };
 use libcorevm::registers::CR0_PG;
-use libcorevm::{corevm_create_ex, corevm_destroy, corevm_get_vcpu_count};
+use libcorevm::{
+    corevm_create_ex,
+    corevm_destroy,
+    corevm_get_vcpu_count,
+    corevm_host_virtualization_backend,
+};
 
 fn run_one(cpu: &mut Cpu, mmu: &mut Mmu, mem: &mut GuestMemory, bytes: &[u8]) {
     mem.load_at(0, bytes);
@@ -108,7 +113,12 @@ fn cpuid_leaf1_reports_configured_logical_cpu_count() {
 
 #[test]
 fn corevm_create_ex_persists_vcpu_count() {
+    let backend = corevm_host_virtualization_backend();
     let h = corevm_create_ex(64, 4);
+    if backend == 0 {
+        assert_eq!(h, 0, "VM creation must fail without Intel VT-x or AMD-V");
+        return;
+    }
     assert_ne!(h, 0);
     let cores = corevm_get_vcpu_count(h);
     assert_eq!(cores, 4);

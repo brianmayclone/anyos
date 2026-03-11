@@ -1,12 +1,14 @@
-//! libcorevm — Pure userspace x86 virtual machine library for anyOS.
+//! libcorevm — userspace x86 virtual machine library for anyOS.
 //!
-//! Provides a complete software x86 CPU emulator supporting:
+//! VM creation now requires host hardware virtualization support and selects
+//! either an Intel VT-x or AMD-V backend through a shared abstraction layer.
+//! The machine monitor, memory subsystem, device model, and BIOS support remain
+//! backend-agnostic.
+//!
+//! CoreVM still exposes the same x86 guest execution modes:
 //! - **Real Mode** (16-bit) — BIOS, bootloaders
 //! - **Protected Mode** (32-bit) — full segmentation, paging, privilege levels
 //! - **Long Mode** (64-bit) — 4-level paging, SYSCALL/SYSRET, R8-R15
-//!
-//! No hardware virtualization extensions (VT-x/AMD-V) are required — all
-//! instruction execution is fully emulated in software.
 //!
 //! # Architecture
 //!
@@ -44,6 +46,7 @@ pub mod fpu_state;
 pub mod sse_state;
 pub mod devices;
 pub mod jit;
+pub mod virtualization;
 #[cfg(feature = "host_test")]
 pub mod debugger;
 
@@ -87,6 +90,11 @@ pub use interrupts::InterruptController;
 pub use decoder::CpuMode;
 pub use registers::{RegisterFile, SegReg};
 pub use flags::OperandSize;
+pub use virtualization::{
+    HardwareVirtualization,
+    HardwareVirtualizationBackend,
+    detect_hardware_virtualization,
+};
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -104,6 +112,8 @@ static IRQ_TRACE_BUDGET: AtomicU32 = AtomicU32::new(96);
 /// For advanced use cases, the individual components (`Cpu`, `GuestMemory`,
 /// `Mmu`, `IoDispatch`, `InterruptController`) can be used directly.
 pub struct VmEngine {
+    /// Detected host hardware virtualization backend.
+    pub virtualization: HardwareVirtualization,
     /// Virtual CPU state and execution engine.
     pub cpu: Cpu,
     /// Guest physical memory (RAM + MMIO regions).
@@ -128,6 +138,20 @@ impl VmEngine {
 
     /// Create a new VM with a configured logical CPU count.
     pub fn new_with_vcpus(ram_size: usize, vcpu_count: u8) -> Self {
+        let virtualization = detect_hardware_virtualization();
+        assert!(
+            virtualization.is_available(),
+            "CoreVM requires Intel VT-x or AMD-V hardware virtualization support"
+        );
+        Self::new_with_vcpus_and_virtualization(ram_size, vcpu_count, virtualization)
+    }
+
+    /// Create a new VM with an explicitly selected hardware virtualization backend.
+    pub fn new_with_vcpus_and_virtualization(
+        ram_size: usize,
+        vcpu_count: u8,
+        virtualization: HardwareVirtualization,
+    ) -> Self {
         let count = vcpu_count.max(1);
         let mut cpu = Cpu::new();
         cpu.configure_topology(0, count);
@@ -136,6 +160,7 @@ impl VmEngine {
         let (ram_p, ram_s) = memory.ram_ptr();
         mmu.set_ram_ptr(ram_p as *mut u8, ram_s);
         VmEngine {
+            virtualization,
             cpu,
             memory,
             mmu,
@@ -234,6 +259,11 @@ impl VmEngine {
     /// Get the current CPU mode.
     pub fn mode(&self) -> Mode {
         self.cpu.mode
+    }
+
+    /// Get the hardware virtualization backend bound to this VM.
+    pub fn hardware_virtualization(&self) -> HardwareVirtualization {
+        self.virtualization
     }
 }
 
@@ -518,14 +548,26 @@ pub extern "C" fn corevm_create(ram_size_mb: u32) -> u64 {
 #[no_mangle]
 pub extern "C" fn corevm_create_ex(ram_size_mb: u32, vcpu_count: u32) -> u64 {
     let count = (vcpu_count.clamp(1, 255)) as u8;
+    let virtualization = detect_hardware_virtualization();
+    if !virtualization.is_available() {
+        vm_log!(
+            "refusing VM creation without host hardware virtualization support"
+        );
+        return 0;
+    }
     vm_log!(
-        "creating VM with {} MiB RAM (vcpus={})",
+        "creating VM with {} MiB RAM (vcpus={}, backend={})",
         ram_size_mb,
-        count
+        count,
+        virtualization.backend_name(),
     );
     let ram_bytes = (ram_size_mb as usize) * 1024 * 1024;
     let instance = Box::new(VmInstance {
-        engine: VmEngine::new_with_vcpus(ram_bytes, count),
+        engine: VmEngine::new_with_vcpus_and_virtualization(
+            ram_bytes,
+            count,
+            virtualization,
+        ),
         last_error: None,
         last_error_rip: 0,
         pic_ptr: ptr::null_mut(),
@@ -1156,6 +1198,14 @@ pub extern "C" fn corevm_get_instruction_count(handle: u64) -> u64 {
 pub extern "C" fn corevm_get_last_error_rip(handle: u64) -> u64 {
     let vm = unsafe { vm_from_handle(handle) };
     vm.last_error_rip
+}
+
+/// Detect the host hardware virtualization backend.
+///
+/// Returns 0 when unavailable, 1 for Intel VT-x, and 2 for AMD-V.
+#[no_mangle]
+pub extern "C" fn corevm_host_virtualization_backend() -> u32 {
+    detect_hardware_virtualization().backend() as u32
 }
 
 /// Dump the exception ring buffer to serial output for BSOD diagnosis.

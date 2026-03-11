@@ -19,7 +19,7 @@
 //! use libcorevm_client::{self as vm, VmHandle, ExitReason};
 //!
 //! vm::init();
-//! let vm = VmHandle::new(16).unwrap(); // 16 MiB RAM
+//! let vm = VmHandle::new(16).unwrap(); // 16 MiB RAM, requires VT-x/AMD-V
 //! vm.load_binary(0xF_0000, &bios_rom);
 //! vm.set_rip(0xFFF0);
 //! vm.setup_standard_devices();
@@ -118,6 +118,28 @@ impl CpuMode {
     }
 }
 
+/// Host hardware virtualization backend required by CoreVM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum HardwareVirtualizationBackend {
+    /// No supported backend detected.
+    Unavailable = 0,
+    /// Intel VT-x / VMX.
+    IntelVtx = 1,
+    /// AMD-V / SVM.
+    AmdV = 2,
+}
+
+impl HardwareVirtualizationBackend {
+    fn from_u32(val: u32) -> Self {
+        match val {
+            1 => HardwareVirtualizationBackend::IntelVtx,
+            2 => HardwareVirtualizationBackend::AmdV,
+            _ => HardwareVirtualizationBackend::Unavailable,
+        }
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════
 //  Internal: cached function pointers from libcorevm.so
 // ══════════════════════════════════════════════════════════════════════
@@ -137,6 +159,8 @@ struct CoreVmLib {
     create: extern "C" fn(u32) -> u64,
     /// Extended create call with explicit logical CPU count.
     create_ex: Option<extern "C" fn(u32, u32) -> u64>,
+    /// Query the host hardware virtualization backend.
+    host_virtualization_backend: Option<extern "C" fn() -> u32>,
     /// Destroy a VM and free all associated resources.
     destroy: extern "C" fn(u64),
     /// Reset the VM to power-on state (preserves RAM content and I/O
@@ -370,6 +394,10 @@ pub fn init() -> bool {
             // VM lifecycle
             create: resolve(&handle, "corevm_create"),
             create_ex: resolve_optional(&handle, "corevm_create_ex"),
+            host_virtualization_backend: resolve_optional(
+                &handle,
+                "corevm_host_virtualization_backend",
+            ),
             destroy: resolve(&handle, "corevm_destroy"),
             reset: resolve(&handle, "corevm_reset"),
             run: resolve(&handle, "corevm_run"),
@@ -460,6 +488,15 @@ pub fn init() -> bool {
     true
 }
 
+/// Query which hardware virtualization backend CoreVM can use on this host.
+pub fn host_virtualization_backend() -> HardwareVirtualizationBackend {
+    let raw = match lib().host_virtualization_backend {
+        Some(f) => f(),
+        None => 0,
+    };
+    HardwareVirtualizationBackend::from_u32(raw)
+}
+
 // ══════════════════════════════════════════════════════════════════════
 //  VmHandle: high-level RAII wrapper
 // ══════════════════════════════════════════════════════════════════════
@@ -494,8 +531,8 @@ impl VmHandle {
     ///
     /// # Returns
     ///
-    /// `Some(VmHandle)` on success, `None` if allocation failed (e.g.,
-    /// out of memory for the requested RAM size).
+    /// `Some(VmHandle)` on success, `None` if allocation failed or if the
+    /// host lacks Intel VT-x / AMD-V hardware virtualization support.
     pub fn new(ram_size_mb: u32) -> Option<Self> {
         Self::new_with_cores(ram_size_mb, 1)
     }

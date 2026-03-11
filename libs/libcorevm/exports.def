@@ -2,6 +2,7 @@ LIBRARY libcorevm
 EXPORTS
     corevm_create
     corevm_create_ex
+    corevm_host_virtualization_backend
     corevm_destroy
     corevm_reset
     corevm_get_rip

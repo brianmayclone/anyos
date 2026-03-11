@@ -32,7 +32,7 @@ use anyos_std::ipc;
 use anyos_std::process::Thread;
 use anyos_std::sys;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use libcorevm_client::{ExitReason, VmHandle};
+use libcorevm_client::{ExitReason, HardwareVirtualizationBackend, VmHandle};
 
 anyos_std::entry!(main);
 
@@ -205,6 +205,15 @@ fn recv_command() -> Option<String> {
         return None;
     }
     Some(String::from(text))
+}
+
+fn create_vm_failure_message() -> &'static str {
+    match libcorevm_client::host_virtualization_backend() {
+        HardwareVirtualizationBackend::Unavailable => {
+            "error 0 failed to create VM (Intel VT-x or AMD-V required)"
+        }
+        _ => "error 0 failed to create VM",
+    }
 }
 
 // ── SHM framebuffer helpers ────────────────────────────────────────────
@@ -471,7 +480,7 @@ fn cmd_create(uuid: &str) {
     let handle = match VmHandle::new_with_cores(config.ram_mb, config.cpu_cores) {
         Some(h) => h,
         None => {
-            send_status("error 0 failed to create VM (out of memory?)");
+            send_status(create_vm_failure_message());
             return;
         }
     };

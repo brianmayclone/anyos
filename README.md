@@ -149,7 +149,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 
 ### CoreVM — Built-in Virtual Machine
 
-anyOS includes **CoreVM**, a pure-software x86 virtual machine built entirely in Rust and NASM assembly, running in userspace. No hardware virtualization (VT-x/AMD-V) required — every instruction is decoded and executed in software.
+anyOS includes **CoreVM**, an x86 virtual machine monitor built in Rust and NASM assembly, running in userspace. VM startup now requires host hardware virtualization support and selects either **Intel VT-x** or **AMD-V** through a backend-neutral abstraction before the monitor is started.
 
 - **Full x86 ISA** — 16-bit real mode, 32-bit protected mode, 64-bit long mode
 - **Complete PC hardware emulation** — dual 8259A PIC, 8254 PIT, PS/2 keyboard/mouse, CMOS RTC, 16550 UART, VGA/SVGA framebuffer, ATA/IDE disk controller, Intel E1000 NIC, PCI bus
@@ -157,7 +157,7 @@ anyOS includes **CoreVM**, a pure-software x86 virtual machine built entirely in
 - **JIT compiler** — two-phase acceleration: decode cache for hot basic blocks + native x86-64 code compilation
 - **Paging support** — 2-level (32-bit), PAE (3-level), and 4-level (long mode) page table walks with NX, WP, U/S enforcement
 - **VM Manager GUI** — create, configure, and run VMs with live VGA display, settings dialog, and disk image creation
-- **58 C ABI exports** via `libcorevm.so` + typed Rust client wrapper (`libcorevm_client`)
+- **59 C ABI exports** via `libcorevm.so` + typed Rust client wrapper (`libcorevm_client`)
 
 See **[CoreVM API Reference](docs/corevm-api.md)** for the complete documentation.
 
@@ -500,7 +500,7 @@ All new libraries use the `.so` format. The DLIB format is maintained for backwa
 | libanyui | .so | 178 | anyui UI framework (44 controls, Windows Forms-style) |
 | libfont | .so | 7 | TrueType font rendering with LCD subpixel AA (system fonts embedded in .rodata) |
 | libgl | .so | 105 | OpenGL ES 2.0 3D engine with GLSL compiler, software rasterizer, and physics engine |
-| libcorevm | .so | 58 | CoreVM x86 virtual machine engine (CPU emulator, devices, JIT, BIOS) |
+| libcorevm | .so | 59 | CoreVM x86 virtual machine engine (machine monitor, devices, JIT, BIOS) |
 | libm | .so | 56 | Hardware-accelerated math (SSE2 + x87 FPU) |
 | libhttp | .so | — | HTTP client/server library |
 | libdb | .so | — | Key-value database |
@@ -527,7 +527,7 @@ DLIB programs link against lightweight client stub crates (e.g. `libimage_client
 - **[libcompositor API](docs/libcompositor-api.md)** — Window management and compositor IPC
 - **[libgl API](docs/libgl-api.md)** — OpenGL ES 2.0 3D engine with GLSL compiler, software rasterizer, and physics engine (105 exports)
 - **[libm API](docs/libm-api.md)** — Hardware-accelerated math (SSE2 + x87 FPU, 56 exports)
-- **[CoreVM API](docs/corevm-api.md)** — Pure-software x86 virtual machine (CPU emulator, JIT, 11 devices, BIOS, 58 exports)
+- **[CoreVM API](docs/corevm-api.md)** — x86 virtual machine monitor with Intel VT-x / AMD-V backend selection, JIT, 11 devices, BIOS, 59 exports
 - **[libdb API](docs/libdb-api.md)** — Key-value database
 - **[libzip API](docs/libzip-api.md)** — ZIP/TAR/GZIP archive handling
 - **[libsvg API](docs/libsvg-api.md)** — SVG rasterizer

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use libcorevm::{
     corevm_create, corevm_destroy, corevm_get_instruction_count, corevm_get_last_error,
+    corevm_host_virtualization_backend,
     corevm_load_rom, corevm_read_phys_u8, corevm_run, corevm_setup_ide,
     corevm_setup_pci_bus, corevm_setup_standard_devices,
 };
@@ -37,6 +38,14 @@ fn last_error(handle: u64) -> String {
 
 #[test]
 fn bios_rom_is_mapped_at_reset_vector_window() {
+    if corevm_host_virtualization_backend() == 0 {
+        assert_eq!(
+            corevm_create(64),
+            0,
+            "VM creation must be rejected without hardware virtualization"
+        );
+        return;
+    }
     let vm = VmHandle(corevm_create(64));
     assert_ne!(vm.0, 0, "corevm_create failed");
 
@@ -51,6 +60,14 @@ fn bios_rom_is_mapped_at_reset_vector_window() {
 
 #[test]
 fn bios_post_executes_without_unhandled_exception() {
+    if corevm_host_virtualization_backend() == 0 {
+        assert_eq!(
+            corevm_create(128),
+            0,
+            "VM creation must be rejected without hardware virtualization"
+        );
+        return;
+    }
     let vm = VmHandle(corevm_create(128));
     assert_ne!(vm.0, 0, "corevm_create failed");
 
