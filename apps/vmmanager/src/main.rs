@@ -4,7 +4,7 @@
 //! virtual machines powered by libcorevm. Features include:
 //! - VM list sidebar with status indicators
 //! - Live VGA framebuffer display on a Canvas control
-//! - Real-time CPU/memory/instruction count monitoring
+//! - Real-time CPU/memory monitoring
 //! - Settings dialog for editing VM configurations
 //! - Keyboard and mouse forwarding to the guest OS
 //!
@@ -143,8 +143,6 @@ struct VmConfig {
     boot_order: BootOrder,
     /// BIOS firmware type.
     bios_type: BiosType,
-    /// Whether JIT acceleration is enabled.
-    jit_enabled: bool,
     /// GPU type.
     gpu_type: GpuType,
     /// Whether the network adapter is enabled.
@@ -172,7 +170,6 @@ impl VmConfig {
             iso_image: String::new(),
             boot_order: BootOrder::DiskFirst,
             bios_type: BiosType::CoreVm,
-            jit_enabled: false,
             gpu_type: GpuType::SvgaFb,
             net_enabled: false,
             net_mode: NetMode::Nat,
@@ -220,11 +217,9 @@ struct VmEntry {
     shm_id: u32,
     /// Mapped SHM base pointer (null if not mapped).
     shm_ptr: *const u8,
-    /// Cached instruction count (read from SHM header).
-    instruction_count: u64,
 }
 
-/// Compact single-line info bar showing VM state, RAM, mode, instructions.
+/// Compact single-line info bar showing VM state, RAM, and mode.
 struct VmInfoLabels {
     label: anyui::Label,
 }
@@ -239,7 +234,6 @@ struct SettingsDialog {
     cores_seg: anyui::SegmentedControl,
     ram_alloc_seg: anyui::SegmentedControl,
     bios_seg: anyui::SegmentedControl,
-    jit_toggle: anyui::Toggle,
     // ── Devices tab ──
     gpu_seg: anyui::SegmentedControl,
     net_toggle: anyui::Toggle,
@@ -487,9 +481,6 @@ fn save_vm_config(config: &VmConfig) {
         BiosType::SeaBios => b"seabios",
     });
     data.push(b'\n');
-    data.extend_from_slice(b"jit=");
-    data.extend_from_slice(if config.jit_enabled { b"1" } else { b"0" });
-    data.push(b'\n');
     data.extend_from_slice(b"ram_alloc=");
     data.extend_from_slice(match config.ram_alloc {
         RamAlloc::Preallocate => b"prealloc" as &[u8],
@@ -609,8 +600,6 @@ fn load_vm_config(uuid: &str) -> Option<VmConfig> {
                 b"seabios" => BiosType::SeaBios,
                 _ => BiosType::CoreVm,
             };
-        } else if let Some(val) = strip_prefix(line, b"jit=") {
-            config.jit_enabled = val == b"1";
         } else if let Some(val) = strip_prefix(line, b"ram_alloc=") {
             config.ram_alloc = match val {
                 b"prealloc" => RamAlloc::Preallocate,
@@ -748,7 +737,6 @@ fn load_all_vms() -> (Vec<VmEntry>, SidebarLayout) {
                 status_pipe: 0,
                 shm_id: 0,
                 shm_ptr: core::ptr::null(),
-                instruction_count: 0,
             });
             loaded.push(String::from(uuid));
         }
@@ -794,7 +782,6 @@ fn load_all_vms() -> (Vec<VmEntry>, SidebarLayout) {
                             status_pipe: 0,
                             shm_id: 0,
                             shm_ptr: core::ptr::null(),
-                            instruction_count: 0,
                         });
                     }
                 }
@@ -1062,7 +1049,7 @@ fn update_info_labels() {
         VmState::Stopped => 0xFF666680,
     };
 
-    // Build compact info string: " State · RAM: 64 MB · Mode: x86 · 16,077 insn"
+    // Build compact info string: " State · RAM: 64 MB · Mode: x86"
     let mut buf = [0u8; 160];
     let mut pos = 0;
     // State
@@ -1073,11 +1060,8 @@ fn update_info_labels() {
     pos += write_u32(&mut buf[pos..], entry.config.ram_mb);
     pos += copy_str(&mut buf[pos..], " MB");
     // Mode
-    if entry.state == VmState::Running || entry.instruction_count > 0 {
+    if entry.state == VmState::Running {
         pos += copy_str(&mut buf[pos..], "  |x86 (vmd)");
-        pos += copy_str(&mut buf[pos..], "  |");
-        pos += write_u64(&mut buf[pos..], entry.instruction_count);
-        pos += copy_str(&mut buf[pos..], " insn");
     }
     if let Ok(s) = core::str::from_utf8(&buf[..pos]) {
         a.info.label.set_text(s);
@@ -1169,7 +1153,6 @@ fn start_selected_vm() {
     // Start execution (disk and ISO are loaded by vmd from config).
     ipc::pipe_write(cmd_pipe, b"start");
     entry.state = VmState::Running;
-    entry.instruction_count = 0;
 
     rebuild_sidebar();
     update_info_labels();
@@ -1877,7 +1860,7 @@ fn seg_state_to_cpu_cores(state: u32) -> u8 {
 /// Open the settings dialog for the currently selected VM.
 ///
 /// Creates a tabbed dialog with three tabs:
-/// - **General**: Name, RAM, RAM allocation, BIOS, JIT acceleration
+/// - **General**: Name, RAM, RAM allocation, BIOS, CPU cores
 /// - **Devices**: GPU, Network adapter (mode, host NIC, MAC)
 /// - **Boot**: Boot order, Disk image, ISO image
 fn open_settings_dialog() {
@@ -1968,20 +1951,6 @@ fn open_settings_dialog() {
     cores_seg.set_size(240, 28);
     cores_seg.set_state(cpu_cores_to_seg_state(config.cpu_cores));
     general_panel.add(&cores_seg);
-
-    // JIT acceleration
-    settings_label(&general_panel, "Acceleration:", 16, 208);
-    let jit_toggle = anyui::Toggle::new(config.jit_enabled);
-    jit_toggle.set_position(120, 208);
-    jit_toggle.set_size(48, 24);
-    general_panel.add(&jit_toggle);
-
-    let jit_hint = anyui::Label::new("JIT (compile hot basic blocks to native code)");
-    jit_hint.set_position(176, 208);
-    jit_hint.set_size(300, 24);
-    jit_hint.set_text_color(0xFF888888);
-    jit_hint.set_font_size(11);
-    general_panel.add(&jit_hint);
 
     // ════════════════════════════════════════════════════════════════
     //  Tab 1: Devices
@@ -2180,7 +2149,6 @@ fn open_settings_dialog() {
         cores_seg,
         ram_alloc_seg,
         bios_seg,
-        jit_toggle,
         // Devices
         gpu_seg,
         net_toggle,
@@ -2224,8 +2192,6 @@ fn save_settings() {
         };
 
         let cpu_cores = seg_state_to_cpu_cores(dlg.cores_seg.get_state());
-        let jit_enabled = dlg.jit_toggle.get_state() != 0;
-
         // ── Devices tab ──
         let gpu_type = match dlg.gpu_seg.get_state() {
             _ => GpuType::SvgaFb,
@@ -2275,7 +2241,6 @@ fn save_settings() {
         config.cpu_cores = cpu_cores.clamp(1, 8);
         config.ram_alloc = ram_alloc;
         config.bios_type = bios_type;
-        config.jit_enabled = jit_enabled;
         config.gpu_type = gpu_type;
         config.net_enabled = net_enabled;
         config.net_mode = net_mode;
@@ -2345,7 +2310,6 @@ fn create_new_vm() {
         status_pipe: 0,
         shm_id: 0,
         shm_ptr: core::ptr::null(),
-        instruction_count: 0,
     });
 
     a.selected_vm = a.vms.len() - 1;
@@ -2414,13 +2378,10 @@ fn vm_tick() {
         }
     }
 
-    // Read SHM header for instruction count and dirty flag.
+    // Read SHM header for dirty flag and framebuffer.
     if !entry.shm_ptr.is_null() {
         unsafe {
             let hdr = entry.shm_ptr;
-            let icount_lo = (hdr.add(20) as *const u32).read_volatile();
-            let icount_hi = (hdr.add(24) as *const u32).read_volatile();
-            entry.instruction_count = (icount_hi as u64) << 32 | icount_lo as u64;
 
             // Check dirty flag.
             let dirty = (hdr.add(12) as *const u32).read_volatile();
