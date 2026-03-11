@@ -18,3 +18,4 @@ pub mod smp;
 pub mod power;
 pub mod syscall_msr;
 pub mod tss;
+pub mod virt;

@@ -132,6 +132,20 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_DEBUG_GET_MEM_MAP, "debug_get_mem_map"),
     (SYS_DEBUG_WAIT_EVENT, "debug_wait_event"),
     (SYS_THREAD_INFO_EX, "thread_info_ex"),
+    // Hardware virtualization
+    (SYS_VM_CREATE, "vm_create"),
+    (SYS_VM_DESTROY, "vm_destroy"),
+    (SYS_VM_SET_MEMORY, "vm_set_memory"),
+    (SYS_VCPU_CREATE, "vcpu_create"),
+    (SYS_VCPU_RUN, "vcpu_run"),
+    (SYS_VCPU_GET_REGS, "vcpu_get_regs"),
+    (SYS_VCPU_SET_REGS, "vcpu_set_regs"),
+    (SYS_VCPU_GET_SREGS, "vcpu_get_sregs"),
+    (SYS_VCPU_SET_SREGS, "vcpu_set_sregs"),
+    (SYS_VCPU_INJECT_IRQ, "vcpu_inject_irq"),
+    (SYS_VCPU_INJECT_EXCEPTION, "vcpu_inject_exception"),
+    (SYS_VCPU_INJECT_NMI, "vcpu_inject_nmi"),
+    (SYS_VM_SET_CPUID, "vm_set_cpuid"),
 ];
 
 /// Look up the human-readable name for a syscall number.

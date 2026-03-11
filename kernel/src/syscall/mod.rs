@@ -277,6 +277,21 @@ pub const SYS_SHUTDOWN: u32 = 282;
 // Kernel debug settings
 pub const SYS_SET_SERIAL_VERBOSE: u32 = 283;
 
+// Hardware virtualization (VT-x / AMD-V)
+pub const SYS_VM_CREATE: u32 = 600;
+pub const SYS_VM_DESTROY: u32 = 601;
+pub const SYS_VM_SET_MEMORY: u32 = 602;
+pub const SYS_VCPU_CREATE: u32 = 603;
+pub const SYS_VCPU_RUN: u32 = 604;
+pub const SYS_VCPU_GET_REGS: u32 = 605;
+pub const SYS_VCPU_SET_REGS: u32 = 606;
+pub const SYS_VCPU_GET_SREGS: u32 = 607;
+pub const SYS_VCPU_SET_SREGS: u32 = 608;
+pub const SYS_VCPU_INJECT_IRQ: u32 = 609;
+pub const SYS_VCPU_INJECT_EXCEPTION: u32 = 610;
+pub const SYS_VCPU_INJECT_NMI: u32 = 611;
+pub const SYS_VM_SET_CPUID: u32 = 612;
+
 // Debug / trace (anyTrace)
 pub const SYS_DEBUG_ATTACH: u32         = 300;
 pub const SYS_DEBUG_DETACH: u32         = 301;
@@ -609,6 +624,34 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         SYS_DEBUG_GET_MEM_MAP => handlers::sys_debug_get_mem_map(arg1, arg2, arg3),
         SYS_DEBUG_WAIT_EVENT => handlers::sys_debug_wait_event(arg1, arg2, arg3),
         SYS_THREAD_INFO_EX => handlers::sys_thread_info_ex(arg1, arg2, arg3),
+
+        // Hardware virtualization
+        #[cfg(target_arch = "x86_64")]
+        SYS_VM_CREATE => crate::arch::x86::virt::syscalls::sys_vm_create(),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VM_DESTROY => crate::arch::x86::virt::syscalls::sys_vm_destroy(arg1),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VM_SET_MEMORY => crate::arch::x86::virt::syscalls::sys_vm_set_memory(arg1, arg2, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_CREATE => crate::arch::x86::virt::syscalls::sys_vcpu_create(arg1, arg2),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_RUN => crate::arch::x86::virt::syscalls::sys_vcpu_run(arg1, arg2, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_GET_REGS => crate::arch::x86::virt::syscalls::sys_vcpu_get_regs(arg1, arg2, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_SET_REGS => crate::arch::x86::virt::syscalls::sys_vcpu_set_regs(arg1, arg2, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_GET_SREGS => crate::arch::x86::virt::syscalls::sys_vcpu_get_sregs(arg1, arg2, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_SET_SREGS => crate::arch::x86::virt::syscalls::sys_vcpu_set_sregs(arg1, arg2, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_INJECT_IRQ => crate::arch::x86::virt::syscalls::sys_vcpu_inject_irq(arg1, arg2, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_INJECT_EXCEPTION => crate::arch::x86::virt::syscalls::sys_vcpu_inject_exception(arg1, arg2, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_INJECT_NMI => crate::arch::x86::virt::syscalls::sys_vcpu_inject_nmi(arg1, arg2),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VM_SET_CPUID => crate::arch::x86::virt::syscalls::sys_vm_set_cpuid(arg1, arg2, arg3),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);
