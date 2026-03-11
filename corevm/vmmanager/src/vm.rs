@@ -501,9 +501,10 @@ fn vm_run_loop(
                     let output = (dbg >> 9) & 1;
                     let current = (dbg >> 16) & 0xFFFF;
                     let count = (dbg >> 32) & 0xFFFF;
+                    let pic_dbg = get_last_error().unwrap_or_default();
                     diag.log(DiagCategory::Interrupt, format!(
-                        "PIT fired {} ticks={} mode={} en={} out={} cur={} cnt={}",
-                        fires, ticks, mode, enabled, output, current, count
+                        "PIT fired {} ticks={} mode={} out={} cnt={} | {}",
+                        fires, ticks, mode, output, count, pic_dbg
                     ));
                 }
             }

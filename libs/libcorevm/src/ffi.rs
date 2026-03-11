@@ -306,12 +306,19 @@ pub extern "C" fn corevm_pit_advance(handle: u64, ticks: u32) -> u32 {
             if fires > 0 && !vm.pic_ptr.is_null() {
                 let pic = unsafe { &mut *vm.pic_ptr };
                 pic.raise_irq(0);
+                // Debug: log PIC state on fire
+                static mut PIT_FIRE_DBG: u32 = 0;
+                unsafe { PIT_FIRE_DBG += 1; }
+                let dbg_cnt = unsafe { PIT_FIRE_DBG };
+                if dbg_cnt <= 10 {
+                    set_last_error(format!(
+                        "PIT fire#{}: IRR=0x{:02X} IMR=0x{:02X} ISR=0x{:02X} icw_step={} vec_off=0x{:02X}",
+                        dbg_cnt, pic.master.irr, pic.master.imr, pic.master.isr,
+                        pic.master.icw_step, pic.master.vector_offset
+                    ));
+                }
                 if let Some(vector) = pic.get_interrupt_vector() {
                     let irq = pic.irq_for_vector(vector).unwrap_or(0);
-                    // Only acknowledge if injection succeeds. If the guest has
-                    // IF=0, WHP rejects the injection and we must leave the IRQ
-                    // in IRR so it can be retried later. Acknowledging on failure
-                    // permanently locks the PIC ISR since the guest never sends EOI.
                     if vm.inject_interrupt(0, vector).is_ok() {
                         let pic = unsafe { &mut *vm.pic_ptr };
                         pic.acknowledge(irq);
