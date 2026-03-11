@@ -2,7 +2,8 @@
 
 use super::{SCHEDULER, PER_CPU_CURRENT_TID, PER_CPU_IS_USER,
             PER_CPU_HAS_THREAD, PER_CPU_THREAD_NAME, PER_CPU_IN_SCHEDULER,
-            PER_CPU_STACK_BOTTOM, PER_CPU_STACK_TOP, PER_CPU_IDLE_STACK_TOP};
+            PER_CPU_STACK_BOTTOM, PER_CPU_STACK_TOP, PER_CPU_IDLE_STACK_TOP,
+            PER_CPU_LAST_SYSCALL};
 use crate::arch::hal::MAX_CPUS;
 use crate::task::thread::ThreadState;
 use core::sync::atomic::Ordering;
@@ -117,4 +118,20 @@ pub fn check_rsp_in_bounds(cpu_id: usize, rsp: u64) -> bool {
 pub fn get_stack_bounds(cpu_id: usize) -> (u64, u64) {
     (PER_CPU_STACK_BOTTOM[cpu_id].load(Ordering::Relaxed),
      PER_CPU_STACK_TOP[cpu_id].load(Ordering::Relaxed))
+}
+
+/// Record the last syscall number on this CPU (lock-free, called from dispatch).
+pub fn set_last_syscall(cpu_id: usize, num: u32) {
+    if cpu_id < MAX_CPUS {
+        PER_CPU_LAST_SYSCALL[cpu_id].store(num, Ordering::Relaxed);
+    }
+}
+
+/// Get the last syscall number executed on this CPU (lock-free crash diagnostics).
+pub fn get_last_syscall(cpu_id: usize) -> u32 {
+    if cpu_id < MAX_CPUS {
+        PER_CPU_LAST_SYSCALL[cpu_id].load(Ordering::Relaxed)
+    } else {
+        0
+    }
 }

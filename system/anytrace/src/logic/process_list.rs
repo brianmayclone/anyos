@@ -17,9 +17,9 @@ pub struct ProcessEntry {
 /// Poll the system for the current process list.
 ///
 /// Uses `anyos_std::sys::sysinfo(1, buf)` which returns the **count** of
-/// thread entries written into `buf`.  Each entry is 60 bytes.
+/// thread entries written into `buf`.  Each entry is 64 bytes.
 pub fn poll_processes() -> Vec<ProcessEntry> {
-    let mut buf = [0u8; 60 * 128]; // room for 128 threads
+    let mut buf = [0u8; 64 * 128]; // room for 128 threads
     let count = anyos_std::sys::sysinfo(1, &mut buf);
     if count == 0 || count == u32::MAX {
         return Vec::new();

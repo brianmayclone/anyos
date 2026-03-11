@@ -19,14 +19,14 @@ pub fn unpack_event_name(w2: u32, w3: u32, w4: u32) -> String {
 
 /// Query thread name by TID via sysinfo(1,...).
 pub fn query_thread_name(tid: u32) -> Option<String> {
-    let mut buf = [0u8; 36 * 64];
+    let mut buf = [0u8; 64 * 64];
     let count = anyos_std::sys::sysinfo(1, &mut buf);
     if count == u32::MAX {
         return None;
     }
     for i in 0..count as usize {
-        let off = i * 36;
-        if off + 36 > buf.len() { break; }
+        let off = i * 64;
+        if off + 64 > buf.len() { break; }
         let entry_tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
         if entry_tid == tid {
             let name_bytes = &buf[off + 8..off + 32];

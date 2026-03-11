@@ -187,3 +187,4 @@ EXPORTS
     anyui_on_menu_item
     anyui_set_fullscreen_capable
     anyui_get_fullscreen_info
+    anyui_tabbar_show_plus

@@ -352,8 +352,9 @@ pub fn init() {
 
 #[inline(always)]
 pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, arg4: u32, arg5: u32) -> u32 {
-    // Syscall entry logging removed — only errors are logged (after dispatch).
-    // Enable debug_verbose for error-only syscall diagnostics.
+    // Record last syscall for crash diagnostics (lock-free, per-CPU).
+    let cpu_id = crate::arch::hal::cpu_id();
+    crate::task::scheduler::set_last_syscall(cpu_id, syscall_num);
 
     // Capability permission check — deny syscalls the thread lacks permission for.
     let required = crate::task::capabilities::required_cap(syscall_num);

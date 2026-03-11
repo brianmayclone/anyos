@@ -5,7 +5,7 @@ anyos_std::entry!(main);
 
 const MAX_TASKS: usize = 64;
 const MAX_CPUS: usize = 16;
-const THREAD_ENTRY_SIZE: usize = 60;
+const THREAD_ENTRY_SIZE: usize = 64;
 const REFRESH_MS: u32 = 2000;
 
 // ─── Terminal size ───────────────────────────────────────────────────────────

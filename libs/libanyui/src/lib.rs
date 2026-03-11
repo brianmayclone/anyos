@@ -3105,3 +3105,26 @@ pub extern "C" fn anyui_measure_text(
     let (w, h) = draw::measure_text_ex(text, font_id, font_size);
     ((w as u64) << 32) | (h as u64)
 }
+
+// ── TabBar extensions ────────────────────────────────────────────────
+
+fn as_tabbar(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::tabbar::TabBar> {
+    if ctrl.kind() == ControlKind::TabBar {
+        let raw: *mut dyn Control = &mut **ctrl;
+        Some(unsafe { &mut *(raw as *mut controls::tabbar::TabBar) })
+    } else {
+        None
+    }
+}
+
+/// Show or hide the "+" (new-tab) button on a TabBar.
+#[no_mangle]
+pub extern "C" fn anyui_tabbar_show_plus(id: ControlId, show: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tb) = as_tabbar(ctrl) {
+            tb.show_plus = show != 0;
+            tb.text_base.base.mark_dirty();
+        }
+    }
+}

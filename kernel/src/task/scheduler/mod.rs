@@ -154,6 +154,12 @@ static PER_CPU_IDLE_STACK_TOP: [AtomicU64; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+/// Last syscall number executed on each CPU (lock-free crash diagnostics).
+static PER_CPU_LAST_SYSCALL: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_CPUS]
+};
+
 // --- Lazy FPU per-CPU state ---
 
 /// TID whose FPU/SSE/AVX state is currently loaded in this CPU's registers.

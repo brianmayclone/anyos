@@ -836,7 +836,11 @@ pub fn run_once() -> u32 {
                                             if st.click_count == 2 {
                                                 if let Some(idx3) = control::find_idx(&st.controls, target_id) {
                                                     let dc_resp = st.controls[idx3].handle_double_click(local_x, local_y, button);
-                                                    fire_event_callback(&st.controls, target_id, control::EVENT_DOUBLE_CLICK, &mut pending_cbs);
+                                                    // Only fire the double-click callback if the control
+                                                    // didn't consume it internally (e.g. TabBar overflow buttons).
+                                                    if !dc_resp.consumed {
+                                                        fire_event_callback(&st.controls, target_id, control::EVENT_DOUBLE_CLICK, &mut pending_cbs);
+                                                    }
                                                     if dc_resp.fire_change {
                                                         fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
                                                     }

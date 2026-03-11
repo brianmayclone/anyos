@@ -190,12 +190,12 @@ fn delete_site_file(filename: &str) {
 
 fn is_httpd_running() -> bool {
     // Check by looking for a thread named "httpd" via sysinfo
-    let mut buf = [0u8; 60 * 128];
+    let mut buf = [0u8; 64 * 128];
     let count = anyos_std::sys::sysinfo(1, &mut buf) as usize;
     let name_target = b"httpd";
     for i in 0..count {
-        let off = i * 60;
-        if off + 60 > buf.len() {
+        let off = i * 64;
+        if off + 64 > buf.len() {
             break;
         }
         let state = buf[off + 5];

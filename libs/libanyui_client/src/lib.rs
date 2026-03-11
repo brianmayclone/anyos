@@ -358,6 +358,8 @@ struct AnyuiLib {
     set_menu_fn: extern "C" fn(u32, *const u8, u32),
     update_menu_item_fn: extern "C" fn(u32, u32, u32),
     on_menu_item_fn: extern "C" fn(u32, Callback, u64),
+    // TabBar extensions
+    pub(crate) tabbar_show_plus: extern "C" fn(u32, u32),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -611,6 +613,7 @@ pub fn init() -> bool {
             set_menu_fn: resolve(&handle, "anyui_set_menu"),
             update_menu_item_fn: resolve(&handle, "anyui_update_menu_item"),
             on_menu_item_fn: resolve(&handle, "anyui_on_menu_item"),
+            tabbar_show_plus: resolve(&handle, "anyui_tabbar_show_plus"),
             _handle: handle,
         };
         (lib.init)();

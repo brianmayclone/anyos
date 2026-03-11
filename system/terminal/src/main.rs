@@ -2269,18 +2269,20 @@ struct Session {
     font_size: u16,
     cell_w: u16,
     cell_h: u16,
+    color_prompt: u32,
+    color_fg: u32,
 }
 
-/// Compute cell dimensions from font size.
+/// Compute cell dimensions from font size by measuring the actual font metrics.
 fn cell_dims_for_font(font_size: u16) -> (u16, u16) {
-    let cw = ((font_size as u32 * 8 + 6) / 13) as u16;
-    let ch = ((font_size as u32 * 16 + 6) / 13) as u16;
+    let (w, h) = anyui::measure_text("W", FONT_ID_MONO as u16, font_size);
+    let cw = if w > 0 { w as u16 } else { ((font_size as u32 * 8 + 6) / 13) as u16 };
+    let ch = if h > 0 { h as u16 } else { ((font_size as u32 * 16 + 6) / 13) as u16 };
     (cw.max(4), ch.max(8))
 }
 
 impl Session {
-    fn new(cols: usize, rows: usize, aliases: Vec<(String, String)>) -> Self {
-        let font_size = app().active_profile.font_size;
+    fn new(cols: usize, rows: usize, aliases: Vec<(String, String)>, font_size: u16, color_prompt: u32, color_fg: u32) -> Self {
         let (cell_w, cell_h) = cell_dims_for_font(font_size);
         let mut shell = Shell::new();
         shell.aliases = aliases;
@@ -2297,6 +2299,8 @@ impl Session {
             font_size,
             cell_w,
             cell_h,
+            color_prompt,
+            color_fg,
         }
     }
 
@@ -2308,11 +2312,10 @@ impl Session {
     }
 
     fn show_prompt(&mut self) {
-        let prof = &app().active_profile;
-        self.buf.current_fg = prof.color_prompt;
+        self.buf.current_fg = self.color_prompt;
         let prompt = self.shell.prompt();
         self.buf.write_str(&prompt);
-        self.buf.current_fg = prof.color_fg;
+        self.buf.current_fg = self.color_fg;
     }
 }
 
@@ -2534,12 +2537,20 @@ impl SavedTab {
 }
 
 /// Recreate a PaneNode tree from a saved layout JSON, allocating fresh sessions.
+/// Profile defaults needed during tree rebuild (before APP is initialized).
+struct SessionDefaults {
+    font_size: u16,
+    color_prompt: u32,
+    color_fg: u32,
+}
+
 fn rebuild_pane_tree(
     layout: &anyos_std::json::Value,
     next_id: &mut PaneId,
     cols: usize,
     rows: usize,
     aliases: &[(String, String)],
+    defaults: &SessionDefaults,
 ) -> PaneNode {
     let typ = layout["type"].as_str().unwrap_or("leaf");
     match typ {
@@ -2547,16 +2558,16 @@ fn rebuild_pane_tree(
             let ratio = layout["ratio"].as_i64().unwrap_or(500) as f32 / 1000.0;
             let left_cols = ((cols as f32) * ratio) as usize;
             let right_cols = cols.saturating_sub(left_cols);
-            let left = rebuild_pane_tree(&layout["left"], next_id, left_cols.max(1), rows, aliases);
-            let right = rebuild_pane_tree(&layout["right"], next_id, right_cols.max(1), rows, aliases);
+            let left = rebuild_pane_tree(&layout["left"], next_id, left_cols.max(1), rows, aliases, defaults);
+            let right = rebuild_pane_tree(&layout["right"], next_id, right_cols.max(1), rows, aliases, defaults);
             PaneNode::HSplit { left: Box::new(left), right: Box::new(right), ratio }
         }
         "vsplit" => {
             let ratio = layout["ratio"].as_i64().unwrap_or(500) as f32 / 1000.0;
             let top_rows = ((rows as f32) * ratio) as usize;
             let bot_rows = rows.saturating_sub(top_rows);
-            let top = rebuild_pane_tree(&layout["top"], next_id, cols, top_rows.max(1), aliases);
-            let bottom = rebuild_pane_tree(&layout["bottom"], next_id, cols, bot_rows.max(1), aliases);
+            let top = rebuild_pane_tree(&layout["top"], next_id, cols, top_rows.max(1), aliases, defaults);
+            let bottom = rebuild_pane_tree(&layout["bottom"], next_id, cols, bot_rows.max(1), aliases, defaults);
             PaneNode::VSplit { top: Box::new(top), bottom: Box::new(bottom), ratio }
         }
         _ => {
@@ -2564,7 +2575,7 @@ fn rebuild_pane_tree(
             let id = *next_id;
             *next_id += 1;
             let aliases_vec: Vec<(String, String)> = aliases.iter().map(|(a, b)| (a.clone(), b.clone())).collect();
-            let mut session = Session::new(cols.max(1), rows.max(1), aliases_vec);
+            let mut session = Session::new(cols.max(1), rows.max(1), aliases_vec, defaults.font_size, defaults.color_prompt, defaults.color_fg);
             // Restore cwd if saved
             if let Some(cwd) = layout["cwd"].as_str() {
                 if !cwd.is_empty() {
@@ -2934,7 +2945,7 @@ impl TerminalApp {
 
     fn new_session(&self, cols: usize, rows: usize) -> Session {
         let aliases = load_dotenv();
-        Session::new(cols, rows, aliases)
+        Session::new(cols, rows, aliases, self.active_profile.font_size, self.active_profile.color_prompt, self.active_profile.color_fg)
     }
 
     /// Snapshot current tabs into SavedTab list (for profile saving).
@@ -2959,7 +2970,12 @@ impl TerminalApp {
         let mut new_tabs = Vec::new();
         for st in saved_tabs {
             let mut next_id = self.next_pane_id;
-            let root = rebuild_pane_tree(&st.layout, &mut next_id, cols, rows, &alias_pairs);
+            let defaults = SessionDefaults {
+                font_size: self.active_profile.font_size,
+                color_prompt: self.active_profile.color_prompt,
+                color_fg: self.active_profile.color_fg,
+            };
+            let root = rebuild_pane_tree(&st.layout, &mut next_id, cols, rows, &alias_pairs, &defaults);
             self.next_pane_id = next_id;
             let active_pane = root.first_pane_id();
             new_tabs.push(Tab {
@@ -3039,7 +3055,7 @@ impl TerminalApp {
                     Some(s) => s,
                     None => return false,
                 };
-                let old_node = core::mem::replace(node, PaneNode::Leaf { id: 0, session: Session::new(1, 1, Vec::new()) });
+                let old_node = core::mem::replace(node, PaneNode::Leaf { id: 0, session: Session::new(1, 1, Vec::new(), 14, 0xFF50FA7B, 0xFFCCCCCC) });
                 let new_leaf = PaneNode::Leaf { id: new_id, session: sess };
                 if horizontal {
                     *node = PaneNode::HSplit {
@@ -3092,7 +3108,7 @@ impl TerminalApp {
                 if let PaneNode::Leaf { id, .. } = left.as_ref() {
                     if *id == target_id {
                         // Replace this split with the right child
-                        let right_node = core::mem::replace(right.as_mut(), PaneNode::Leaf { id: 0, session: Session::new(1, 1, Vec::new()) });
+                        let right_node = core::mem::replace(right.as_mut(), PaneNode::Leaf { id: 0, session: Session::new(1, 1, Vec::new(), 14, 0xFF50FA7B, 0xFFCCCCCC) });
                         *node = right_node;
                         return true;
                     }
@@ -3100,7 +3116,7 @@ impl TerminalApp {
                 // Check if right child is the target leaf
                 if let PaneNode::Leaf { id, .. } = right.as_ref() {
                     if *id == target_id {
-                        let left_node = core::mem::replace(left.as_mut(), PaneNode::Leaf { id: 0, session: Session::new(1, 1, Vec::new()) });
+                        let left_node = core::mem::replace(left.as_mut(), PaneNode::Leaf { id: 0, session: Session::new(1, 1, Vec::new(), 14, 0xFF50FA7B, 0xFFCCCCCC) });
                         *node = left_node;
                         return true;
                     }
@@ -6956,6 +6972,12 @@ fn main() {
     let active_profile = find_default_profile(&profiles);
     let init_w = active_profile.win_w;
     let init_h = active_profile.win_h;
+    let init_font_size = active_profile.font_size;
+    let init_defaults = SessionDefaults {
+        font_size: active_profile.font_size,
+        color_prompt: active_profile.color_prompt,
+        color_fg: active_profile.color_fg,
+    };
 
     let win = anyui::Window::new("Terminal", -1, -1, init_w, init_h);
 
@@ -7051,7 +7073,7 @@ fn main() {
         let alias_pairs: Vec<(String, String)> = aliases;
         for st in restore_tabs {
             let mut next_id = term_app.next_pane_id;
-            let root = rebuild_pane_tree(&st.layout, &mut next_id, cols.max(1), rows.max(1), &alias_pairs);
+            let root = rebuild_pane_tree(&st.layout, &mut next_id, cols.max(1), rows.max(1), &alias_pairs, &init_defaults);
             term_app.next_pane_id = next_id;
             let active_pane = root.first_pane_id();
             term_app.tabs.push(Tab {
@@ -7062,7 +7084,7 @@ fn main() {
         }
     } else {
         // Create default first session
-        let first_session = Session::new(cols.max(1), rows.max(1), aliases);
+        let first_session = Session::new(cols.max(1), rows.max(1), aliases, init_defaults.font_size, init_defaults.color_prompt, init_defaults.color_fg);
         let first_tab = Tab {
             root: PaneNode::Leaf { id: 1, session: first_session },
             active_pane_id: 1,
@@ -7792,6 +7814,9 @@ fn main() {
         if stride > 0 && h > 0 {
             a.canvas_w = stride;
             a.canvas_h = h;
+            // Remember window size in profile (canvas + tab row height)
+            a.active_profile.win_w = stride;
+            a.active_profile.win_h = h + 28; // 28 = tab row height
         }
         a.update_pane_sizes();
         let (new_cols, new_rows) = a.content_cols_rows();
@@ -7801,7 +7826,17 @@ fn main() {
     });
 
     win.on_close(|_| {
-        save_recovery(app());
+        let a = app();
+        save_recovery(a);
+        // Persist active profile (window size, etc.) back to profiles list
+        for p in a.profiles.iter_mut() {
+            if p.name == a.active_profile.name {
+                p.win_w = a.active_profile.win_w;
+                p.win_h = a.active_profile.win_h;
+                break;
+            }
+        }
+        save_profiles(&a.profiles);
         anyui::quit();
     });
 

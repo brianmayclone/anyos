@@ -226,16 +226,22 @@ fn main() {
     window_ref.set_fullscreen_capable(true);
 
     window_ref.on_fullscreen_enter(|_| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.fullscreen = true;
+        // Use the canvas's actual dimensions (logical, after layout) — these match
+        // the canvas pixel buffer size.  info.width/height are physical screen pixels
+        // which may differ due to DPI scaling, causing copy_pixels_from to clip.
+        let cw = s.canvas.get_stride();
+        let ch = s.canvas.get_height();
+        if cw > 0 && ch > 0 {
+            s.canvas_w = cw;
+            s.canvas_h = ch;
+        }
+        s.fb_w = s.canvas_w / 2;
+        s.fb_h = s.canvas_h / 2;
+        gl::gl_resize(s.fb_w, s.fb_h);
+        gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
         if let Some(info) = libanyui_client::get_fullscreen_info() {
-            let s = unsafe { STATE.as_mut().unwrap() };
-            s.fullscreen = true;
-            s.canvas_w = info.width;
-            s.canvas_h = info.height;
-            // Render at half resolution for performance
-            s.fb_w = info.width / 2;
-            s.fb_h = info.height / 2;
-            gl::gl_resize(s.fb_w, s.fb_h);
-            gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
             if info.fb_ptr != 0 {
                 s.fs_fb_ptr = info.fb_ptr as *mut u32;
                 s.fs_stride = info.stride;
@@ -246,8 +252,8 @@ fn main() {
                     info.stride,
                 );
             }
-            anyos_std::println!("forger: fullscreen ENTER {}x{} render={}x{}", info.width, info.height, s.fb_w, s.fb_h);
         }
+        anyos_std::println!("forger: fullscreen ENTER canvas={}x{} render={}x{}", s.canvas_w, s.canvas_h, s.fb_w, s.fb_h);
     });
 
     window_ref.on_fullscreen_exit(|_| {

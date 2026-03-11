@@ -415,6 +415,11 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         crate::serial_println!("  R8:     {:#018x}  R9:  {:#018x}", frame.r8, frame.r9);
         crate::serial_println!("  R10:    {:#018x}  R11: {:#018x}", frame.r10, frame.r11);
         crate::serial_println!("  CS:     {:#06x}  SS:  {:#06x}  RFLAGS: {:#018x}", frame.cs, frame.ss, frame.rflags);
+        {
+            let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
+            let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
+            crate::serial_println!("  LastSC: {} ({})", last_sc, crate::syscall::table::syscall_name(last_sc));
+        }
         if signal == 139 && frame.int_no == 14 {
             // Page fault — show CR2 (faulting address)
             let cr2: u64;
@@ -816,6 +821,12 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 "  R12={:#018x} R13={:#018x} R14={:#018x} R15={:#018x}",
                 frame.r12, frame.r13, frame.r14, frame.r15
             );
+            // Last syscall diagnostics
+            {
+                let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
+                let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
+                crate::serial_println!("  LastSC={} ({})", last_sc, crate::syscall::table::syscall_name(last_sc));
+            }
             // Stack location diagnostics
             {
                 let frame_addr = frame as *const InterruptFrame as u64;
@@ -911,6 +922,11 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                     crate::serial_println!("  !!! DS is NULL — this is the cause of the #GP(0)!");
                     crate::serial_println!("  DS was not restored to 0x23 before returning to user mode.");
                 }
+                {
+                    let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
+                    let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
+                    crate::serial_println!("  LastSC: {} ({})", last_sc, crate::syscall::table::syscall_name(last_sc));
+                }
                 dump_iretq_frame(frame.rip, frame.rsp);
                 crate::serial_println!("  User process fault — terminating thread");
                 let gpf_tid = crate::task::scheduler::debug_current_tid();
@@ -934,6 +950,11 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             {
                 let (saved_ds, saved_es) = unsafe { (SAVED_FAULT_DS, SAVED_FAULT_ES) };
                 crate::serial_println!("  DS={:#06x}  ES={:#06x} (at fault time)", saved_ds, saved_es);
+            }
+            {
+                let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
+                let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
+                crate::serial_println!("  LastSC={} ({})", last_sc, crate::syscall::table::syscall_name(last_sc));
             }
             // Stack location diagnostics
             {

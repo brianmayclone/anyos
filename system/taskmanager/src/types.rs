@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 pub const MAX_CPUS: usize = 16;
 pub const MAX_TASKS: usize = 64;
-pub const THREAD_ENTRY_SIZE: usize = 60;
+pub const THREAD_ENTRY_SIZE: usize = 64;
 pub const ICON_SIZE: u32 = 16;
 pub const GRAPH_SAMPLES: usize = 60;
 
