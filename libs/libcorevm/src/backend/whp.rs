@@ -898,7 +898,7 @@ impl VmBackend for WhpBackend {
                             ctx.vp_context[36], ctx.vp_context[37], ctx.vp_context[38], ctx.vp_context[39],
                         ]);
                         let df = (rflags >> 10) & 1;
-                        let step: i64 = if df == 0 { 1 } else { -1 };
+                        let step: i64 = if df == 0 { access_size as i64 } else { -(access_size as i64) };
 
                         let count = if rep_prefix {
                             Self::read_counter(rcx, addr_size)
@@ -927,7 +927,7 @@ impl VmBackend for WhpBackend {
                         };
 
                         return Ok(VmExitReason::StringIo {
-                            port, is_write, count, gpa, step, instr_len, addr_size,
+                            port, is_write, count, gpa, step, instr_len, addr_size, access_size,
                         });
                     }
 

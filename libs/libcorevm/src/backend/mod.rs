@@ -60,12 +60,14 @@ pub enum VmExitReason {
         count: u64,
         /// Guest physical address of the first byte.
         gpa: u64,
-        /// +1 or -1 (direction flag).
+        /// ±access_size (direction flag × data width).
         step: i64,
         /// Instruction length for RIP advancement after completion.
         instr_len: u64,
         /// Address size (2/4/8) for register update masking.
         addr_size: u8,
+        /// Port I/O access size (1=byte, 2=word, 4=dword).
+        access_size: u8,
     },
     Halted,
     InterruptWindow,

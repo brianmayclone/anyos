@@ -303,25 +303,36 @@ impl Vm {
         }
     }
 
-    /// Handle a bulk string I/O transfer (REP INSB/OUTSB).
+    /// Handle a bulk string I/O transfer (REP INS/OUTS).
     ///
-    /// Performs `count` byte-sized port I/O operations, reading from or writing
-    /// to guest physical memory starting at `gpa`, advancing by `step` each time.
+    /// Performs `count` port I/O operations of `access_size` bytes each,
+    /// reading from or writing to guest physical memory starting at `gpa`,
+    /// advancing by `step` (±access_size) each time.
     /// Updates guest registers (RCX, RDI/RSI, RIP) after completion.
     pub fn handle_string_io(
         &mut self, port: u16, is_write: bool, count: u64, gpa: u64,
-        step: i64, instr_len: u64, addr_size: u8,
+        step: i64, instr_len: u64, addr_size: u8, access_size: u8,
     ) {
         let mut current_gpa = gpa;
         for _ in 0..count {
             if is_write {
-                // OUTSB: read byte from guest memory, write to port
-                let byte = self.memory.read_u8(current_gpa).unwrap_or(0);
-                let _ = self.io.port_out(port, 1, byte as u32);
+                // OUTS: read from guest memory, write to port
+                let val = match access_size {
+                    1 => self.memory.read_u8(current_gpa).unwrap_or(0) as u32,
+                    2 => self.memory.read_u16(current_gpa).unwrap_or(0) as u32,
+                    4 => self.memory.read_u32(current_gpa).unwrap_or(0),
+                    _ => 0,
+                };
+                let _ = self.io.port_out(port, access_size, val);
             } else {
-                // INSB: read byte from port, write to guest memory
-                let val = self.io.port_in(port, 1).unwrap_or(0xFF);
-                let _ = self.memory.write_u8(current_gpa, val as u8);
+                // INS: read from port, write to guest memory
+                let val = self.io.port_in(port, access_size).unwrap_or(0xFFFF_FFFF);
+                match access_size {
+                    1 => { let _ = self.memory.write_u8(current_gpa, val as u8); }
+                    2 => { let _ = self.memory.write_u16(current_gpa, val as u16); }
+                    4 => { let _ = self.memory.write_u32(current_gpa, val); }
+                    _ => {}
+                }
             }
             current_gpa = (current_gpa as i64 + step) as u64;
         }

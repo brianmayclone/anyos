@@ -107,8 +107,8 @@ fn fill_exit(e: &mut CExitReason, reason: VmExitReason) {
         VmExitReason::CpuidExit { function, index } => {
             e.reason = 6; e.cpuid_fn = function; e.cpuid_idx = index;
         }
-        VmExitReason::StringIo { port, is_write, count, gpa, step, instr_len, addr_size } => {
-            e.reason = 12; e.port = port;
+        VmExitReason::StringIo { port, is_write, count, gpa, step, instr_len, addr_size, access_size } => {
+            e.reason = 12; e.port = port; e.size = access_size;
             e.string_io_count = count;
             e.string_io_gpa = gpa;
             e.string_io_step = step;
