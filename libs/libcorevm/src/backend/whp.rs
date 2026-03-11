@@ -10,6 +10,21 @@ use core::ffi::c_void;
 use super::{VmBackend, VmError, VmExitReason};
 use super::types::*;
 
+/// Write debug line to whp_debug.log in %TEMP% or current dir (first 200 lines only).
+fn whp_debug(args: core::fmt::Arguments) {
+    use std::io::Write;
+    static DEBUG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let n = DEBUG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if n >= 200 { return; }
+    // Try %TEMP%, fallback to current directory
+    let path = std::env::var("TEMP")
+        .map(|t| std::format!("{}\\whp_debug.log", t))
+        .unwrap_or_else(|_| std::string::String::from("whp_debug.log"));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "[{}] {}", n, args);
+    }
+}
+
 // --- WHP types ---
 
 type WHV_PARTITION_HANDLE = *mut c_void;
@@ -277,6 +292,10 @@ pub struct WhpBackend {
     api: WhpApi,
     lapic: SoftLapic,
     ioapic: SoftIoapic,
+    /// Pending MMIO read response: (value, dest_reg).
+    /// Set by the FFI handler after dispatching to the device.
+    /// Applied at the top of run_vcpu before re-entering the guest.
+    pending_mmio_read: Option<(u64, u8)>,
 }
 
 unsafe impl Send for WhpBackend {}
@@ -393,8 +412,14 @@ impl WhpBackend {
                 api,
                 lapic: SoftLapic::new(),
                 ioapic: SoftIoapic::new(),
+                pending_mmio_read: None,
             })
         }
+    }
+
+    /// Store a pending MMIO read response to be applied before the next VM entry.
+    pub fn set_pending_mmio_read(&mut self, value: u64, dest_reg: u8) {
+        self.pending_mmio_read = Some((value, dest_reg));
     }
 
     fn get_regs_raw(&self, id: u32, names: &[u32], values: &mut [WHV_REGISTER_VALUE]) -> Result<(), VmError> {
@@ -543,6 +568,68 @@ fn read_imm(data: &[u8], size: u8) -> u64 {
     }
 }
 
+/// Compute instruction length from raw bytes (for MEMORY_ACCESS exits where
+/// VP context InstructionLength is 0).
+fn compute_instr_len(instr: &[u8]) -> u64 {
+    if instr.is_empty() { return 1; }
+    let mut i = 0;
+    let mut has_addr_override = false;
+    let mut has_op_override = false;
+    // Skip prefixes
+    while i < instr.len() {
+        match instr[i] {
+            0x67 => { has_addr_override = true; i += 1; }
+            0x66 => { has_op_override = true; i += 1; }
+            0xF0 | 0xF2 | 0xF3
+            | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65
+            | 0x40..=0x4F => { i += 1; }
+            _ => break,
+        }
+    }
+    if i >= instr.len() { return i as u64; }
+    let prefix_len = i;
+    let op = instr[i];
+    // MOV AL/AX, moffs (A0/A1) or MOV moffs, AL/AX (A2/A3)
+    if op >= 0xA0 && op <= 0xA3 {
+        let addr_size: usize = if has_addr_override { 2 } else { 4 };
+        return (prefix_len + 1 + addr_size) as u64;
+    }
+    // Two-byte opcode (0F xx)
+    let opcode_len = if op == 0x0F { 2 } else { 1 };
+    let modrm_start = prefix_len + opcode_len;
+    if modrm_start >= instr.len() { return modrm_start as u64; }
+    // Opcodes that have ModR/M
+    let has_modrm = match op {
+        0x88 | 0x89 | 0x8A | 0x8B | 0xC6 | 0xC7 => true,
+        0x0F => true, // MOVZX/MOVSX etc.
+        _ => false,
+    };
+    if !has_modrm {
+        return (prefix_len + opcode_len) as u64;
+    }
+    // Parse ModR/M + SIB + displacement
+    let modrm = instr[modrm_start];
+    let mod_bits = (modrm >> 6) & 3;
+    let rm = modrm & 7;
+    let mut off = modrm_start + 1; // past modrm
+    if mod_bits != 3 {
+        if rm == 4 { off += 1; } // SIB
+        match mod_bits {
+            0 if rm == 5 => { off += 4; } // disp32
+            1 => { off += 1; } // disp8
+            2 => { off += 4; } // disp32
+            _ => {}
+        }
+    }
+    // Immediate for MOV r/m, imm
+    match op {
+        0xC6 => { off += 1; } // imm8
+        0xC7 => { off += if has_op_override { 2 } else { 4 }; } // imm16/32
+        _ => {}
+    }
+    off as u64
+}
+
 /// Decode the destination register index from an MMIO read instruction.
 /// Returns 0-7 corresponding to RAX..RDI. Falls back to 0 (RAX).
 fn decode_mmio_dest_reg(instr: &[u8]) -> u8 {
@@ -687,7 +774,37 @@ impl VmBackend for WhpBackend {
     }
 
     fn run_vcpu(&mut self, id: u32) -> Result<VmExitReason, VmError> {
+        static FIRST: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+        if FIRST.swap(false, core::sync::atomic::Ordering::Relaxed) {
+            whp_debug(format_args!("run_vcpu entered for the first time"));
+        }
         loop {
+            // Apply pending MMIO read response before re-entering the guest.
+            // This sets the destination register with the device's read value.
+            if let Some((value, dest_reg)) = self.pending_mmio_read.take() {
+                let mut regs = self.get_vcpu_regs(id)?;
+                whp_debug(format_args!("apply MMIO: val=0x{:X} dreg={} rip=0x{:X} rax=0x{:X}", value, dest_reg, regs.rip, regs.rax));
+                match dest_reg {
+                    0 => regs.rax = value,
+                    1 => regs.rcx = value,
+                    2 => regs.rdx = value,
+                    3 => regs.rbx = value,
+                    4 => regs.rsp = value,
+                    5 => regs.rbp = value,
+                    6 => regs.rsi = value,
+                    7 => regs.rdi = value,
+                    _ => regs.rax = value,
+                }
+                if let Err(e) = self.set_vcpu_regs(id, &regs) {
+                    whp_debug(format_args!("set_vcpu_regs FAILED: {:?}", e));
+                    return Err(e);
+                }
+                // Verify
+                if let Ok(v) = self.get_vcpu_regs(id) {
+                    whp_debug(format_args!("verify: rax=0x{:X} rcx=0x{:X} rdx=0x{:X} rbx=0x{:X}", v.rax, v.rcx, v.rdx, v.rbx));
+                }
+            }
+
             let mut exit_ctx = core::mem::MaybeUninit::<WHV_RUN_VP_EXIT_CONTEXT>::uninit();
             check(unsafe {
                 (self.api.run_vp)(
@@ -756,6 +873,14 @@ impl VmBackend for WhpBackend {
                     // Decode instruction to get access size and write data
                     let regs = self.get_vcpu_regs(id)?;
                     let (access_size, write_data) = decode_mmio_instruction(instr_bytes, &regs);
+
+                    // VP context InstructionLength is 0 for MEMORY_ACCESS exits.
+                    // Compute from instruction bytes instead.
+                    let instr_len = if instr_len == 0 && instr_byte_count > 0 {
+                        compute_instr_len(instr_bytes)
+                    } else {
+                        instr_len
+                    };
 
                     // Handle LAPIC MMIO internally (0xFEE00000-0xFEE00FFF)
                     if gpa >= 0xFEE0_0000 && gpa < 0xFEE0_1000 {
@@ -853,20 +978,21 @@ impl VmBackend for WhpBackend {
                         continue; // re-enter guest
                     }
 
+                    // Advance RIP for both reads and writes — same pattern as I/O exits.
+                    // For reads, the FFI handler will additionally set the dest register.
+                    let mut new_regs = regs;
+                    new_regs.rip += instr_len;
+                    self.set_vcpu_regs(id, &new_regs)?;
+
                     if is_write {
-                        // For writes, advance RIP here — no register result needed
-                        let mut new_regs = regs;
-                        new_regs.rip += instr_len;
-                        self.set_vcpu_regs(id, &new_regs)?;
                         return Ok(VmExitReason::MmioWrite { addr: gpa, size: access_size, data: write_data });
                     } else {
-                        // For reads, do NOT advance RIP here — the FFI handler will
-                        // advance RIP and set the dest register in a single set_vcpu_regs
-                        // call to avoid double-write issues.
                         let dest_reg = decode_mmio_dest_reg(instr_bytes);
+                        whp_debug(format_args!("MMIO RD gpa=0x{:X} sz={} dreg={} ilen={} instr={:02X?}",
+                            gpa, access_size, dest_reg, instr_len, &instr_bytes[..instr_byte_count.min(8)]));
                         return Ok(VmExitReason::MmioRead {
                             addr: gpa, size: access_size, dest_reg,
-                            instr_len: instr_len as u8,
+                            instr_len: 0, // RIP already advanced
                         });
                     }
                 }

@@ -237,6 +237,12 @@ impl Vm {
         self.backend.set_vcpu_regs(id, regs)
     }
 
+    /// Store a pending MMIO read response (WHP only).
+    #[cfg(feature = "windows")]
+    pub fn set_pending_mmio_read(&mut self, value: u64, dest_reg: u8) {
+        self.backend.set_pending_mmio_read(value, dest_reg);
+    }
+
     pub fn get_vcpu_sregs(&self, id: u32) -> Result<VcpuSregs, VmError> {
         self.backend.get_vcpu_sregs(id)
     }

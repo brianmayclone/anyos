@@ -448,28 +448,30 @@ pub extern "C" fn corevm_handle_mmio_exit(
 
     // For MMIO reads, write response back to backend.
     if is_write == 0 {
+        let val = match size {
+            1 => buf[0] as u64,
+            2 => u16::from_le_bytes([buf[0], buf[1]]) as u64,
+            4 => u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as u64,
+            8 => u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]),
+            _ => 0,
+        };
         #[cfg(feature = "linux")]
         {
+            let _ = val; // used by other paths
             vm.set_mmio_response(0, buf);
         }
-        #[cfg(not(feature = "linux"))]
+        #[cfg(feature = "windows")]
         {
-            // Write result AND advance RIP in a single set_vcpu_regs call.
-            // This avoids the double-write issue where the first set_vcpu_regs
-            // (RIP advance) gets overwritten by the second (register set).
+            // Store pending response — applied inside run_vcpu before next VM entry.
+            vm.set_pending_mmio_read(val, dest_reg);
+        }
+        #[cfg(not(any(feature = "linux", feature = "windows")))]
+        {
+            // anyOS or other: set register directly
             if let Ok(mut regs) = vm.get_vcpu_regs(0) {
-                let val = match size {
-                    1 => buf[0] as u64,
-                    2 => u16::from_le_bytes([buf[0], buf[1]]) as u64,
-                    4 => u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as u64,
-                    8 => u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]),
-                    _ => 0,
-                };
-                // Advance RIP past the MMIO instruction
                 if instr_len > 0 {
                     regs.rip += instr_len as u64;
                 }
-                // Set destination register
                 match dest_reg {
                     0 => regs.rax = val,
                     1 => regs.rcx = val,
