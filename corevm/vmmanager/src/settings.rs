@@ -160,8 +160,8 @@ impl SettingsDialog {
 
         section_heading(ui, "Acceleration");
 
-        labeled_row(ui, "JIT:", |ui| {
-            ui.checkbox(&mut self.config.jit_enabled, "Enable JIT Compiler");
+        labeled_row(ui, "Virtualization:", |ui| {
+            ui.label("Hardware (VT-x / AMD-V)");
         });
     }
 

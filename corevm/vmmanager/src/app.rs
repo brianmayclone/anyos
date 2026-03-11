@@ -674,9 +674,7 @@ fn render_summary(ui: &mut egui::Ui, vm: &VmEntry, deferred_action: &mut Option<
             ("CPUs", format!("{}", vm.config.cpu_cores)),
             ("BIOS", format!("{:?}", vm.config.bios_type)),
         ];
-        if vm.config.jit_enabled {
-            items.push(("JIT", "Enabled".to_string()));
-        }
+        items.push(("Accel", "Hardware (VT-x/AMD-V)".to_string()));
         if !vm.config.disk_image.is_empty() {
             let disk_name = std::path::Path::new(&vm.config.disk_image)
                 .file_name()

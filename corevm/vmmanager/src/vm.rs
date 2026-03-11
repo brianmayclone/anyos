@@ -56,11 +56,6 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         std::mem::forget(disk_data);
     }
 
-    // Enable JIT if configured
-    if config.jit_enabled {
-        libcorevm::corevm_jit_enable(handle, 1);
-    }
-
     // Setup shared state
     let control = Arc::new(VmControl {
         stop: AtomicBool::new(false),
@@ -120,29 +115,10 @@ pub fn resume_vm(entry: &mut VmEntry) {
     entry.state = VmState::Running;
 }
 
-/// Run a batch of instructions, polling IDE IRQs between sub-batches.
-/// The IDE poll quantum must be large enough that the wall-clock overhead
-/// between corevm_run calls does not dominate — the PIT timer inside
-/// corevm_run only measures time *within* each call.
-fn run_batch_with_irq_poll(handle: u64, batch: u64) -> u32 {
-    const IDE_IRQ_POLL_QUANTUM: u64 = 500_000;
-    let mut remaining = batch.max(1);
-    let mut exit_code = 2;
-
-    while remaining > 0 {
-        let chunk = remaining.min(IDE_IRQ_POLL_QUANTUM);
-        exit_code = libcorevm::corevm_run(handle, chunk);
-        if libcorevm::corevm_ide_irq_raised(handle) != 0 {
-            libcorevm::corevm_pic_raise_irq(handle, 14);
-            libcorevm::corevm_ide_clear_irq(handle);
-        }
-        if exit_code != 2 {
-            break;
-        }
-        remaining -= chunk;
-    }
-
-    exit_code
+/// Run a batch of VM-exit cycles. The VM handles I/O, MMIO, CPUID, MSR,
+/// and timer advancement internally. Returns the exit reason code.
+fn run_vm_exits(handle: u64, max_exits: u64) -> u32 {
+    libcorevm::corevm_run(handle, max_exits)
 }
 
 /// The main VM execution loop (runs in dedicated thread)
@@ -151,12 +127,16 @@ fn vm_run_loop(
     fb: Arc<Mutex<FrameBufferData>>,
     control: Arc<VmControl>,
 ) {
-    let batch_size: u64 = 500_000;
+    // VM-exit driven execution loop.
+    // Each corevm_run call processes VM-exits internally (I/O, MMIO, CPUID,
+    // MSR, timers). We use max_exits=0 for unbounded runs that return on
+    // HLT, shutdown, stop, or other terminal exits.
+    let exits_per_batch: u64 = 100_000; // Process exits in batches for responsiveness
     let mut last_fb_update = Instant::now();
     let fb_interval = Duration::from_millis(16); // ~60fps
     let mut last_metrics = Instant::now();
-    let mut instructions_since_last: u64 = 0;
-    let mut total: u64 = 0;
+    let mut exits_since_last: u64 = 0;
+    let mut total_exits: u64 = 0;
 
     loop {
         if control.stop.load(Ordering::Relaxed) {
@@ -168,13 +148,12 @@ fn vm_run_loop(
             continue;
         }
 
-        // Run a batch with frequent IDE IRQ polling (every 1024 instructions).
-        // Do NOT call corevm_pit_tick — corevm_run handles PIT internally
-        // via wall-clock time. Calling pit_tick sets pit_is_externally_clocked
-        // which disables the automatic PIT.
-        let exit_reason = run_batch_with_irq_poll(handle, batch_size);
-        instructions_since_last += batch_size;
-        total += batch_size;
+        // Run a batch of VM-exit cycles.
+        let exit_reason = run_vm_exits(handle, exits_per_batch);
+        let current_exits = libcorevm::corevm_get_instruction_count(handle);
+        let batch_exits = current_exits.saturating_sub(total_exits);
+        exits_since_last += batch_exits;
+        total_exits = current_exits;
 
         // Update framebuffer at ~60fps
         if last_fb_update.elapsed() >= fb_interval {
@@ -186,16 +165,17 @@ fn vm_run_loop(
         let metrics_elapsed = last_metrics.elapsed();
         if metrics_elapsed >= Duration::from_millis(500) {
             let secs = metrics_elapsed.as_secs_f64();
-            let mips_val = (instructions_since_last as f64) / secs / 1_000_000.0;
-            control.mips.store(mips_val.to_bits(), Ordering::Relaxed);
-            control.total_instructions.store(total, Ordering::Relaxed);
-            instructions_since_last = 0;
+            // Report VM-exit rate instead of MIPS (hardware executes natively)
+            let exits_per_sec = (exits_since_last as f64) / secs / 1_000_000.0;
+            control.mips.store(exits_per_sec.to_bits(), Ordering::Relaxed);
+            control.total_instructions.store(total_exits, Ordering::Relaxed);
+            exits_since_last = 0;
             last_metrics = Instant::now();
         }
 
         match exit_reason {
             2 => {
-                // InstructionLimit — normal, batch completed, continue
+                // Batch limit reached — continue processing
             }
             0 => {
                 // HLT — sleep briefly, interrupts might wake it

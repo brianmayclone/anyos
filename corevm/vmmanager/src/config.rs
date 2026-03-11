@@ -26,7 +26,6 @@ pub struct VmConfig {
     pub iso_image: String,
     pub boot_order: BootOrder,
     pub bios_type: BiosType,
-    pub jit_enabled: bool,
     pub gpu_type: String,
     pub net_enabled: bool,
     pub net_mode: NetMode,
@@ -47,7 +46,6 @@ impl Default for VmConfig {
             iso_image: String::new(),
             boot_order: BootOrder::CdFirst,
             bios_type: BiosType::SeaBios,
-            jit_enabled: false,
             gpu_type: "svga".into(),
             net_enabled: false,
             net_mode: NetMode::Nat,
@@ -84,12 +82,11 @@ impl VmConfig {
             MacMode::Static => "static",
         };
         let content = format!(
-            "name={}\nram={}\ncpu_cores={}\ndisk={}\niso={}\nboot={}\nbios={}\njit={}\n\
+            "name={}\nram={}\ncpu_cores={}\ndisk={}\niso={}\nboot={}\nbios={}\n\
              ram_alloc={}\ngpu={}\nnet_enabled={}\nnet_mode={}\nnet_host_nic={}\n\
              mac_mode={}\nmac_address={}\n",
             self.name, self.ram_mb, self.cpu_cores, self.disk_image, self.iso_image,
-            boot, bios, if self.jit_enabled { "1" } else { "0" },
-            alloc, self.gpu_type,
+            boot, bios, alloc, self.gpu_type,
             if self.net_enabled { "1" } else { "0" },
             net_mode, self.net_host_nic, mac_mode, self.mac_address,
         );
@@ -121,7 +118,7 @@ impl VmConfig {
                     "corevm" => BiosType::CoreVm,
                     _ => BiosType::SeaBios,
                 },
-                "jit" => cfg.jit_enabled = val == "1",
+                "jit" => { /* ignored — hardware virtualization */ },
                 "ram_alloc" => cfg.ram_alloc = match val {
                     "preallocate" => RamAlloc::Preallocate,
                     _ => RamAlloc::OnDemand,
