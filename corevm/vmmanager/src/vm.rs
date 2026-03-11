@@ -446,12 +446,8 @@ fn vm_run_loop(
             }
         }
 
-        // Update framebuffer at ~60fps
-        if last_fb_update.elapsed() >= fb_interval {
-            update_framebuffer(handle, &fb);
-            last_fb_update = Instant::now();
-
-            // Drain debug port output
+        // Drain debug port output on every iteration
+        {
             let mut dbg_buf = [0u8; 1024];
             let n = corevm_debug_port_take_output(handle, dbg_buf.as_mut_ptr(), dbg_buf.len() as u32);
             if n > 0 {
@@ -459,6 +455,12 @@ fn vm_run_loop(
                     diag.append_debug_text(s);
                 }
             }
+        }
+
+        // Update framebuffer at ~60fps
+        if last_fb_update.elapsed() >= fb_interval {
+            update_framebuffer(handle, &fb);
+            last_fb_update = Instant::now();
         }
     }
 }

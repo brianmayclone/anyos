@@ -496,6 +496,14 @@ pub extern "C" fn corevm_setup_ahci(handle: u64, num_ports: u8) -> i32 {
     let ahci = Box::new(crate::devices::ahci::Ahci::new(num_ports));
     vm.ahci_ptr = &*ahci as *const crate::devices::ahci::Ahci as *mut crate::devices::ahci::Ahci;
     vm.memory.add_mmio(0xFEBF_0000, 0x1000, ahci);
+
+    // Register AHCI as a PCI device so SeaBIOS can discover it
+    if !vm.pci_bus_ptr.is_null() {
+        let pci_bus = unsafe { &mut *vm.pci_bus_ptr };
+        let mut pci_dev = crate::devices::ahci::create_ahci_pci_device(0xFEBF_0000);
+        pci_dev.device = 1; // PCI device 00:01.0
+        pci_bus.add_device(pci_dev);
+    }
     0
 }
 

@@ -39,6 +39,7 @@ pub struct Vm {
     pub pit_ptr: *mut crate::devices::pit::Pit,
     pub pic_ptr: *mut crate::devices::pic::PicPair,
     pub debug_port_ptr: *mut crate::devices::debug_port::DebugPort,
+    pub pci_bus_ptr: *mut crate::devices::bus::PciBus,
 }
 
 impl Vm {
@@ -71,6 +72,7 @@ impl Vm {
             pit_ptr: core::ptr::null_mut(),
             pic_ptr: core::ptr::null_mut(),
             debug_port_ptr: core::ptr::null_mut(),
+            pci_bus_ptr: core::ptr::null_mut(),
         })
     }
 
@@ -91,52 +93,9 @@ impl Vm {
 
         let ram_size = self.memory.ram_size();
 
-        // PIC comments: see wide-range registration at the end of this function.
-        // Slave PIC at 0xA0 — PicPair handles both via port dispatch internally.
-        // PicPair's IoHandler checks the port number to route to master or slave.
-        // Register the same range approach: PicPair at 0x20/count=2 handles master.
-        // We need a second registration for slave ports.
-        // Actually, looking at PicPair's IoHandler, it matches ports 0x20,0x21,0xA0,0xA1.
-        // Since IoDispatch does linear scan and PicPair checks the exact port,
-        // we need to register at both ranges. But we can only have one Box.
-        // The existing codebase must handle this somehow. Let's check.
-        // For now, register 0x20 with count=0x82 which covers 0x20-0xA1.
-        // Actually that's too wide. Let's just allocate two PicPairs.
-        // No -- they share state. The real solution is to register both ranges.
-        // Since IoDispatch takes Box<dyn IoHandler>, we need two separate
-        // registrations pointing to the same object. Use raw pointer trick.
-
-        // Actually, re-reading pic.rs IoHandler impl: it likely handles ports
-        // by checking port value. Two separate registrations with the same
-        // handler would require Rc or raw pointers. For now, let's use the
-        // approach of registering the PicPair twice: once for master range
-        // and once for slave. Since PicPair is small, we can use two instances
-        // that share state via a common pointer... but that's complex.
-        //
-        // Simpler: The PIC pair IoHandler at 0x20/count=130 covers 0x20-0xA1.
-        // Ports in between (0x22-0x9F) will hit the PIC handler but it just
-        // returns Ok(0xFF)/Ok(()) for unknown ports. This wastes some address
-        // space but is functionally correct since those ports will have other
-        // handlers registered earlier with higher priority.
-        //
-        // WAIT: IoDispatch first-match means later registrations are lower
-        // priority. So we register specific devices first, then the PIC pair
-        // with the wide range as a fallback? No, that's backwards.
-        //
-        // Let's just register PIC at two separate ranges. We need two
-        // Box<dyn IoHandler> instances that share internal state. Use a
-        // wrapper that holds a raw pointer.
-        //
-        // For SIMPLICITY in this initial implementation, register as two ranges.
-        // PicPair is small enough to duplicate, but they'd have separate state
-        // which is wrong. Let's use a different approach:
-        //
-        // Register at 0x20 count=2 and 0xA0 count=2 using shared state via
-        // a raw pointer in a thin wrapper.
-
-        // For now, take the pragmatic approach: register a wide range.
-        // PIT/CMOS/PS2/Serial are at different ports and will be registered
-        // BEFORE the wide PIC range, so they get first-match priority.
+        // PIC is registered at the end with a wide range (0x20, count=0x82)
+        // covering both master (0x20-0x21) and slave (0xA0-0xA1).
+        // All specific devices below are registered first for priority.
 
         // PIT (0x40-0x43)
         let pit = Box::new(Pit::new());
@@ -189,6 +148,7 @@ impl Vm {
         // PCI bus (0xCF8-0xCFF)
         let pci_bus = Box::new(PciBus::new());
         let pci_bus_ptr = &*pci_bus as *const PciBus as *mut PciBus;
+        self.pci_bus_ptr = pci_bus_ptr;
         self.io.register(0xCF8, 8, pci_bus);
 
         // PCI MMCONFIG MMIO (0xB0000000, 256MB)

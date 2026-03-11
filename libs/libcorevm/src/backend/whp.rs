@@ -1035,24 +1035,9 @@ impl VmBackend for WhpBackend {
     }
 
     fn inject_interrupt(&mut self, id: u32, vector: u8) -> Result<(), VmError> {
-        if let Some(req_int) = self.api.request_interrupt {
-            // WHV_INTERRUPT_CONTROL structure (8 bytes):
-            // bits[1:0]  = Type (0=Fixed)
-            // bit 2      = DestinationMode (0=Physical)
-            // bit 3      = TriggerMode (0=Edge)
-            // bits[15:8] = Vector
-            // bits[63:32]= Destination (0 = BSP APIC ID)
-            let ctrl: u64 = (vector as u64) << 8; // Fixed, Physical, Edge, dest=0
-            let hr = (req_int)(self.partition, &ctrl as *const u64 as *const u8, 8);
-            if hr < 0 {
-                return Err(VmError::BackendError(hr));
-            }
-            Ok(())
-        } else {
-            // Fallback: set pending interruption register directly
-            let val = WHV_REGISTER_VALUE::from_u64((vector as u64) | (0u64 << 8) | (1u64 << 12));
-            self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[val])
-        }
+        // Set pending interruption register: bits[7:0]=vector, bits[11:8]=type(0=ext int), bit 12=deliver
+        let val = WHV_REGISTER_VALUE::from_u64((vector as u64) | (0u64 << 8) | (1u64 << 12));
+        self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[val])
     }
 
     fn inject_exception(&mut self, id: u32, vector: u8, error_code: Option<u32>) -> Result<(), VmError> {
