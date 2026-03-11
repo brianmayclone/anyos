@@ -20,7 +20,7 @@ use libcorevm::ffi::{
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
     corevm_last_error, corevm_last_error_len,
-    corevm_pit_advance, corevm_poll_irqs, corevm_debug_port_take_output,
+    corevm_pit_advance, corevm_pit_debug, corevm_poll_irqs, corevm_cancel_vcpu, corevm_debug_port_take_output,
     corevm_fw_cfg_add_file, corevm_set_memory_region,
 };
 use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
@@ -335,6 +335,19 @@ fn vm_run_loop(
     let mut fb_debug_count: u32 = 0;
     const PIT_FREQ: u64 = 1_193_182; // 8254 PIT clock rate in Hz
 
+    // Timer thread: periodically cancel run_vcpu so the main loop can
+    // advance PIT, inject IRQs, and handle other events.
+    let cancel_control = control.clone();
+    let cancel_handle = handle;
+    thread::spawn(move || {
+        while !cancel_control.stop.load(Ordering::Relaxed)
+            && !cancel_control.exited.load(Ordering::Relaxed)
+        {
+            thread::sleep(Duration::from_millis(10));
+            corevm_cancel_vcpu(cancel_handle, 0);
+        }
+    });
+
     loop {
         if control.stop.load(Ordering::Relaxed) {
             break;
@@ -346,7 +359,15 @@ fn vm_run_loop(
         }
 
         let mut exit = CExitReason::default();
+        let run_start = Instant::now();
         let rc = corevm_run_vcpu(handle, 0, &mut exit);
+        let run_elapsed = run_start.elapsed();
+        if run_elapsed.as_secs() >= 2 {
+            diag.log(DiagCategory::Error, format!(
+                "run_vcpu took {}ms! reason={} port=0x{:04X} rc={}",
+                run_elapsed.as_millis(), exit.reason, exit.port, rc
+            ));
+        }
         if rc != 0 {
             consecutive_errors += 1;
             let err_msg = get_last_error().unwrap_or_else(|| "unknown".into());
@@ -457,6 +478,14 @@ fn vm_run_loop(
             }
         }
 
+        let handler_elapsed = run_start.elapsed();
+        if handler_elapsed.as_secs() >= 2 {
+            diag.log(DiagCategory::Error, format!(
+                "exit handler took {}ms! reason={}",
+                handler_elapsed.as_millis() - run_elapsed.as_millis(), exit.reason
+            ));
+        }
+
         // Advance PIT based on wall-clock elapsed time; IRQ0 injection handled internally
         // Cap at ~1ms worth of ticks to avoid blocking on large time deltas
         let pit_elapsed = last_pit_tick.elapsed();
@@ -464,12 +493,42 @@ fn vm_run_loop(
             let ticks = ((pit_elapsed.as_micros() as u64 * PIT_FREQ / 1_000_000) as u32).min(PIT_FREQ as u32 / 100);
             if ticks > 0 {
                 last_pit_tick = Instant::now();
-                corevm_pit_advance(handle, ticks);
+                let fires = corevm_pit_advance(handle, ticks);
+                if fires > 0 {
+                    let dbg = corevm_pit_debug(handle);
+                    let mode = dbg & 0xFF;
+                    let enabled = (dbg >> 8) & 1;
+                    let output = (dbg >> 9) & 1;
+                    let current = (dbg >> 16) & 0xFFFF;
+                    let count = (dbg >> 32) & 0xFFFF;
+                    diag.log(DiagCategory::Interrupt, format!(
+                        "PIT fired {} ticks={} mode={} en={} out={} cur={} cnt={}",
+                        fires, ticks, mode, enabled, output, current, count
+                    ));
+                }
             }
         }
 
+        // Log PIT state every 5000 iterations
+        static mut PIT_LOG_CTR: u64 = 0;
+        unsafe { PIT_LOG_CTR += 1; }
+        if unsafe { PIT_LOG_CTR } % 5000 == 0 {
+            let dbg = corevm_pit_debug(handle);
+            let mode = dbg & 0xFF;
+            let enabled = (dbg >> 8) & 1;
+            let output = (dbg >> 9) & 1;
+            let current = (dbg >> 16) & 0xFFFF;
+            let count = (dbg >> 32) & 0xFFFF;
+            diag.log(DiagCategory::Interrupt, format!(
+                "PIT status: mode={} en={} out={} cur={} cnt={}", mode, enabled, output, current, count
+            ));
+        }
+
         // Poll device IRQs (PS/2 keyboard IRQ 1, mouse IRQ 12, etc.)
-        corevm_poll_irqs(handle);
+        let poll_inj = corevm_poll_irqs(handle);
+        if poll_inj > 0 {
+            diag.log(DiagCategory::Interrupt, format!("poll_irqs injected {}", poll_inj));
+        }
 
         // Drain debug port output on every iteration
         {

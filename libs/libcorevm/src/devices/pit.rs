@@ -58,7 +58,7 @@ pub struct PitChannel {
     /// Whether counting is enabled (set after a full reload value is written).
     pub enabled: bool,
     /// Internal running counter that decrements on each tick.
-    current: u16,
+    pub current: u16,
 }
 
 impl PitChannel {

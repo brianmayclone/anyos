@@ -87,6 +87,23 @@ struct WHV_RUN_VP_EXIT_CONTEXT {
     exit_data: [u8; 256],
 }
 
+// --- Thread-safe cancel support ---
+// Stored after partition creation so cancel_vcpu_global can be called from any thread.
+static CANCEL_PARTITION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static CANCEL_FN_PTR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Cancel a running WHvRunVirtualProcessor from any thread.
+pub fn cancel_vcpu_global(vcpu_id: u32) -> i32 {
+    let partition = CANCEL_PARTITION.load(core::sync::atomic::Ordering::Relaxed);
+    let fn_ptr = CANCEL_FN_PTR.load(core::sync::atomic::Ordering::Relaxed);
+    if partition == 0 || fn_ptr == 0 {
+        return -1;
+    }
+    let cancel_fn: FnCancelRunVirtualProcessor = unsafe { core::mem::transmute(fn_ptr) };
+    let hr = cancel_fn(partition as WHV_PARTITION_HANDLE, vcpu_id, 0);
+    if hr >= 0 { 0 } else { -1 }
+}
+
 // --- WHP constants ---
 
 const WHV_PROPERTY_PROCESSOR_COUNT: u32 = 0x00001FFF; // WHvPartitionPropertyCodeProcessorCount
@@ -176,6 +193,7 @@ type FnGetVirtualProcessorRegisters = extern "system" fn(WHV_PARTITION_HANDLE, u
 type FnSetVirtualProcessorRegisters = extern "system" fn(WHV_PARTITION_HANDLE, u32, *const u32, u32, *const WHV_REGISTER_VALUE) -> i32;
 // WHvRequestInterrupt(partition, *interrupt_control, size) -> HRESULT
 type FnRequestInterrupt = extern "system" fn(WHV_PARTITION_HANDLE, *const u8, u32) -> i32;
+type FnCancelRunVirtualProcessor = extern "system" fn(WHV_PARTITION_HANDLE, u32, u32) -> i32;
 
 struct WhpApi {
     get_capability: FnGetCapability,
@@ -191,6 +209,7 @@ struct WhpApi {
     get_regs: FnGetVirtualProcessorRegisters,
     set_regs: FnSetVirtualProcessorRegisters,
     request_interrupt: Option<FnRequestInterrupt>,
+    cancel_run: FnCancelRunVirtualProcessor,
 }
 
 // Windows API imports for DLL loading
@@ -339,6 +358,7 @@ impl WhpBackend {
                     let p = GetProcAddress(dll, b"WHvRequestInterrupt\0".as_ptr());
                     if p.is_null() { None } else { Some(core::mem::transmute(p)) }
                 },
+                cancel_run: load!("WHvCancelRunVirtualProcessor"),
             };
 
             // Check if the hypervisor is present
@@ -405,6 +425,10 @@ impl WhpBackend {
                 (api.delete_partition)(partition);
                 return Err(VmError::BackendErrorCtx(hr, "WHvSetupPartition"));
             }
+
+            // Store partition handle and cancel function for thread-safe cancel support.
+            CANCEL_PARTITION.store(partition as u64, core::sync::atomic::Ordering::Relaxed);
+            CANCEL_FN_PTR.store(api.cancel_run as usize as u64, core::sync::atomic::Ordering::Relaxed);
 
             Ok(WhpBackend {
                 partition,
@@ -789,7 +813,17 @@ impl VmBackend for WhpBackend {
         if FIRST.swap(false, core::sync::atomic::Ordering::Relaxed) {
             whp_debug(format_args!("run_vcpu entered for the first time"));
         }
+        let mut inner_loops = 0u32;
         loop {
+            // Break out of inner loop periodically so the vmmanager can advance
+            // the PIT timer, poll IRQs, and process other events. Without this,
+            // LAPIC/IOAPIC MMIO handled internally via `continue` can starve
+            // the timer and cause the guest to hang polling LAPIC timer counts.
+            inner_loops += 1;
+            if inner_loops > 64 {
+                return Ok(VmExitReason::InterruptWindow);
+            }
+
             // Apply pending MMIO read response before re-entering the guest.
             // This sets the destination register with the device's read value.
             if let Some((value, dest_reg)) = self.pending_mmio_read.take() {
@@ -1171,7 +1205,7 @@ impl VmBackend for WhpBackend {
                     // Re-enter guest
                     continue;
                 }
-                WHV_EXIT_REASON_CANCELED => return Ok(VmExitReason::Halted),
+                WHV_EXIT_REASON_CANCELED => return Ok(VmExitReason::InterruptWindow),
                 WHV_EXIT_REASON_NONE => return Ok(VmExitReason::Error),
                 _ => return Ok(VmExitReason::Error),
             }

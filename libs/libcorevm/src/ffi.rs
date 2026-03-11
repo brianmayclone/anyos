@@ -279,6 +279,18 @@ pub extern "C" fn corevm_inject_interrupt(handle: u64, vcpu_id: u32, vector: u8)
     }
 }
 
+/// Cancel a running WHvRunVirtualProcessor call, causing it to return.
+/// Safe to call from any thread — uses atomic globals, no VM registry access.
+#[no_mangle]
+pub extern "C" fn corevm_cancel_vcpu(_handle: u64, vcpu_id: u32) -> i32 {
+    #[cfg(feature = "windows")]
+    {
+        crate::backend::whp::cancel_vcpu_global(vcpu_id)
+    }
+    #[cfg(not(feature = "windows"))]
+    { let _ = (_handle, vcpu_id); 0 }
+}
+
 /// Advance the PIT timer by `ticks` clock cycles.
 /// If channel 0 fires, raises IRQ0 on the PIC and injects the resulting
 /// interrupt vector into vCPU 0. Returns the number of IRQ0 fires.
@@ -307,6 +319,24 @@ pub extern "C" fn corevm_pit_advance(handle: u64, ticks: u32) -> u32 {
                 }
             }
             fires
+        }
+        None => 0,
+    }
+}
+
+/// Return PIT channel 0 debug info: mode | (enabled << 8) | (output << 9) | (current << 16)
+#[no_mangle]
+pub extern "C" fn corevm_pit_debug(handle: u64) -> u64 {
+    match get_vm(handle) {
+        Some(vm) => {
+            if let Some(pit) = vm.pit_mut() {
+                let ch = &pit.channels[0];
+                (ch.mode as u64)
+                    | ((ch.enabled as u64) << 8)
+                    | ((ch.output as u64) << 9)
+                    | ((ch.current as u64) << 16)
+                    | ((ch.count as u64) << 32)
+            } else { 0 }
         }
         None => 0,
     }
