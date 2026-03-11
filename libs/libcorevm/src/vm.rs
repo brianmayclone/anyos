@@ -371,6 +371,15 @@ impl Vm {
         }
     }
 
+    /// Get a mutable reference to the VGA adapter, if set up.
+    pub fn svga_mut(&mut self) -> Option<&mut Svga> {
+        if self.svga_ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *self.svga_ptr })
+        }
+    }
+
     /// Get a mutable reference to the AHCI controller, if set up.
     pub fn ahci(&mut self) -> Option<&mut Ahci> {
         if self.ahci_ptr.is_null() {

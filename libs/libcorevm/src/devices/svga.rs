@@ -207,6 +207,22 @@ impl Svga {
         &self.text_buffer
     }
 
+    /// Sync the text buffer from guest physical memory at 0xB8000.
+    /// In hardware-virtualization mode (KVM/WHP), VGA memory writes go
+    /// directly to RAM and bypass the MMIO handler. This function copies
+    /// the text buffer from guest RAM into our internal buffer.
+    ///
+    /// # Safety
+    /// `ram_ptr` must point to a valid guest RAM allocation of at least
+    /// `0xB8000 + 80*25*2` bytes.
+    pub unsafe fn sync_text_buffer_from_ram(&mut self, ram_ptr: *const u8) {
+        if ram_ptr.is_null() { return; }
+        let src = ram_ptr.add(0xB8000);
+        let count = self.text_buffer.len().min(80 * 25);
+        let src_slice = core::slice::from_raw_parts(src as *const u16, count);
+        self.text_buffer[..count].copy_from_slice(src_slice);
+    }
+
     /// Switch to a new display mode.
     ///
     /// Reallocates the framebuffer if the new mode requires a different

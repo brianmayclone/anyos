@@ -570,6 +570,7 @@ pub extern "C" fn corevm_ps2_mouse_move(handle: u64, dx: i16, dy: i16, buttons: 
 
 /// Get a pointer to the VGA framebuffer pixel data.
 /// Sets `*out_ptr` and `*out_len`. Returns 0 on success, -1 on error.
+/// Returns len=0 when in text mode (caller should use get_text_buffer instead).
 #[no_mangle]
 pub extern "C" fn corevm_vga_get_framebuffer(
     handle: u64, out_ptr: *mut *const u8, out_len: *mut u32,
@@ -578,6 +579,12 @@ pub extern "C" fn corevm_vga_get_framebuffer(
     if out_ptr.is_null() || out_len.is_null() { return -1; }
     match vm.svga() {
         Some(svga) => {
+            // Only return framebuffer in graphics modes; in text mode return empty
+            // so the caller falls through to get_text_buffer.
+            if svga.mode == crate::devices::svga::VgaMode::Text80x25 {
+                unsafe { *out_ptr = core::ptr::null(); *out_len = 0; }
+                return 0;
+            }
             let fb = svga.get_framebuffer();
             unsafe {
                 *out_ptr = fb.as_ptr();
@@ -591,12 +598,23 @@ pub extern "C" fn corevm_vga_get_framebuffer(
 
 /// Get a pointer to the VGA text buffer (array of u16: char+attr pairs).
 /// Sets `*out_ptr` and `*out_len` (number of u16 entries). Returns 0 on success, -1 on error.
+/// In hardware-virt mode, syncs the text buffer from guest RAM first.
 #[no_mangle]
 pub extern "C" fn corevm_vga_get_text_buffer(
     handle: u64, out_ptr: *mut *const u16, out_len: *mut u32,
 ) -> i32 {
     let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
     if out_ptr.is_null() || out_len.is_null() { return -1; }
+
+    // In hardware-virt mode (KVM/WHP), sync text buffer from guest RAM
+    // since VGA memory writes bypass the MMIO handler.
+    let (ram_ptr, ram_size) = vm.memory.ram_ptr();
+    if ram_size > 0xB8000 + 80 * 25 * 2 {
+        if let Some(svga) = vm.svga_mut() {
+            unsafe { svga.sync_text_buffer_from_ram(ram_ptr); }
+        }
+    }
+
     match vm.svga() {
         Some(svga) => {
             let tb = svga.get_text_buffer();

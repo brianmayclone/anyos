@@ -75,7 +75,7 @@ struct WHV_RUN_VP_EXIT_CONTEXT {
 // --- WHP constants ---
 
 const WHV_PROPERTY_PROCESSOR_COUNT: u32 = 0x00001FFF; // WHvPartitionPropertyCodeProcessorCount
-const WHV_PROPERTY_EXTENDED_VM_EXITS: u32 = 0x00000002; // WHvPartitionPropertyCodeExtendedVmExits
+const WHV_PROPERTY_EXTENDED_VM_EXITS: u32 = 0x00000001; // WHvPartitionPropertyCodeExtendedVmExits
 
 const WHV_MAP_GPA_RANGE_FLAG_READ: u32 = 0x1;
 const WHV_MAP_GPA_RANGE_FLAG_WRITE: u32 = 0x2;
@@ -313,6 +313,131 @@ impl WhpBackend {
     }
 }
 
+/// Decode an MMIO instruction to extract access size and write data.
+/// WHP doesn't provide these in the exit context, so we parse the instruction bytes.
+/// Returns (access_size, write_data). write_data is 0 for reads.
+fn decode_mmio_instruction(instr: &[u8], regs: &VcpuRegs) -> (u8, u64) {
+    if instr.is_empty() {
+        return (4, 0);
+    }
+
+    let mut i = 0;
+    let mut operand_size_override = false;
+    let mut rex = 0u8;
+
+    // Skip prefixes
+    while i < instr.len() {
+        match instr[i] {
+            0x66 => { operand_size_override = true; i += 1; }
+            0x67 | 0xF0 | 0xF2 | 0xF3 | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 => { i += 1; }
+            0x40..=0x4F => { rex = instr[i]; i += 1; }
+            _ => break,
+        }
+    }
+
+    if i >= instr.len() {
+        return (4, 0);
+    }
+
+    let rex_w = (rex & 0x08) != 0;
+
+    let size: u8 = if rex_w { 8 } else if operand_size_override { 2 } else { 4 };
+
+    let opcode = instr[i];
+    match opcode {
+        // MOV r/m8, r8 (write)
+        0x88 => {
+            let reg_val = get_reg_from_modrm(instr.get(i + 1).copied().unwrap_or(0), regs, true);
+            (1, reg_val)
+        }
+        // MOV r/m16/32/64, r16/32/64 (write)
+        0x89 => {
+            let reg_val = get_reg_from_modrm(instr.get(i + 1).copied().unwrap_or(0), regs, false);
+            (size, reg_val)
+        }
+        // MOV r8, r/m8 (read)
+        0x8A => (1, 0),
+        // MOV r16/32/64, r/m16/32/64 (read)
+        0x8B => (size, 0),
+        // MOV r/m8, imm8 (write)
+        0xC6 => {
+            let (_, imm_off) = skip_modrm(&instr[i..]);
+            let imm = instr.get(i + imm_off).copied().unwrap_or(0) as u64;
+            (1, imm)
+        }
+        // MOV r/m16/32/64, imm16/32 (write)
+        0xC7 => {
+            let (_, imm_off) = skip_modrm(&instr[i..]);
+            let imm_size = if operand_size_override { 2 } else { 4 };
+            let imm = read_imm(&instr[i + imm_off..], imm_size);
+            (size, imm)
+        }
+        // MOV AL, moffs (read) / MOV moffs, AL (write)
+        0xA0 => (1, 0),
+        0xA1 => (size, 0),
+        0xA2 => (1, regs.rax & 0xFF),
+        0xA3 => (size, regs.rax),
+        // MOVS (REP prefix handled above, single step)
+        0xA4 => (1, 0), // MOVSB - read+write, treat as read
+        0xA5 => (size, 0),
+        // STOS
+        0xAA => (1, regs.rax & 0xFF),
+        0xAB => (size, regs.rax),
+        // Two-byte opcodes (0x0F prefix)
+        0x0F if i + 1 < instr.len() => {
+            match instr[i + 1] {
+                // MOVZX r, r/m8
+                0xB6 => (1, 0),
+                // MOVZX r, r/m16
+                0xB7 => (2, 0),
+                // MOVSX r, r/m8
+                0xBE => (1, 0),
+                // MOVSX r, r/m16
+                0xBF => (2, 0),
+                _ => (size, 0),
+            }
+        }
+        _ => (size, 0),
+    }
+}
+
+/// Extract the register value indicated by the reg field of ModR/M byte
+fn get_reg_from_modrm(modrm: u8, regs: &VcpuRegs, byte_reg: bool) -> u64 {
+    let reg = ((modrm >> 3) & 7) as usize;
+    let vals = [regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi];
+    let v = if reg < 8 { vals[reg] } else { 0 };
+    if byte_reg { v & 0xFF } else { v }
+}
+
+/// Skip past the ModR/M and SIB bytes + displacement, return (modrm_byte, total_bytes_consumed)
+fn skip_modrm(instr: &[u8]) -> (u8, usize) {
+    if instr.len() < 2 { return (0, 2); }
+    let modrm = instr[1];
+    let mod_bits = (modrm >> 6) & 3;
+    let rm = modrm & 7;
+    let mut off = 2usize; // opcode + modrm
+    if mod_bits != 3 {
+        if rm == 4 { off += 1; } // SIB byte
+        match mod_bits {
+            0 if rm == 5 => { off += 4; } // disp32
+            1 => { off += 1; } // disp8
+            2 => { off += 4; } // disp32
+            _ => {}
+        }
+    }
+    (modrm, off)
+}
+
+/// Read an immediate value of the given size
+fn read_imm(data: &[u8], size: u8) -> u64 {
+    match size {
+        1 if data.len() >= 1 => data[0] as u64,
+        2 if data.len() >= 2 => u16::from_le_bytes([data[0], data[1]]) as u64,
+        4 if data.len() >= 4 => u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as u64,
+        _ => 0,
+    }
+}
+
 fn seg_to_whv(seg: &SegmentReg) -> WhvSegment {
     let attrs: u16 =
         (seg.type_ as u16 & 0xF)
@@ -457,8 +582,8 @@ impl VmBackend for WhpBackend {
                     let data = &ctx.exit_data;
                     let access_info = u32::from_le_bytes([data[0x14], data[0x15], data[0x16], data[0x17]]);
                     let is_write = (access_info & 1) != 0;
-                    let access_size_enc = ((access_info >> 1) & 0x7) as u8;
-                    let access_size = match access_size_enc { 0 => 1, 1 => 2, 3 => 4, _ => 1 };
+                    let access_size = ((access_info >> 1) & 0x7) as u8;
+                    let access_size = if access_size == 0 { 1 } else { access_size };
                     let port = u16::from_le_bytes([data[0x18], data[0x19]]);
                     let rax = u64::from_le_bytes([
                         data[0x20], data[0x21], data[0x22], data[0x23],
@@ -485,6 +610,8 @@ impl VmBackend for WhpBackend {
                     // [0x18..20] Gpa: u64
                     // [0x20..28] Gva: u64
                     let data = &ctx.exit_data;
+                    let instr_byte_count = data[0x00] as usize;
+                    let instr_bytes = &data[0x04..0x04 + instr_byte_count.min(16)];
                     let access_info = u32::from_le_bytes([data[0x14], data[0x15], data[0x16], data[0x17]]);
                     let access_type = access_info & 0x3;
                     let is_write = access_type == 1;
@@ -492,17 +619,20 @@ impl VmBackend for WhpBackend {
                         data[0x18], data[0x19], data[0x1A], data[0x1B],
                         data[0x1C], data[0x1D], data[0x1E], data[0x1F],
                     ]);
-                    let size = if instr_len > 0 { instr_len as u8 } else { 4 };
+
+                    // Decode instruction to get access size and write data
+                    let regs = self.get_vcpu_regs(id)?;
+                    let (access_size, write_data) = decode_mmio_instruction(instr_bytes, &regs);
 
                     // WHP does not auto-advance RIP for MMIO exits
-                    let mut regs = self.get_vcpu_regs(id)?;
-                    regs.rip += instr_len;
-                    self.set_vcpu_regs(id, &regs)?;
+                    let mut new_regs = regs;
+                    new_regs.rip += instr_len;
+                    self.set_vcpu_regs(id, &new_regs)?;
 
                     return if is_write {
-                        Ok(VmExitReason::MmioWrite { addr: gpa, size, data: 0 })
+                        Ok(VmExitReason::MmioWrite { addr: gpa, size: access_size, data: write_data })
                     } else {
-                        Ok(VmExitReason::MmioRead { addr: gpa, size })
+                        Ok(VmExitReason::MmioRead { addr: gpa, size: access_size })
                     };
                 }
                 WHV_EXIT_REASON_MSR => {
