@@ -35,11 +35,14 @@
 #define CMD_CREATE_WINDOW   0x1001
 #define CMD_PRESENT         0x1003
 #define CMD_SET_TITLE       0x1004
+#define CMD_SET_FULLSCREEN_CAP 0x1030
 #define RESP_WINDOW_CREATED 0x2001
 
 #define EVT_KEY_DOWN        0x3001
 #define EVT_KEY_UP          0x3002
 #define EVT_WINDOW_CLOSE    0x3007
+#define EVT_FULLSCREEN_ENTER 0x300D
+#define EVT_FULLSCREEN_EXIT  0x300E
 
 /* ── Raw Syscall ───────────────────────────────────────────────────────── */
 
@@ -163,6 +166,10 @@ static void poll_events(void)
             if (dk != 0) {
                 key_push(evt_type == EVT_KEY_DOWN ? 1 : 0, dk);
             }
+        } else if (evt_type == EVT_FULLSCREEN_ENTER
+                || evt_type == EVT_FULLSCREEN_EXIT) {
+            /* Compositor scales our 320x200 SCALE_CONTENT buffer automatically;
+               nothing to do here — just consume the event. */
         }
     }
 }
@@ -226,6 +233,18 @@ void DG_Init(void)
     }
     if (g_window_id == 0) {
         printf("DG_Init: WARNING - failed to create window!\n");
+    }
+
+    /* Mark window as fullscreen-capable (Alt+Enter toggles fullscreen) */
+    if (g_window_id != 0) {
+        uint32_t fs_cmd[5];
+        fs_cmd[0] = CMD_SET_FULLSCREEN_CAP;
+        fs_cmd[1] = g_window_id;
+        fs_cmd[2] = 0;  /* auto_enter=0 (user triggers via Alt+Enter) */
+        fs_cmd[3] = 0;
+        fs_cmd[4] = 0;
+        _syscall(SYS_EVT_CHAN_EMIT, g_channel_id, (int)fs_cmd, 0, 0);
+        printf("DG_Init: fullscreen capability registered\n");
     }
 }
 

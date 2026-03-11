@@ -20,6 +20,11 @@ extern bad_rsp_recovery
 ; Defined in Rust (scheduler.rs) as #[no_mangle] pub static.
 extern BAD_RSP_SAVED
 
+; Saved DS/ES from ISR/IRQ entry — for #GP diagnostics.
+; Defined in Rust (idt.rs) as #[no_mangle] pub static mut.
+extern SAVED_FAULT_DS
+extern SAVED_FAULT_ES
+
 ; =============================================================================
 ; ISR stubs - CPU Exceptions (INT 0-31)
 ; =============================================================================
@@ -118,6 +123,16 @@ IRQ 23, 55      ; LAPIC Spurious
 ; Common ISR stub - saves all GPRs, calls Rust isr_handler, restores state
 ; =============================================================================
 isr_common_stub:
+    ; Capture DS/ES BEFORE overwriting — for #GP diagnostics.
+    ; In 64-bit long mode, DS base is forced to 0, so RIP-relative
+    ; addressing works even when DS holds a null selector (0x0000).
+    push rax
+    mov ax, ds
+    mov word [rel SAVED_FAULT_DS], ax
+    mov ax, es
+    mov word [rel SAVED_FAULT_ES], ax
+    pop rax
+
     ; Save all general-purpose registers (no pushad in 64-bit mode)
     push rax
     push rbx
@@ -238,6 +253,14 @@ isr_common_stub:
 ; Common IRQ stub - saves all GPRs, calls Rust irq_handler, restores state
 ; =============================================================================
 irq_common_stub:
+    ; Capture DS/ES BEFORE overwriting (same as ISR stub)
+    push rax
+    mov ax, ds
+    mov word [rel SAVED_FAULT_DS], ax
+    mov ax, es
+    mov word [rel SAVED_FAULT_ES], ax
+    pop rax
+
     push rax
     push rbx
     push rcx

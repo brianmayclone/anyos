@@ -723,13 +723,13 @@ fn run_vm_step() -> bool {
         }
         VmExitReason::MmioRead { addr, size } => {
             let mut data = [0u8; 8];
-            inst.handle.handle_mmio_exit(addr, 0, size, &mut data[..size as usize]);
+            inst.handle.handle_mmio_exit(addr, 0, size, &mut data[..size as usize], 0, 0);
         }
         VmExitReason::MmioWrite { addr, size, data } => {
             let bytes = data.to_le_bytes();
             let mut buf = [0u8; 8];
             buf[..size as usize].copy_from_slice(&bytes[..size as usize]);
-            inst.handle.handle_mmio_exit(addr, 1, size, &mut buf[..size as usize]);
+            inst.handle.handle_mmio_exit(addr, 1, size, &mut buf[..size as usize], 0, 0);
         }
         VmExitReason::Halted => {
             // HLT pauses until the next interrupt. Sleep briefly so the

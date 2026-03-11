@@ -40,6 +40,7 @@ struct GameState {
     last_mouse_x: i32,
     last_mouse_y: i32,
     mouse_captured: bool,
+    fullscreen: bool,
 }
 
 static mut STATE: Option<GameState> = None;
@@ -146,6 +147,7 @@ fn main() {
             last_mouse_x: 400,
             last_mouse_y: 300,
             mouse_captured: false,
+            fullscreen: false,
         });
     }
 
@@ -214,6 +216,50 @@ fn main() {
         s.last_mouse_x = x;
         s.last_mouse_y = y;
         s.player.mouse_move(dx as f32, dy as f32);
+    });
+
+    // ── Fullscreen support ────────────────────────────────────────────────
+    window_ref.set_fullscreen_capable(true);
+
+    window_ref.on_fullscreen_enter(|_| {
+        if let Some(info) = libanyui_client::get_fullscreen_info() {
+            let s = unsafe { STATE.as_mut().unwrap() };
+            s.fullscreen = true;
+            s.canvas_w = info.width;
+            s.canvas_h = info.height;
+            // Render at half resolution for performance
+            s.fb_w = info.width / 2;
+            s.fb_h = info.height / 2;
+            gl::gl_resize(s.fb_w, s.fb_h);
+            gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
+            if info.fb_ptr != 0 {
+                gl::gl_init_fullscreen(
+                    info.fb_ptr as *mut u32,
+                    info.width,
+                    info.height,
+                    info.stride,
+                );
+            }
+            anyos_std::println!("forger: fullscreen ENTER {}x{} render={}x{}", info.width, info.height, s.fb_w, s.fb_h);
+        }
+    });
+
+    window_ref.on_fullscreen_exit(|_| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.fullscreen = false;
+        gl::gl_exit_fullscreen();
+        // Restore canvas size from actual widget
+        let w = s.canvas.get_stride();
+        let h = s.canvas.get_height();
+        if w > 0 && h > 0 {
+            s.canvas_w = w;
+            s.canvas_h = h;
+            s.fb_w = w / 2;
+            s.fb_h = h / 2;
+            gl::gl_resize(s.fb_w, s.fb_h);
+            gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
+        }
+        anyos_std::println!("forger: fullscreen EXIT {}x{}", s.canvas_w, s.canvas_h);
     });
 
     // Reset FPS timer just before event loop so init time is not counted
@@ -288,7 +334,7 @@ fn game_tick() {
     // Render
     s.renderer.render(ex, ey, ez, s.fb_w, s.fb_h);
 
-    // Swap to canvas (upscale from half-res)
+    // Swap: upscale from half-res render buffer to display
     let fb_ptr = gl::swap_buffers();
     if !fb_ptr.is_null() {
         let src = unsafe { core::slice::from_raw_parts(fb_ptr, (s.fb_w * s.fb_h) as usize) };

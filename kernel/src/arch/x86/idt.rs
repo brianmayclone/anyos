@@ -11,6 +11,14 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 /// Total IDT entries (covers the full x86 interrupt vector range).
 const IDT_ENTRIES: usize = 256;
 
+/// Saved DS/ES from the ISR/IRQ stub entry — captured BEFORE the stub
+/// overwrites them with kernel segment 0x10.  Used by the #GP handler to
+/// diagnose null-DS faults in 32-bit compat mode.
+#[no_mangle]
+pub static mut SAVED_FAULT_DS: u16 = 0;
+#[no_mangle]
+pub static mut SAVED_FAULT_ES: u16 = 0;
+
 /// Per-CPU re-entrancy guard for the fault handler.
 /// Prevents recursive SIGSEGV crash loops when SCHEDULER data is corrupted:
 /// try_exit_current accesses corrupted per_cpu Vec ptr → #PF → handler calls
@@ -82,6 +90,59 @@ fn uart_put_hex(n: u64) {
         uart_putc(buf[i]);
     }
 }
+/// Check if the instruction at `rip` is IRETQ (0x48 0xCF) and dump the 5-value
+/// return frame from the stack. When IRETQ faults, the CPU restores RSP to the
+/// pre-IRETQ value, so `saved_rsp` points to: [RIP, CS, RFLAGS, RSP, SS].
+fn dump_iretq_frame(rip: u64, saved_rsp: u64) {
+    // Only check kernel-space addresses
+    if rip < 0xFFFF_FFFF_8000_0000 {
+        return;
+    }
+    // Read the 2-byte opcode at fault RIP: REX.W prefix (0x48) + IRET (0xCF)
+    let opcodes = unsafe { core::slice::from_raw_parts(rip as *const u8, 2) };
+    if opcodes[0] != 0x48 || opcodes[1] != 0xCF {
+        return;
+    }
+    crate::serial_println!("  >>> IRETQ fault detected! Dumping return frame at RSP={:#018x}:", saved_rsp);
+    // Validate saved_rsp is in kernel higher-half and aligned
+    if saved_rsp < 0xFFFF_FFFF_8000_0000 || saved_rsp & 0x7 != 0 {
+        crate::serial_println!("  >>> Invalid RSP for IRETQ frame (not kernel-aligned)");
+        return;
+    }
+    let p = saved_rsp as *const u64;
+    unsafe {
+        let ret_rip    = *p;
+        let ret_cs     = *p.add(1);
+        let ret_rflags = *p.add(2);
+        let ret_rsp    = *p.add(3);
+        let ret_ss     = *p.add(4);
+        crate::serial_println!("    Return RIP:    {:#018x}", ret_rip);
+        crate::serial_println!("    Return CS:     {:#018x}", ret_cs);
+        crate::serial_println!("    Return RFLAGS: {:#018x}", ret_rflags);
+        crate::serial_println!("    Return RSP:    {:#018x}", ret_rsp);
+        crate::serial_println!("    Return SS:     {:#018x}", ret_ss);
+        // Flag suspicious values
+        let cs_rpl = ret_cs & 3;
+        let canonical_ok = ret_rip < 0x0000_8000_0000_0000 || ret_rip >= 0xFFFF_8000_0000_0000;
+        if !canonical_ok {
+            crate::serial_println!("    !!! Return RIP is NON-CANONICAL — stack corruption!");
+        }
+        if cs_rpl == 3 {
+            // User-mode return — check RSP is in user range
+            if ret_rsp >= 0x0000_8000_0000_0000 {
+                crate::serial_println!("    !!! Return RSP is non-canonical for user mode!");
+            }
+            let valid_user_cs = matches!(ret_cs, 0x1B | 0x2B);
+            if !valid_user_cs {
+                crate::serial_println!("    !!! Return CS={:#x} is not a valid user CS!", ret_cs);
+            }
+            if ret_ss != 0x23 {
+                crate::serial_println!("    !!! Return SS={:#x} is not 0x23 (user data)!", ret_ss);
+            }
+        }
+    }
+}
+
 /// GDT selector for Ring 0 code segment.
 const KERNEL_CODE_SEG: u16 = 0x08;
 
@@ -369,6 +430,8 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
             };
             crate::serial_println!("  CR2:    {:#018x} ({})", cr2, reason);
         }
+        // Detect IRETQ fault and dump the return frame
+        dump_iretq_frame(frame.rip, frame.rsp);
         if frame.err_code != 0 && frame.int_no != 14 {
             crate::serial_println!("  Error:  {:#x}", frame.err_code);
         }
@@ -841,6 +904,14 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                     "  R12={:#018x} R13={:#018x} R14={:#018x} R15={:#018x}",
                     frame.r12, frame.r13, frame.r14, frame.r15
                 );
+                // Print DS/ES captured by ISR stub BEFORE overwrite
+                let (saved_ds, saved_es) = unsafe { (SAVED_FAULT_DS, SAVED_FAULT_ES) };
+                crate::serial_println!("  DS={:#06x}  ES={:#06x} (at fault time)", saved_ds, saved_es);
+                if saved_ds == 0 {
+                    crate::serial_println!("  !!! DS is NULL — this is the cause of the #GP(0)!");
+                    crate::serial_println!("  DS was not restored to 0x23 before returning to user mode.");
+                }
+                dump_iretq_frame(frame.rip, frame.rsp);
                 crate::serial_println!("  User process fault — terminating thread");
                 let gpf_tid = crate::task::scheduler::debug_current_tid();
                 crate::task::crash_info::store_crash(gpf_tid, 139, frame);
@@ -860,6 +931,10 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 "  RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
                 frame.rsi, frame.rdi, frame.rbp, frame.rsp
             );
+            {
+                let (saved_ds, saved_es) = unsafe { (SAVED_FAULT_DS, SAVED_FAULT_ES) };
+                crate::serial_println!("  DS={:#06x}  ES={:#06x} (at fault time)", saved_ds, saved_es);
+            }
             // Stack location diagnostics
             {
                 let frame_addr = frame as *const InterruptFrame as u64;
@@ -872,6 +947,7 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                     crate::serial_println!("  CRITICAL: Frame is OUTSIDE kernel stack bounds!");
                 }
             }
+            dump_iretq_frame(frame.rip, frame.rsp);
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
             crate::drivers::rsod::show_exception(frame, "General Protection Fault (#GP)");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
@@ -1006,6 +1082,7 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 crate::serial_println!("  CR3={:#018x} PML4[{}] PDPT[{}] PD[{}] PT[{}]",
                     cr3_val, pml4i, pdpti, pdi, pti);
             }
+            dump_iretq_frame(frame.rip, frame.rsp);
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
             crate::drivers::rsod::show_exception(frame, "Page Fault (#PF)");
             loop { unsafe { core::arch::asm!("cli; hlt"); } }
