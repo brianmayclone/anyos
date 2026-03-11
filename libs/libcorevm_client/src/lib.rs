@@ -201,7 +201,7 @@ struct CoreVmLib {
 
     // I/O and MMIO exit dispatch
     handle_io_exit: extern "C" fn(u64, u16, u8, u8, *mut u8) -> i32,
-    handle_mmio_exit: extern "C" fn(u64, u64, u8, u8, *mut u8) -> i32,
+    handle_mmio_exit: extern "C" fn(u64, u64, u8, u8, *mut u8, u8) -> i32,
 
     // Device setup
     setup_standard_devices: extern "C" fn(u64) -> i32,
@@ -479,8 +479,8 @@ impl VmHandle {
     }
 
     /// Dispatch an MMIO exit to registered device handlers.
-    pub fn handle_mmio_exit(&self, addr: u64, direction: u8, size: u8, data: &mut [u8]) -> i32 {
-        (lib().handle_mmio_exit)(self.handle, addr, direction, size, data.as_mut_ptr())
+    pub fn handle_mmio_exit(&self, addr: u64, direction: u8, size: u8, data: &mut [u8], dest_reg: u8) -> i32 {
+        (lib().handle_mmio_exit)(self.handle, addr, direction, size, data.as_mut_ptr(), dest_reg)
     }
 
     // ── Device setup ─────────────────────────────────────────────

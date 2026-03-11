@@ -689,6 +689,7 @@ impl VmBackend for KvmBackend {
                         Ok(VmExitReason::MmioRead {
                             addr: mmio.phys_addr,
                             size: mmio.len as u8,
+                            dest_reg: 0,
                         })
                     }
                 }

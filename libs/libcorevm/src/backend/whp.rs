@@ -543,6 +543,34 @@ fn read_imm(data: &[u8], size: u8) -> u64 {
     }
 }
 
+/// Decode the destination register index from an MMIO read instruction.
+/// Returns 0-7 corresponding to RAX..RDI. Falls back to 0 (RAX).
+fn decode_mmio_dest_reg(instr: &[u8]) -> u8 {
+    let mut i = 0;
+    // Skip prefixes
+    while i < instr.len() {
+        match instr[i] {
+            0x66 | 0x67 | 0xF0 | 0xF2 | 0xF3
+            | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65
+            | 0x40..=0x4F => { i += 1; }
+            _ => break,
+        }
+    }
+    if i >= instr.len() { return 0; }
+    let op = instr[i];
+    // MOV r, r/m (0x8B, 0x8A) or MOVZX/MOVSX (0F B6/B7/BE/BF)
+    if (op == 0x8B || op == 0x8A) && i + 1 < instr.len() {
+        return (instr[i + 1] >> 3) & 7;
+    }
+    if op == 0x0F && i + 2 < instr.len() {
+        let op2 = instr[i + 1];
+        if op2 == 0xB6 || op2 == 0xB7 || op2 == 0xBE || op2 == 0xBF {
+            return (instr[i + 2] >> 3) & 7;
+        }
+    }
+    0 // default to RAX
+}
+
 fn seg_to_whv(seg: &SegmentReg) -> WhvSegment {
     let attrs: u16 =
         (seg.type_ as u16 & 0xF)
@@ -833,7 +861,9 @@ impl VmBackend for WhpBackend {
                     return if is_write {
                         Ok(VmExitReason::MmioWrite { addr: gpa, size: access_size, data: write_data })
                     } else {
-                        Ok(VmExitReason::MmioRead { addr: gpa, size: access_size })
+                        // Decode destination register from ModR/M byte
+                        let dest_reg = decode_mmio_dest_reg(instr_bytes);
+                        Ok(VmExitReason::MmioRead { addr: gpa, size: access_size, dest_reg })
                     };
                 }
                 WHV_EXIT_REASON_MSR => {

@@ -383,7 +383,7 @@ fn vm_run_loop(
             2 => {
                 // MmioRead — dispatch to device
                 let mut data = [0u8; 8];
-                corevm_handle_mmio_exit(handle, exit.addr, 0, exit.size, data.as_mut_ptr());
+                corevm_handle_mmio_exit(handle, exit.addr, 0, exit.size, data.as_mut_ptr(), exit.mmio_dest_reg);
                 if diag_enabled {
                     diag.log(DiagCategory::Mmio, format!("MMIO RD addr=0x{:08X} size={}", exit.addr, exit.size));
                 }
@@ -394,7 +394,7 @@ fn vm_run_loop(
                     diag.log(DiagCategory::Mmio, format!("MMIO WR addr=0x{:08X} size={} data=0x{:X}", exit.addr, exit.size, exit.data_u64));
                 }
                 let mut data = exit.data_u64.to_le_bytes();
-                corevm_handle_mmio_exit(handle, exit.addr, 1, exit.size, data.as_mut_ptr());
+                corevm_handle_mmio_exit(handle, exit.addr, 1, exit.size, data.as_mut_ptr(), 0);
             }
             7 => {
                 // Halted — sleep briefly
