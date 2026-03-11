@@ -20,7 +20,8 @@ use libcorevm::ffi::{
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
     corevm_last_error, corevm_last_error_len,
-    corevm_pit_advance, corevm_pit_debug, corevm_poll_irqs, corevm_cancel_vcpu, corevm_debug_port_take_output,
+    corevm_pit_advance, corevm_pit_debug, corevm_poll_irqs, corevm_cancel_vcpu,
+    corevm_read_phys, corevm_debug_port_take_output,
     corevm_fw_cfg_add_file, corevm_set_memory_region,
 };
 use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
@@ -495,16 +496,15 @@ fn vm_run_loop(
                 last_pit_tick = Instant::now();
                 let fires = corevm_pit_advance(handle, ticks);
                 if fires > 0 {
-                    let dbg = corevm_pit_debug(handle);
-                    let mode = dbg & 0xFF;
-                    let enabled = (dbg >> 8) & 1;
-                    let output = (dbg >> 9) & 1;
-                    let current = (dbg >> 16) & 0xFFFF;
-                    let count = (dbg >> 32) & 0xFFFF;
-                    let pic_dbg = get_last_error().unwrap_or_default();
+                    let mut tick_buf = [0u8; 4];
+                    corevm_read_phys(handle, 0x46C, tick_buf.as_mut_ptr(), 4);
+                    let bda_ticks = u32::from_le_bytes(tick_buf);
+                    let mut ivt_buf = [0u8; 4];
+                    corevm_read_phys(handle, 0x20, ivt_buf.as_mut_ptr(), 4);
+                    let ivt8 = u32::from_le_bytes(ivt_buf);
                     diag.log(DiagCategory::Interrupt, format!(
-                        "PIT fired {} ticks={} mode={} out={} cnt={} | {}",
-                        fires, ticks, mode, output, count, pic_dbg
+                        "PIT fired {} ticks={} BDA=0x{:X} IVT8=0x{:08X}",
+                        fires, ticks, bda_ticks, ivt8
                     ));
                 }
             }
@@ -513,15 +513,17 @@ fn vm_run_loop(
         // Log PIT state every 5000 iterations
         static mut PIT_LOG_CTR: u64 = 0;
         unsafe { PIT_LOG_CTR += 1; }
-        if unsafe { PIT_LOG_CTR } % 5000 == 0 {
-            let dbg = corevm_pit_debug(handle);
-            let mode = dbg & 0xFF;
-            let enabled = (dbg >> 8) & 1;
-            let output = (dbg >> 9) & 1;
-            let current = (dbg >> 16) & 0xFFFF;
-            let count = (dbg >> 32) & 0xFFFF;
+        if unsafe { PIT_LOG_CTR } % 200 == 0 {
+            // Read BDA timer tick count at physical 0x46C (DWORD)
+            let mut tick_buf = [0u8; 4];
+            corevm_read_phys(handle, 0x46C, tick_buf.as_mut_ptr(), 4);
+            let bda_ticks = u32::from_le_bytes(tick_buf);
+            // Read IVT entry for INT 8 (4 bytes at physical 0x20)
+            let mut ivt_buf = [0u8; 4];
+            corevm_read_phys(handle, 0x20, ivt_buf.as_mut_ptr(), 4);
+            let ivt8 = u32::from_le_bytes(ivt_buf);
             diag.log(DiagCategory::Interrupt, format!(
-                "PIT status: mode={} en={} out={} cur={} cnt={}", mode, enabled, output, current, count
+                "BDA ticks=0x{:08X} IVT[8]=0x{:08X}", bda_ticks, ivt8
             ));
         }
 

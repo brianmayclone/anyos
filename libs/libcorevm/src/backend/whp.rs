@@ -406,18 +406,20 @@ impl WhpBackend {
                 // Non-fatal: some WHP versions may not support extended exits
             }
 
-            // Enable Local APIC emulation (XApic mode)
+            // Disable APIC emulation — we handle PIC interrupts via
+            // PendingInterruption register. APIC emulation intercepts
+            // interrupt delivery and prevents PendingInterruption from working.
             // WHvPartitionPropertyCodeLocalApicEmulationMode = 0x00001005
-            // WHvX64LocalApicEmulationModeXApic = 1
-            let apic_mode: u32 = 1;
+            // WHvX64LocalApicEmulationModeNone = 0
+            let apic_mode: u32 = 0;
             let hr = (api.set_property)(
                 partition,
-                0x00001005, // WHvPartitionPropertyCodeLocalApicEmulationMode
+                0x00001005,
                 &apic_mode as *const u32 as *const u8,
                 core::mem::size_of::<u32>() as u32,
             );
             if hr < 0 {
-                // Non-fatal: older WHP versions may not support APIC emulation
+                // Non-fatal
             }
 
             let hr = (api.setup_partition)(partition);
@@ -1320,34 +1322,29 @@ impl VmBackend for WhpBackend {
     }
 
     fn inject_interrupt(&mut self, id: u32, vector: u8) -> Result<(), VmError> {
-        // Check RFLAGS.IF — WHP silently drops pending interruptions when IF=0,
-        // which causes the caller to acknowledge the PIC (permanently locking ISR).
-        let mut rflags_val = WHV_REGISTER_VALUE { reg64: 0 };
-        self.get_regs_raw(id, &[REG_RFLAGS], core::slice::from_mut(&mut rflags_val))?;
-        let rflags = unsafe { rflags_val.reg64 };
-        if rflags & (1 << 9) == 0 {
-            return Err(VmError::BackendError(-1)); // IF=0, can't deliver
-        }
-        // Set pending interruption register: bits[7:0]=vector, bits[11:8]=type(0=ext int), bit 12=deliver
-        let val = WHV_REGISTER_VALUE::from_u64((vector as u64) | (0u64 << 8) | (1u64 << 12));
-        self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[val])
+        // WHV_X64_PENDING_INTERRUPTION_REGISTER layout:
+        //   bit 0:      InterruptionPending (1)
+        //   bits 1-3:   InterruptionType (0 = External interrupt)
+        //   bit 4:      DeliverErrorCode (0)
+        //   bits 16-31: InterruptionVector
+        let val = 1u64 | (0u64 << 1) | ((vector as u64) << 16);
+        self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[WHV_REGISTER_VALUE::from_u64(val)])
     }
 
     fn inject_exception(&mut self, id: u32, vector: u8, error_code: Option<u32>) -> Result<(), VmError> {
-        // type=3 (hardware exception), bit 12=deliver
-        let mut val: u64 = (vector as u64) | (3u64 << 8) | (1u64 << 12);
+        // InterruptionType 3 = Hardware exception
+        let mut val: u64 = 1u64 | (3u64 << 1) | ((vector as u64) << 16);
         if let Some(ec) = error_code {
+            val |= 1u64 << 4; // DeliverErrorCode
             val |= (ec as u64) << 32;
-            val |= 1u64 << 13; // has error code
         }
-        let reg_val = WHV_REGISTER_VALUE::from_u64(val);
-        self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[reg_val])
+        self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[WHV_REGISTER_VALUE::from_u64(val)])
     }
 
     fn inject_nmi(&mut self, id: u32) -> Result<(), VmError> {
-        // type=2 (NMI), bit 12=deliver
-        let val = WHV_REGISTER_VALUE::from_u64((2u64 << 8) | (1u64 << 12));
-        self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[val])
+        // InterruptionType 2 = NMI
+        let val = 1u64 | (2u64 << 1);
+        self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[WHV_REGISTER_VALUE::from_u64(val)])
     }
 
     fn request_interrupt_window(&mut self, _id: u32, _enable: bool) -> Result<(), VmError> {
