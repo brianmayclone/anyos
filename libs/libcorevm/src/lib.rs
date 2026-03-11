@@ -33,6 +33,8 @@ pub mod interrupts;
 pub mod io;
 pub mod devices;
 pub mod backend;
+pub mod vm;
+pub mod ffi;
 
 /// Syscall wrappers for the allocator, panic handler, debug output, and
 /// file I/O (used by the IDE controller for on-demand disk access).

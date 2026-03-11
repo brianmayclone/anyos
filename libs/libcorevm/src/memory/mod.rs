@@ -219,6 +219,35 @@ impl GuestMemory {
         unsafe { &*self.mmio.get() }.bounds()
     }
 
+    /// Dispatch an MMIO read to the registered handler.
+    ///
+    /// Returns the value read, or `None` if no handler covers `addr`.
+    /// Used by the VM exit dispatcher for hypervisor MMIO exits.
+    pub fn dispatch_mmio_read(&self, addr: u64, size: u8) -> Option<u64> {
+        let mmio = self.mmio_mut();
+        if let Some(region) = mmio.find(addr) {
+            let offset = addr - region.base;
+            region.handler.read(offset, size).ok()
+        } else {
+            None
+        }
+    }
+
+    /// Dispatch an MMIO write to the registered handler.
+    ///
+    /// Returns `true` if a handler was found and the write was dispatched.
+    /// Used by the VM exit dispatcher for hypervisor MMIO exits.
+    pub fn dispatch_mmio_write(&self, addr: u64, size: u8, val: u64) -> bool {
+        let mmio = self.mmio_mut();
+        if let Some(region) = mmio.find(addr) {
+            let offset = addr - region.base;
+            let _ = region.handler.write(offset, size, val);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Total RAM size in bytes.
     #[inline(always)]
     pub fn ram_size(&self) -> usize {
