@@ -1867,6 +1867,8 @@ struct ForegroundProcess {
     extra_pipes: Vec<u32>,
     /// Output redirect: if set, pipe output goes to file instead of terminal.
     redirect: Option<Redirect>,
+    /// The command line that spawned this process (for job control display).
+    command: String,
 }
 
 // ─── Profile ─────────────────────────────────────────────────────────────────
@@ -3715,49 +3717,26 @@ impl Shell {
                     buf.current_fg = COLOR_FG;
                     if !cmd.is_empty() {
                         buf.write_str(&cmd);
-                        buf.write_char('\n');
+                    } else {
+                        let fallback = format!("TID {}", tid);
+                        buf.write_str(&fallback);
                     }
+                    buf.write_char('\n');
 
                     if was_stopped {
                         // Resume the stopped process with SIGCONT
                         process::send_signal(tid, process::SIGCONT);
-                        // Mark job as no longer stopped and remove from bg_jobs
-                        for job in &mut self.bg_jobs {
-                            if job.tid == tid { job.finished = true; }
-                        }
-                        // Re-attach as foreground process with existing pipes
-                        if has_pipe {
-                            return (true, Some(ForegroundProcess {
-                                tid, pipe_id, stdin_pipe, extra_pipes,
-                                redirect: None,
-                            }), None);
-                        } else {
-                            // No pipe — wait synchronously
-                            let exit_code = process::waitpid(tid);
-                            for job in &mut self.bg_jobs {
-                                if job.tid == tid { job.exit_code = exit_code; }
-                            }
-                            if exit_code != 0 && exit_code != u32::MAX {
-                                buf.current_fg = COLOR_DIM;
-                                let msg = format!("Process exited with code {}\n", exit_code);
-                                buf.write_str(&msg);
-                            }
-                        }
-                    } else {
-                        // Running background job — wait synchronously
-                        for job in &mut self.bg_jobs {
-                            if job.tid == tid { job.finished = true; }
-                        }
-                        let exit_code = process::waitpid(tid);
-                        for job in &mut self.bg_jobs {
-                            if job.tid == tid { job.exit_code = exit_code; }
-                        }
-                        if exit_code != 0 && exit_code != u32::MAX {
-                            buf.current_fg = COLOR_DIM;
-                            let msg = format!("Process exited with code {}\n", exit_code);
-                            buf.write_str(&msg);
-                        }
                     }
+                    // Mark job as done in bg_jobs and re-attach as foreground
+                    for job in &mut self.bg_jobs {
+                        if job.tid == tid { job.finished = true; }
+                    }
+                    // Always return as ForegroundProcess so the event loop
+                    // can handle Ctrl+C / Ctrl+Z while waiting for exit.
+                    return (true, Some(ForegroundProcess {
+                        tid, pipe_id, stdin_pipe, extra_pipes,
+                        redirect: None, command: cmd,
+                    }), None);
                 } else {
                     buf.current_fg = COLOR_FG;
                     buf.write_str("fg: no current job\n");
@@ -3914,9 +3893,9 @@ impl Shell {
                             // Don't close the pipe here — close() destroys it with all
                             // buffered data before the child can read.  The pipe will be
                             // cleaned up when the foreground process exits (poll_fg_processes).
-                            return (true, Some(ForegroundProcess { tid, pipe_id, stdin_pipe, extra_pipes: Vec::new(), redirect: redirect.clone() }), None);
+                            return (true, Some(ForegroundProcess { tid, pipe_id, stdin_pipe, extra_pipes: Vec::new(), redirect: redirect.clone(), command: String::from(cmd_line) }), None);
                         }
-                        return (true, Some(ForegroundProcess { tid, pipe_id, stdin_pipe, extra_pipes: Vec::new(), redirect: redirect.clone() }), None);
+                        return (true, Some(ForegroundProcess { tid, pipe_id, stdin_pipe, extra_pipes: Vec::new(), redirect: redirect.clone(), command: String::from(cmd_line) }), None);
                     }
                 }
             }
@@ -4048,6 +4027,7 @@ impl Shell {
             stdin_pipe: 0, // pipelines don't get stdin forwarding
             extra_pipes,
             redirect,
+            command: String::from(line),
         })
     }
 
@@ -4074,16 +4054,23 @@ impl Shell {
             buf.write_str("No jobs\n");
             return;
         }
+        let last_id = self.bg_jobs.iter().rev().find(|j| !j.finished).map(|j| j.job_id).unwrap_or(0);
         for job in &self.bg_jobs {
             buf.current_fg = COLOR_FG;
-            let status = if job.finished {
-                if job.exit_code == 0 { "Done" } else { "Exit" }
+            let marker = if job.job_id == last_id { "+" } else { "-" };
+            let (status, suffix) = if job.finished {
+                if job.exit_code == 0 { ("Fertig", "") } else { ("Beendet", "") }
             } else if job.stopped {
-                "Stopped"
+                ("Angehalten", "")
             } else {
-                "Running"
+                ("Läuft", " &")
             };
-            let line = format!("[{}]  {:8}  {}\n", job.job_id, status, job.command);
+            let cmd_display = if job.command.is_empty() {
+                format!("TID {}", job.tid)
+            } else {
+                format!("{}{}", job.command, suffix)
+            };
+            let line = format!("[{}]{}  {:<20}{}\n", job.job_id, marker, status, cmd_display);
             buf.write_str(&line);
         }
         // Clean up finished jobs
@@ -5487,18 +5474,20 @@ fn poll_fg_processes(app: &mut TerminalApp) {
 
         if let Some(ref mut fp) = sess.fg_proc {
             let mut read_buf = [0u8; 512];
-            loop {
-                let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
-                if n == 0 || n == u32::MAX { break; }
-                if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
-                    if let Some(ref mut redir) = fp.redirect {
-                        write_redirect(redir, s);
-                    } else {
-                        sess.buf.current_fg = COLOR_FG;
-                        sess.buf.write_str(s);
+            if fp.pipe_id != 0 {
+                loop {
+                    let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
+                    if n == 0 || n == u32::MAX { break; }
+                    if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
+                        if let Some(ref mut redir) = fp.redirect {
+                            write_redirect(redir, s);
+                        } else {
+                            sess.buf.current_fg = COLOR_FG;
+                            sess.buf.write_str(s);
+                        }
                     }
+                    sess.dirty = true;
                 }
-                sess.dirty = true;
             }
 
             let status = process::try_waitpid(fp.tid);
@@ -5509,6 +5498,7 @@ fn poll_fg_processes(app: &mut TerminalApp) {
                 let pipe_id = fp.pipe_id;
                 let stdin_pipe = fp.stdin_pipe;
                 let extra_pipes = fp.extra_pipes.clone();
+                let cmd = fp.command.clone();
                 sess.fg_proc = None;
                 sess.buf.write_str("\n");
                 let job_id = sess.shell.next_job_id;
@@ -5516,7 +5506,7 @@ fn poll_fg_processes(app: &mut TerminalApp) {
                 sess.shell.bg_jobs.push(BackgroundJob {
                     job_id,
                     tid,
-                    command: String::new(),
+                    command: cmd,
                     finished: false,
                     exit_code: 0,
                     stopped: true,
@@ -5532,15 +5522,17 @@ fn poll_fg_processes(app: &mut TerminalApp) {
                 continue;
             }
             if status != process::STILL_RUNNING {
-                loop {
-                    let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
-                    if n == 0 || n == u32::MAX { break; }
-                    if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
-                        if let Some(ref mut redir) = fp.redirect {
-                            write_redirect(redir, s);
-                        } else {
-                            sess.buf.current_fg = COLOR_FG;
-                            sess.buf.write_str(s);
+                if fp.pipe_id != 0 {
+                    loop {
+                        let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
+                        if n == 0 || n == u32::MAX { break; }
+                        if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
+                            if let Some(ref mut redir) = fp.redirect {
+                                write_redirect(redir, s);
+                            } else {
+                                sess.buf.current_fg = COLOR_FG;
+                                sess.buf.write_str(s);
+                            }
                         }
                     }
                 }
@@ -5549,7 +5541,7 @@ fn poll_fg_processes(app: &mut TerminalApp) {
                 let extra_pipes: Vec<u32> = fp.extra_pipes.clone();
                 let exit_code = status;
                 sess.fg_proc = None;
-                ipc::pipe_close(pipe_id);
+                if pipe_id != 0 { ipc::pipe_close(pipe_id); }
                 if stdin_pipe_id != 0 { ipc::pipe_close(stdin_pipe_id); }
                 for &p in &extra_pipes { ipc::pipe_close(p); }
 
@@ -5582,7 +5574,7 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
         if let Some(fp) = sess.fg_proc.take() {
             if fp.stdin_pipe != 0 { ipc::pipe_close(fp.stdin_pipe); }
             process::kill(fp.tid);
-            ipc::pipe_close(fp.pipe_id);
+            if fp.pipe_id != 0 { ipc::pipe_close(fp.pipe_id); }
             for &p in &fp.extra_pipes { ipc::pipe_close(p); }
         }
         sess.su_pending_user = None;
@@ -5607,7 +5599,7 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
             sess.shell.bg_jobs.push(BackgroundJob {
                 job_id,
                 tid: fp.tid,
-                command: String::new(), // will be shown as [job_id]
+                command: fp.command.clone(),
                 finished: false,
                 exit_code: 0,
                 stopped: true,
@@ -5706,6 +5698,7 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                             sess.fg_proc = Some(ForegroundProcess {
                                 tid, pipe_id, stdin_pipe: 0,
                                 extra_pipes: Vec::new(), redirect: None,
+                                command: String::from(cmd),
                             });
                         } else {
                             ipc::pipe_close(pipe_id);

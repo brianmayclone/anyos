@@ -16,6 +16,7 @@ pub struct ThreadInfo {
     pub io_write_bytes: u64,
     pub user_pages: u32,
     pub uid: u16,
+    pub parent_tid: u32,
 }
 
 /// List all live threads (lock-free heap allocation pattern).
@@ -24,11 +25,11 @@ pub fn list_threads() -> Vec<ThreadInfo> {
     struct ThreadSnap {
         tid: u32, priority: u8, state: u8, arch_mode: u8,
         cpu_ticks: u32, io_read_bytes: u64, io_write_bytes: u64,
-        user_pages: u32, name: [u8; 32], name_len: u8, uid: u16,
+        user_pages: u32, name: [u8; 32], name_len: u8, uid: u16, parent_tid: u32,
     }
     let mut buf = [const {
         ThreadSnap { tid: 0, priority: 0, state: 0, arch_mode: 0, cpu_ticks: 0,
-            io_read_bytes: 0, io_write_bytes: 0, user_pages: 0, name: [0; 32], name_len: 0, uid: 0 }
+            io_read_bytes: 0, io_write_bytes: 0, user_pages: 0, name: [0; 32], name_len: 0, uid: 0, parent_tid: 0 }
     }; MAX_SNAP];
     let mut count = 0;
 
@@ -56,7 +57,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                     arch_mode: thread.arch_mode as u8, cpu_ticks: thread.cpu_ticks,
                     io_read_bytes: thread.io_read_bytes, io_write_bytes: thread.io_write_bytes,
                     user_pages: thread.user_pages, name: name_buf, name_len: len as u8,
-                    uid: thread.uid,
+                    uid: thread.uid, parent_tid: thread.parent_tid,
                 };
                 count += 1;
             }
@@ -69,7 +70,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
         result.push(ThreadInfo {
             tid: snap.tid,
             priority: snap.priority,
-            state: match snap.state { 0 => "ready", 1 => "running", _ => "blocked" },
+            state: match snap.state { 0 => "ready", 1 => "running", 2 => "blocked", 4 => "stopped", _ => "blocked" },
             name: alloc::string::String::from(
                 core::str::from_utf8(&snap.name[..snap.name_len as usize]).unwrap_or("?")
             ),
@@ -79,6 +80,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
             io_write_bytes: snap.io_write_bytes,
             user_pages: snap.user_pages,
             uid: snap.uid,
+            parent_tid: snap.parent_tid,
         });
     }
     result

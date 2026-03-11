@@ -35,7 +35,15 @@ pub fn spawn_blocked(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SPAWN_BLOCKED);
         let mut sched = SCHEDULER.lock();
         let sched = match sched.as_mut() { Some(s) => s, None => return 0 };
-        sched.add_thread_blocked(thread)
+        let new_tid = sched.add_thread_blocked(thread);
+        // Set parent_tid inside the same lock (avoids separate lock acquisition).
+        let caller_tid = sched.per_cpu[get_cpu_id()].current_tid.unwrap_or(0);
+        if caller_tid != 0 {
+            if let Some(t) = sched.threads.iter_mut().find(|t| t.tid == new_tid) {
+                t.parent_tid = caller_tid;
+            }
+        }
+        new_tid
     };
     // Debug output OUTSIDE the lock (serial I/O is slow).
     #[cfg(feature = "debug_verbose")]

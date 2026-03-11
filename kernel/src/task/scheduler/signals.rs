@@ -21,6 +21,21 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
         if (sig == SIGTSTP || sig == SIGSTOP) && handler == SIG_DFL {
             let state = sched.threads[idx].state;
             if state == ThreadState::Ready || state == ThreadState::Running || state == ThreadState::Blocked {
+                // If the thread was sleeping (Blocked with wake_at_tick), save the
+                // remaining ticks so SIGCONT can resume the sleep correctly.
+                if state == ThreadState::Blocked {
+                    if let Some(wake_tick) = sched.threads[idx].wake_at_tick {
+                        let now = crate::arch::hal::timer_current_ticks();
+                        let remaining = wake_tick.wrapping_sub(now);
+                        // Only save if the sleep hasn't already expired
+                        if remaining < 0x8000_0000 {
+                            sched.threads[idx].sleep_remaining = remaining;
+                        } else {
+                            sched.threads[idx].sleep_remaining = 0;
+                        }
+                        sched.threads[idx].wake_at_tick = None;
+                    }
+                }
                 sched.threads[idx].state = ThreadState::Stopped;
                 crate::serial_verbose_println!("Signal {}: stopped T{} (was {:?})", sig, tid, state);
                 // Wake any waitpid waiter so it can see the stopped state
@@ -34,13 +49,23 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
         // SIGCONT: resume a stopped thread
         if sig == SIGCONT {
             if sched.threads[idx].state == ThreadState::Stopped {
-                sched.threads[idx].state = ThreadState::Ready;
-                let cpu = sched.threads[idx].affinity_cpu;
-                let n = sched.num_cpus();
-                let target = if cpu < n { cpu } else { 0 };
-                let priority = sched.threads[idx].priority;
-                sched.per_cpu[target].run_queue.enqueue(tid, priority);
-                crate::serial_verbose_println!("Signal {}: continued T{}", sig, tid);
+                // If the thread had remaining sleep time, restore it as Blocked
+                // with a new wake_at_tick instead of making it immediately Ready.
+                if sched.threads[idx].sleep_remaining > 0 {
+                    let now = crate::arch::hal::timer_current_ticks();
+                    sched.threads[idx].wake_at_tick = Some(now.wrapping_add(sched.threads[idx].sleep_remaining));
+                    sched.threads[idx].sleep_remaining = 0;
+                    sched.threads[idx].state = ThreadState::Blocked;
+                    crate::serial_verbose_println!("Signal {}: continued T{} (re-sleeping)", sig, tid);
+                } else {
+                    sched.threads[idx].state = ThreadState::Ready;
+                    let cpu = sched.threads[idx].affinity_cpu;
+                    let n = sched.num_cpus();
+                    let target = if cpu < n { cpu } else { 0 };
+                    let priority = sched.threads[idx].priority;
+                    sched.per_cpu[target].run_queue.enqueue(tid, priority);
+                    crate::serial_verbose_println!("Signal {}: continued T{}", sig, tid);
+                }
             }
             // SIGCONT also clears pending stop signals
             sched.threads[idx].signals.pending &= !((1 << SIGTSTP) | (1 << SIGSTOP));

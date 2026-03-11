@@ -119,7 +119,7 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
             // Thread list: 64 bytes each
             // [tid:u32, prio:u8, state:u8, arch:u8, pad:u8, name:24bytes,
             //  user_pages:u32, cpu_ticks:u32, io_read_bytes:u64, io_write_bytes:u64,
-            //  uid:u16, pad:u16, reserved:u32]
+            //  uid:u16, pad:u16, parent_tid:u32]
             let threads = crate::task::scheduler::list_threads();
             if buf_ptr != 0 && buf_size > 0 {
                 let entry_size = 64usize;
@@ -132,7 +132,8 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                     buf[off..off + 4].copy_from_slice(&t.tid.to_le_bytes());
                     buf[off + 4] = t.priority;
                     buf[off + 5] = match t.state {
-                        "ready" => 0, "running" => 1, "blocked" => 2, "dead" => 3, _ => 255,
+                        "ready" => 0, "running" => 1, "blocked" => 2, "dead" => 3,
+                        "stopped" => 4, _ => 255,
                     };
                     buf[off + 6] = t.arch_mode; // 0=x86_64, 1=x86
                     buf[off + 7] = 0;
@@ -149,7 +150,10 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                     buf[off + 48..off + 56].copy_from_slice(&t.io_write_bytes.to_le_bytes());
                     // uid at offset 56, pad at 58, reserved at 60
                     buf[off + 56..off + 58].copy_from_slice(&t.uid.to_le_bytes());
-                    buf[off + 58..off + 64].fill(0); // padding + reserved
+                    buf[off + 58] = 0;
+                    buf[off + 59] = 0;
+                    // parent_tid at offset 60
+                    buf[off + 60..off + 64].copy_from_slice(&t.parent_tid.to_le_bytes());
                 }
             }
             threads.len() as u32

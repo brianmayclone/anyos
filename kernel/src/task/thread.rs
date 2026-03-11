@@ -161,6 +161,8 @@ pub struct Thread {
     pub fpu_state: FxState,
     /// PIT tick at which a sleeping thread should be woken (None = not sleeping).
     pub wake_at_tick: Option<u32>,
+    /// Remaining sleep ticks when stopped by SIGTSTP (restored on SIGCONT).
+    pub sleep_remaining: u32,
     /// PIT tick at which this thread was terminated (for auto-reap grace period).
     pub terminated_at_tick: Option<u32>,
     /// True if this thread shares its page directory with another thread (intra-process child).
@@ -330,6 +332,7 @@ impl Thread {
             arch_mode: ArchMode::Native64,
             fpu_state: FxState::new_default(),
             wake_at_tick: None,
+            sleep_remaining: 0,
             terminated_at_tick: None,
             pd_shared: false,
             pcid: 0,

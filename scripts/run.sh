@@ -552,7 +552,7 @@ fi
 
 # VGA device flags
 VGA_FLAGS="-vga $VGA"
-DISPLAY_FLAGS=""
+DISPLAY_FLAGS="-display gtk,grab-on-hover=on"
 RES_LABEL=""
 if [ "$VGA" = "virtio" ]; then
     RES_W="${RESOLUTION%%x*}"
@@ -635,6 +635,7 @@ if [ "$USE_XDOTOOL" = true ]; then
         -smp cpus=4 \
         -serial stdio \
         $VGA_FLAGS \
+        $DISPLAY_FLAGS \
         $NET_FLAGS \
         $AUDIO_FLAGS \
         $USB_FLAGS \
@@ -668,6 +669,7 @@ else
         -smp cpus=4 \
         -serial stdio \
         $VGA_FLAGS \
+        $DISPLAY_FLAGS \
         $NET_FLAGS \
         $AUDIO_FLAGS \
         $USB_FLAGS \
