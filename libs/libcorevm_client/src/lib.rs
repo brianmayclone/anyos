@@ -16,18 +16,18 @@
 //! # Usage
 //!
 //! ```rust
-//! use libcorevm_client::{self as vm, VmHandle, ExitReason};
+//! use libcorevm_client::{self as vm, VmHandle};
 //!
 //! vm::init();
-//! let vm = VmHandle::new(16).unwrap(); // 16 MiB RAM
+//! let vm = VmHandle::new(256).unwrap(); // 256 MiB RAM
+//! vm.create_vcpu(0);
 //! vm.load_binary(0xF_0000, &bios_rom);
-//! vm.set_rip(0xFFF0);
 //! vm.setup_standard_devices();
 //!
 //! loop {
-//!     match vm.run(1_000_000) {
-//!         ExitReason::Halted => break,
-//!         ExitReason::InstructionLimit => continue,
+//!     match vm.run_vcpu(0) {
+//!         VmExitReason::Halted => break,
+//!         VmExitReason::IoOut { port, size, data } => { /* handle */ }
 //!         _ => break,
 //!     }
 //! }
@@ -41,79 +41,114 @@ use alloc::vec::Vec;
 use dynlink::{DlHandle, dl_open, dl_sym};
 
 // ══════════════════════════════════════════════════════════════════════
-//  Exit reason and CPU mode enums
+//  C-compatible types (mirror backend/types.rs)
+// ══════════════════════════════════════════════════════════════════════
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VcpuRegs {
+    pub rax: u64, pub rbx: u64, pub rcx: u64, pub rdx: u64,
+    pub rsi: u64, pub rdi: u64, pub rbp: u64, pub rsp: u64,
+    pub r8: u64, pub r9: u64, pub r10: u64, pub r11: u64,
+    pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
+    pub rip: u64, pub rflags: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SegmentReg {
+    pub base: u64,
+    pub limit: u32,
+    pub selector: u16,
+    pub type_: u8,
+    pub present: u8,
+    pub dpl: u8,
+    pub db: u8,
+    pub s: u8,
+    pub l: u8,
+    pub g: u8,
+    pub avl: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DescriptorTable {
+    pub base: u64,
+    pub limit: u16,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VcpuSregs {
+    pub cs: SegmentReg, pub ds: SegmentReg, pub es: SegmentReg,
+    pub fs: SegmentReg, pub gs: SegmentReg, pub ss: SegmentReg,
+    pub tr: SegmentReg, pub ldt: SegmentReg,
+    pub gdt: DescriptorTable, pub idt: DescriptorTable,
+    pub cr0: u64, pub cr2: u64, pub cr3: u64, pub cr4: u64, pub efer: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CpuidEntry {
+    pub function: u32,
+    pub index: u32,
+    pub eax: u32, pub ebx: u32, pub ecx: u32, pub edx: u32,
+}
+
+/// C-compatible tagged struct for VM exit reasons (matches ffi.rs CExitReason).
+#[repr(C)]
+#[derive(Default)]
+struct CExitReason {
+    reason: u32,
+    port: u16,
+    size: u8,
+    _pad: u8,
+    data_u32: u32,
+    _pad2: u32,
+    addr: u64,
+    data_u64: u64,
+    msr_index: u32,
+    cpuid_fn: u32,
+    cpuid_idx: u32,
+    _reserved: u32,
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  VM exit reason enum (Rust-friendly)
 // ══════════════════════════════════════════════════════════════════════
 
 /// Reason the VM stopped executing.
-///
-/// These values match the `u32` codes returned by the `corevm_run` C ABI
-/// function in libcorevm.so:
-/// - 0 = Halted
-/// - 1 = Exception
-/// - 2 = InstructionLimit
-/// - 3 = Breakpoint
-/// - 4 = StopRequested
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum ExitReason {
-    /// The guest executed a HLT instruction.
-    Halted = 0,
-    /// An unrecoverable CPU exception occurred.
-    Exception = 1,
-    /// The maximum instruction count was reached.
-    InstructionLimit = 2,
-    /// A breakpoint (INT 3) was hit.
-    Breakpoint = 3,
-    /// An external stop was requested via [`VmHandle::request_stop`].
-    StopRequested = 4,
+pub enum VmExitReason {
+    IoIn { port: u16, size: u8 },
+    IoOut { port: u16, size: u8, data: u32 },
+    MmioRead { addr: u64, size: u8 },
+    MmioWrite { addr: u64, size: u8, data: u64 },
+    MsrRead { index: u32 },
+    MsrWrite { index: u32, value: u64 },
+    CpuidExit { function: u32, index: u32 },
+    Halted,
+    InterruptWindow,
+    Shutdown,
+    Debug,
+    Error,
 }
 
-impl ExitReason {
-    /// Convert a raw `u32` exit code from the C ABI into an `ExitReason`.
-    ///
-    /// Returns `ExitReason::Exception` for any unrecognized value as a
-    /// safe fallback.
-    pub fn from_u32(val: u32) -> Self {
-        match val {
-            0 => ExitReason::Halted,
-            1 => ExitReason::Exception,
-            2 => ExitReason::InstructionLimit,
-            3 => ExitReason::Breakpoint,
-            4 => ExitReason::StopRequested,
-            _ => ExitReason::Exception,
-        }
-    }
-}
-
-/// CPU execution mode.
-///
-/// These values match the `u32` codes returned by the `corevm_get_mode` C ABI
-/// function in libcorevm.so:
-/// - 0 = RealMode (16-bit)
-/// - 1 = ProtectedMode (32-bit)
-/// - 2 = LongMode (64-bit)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum CpuMode {
-    /// 16-bit real mode.
-    RealMode = 0,
-    /// 32-bit protected mode.
-    ProtectedMode = 1,
-    /// 64-bit long mode.
-    LongMode = 2,
-}
-
-impl CpuMode {
-    /// Convert a raw `u32` mode code from the C ABI into a `CpuMode`.
-    ///
-    /// Returns `CpuMode::RealMode` for any unrecognized value as a
-    /// safe fallback (real mode is the power-on default).
-    pub fn from_u32(val: u32) -> Self {
-        match val {
-            0 => CpuMode::RealMode,
-            1 => CpuMode::ProtectedMode,
-            2 => CpuMode::LongMode,
-            _ => CpuMode::RealMode,
+impl VmExitReason {
+    fn from_c(c: &CExitReason) -> Self {
+        match c.reason {
+            0 => VmExitReason::IoIn { port: c.port, size: c.size },
+            1 => VmExitReason::IoOut { port: c.port, size: c.size, data: c.data_u32 },
+            2 => VmExitReason::MmioRead { addr: c.addr, size: c.size },
+            3 => VmExitReason::MmioWrite { addr: c.addr, size: c.size, data: c.data_u64 },
+            4 => VmExitReason::MsrRead { index: c.msr_index },
+            5 => VmExitReason::MsrWrite { index: c.msr_index, value: c.data_u64 },
+            6 => VmExitReason::CpuidExit { function: c.cpuid_fn, index: c.cpuid_idx },
+            7 => VmExitReason::Halted,
+            8 => VmExitReason::InterruptWindow,
+            9 => VmExitReason::Shutdown,
+            10 => VmExitReason::Debug,
+            _ => VmExitReason::Error,
         }
     }
 }
@@ -123,203 +158,66 @@ impl CpuMode {
 // ══════════════════════════════════════════════════════════════════════
 
 /// Holds all resolved function pointers from libcorevm.so.
-///
-/// Each field corresponds to a `#[no_mangle] pub extern "C"` function
-/// exported by the shared library. The DlHandle is kept alive to
-/// prevent the library from being unloaded.
 struct CoreVmLib {
-    /// Retained handle so the .so stays mapped.
     _handle: DlHandle,
 
-    // ── VM lifecycle ─────────────────────────────────────────────
-    /// Create a new VM with `ram_size_mb` megabytes of guest RAM.
-    /// Returns an opaque handle (0 on failure).
+    // VM lifecycle
     create: extern "C" fn(u32) -> u64,
-    /// Extended create call with explicit logical CPU count.
-    create_ex: Option<extern "C" fn(u32, u32) -> u64>,
-    /// Destroy a VM and free all associated resources.
     destroy: extern "C" fn(u64),
-    /// Reset the VM to power-on state (preserves RAM content and I/O
-    /// handlers, resets CPU and MMU).
-    reset: extern "C" fn(u64),
-    /// Execute up to `max_instructions` guest instructions.
-    /// Returns an `ExitReason` as a `u32`.
-    run: extern "C" fn(u64, u64) -> u32,
-    /// Request the VM to stop at the next instruction boundary.
-    request_stop: extern "C" fn(u64),
+    reset: extern "C" fn(u64) -> i32,
 
-    // ── CPU state: instruction pointer ───────────────────────────
-    /// Get the current instruction pointer (RIP/EIP/IP).
-    get_rip: extern "C" fn(u64) -> u64,
-    /// Set the instruction pointer.
-    set_rip: extern "C" fn(u64, u64),
+    // vCPU management
+    create_vcpu: extern "C" fn(u64, u32) -> i32,
+    destroy_vcpu: extern "C" fn(u64, u32) -> i32,
+    run_vcpu: extern "C" fn(u64, u32, *mut CExitReason) -> i32,
 
-    // ── CPU state: general-purpose registers ─────────────────────
-    /// Read a 64-bit GPR by index (0=RAX..15=R15).
-    get_gpr: extern "C" fn(u64, u8) -> u64,
-    /// Write a 64-bit GPR by index.
-    set_gpr: extern "C" fn(u64, u8, u64),
+    // Register access
+    get_vcpu_regs: extern "C" fn(u64, u32, *mut VcpuRegs) -> i32,
+    set_vcpu_regs: extern "C" fn(u64, u32, *const VcpuRegs) -> i32,
+    get_vcpu_sregs: extern "C" fn(u64, u32, *mut VcpuSregs) -> i32,
+    set_vcpu_sregs: extern "C" fn(u64, u32, *const VcpuSregs) -> i32,
 
-    // ── CPU state: segment registers ─────────────────────────────
-    /// Get segment selector by index (0=ES, 1=CS, 2=SS, 3=DS, 4=FS, 5=GS).
-    get_segment_selector: extern "C" fn(u64, u8) -> u16,
-    /// Get segment base by index.
-    get_segment_base: extern "C" fn(u64, u8) -> u64,
+    // Interrupt injection
+    inject_interrupt: extern "C" fn(u64, u32, u8) -> i32,
+    inject_exception: extern "C" fn(u64, u32, u8, i64) -> i32,
+    inject_nmi: extern "C" fn(u64, u32) -> i32,
+    request_interrupt_window: extern "C" fn(u64, u32, u8) -> i32,
 
-    // ── CPU state: flags ─────────────────────────────────────────
-    /// Get RFLAGS.
-    get_rflags: extern "C" fn(u64) -> u64,
-    /// Set RFLAGS.
-    set_rflags: extern "C" fn(u64, u64),
+    // CPUID
+    set_cpuid: extern "C" fn(u64, *const CpuidEntry, u32) -> i32,
 
-    // ── CPU state: control registers ─────────────────────────────
-    /// Read a control register (n = 0, 2, 3, 4, or 8).
-    get_cr: extern "C" fn(u64, u8) -> u64,
-    /// Write a control register.
-    set_cr: extern "C" fn(u64, u8, u64),
+    // Memory
+    set_memory_region: extern "C" fn(u64, u32, u64, u64, *mut u8) -> i32,
+    read_phys: extern "C" fn(u64, u64, *mut u8, u32) -> i32,
+    write_phys: extern "C" fn(u64, u64, *const u8, u32) -> i32,
+    load_binary: extern "C" fn(u64, u64, *const u8, u32) -> i32,
 
-    // ── CPU state: mode and privilege ────────────────────────────
-    /// Get the current CPU mode as a `u32` (`CpuMode` discriminant).
-    get_mode: extern "C" fn(u64) -> u32,
-    /// Get the current privilege level (0-3).
-    get_cpl: extern "C" fn(u64) -> u8,
-    /// Get the total number of instructions executed since last reset.
-    get_instruction_count: extern "C" fn(u64) -> u64,
-    /// Get configured logical CPU count.
-    get_vcpu_count: Option<extern "C" fn(u64) -> u32>,
+    // Hardware support
+    has_hw_support: extern "C" fn() -> i32,
 
-    // ── Memory access ────────────────────────────────────────────
-    /// Load raw binary data at a guest physical address.
-    /// `data_ptr` / `data_len` define the source buffer.
-    /// Returns 1 on success, 0 on failure.
-    load_binary: extern "C" fn(u64, u64, *const u8, u32) -> u32,
-    /// Map a read-only ROM at a guest physical address.
-    /// Reads from the ROM range return ROM data; writes are silently ignored.
-    /// Returns 0 on success, -1 on failure.
-    load_rom: extern "C" fn(u64, u64, *const u8, u32) -> i32,
-    /// Read a byte from guest physical memory.
-    read_phys_u8: extern "C" fn(u64, u64) -> u8,
-    /// Read a 16-bit value from guest physical memory (little-endian).
-    read_phys_u16: extern "C" fn(u64, u64) -> u16,
-    /// Read a 32-bit value from guest physical memory (little-endian).
-    read_phys_u32: extern "C" fn(u64, u64) -> u32,
-    /// Write a byte to guest physical memory.
-    write_phys_u8: extern "C" fn(u64, u64, u8),
-    /// Write a 16-bit value to guest physical memory (little-endian).
-    write_phys_u16: extern "C" fn(u64, u64, u16),
-    /// Write a 32-bit value to guest physical memory (little-endian).
-    write_phys_u32: extern "C" fn(u64, u64, u32),
+    // I/O and MMIO exit dispatch
+    handle_io_exit: extern "C" fn(u64, u16, u8, u8, *mut u8) -> i32,
+    handle_mmio_exit: extern "C" fn(u64, u64, u8, u8, *mut u8) -> i32,
 
-    // ── Device setup ─────────────────────────────────────────────
-    /// Register all standard devices (PIC, PIT, PS/2, CMOS, serial, VGA).
-    setup_standard_devices: extern "C" fn(u64),
-    /// Register a PCI bus device.
-    setup_pci_bus: extern "C" fn(u64),
-    /// Register an E1000 NIC with the given MMIO base and MAC address.
-    /// `mac_ptr` points to a 6-byte MAC address array.
-    setup_e1000: extern "C" fn(u64, u64, *const u8),
+    // Device setup
+    setup_standard_devices: extern "C" fn(u64) -> i32,
+    setup_e1000: extern "C" fn(u64, *const u8) -> i32,
+    setup_ahci: extern "C" fn(u64, u8) -> i32,
+    ahci_attach_disk: extern "C" fn(u64, u32, i32, u64) -> i32,
+    ahci_attach_cdrom: extern "C" fn(u64, u32, i32, u64) -> i32,
 
-    // ── PS/2 keyboard and mouse input ────────────────────────────
-    /// Inject a keyboard key press (scancode).
-    ps2_key_press: extern "C" fn(u64, u8),
-    /// Inject a keyboard key release (scancode).
-    ps2_key_release: extern "C" fn(u64, u8),
-    /// Inject a mouse movement packet.
-    ps2_mouse_move: extern "C" fn(u64, i16, i16, u8),
+    // PS/2 input
+    ps2_key_press: extern "C" fn(u64, u8) -> i32,
+    ps2_key_release: extern "C" fn(u64, u8) -> i32,
+    ps2_mouse_move: extern "C" fn(u64, i16, i16, u8) -> i32,
 
-    // ── VGA framebuffer access ───────────────────────────────────
-    /// Get a pointer to the VGA framebuffer pixels.
-    /// On success, writes width/height/bpp to the out-pointers and
-    /// returns a pointer to the pixel data. Returns null on failure.
-    vga_get_framebuffer: extern "C" fn(u64, *mut u32, *mut u32, *mut u8) -> *const u8,
-    /// Get a pointer to the VGA text buffer (80x25 u16 cells).
-    /// Returns null if VGA is not in text mode.
-    vga_get_text_buffer: extern "C" fn(u64, *mut u32) -> *const u16,
-    /// Get VGA MMIO debug counters (total writes, text-region writes).
-    vga_debug_counters: extern "C" fn(u64, *mut u64, *mut u64),
+    // Serial
+    serial_send_input: extern "C" fn(u64, *const u8, u32) -> i32,
+    serial_take_output: extern "C" fn(u64, *mut u8, u32) -> i32,
 
-    // ── Serial port ──────────────────────────────────────────────
-    /// Send input bytes to the guest serial port (COM1).
-    serial_send_input: extern "C" fn(u64, *const u8, u32),
-    /// Read output bytes from the guest serial port (COM1).
-    /// Copies up to `buf_len` bytes into `buf_ptr`.
-    /// Returns the number of bytes actually written.
-    serial_take_output: extern "C" fn(u64, *mut u8, u32) -> u32,
-
-    // ── E1000 network ────────────────────────────────────────────
-    /// Deliver a network packet to the guest E1000 NIC.
-    e1000_receive_packet: extern "C" fn(u64, *const u8, u32),
-    /// Take transmitted packets from the guest E1000 NIC.
-    /// Copies serialized packet data into `buf_ptr` (up to `buf_len` bytes).
-    /// Returns the number of bytes written.
-    e1000_take_tx_packets: extern "C" fn(u64, *mut u8, u32) -> u32,
-
-    // ── PIT timer ────────────────────────────────────────────────
-    /// Advance the PIT by one tick.
-    /// Returns 1 if channel 0 fired (IRQ 0 should be raised), 0 otherwise.
-    pit_tick: extern "C" fn(u64) -> u32,
-
-    /// Advance the PIT by n ticks in bulk.
-    /// Returns number of times channel 0 fired.
-    pit_advance: extern "C" fn(u64, u32) -> u32,
-
-    // ── PIC interrupt controller ─────────────────────────────────
-    /// Assert an IRQ line on the PIC (0-15).
-    pic_raise_irq: extern "C" fn(u64, u8),
-    /// Get the next pending interrupt vector from the PIC.
-    /// Returns the vector number, or 0xFFFF if no interrupt is pending.
-    pic_get_interrupt: extern "C" fn(u64) -> u32,
-
-    // ── IDE/ATA disk controller ─────────────────────────────────
-    /// Register an IDE controller on the primary channel.
-    setup_ide: extern "C" fn(u64),
-    /// Attach an in-memory disk image to IDE master.
-    ide_attach_disk: extern "C" fn(u64, *const u8, u32),
-    /// Attach an in-memory disk image to IDE slave.
-    ide_attach_slave: extern "C" fn(u64, *const u8, u32),
-    /// Attach FD-backed disk to IDE master (fd, size).
-    ide_attach_disk_fd: extern "C" fn(u64, u32, u64),
-    /// Attach FD-backed disk to IDE slave (fd, size).
-    ide_attach_slave_fd: extern "C" fn(u64, u32, u64),
-    /// Detach the master disk image.
-    ide_detach_disk: extern "C" fn(u64),
-    /// Detach the slave disk image.
-    ide_detach_slave: extern "C" fn(u64),
-    /// Check if the IDE controller has a pending IRQ (1=yes, 0=no).
-    ide_irq_raised: extern "C" fn(u64) -> u32,
-    /// Clear the pending IDE IRQ.
-    ide_clear_irq: extern "C" fn(u64),
-
-    // ── fw_cfg ────────────────────────────────────────────────
-    /// Add a named file to the fw_cfg device.
-    fw_cfg_add_file: extern "C" fn(u64, *const u8, *const u8, u32) -> i32,
-
-    // ── Debug port ──────────────────────────────────────────────
-    /// Read output bytes from the QEMU debug console port (0x402).
-    /// Copies up to `buf_len` bytes into `buf_ptr`.
-    /// Returns the number of bytes actually written.
-    debug_take_output: extern "C" fn(u64, *mut u8, u32) -> u32,
-
-    // ── JIT / Decode Cache ────────────────────────────────────────
-    /// Enable or disable the JIT engine (1=enable, 0=disable).
-    jit_enable: extern "C" fn(u64, u32),
-    /// Flush the decode cache and JIT code cache.
-    jit_flush_cache: extern "C" fn(u64),
-    /// Query decode cache statistics (cached_blocks, hits, misses).
-    jit_cache_stats: extern "C" fn(u64, *mut u32, *mut u64, *mut u64),
-    /// Query JIT engine statistics (blocks_compiled, native_count,
-    /// fallback_count, code_buffer_used).
-    jit_stats: extern "C" fn(u64, *mut u64, *mut u64, *mut u64, *mut u32),
-
-    // ── Diagnostics ─────────────────────────────────────────────
-    /// MMIO diagnostic: region count, bounds, RAM content at 0xB8000.
-    mmio_diag: extern "C" fn(u64, *mut u32, *mut u64, *mut u64, *mut u32),
-
-    // ── Error reporting ────────────────────────────────────────
-    /// Write the last error message into a buffer. Returns bytes written.
-    get_last_error: extern "C" fn(u64, *mut u8, u32) -> u32,
-    /// Get the RIP at the time of the last error.
-    get_last_error_rip: extern "C" fn(u64) -> u64,
+    // VGA
+    vga_get_framebuffer: extern "C" fn(u64, *mut *const u8, *mut u32) -> i32,
+    vga_get_text_buffer: extern "C" fn(u64, *mut *const u16, *mut u32) -> i32,
 }
 
 /// Singleton holding the loaded library.
@@ -331,23 +229,12 @@ fn lib() -> &'static CoreVmLib {
 }
 
 /// Resolve a function pointer from the loaded library, or panic.
-///
-/// # Safety
-///
-/// The caller must ensure that the symbol name matches the actual function
-/// signature type `T`. The transmute is unchecked.
 unsafe fn resolve<T: Copy>(handle: &DlHandle, name: &str) -> T {
     let ptr = match dl_sym(handle, name) {
         Some(p) => p,
         None => panic!("symbol '{}' not found in libcorevm.so", name),
     };
     core::mem::transmute_copy::<*const (), T>(&ptr)
-}
-
-/// Resolve an optional function pointer from the loaded library.
-unsafe fn resolve_optional<T: Copy>(handle: &DlHandle, name: &str) -> Option<T> {
-    let ptr = dl_sym(handle, name)?;
-    Some(core::mem::transmute_copy::<*const (), T>(&ptr))
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -357,8 +244,7 @@ unsafe fn resolve_optional<T: Copy>(handle: &DlHandle, name: &str) -> Option<T> 
 /// Load and initialize libcorevm.so.
 ///
 /// Must be called once before any other function in this crate. Returns
-/// `true` on success, `false` if the shared library could not be loaded
-/// (e.g., the file is missing or symbol resolution failed).
+/// `true` on success, `false` if the shared library could not be loaded.
 pub fn init() -> bool {
     let handle = match dl_open("/Libraries/libcorevm.so") {
         Some(h) => h,
@@ -369,88 +255,50 @@ pub fn init() -> bool {
         let corevm = CoreVmLib {
             // VM lifecycle
             create: resolve(&handle, "corevm_create"),
-            create_ex: resolve_optional(&handle, "corevm_create_ex"),
             destroy: resolve(&handle, "corevm_destroy"),
             reset: resolve(&handle, "corevm_reset"),
-            run: resolve(&handle, "corevm_run"),
-            request_stop: resolve(&handle, "corevm_request_stop"),
-            // CPU state: instruction pointer
-            get_rip: resolve(&handle, "corevm_get_rip"),
-            set_rip: resolve(&handle, "corevm_set_rip"),
-            // CPU state: GPR
-            get_gpr: resolve(&handle, "corevm_get_gpr"),
-            set_gpr: resolve(&handle, "corevm_set_gpr"),
-            // CPU state: segment registers
-            get_segment_selector: resolve(&handle, "corevm_get_segment_selector"),
-            get_segment_base: resolve(&handle, "corevm_get_segment_base"),
-            // CPU state: flags
-            get_rflags: resolve(&handle, "corevm_get_rflags"),
-            set_rflags: resolve(&handle, "corevm_set_rflags"),
-            // CPU state: control registers
-            get_cr: resolve(&handle, "corevm_get_cr"),
-            set_cr: resolve(&handle, "corevm_set_cr"),
-            // CPU state: mode and privilege
-            get_mode: resolve(&handle, "corevm_get_mode"),
-            get_cpl: resolve(&handle, "corevm_get_cpl"),
-            get_instruction_count: resolve(&handle, "corevm_get_instruction_count"),
-            get_vcpu_count: resolve_optional(&handle, "corevm_get_vcpu_count"),
+            // vCPU management
+            create_vcpu: resolve(&handle, "corevm_create_vcpu"),
+            destroy_vcpu: resolve(&handle, "corevm_destroy_vcpu"),
+            run_vcpu: resolve(&handle, "corevm_run_vcpu"),
+            // Register access
+            get_vcpu_regs: resolve(&handle, "corevm_get_vcpu_regs"),
+            set_vcpu_regs: resolve(&handle, "corevm_set_vcpu_regs"),
+            get_vcpu_sregs: resolve(&handle, "corevm_get_vcpu_sregs"),
+            set_vcpu_sregs: resolve(&handle, "corevm_set_vcpu_sregs"),
+            // Interrupt injection
+            inject_interrupt: resolve(&handle, "corevm_inject_interrupt"),
+            inject_exception: resolve(&handle, "corevm_inject_exception"),
+            inject_nmi: resolve(&handle, "corevm_inject_nmi"),
+            request_interrupt_window: resolve(&handle, "corevm_request_interrupt_window"),
+            // CPUID
+            set_cpuid: resolve(&handle, "corevm_set_cpuid"),
             // Memory
+            set_memory_region: resolve(&handle, "corevm_set_memory_region"),
+            read_phys: resolve(&handle, "corevm_read_phys"),
+            write_phys: resolve(&handle, "corevm_write_phys"),
             load_binary: resolve(&handle, "corevm_load_binary"),
-            load_rom: resolve(&handle, "corevm_load_rom"),
-            read_phys_u8: resolve(&handle, "corevm_read_phys_u8"),
-            read_phys_u16: resolve(&handle, "corevm_read_phys_u16"),
-            read_phys_u32: resolve(&handle, "corevm_read_phys_u32"),
-            write_phys_u8: resolve(&handle, "corevm_write_phys_u8"),
-            write_phys_u16: resolve(&handle, "corevm_write_phys_u16"),
-            write_phys_u32: resolve(&handle, "corevm_write_phys_u32"),
+            // Hardware support
+            has_hw_support: resolve(&handle, "corevm_has_hw_support"),
+            // I/O and MMIO exit dispatch
+            handle_io_exit: resolve(&handle, "corevm_handle_io_exit"),
+            handle_mmio_exit: resolve(&handle, "corevm_handle_mmio_exit"),
             // Device setup
             setup_standard_devices: resolve(&handle, "corevm_setup_standard_devices"),
-            setup_pci_bus: resolve(&handle, "corevm_setup_pci_bus"),
             setup_e1000: resolve(&handle, "corevm_setup_e1000"),
-            // PS/2
+            setup_ahci: resolve(&handle, "corevm_setup_ahci"),
+            ahci_attach_disk: resolve(&handle, "corevm_ahci_attach_disk"),
+            ahci_attach_cdrom: resolve(&handle, "corevm_ahci_attach_cdrom"),
+            // PS/2 input
             ps2_key_press: resolve(&handle, "corevm_ps2_key_press"),
             ps2_key_release: resolve(&handle, "corevm_ps2_key_release"),
             ps2_mouse_move: resolve(&handle, "corevm_ps2_mouse_move"),
-            // VGA
-            vga_get_framebuffer: resolve(&handle, "corevm_vga_get_framebuffer"),
-            vga_get_text_buffer: resolve(&handle, "corevm_vga_get_text_buffer"),
-            vga_debug_counters: resolve(&handle, "corevm_vga_debug_counters"),
             // Serial
             serial_send_input: resolve(&handle, "corevm_serial_send_input"),
             serial_take_output: resolve(&handle, "corevm_serial_take_output"),
-            // E1000
-            e1000_receive_packet: resolve(&handle, "corevm_e1000_receive_packet"),
-            e1000_take_tx_packets: resolve(&handle, "corevm_e1000_take_tx_packets"),
-            // PIT
-            pit_tick: resolve(&handle, "corevm_pit_tick"),
-            pit_advance: resolve(&handle, "corevm_pit_advance"),
-            // PIC
-            pic_raise_irq: resolve(&handle, "corevm_pic_raise_irq"),
-            pic_get_interrupt: resolve(&handle, "corevm_pic_get_interrupt"),
-            // IDE
-            setup_ide: resolve(&handle, "corevm_setup_ide"),
-            ide_attach_disk: resolve(&handle, "corevm_ide_attach_disk"),
-            ide_attach_slave: resolve(&handle, "corevm_ide_attach_slave"),
-            ide_attach_disk_fd: resolve(&handle, "corevm_ide_attach_disk_fd"),
-            ide_attach_slave_fd: resolve(&handle, "corevm_ide_attach_slave_fd"),
-            ide_detach_disk: resolve(&handle, "corevm_ide_detach_disk"),
-            ide_detach_slave: resolve(&handle, "corevm_ide_detach_slave"),
-            ide_irq_raised: resolve(&handle, "corevm_ide_irq_raised"),
-            ide_clear_irq: resolve(&handle, "corevm_ide_clear_irq"),
-            // fw_cfg
-            fw_cfg_add_file: resolve(&handle, "corevm_fw_cfg_add_file"),
-            // Debug port
-            debug_take_output: resolve(&handle, "corevm_debug_take_output"),
-            // JIT / Decode Cache
-            jit_enable: resolve(&handle, "corevm_jit_enable"),
-            jit_flush_cache: resolve(&handle, "corevm_jit_flush_cache"),
-            jit_cache_stats: resolve(&handle, "corevm_jit_cache_stats"),
-            jit_stats: resolve(&handle, "corevm_jit_stats"),
-            // Diagnostics
-            mmio_diag: resolve(&handle, "corevm_mmio_diag"),
-            // Error reporting
-            get_last_error: resolve(&handle, "corevm_get_last_error"),
-            get_last_error_rip: resolve(&handle, "corevm_get_last_error_rip"),
+            // VGA
+            vga_get_framebuffer: resolve(&handle, "corevm_vga_get_framebuffer"),
+            vga_get_text_buffer: resolve(&handle, "corevm_vga_get_text_buffer"),
             // Handle
             _handle: handle,
         };
@@ -466,20 +314,10 @@ pub fn init() -> bool {
 
 /// An active virtual machine instance.
 ///
-/// `VmHandle` wraps an opaque `u64` handle returned by `corevm_create`
-/// and provides typed methods for all VM operations. The VM is
-/// automatically destroyed when the handle is dropped.
-///
-/// # Examples
-///
-/// ```rust
-/// let vm = VmHandle::new(16).unwrap(); // 16 MiB guest RAM
-/// vm.set_rip(0x7C00);
-/// vm.load_binary(0x7C00, &boot_sector);
-/// let reason = vm.run(0); // run until exit
-/// ```
+/// Wraps an opaque `u64` handle returned by `corevm_create` and provides
+/// typed methods for all VM operations. The VM is automatically destroyed
+/// when the handle is dropped.
 pub struct VmHandle {
-    /// Opaque handle identifying this VM instance in libcorevm.so.
     handle: u64,
 }
 
@@ -488,697 +326,236 @@ impl VmHandle {
 
     /// Create a new virtual machine with the specified guest RAM size.
     ///
-    /// # Arguments
-    ///
-    /// * `ram_size_mb` - Guest RAM size in megabytes. Minimum 1 MiB.
-    ///
-    /// # Returns
-    ///
-    /// `Some(VmHandle)` on success, `None` if allocation failed (e.g.,
-    /// out of memory for the requested RAM size).
-    pub fn new(ram_size_mb: u32) -> Option<Self> {
-        Self::new_with_cores(ram_size_mb, 1)
+    /// Returns `Some(VmHandle)` on success, `None` if creation failed.
+    pub fn new(ram_mb: u32) -> Option<Self> {
+        let h = (lib().create)(ram_mb);
+        if h == 0 { None } else { Some(VmHandle { handle: h }) }
     }
 
-    /// Create a new virtual machine with explicit logical CPU count.
-    pub fn new_with_cores(ram_size_mb: u32, cores: u32) -> Option<Self> {
-        let h = if let Some(create_ex) = lib().create_ex {
-            create_ex(ram_size_mb, cores.max(1))
-        } else {
-            (lib().create)(ram_size_mb)
-        };
-        if h == 0 {
-            None
-        } else {
-            Some(VmHandle { handle: h })
+    /// Reset the VM. Returns 0 on success, -1 on error.
+    pub fn reset(&self) -> i32 {
+        (lib().reset)(self.handle)
+    }
+
+    // ── vCPU management ──────────────────────────────────────────
+
+    /// Create a vCPU with the given ID. Returns 0 on success.
+    pub fn create_vcpu(&self, id: u32) -> i32 {
+        (lib().create_vcpu)(self.handle, id)
+    }
+
+    /// Destroy a vCPU. Returns 0 on success.
+    pub fn destroy_vcpu(&self, id: u32) -> i32 {
+        (lib().destroy_vcpu)(self.handle, id)
+    }
+
+    /// Run a vCPU until it exits. Returns the exit reason.
+    pub fn run_vcpu(&self, id: u32) -> VmExitReason {
+        let mut exit = CExitReason::default();
+        let rc = (lib().run_vcpu)(self.handle, id, &mut exit);
+        if rc != 0 {
+            return VmExitReason::Error;
         }
+        VmExitReason::from_c(&exit)
     }
 
-    /// Reset the VM to its power-on state.
-    ///
-    /// CPU registers, MMU, and interrupt controller are reset. Guest RAM
-    /// content and registered I/O handlers are preserved.
-    pub fn reset(&self) {
-        (lib().reset)(self.handle);
+    // ── Register access ──────────────────────────────────────────
+
+    /// Get general-purpose registers for a vCPU.
+    pub fn get_vcpu_regs(&self, id: u32) -> VcpuRegs {
+        let mut regs = VcpuRegs::default();
+        (lib().get_vcpu_regs)(self.handle, id, &mut regs);
+        regs
     }
 
-    /// Execute guest instructions.
-    ///
-    /// Runs the CPU fetch-decode-execute loop for up to `max_instructions`
-    /// guest instructions. Pass 0 for unlimited execution (the VM will
-    /// run until it halts, hits a breakpoint, encounters an unrecoverable
-    /// exception, or an external stop is requested).
-    ///
-    /// # Returns
-    ///
-    /// The reason the VM stopped executing.
-    pub fn run(&self, max_instructions: u64) -> ExitReason {
-        let code = (lib().run)(self.handle, max_instructions);
-        ExitReason::from_u32(code)
+    /// Set general-purpose registers for a vCPU. Returns 0 on success.
+    pub fn set_vcpu_regs(&self, id: u32, regs: &VcpuRegs) -> i32 {
+        (lib().set_vcpu_regs)(self.handle, id, regs)
     }
 
-    /// Request the VM to stop at the next instruction boundary.
-    ///
-    /// This is safe to call from another thread or a signal handler.
-    /// The next call to [`run`](Self::run) will return
-    /// [`ExitReason::StopRequested`] promptly.
-    pub fn request_stop(&self) {
-        (lib().request_stop)(self.handle);
+    /// Get system registers for a vCPU.
+    pub fn get_vcpu_sregs(&self, id: u32) -> VcpuSregs {
+        let mut sregs = VcpuSregs::default();
+        (lib().get_vcpu_sregs)(self.handle, id, &mut sregs);
+        sregs
     }
 
-    /// Return the configured logical CPU count (defaults to 1 if unsupported).
-    pub fn vcpu_count(&self) -> u32 {
-        if let Some(getter) = lib().get_vcpu_count {
-            getter(self.handle).max(1)
-        } else {
-            1
-        }
+    /// Set system registers for a vCPU. Returns 0 on success.
+    pub fn set_vcpu_sregs(&self, id: u32, sregs: &VcpuSregs) -> i32 {
+        (lib().set_vcpu_sregs)(self.handle, id, sregs)
     }
 
-    // ── CPU state: instruction pointer ──────────────────────────
+    // ── Interrupt injection ──────────────────────────────────────
 
-    /// Get the current instruction pointer (RIP in long mode, EIP in
-    /// protected mode, IP in real mode).
-    pub fn rip(&self) -> u64 {
-        (lib().get_rip)(self.handle)
+    /// Inject an external interrupt into a vCPU.
+    pub fn inject_interrupt(&self, id: u32, vector: u8) -> i32 {
+        (lib().inject_interrupt)(self.handle, id, vector)
     }
 
-    /// Set the instruction pointer.
-    pub fn set_rip(&self, rip: u64) {
-        (lib().set_rip)(self.handle, rip);
+    /// Inject an exception into a vCPU.
+    pub fn inject_exception(&self, id: u32, vector: u8, has_error_code: bool, error_code: u32) -> i32 {
+        let ec: i64 = if has_error_code { error_code as i64 } else { -1 };
+        (lib().inject_exception)(self.handle, id, vector, ec)
     }
 
-    // ── CPU state: general-purpose registers ─────────────────────
-
-    /// Read a 64-bit general-purpose register by index.
-    ///
-    /// Register indices follow the standard x86 encoding:
-    /// 0=RAX, 1=RCX, 2=RDX, 3=RBX, 4=RSP, 5=RBP, 6=RSI, 7=RDI,
-    /// 8=R8 .. 15=R15.
-    ///
-    /// # Panics
-    ///
-    /// The behavior is undefined if `index > 15`.
-    pub fn gpr(&self, index: u8) -> u64 {
-        (lib().get_gpr)(self.handle, index)
+    /// Inject an NMI into a vCPU.
+    pub fn inject_nmi(&self, id: u32) -> i32 {
+        (lib().inject_nmi)(self.handle, id)
     }
 
-    /// Write a 64-bit general-purpose register by index.
-    ///
-    /// See [`gpr`](Self::gpr) for the index mapping.
-    pub fn set_gpr(&self, index: u8, val: u64) {
-        (lib().set_gpr)(self.handle, index, val);
+    /// Request or cancel interrupt window notification for a vCPU.
+    pub fn request_interrupt_window(&self, id: u32, enable: bool) -> i32 {
+        (lib().request_interrupt_window)(self.handle, id, enable as u8)
     }
 
-    /// Get a segment selector by index (0=ES, 1=CS, 2=SS, 3=DS, 4=FS, 5=GS).
-    pub fn segment_selector(&self, index: u8) -> u16 {
-        (lib().get_segment_selector)(self.handle, index)
+    // ── CPUID ────────────────────────────────────────────────────
+
+    /// Set CPUID entries for the VM.
+    pub fn set_cpuid(&self, entries: &[CpuidEntry]) -> i32 {
+        (lib().set_cpuid)(self.handle, entries.as_ptr(), entries.len() as u32)
     }
 
-    /// Get a segment base by index (0=ES, 1=CS, 2=SS, 3=DS, 4=FS, 5=GS).
-    pub fn segment_base(&self, index: u8) -> u64 {
-        (lib().get_segment_base)(self.handle, index)
+    // ── Memory ───────────────────────────────────────────────────
+
+    /// Map a memory region into the guest physical address space.
+    pub fn set_memory_region(&self, slot: u32, guest_phys: u64, size: u64, host_ptr: *mut u8) -> i32 {
+        (lib().set_memory_region)(self.handle, slot, guest_phys, size, host_ptr)
     }
 
-    /// Get the CS segment selector.
-    pub fn cs(&self) -> u16 {
-        self.segment_selector(1)
+    /// Read from guest physical memory.
+    pub fn read_phys(&self, addr: u64, buf: &mut [u8]) -> i32 {
+        (lib().read_phys)(self.handle, addr, buf.as_mut_ptr(), buf.len() as u32)
     }
 
-    /// Get the CS segment base address.
-    pub fn cs_base(&self) -> u64 {
-        self.segment_base(1)
+    /// Write to guest physical memory.
+    pub fn write_phys(&self, addr: u64, buf: &[u8]) -> i32 {
+        (lib().write_phys)(self.handle, addr, buf.as_ptr(), buf.len() as u32)
     }
 
-    /// Get the DS segment selector.
-    pub fn ds(&self) -> u16 {
-        self.segment_selector(3)
+    /// Load binary data at a guest physical address.
+    pub fn load_binary(&self, addr: u64, data: &[u8]) -> i32 {
+        (lib().load_binary)(self.handle, addr, data.as_ptr(), data.len() as u32)
     }
 
-    // ── CPU state: flags ─────────────────────────────────────────
+    // ── Hardware support ─────────────────────────────────────────
 
-    /// Get the RFLAGS register.
-    pub fn rflags(&self) -> u64 {
-        (lib().get_rflags)(self.handle)
+    /// Returns true if hardware virtualization (e.g., KVM) is available.
+    pub fn has_hw_support() -> bool {
+        (lib().has_hw_support)() != 0
     }
 
-    /// Set the RFLAGS register.
-    pub fn set_rflags(&self, val: u64) {
-        (lib().set_rflags)(self.handle, val);
+    // ── I/O and MMIO exit dispatch ───────────────────────────────
+
+    /// Dispatch a port I/O exit to registered device handlers.
+    pub fn handle_io_exit(&self, port: u16, direction: u8, size: u8, data: &mut [u8]) -> i32 {
+        (lib().handle_io_exit)(self.handle, port, direction, size, data.as_mut_ptr())
     }
 
-    // ── CPU state: control registers ─────────────────────────────
-
-    /// Read a control register.
-    ///
-    /// Valid indices are 0 (CR0), 2 (CR2), 3 (CR3), 4 (CR4), and 8 (CR8).
-    /// Other indices return 0.
-    pub fn cr(&self, n: u8) -> u64 {
-        (lib().get_cr)(self.handle, n)
-    }
-
-    /// Write a control register.
-    ///
-    /// Valid indices are 0 (CR0), 2 (CR2), 3 (CR3), 4 (CR4), and 8 (CR8).
-    /// Writes to other indices are silently ignored.
-    pub fn set_cr(&self, n: u8, val: u64) {
-        (lib().set_cr)(self.handle, n, val);
-    }
-
-    // ── CPU state: mode and privilege ────────────────────────────
-
-    /// Get the current CPU execution mode.
-    pub fn mode(&self) -> CpuMode {
-        let code = (lib().get_mode)(self.handle);
-        CpuMode::from_u32(code)
-    }
-
-    /// Get the current privilege level (0=kernel, 3=user).
-    pub fn cpl(&self) -> u8 {
-        (lib().get_cpl)(self.handle)
-    }
-
-    /// Get the total number of instructions executed since the last
-    /// reset.
-    pub fn instruction_count(&self) -> u64 {
-        (lib().get_instruction_count)(self.handle)
-    }
-
-    // ── Memory access ────────────────────────────────────────────
-
-    /// Load raw binary data into guest physical memory.
-    ///
-    /// Copies `data` into guest RAM starting at guest physical address
-    /// `addr`. This bypasses the MMU and writes directly to the flat
-    /// memory backing store, making it suitable for loading BIOS ROMs,
-    /// kernels, and initial data before the VM starts.
-    ///
-    /// # Returns
-    ///
-    /// `true` on success, `false` if the address range is out of bounds.
-    pub fn load_binary(&self, addr: u64, data: &[u8]) -> bool {
-        (lib().load_binary)(self.handle, addr, data.as_ptr(), data.len() as u32) != 0
-    }
-
-    /// Map a read-only ROM at a guest physical address.
-    ///
-    /// Creates a ROM overlay: reads from `[addr, addr + data.len())`
-    /// return ROM content; writes are silently ignored. Use this to place
-    /// firmware ROMs at high addresses (e.g., SeaBIOS at 0xFFFC0000)
-    /// without allocating a full 4 GiB RAM buffer.
-    ///
-    /// # Returns
-    ///
-    /// `true` on success, `false` on invalid arguments.
-    pub fn load_rom(&self, addr: u64, data: &[u8]) -> bool {
-        (lib().load_rom)(self.handle, addr, data.as_ptr(), data.len() as u32) == 0
-    }
-
-    /// Read a byte from guest physical memory.
-    pub fn read_phys_u8(&self, addr: u64) -> u8 {
-        (lib().read_phys_u8)(self.handle, addr)
-    }
-
-    /// Read a 16-bit little-endian value from guest physical memory.
-    pub fn read_phys_u16(&self, addr: u64) -> u16 {
-        (lib().read_phys_u16)(self.handle, addr)
-    }
-
-    /// Read a 32-bit little-endian value from guest physical memory.
-    pub fn read_phys_u32(&self, addr: u64) -> u32 {
-        (lib().read_phys_u32)(self.handle, addr)
-    }
-
-    /// Write a byte to guest physical memory.
-    pub fn write_phys_u8(&self, addr: u64, val: u8) {
-        (lib().write_phys_u8)(self.handle, addr, val);
-    }
-
-    /// Write a 16-bit little-endian value to guest physical memory.
-    pub fn write_phys_u16(&self, addr: u64, val: u16) {
-        (lib().write_phys_u16)(self.handle, addr, val);
-    }
-
-    /// Write a 32-bit little-endian value to guest physical memory.
-    pub fn write_phys_u32(&self, addr: u64, val: u32) {
-        (lib().write_phys_u32)(self.handle, addr, val);
+    /// Dispatch an MMIO exit to registered device handlers.
+    pub fn handle_mmio_exit(&self, addr: u64, direction: u8, size: u8, data: &mut [u8]) -> i32 {
+        (lib().handle_mmio_exit)(self.handle, addr, direction, size, data.as_mut_ptr())
     }
 
     // ── Device setup ─────────────────────────────────────────────
 
-    /// Register all standard hardware devices.
-    ///
-    /// This sets up the full complement of PC-compatible devices:
-    /// - Intel 8259A dual PIC (IRQ 0-15)
-    /// - Intel 8254 PIT (system timer on IRQ 0)
-    /// - PS/2 controller (keyboard + mouse)
-    /// - CMOS RTC
-    /// - 16550 UART serial port (COM1)
-    /// - VGA/SVGA framebuffer
-    pub fn setup_standard_devices(&self) {
-        (lib().setup_standard_devices)(self.handle);
+    /// Register all standard chipset devices (PIC, PIT, PS/2, CMOS, serial, VGA).
+    pub fn setup_standard_devices(&self) -> i32 {
+        (lib().setup_standard_devices)(self.handle)
     }
 
-    /// Register a PCI configuration space bus.
-    ///
-    /// Must be called before [`setup_e1000`](Self::setup_e1000) to provide
-    /// the PCI bus infrastructure that PCI devices attach to.
-    pub fn setup_pci_bus(&self) {
-        (lib().setup_pci_bus)(self.handle);
+    /// Set up an E1000 NIC with the given MAC address.
+    pub fn setup_e1000(&self, mac: &[u8; 6]) -> i32 {
+        (lib().setup_e1000)(self.handle, mac.as_ptr())
     }
 
-    /// Register an Intel E1000 network interface card.
-    ///
-    /// # Arguments
-    ///
-    /// * `mmio_base` - MMIO base address for the E1000 register space (128 KB)
-    /// * `mac` - 6-byte MAC address for the virtual NIC
-    pub fn setup_e1000(&self, mmio_base: u64, mac: &[u8; 6]) {
-        (lib().setup_e1000)(self.handle, mmio_base, mac.as_ptr());
+    /// Set up the AHCI SATA controller. Returns 0 on success.
+    pub fn setup_ahci(&self, num_ports: u8) -> i32 {
+        (lib().setup_ahci)(self.handle, num_ports)
     }
 
-    // ── PS/2 keyboard and mouse ──────────────────────────────────
+    /// Attach a disk image to an AHCI port (fd-backed).
+    pub fn ahci_attach_disk(&self, port: u32, fd: i32, size: u64) -> i32 {
+        (lib().ahci_attach_disk)(self.handle, port, fd, size)
+    }
 
-    /// Inject a keyboard key press event.
-    ///
-    /// The `scancode` is in the format matching the currently active
-    /// scancode set (default: set 2).
+    /// Attach a CD-ROM image to an AHCI port (fd-backed).
+    pub fn ahci_attach_cdrom(&self, port: u32, fd: i32, size: u64) -> i32 {
+        (lib().ahci_attach_cdrom)(self.handle, port, fd, size)
+    }
+
+    // ── PS/2 input ───────────────────────────────────────────────
+
+    /// Send a PS/2 key press scancode.
     pub fn ps2_key_press(&self, scancode: u8) {
         (lib().ps2_key_press)(self.handle, scancode);
     }
 
-    /// Inject a keyboard key release event.
-    ///
-    /// For scancode set 2, the controller automatically generates the
-    /// `0xF0` break prefix. For set 1, it generates `scancode | 0x80`.
+    /// Send a PS/2 key release scancode.
     pub fn ps2_key_release(&self, scancode: u8) {
         (lib().ps2_key_release)(self.handle, scancode);
     }
 
-    /// Inject a mouse movement packet.
-    ///
-    /// # Arguments
-    ///
-    /// * `dx` - Horizontal displacement (-256..255)
-    /// * `dy` - Vertical displacement (-256..255)
-    /// * `buttons` - Button state (bit 0=left, bit 1=right, bit 2=middle)
+    /// Send a PS/2 mouse movement.
     pub fn ps2_mouse_move(&self, dx: i16, dy: i16, buttons: u8) {
         (lib().ps2_mouse_move)(self.handle, dx, dy, buttons);
     }
 
-    // ── VGA display ──────────────────────────────────────────────
+    // ── Serial port ──────────────────────────────────────────────
 
-    /// Get a read-only view of the VGA framebuffer.
-    ///
-    /// Returns `Some((pixels, width, height, bpp))` if the VGA adapter is
-    /// in a graphics mode, or `None` if no framebuffer is available (e.g.,
-    /// text mode, or VGA not initialized).
-    ///
-    /// The returned slice is a direct reference into the guest's VGA
-    /// framebuffer memory and is only valid until the next mutable VM
-    /// operation.
-    pub fn vga_framebuffer(&self) -> Option<(&[u8], u32, u32, u8)> {
-        let mut width: u32 = 0;
-        let mut height: u32 = 0;
-        let mut bpp: u8 = 0;
-        let ptr = (lib().vga_get_framebuffer)(
-            self.handle,
-            &mut width as *mut u32,
-            &mut height as *mut u32,
-            &mut bpp as *mut u8,
-        );
-        if ptr.is_null() || width == 0 || height == 0 {
-            return None;
-        }
-        let bytes_per_pixel = ((bpp as usize) + 7) / 8;
-        let len = (width as usize) * (height as usize) * bytes_per_pixel;
-        let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
-        Some((slice, width, height, bpp))
-    }
-
-    /// Get a read-only view of the VGA text mode buffer.
-    ///
-    /// Returns `Some(cells)` if the VGA adapter is in 80x25 text mode,
-    /// where each `u16` cell is `(attribute << 8) | character`. Returns
-    /// `None` if VGA is not in text mode.
-    pub fn vga_text_buffer(&self) -> Option<&[u16]> {
-        let mut count: u32 = 0;
-        let ptr = (lib().vga_get_text_buffer)(self.handle, &mut count as *mut u32);
-        if ptr.is_null() || count == 0 {
-            return None;
-        }
-        let slice = unsafe { core::slice::from_raw_parts(ptr, count as usize) };
-        Some(slice)
-    }
-
-    /// Get VGA MMIO debug counters.
-    ///
-    /// Returns `(total_mmio_writes, text_region_writes)` for diagnosing
-    /// whether guest writes to the VGA framebuffer are reaching the handler.
-    pub fn vga_debug_counters(&self) -> (u64, u64) {
-        let mut total: u64 = 0;
-        let mut text: u64 = 0;
-        (lib().vga_debug_counters)(self.handle, &mut total as *mut u64, &mut text as *mut u64);
-        (total, text)
-    }
-
-    /// Add a named file to the fw_cfg device (used for VGA BIOS, etc.).
-    ///
-    /// `name` is the file name (e.g., "vgaroms/vgabios.bin").
-    /// `data` is the file content.
-    /// Returns 0 on success, -1 on failure.
-    pub fn fw_cfg_add_file(&self, name: &str, data: &[u8]) -> i32 {
-        // Build NUL-terminated name.
-        let mut name_buf = [0u8; 56];
-        let copy_len = name.len().min(55);
-        name_buf[..copy_len].copy_from_slice(&name.as_bytes()[..copy_len]);
-        (lib().fw_cfg_add_file)(
-            self.handle,
-            name_buf.as_ptr(),
-            data.as_ptr(),
-            data.len() as u32,
-        )
-    }
-
-    /// Get MMIO diagnostic info.
-    ///
-    /// Returns `(region_count, min_base, max_end, ram_at_b8000)`.
-    /// `ram_at_b8000` is 4 bytes read directly from flat RAM at 0xB8000,
-    /// bypassing MMIO — useful to check if writes went to RAM instead.
-    pub fn mmio_diag(&self) -> (u32, u64, u64, u32) {
-        let mut count: u32 = 0;
-        let mut lo: u64 = 0;
-        let mut hi: u64 = 0;
-        let mut ram: u32 = 0;
-        (lib().mmio_diag)(
-            self.handle,
-            &mut count as *mut u32,
-            &mut lo as *mut u64,
-            &mut hi as *mut u64,
-            &mut ram as *mut u32,
-        );
-        (count, lo, hi, ram)
-    }
-
-    // ── Serial port (COM1) ───────────────────────────────────────
-
-    /// Send input to the guest serial port.
-    ///
-    /// The bytes become available for the guest to read from the Receive
-    /// Buffer Register (port 0x3F8 with DLAB=0).
+    /// Send input bytes to the guest serial port (COM1).
     pub fn serial_send_input(&self, data: &[u8]) {
         (lib().serial_send_input)(self.handle, data.as_ptr(), data.len() as u32);
     }
 
-    /// Read output bytes produced by the guest serial port.
-    ///
-    /// Drains up to `buf.len()` bytes from the serial output buffer into
-    /// `buf`. Returns the number of bytes actually read (may be 0 if no
-    /// output is available).
-    pub fn serial_take_output(&self, buf: &mut [u8]) -> usize {
+    /// Take output bytes from the guest serial port (COM1).
+    pub fn serial_take_output(&self) -> Vec<u8> {
+        let mut buf = [0u8; 4096];
         let n = (lib().serial_take_output)(self.handle, buf.as_mut_ptr(), buf.len() as u32);
-        n as usize
-    }
-
-    /// Convenience method: drain all serial output into a new `Vec<u8>`.
-    ///
-    /// Allocates a temporary buffer and returns only the bytes that were
-    /// actually produced. Returns an empty vector if no output is
-    /// available.
-    pub fn serial_take_output_vec(&self) -> Vec<u8> {
-        let mut buf = [0u8; 4096];
-        let n = self.serial_take_output(&mut buf);
-        let mut v = Vec::with_capacity(n);
-        v.extend_from_slice(&buf[..n]);
+        if n <= 0 {
+            return Vec::new();
+        }
+        let mut v = Vec::with_capacity(n as usize);
+        v.extend_from_slice(&buf[..n as usize]);
         v
     }
 
-    // ── Debug port ────────────────────────────────────────────────
+    // ── VGA ──────────────────────────────────────────────────────
 
-    /// Drain debug port output (port 0x402) into the provided buffer.
-    ///
-    /// Returns the number of bytes written. SeaBIOS writes debug messages
-    /// to this port during POST.
-    pub fn debug_take_output(&self, buf: &mut [u8]) -> usize {
-        let n = (lib().debug_take_output)(self.handle, buf.as_mut_ptr(), buf.len() as u32);
-        n as usize
-    }
-
-    /// Convenience method: drain all debug port output into a new `Vec<u8>`.
-    pub fn debug_take_output_vec(&self) -> Vec<u8> {
-        let mut buf = [0u8; 4096];
-        let n = self.debug_take_output(&mut buf);
-        let mut v = Vec::with_capacity(n);
-        v.extend_from_slice(&buf[..n]);
-        v
-    }
-
-    // ── E1000 network ────────────────────────────────────────────
-
-    /// Deliver a network packet to the guest E1000 NIC.
-    ///
-    /// The packet should be a complete Ethernet frame (destination MAC,
-    /// source MAC, EtherType, payload). The E1000 will set the RX
-    /// interrupt cause bit; call [`pit_tick`](Self::pit_tick) or
-    /// [`pic_raise_irq`](Self::pic_raise_irq) to deliver the interrupt.
-    pub fn e1000_receive_packet(&self, data: &[u8]) {
-        (lib().e1000_receive_packet)(self.handle, data.as_ptr(), data.len() as u32);
-    }
-
-    /// Take transmitted packets from the guest E1000 NIC.
-    ///
-    /// Copies serialized packet data into `buf`. Returns the number of
-    /// bytes written. The format is implementation-defined; typically
-    /// each packet is length-prefixed.
-    pub fn e1000_take_tx_packets(&self, buf: &mut [u8]) -> usize {
-        let n = (lib().e1000_take_tx_packets)(self.handle, buf.as_mut_ptr(), buf.len() as u32);
-        n as usize
-    }
-
-    // ── PIT timer ────────────────────────────────────────────────
-
-    /// Advance the Programmable Interval Timer by one tick.
-    ///
-    /// Returns `true` if PIT channel 0 fired, indicating that IRQ 0
-    /// should be raised on the PIC (call
-    /// [`pic_raise_irq(0)`](Self::pic_raise_irq) to deliver it).
-    pub fn pit_tick(&self) -> bool {
-        (lib().pit_tick)(self.handle) != 0
-    }
-
-    /// Advance the PIT by `n` ticks in a single call.
-    ///
-    /// Returns the number of times channel 0 fired.  The caller should
-    /// raise IRQ 0 on the PIC at least once if the return value is > 0.
-    pub fn pit_advance(&self, n: u32) -> u32 {
-        (lib().pit_advance)(self.handle, n)
-    }
-
-    // ── PIC interrupt controller ─────────────────────────────────
-
-    /// Assert an IRQ line on the PIC.
-    ///
-    /// IRQ 0-7 are routed to the master PIC, IRQ 8-15 to the slave.
-    /// The interrupt will be delivered to the CPU when the guest has
-    /// interrupts enabled (IF=1) and the IRQ is not masked.
-    pub fn pic_raise_irq(&self, irq: u8) {
-        (lib().pic_raise_irq)(self.handle, irq);
-    }
-
-    /// Get the next pending interrupt vector from the PIC.
-    ///
-    /// Returns `Some(vector)` if an unmasked interrupt is pending, or
-    /// `None` if all interrupts are masked or no IRQs are asserted.
-    pub fn pic_get_interrupt(&self) -> Option<u8> {
-        let val = (lib().pic_get_interrupt)(self.handle);
-        if val == 0xFFFF {
-            None
-        } else {
-            Some(val as u8)
+    /// Get the VGA framebuffer contents.
+    /// Returns `(pixels, width, height, bpp)` or `None` if unavailable.
+    pub fn vga_framebuffer(&self) -> Option<(Vec<u8>, u32, u32, u8)> {
+        let mut ptr: *const u8 = core::ptr::null();
+        let mut len: u32 = 0;
+        let rc = (lib().vga_get_framebuffer)(self.handle, &mut ptr, &mut len);
+        if rc != 0 || ptr.is_null() || len == 0 {
+            return None;
         }
+        let slice = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+        let mut v = Vec::with_capacity(len as usize);
+        v.extend_from_slice(slice);
+        // The raw FFI only gives us ptr+len; width/height/bpp are not
+        // returned by the current C API, so we return sensible defaults.
+        // Callers needing dimensions should query VGA mode separately.
+        Some((v, 0, 0, 0))
     }
 
-    // ── IDE/ATA disk controller ───────────────────────────────────
-
-    /// Register an ATA/IDE disk controller on the primary channel.
-    ///
-    /// Sets up I/O handlers at ports 0x1F0-0x1F7 (command block) and
-    /// 0x3F6-0x3F7 (control block). The controller supports PIO data
-    /// transfers used by BIOS INT 13h and early Linux boot.
-    pub fn setup_ide(&self) {
-        (lib().setup_ide)(self.handle);
-    }
-
-    /// Attach an in-memory disk image to the IDE master drive.
-    ///
-    /// The raw disk image bytes are copied into the VM. The caller retains
-    /// ownership of the source data. Must be called after
-    /// [`setup_ide`](Self::setup_ide).
-    pub fn ide_attach_disk(&self, data: &[u8]) {
-        (lib().ide_attach_disk)(self.handle, data.as_ptr(), data.len() as u32);
-    }
-
-    /// Attach an in-memory disk image to the IDE slave drive.
-    pub fn ide_attach_slave(&self, data: &[u8]) {
-        (lib().ide_attach_slave)(self.handle, data.as_ptr(), data.len() as u32);
-    }
-
-    /// Attach a file-descriptor-backed disk to the IDE master drive.
-    ///
-    /// The IDE controller reads sectors on demand via `fd` instead of
-    /// copying the entire image into RAM. The caller must keep `fd` open
-    /// for the lifetime of the VM.
-    pub fn ide_attach_disk_fd(&self, fd: u32, size: u64) {
-        (lib().ide_attach_disk_fd)(self.handle, fd, size);
-    }
-
-    /// Attach a file-descriptor-backed disk to the IDE slave drive.
-    pub fn ide_attach_slave_fd(&self, fd: u32, size: u64) {
-        (lib().ide_attach_slave_fd)(self.handle, fd, size);
-    }
-
-    /// Detach the master disk image from the IDE controller.
-    pub fn ide_detach_disk(&self) {
-        (lib().ide_detach_disk)(self.handle);
-    }
-
-    /// Detach the slave disk image from the IDE controller.
-    pub fn ide_detach_slave(&self) {
-        (lib().ide_detach_slave)(self.handle);
-    }
-
-    /// Check whether the IDE controller has a pending IRQ (IRQ 14).
-    ///
-    /// Returns `true` if an IRQ is pending and should be raised on the
-    /// PIC via [`pic_raise_irq(14)`](Self::pic_raise_irq).
-    pub fn ide_irq_raised(&self) -> bool {
-        (lib().ide_irq_raised)(self.handle) != 0
-    }
-
-    /// Clear the pending IDE IRQ.
-    pub fn ide_clear_irq(&self) {
-        (lib().ide_clear_irq)(self.handle);
-    }
-
-    // ── JIT / Decode Cache ────────────────────────────────────────
-
-    /// Enable or disable the JIT engine.
-    ///
-    /// When enabled, the VM compiles hot basic blocks to native x86-64 code
-    /// for dramatically faster execution. When disabled (default), all
-    /// instructions are interpreted.
-    pub fn jit_enable(&self, enable: bool) {
-        (lib().jit_enable)(self.handle, if enable { 1 } else { 0 });
-    }
-
-    /// Flush the decode cache and JIT code cache.
-    ///
-    /// Forces all basic blocks to be re-decoded and recompiled. Useful after
-    /// loading new code into guest memory.
-    pub fn jit_flush_cache(&self) {
-        (lib().jit_flush_cache)(self.handle);
-    }
-
-    /// Query decode cache statistics.
-    ///
-    /// Returns `(cached_blocks, hits, misses)`.
-    pub fn jit_cache_stats(&self) -> (u32, u64, u64) {
-        let mut blocks: u32 = 0;
-        let mut hits: u64 = 0;
-        let mut misses: u64 = 0;
-        (lib().jit_cache_stats)(
-            self.handle,
-            &mut blocks as *mut u32,
-            &mut hits as *mut u64,
-            &mut misses as *mut u64,
-        );
-        (blocks, hits, misses)
-    }
-
-    /// Query JIT engine statistics.
-    ///
-    /// Returns `(blocks_compiled, native_count, fallback_count, code_buffer_used)`.
-    pub fn jit_stats(&self) -> (u64, u64, u64, u32) {
-        let mut blocks: u64 = 0;
-        let mut native: u64 = 0;
-        let mut fallback: u64 = 0;
-        let mut buf_used: u32 = 0;
-        (lib().jit_stats)(
-            self.handle,
-            &mut blocks as *mut u64,
-            &mut native as *mut u64,
-            &mut fallback as *mut u64,
-            &mut buf_used as *mut u32,
-        );
-        (blocks, native, fallback, buf_used)
-    }
-
-
-    // ── Error reporting ─────────────────────────────────────────
-
-    /// Get a human-readable description of the last error.
-    ///
-    /// Returns `None` if no error has occurred since the last reset,
-    /// or `Some(message)` with the formatted error string.
-    pub fn last_error(&self) -> Option<alloc::string::String> {
-        let mut buf = [0u8; 256];
-        let n = (lib().get_last_error)(self.handle, buf.as_mut_ptr(), buf.len() as u32);
-        if n == 0 {
-            None
-        } else {
-            let s = core::str::from_utf8(&buf[..n as usize]).unwrap_or("(invalid UTF-8)");
-            Some(alloc::string::String::from(s))
+    /// Get the VGA text buffer contents (array of u16 char+attr pairs).
+    pub fn vga_text_buffer(&self) -> Option<Vec<u16>> {
+        let mut ptr: *const u16 = core::ptr::null();
+        let mut len: u32 = 0;
+        let rc = (lib().vga_get_text_buffer)(self.handle, &mut ptr, &mut len);
+        if rc != 0 || ptr.is_null() || len == 0 {
+            return None;
         }
-    }
-
-    /// Get the instruction pointer (RIP) at the time of the last error.
-    ///
-    /// Returns 0 if no error has occurred since the last reset.
-    pub fn last_error_rip(&self) -> u64 {
-        (lib().get_last_error_rip)(self.handle)
+        let slice = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+        let mut v = Vec::with_capacity(len as usize);
+        v.extend_from_slice(slice);
+        Some(v)
     }
 }
 
 impl Drop for VmHandle {
-    /// Destroy the VM and free all associated resources.
     fn drop(&mut self) {
         (lib().destroy)(self.handle);
     }
 }
-
-// ══════════════════════════════════════════════════════════════════════
-//  GPR index constants (convenience)
-// ══════════════════════════════════════════════════════════════════════
-
-/// General-purpose register index: RAX.
-pub const GPR_RAX: u8 = 0;
-/// General-purpose register index: RCX.
-pub const GPR_RCX: u8 = 1;
-/// General-purpose register index: RDX.
-pub const GPR_RDX: u8 = 2;
-/// General-purpose register index: RBX.
-pub const GPR_RBX: u8 = 3;
-/// General-purpose register index: RSP.
-pub const GPR_RSP: u8 = 4;
-/// General-purpose register index: RBP.
-pub const GPR_RBP: u8 = 5;
-/// General-purpose register index: RSI.
-pub const GPR_RSI: u8 = 6;
-/// General-purpose register index: RDI.
-pub const GPR_RDI: u8 = 7;
-/// General-purpose register index: R8.
-pub const GPR_R8: u8 = 8;
-/// General-purpose register index: R9.
-pub const GPR_R9: u8 = 9;
-/// General-purpose register index: R10.
-pub const GPR_R10: u8 = 10;
-/// General-purpose register index: R11.
-pub const GPR_R11: u8 = 11;
-/// General-purpose register index: R12.
-pub const GPR_R12: u8 = 12;
-/// General-purpose register index: R13.
-pub const GPR_R13: u8 = 13;
-/// General-purpose register index: R14.
-pub const GPR_R14: u8 = 14;
-/// General-purpose register index: R15.
-pub const GPR_R15: u8 = 15;
