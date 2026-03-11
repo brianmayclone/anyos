@@ -10,6 +10,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-cargo.exe +stable build --release --target x86_64-pc-windows-msvc
+cargo.exe +stable build --release --target x86_64-pc-windows-msvc --features libcorevm/windows
 if errorlevel 1 exit /b 1
 echo Built: target\x86_64-pc-windows-msvc\release\corevm-vmmanager.exe

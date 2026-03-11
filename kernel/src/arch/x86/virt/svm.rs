@@ -51,8 +51,9 @@ struct VmcbControl {
     exit_int_info: u64,          // 0x088
     np_enable: u64,              // 0x090 — bit 0 enables NPT
     _reserved3: [u8; 0x0A8 - 0x098],
-    ncr3: u64,                   // 0x0A8 — nested CR3 (NPT root)
-    _reserved4: [u8; 0x400 - 0x0B0],
+    event_inj: u64,              // 0x0A8 — EVENTINJ (event injection)
+    ncr3: u64,                   // 0x0B0 — nested CR3 (NPT root)
+    _reserved4: [u8; 0x400 - 0x0B8],
 }
 
 /// VMCB segment descriptor.
@@ -416,18 +417,49 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
             handle_cpuid_exit(&vm.cpuid_table[..vm.cpuid_count], vcpu, vmcb_phys);
             return Some(VmExitInfo {
                 reason: exit_code as u32,
-                qualification: 0,
-                guest_phys_addr: 0,
-                instruction_len: 2,
+                ..Default::default()
             });
         }
 
-        Some(VmExitInfo {
+        let mut info = VmExitInfo {
             reason: exit_code as u32,
             qualification: exit_info1,
             guest_phys_addr: if exit_code == VMEXIT_NPF { exit_info2 } else { 0 },
-            instruction_len: 0, // SVM doesn't provide instruction length for all exits
-        })
+            ..Default::default()
+        };
+
+        match exit_code {
+            VMEXIT_IOIO => {
+                // SVM exit_info1 for IOIO: bit 0 = IN(1)/OUT(0), bits 6:4 = size encoding,
+                // bits 31:16 = port
+                info.io_port = (exit_info1 >> 16) as u16;
+                info.is_read = (exit_info1 & 1) as u8;
+                let sz_bits = (exit_info1 >> 4) & 0x7;
+                info.access_size = match sz_bits {
+                    1 => 1, 2 => 2, 4 => 4, _ => 1,
+                };
+                if info.is_read == 0 {
+                    info.io_data = vcpu.guest_gprs.rax;
+                }
+            }
+            VMEXIT_NPF => {
+                info.is_read = if (exit_info1 >> 1) & 1 != 0 { 0 } else { 1 };
+                info.access_size = 4; // default
+                if info.is_read == 0 {
+                    info.io_data = vcpu.guest_gprs.rax;
+                }
+            }
+            VMEXIT_MSR => {
+                info.msr_index = vcpu.guest_gprs.rcx as u32;
+                info.is_read = if exit_info1 == 0 { 1 } else { 0 }; // 0=RDMSR, 1=WRMSR
+                if info.is_read == 0 {
+                    info.io_data = (vcpu.guest_gprs.rdx << 32) | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
+                }
+            }
+            _ => {}
+        }
+
+        Some(info)
     }
 }
 
@@ -649,7 +681,7 @@ pub fn inject_irq(vm_id: u32, vcpu_id: u32, vector: u8) -> bool {
 
     unsafe {
         let vmcb = &mut *(vcpu.vmcb_phys as *mut Vmcb);
-        vmcb.control.vintr = (1 << 8) | ((vector as u64) << 16) | ((0u64) << 24);
+        vmcb.control.event_inj = (vector as u64) | (0u64 << 8) | (1u64 << 31);
     }
     true
 }
@@ -668,7 +700,7 @@ pub fn inject_exception(vm_id: u32, vcpu_id: u32, vector: u8, error_code: u32) -
         if has_error {
             info |= (1u64 << 11) | ((error_code as u64) << 32);
         }
-        vmcb.control.exit_int_info = info;
+        vmcb.control.event_inj = info;
     }
     true
 }
@@ -680,8 +712,8 @@ pub fn inject_nmi(vm_id: u32, vcpu_id: u32) -> bool {
 
     unsafe {
         let vmcb = &mut *(vcpu.vmcb_phys as *mut Vmcb);
-        let info: u64 = 2 | (2 << 8) | (1u64 << 31);
-        vmcb.control.exit_int_info = info;
+        let info: u64 = 2 | (2u64 << 8) | (1u64 << 31);
+        vmcb.control.event_inj = info;
     }
     true
 }

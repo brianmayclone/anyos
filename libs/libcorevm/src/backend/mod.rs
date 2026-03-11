@@ -12,6 +12,9 @@ pub mod kvm;
 #[cfg(feature = "anyos")]
 pub mod anyos;
 
+#[cfg(feature = "windows")]
+pub mod whp;
+
 #[derive(Debug, Clone)]
 pub enum VmError {
     NoHardwareSupport,
@@ -21,6 +24,23 @@ pub enum VmError {
     MemoryMapFailed,
     VmEntryFailed(u32),
     BackendError(i32),
+    /// Backend error with context: (HRESULT, step description)
+    BackendErrorCtx(i32, &'static str),
+}
+
+impl core::fmt::Display for VmError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            VmError::NoHardwareSupport => write!(f, "No hardware virtualization support (KVM/WHP not available)"),
+            VmError::VmxInitFailed => write!(f, "Intel VT-x initialization failed"),
+            VmError::SvmInitFailed => write!(f, "AMD-V (SVM) initialization failed"),
+            VmError::InvalidVcpuId => write!(f, "Invalid vCPU ID"),
+            VmError::MemoryMapFailed => write!(f, "Memory mapping failed"),
+            VmError::VmEntryFailed(code) => write!(f, "VM entry failed (code {})", code),
+            VmError::BackendError(code) => write!(f, "Backend error (HRESULT 0x{:08X})", *code as u32),
+            VmError::BackendErrorCtx(code, step) => write!(f, "{} failed (HRESULT 0x{:08X})", step, *code as u32),
+        }
+    }
 }
 
 #[derive(Debug)]

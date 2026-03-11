@@ -23,6 +23,7 @@ rm -rf "$VMMANAGER_DIR/target"
 cargo.exe +stable build \
     --release \
     --target x86_64-pc-windows-msvc \
+    --features libcorevm/windows \
     --manifest-path "$WIN_MANIFEST" \
     --target-dir "$WIN_TARGET_DIR_W"
 

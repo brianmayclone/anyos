@@ -7,7 +7,7 @@ edition = "2021"
 eframe = "0.31"
 egui = "0.31"
 egui_extras = { version = "0.31", features = ["image"] }
-libcorevm = { path = "../../libs/libcorevm", features = ["host_test"] }
+libcorevm = { path = "../../libs/libcorevm", default-features = false }
 uuid = { version = "1", features = ["v4"] }
 
 [build-dependencies]

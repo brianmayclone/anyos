@@ -192,6 +192,10 @@ struct CoreVmLib {
     write_phys: extern "C" fn(u64, u64, *const u8, u32) -> i32,
     load_binary: extern "C" fn(u64, u64, *const u8, u32) -> i32,
 
+    // Error reporting
+    last_error: extern "C" fn() -> *const u8,
+    last_error_len: extern "C" fn() -> u32,
+
     // Hardware support
     has_hw_support: extern "C" fn() -> i32,
 
@@ -278,6 +282,9 @@ pub fn init() -> bool {
             read_phys: resolve(&handle, "corevm_read_phys"),
             write_phys: resolve(&handle, "corevm_write_phys"),
             load_binary: resolve(&handle, "corevm_load_binary"),
+            // Error reporting
+            last_error: resolve(&handle, "corevm_last_error"),
+            last_error_len: resolve(&handle, "corevm_last_error_len"),
             // Hardware support
             has_hw_support: resolve(&handle, "corevm_has_hw_support"),
             // I/O and MMIO exit dispatch
@@ -309,6 +316,21 @@ pub fn init() -> bool {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+//  Error reporting
+// ══════════════════════════════════════════════════════════════════════
+
+/// Get the last error message from libcorevm, if any.
+pub fn last_error() -> Option<alloc::string::String> {
+    let l = lib();
+    let len = (l.last_error_len)() as usize;
+    if len == 0 { return None; }
+    let ptr = (l.last_error)();
+    if ptr.is_null() { return None; }
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    Some(alloc::string::String::from_utf8_lossy(bytes).into_owned())
+}
+
+// ══════════════════════════════════════════════════════════════════════
 //  VmHandle: high-level RAII wrapper
 // ══════════════════════════════════════════════════════════════════════
 
@@ -326,10 +348,15 @@ impl VmHandle {
 
     /// Create a new virtual machine with the specified guest RAM size.
     ///
-    /// Returns `Some(VmHandle)` on success, `None` if creation failed.
-    pub fn new(ram_mb: u32) -> Option<Self> {
+    /// Returns `Ok(VmHandle)` on success, `Err(String)` with a descriptive
+    /// error message on failure (e.g., missing KVM/WHP support).
+    pub fn new(ram_mb: u32) -> Result<Self, alloc::string::String> {
         let h = (lib().create)(ram_mb);
-        if h == 0 { None } else { Some(VmHandle { handle: h }) }
+        if h == 0 {
+            Err(last_error().unwrap_or_else(|| "Unknown error creating VM".into()))
+        } else {
+            Ok(VmHandle { handle: h })
+        }
     }
 
     /// Reset the VM. Returns 0 on success, -1 on error.

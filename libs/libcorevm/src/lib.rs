@@ -18,10 +18,10 @@
 //! The new FFI layer will be added in a subsequent task.
 
 #![cfg_attr(not(any(feature = "host_test", feature = "std")), no_std)]
-#![cfg_attr(not(feature = "host_test"), no_main)]
+#![cfg_attr(not(any(feature = "host_test", feature = "std")), no_main)]
 
 extern crate alloc;
-#[cfg(not(feature = "host_test"))]
+#[cfg(not(any(feature = "host_test", feature = "std")))]
 extern crate libheap;
 
 pub mod error;
@@ -55,10 +55,10 @@ macro_rules! vm_log {
     }};
 }
 
-#[cfg(not(feature = "host_test"))]
+#[cfg(not(any(feature = "host_test", feature = "std")))]
 libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
 
-#[cfg(not(feature = "host_test"))]
+#[cfg(not(any(feature = "host_test", feature = "std")))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     syscall::exit(1);

@@ -151,6 +151,23 @@ pub struct VmExitInfo {
     pub guest_phys_addr: u64,
     /// Instruction length (for instruction-based exits like CPUID, I/O).
     pub instruction_len: u32,
+    /// I/O port number (for I/O exits).
+    pub io_port: u16,
+    /// Access size in bytes (1, 2, 4, 8).
+    pub access_size: u8,
+    /// Direction: 0 = out/write, 1 = in/read.
+    pub is_read: u8,
+    /// Data value (for OUT/MMIO write: guest-written value; for CPUID: EAX input).
+    pub io_data: u64,
+    /// Secondary data (for CPUID: ECX index; for WRMSR: value).
+    pub io_data2: u64,
+    /// MSR index (for RDMSR/WRMSR exits).
+    pub msr_index: u32,
+    /// CPUID function (EAX) for CPUID exits.
+    pub cpuid_function: u32,
+    /// CPUID index (ECX) for CPUID exits.
+    pub cpuid_index: u32,
+    pub _pad: u32,
 }
 
 /// Guest general-purpose registers saved/restored across VM-entry/exit.

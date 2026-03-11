@@ -10,6 +10,7 @@ use crate::display::DisplayWidget;
 use crate::filebrowser::FileBrowserDialog;
 use crate::input::{self, MouseCapture};
 use crate::platform;
+use crate::diagnostics::{DiagLog, DiagnosticsWindow};
 use crate::settings::SettingsDialog;
 use crate::sidebar::{self, SidebarAction, SidebarLayout, SidebarState, VmState};
 use crate::statusbar::{self, VmMetrics};
@@ -50,6 +51,7 @@ pub struct VmEntry {
     pub framebuffer: Arc<Mutex<FrameBufferData>>,
     pub vm_thread: Option<JoinHandle<()>>,
     pub cpu_mode: u32,  // 0=real, 1=protected, 2=long
+    pub diag_log: DiagLog,
 }
 
 impl VmEntry {
@@ -62,6 +64,7 @@ impl VmEntry {
             framebuffer: Arc::new(Mutex::new(FrameBufferData::default())),
             vm_thread: None,
             cpu_mode: 0,
+            diag_log: DiagLog::new(),
         }
     }
 }
@@ -85,6 +88,7 @@ pub struct CoreVmApp {
     pub create_disk_dialog: Option<CreateDiskDialog>,
     pub about_dialog: Option<AboutDialog>,
     pub snapshots_dialog: Option<SnapshotsDialog>,
+    pub diagnostics_window: Option<DiagnosticsWindow>,
     pub error_message: Option<String>,
     pub file_browser: Option<FileBrowserDialog>,
     pub file_pick_target: Option<FilePickTarget>,
@@ -127,6 +131,7 @@ impl CoreVmApp {
             create_disk_dialog: None,
             about_dialog: None,
             snapshots_dialog: None,
+            diagnostics_window: None,
             error_message: None,
             file_browser: None,
             file_pick_target: None,
@@ -160,6 +165,8 @@ impl CoreVmApp {
                     if let Some(entry) = self.find_vm_mut(&uuid) {
                         if let Err(e) = vm::start_vm(entry) {
                             self.error_message = Some(format!("Failed to start VM: {}", e));
+                        } else if entry.config.diagnostics {
+                            self.diagnostics_window = Some(DiagnosticsWindow::new(&entry.config.name));
                         }
                     }
                 }
@@ -518,6 +525,19 @@ impl eframe::App for CoreVmApp {
         if let Some(ref mut dialog) = self.snapshots_dialog {
             if !dialog.show(ctx) {
                 self.snapshots_dialog = None;
+            }
+        }
+
+        // Diagnostics window
+        if let Some(ref mut diag_win) = self.diagnostics_window {
+            // Find the selected VM's diag log
+            if let Some(uuid) = &self.selected_vm {
+                if let Some(entry) = self.vms.iter().find(|v| &v.config.uuid == uuid) {
+                    diag_win.show(ctx, &entry.diag_log);
+                }
+            }
+            if !diag_win.open {
+                self.diagnostics_window = None;
             }
         }
 

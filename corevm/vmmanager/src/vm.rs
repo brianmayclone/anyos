@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::app::{VmEntry, FrameBufferData};
 use crate::config::BiosType;
+use crate::diagnostics::{DiagLog, DiagCategory};
 use crate::display;
 use crate::platform;
 use crate::sidebar::VmState;
@@ -18,8 +19,23 @@ use libcorevm::ffi::{
     corevm_get_vcpu_regs, corevm_set_vcpu_regs,
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
+    corevm_last_error, corevm_last_error_len,
 };
 use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg};
+
+/// Retrieve the last error message from libcorevm.
+pub fn get_last_error_public() -> Option<String> {
+    let len = corevm_last_error_len() as usize;
+    if len == 0 { return None; }
+    let ptr = corevm_last_error();
+    if ptr.is_null() { return None; }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    Some(String::from_utf8_lossy(bytes).into_owned())
+}
+
+fn get_last_error() -> Option<String> {
+    get_last_error_public()
+}
 
 /// Shared control flags for the VM thread
 pub struct VmControl {
@@ -33,10 +49,17 @@ pub struct VmControl {
 pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     let config = &entry.config;
 
+    // Reset diagnostics log
+    entry.diag_log.clear();
+    if entry.config.diagnostics {
+        entry.diag_log.log(DiagCategory::Info, format!("Starting VM '{}' RAM={}MB BIOS={:?}", config.name, config.ram_mb, config.bios_type));
+    }
+
     // Create VM
     let handle = corevm_create(config.ram_mb);
     if handle == 0 {
-        return Err("Failed to create VM".into());
+        let msg = get_last_error().unwrap_or_else(|| "Unknown error".into());
+        return Err(format!("Failed to create VM: {}", msg));
     }
 
     // Create vCPU
@@ -77,10 +100,12 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
 
     let fb = entry.framebuffer.clone();
     let control_clone = control.clone();
+    let diag = entry.diag_log.clone();
+    let diag_enabled = entry.config.diagnostics;
 
     // Spawn VM execution thread
     let thread = thread::spawn(move || {
-        vm_run_loop(handle, fb, control_clone);
+        vm_run_loop(handle, fb, control_clone, diag, diag_enabled);
         corevm_destroy(handle);
     });
 
@@ -95,7 +120,7 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
 /// Attach a disk or ISO image to an AHCI port via file descriptor.
 #[cfg(unix)]
 fn attach_image_to_ahci(handle: u64, path: &str, port: u32, is_cdrom: bool) -> Result<(), String> {
-    use std::os::unix::io::IntoRawFd;
+    use std::os::unix::io::{IntoRawFd, FromRawFd};
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(!is_cdrom)
@@ -212,6 +237,8 @@ fn vm_run_loop(
     handle: u64,
     fb: Arc<Mutex<FrameBufferData>>,
     control: Arc<VmControl>,
+    diag: DiagLog,
+    diag_enabled: bool,
 ) {
     let mut last_fb_update = Instant::now();
     let fb_interval = Duration::from_millis(16); // ~60fps
@@ -227,16 +254,31 @@ fn vm_run_loop(
         }
 
         let mut exit = CExitReason::default();
-        corevm_run_vcpu(handle, 0, &mut exit);
+        let rc = corevm_run_vcpu(handle, 0, &mut exit);
+        if rc != 0 {
+            let err_msg = get_last_error().unwrap_or_else(|| "unknown".into());
+            if diag_enabled {
+                diag.log(DiagCategory::Error, format!("run_vcpu error: {}", err_msg));
+            }
+            thread::sleep(Duration::from_millis(10));
+            continue;
+        }
 
         match exit.reason {
             0 => {
                 // IoIn — dispatch to device, device fills data
                 let mut data = [0u8; 4];
                 corevm_handle_io_exit(handle, exit.port, 0, exit.size, data.as_mut_ptr());
+                if diag_enabled {
+                    let val = match exit.size { 1 => data[0] as u32, 2 => u16::from_le_bytes([data[0], data[1]]) as u32, _ => u32::from_le_bytes(data) };
+                    diag.log(DiagCategory::IoPort, format!("IN  port=0x{:04X} size={} -> 0x{:X}", exit.port, exit.size, val));
+                }
             }
             1 => {
                 // IoOut — dispatch to device
+                if diag_enabled {
+                    diag.log(DiagCategory::IoPort, format!("OUT port=0x{:04X} size={} data=0x{:X}", exit.port, exit.size, exit.data_u32));
+                }
                 let mut data = exit.data_u32.to_le_bytes();
                 corevm_handle_io_exit(handle, exit.port, 1, exit.size, data.as_mut_ptr());
             }
@@ -244,18 +286,30 @@ fn vm_run_loop(
                 // MmioRead — dispatch to device
                 let mut data = [0u8; 8];
                 corevm_handle_mmio_exit(handle, exit.addr, 0, exit.size, data.as_mut_ptr());
+                if diag_enabled {
+                    diag.log(DiagCategory::Mmio, format!("MMIO RD addr=0x{:08X} size={}", exit.addr, exit.size));
+                }
             }
             3 => {
                 // MmioWrite — dispatch to device
+                if diag_enabled {
+                    diag.log(DiagCategory::Mmio, format!("MMIO WR addr=0x{:08X} size={} data=0x{:X}", exit.addr, exit.size, exit.data_u64));
+                }
                 let mut data = exit.data_u64.to_le_bytes();
                 corevm_handle_mmio_exit(handle, exit.addr, 1, exit.size, data.as_mut_ptr());
             }
             7 => {
                 // Halted — sleep briefly
+                if diag_enabled {
+                    diag.log(DiagCategory::CpuState, "HLT".to_string());
+                }
                 thread::sleep(Duration::from_millis(1));
             }
             9 => {
                 // Shutdown — clean exit
+                if diag_enabled {
+                    diag.log(DiagCategory::Error, "VM Shutdown (triple fault)".to_string());
+                }
                 update_framebuffer(handle, &fb);
                 if let Ok(mut r) = control.exit_reason.lock() {
                     *r = "Shutdown".into();
@@ -265,6 +319,9 @@ fn vm_run_loop(
             }
             11 => {
                 // Error — fatal
+                if diag_enabled {
+                    diag.log(DiagCategory::Error, "VM Error exit".to_string());
+                }
                 update_framebuffer(handle, &fb);
                 if let Ok(mut r) = control.exit_reason.lock() {
                     *r = "Error".into();
@@ -272,9 +329,11 @@ fn vm_run_loop(
                 control.exited.store(true, Ordering::Relaxed);
                 break;
             }
-            _ => {
+            other => {
                 // Other exits (MsrRead/Write, Cpuid, InterruptWindow, Debug)
-                // For now, continue
+                if diag_enabled {
+                    diag.log(DiagCategory::Info, format!("Unhandled exit reason={}", other));
+                }
             }
         }
 

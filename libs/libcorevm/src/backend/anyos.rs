@@ -58,9 +58,12 @@ unsafe fn syscall0(nr: u64) -> u64 {
 unsafe fn syscall1(nr: u64, a1: u64) -> u64 {
     let ret: u64;
     core::arch::asm!(
+        "push rbx",
+        "mov rbx, {a1}",
         "syscall",
+        "pop rbx",
+        a1 = in(reg) a1,
         in("rax") nr,
-        in("rbx") a1,
         lateout("rax") ret,
         out("rcx") _,
         out("r11") _,
@@ -73,9 +76,12 @@ unsafe fn syscall1(nr: u64, a1: u64) -> u64 {
 unsafe fn syscall2(nr: u64, a1: u64, a2: u64) -> u64 {
     let ret: u64;
     core::arch::asm!(
+        "push rbx",
+        "mov rbx, {a1}",
         "syscall",
+        "pop rbx",
+        a1 = in(reg) a1,
         in("rax") nr,
-        in("rbx") a1,
         in("r10") a2,
         lateout("rax") ret,
         out("rcx") _,
@@ -89,9 +95,12 @@ unsafe fn syscall2(nr: u64, a1: u64, a2: u64) -> u64 {
 unsafe fn syscall3(nr: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     let ret: u64;
     core::arch::asm!(
+        "push rbx",
+        "mov rbx, {a1}",
         "syscall",
+        "pop rbx",
+        a1 = in(reg) a1,
         in("rax") nr,
-        in("rbx") a1,
         in("r10") a2,
         in("rdx") a3,
         lateout("rax") ret,
@@ -107,9 +116,12 @@ unsafe fn syscall3(nr: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 unsafe fn syscall4(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
     let ret: u64;
     core::arch::asm!(
+        "push rbx",
+        "mov rbx, {a1}",
         "syscall",
+        "pop rbx",
+        a1 = in(reg) a1,
         in("rax") nr,
-        in("rbx") a1,
         in("r10") a2,
         in("rdx") a3,
         in("rsi") a4,
@@ -126,9 +138,12 @@ unsafe fn syscall4(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
 unsafe fn syscall5(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> u64 {
     let ret: u64;
     core::arch::asm!(
+        "push rbx",
+        "mov rbx, {a1}",
         "syscall",
+        "pop rbx",
+        a1 = in(reg) a1,
         in("rax") nr,
-        in("rbx") a1,
         in("r10") a2,
         in("rdx") a3,
         in("rsi") a4,
@@ -161,6 +176,15 @@ struct KernelVmExitInfo {
     qualification: u64,
     guest_phys_addr: u64,
     instruction_len: u32,
+    io_port: u16,
+    access_size: u8,
+    is_read: u8,
+    io_data: u64,
+    io_data2: u64,
+    msr_index: u32,
+    cpuid_function: u32,
+    cpuid_index: u32,
+    _pad: u32,
 }
 
 /// Guest GPRs as the kernel sees them.
@@ -209,7 +233,7 @@ pub struct AnyOsBackend {
 }
 
 impl AnyOsBackend {
-    pub fn new() -> Result<Self, VmError> {
+    pub fn new(_ram_bytes: usize) -> Result<Self, VmError> {
         let vm_id = unsafe { syscall0(SYS_VM_CREATE) } as u32;
         if vm_id == 0 || vm_id == u32::MAX {
             return Err(VmError::NoHardwareSupport);
@@ -367,39 +391,31 @@ impl VmBackend for AnyOsBackend {
         let reason = exit_info.reason & 0xFFFF;
         match reason {
             EXIT_REASON_IO_INSTRUCTION => {
-                // Qualification encodes: bits 15:0 = port, bit 3 = direction (1=in),
-                // bits 2:0 = size-1.
-                let qual = exit_info.qualification;
-                let port = (qual >> 16) as u16;
-                let size = ((qual & 0x7) + 1) as u8;
-                let is_in = (qual >> 3) & 1 != 0;
-                if is_in {
+                let port = exit_info.io_port;
+                let size = exit_info.access_size;
+                if exit_info.is_read != 0 {
                     Ok(VmExitReason::IoIn { port, size })
                 } else {
-                    // For OUT, the data is in EAX (caller reads from regs).
-                    Ok(VmExitReason::IoOut { port, size, data: 0 })
+                    Ok(VmExitReason::IoOut { port, size, data: exit_info.io_data as u32 })
                 }
             }
             EXIT_REASON_EPT_VIOLATION => {
-                let qual = exit_info.qualification;
                 let addr = exit_info.guest_phys_addr;
-                let is_write = (qual >> 1) & 1 != 0;
-                // Size is not directly available from VMX; the caller typically
-                // decodes the instruction. We report size=0 and let the caller handle it.
-                if is_write {
-                    Ok(VmExitReason::MmioWrite { addr, size: 0, data: 0 })
+                let size = exit_info.access_size;
+                if exit_info.is_read != 0 {
+                    Ok(VmExitReason::MmioRead { addr, size })
                 } else {
-                    Ok(VmExitReason::MmioRead { addr, size: 0 })
+                    Ok(VmExitReason::MmioWrite { addr, size, data: exit_info.io_data })
                 }
             }
             EXIT_REASON_RDMSR => {
-                Ok(VmExitReason::MsrRead { index: exit_info.qualification as u32 })
+                Ok(VmExitReason::MsrRead { index: exit_info.msr_index })
             }
             EXIT_REASON_WRMSR => {
-                Ok(VmExitReason::MsrWrite { index: exit_info.qualification as u32, value: 0 })
+                Ok(VmExitReason::MsrWrite { index: exit_info.msr_index, value: exit_info.io_data })
             }
             EXIT_REASON_CPUID => {
-                Ok(VmExitReason::CpuidExit { function: 0, index: 0 })
+                Ok(VmExitReason::CpuidExit { function: exit_info.cpuid_function, index: exit_info.cpuid_index })
             }
             EXIT_REASON_HLT => Ok(VmExitReason::Halted),
             EXIT_REASON_TRIPLE_FAULT => Ok(VmExitReason::Shutdown),

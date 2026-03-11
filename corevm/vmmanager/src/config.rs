@@ -33,6 +33,7 @@ pub struct VmConfig {
     pub mac_mode: MacMode,
     pub mac_address: String,
     pub ram_alloc: RamAlloc,
+    pub diagnostics: bool,
 }
 
 impl Default for VmConfig {
@@ -53,6 +54,7 @@ impl Default for VmConfig {
             mac_mode: MacMode::Dynamic,
             mac_address: String::new(),
             ram_alloc: RamAlloc::OnDemand,
+            diagnostics: false,
         }
     }
 }
@@ -84,12 +86,13 @@ impl VmConfig {
         let content = format!(
             "name={}\nram={}\ncpu_cores={}\ndisk={}\niso={}\nboot={}\nbios={}\n\
              ram_alloc={}\ngpu={}\nnet_enabled={}\nnet_mode={}\nnet_host_nic={}\n\
-             mac_mode={}\nmac_address={}\n",
+             mac_mode={}\nmac_address={}\ndiagnostics={}\n",
             self.name, self.ram_mb, self.cpu_cores, self.disk_image, self.iso_image,
             boot, bios,
             alloc, self.gpu_type,
             if self.net_enabled { "1" } else { "0" },
             net_mode, self.net_host_nic, mac_mode, self.mac_address,
+            if self.diagnostics { "1" } else { "0" },
         );
         fs::write(&path, content)
     }
@@ -136,6 +139,7 @@ impl VmConfig {
                     _ => MacMode::Dynamic,
                 },
                 "mac_address" => cfg.mac_address = val.to_string(),
+                "diagnostics" => cfg.diagnostics = val == "1",
                 _ => {}
             }
         }

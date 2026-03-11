@@ -17,19 +17,70 @@ use crate::error::Result;
 /// Addresses `0..size` are valid; anything beyond is out-of-bounds.
 /// All multi-byte reads and writes use little-endian byte order,
 /// matching the x86 memory model.
+///
+/// On `std` targets, memory is allocated with 4KB page alignment
+/// (required by KVM and WHP for guest RAM mapping).
 pub struct FlatMemory {
     /// Backing storage.
+    #[cfg(not(feature = "std"))]
     data: Vec<u8>,
-    /// Logical size in bytes (always equals `data.len()`).
+    #[cfg(feature = "std")]
+    data: AlignedBuffer,
+    /// Logical size in bytes.
     size: usize,
+}
+
+/// Page-aligned memory buffer for hypervisor backends.
+#[cfg(feature = "std")]
+struct AlignedBuffer {
+    ptr: *mut u8,
+    len: usize,
+}
+
+#[cfg(feature = "std")]
+impl AlignedBuffer {
+    fn new(size: usize) -> Self {
+        use core::alloc::Layout;
+        let layout = Layout::from_size_align(size, 4096).expect("invalid layout");
+        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            panic!("Failed to allocate {} bytes of page-aligned guest RAM", size);
+        }
+        AlignedBuffer { ptr, len: size }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Drop for AlignedBuffer {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            use core::alloc::Layout;
+            let layout = Layout::from_size_align(self.len, 4096).unwrap();
+            unsafe { alloc::alloc::dealloc(self.ptr, layout); }
+        }
+    }
 }
 
 impl FlatMemory {
     /// Allocate `size` bytes of zeroed guest RAM.
     pub fn new(size: usize) -> Self {
+        // Round up to page boundary for hypervisor compatibility
+        let aligned_size = (size + 4095) & !4095;
+        #[cfg(not(feature = "std"))]
+        let data = vec![0u8; aligned_size];
+        #[cfg(feature = "std")]
+        let data = AlignedBuffer::new(aligned_size);
         FlatMemory {
-            data: vec![0u8; size],
-            size,
+            data,
+            size: aligned_size,
         }
     }
 
@@ -47,17 +98,23 @@ impl FlatMemory {
             src.len(),
             self.size,
         );
-        self.data[offset..end].copy_from_slice(src);
+        self.as_mut_slice()[offset..end].copy_from_slice(src);
     }
 
     /// Borrow the entire guest RAM as a byte slice.
     pub fn as_slice(&self) -> &[u8] {
-        &self.data
+        #[cfg(not(feature = "std"))]
+        { &self.data }
+        #[cfg(feature = "std")]
+        { self.data.as_slice() }
     }
 
     /// Borrow the entire guest RAM as a mutable byte slice.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut self.data
+        #[cfg(not(feature = "std"))]
+        { &mut self.data }
+        #[cfg(feature = "std")]
+        { self.data.as_mut_slice() }
     }
 
     /// Returns the size of guest RAM in bytes.
@@ -69,10 +126,11 @@ impl FlatMemory {
 impl MemoryBus for FlatMemory {
     fn read_u8(&self, addr: u64) -> Result<u8> {
         let a = addr as usize;
+        let s = self.as_slice();
         if a >= self.size {
             return Ok(0xFF); // floating bus
         }
-        Ok(self.data[a])
+        Ok(s[a])
     }
 
     fn read_u16(&self, addr: u64) -> Result<u16> {
@@ -81,7 +139,8 @@ impl MemoryBus for FlatMemory {
         if end > self.size || end < a {
             return Ok(0xFFFF); // floating bus
         }
-        let bytes: [u8; 2] = [self.data[a], self.data[a + 1]];
+        let s = self.as_slice();
+        let bytes: [u8; 2] = [s[a], s[a + 1]];
         Ok(u16::from_le_bytes(bytes))
     }
 
@@ -91,12 +150,8 @@ impl MemoryBus for FlatMemory {
         if end > self.size || end < a {
             return Ok(0xFFFF_FFFF); // floating bus
         }
-        let bytes: [u8; 4] = [
-            self.data[a],
-            self.data[a + 1],
-            self.data[a + 2],
-            self.data[a + 3],
-        ];
+        let s = self.as_slice();
+        let bytes: [u8; 4] = [s[a], s[a + 1], s[a + 2], s[a + 3]];
         Ok(u32::from_le_bytes(bytes))
     }
 
@@ -106,16 +161,8 @@ impl MemoryBus for FlatMemory {
         if end > self.size || end < a {
             return Ok(0xFFFF_FFFF_FFFF_FFFF); // floating bus
         }
-        let bytes: [u8; 8] = [
-            self.data[a],
-            self.data[a + 1],
-            self.data[a + 2],
-            self.data[a + 3],
-            self.data[a + 4],
-            self.data[a + 5],
-            self.data[a + 6],
-            self.data[a + 7],
-        ];
+        let s = self.as_slice();
+        let bytes: [u8; 8] = [s[a], s[a+1], s[a+2], s[a+3], s[a+4], s[a+5], s[a+6], s[a+7]];
         Ok(u64::from_le_bytes(bytes))
     }
 
@@ -124,7 +171,7 @@ impl MemoryBus for FlatMemory {
         if a >= self.size {
             return Ok(()); // ignore write to unmapped physical memory
         }
-        self.data[a] = val;
+        self.as_mut_slice()[a] = val;
         Ok(())
     }
 
@@ -135,8 +182,9 @@ impl MemoryBus for FlatMemory {
             return Ok(()); // ignore write to unmapped physical memory
         }
         let bytes = val.to_le_bytes();
-        self.data[a] = bytes[0];
-        self.data[a + 1] = bytes[1];
+        let s = self.as_mut_slice();
+        s[a] = bytes[0];
+        s[a + 1] = bytes[1];
         Ok(())
     }
 
@@ -147,10 +195,11 @@ impl MemoryBus for FlatMemory {
             return Ok(()); // ignore write to unmapped physical memory
         }
         let bytes = val.to_le_bytes();
-        self.data[a] = bytes[0];
-        self.data[a + 1] = bytes[1];
-        self.data[a + 2] = bytes[2];
-        self.data[a + 3] = bytes[3];
+        let s = self.as_mut_slice();
+        s[a] = bytes[0];
+        s[a + 1] = bytes[1];
+        s[a + 2] = bytes[2];
+        s[a + 3] = bytes[3];
         Ok(())
     }
 
@@ -161,14 +210,15 @@ impl MemoryBus for FlatMemory {
             return Ok(()); // ignore write to unmapped physical memory
         }
         let bytes = val.to_le_bytes();
-        self.data[a] = bytes[0];
-        self.data[a + 1] = bytes[1];
-        self.data[a + 2] = bytes[2];
-        self.data[a + 3] = bytes[3];
-        self.data[a + 4] = bytes[4];
-        self.data[a + 5] = bytes[5];
-        self.data[a + 6] = bytes[6];
-        self.data[a + 7] = bytes[7];
+        let s = self.as_mut_slice();
+        s[a] = bytes[0];
+        s[a + 1] = bytes[1];
+        s[a + 2] = bytes[2];
+        s[a + 3] = bytes[3];
+        s[a + 4] = bytes[4];
+        s[a + 5] = bytes[5];
+        s[a + 6] = bytes[6];
+        s[a + 7] = bytes[7];
         Ok(())
     }
 
@@ -180,7 +230,7 @@ impl MemoryBus for FlatMemory {
             buf.fill(0xFF);
             return Ok(());
         }
-        buf.copy_from_slice(&self.data[a..end]);
+        buf.copy_from_slice(&self.as_slice()[a..end]);
         Ok(())
     }
 
@@ -190,7 +240,7 @@ impl MemoryBus for FlatMemory {
         if end > self.size || end < a {
             return Ok(()); // ignore write to unmapped physical memory
         }
-        self.data[a..end].copy_from_slice(buf);
+        self.as_mut_slice()[a..end].copy_from_slice(buf);
         Ok(())
     }
 }

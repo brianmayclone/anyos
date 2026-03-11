@@ -21,6 +21,10 @@ use crate::devices::ahci::Ahci;
 pub struct Vm {
     #[cfg(feature = "linux")]
     backend: crate::backend::kvm::KvmBackend,
+    #[cfg(feature = "anyos")]
+    backend: crate::backend::anyos::AnyOsBackend,
+    #[cfg(feature = "windows")]
+    backend: crate::backend::whp::WhpBackend,
 
     pub memory: GuestMemory,
     pub io: IoDispatch,
@@ -41,6 +45,10 @@ impl Vm {
 
         #[cfg(feature = "linux")]
         let mut backend = crate::backend::kvm::KvmBackend::new()?;
+        #[cfg(feature = "anyos")]
+        let mut backend = crate::backend::anyos::AnyOsBackend::new(ram_bytes)?;
+        #[cfg(feature = "windows")]
+        let mut backend = crate::backend::whp::WhpBackend::new(ram_bytes)?;
 
         let mut memory = GuestMemory::new(ram_bytes);
         let io = IoDispatch::new();

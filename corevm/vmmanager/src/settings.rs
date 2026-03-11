@@ -158,6 +158,11 @@ impl SettingsDialog {
             ui.radio_value(&mut self.config.bios_type, BiosType::CoreVm, "CoreVM");
         });
 
+        section_heading(ui, "Debugging");
+
+        labeled_row(ui, "", |ui| {
+            ui.checkbox(&mut self.config.diagnostics, "Enable Diagnostics Window");
+        });
     }
 
     fn devices_tab(&mut self, ui: &mut egui::Ui) {

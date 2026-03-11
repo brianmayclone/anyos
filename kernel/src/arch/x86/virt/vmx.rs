@@ -632,6 +632,11 @@ core::arch::global_asm!(
     "push r15",
     "push rdi",          // save GuestGprs pointer for vmexit stub
 
+    // Set HOST_RSP to current RSP (after all pushes, pointing at GuestGprs ptr)
+    "mov rax, 0x6C14",  // HOST_RSP field encoding
+    "mov rdx, rsp",     // current RSP after all pushes
+    "vmwrite rax, rdx",
+
     // Load guest GPRs from struct
     "mov rax, [rdi + 0x00]",
     "mov rbx, [rdi + 0x08]",
@@ -735,34 +740,8 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
         // Make this VMCS current
         vmptrld(vcpu.vmcs_phys);
 
-        // Update HOST_RSP: after the pushes in vmx_vcpu_run, RSP points at
-        // the pushed rdi (GuestGprs pointer). We calculate what RSP will be
-        // at that point: current RSP - 7*8 (6 callee-saved + 1 rdi).
-        // But we can't predict RSP here. Instead, we set HOST_RSP to the
-        // address where vmx_vmexit_stub expects to find the GuestGprs pointer.
-        //
-        // The trick: HOST_RSP is written inside the assembly. We do it here
-        // by reading RSP and accounting for pushes. Actually, the assembly
-        // handles this: after pushing 7 values, the GuestGprs ptr is at [rsp].
-        // We need HOST_RSP = RSP at that point. Let's compute it.
-        //
-        // Instead, we'll set HOST_RSP inside vmx_vcpu_run via vmwrite.
-        // For now, we trust the assembly: HOST_RSP will be set to RSP
-        // right after all pushes, before loading guest GPRs.
-        //
-        // Actually, the correct approach: set HOST_RSP to the stack pointer
-        // value where the `push rdi` left the GuestGprs pointer.
-        // We need to do this from within the assembly or just before vmlaunch.
-        // The simplest correct approach: read RSP, subtract 7*8, that's HOST_RSP.
-        let rsp: u64;
-        core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nostack, nomem));
-        // After the call to vmx_vcpu_run (which pushes return address),
-        // then 6 callee-saved + 1 rdi = 7 pushes = 56 bytes,
-        // plus the call pushed 8 bytes (return address).
-        // HOST_RSP = rsp - 8 (call) - 56 (pushes) = rsp - 64
-        // But at the point of vmlaunch, RSP = rsp - 64, and [rsp] = GuestGprs ptr.
-        // That's exactly what vmexit_stub expects.
-        vmwrite(HOST_RSP, rsp - 64);
+        // HOST_RSP is set inside vmx_vcpu_run assembly, after all pushes,
+        // via VMWRITE with the exact RSP value at that point.
 
         let launched = vcpu.launched;
         let gprs_ptr = &mut vcpu.guest_gprs as *mut GuestGprs;
@@ -796,18 +775,46 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                 handle_cpuid_exit(&vm.cpuid_table[..vm.cpuid_count], vcpu);
                 return Some(VmExitInfo {
                     reason,
-                    qualification: 0,
-                    guest_phys_addr: 0,
-                    instruction_len: instr_len,
+                    ..Default::default()
                 });
             }
 
-            Some(VmExitInfo {
+            let mut info = VmExitInfo {
                 reason,
                 qualification,
                 guest_phys_addr: guest_phys,
                 instruction_len: instr_len,
-            })
+                ..Default::default()
+            };
+
+            match reason {
+                EXIT_REASON_IO_INSTRUCTION => {
+                    info.io_port = (qualification >> 16) as u16;
+                    info.access_size = ((qualification & 0x7) + 1) as u8;
+                    info.is_read = ((qualification >> 3) & 1) as u8;
+                    if info.is_read == 0 {
+                        info.io_data = vcpu.guest_gprs.rax;
+                    }
+                }
+                EXIT_REASON_EPT_VIOLATION => {
+                    info.is_read = if (qualification >> 1) & 1 != 0 { 0 } else { 1 };
+                    info.access_size = 4; // default; exact size requires instruction decode
+                    if info.is_read == 0 {
+                        info.io_data = vcpu.guest_gprs.rax;
+                    }
+                }
+                EXIT_REASON_RDMSR => {
+                    info.msr_index = vcpu.guest_gprs.rcx as u32;
+                    info.is_read = 1;
+                }
+                EXIT_REASON_WRMSR => {
+                    info.msr_index = vcpu.guest_gprs.rcx as u32;
+                    info.io_data = (vcpu.guest_gprs.rdx << 32) | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
+                }
+                _ => {}
+            }
+
+            Some(info)
         } else {
             // VM-entry failure
             crate::serial_println!("VMX: VM-entry failed for VM {} vCPU {}", vm_id, vcpu_id);

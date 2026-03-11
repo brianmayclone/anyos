@@ -4,6 +4,9 @@
 //! daemon (vmd) and other C/C++ callers. A global VM registry maps opaque
 //! `u64` handles to [`Vm`] instances.
 
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -17,6 +20,15 @@ use crate::backend::VmExitReason;
 
 static mut VMS: Option<Vec<Option<Vm>>> = None;
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
+static mut LAST_ERROR: Option<String> = None;
+
+fn set_last_error(msg: String) {
+    unsafe { LAST_ERROR = Some(msg); }
+}
+
+fn clear_last_error() {
+    unsafe { LAST_ERROR = None; }
+}
 
 fn vm_list() -> &'static mut Vec<Option<Vm>> {
     unsafe {
@@ -97,6 +109,7 @@ fn fill_exit(e: &mut CExitReason, reason: VmExitReason) {
 /// Returns a non-zero handle on success, 0 on failure.
 #[no_mangle]
 pub extern "C" fn corevm_create(ram_mb: u32) -> u64 {
+    clear_last_error();
     match Vm::new(ram_mb) {
         Ok(vm) => {
             let handle = NEXT_HANDLE.fetch_add(1, Ordering::SeqCst);
@@ -108,7 +121,10 @@ pub extern "C" fn corevm_create(ram_mb: u32) -> u64 {
             list[idx] = Some(vm);
             handle
         }
-        Err(_) => 0,
+        Err(e) => {
+            set_last_error(format!("{}", e));
+            0
+        }
     }
 }
 
@@ -120,6 +136,30 @@ pub extern "C" fn corevm_destroy(handle: u64) {
     if let Some(slot) = vm_list().get_mut(idx) {
         if let Some(mut vm) = slot.take() {
             vm.destroy_backend();
+        }
+    }
+}
+
+/// Get the last error message. Returns a pointer to a null-terminated UTF-8
+/// string, or null if no error. The pointer is valid until the next FFI call.
+#[no_mangle]
+pub extern "C" fn corevm_last_error() -> *const u8 {
+    unsafe {
+        match &LAST_ERROR {
+            Some(s) => s.as_ptr(),
+            None => core::ptr::null(),
+        }
+    }
+}
+
+/// Get the length of the last error message (excluding null terminator).
+/// Returns 0 if no error.
+#[no_mangle]
+pub extern "C" fn corevm_last_error_len() -> u32 {
+    unsafe {
+        match &LAST_ERROR {
+            Some(s) => s.len() as u32,
+            None => 0,
         }
     }
 }
@@ -162,7 +202,7 @@ pub extern "C" fn corevm_run_vcpu(handle: u64, vcpu_id: u32, exit: *mut CExitRea
             }
             0
         }
-        Err(_) => -1,
+        Err(e) => { set_last_error(format!("{}", e)); -1 }
     }
 }
 
@@ -302,8 +342,15 @@ pub extern "C" fn corevm_has_hw_support() -> i32 {
             Err(_) => 0,
         }
     }
-    #[cfg(not(feature = "linux"))]
-    { 0 }
+    #[cfg(feature = "windows")]
+    {
+        match crate::backend::whp::WhpBackend::new(0) {
+            Ok(_) => 1,
+            Err(_) => 0,
+        }
+    }
+    #[cfg(feature = "anyos")]
+    { 1 }
 }
 
 // ── I/O and MMIO exit dispatch ──────────────────────────────────────────────
@@ -320,6 +367,30 @@ pub extern "C" fn corevm_handle_io_exit(
     if data.is_null() { return -1; }
     let buf = unsafe { core::slice::from_raw_parts_mut(data, size as usize) };
     vm.handle_io(port, is_write != 0, size, buf);
+
+    // For IN (read), write response back to the backend.
+    // KVM: write into kvm_run shared page.
+    // anyOS/WHP: write response value into guest RAX via set_vcpu_regs.
+    if is_write == 0 {
+        #[cfg(feature = "linux")]
+        {
+            vm.set_io_response(0, buf);
+        }
+        #[cfg(not(feature = "linux"))]
+        {
+            // Write result into guest RAX
+            if let Ok(mut regs) = vm.get_vcpu_regs(0) {
+                let val = match size {
+                    1 => buf[0] as u64,
+                    2 => u16::from_le_bytes([buf[0], buf[1]]) as u64,
+                    4 => u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as u64,
+                    _ => 0,
+                };
+                regs.rax = (regs.rax & !((1u64 << (size as u64 * 8)) - 1)) | val;
+                let _ = vm.set_vcpu_regs(0, &regs);
+            }
+        }
+    }
     0
 }
 
@@ -335,6 +406,29 @@ pub extern "C" fn corevm_handle_mmio_exit(
     if data.is_null() { return -1; }
     let buf = unsafe { core::slice::from_raw_parts_mut(data, size as usize) };
     vm.handle_mmio(addr, is_write != 0, size, buf);
+
+    // For MMIO reads, write response back to backend.
+    if is_write == 0 {
+        #[cfg(feature = "linux")]
+        {
+            vm.set_mmio_response(0, buf);
+        }
+        #[cfg(not(feature = "linux"))]
+        {
+            // Write result into guest RAX (common for MMIO reads via MOV)
+            if let Ok(mut regs) = vm.get_vcpu_regs(0) {
+                let val = match size {
+                    1 => buf[0] as u64,
+                    2 => u16::from_le_bytes([buf[0], buf[1]]) as u64,
+                    4 => u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as u64,
+                    8 => u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]),
+                    _ => 0,
+                };
+                regs.rax = val;
+                let _ = vm.set_vcpu_regs(0, &regs);
+            }
+        }
+    }
     0
 }
 
@@ -378,7 +472,7 @@ pub extern "C" fn corevm_ahci_attach_disk(handle: u64, port: u32, fd: i32, size:
     let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
     match vm.ahci() {
         Some(ahci) => {
-            ahci.attach_disk_fd(port as usize, fd, size, crate::devices::ahci::AhciDriveKind::Disk);
+            ahci.attach_disk_fd(port as usize, fd, size, crate::devices::ahci::AhciDriveKind::AtaDisk);
             0
         }
         None => -1,
@@ -391,7 +485,7 @@ pub extern "C" fn corevm_ahci_attach_cdrom(handle: u64, port: u32, fd: i32, size
     let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
     match vm.ahci() {
         Some(ahci) => {
-            ahci.attach_disk_fd(port as usize, fd, size, crate::devices::ahci::AhciDriveKind::Cdrom);
+            ahci.attach_disk_fd(port as usize, fd, size, crate::devices::ahci::AhciDriveKind::AtapiCdrom);
             0
         }
         None => -1,
