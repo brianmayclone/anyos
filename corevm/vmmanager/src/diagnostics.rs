@@ -10,6 +10,7 @@ pub struct DiagEntry {
     pub timestamp_ms: u64,
     pub category: DiagCategory,
     pub message: String,
+    pub repeat_count: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -88,7 +89,16 @@ impl DiagLog {
             }
             inner.exit_count += 1;
 
-            inner.entries.push_back(DiagEntry { timestamp_ms, category, message });
+            // Deduplicate consecutive identical messages
+            if let Some(last) = inner.entries.back_mut() {
+                if last.category == category && last.message == message {
+                    last.repeat_count += 1;
+                    last.timestamp_ms = timestamp_ms;
+                    return;
+                }
+            }
+
+            inner.entries.push_back(DiagEntry { timestamp_ms, category, message, repeat_count: 1 });
             if inner.entries.len() > MAX_LOG_ENTRIES {
                 inner.entries.pop_front();
             }
@@ -209,6 +219,9 @@ impl DiagnosticsWindow {
                                 ui.label(egui::RichText::new(ts).small().color(egui::Color32::from_rgb(120, 120, 120)));
                                 ui.label(egui::RichText::new(format!("{:<4}", entry.category.label())).small().color(entry.category.color()));
                                 ui.label(egui::RichText::new(&entry.message).small());
+                                if entry.repeat_count > 1 {
+                                    ui.label(egui::RichText::new(format!(" x{}", entry.repeat_count)).small().color(egui::Color32::from_rgb(255, 200, 100)));
+                                }
                             });
                         }
                     });

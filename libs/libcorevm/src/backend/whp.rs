@@ -14,7 +14,7 @@ use super::types::*;
 
 type WHV_PARTITION_HANDLE = *mut c_void;
 
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone)]
 union WHV_REGISTER_VALUE {
     reg64: u64,
@@ -26,6 +26,21 @@ union WHV_REGISTER_VALUE {
 impl Default for WHV_REGISTER_VALUE {
     fn default() -> Self {
         WHV_REGISTER_VALUE { reg128: [0; 2] }
+    }
+}
+
+impl WHV_REGISTER_VALUE {
+    /// Create a register value from a u64, with upper 64 bits zeroed.
+    fn from_u64(v: u64) -> Self {
+        WHV_REGISTER_VALUE { reg128: [v, 0] }
+    }
+    /// Create a register value from a segment descriptor (16 bytes, no leftover).
+    fn from_seg(s: WhvSegment) -> Self {
+        WHV_REGISTER_VALUE { segment: s }
+    }
+    /// Create a register value from a table descriptor (16 bytes, no leftover).
+    fn from_table(t: WhvTable) -> Self {
+        WHV_REGISTER_VALUE { table: t }
     }
 }
 
@@ -41,9 +56,9 @@ struct WhvSegment {
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 struct WhvTable {
-    base: u64,
-    limit: u16,
     _pad: [u16; 3],
+    limit: u16,
+    base: u64,
 }
 
 // WHV_VP_EXIT_CONTEXT: ExecutionState(2) + InstructionLength:4+Cr8:4(1) + Reserved(1) + Reserved2(4) + Cs(16) + Rip(8) + Rflags(8) = 40 bytes
@@ -74,44 +89,44 @@ const WHV_EXIT_REASON_CANCELED: u32 = 0x00002001;
 const WHV_EXIT_REASON_MSR: u32 = 0x00001000;
 const WHV_EXIT_REASON_CPUID: u32 = 0x00001001;
 
-// Register name constants
-const REG_RAX: u32 = 0x00020000;
-const REG_RCX: u32 = 0x00020001;
-const REG_RDX: u32 = 0x00020002;
-const REG_RBX: u32 = 0x00020003;
-const REG_RSP: u32 = 0x00020004;
-const REG_RBP: u32 = 0x00020005;
-const REG_RSI: u32 = 0x00020006;
-const REG_RDI: u32 = 0x00020007;
-const REG_R8: u32 = 0x00020008;
-const REG_R9: u32 = 0x00020009;
-const REG_R10: u32 = 0x0002000A;
-const REG_R11: u32 = 0x0002000B;
-const REG_R12: u32 = 0x0002000C;
-const REG_R13: u32 = 0x0002000D;
-const REG_R14: u32 = 0x0002000E;
-const REG_R15: u32 = 0x0002000F;
-const REG_RIP: u32 = 0x00020010;
-const REG_RFLAGS: u32 = 0x00020011;
+// WHV_REGISTER_NAME constants (from Windows SDK)
+const REG_RAX: u32 = 0x00000000;
+const REG_RCX: u32 = 0x00000001;
+const REG_RDX: u32 = 0x00000002;
+const REG_RBX: u32 = 0x00000003;
+const REG_RSP: u32 = 0x00000004;
+const REG_RBP: u32 = 0x00000005;
+const REG_RSI: u32 = 0x00000006;
+const REG_RDI: u32 = 0x00000007;
+const REG_R8: u32 = 0x00000008;
+const REG_R9: u32 = 0x00000009;
+const REG_R10: u32 = 0x0000000A;
+const REG_R11: u32 = 0x0000000B;
+const REG_R12: u32 = 0x0000000C;
+const REG_R13: u32 = 0x0000000D;
+const REG_R14: u32 = 0x0000000E;
+const REG_R15: u32 = 0x0000000F;
+const REG_RIP: u32 = 0x00000010;
+const REG_RFLAGS: u32 = 0x00000011;
 
-const REG_CS: u32 = 0x00030000;
-const REG_DS: u32 = 0x00030001;
-const REG_ES: u32 = 0x00030002;
-const REG_FS: u32 = 0x00030003;
-const REG_GS: u32 = 0x00030004;
-const REG_SS: u32 = 0x00030005;
-const REG_TR: u32 = 0x00030006;
-const REG_LDTR: u32 = 0x00030007;
-const REG_GDTR: u32 = 0x00030008;
-const REG_IDTR: u32 = 0x00030009;
+const REG_ES: u32 = 0x00000012;
+const REG_CS: u32 = 0x00000013;
+const REG_SS: u32 = 0x00000014;
+const REG_DS: u32 = 0x00000015;
+const REG_FS: u32 = 0x00000016;
+const REG_GS: u32 = 0x00000017;
+const REG_LDTR: u32 = 0x00000018;
+const REG_TR: u32 = 0x00000019;
+const REG_IDTR: u32 = 0x0000001A;
+const REG_GDTR: u32 = 0x0000001B;
 
-const REG_CR0: u32 = 0x00040000;
-const REG_CR2: u32 = 0x00040001;
-const REG_CR3: u32 = 0x00040002;
-const REG_CR4: u32 = 0x00040003;
-const REG_EFER: u32 = 0x00050001;
+const REG_CR0: u32 = 0x0000001C;
+const REG_CR2: u32 = 0x0000001D;
+const REG_CR3: u32 = 0x0000001E;
+const REG_CR4: u32 = 0x0000001F;
+const REG_EFER: u32 = 0x00002001;
 
-const REG_PENDING_INTERRUPTION: u32 = 0x00080015;
+const REG_PENDING_INTERRUPTION: u32 = 0x80000000;
 
 // GP register names in order for get/set
 const GP_REG_NAMES: [u32; 18] = [
@@ -395,7 +410,18 @@ impl VmBackend for WhpBackend {
     }
 
     fn create_vcpu(&mut self, id: u32) -> Result<(), VmError> {
-        check(unsafe { (self.api.create_vp)(self.partition, id, 0) })
+        check(unsafe { (self.api.create_vp)(self.partition, id, 0) })?;
+
+        // Smoke test: try reading a single register (RIP) to verify the VP works
+        let mut val = WHV_REGISTER_VALUE::default();
+        let name = REG_RIP;
+        let hr = unsafe {
+            (self.api.get_regs)(self.partition, id, &name, 1, &mut val)
+        };
+        if hr < 0 {
+            return Err(VmError::BackendErrorCtx(hr, "WHvGetVirtualProcessorRegisters(RIP) after create"));
+        }
+        Ok(())
     }
 
     fn destroy_vcpu(&mut self, id: u32) -> Result<(), VmError> {
@@ -598,24 +624,24 @@ impl VmBackend for WhpBackend {
 
     fn set_vcpu_regs(&mut self, id: u32, regs: &VcpuRegs) -> Result<(), VmError> {
         let vals = [
-            WHV_REGISTER_VALUE { reg64: regs.rax },
-            WHV_REGISTER_VALUE { reg64: regs.rbx },
-            WHV_REGISTER_VALUE { reg64: regs.rcx },
-            WHV_REGISTER_VALUE { reg64: regs.rdx },
-            WHV_REGISTER_VALUE { reg64: regs.rsi },
-            WHV_REGISTER_VALUE { reg64: regs.rdi },
-            WHV_REGISTER_VALUE { reg64: regs.rbp },
-            WHV_REGISTER_VALUE { reg64: regs.rsp },
-            WHV_REGISTER_VALUE { reg64: regs.r8 },
-            WHV_REGISTER_VALUE { reg64: regs.r9 },
-            WHV_REGISTER_VALUE { reg64: regs.r10 },
-            WHV_REGISTER_VALUE { reg64: regs.r11 },
-            WHV_REGISTER_VALUE { reg64: regs.r12 },
-            WHV_REGISTER_VALUE { reg64: regs.r13 },
-            WHV_REGISTER_VALUE { reg64: regs.r14 },
-            WHV_REGISTER_VALUE { reg64: regs.r15 },
-            WHV_REGISTER_VALUE { reg64: regs.rip },
-            WHV_REGISTER_VALUE { reg64: regs.rflags },
+            WHV_REGISTER_VALUE::from_u64(regs.rax),
+            WHV_REGISTER_VALUE::from_u64(regs.rbx),
+            WHV_REGISTER_VALUE::from_u64(regs.rcx),
+            WHV_REGISTER_VALUE::from_u64(regs.rdx),
+            WHV_REGISTER_VALUE::from_u64(regs.rsi),
+            WHV_REGISTER_VALUE::from_u64(regs.rdi),
+            WHV_REGISTER_VALUE::from_u64(regs.rbp),
+            WHV_REGISTER_VALUE::from_u64(regs.rsp),
+            WHV_REGISTER_VALUE::from_u64(regs.r8),
+            WHV_REGISTER_VALUE::from_u64(regs.r9),
+            WHV_REGISTER_VALUE::from_u64(regs.r10),
+            WHV_REGISTER_VALUE::from_u64(regs.r11),
+            WHV_REGISTER_VALUE::from_u64(regs.r12),
+            WHV_REGISTER_VALUE::from_u64(regs.r13),
+            WHV_REGISTER_VALUE::from_u64(regs.r14),
+            WHV_REGISTER_VALUE::from_u64(regs.r15),
+            WHV_REGISTER_VALUE::from_u64(regs.rip),
+            WHV_REGISTER_VALUE::from_u64(regs.rflags),
         ];
         self.set_regs_raw(id, &GP_REG_NAMES, &vals)
     }
@@ -654,36 +680,33 @@ impl VmBackend for WhpBackend {
 
     fn set_vcpu_sregs(&mut self, id: u32, sregs: &VcpuSregs) -> Result<(), VmError> {
         let vals: [WHV_REGISTER_VALUE; 13] = [
-            WHV_REGISTER_VALUE { segment: seg_to_whv(&sregs.cs) },
-            WHV_REGISTER_VALUE { segment: seg_to_whv(&sregs.ds) },
-            WHV_REGISTER_VALUE { segment: seg_to_whv(&sregs.es) },
-            WHV_REGISTER_VALUE { segment: seg_to_whv(&sregs.fs) },
-            WHV_REGISTER_VALUE { segment: seg_to_whv(&sregs.gs) },
-            WHV_REGISTER_VALUE { segment: seg_to_whv(&sregs.ss) },
-            WHV_REGISTER_VALUE { segment: seg_to_whv(&sregs.tr) },
-            WHV_REGISTER_VALUE { segment: seg_to_whv(&sregs.ldt) },
-            WHV_REGISTER_VALUE { table: WhvTable { base: sregs.gdt.base, limit: sregs.gdt.limit, _pad: [0; 3] } },
-            WHV_REGISTER_VALUE { table: WhvTable { base: sregs.idt.base, limit: sregs.idt.limit, _pad: [0; 3] } },
-            WHV_REGISTER_VALUE { reg64: sregs.cr0 },
-            WHV_REGISTER_VALUE { reg64: sregs.cr2 },
-            WHV_REGISTER_VALUE { reg64: sregs.cr3 },
+            WHV_REGISTER_VALUE::from_seg(seg_to_whv(&sregs.cs)),
+            WHV_REGISTER_VALUE::from_seg(seg_to_whv(&sregs.ds)),
+            WHV_REGISTER_VALUE::from_seg(seg_to_whv(&sregs.es)),
+            WHV_REGISTER_VALUE::from_seg(seg_to_whv(&sregs.fs)),
+            WHV_REGISTER_VALUE::from_seg(seg_to_whv(&sregs.gs)),
+            WHV_REGISTER_VALUE::from_seg(seg_to_whv(&sregs.ss)),
+            WHV_REGISTER_VALUE::from_seg(seg_to_whv(&sregs.tr)),
+            WHV_REGISTER_VALUE::from_seg(seg_to_whv(&sregs.ldt)),
+            WHV_REGISTER_VALUE::from_table(WhvTable { _pad: [0; 3], limit: sregs.gdt.limit, base: sregs.gdt.base }),
+            WHV_REGISTER_VALUE::from_table(WhvTable { _pad: [0; 3], limit: sregs.idt.limit, base: sregs.idt.base }),
+            WHV_REGISTER_VALUE::from_u64(sregs.cr0),
+            WHV_REGISTER_VALUE::from_u64(sregs.cr2),
+            WHV_REGISTER_VALUE::from_u64(sregs.cr3),
         ];
         self.set_regs_raw(id, &SREG_NAMES, &vals)?;
 
         let ext_vals = [
-            WHV_REGISTER_VALUE { reg64: sregs.cr4 },
-            WHV_REGISTER_VALUE { reg64: sregs.efer },
+            WHV_REGISTER_VALUE::from_u64(sregs.cr4),
+            WHV_REGISTER_VALUE::from_u64(sregs.efer),
         ];
         self.set_regs_raw(id, &SREG_NAMES_EXT, &ext_vals)
     }
 
     fn inject_interrupt(&mut self, id: u32, vector: u8) -> Result<(), VmError> {
         // WHV_INTERRUPT_CONTROL: bits[7:0]=vector, bits[11:8]=type(0=ext int), bit 12=deliver
-        let val = WHV_REGISTER_VALUE {
-            reg64: (vector as u64) | (0u64 << 8) | (1u64 << 12),
-        };
-        let name = REG_PENDING_INTERRUPTION;
-        self.set_regs_raw(id, &[name], &[val])
+        let val = WHV_REGISTER_VALUE::from_u64((vector as u64) | (0u64 << 8) | (1u64 << 12));
+        self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[val])
     }
 
     fn inject_exception(&mut self, id: u32, vector: u8, error_code: Option<u32>) -> Result<(), VmError> {
@@ -693,15 +716,13 @@ impl VmBackend for WhpBackend {
             val |= (ec as u64) << 32;
             val |= 1u64 << 13; // has error code
         }
-        let reg_val = WHV_REGISTER_VALUE { reg64: val };
+        let reg_val = WHV_REGISTER_VALUE::from_u64(val);
         self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[reg_val])
     }
 
     fn inject_nmi(&mut self, id: u32) -> Result<(), VmError> {
         // type=2 (NMI), bit 12=deliver
-        let val = WHV_REGISTER_VALUE {
-            reg64: (2u64 << 8) | (1u64 << 12),
-        };
+        let val = WHV_REGISTER_VALUE::from_u64((2u64 << 8) | (1u64 << 12));
         self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[val])
     }
 

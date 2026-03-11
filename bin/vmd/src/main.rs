@@ -414,9 +414,9 @@ fn cmd_create(uuid: &str) {
 
     // Create VM with configured RAM.
     let handle = match VmHandle::new(config.ram_mb) {
-        Some(h) => h,
-        None => {
-            send_status("error 0 failed to create VM (out of memory?)");
+        Ok(h) => h,
+        Err(e) => {
+            send_status(&format!("error 0 failed to create VM: {}", e));
             return;
         }
     };

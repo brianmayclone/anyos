@@ -178,8 +178,11 @@ pub extern "C" fn corevm_reset(handle: u64) -> i32 {
 #[no_mangle]
 pub extern "C" fn corevm_create_vcpu(handle: u64, vcpu_id: u32) -> i32 {
     match get_vm(handle) {
-        Some(vm) => if vm.create_vcpu(vcpu_id).is_ok() { 0 } else { -1 },
-        None => -1,
+        Some(vm) => match vm.create_vcpu(vcpu_id) {
+            Ok(()) => 0,
+            Err(e) => { set_last_error(format!("{}", e)); -1 }
+        },
+        None => { set_last_error("no VM handle".into()); -1 },
     }
 }
 
@@ -237,9 +240,12 @@ pub extern "C" fn corevm_get_vcpu_sregs(handle: u64, vcpu_id: u32, sregs: *mut V
 
 #[no_mangle]
 pub extern "C" fn corevm_set_vcpu_sregs(handle: u64, vcpu_id: u32, sregs: *const VcpuSregs) -> i32 {
-    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
-    if sregs.is_null() { return -1; }
-    if vm.set_vcpu_sregs(vcpu_id, unsafe { &*sregs }).is_ok() { 0 } else { -1 }
+    let vm = match get_vm(handle) { Some(v) => v, None => { set_last_error("no VM handle".into()); return -1 } };
+    if sregs.is_null() { set_last_error("null sregs".into()); return -1; }
+    match vm.set_vcpu_sregs(vcpu_id, unsafe { &*sregs }) {
+        Ok(()) => 0,
+        Err(e) => { set_last_error(format!("{}", e)); -1 }
+    }
 }
 
 // ── Interrupt injection ─────────────────────────────────────────────────────

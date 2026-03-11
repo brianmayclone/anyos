@@ -21,7 +21,7 @@ use libcorevm::ffi::{
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
     corevm_last_error, corevm_last_error_len,
 };
-use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg};
+use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
 
 /// Retrieve the last error message from libcorevm.
 pub fn get_last_error_public() -> Option<String> {
@@ -63,9 +63,11 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     }
 
     // Create vCPU
-    if corevm_create_vcpu(handle, 0) != 0 {
+    let vcpu_rc = corevm_create_vcpu(handle, 0);
+    if vcpu_rc != 0 {
+        let e = get_last_error().unwrap_or_else(|| "unknown".into());
         corevm_destroy(handle);
-        return Err("Failed to create vCPU".into());
+        return Err(format!("Failed to create vCPU: {}", e));
     }
 
     // Setup devices (includes PCI bus)
@@ -88,7 +90,36 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     }
 
     // Set initial CPU state: CS:IP = F000:FFF0 (real-mode reset vector)
-    set_initial_cpu_state(handle);
+    let sregs_rc = set_initial_cpu_state(handle);
+    if entry.config.diagnostics {
+        if let Err(ref e) = sregs_rc {
+            entry.diag_log.log(DiagCategory::Error, format!("set_initial_cpu_state failed: {}", e));
+        }
+        // Dump actual VP state after setup
+        let mut sregs = VcpuSregs::default();
+        let mut regs = VcpuRegs::default();
+        corevm_get_vcpu_sregs(handle, 0, &mut sregs);
+        corevm_get_vcpu_regs(handle, 0, &mut regs);
+        entry.diag_log.log(DiagCategory::CpuState, format!(
+            "VP state: CS={:04X}:{:016X}(lim={:X} attr={:02X}/{}/{}) RIP={:X} RFLAGS={:X} CR0={:X}",
+            sregs.cs.selector, sregs.cs.base, sregs.cs.limit,
+            sregs.cs.type_, sregs.cs.s, sregs.cs.present,
+            regs.rip, regs.rflags, sregs.cr0
+        ));
+        entry.diag_log.log(DiagCategory::CpuState, format!(
+            "SS={:04X}:{:016X} DS={:04X}:{:016X} TR={:04X}:{:016X}(type={:02X} s={} p={})",
+            sregs.ss.selector, sregs.ss.base,
+            sregs.ds.selector, sregs.ds.base,
+            sregs.tr.selector, sregs.tr.base,
+            sregs.tr.type_, sregs.tr.s, sregs.tr.present
+        ));
+        entry.diag_log.log(DiagCategory::CpuState, format!(
+            "GDT base={:X} lim={:X}  IDT base={:X} lim={:X}  CR4={:X} EFER={:X}",
+            sregs.gdt.base, sregs.gdt.limit,
+            sregs.idt.base, sregs.idt.limit,
+            sregs.cr4, sregs.efer
+        ));
+    }
 
     // Setup shared state
     let control = Arc::new(VmControl {
@@ -172,16 +203,12 @@ fn attach_image_to_ahci(handle: u64, path: &str, port: u32, is_cdrom: bool) -> R
 }
 
 /// Set initial CPU state to real-mode reset vector (F000:FFF0).
-fn set_initial_cpu_state(handle: u64) {
-    let mut sregs = VcpuSregs::default();
-    corevm_get_vcpu_sregs(handle, 0, &mut sregs);
-
-    // CS: base=0xF0000, selector=0xF000, limit=0xFFFF
-    sregs.cs = SegmentReg {
-        base: 0xF0000,
+fn set_initial_cpu_state(handle: u64) -> Result<(), String> {
+    let data_seg = SegmentReg {
+        base: 0,
         limit: 0xFFFF,
-        selector: 0xF000,
-        type_: 0x0B, // execute/read, accessed
+        selector: 0,
+        type_: 0x03, // read/write, accessed
         present: 1,
         dpl: 0,
         db: 0,
@@ -191,16 +218,75 @@ fn set_initial_cpu_state(handle: u64) {
         avl: 0,
     };
 
-    // CR0: PE=0 (real mode)
-    sregs.cr0 = 0x10; // ET bit set (FPU extension type)
+    let sregs = VcpuSregs {
+        cs: SegmentReg {
+            base: 0xF0000,
+            limit: 0xFFFF,
+            selector: 0xF000,
+            type_: 0x0B, // execute/read, accessed
+            present: 1,
+            dpl: 0,
+            db: 0,
+            s: 1,
+            l: 0,
+            g: 0,
+            avl: 0,
+        },
+        ds: data_seg,
+        es: data_seg,
+        fs: data_seg,
+        gs: data_seg,
+        ss: data_seg,
+        tr: SegmentReg {
+            base: 0,
+            limit: 0xFFFF,
+            selector: 0,
+            type_: 0x0B, // 16-bit busy TSS
+            present: 1,
+            dpl: 0,
+            db: 0,
+            s: 0, // system segment
+            l: 0,
+            g: 0,
+            avl: 0,
+        },
+        ldt: SegmentReg {
+            base: 0,
+            limit: 0xFFFF,
+            selector: 0,
+            type_: 0x02, // LDT
+            present: 1,
+            dpl: 0,
+            db: 0,
+            s: 0, // system segment
+            l: 0,
+            g: 0,
+            avl: 0,
+        },
+        gdt: DescriptorTable { base: 0, limit: 0xFFFF },
+        idt: DescriptorTable { base: 0, limit: 0xFFFF },
+        cr0: 0x10, // ET bit set (FPU extension type), PE=0 (real mode)
+        cr2: 0,
+        cr3: 0,
+        cr4: 0,
+        efer: 0,
+    };
 
-    corevm_set_vcpu_sregs(handle, 0, &sregs);
+    let rc1 = corevm_set_vcpu_sregs(handle, 0, &sregs);
+    if rc1 != 0 {
+        let e = get_last_error().unwrap_or_else(|| "unknown".into());
+        return Err(format!("set_vcpu_sregs failed (rc={}): {}", rc1, e));
+    }
 
     let mut regs = VcpuRegs::default();
-    corevm_get_vcpu_regs(handle, 0, &mut regs);
     regs.rip = 0xFFF0;
     regs.rflags = 0x02; // reserved bit
-    corevm_set_vcpu_regs(handle, 0, &regs);
+    let rc2 = corevm_set_vcpu_regs(handle, 0, &regs);
+    if rc2 != 0 {
+        let e = get_last_error().unwrap_or_else(|| "unknown".into());
+        return Err(format!("set_vcpu_regs failed (rc={}): {}", rc2, e));
+    }
+    Ok(())
 }
 
 /// Stop a running VM
@@ -242,6 +328,7 @@ fn vm_run_loop(
 ) {
     let mut last_fb_update = Instant::now();
     let fb_interval = Duration::from_millis(16); // ~60fps
+    let mut consecutive_errors: u32 = 0;
 
     loop {
         if control.stop.load(Ordering::Relaxed) {
@@ -256,13 +343,21 @@ fn vm_run_loop(
         let mut exit = CExitReason::default();
         let rc = corevm_run_vcpu(handle, 0, &mut exit);
         if rc != 0 {
+            consecutive_errors += 1;
             let err_msg = get_last_error().unwrap_or_else(|| "unknown".into());
             if diag_enabled {
                 diag.log(DiagCategory::Error, format!("run_vcpu error: {}", err_msg));
             }
+            if consecutive_errors >= 10 {
+                diag.log(DiagCategory::Error, format!("Too many consecutive errors ({}), stopping VM", consecutive_errors));
+                *control.exit_reason.lock().unwrap() = format!("Fatal: {}", err_msg);
+                control.exited.store(true, Ordering::Relaxed);
+                break;
+            }
             thread::sleep(Duration::from_millis(10));
             continue;
         }
+        consecutive_errors = 0;
 
         match exit.reason {
             0 => {

@@ -20,6 +20,14 @@ WIN_TARGET_DIR_W="$(wslpath -w "$WIN_TARGET_DIR")"
 # Remove stale WSL target dir that cargo.exe can't clean
 rm -rf "$VMMANAGER_DIR/target"
 
+# Clean libcorevm to force rebuild (WSL→Windows path timestamps may not trigger rebuild)
+cargo.exe +stable clean \
+    --release \
+    --target x86_64-pc-windows-msvc \
+    --manifest-path "$WIN_MANIFEST" \
+    --target-dir "$WIN_TARGET_DIR_W" \
+    -p libcorevm 2>/dev/null || true
+
 cargo.exe +stable build \
     --release \
     --target x86_64-pc-windows-msvc \
