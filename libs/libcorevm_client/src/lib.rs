@@ -19,7 +19,7 @@
 //! use libcorevm_client::{self as vm, VmHandle, ExitReason};
 //!
 //! vm::init();
-//! let vm = VmHandle::new(16).unwrap(); // 16 MiB RAM, requires VT-x/AMD-V
+//! let vm = VmHandle::new(16).expect("Intel VT-x or AMD-V hardware virtualization is required");
 //! vm.load_binary(0xF_0000, &bios_rom);
 //! vm.set_rip(0xFFF0);
 //! vm.setup_standard_devices();
@@ -131,7 +131,8 @@ pub enum HardwareVirtualizationBackend {
 }
 
 impl HardwareVirtualizationBackend {
-    fn from_u32(val: u32) -> Self {
+    /// Convert the raw C ABI discriminant into a typed backend enum.
+    pub fn from_u32(val: u32) -> Self {
         match val {
             1 => HardwareVirtualizationBackend::IntelVtx,
             2 => HardwareVirtualizationBackend::AmdV,
@@ -538,6 +539,9 @@ impl VmHandle {
     }
 
     /// Create a new virtual machine with explicit logical CPU count.
+    ///
+    /// Returns `None` if VM creation fails, including when the host lacks
+    /// Intel VT-x / AMD-V hardware virtualization support.
     pub fn new_with_cores(ram_size_mb: u32, cores: u32) -> Option<Self> {
         let h = if let Some(create_ex) = lib().create_ex {
             create_ex(ram_size_mb, cores.max(1))

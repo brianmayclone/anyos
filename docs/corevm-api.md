@@ -144,7 +144,7 @@ fn main() {
 
     // Create a VM with 16 MiB guest RAM.
     // This now requires Intel VT-x or AMD-V support on the host.
-    let vm = VmHandle::new(16).expect("host hardware virtualization is required");
+    let vm = VmHandle::new(16).expect("Intel VT-x or AMD-V hardware virtualization is required");
 
     // Load a BIOS ROM at the reset vector address
     let bios_rom = anyos_std::fs::read("/Libraries/libcorevm/bios/bios.bin").unwrap();

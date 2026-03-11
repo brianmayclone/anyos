@@ -150,7 +150,10 @@ impl VmEngine {
     }
 
     /// Create a new VM with an explicitly selected hardware virtualization backend.
-    pub fn new_with_vcpus_and_virtualization(
+    ///
+    /// This bypasses host capability detection and is only intended for
+    /// internal callers that have already validated the backend.
+    pub(crate) fn new_with_vcpus_and_virtualization(
         ram_size: usize,
         vcpu_count: u8,
         virtualization: HardwareVirtualization,
