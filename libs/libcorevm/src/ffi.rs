@@ -466,10 +466,10 @@ pub extern "C" fn corevm_has_hw_support() -> i32 {
 #[no_mangle]
 pub extern "C" fn corevm_handle_string_io_exit(
     handle: u64, port: u16, is_write: u8, count: u64, gpa: u64,
-    step: i64, instr_len: u64, addr_size: u8,
+    step: i64, instr_len: u64, addr_size: u8, access_size: u8,
 ) -> i32 {
     let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
-    vm.handle_string_io(port, is_write != 0, count, gpa, step, instr_len, addr_size);
+    vm.handle_string_io(port, is_write != 0, count, gpa, step, instr_len, addr_size, access_size);
     0
 }
 
