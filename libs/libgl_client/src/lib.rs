@@ -90,6 +90,10 @@ struct LibGl {
     resize: extern "C" fn(u32, u32),
     swap_buffers: extern "C" fn() -> *const u32,
     get_backbuffer: extern "C" fn() -> *const u32,
+    // Fullscreen
+    init_fullscreen: extern "C" fn(*mut u32, u32, u32, u32),
+    exit_fullscreen: extern "C" fn(),
+    swap_buffers_fullscreen: extern "C" fn() -> u32,
     // State
     get_error: extern "C" fn() -> GLenum,
     get_string: extern "C" fn(GLenum) -> *const u8,
@@ -237,6 +241,9 @@ pub fn init() -> bool {
             resize: resolve(&handle, "gl_resize"),
             swap_buffers: resolve(&handle, "gl_swap_buffers"),
             get_backbuffer: resolve(&handle, "gl_get_backbuffer"),
+            init_fullscreen: resolve(&handle, "gl_init_fullscreen"),
+            exit_fullscreen: resolve(&handle, "gl_exit_fullscreen"),
+            swap_buffers_fullscreen: resolve(&handle, "gl_swap_buffers_fullscreen"),
             get_error: resolve(&handle, "glGetError"),
             get_string: resolve(&handle, "glGetString"),
             enable: resolve(&handle, "glEnable"),
@@ -364,6 +371,19 @@ pub fn swap_buffers() -> *const u32 { (lib().swap_buffers)() }
 
 /// Get a pointer to the backbuffer.
 pub fn get_backbuffer() -> *const u32 { (lib().get_backbuffer)() }
+
+/// Initialize fullscreen direct framebuffer rendering.
+/// `fb_ptr` is the mapped framebuffer address, `stride` is row stride in pixels.
+pub fn gl_init_fullscreen(fb_ptr: *mut u32, width: u32, height: u32, stride: u32) {
+    (lib().init_fullscreen)(fb_ptr, width, height, stride);
+}
+
+/// Exit fullscreen mode.
+pub fn gl_exit_fullscreen() { (lib().exit_fullscreen)(); }
+
+/// Swap buffers in fullscreen mode (copies directly to mapped framebuffer).
+/// Returns true (1) if copy was performed, false (0) if not in fullscreen mode.
+pub fn swap_buffers_fullscreen() -> bool { (lib().swap_buffers_fullscreen)() != 0 }
 
 /// Get the current error.
 pub fn get_error() -> GLenum { (lib().get_error)() }

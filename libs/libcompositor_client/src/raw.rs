@@ -100,6 +100,27 @@ pub struct LibcompositorExports {
     ),
 
     pub dismiss_notification: extern "C" fn(channel_id: u32, notification_id: u32),
+
+    pub get_window_position: extern "C" fn(channel_id: u32, sub_id: u32, window_id: u32, out_x: *mut i32, out_y: *mut i32) -> u32,
+
+    pub minimize_window: extern "C" fn(channel_id: u32, window_id: u32),
+
+    pub set_modal_owner: extern "C" fn(channel_id: u32, modal_window_id: u32, owner_window_id: u32),
+
+    pub set_fullscreen_capable: extern "C" fn(channel_id: u32, window_id: u32, auto_enter: u32),
+
+    pub request_fullscreen: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        window_id: u32,
+        want_direct_fb: u32,
+        out_width: *mut u32,
+        out_height: *mut u32,
+        out_stride: *mut u32,
+        out_fb_ptr: *mut usize,
+    ) -> u32,
+
+    pub exit_fullscreen: extern "C" fn(channel_id: u32, window_id: u32),
 }
 
 /// Get a reference to the libcompositor export table.

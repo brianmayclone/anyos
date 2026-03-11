@@ -823,6 +823,122 @@ pub fn sys_gpu_register_backbuffer(_buf_ptr: u32, _buf_size: u32) -> u32 {
 }
 
 // =========================================================================
+// Fullscreen direct framebuffer access
+// =========================================================================
+
+/// SYS_GRANT_FRAMEBUFFER (259): Map the GPU framebuffer into a target app's address space.
+/// Compositor-only. Used for fullscreen direct framebuffer access.
+///
+/// arg1 = target_tid
+/// arg2 = out_info_ptr (in compositor's address space): writes [fb_va: u32, width: u32, height: u32, pitch: u32]
+///
+/// Maps the framebuffer at VA 0x19000000 in the target process (different from VRAM surfaces at 0x18000000).
+/// Returns 0 on success, u32::MAX on failure.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u32) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+
+    // Get framebuffer info from GPU driver
+    let (width, height, pitch, fb_phys) = match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
+        Some(m) => m,
+        None => return u32::MAX,
+    };
+
+    // Get target thread's page directory
+    let pd_phys = match crate::task::scheduler::thread_page_directory(target_tid) {
+        Some(pd) => pd,
+        None => return u32::MAX,
+    };
+
+    let fb_user_base: u64 = 0x1900_0000;
+    let fb_total_bytes = height as usize * pitch as usize;
+    let pages = (fb_total_bytes + 4095) / 4096;
+
+    // Map framebuffer pages into the target's address space
+    // Flags: Present + Writable + User + Write-Through (0x0F)
+    for i in 0..pages {
+        let phys = crate::memory::address::PhysAddr::new(
+            fb_phys as u64 + (i * 4096) as u64,
+        );
+        let virt = crate::memory::address::VirtAddr::new(
+            fb_user_base + (i * 4096) as u64,
+        );
+        crate::memory::virtual_mem::map_page_in_pd(pd_phys, virt, phys, 0x0F);
+    }
+
+    // Write info struct to compositor's user memory
+    if out_info_ptr != 0 {
+        unsafe {
+            let info = out_info_ptr as *mut u32;
+            *info = fb_user_base as u32;
+            *info.add(1) = width;
+            *info.add(2) = height;
+            *info.add(3) = pitch;
+        }
+    }
+
+    crate::serial_verbose_println!(
+        "GRANT_FRAMEBUFFER: mapped {} pages at VA {:#x} for T{} (fb_phys={:#x})",
+        pages, fb_user_base, target_tid, fb_phys
+    );
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_grant_framebuffer(_target_tid: u32, _out_info_ptr: u32) -> u32 {
+    u32::MAX
+}
+
+/// SYS_REVOKE_FRAMEBUFFER (261): Unmap the framebuffer from a target app's address space.
+/// Compositor-only. Removes the mapping created by sys_grant_framebuffer.
+///
+/// arg1 = target_tid
+/// Returns 0 on success, u32::MAX on failure.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_revoke_framebuffer(target_tid: u32) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+
+    // Get framebuffer info to know how many pages to unmap
+    let (_, height, pitch, _) = match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
+        Some(m) => m,
+        None => return u32::MAX,
+    };
+
+    // Get target thread's page directory
+    let pd_phys = match crate::task::scheduler::thread_page_directory(target_tid) {
+        Some(pd) => pd,
+        None => return u32::MAX,
+    };
+
+    let fb_user_base: u64 = 0x1900_0000;
+    let fb_total_bytes = height as usize * pitch as usize;
+    let pages = (fb_total_bytes + 4095) / 4096;
+
+    // Unmap pages from the target's address space
+    for i in 0..pages {
+        let virt = crate::memory::address::VirtAddr::new(
+            fb_user_base + (i * 4096) as u64,
+        );
+        crate::memory::virtual_mem::unmap_page_in_pd(pd_phys, virt);
+    }
+
+    crate::serial_verbose_println!(
+        "REVOKE_FRAMEBUFFER: unmapped {} pages at VA {:#x} for T{}",
+        pages, fb_user_base, target_tid
+    );
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_revoke_framebuffer(_target_tid: u32) -> u32 {
+    u32::MAX
+}
+
+// =========================================================================
 // GPU 3D Acceleration (SVGA3D)
 // =========================================================================
 

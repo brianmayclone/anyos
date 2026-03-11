@@ -933,6 +933,21 @@ pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: 
     }
 }
 
+/// Unmap a single 4K page in a foreign page directory (identified by its
+/// physical PML4 address). Temporarily switches CR3 with interrupts disabled.
+pub fn unmap_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr) {
+    unsafe {
+        let rflags: u64;
+        asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
+        asm!("cli", options(nomem, nostack));
+        let old_cr3 = current_cr3();
+        asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
+        unmap_page(virt);
+        asm!("mov cr3, {}", in(reg) old_cr3);
+        asm!("push {}; popfq", in(reg) rflags, options(nomem));
+    }
+}
+
 /// Map `count` consecutive 4K pages starting at `start_virt` in the target PD.
 /// Allocates physical frames internally. Uses chunked CR3 switches (64 pages
 /// per chunk) to avoid long interrupt-disabled windows while still being much

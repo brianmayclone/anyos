@@ -56,6 +56,15 @@ pub const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
 /// Sent in response to CMD_GET_CLIPBOARD. len=0 means clipboard is empty.
 pub const RESP_CLIPBOARD_DATA: u32 = 0x2010;
 
+/// Fullscreen entered: [RESP, window_id, (width << 16) | height, stride, fb_ptr_or_0]
+/// fb_ptr=0 means SHM compositing mode (no direct framebuffer).
+/// fb_ptr>0 means direct framebuffer virtual address (for libgl).
+pub const RESP_FULLSCREEN_ENTERED: u32 = 0x2020;
+
+/// Fullscreen exited: [RESP, window_id, 0, 0, 0]
+/// Sent after the compositor restores the original window bounds.
+pub const RESP_FULLSCREEN_EXITED: u32 = 0x2021;
+
 /// Window position response: [RESP, window_id, content_x (as u32), content_y (as u32), requester_tid]
 /// content_x/content_y are the screen coordinates of the window's content area top-left.
 pub const RESP_WINDOW_POS: u32 = 0x2006;
@@ -222,6 +231,24 @@ pub const CMD_INJECT_POINTER: u32 = 0x1023;
 /// owner_window_id=0 clears the modal relationship.
 pub const CMD_SET_MODAL_OWNER: u32 = 0x1024;
 
+// ── App → Compositor: Fullscreen Commands ─────────────────────────────
+
+/// Mark a window as fullscreen-capable.
+/// [CMD, window_id, auto_enter (0=no, 1=enter immediately), 0, 0]
+/// If auto_enter=1, the compositor enters fullscreen immediately after registration.
+pub const CMD_SET_FULLSCREEN_CAP: u32 = 0x1030;
+
+/// Request fullscreen mode for a window.
+/// [CMD, window_id, want_direct_fb (0=SHM, 1=direct framebuffer), 0, 0]
+/// Compositor responds with RESP_FULLSCREEN_ENTERED.
+/// want_direct_fb=1: compositor maps framebuffer into app's address space (for libgl).
+pub const CMD_REQUEST_FULLSCREEN: u32 = 0x1031;
+
+/// Exit fullscreen mode for a window.
+/// [CMD, window_id, 0, 0, 0]
+/// Compositor restores saved window bounds and responds with RESP_FULLSCREEN_EXITED.
+pub const CMD_EXIT_FULLSCREEN: u32 = 0x1032;
+
 // ── Compositor → App: Notification Events ────────────────────────────────
 
 /// Notification clicked by user: [EVT, notification_id, sender_tid, 0, 0]
@@ -265,6 +292,15 @@ pub const EVT_FRAME_ACK: u32 = 0x300B;
 /// Focus lost: [EVT, window_id, 0, 0, 0]
 /// Sent when a window loses focus (another window was clicked or desktop background).
 pub const EVT_FOCUS_LOST: u32 = 0x300C;
+
+/// Fullscreen entered (via hotkey): [EVT, window_id, (width << 16) | height, stride, fb_ptr_or_0]
+/// Sent when the compositor activates fullscreen via Alt+Enter (user-initiated).
+/// Same payload as RESP_FULLSCREEN_ENTERED.
+pub const EVT_FULLSCREEN_ENTER: u32 = 0x300D;
+
+/// Fullscreen exited (via hotkey): [EVT, window_id, 0, 0, 0]
+/// Sent when the compositor exits fullscreen via Alt+Enter or Ctrl+Alt+Delete.
+pub const EVT_FULLSCREEN_EXIT: u32 = 0x300E;
 
 /// Window opened (broadcast): [EVT, app_tid, win_id, 0, 0]
 /// Emitted when any app creates a window. Used by dock for filtering.

@@ -185,3 +185,5 @@ EXPORTS
     anyui_set_menu
     anyui_update_menu_item
     anyui_on_menu_item
+    anyui_set_fullscreen_capable
+    anyui_get_fullscreen_info

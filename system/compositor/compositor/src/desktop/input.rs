@@ -1,7 +1,11 @@
 //! Input handling — mouse, keyboard, scroll, drag, and resize interaction.
 
 use crate::compositor::Rect;
-use crate::keys::{encode_scancode, KEY_VOLUME_UP, KEY_VOLUME_DOWN, KEY_VOLUME_MUTE};
+use crate::keys::{
+    encode_scancode,
+    KEY_ENTER, KEY_DELETE, KEY_F4, KEY_ESCAPE,
+    KEY_VOLUME_UP, KEY_VOLUME_DOWN, KEY_VOLUME_MUTE,
+};
 use crate::menu::MenuBarHit;
 
 use super::cursors::CursorShape;
@@ -682,6 +686,67 @@ impl Desktop {
     fn handle_key(&mut self, scancode: u32, chr: u32, mods: u32, down: bool) {
         self.current_modifiers = mods;
         let key_code = encode_scancode(scancode);
+        let ctrl = mods & 2 != 0;
+        let alt = mods & 4 != 0;
+
+        // ── System hotkeys (intercepted before apps) ──────────────────────
+
+        if down {
+            // Ctrl+Alt+Delete: System escape — exit fullscreen + show system dialog
+            if ctrl && alt && key_code == KEY_DELETE {
+                if self.fullscreen_window.is_some() {
+                    // Notify the fullscreen app that fullscreen is ending
+                    let fs_win = self.fullscreen_window.unwrap();
+                    self.push_event(fs_win, [EVENT_FULLSCREEN_EXIT, 0, 0, 0, 0]);
+                    self.exit_fullscreen();
+                }
+                // TODO: Phase 8 — show system dialog (force-quit, task manager, logout, shutdown)
+                return;
+            }
+
+            // Alt+Enter: Fullscreen toggle
+            if alt && key_code == KEY_ENTER {
+                if let Some(fs_win) = self.fullscreen_window {
+                    // Exit fullscreen — notify app
+                    self.push_event(fs_win, [EVENT_FULLSCREEN_EXIT, 0, 0, 0, 0]);
+                    self.exit_fullscreen();
+                } else if let Some(focused) = self.focused_window {
+                    // Enter fullscreen — only if the app registered as fullscreen-capable
+                    let is_capable = self.windows.iter()
+                        .find(|w| w.id == focused)
+                        .map(|w| w.fullscreen_capable)
+                        .unwrap_or(false);
+                    if is_capable {
+                        if let Some(resp) = self.enter_fullscreen(focused, false) {
+                            let sw = self.screen_width;
+                            let sh = self.screen_height;
+                            let stride = self.compositor.fb_pitch / 4;
+                            self.push_event(focused, [
+                                EVENT_FULLSCREEN_ENTER,
+                                (sw << 16) | (sh & 0xFFFF),
+                                stride,
+                                0, // fb_ptr (0 = SHM mode)
+                                0,
+                            ]);
+                        }
+                    }
+                }
+                return;
+            }
+
+            // Alt+F4: Close focused window
+            if alt && key_code == KEY_F4 {
+                if let Some(fs_win) = self.fullscreen_window {
+                    // In fullscreen: exit fullscreen first, then close
+                    self.push_event(fs_win, [EVENT_FULLSCREEN_EXIT, 0, 0, 0, 0]);
+                    self.exit_fullscreen();
+                    self.push_event(fs_win, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
+                } else if let Some(win_id) = self.focused_window {
+                    self.push_event(win_id, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
+                }
+                return;
+            }
+        }
 
         // Volume keys: intercept globally, don't forward to apps
         if down {

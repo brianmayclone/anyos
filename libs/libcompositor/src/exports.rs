@@ -28,13 +28,18 @@ const CMD_MINIMIZE_WINDOW: u32 = 0x1015;
 const CMD_SHOW_NOTIFICATION: u32 = 0x1020;
 const CMD_DISMISS_NOTIFICATION: u32 = 0x1021;
 const CMD_SET_MODAL_OWNER: u32 = 0x1024;
+const CMD_SET_FULLSCREEN_CAP: u32 = 0x1030;
+const CMD_REQUEST_FULLSCREEN: u32 = 0x1031;
+const CMD_EXIT_FULLSCREEN: u32 = 0x1032;
 const RESP_WINDOW_CREATED: u32 = 0x2001;
 const RESP_VRAM_WINDOW_CREATED: u32 = 0x2004;
 const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
 const RESP_WINDOW_POS: u32 = 0x2006;
 const RESP_CLIPBOARD_DATA: u32 = 0x2010;
+const RESP_FULLSCREEN_ENTERED: u32 = 0x2020;
+const RESP_FULLSCREEN_EXITED: u32 = 0x2021;
 
-const NUM_EXPORTS: u32 = 25;
+const NUM_EXPORTS: u32 = 28;
 
 #[repr(C)]
 pub struct LibcompositorExports {
@@ -181,6 +186,28 @@ pub struct LibcompositorExports {
     /// The modal window will stay above its owner and clicking the owner re-focuses the modal.
     /// owner_window_id=0 clears the modal relationship.
     pub set_modal_owner: extern "C" fn(channel_id: u32, modal_window_id: u32, owner_window_id: u32),
+
+    /// Mark a window as fullscreen-capable.
+    /// auto_enter=1: immediately enter fullscreen mode.
+    pub set_fullscreen_capable: extern "C" fn(channel_id: u32, window_id: u32, auto_enter: u32),
+
+    /// Request fullscreen mode for a window.
+    /// want_direct_fb=1: request direct framebuffer access (for LibGL apps).
+    /// Returns 1 on success (response received), 0 on timeout.
+    /// On success, fills out_width, out_height, out_stride, out_fb_ptr.
+    pub request_fullscreen: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        window_id: u32,
+        want_direct_fb: u32,
+        out_width: *mut u32,
+        out_height: *mut u32,
+        out_stride: *mut u32,
+        out_fb_ptr: *mut usize,
+    ) -> u32,
+
+    /// Exit fullscreen mode for a window.
+    pub exit_fullscreen: extern "C" fn(channel_id: u32, window_id: u32),
 }
 
 #[link_section = ".exports"]
@@ -216,6 +243,9 @@ pub static LIBCOMPOSITOR_EXPORTS: LibcompositorExports = LibcompositorExports {
     get_window_position: export_get_window_position,
     minimize_window: export_minimize_window,
     set_modal_owner: export_set_modal_owner,
+    set_fullscreen_capable: export_set_fullscreen_capable,
+    request_fullscreen: export_request_fullscreen,
+    exit_fullscreen: export_exit_fullscreen,
 };
 
 // ── Export Implementations ───────────────────────────────────────────────────
@@ -830,5 +860,52 @@ extern "C" fn export_minimize_window(channel_id: u32, window_id: u32) {
 
 extern "C" fn export_set_modal_owner(channel_id: u32, modal_window_id: u32, owner_window_id: u32) {
     let cmd: [u32; 5] = [CMD_SET_MODAL_OWNER, modal_window_id, owner_window_id, 0, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
+}
+
+extern "C" fn export_set_fullscreen_capable(channel_id: u32, window_id: u32, auto_enter: u32) {
+    let cmd: [u32; 5] = [CMD_SET_FULLSCREEN_CAP, window_id, auto_enter, 0, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
+}
+
+extern "C" fn export_request_fullscreen(
+    channel_id: u32,
+    sub_id: u32,
+    window_id: u32,
+    want_direct_fb: u32,
+    out_width: *mut u32,
+    out_height: *mut u32,
+    out_stride: *mut u32,
+    out_fb_ptr: *mut usize,
+) -> u32 {
+    let cmd: [u32; 5] = [CMD_REQUEST_FULLSCREEN, window_id, want_direct_fb, 0, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
+
+    // Poll for RESP_FULLSCREEN_ENTERED
+    let mut response = [0u32; 5];
+    for _ in 0..100 {
+        while syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
+            if response[0] == RESP_FULLSCREEN_ENTERED && response[1] == window_id {
+                let packed_size = response[2];
+                let w = packed_size >> 16;
+                let h = packed_size & 0xFFFF;
+                let stride = response[3];
+                let fb_ptr = response[4] as usize;
+                unsafe {
+                    *out_width = w;
+                    *out_height = h;
+                    *out_stride = stride;
+                    *out_fb_ptr = fb_ptr;
+                }
+                return 1;
+            }
+        }
+        syscall::sleep(5);
+    }
+    0 // Timeout
+}
+
+extern "C" fn export_exit_fullscreen(channel_id: u32, window_id: u32) {
+    let cmd: [u32; 5] = [CMD_EXIT_FULLSCREEN, window_id, 0, 0, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 }

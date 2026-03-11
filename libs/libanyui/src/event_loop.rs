@@ -1035,6 +1035,79 @@ pub fn run_once() -> u32 {
                     st.needs_layout = true;
                 }
 
+                compositor::EVT_FULLSCREEN_ENTER => {
+                    // Fullscreen entered: ev[2] = (width<<16)|height, ev[3] = stride, ev[4] = fb_ptr
+                    crate::FULLSCREEN_INFO.store(ev[2] as u64 | ((ev[3] as u64) << 32), core::sync::atomic::Ordering::Relaxed);
+                    crate::FULLSCREEN_FB_PTR.store(ev[4], core::sync::atomic::Ordering::Relaxed);
+
+                    // Resize window SHM to fullscreen dimensions
+                    let fs_w = (ev[2] >> 16) & 0xFFFF;
+                    let fs_h = ev[2] & 0xFFFF;
+                    if wi < st.comp_windows.len() && fs_w > 0 && fs_h > 0 {
+                        let cw = &mut st.comp_windows[wi];
+                        // Save original logical size for restore on exit
+                        cw.saved_logical_size_fs = Some((cw.logical_width, cw.logical_height));
+                        let logical_w = crate::theme::unscale_u32(fs_w);
+                        let logical_h = crate::theme::unscale_u32(fs_h);
+                        if let Some((new_shm_id, new_surface)) = compositor::resize_shm(
+                            st.channel_id, cw.window_id, cw.shm_id, fs_w, fs_h,
+                        ) {
+                            cw.shm_id = new_shm_id;
+                            cw.surface = new_surface;
+                        }
+                        cw.width = fs_w;
+                        cw.height = fs_h;
+                        cw.logical_width = logical_w;
+                        cw.logical_height = logical_h;
+                        let new_count = (fs_w as usize) * (fs_h as usize);
+                        cw.back_buffer.resize(new_count, 0);
+                        cw.dirty = true;
+                        cw.dirty_rect = None;
+                        // Update control tree size and re-layout
+                        if let Some(idx) = control::find_idx(&st.controls, win_id) {
+                            st.controls[idx].set_size(logical_w, logical_h);
+                        }
+                        crate::layout::perform_layout(&mut st.controls, win_id);
+                    }
+
+                    fire_event_callback(&st.controls, win_id, control::EVENT_FULLSCREEN_ENTER, &mut pending_cbs);
+                }
+
+                compositor::EVT_FULLSCREEN_EXIT => {
+                    crate::FULLSCREEN_INFO.store(0, core::sync::atomic::Ordering::Relaxed);
+                    crate::FULLSCREEN_FB_PTR.store(0, core::sync::atomic::Ordering::Relaxed);
+
+                    // Restore window SHM to original size
+                    if wi < st.comp_windows.len() {
+                        let cw = &mut st.comp_windows[wi];
+                        if let Some((orig_lw, orig_lh)) = cw.saved_logical_size_fs.take() {
+                            let phys_w = crate::theme::scale(orig_lw);
+                            let phys_h = crate::theme::scale(orig_lh);
+                            if let Some((new_shm_id, new_surface)) = compositor::resize_shm(
+                                st.channel_id, cw.window_id, cw.shm_id, phys_w, phys_h,
+                            ) {
+                                cw.shm_id = new_shm_id;
+                                cw.surface = new_surface;
+                            }
+                            cw.width = phys_w;
+                            cw.height = phys_h;
+                            cw.logical_width = orig_lw;
+                            cw.logical_height = orig_lh;
+                            let new_count = (phys_w as usize) * (phys_h as usize);
+                            cw.back_buffer.resize(new_count, 0);
+                            cw.dirty = true;
+                            cw.dirty_rect = None;
+                            // Update control tree size and re-layout
+                            if let Some(idx) = control::find_idx(&st.controls, win_id) {
+                                st.controls[idx].set_size(orig_lw, orig_lh);
+                            }
+                            crate::layout::perform_layout(&mut st.controls, win_id);
+                        }
+                    }
+
+                    fire_event_callback(&st.controls, win_id, control::EVENT_FULLSCREEN_EXIT, &mut pending_cbs);
+                }
+
                 compositor::EVT_FRAME_ACK => {
                     // VSync callback: compositor has composited our frame to screen.
                     // Clear back-pressure so we can present the next frame.

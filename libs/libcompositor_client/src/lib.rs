@@ -39,6 +39,8 @@ pub const EVT_FRAME_ACK: u32 = 0x300B;
 pub const EVT_FOCUS_LOST: u32 = 0x300C;
 pub const EVT_NOTIFICATION_CLICK: u32 = 0x3010;
 pub const EVT_NOTIFICATION_DISMISSED: u32 = 0x3011;
+pub const EVT_FULLSCREEN_ENTER: u32 = 0x300D;
+pub const EVT_FULLSCREEN_EXIT: u32 = 0x300E;
 
 /// A handle to a compositor window.
 pub struct WindowHandle {
@@ -94,6 +96,17 @@ impl VramWindowHandle {
         let off = y * self.stride + x;
         *self.surface_ptr.add(off as usize) = color;
     }
+}
+
+/// Information returned when entering fullscreen mode.
+#[derive(Clone, Copy, Debug)]
+pub struct FullscreenInfo {
+    pub width: u32,
+    pub height: u32,
+    /// Row stride in pixels.
+    pub stride: u32,
+    /// Direct framebuffer pointer (0 if SHM compositing mode).
+    pub fb_ptr: usize,
 }
 
 /// An event received from the compositor.
@@ -377,6 +390,70 @@ impl CompositorClient {
         handle.width = new_width;
         handle.height = new_height;
         true
+    }
+
+    /// Mark a window as fullscreen-capable.
+    /// `auto_enter`: if true, immediately enter fullscreen mode.
+    pub fn set_fullscreen_capable(&self, handle: &WindowHandle, auto_enter: bool) {
+        (raw::exports().set_fullscreen_capable)(
+            self.channel_id,
+            handle.id,
+            if auto_enter { 1 } else { 0 },
+        );
+    }
+
+    /// Mark a VRAM window as fullscreen-capable.
+    pub fn set_fullscreen_capable_vram(&self, handle: &VramWindowHandle, auto_enter: bool) {
+        (raw::exports().set_fullscreen_capable)(
+            self.channel_id,
+            handle.id,
+            if auto_enter { 1 } else { 0 },
+        );
+    }
+
+    /// Request fullscreen mode for a window.
+    /// `want_direct_fb`: if true, request direct framebuffer access (for LibGL apps).
+    /// Returns Some((width, height, stride, fb_ptr)) on success, None on timeout.
+    /// fb_ptr is 0 if SHM compositing mode (no direct FB), non-zero for direct FB access.
+    pub fn request_fullscreen(
+        &self,
+        handle: &WindowHandle,
+        want_direct_fb: bool,
+    ) -> Option<FullscreenInfo> {
+        let mut w: u32 = 0;
+        let mut h: u32 = 0;
+        let mut stride: u32 = 0;
+        let mut fb_ptr: usize = 0;
+        let ok = (raw::exports().request_fullscreen)(
+            self.channel_id,
+            self.sub_id,
+            handle.id,
+            if want_direct_fb { 1 } else { 0 },
+            &mut w,
+            &mut h,
+            &mut stride,
+            &mut fb_ptr,
+        );
+        if ok != 0 {
+            Some(FullscreenInfo {
+                width: w,
+                height: h,
+                stride,
+                fb_ptr,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Exit fullscreen mode for a window.
+    pub fn exit_fullscreen(&self, handle: &WindowHandle) {
+        (raw::exports().exit_fullscreen)(self.channel_id, handle.id);
+    }
+
+    /// Exit fullscreen mode for a VRAM window.
+    pub fn exit_fullscreen_vram(&self, handle: &VramWindowHandle) {
+        (raw::exports().exit_fullscreen)(self.channel_id, handle.id);
     }
 }
 

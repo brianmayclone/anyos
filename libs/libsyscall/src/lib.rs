@@ -82,6 +82,10 @@ pub const SYS_UPTIME_MS: u32 = 35;
 // Random
 pub const SYS_RANDOM: u32 = 210;
 
+// Fullscreen framebuffer access (compositor-only)
+pub const SYS_GRANT_FRAMEBUFFER: u32 = 259;
+pub const SYS_REVOKE_FRAMEBUFFER: u32 = 261;
+
 // =========================================================================
 // Raw syscall wrappers — x86_64
 // =========================================================================
@@ -522,6 +526,21 @@ pub fn evt_chan_emit_to(channel_id: u32, sub_id: u32, event: *const [u32; 5]) {
 
 pub fn evt_chan_wait(channel_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
     syscall3(SYS_EVT_CHAN_WAIT, channel_id as u64, sub_id as u64, timeout_ms as u64) as u32
+}
+
+// ── Fullscreen Framebuffer Access (Compositor-only) ─────────────────
+
+/// Grant direct framebuffer access to a target app.
+/// out_info_ptr receives [fb_va: u32, width: u32, height: u32, pitch: u32].
+/// Returns 0 on success, u32::MAX on failure.
+pub fn grant_framebuffer(target_tid: u32, out_info_ptr: *mut u32) -> u32 {
+    syscall2(SYS_GRANT_FRAMEBUFFER, target_tid as u64, out_info_ptr as u64) as u32
+}
+
+/// Revoke direct framebuffer access from a target app.
+/// Returns 0 on success, u32::MAX on failure.
+pub fn revoke_framebuffer(target_tid: u32) -> u32 {
+    syscall1(SYS_REVOKE_FRAMEBUFFER, target_tid as u64) as u32
 }
 
 // ── Networking ───────────────────────────────────────────────────────
