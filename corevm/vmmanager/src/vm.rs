@@ -435,7 +435,7 @@ fn vm_run_loop(
                     handle, exit.port, exit.string_io_is_write,
                     exit.string_io_count, exit.string_io_gpa,
                     exit.string_io_step, exit.string_io_instr_len,
-                    exit.string_io_addr_size,
+                    exit.string_io_addr_size, exit.size,
                 );
                 if diag_enabled {
                     let dir = if exit.string_io_is_write != 0 { "OUT" } else { "IN" };
