@@ -52,6 +52,21 @@ pub enum VmExitReason {
     MsrRead { index: u32 },
     MsrWrite { index: u32, value: u64 },
     CpuidExit { function: u32, index: u32 },
+    /// Bulk string I/O (REP INSB/OUTSB). The backend provides all the info
+    /// needed for the caller to handle the entire transfer in one call.
+    StringIo {
+        port: u16,
+        is_write: bool,
+        count: u64,
+        /// Guest physical address of the first byte.
+        gpa: u64,
+        /// +1 or -1 (direction flag).
+        step: i64,
+        /// Instruction length for RIP advancement after completion.
+        instr_len: u64,
+        /// Address size (2/4/8) for register update masking.
+        addr_size: u8,
+    },
     Halted,
     InterruptWindow,
     Shutdown,

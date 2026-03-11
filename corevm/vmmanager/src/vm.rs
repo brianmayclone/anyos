@@ -12,7 +12,7 @@ use crate::sidebar::VmState;
 use libcorevm::ffi::{
     CExitReason,
     corevm_create, corevm_create_vcpu, corevm_destroy,
-    corevm_run_vcpu, corevm_handle_io_exit, corevm_handle_mmio_exit,
+    corevm_run_vcpu, corevm_handle_io_exit, corevm_handle_mmio_exit, corevm_handle_string_io_exit,
     corevm_setup_standard_devices, corevm_setup_ahci,
     corevm_ahci_attach_disk, corevm_ahci_attach_cdrom,
     corevm_load_binary,
@@ -20,7 +20,7 @@ use libcorevm::ffi::{
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer,
     corevm_last_error, corevm_last_error_len,
-    corevm_pit_advance, corevm_debug_port_take_output,
+    corevm_pit_advance, corevm_poll_irqs, corevm_debug_port_take_output,
     corevm_fw_cfg_add_file, corevm_set_memory_region,
 };
 use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
@@ -447,6 +447,9 @@ fn vm_run_loop(
                 corevm_pit_advance(handle, ticks);
             }
         }
+
+        // Poll device IRQs (PS/2 keyboard IRQ 1, mouse IRQ 12, etc.)
+        corevm_poll_irqs(handle);
 
         // Drain debug port output on every iteration
         {

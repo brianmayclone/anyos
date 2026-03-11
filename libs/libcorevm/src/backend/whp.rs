@@ -693,6 +693,17 @@ fn whv_to_seg(s: &WhvSegment) -> SegmentReg {
     }
 }
 
+impl WhpBackend {
+    /// Read the counter register respecting address size.
+    fn read_counter(rcx: u64, addr_size: u8) -> u64 {
+        match addr_size {
+            2 => rcx & 0xFFFF,
+            4 => rcx & 0xFFFF_FFFF,
+            _ => rcx,
+        }
+    }
+}
+
 impl VmBackend for WhpBackend {
     fn destroy(&mut self) {
         unsafe {
@@ -825,22 +836,102 @@ impl VmBackend for WhpBackend {
                     // [0x00]     InstructionByteCount: u8
                     // [0x01..04] Reserved: [u8; 3]
                     // [0x04..14] InstructionBytes: [u8; 16]
-                    // [0x14..18] AccessInfo: u32 (bit 0=IsWrite, bits 1-3=AccessSize)
+                    // [0x14..18] AccessInfo: u32
+                    //            bit 0 = IsWrite, bits 1-3 = AccessSize,
+                    //            bit 4 = StringOp, bit 5 = RepPrefix
                     // [0x18..1A] PortNumber: u16
                     // [0x1A..20] Reserved
                     // [0x20..28] Rax: u64
+                    // [0x28..30] Rcx: u64
+                    // [0x30..38] Rsi: u64
+                    // [0x38..40] Rdi: u64
+                    // [0x40..50] Ds: WHV_X64_SEGMENT_REGISTER (16 bytes)
+                    // [0x50..60] Es: WHV_X64_SEGMENT_REGISTER (16 bytes)
                     let data = &ctx.exit_data;
                     let access_info = u32::from_le_bytes([data[0x14], data[0x15], data[0x16], data[0x17]]);
                     let is_write = (access_info & 1) != 0;
                     let access_size = ((access_info >> 1) & 0x7) as u8;
                     let access_size = if access_size == 0 { 1 } else { access_size };
+                    let string_op = (access_info & (1 << 4)) != 0;
+                    let rep_prefix = (access_info & (1 << 5)) != 0;
                     let port = u16::from_le_bytes([data[0x18], data[0x19]]);
                     let rax = u64::from_le_bytes([
                         data[0x20], data[0x21], data[0x22], data[0x23],
                         data[0x24], data[0x25], data[0x26], data[0x27],
                     ]);
 
-                    // WHP does not auto-advance RIP for I/O exits — advance now
+                    if string_op {
+                        // REP INSB/OUTSB: bulk I/O to/from guest memory.
+                        let rcx = u64::from_le_bytes([
+                            data[0x28], data[0x29], data[0x2A], data[0x2B],
+                            data[0x2C], data[0x2D], data[0x2E], data[0x2F],
+                        ]);
+                        let rsi = u64::from_le_bytes([
+                            data[0x30], data[0x31], data[0x32], data[0x33],
+                            data[0x34], data[0x35], data[0x36], data[0x37],
+                        ]);
+                        let rdi = u64::from_le_bytes([
+                            data[0x38], data[0x39], data[0x3A], data[0x3B],
+                            data[0x3C], data[0x3D], data[0x3E], data[0x3F],
+                        ]);
+                        // ES segment base (for INSB destination)
+                        let es_base = u64::from_le_bytes([
+                            data[0x50], data[0x51], data[0x52], data[0x53],
+                            data[0x54], data[0x55], data[0x56], data[0x57],
+                        ]);
+                        // DS segment base (for OUTSB source)
+                        let ds_base = u64::from_le_bytes([
+                            data[0x40], data[0x41], data[0x42], data[0x43],
+                            data[0x44], data[0x45], data[0x46], data[0x47],
+                        ]);
+
+                        // Determine address size from CS.D bit (in VP context)
+                        // VP context CS is at vp_context[8..24], attributes at [8+14..8+16]
+                        let cs_attr = u16::from_le_bytes([ctx.vp_context[22], ctx.vp_context[23]]);
+                        let cs_l = (cs_attr >> 13) & 1; // Long mode
+                        let cs_d = (cs_attr >> 14) & 1; // Default size
+                        let addr_size: u8 = if cs_l == 1 { 8 } else if cs_d == 1 { 4 } else { 2 };
+
+                        // Direction from RFLAGS (in VP context at offset [32..40])
+                        let rflags = u64::from_le_bytes([
+                            ctx.vp_context[32], ctx.vp_context[33], ctx.vp_context[34], ctx.vp_context[35],
+                            ctx.vp_context[36], ctx.vp_context[37], ctx.vp_context[38], ctx.vp_context[39],
+                        ]);
+                        let df = (rflags >> 10) & 1;
+                        let step: i64 = if df == 0 { 1 } else { -1 };
+
+                        let count = if rep_prefix {
+                            Self::read_counter(rcx, addr_size)
+                        } else {
+                            1 // Single INS/OUTS without REP
+                        };
+
+                        if count == 0 {
+                            // REP with CX=0: just advance RIP, nothing to do
+                            let mut regs = self.get_vcpu_regs(id)?;
+                            regs.rip += instr_len;
+                            self.set_vcpu_regs(id, &regs)?;
+                            continue;
+                        }
+
+                        // Mask offset register to address size (16-bit in real mode)
+                        let addr_mask: u64 = match addr_size {
+                            2 => 0xFFFF,
+                            4 => 0xFFFF_FFFF,
+                            _ => u64::MAX,
+                        };
+                        let gpa = if is_write {
+                            ds_base.wrapping_add(rsi & addr_mask)
+                        } else {
+                            es_base.wrapping_add(rdi & addr_mask)
+                        };
+
+                        return Ok(VmExitReason::StringIo {
+                            port, is_write, count, gpa, step, instr_len, addr_size,
+                        });
+                    }
+
+                    // Regular (non-string) I/O: advance RIP and return
                     let mut regs = self.get_vcpu_regs(id)?;
                     regs.rip += instr_len;
                     self.set_vcpu_regs(id, &regs)?;

@@ -53,7 +53,8 @@ fn get_vm(handle: u64) -> Option<&'static mut Vm> {
 ///
 /// The `reason` field selects which union members are valid:
 /// 0=IoIn, 1=IoOut, 2=MmioRead, 3=MmioWrite, 4=MsrRead, 5=MsrWrite,
-/// 6=Cpuid, 7=Halted, 8=InterruptWindow, 9=Shutdown, 10=Debug, 11=Error
+/// 6=Cpuid, 7=Halted, 8=InterruptWindow, 9=Shutdown, 10=Debug, 11=Error,
+/// 12=StringIo
 #[repr(C)]
 #[derive(Default)]
 pub struct CExitReason {
@@ -71,6 +72,14 @@ pub struct CExitReason {
     pub mmio_dest_reg: u8,
     pub mmio_instr_len: u8,
     pub _reserved: [u8; 2],
+    // StringIo fields (reason=12)
+    pub string_io_count: u64,
+    pub string_io_gpa: u64,
+    pub string_io_step: i64,
+    pub string_io_instr_len: u64,
+    pub string_io_is_write: u8,
+    pub string_io_addr_size: u8,
+    pub _reserved2: [u8; 6],
 }
 
 fn fill_exit(e: &mut CExitReason, reason: VmExitReason) {
@@ -97,6 +106,15 @@ fn fill_exit(e: &mut CExitReason, reason: VmExitReason) {
         }
         VmExitReason::CpuidExit { function, index } => {
             e.reason = 6; e.cpuid_fn = function; e.cpuid_idx = index;
+        }
+        VmExitReason::StringIo { port, is_write, count, gpa, step, instr_len, addr_size } => {
+            e.reason = 12; e.port = port;
+            e.string_io_count = count;
+            e.string_io_gpa = gpa;
+            e.string_io_step = step;
+            e.string_io_instr_len = instr_len;
+            e.string_io_is_write = if is_write { 1 } else { 0 };
+            e.string_io_addr_size = addr_size;
         }
         VmExitReason::Halted => e.reason = 7,
         VmExitReason::InterruptWindow => e.reason = 8,
@@ -288,6 +306,47 @@ pub extern "C" fn corevm_pit_advance(handle: u64, ticks: u32) -> u32 {
     }
 }
 
+/// Poll all device IRQ sources and inject any pending interrupts.
+///
+/// Checks PS/2 keyboard (IRQ 1) and mouse (IRQ 12). If a device has pending
+/// data, raises the corresponding IRQ on the PIC and injects the resulting
+/// interrupt vector into vCPU 0. Returns the number of interrupts injected.
+#[no_mangle]
+pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
+    match get_vm(handle) {
+        Some(vm) => {
+            let mut injected = 0u32;
+            if vm.pic_ptr.is_null() {
+                return 0;
+            }
+            // PS/2 keyboard → IRQ 1, mouse → IRQ 12
+            if let Some(ps2) = vm.ps2() {
+                let status = ps2.status;
+                let is_mouse = (status & 0x20) != 0; // STATUS_MOUSE_DATA
+                if (status & 0x01) != 0 { // STATUS_OUTPUT_FULL
+                    let irq = if is_mouse { 12 } else { 1 };
+                    let pic = unsafe { &mut *vm.pic_ptr };
+                    pic.raise_irq(irq);
+                }
+            }
+            // Drain all pending PIC interrupts
+            loop {
+                let pic = unsafe { &mut *vm.pic_ptr };
+                if let Some(vector) = pic.get_interrupt_vector() {
+                    let irq = pic.irq_for_vector(vector).unwrap_or(0);
+                    pic.acknowledge(irq);
+                    let _ = vm.inject_interrupt(0, vector);
+                    injected += 1;
+                } else {
+                    break;
+                }
+            }
+            injected
+        }
+        None => 0,
+    }
+}
+
 /// Inject an exception. Pass `error_code` < 0 for no error code.
 #[no_mangle]
 pub extern "C" fn corevm_inject_exception(handle: u64, vcpu_id: u32, vector: u8, error_code: i64) -> i32 {
@@ -393,6 +452,20 @@ pub extern "C" fn corevm_has_hw_support() -> i32 {
 
 /// Dispatch a port I/O exit to the registered device handler.
 ///
+/// Handle a bulk string I/O exit (REP INSB/OUTSB).
+///
+/// Performs the entire transfer in one call: reads/writes guest memory and
+/// invokes the I/O handler for each byte. Updates guest registers afterward.
+#[no_mangle]
+pub extern "C" fn corevm_handle_string_io_exit(
+    handle: u64, port: u16, is_write: u8, count: u64, gpa: u64,
+    step: i64, instr_len: u64, addr_size: u8,
+) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+    vm.handle_string_io(port, is_write != 0, count, gpa, step, instr_len, addr_size);
+    0
+}
+
 /// For reads (`is_write`=0), `data` is filled with the result.
 /// For writes (`is_write`=1), `data` contains the guest-written value.
 #[no_mangle]

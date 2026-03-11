@@ -303,6 +303,58 @@ impl Vm {
         }
     }
 
+    /// Handle a bulk string I/O transfer (REP INSB/OUTSB).
+    ///
+    /// Performs `count` byte-sized port I/O operations, reading from or writing
+    /// to guest physical memory starting at `gpa`, advancing by `step` each time.
+    /// Updates guest registers (RCX, RDI/RSI, RIP) after completion.
+    pub fn handle_string_io(
+        &mut self, port: u16, is_write: bool, count: u64, gpa: u64,
+        step: i64, instr_len: u64, addr_size: u8,
+    ) {
+        let mut current_gpa = gpa;
+        for _ in 0..count {
+            if is_write {
+                // OUTSB: read byte from guest memory, write to port
+                let byte = self.memory.read_u8(current_gpa).unwrap_or(0);
+                let _ = self.io.port_out(port, 1, byte as u32);
+            } else {
+                // INSB: read byte from port, write to guest memory
+                let val = self.io.port_in(port, 1).unwrap_or(0xFF);
+                let _ = self.memory.write_u8(current_gpa, val as u8);
+            }
+            current_gpa = (current_gpa as i64 + step) as u64;
+        }
+
+        // Update guest registers
+        if let Ok(mut regs) = self.get_vcpu_regs(0) {
+            // Update pointer register
+            let total_delta = step * count as i64;
+            if is_write {
+                regs.rsi = match addr_size {
+                    2 => { let v = (regs.rsi as u16).wrapping_add(total_delta as u16); (regs.rsi & !0xFFFF) | v as u64 }
+                    4 => (regs.rsi as u32).wrapping_add(total_delta as u32) as u64,
+                    _ => regs.rsi.wrapping_add(total_delta as u64),
+                };
+            } else {
+                regs.rdi = match addr_size {
+                    2 => { let v = (regs.rdi as u16).wrapping_add(total_delta as u16); (regs.rdi & !0xFFFF) | v as u64 }
+                    4 => (regs.rdi as u32).wrapping_add(total_delta as u32) as u64,
+                    _ => regs.rdi.wrapping_add(total_delta as u64),
+                };
+            }
+            // Update counter
+            regs.rcx = match addr_size {
+                2 => { let v = (regs.rcx as u16).wrapping_sub(count as u16); (regs.rcx & !0xFFFF) | v as u64 }
+                4 => (regs.rcx as u32).wrapping_sub(count as u32) as u64,
+                _ => regs.rcx.wrapping_sub(count),
+            };
+            // Advance RIP
+            regs.rip += instr_len;
+            let _ = self.set_vcpu_regs(0, &regs);
+        }
+    }
+
     /// Route an MMIO exit to the registered device handler.
     pub fn handle_mmio(&mut self, addr: u64, is_write: bool, size: u8, data: &mut [u8]) {
         if is_write {
