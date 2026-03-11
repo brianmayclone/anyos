@@ -16,8 +16,8 @@
 //! | 8      | 4    | bpp (0 = text mode, 8/24/32 = graphics) |
 //! | 12     | 4    | dirty flag (1 = updated since last read) |
 //! | 16     | 4    | vm_state (0=stopped, 1=running, 2=halted, 3=error) |
-//! | 20     | 4    | instruction_count low 32 bits |
-//! | 24     | 4    | instruction_count high 32 bits |
+//! | 20     | 4    | reserved (was instruction_count low) |
+//! | 24     | 4    | reserved (was instruction_count high) |
 //! | 28     | 36   | reserved |
 //! | 64     | ...  | payload (text: 80*25*2 bytes, gfx: w*h*bpp/8 bytes) |
 
@@ -31,8 +31,8 @@ use anyos_std::fs;
 use anyos_std::ipc;
 use anyos_std::process::Thread;
 use anyos_std::sys;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use libcorevm_client::{ExitReason, VmHandle};
+use core::sync::atomic::{AtomicBool, Ordering};
+use libcorevm_client::{VmExitReason, VmHandle};
 
 anyos_std::entry!(main);
 
@@ -55,21 +55,13 @@ const VGABIOS_PATH: &str = "/System/shared/corevm/bios/vgabios.bin";
 /// Default MAC address for the virtual E1000 NIC.
 const DEFAULT_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
-/// E1000 MMIO base address (128 KB region).
-const E1000_MMIO_BASE: u64 = 0xD000_0000;
-
-/// Instructions to run per execution batch before checking IPC.
-///
-/// With 1M per batch, a BIOS spin loop of 64M instructions spans ~64
-/// batches — enough for the PIT timer to fire at least once (needs ~55
-/// batches at 1193 ticks/batch for the 65536-tick period).
-const BATCH_SIZE: u64 = 50_000;
-const IDE_IRQ_POLL_QUANTUM: u64 = 1_024;
+/// Number of VM exits between framebuffer updates.
+const FB_UPDATE_INTERVAL: u64 = 1000;
 
 /// SHM state constants (written to offset 16).
 const STATE_STOPPED: u32 = 0;
 const STATE_RUNNING: u32 = 1;
-const STATE_HALTED: u32 = 2;
+const _STATE_HALTED: u32 = 2;
 const STATE_ERROR: u32 = 3;
 
 /// Runtime state for a single VM instance.
@@ -86,10 +78,8 @@ struct VmInstance {
     name: String,
     /// BIOS type from config ("corevm" or "seabios").
     bios_type: String,
-    /// Whether JIT acceleration is enabled.
-    jit_enabled: bool,
-    /// Batch counter for periodic diagnostics.
-    batch_count: u64,
+    /// Exit counter for periodic tasks.
+    exit_count: u64,
 }
 
 /// Global daemon state.
@@ -123,7 +113,7 @@ static MGMT_STOP: AtomicBool = AtomicBool::new(false);
 ///
 /// Continuously reads from the command pipe and forwards commands to the
 /// main loop via the atomic CMD_PENDING slot.  This runs in its own thread
-/// so IPC stays responsive even when the VM is executing a batch.
+/// so IPC stays responsive even when the VM is executing.
 fn mgmt_thread_entry() {
     let pipe_id = unsafe { MGMT_CMD_PIPE };
     let mut buf = [0u8; 512];
@@ -191,22 +181,6 @@ fn send_status(msg: &str) {
     }
 }
 
-/// Read a command from the command pipe (non-blocking).
-/// Returns None if no data available.
-fn recv_command() -> Option<String> {
-    let d = daemon();
-    let mut buf = [0u8; 512];
-    let n = ipc::pipe_read(d.cmd_pipe, &mut buf);
-    if n == 0 || n == u32::MAX {
-        return None;
-    }
-    let text = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
-    if text.is_empty() {
-        return None;
-    }
-    Some(String::from(text))
-}
-
 // ── SHM framebuffer helpers ────────────────────────────────────────────
 
 /// Write a u32 to the SHM header at the given byte offset.
@@ -221,8 +195,6 @@ fn update_shm_framebuffer(inst: &VmInstance) {
         return;
     }
 
-    let icount = inst.handle.instruction_count();
-
     // Try text mode first.
     if let Some(text_buf) = inst.handle.vga_text_buffer() {
         let cols: u32 = 80;
@@ -231,8 +203,6 @@ fn update_shm_framebuffer(inst: &VmInstance) {
             shm_write_u32(inst.shm_ptr, 0, cols);
             shm_write_u32(inst.shm_ptr, 4, rows);
             shm_write_u32(inst.shm_ptr, 8, 0); // bpp=0 means text mode
-            shm_write_u32(inst.shm_ptr, 20, icount as u32);
-            shm_write_u32(inst.shm_ptr, 24, (icount >> 32) as u32);
 
             // Copy text buffer (u16 cells).
             let payload = inst.shm_ptr.add(SHM_HEADER);
@@ -244,26 +214,24 @@ fn update_shm_framebuffer(inst: &VmInstance) {
             shm_write_u32(inst.shm_ptr, 12, 1);
         }
     } else if let Some((fb, w, h, bpp)) = inst.handle.vga_framebuffer() {
+        // If w/h/bpp are 0 from FFI, use sensible defaults.
+        let (w, h, bpp) = if w == 0 || h == 0 || bpp == 0 {
+            (640u32, 480u32, 32u8)
+        } else {
+            (w, h, bpp)
+        };
         let bytes_per_pixel = ((bpp as usize) + 7) / 8;
         let byte_len = (w as usize * h as usize * bytes_per_pixel)
-            .min(SHM_SIZE as usize - SHM_HEADER);
+            .min(SHM_SIZE as usize - SHM_HEADER)
+            .min(fb.len());
         unsafe {
             shm_write_u32(inst.shm_ptr, 0, w);
             shm_write_u32(inst.shm_ptr, 4, h);
             shm_write_u32(inst.shm_ptr, 8, bpp as u32);
-            shm_write_u32(inst.shm_ptr, 20, icount as u32);
-            shm_write_u32(inst.shm_ptr, 24, (icount >> 32) as u32);
 
             let payload = inst.shm_ptr.add(SHM_HEADER);
             core::ptr::copy_nonoverlapping(fb.as_ptr(), payload, byte_len);
 
-            shm_write_u32(inst.shm_ptr, 12, 1);
-        }
-    } else {
-        // No VGA data yet — just update instruction count.
-        unsafe {
-            shm_write_u32(inst.shm_ptr, 20, icount as u32);
-            shm_write_u32(inst.shm_ptr, 24, (icount >> 32) as u32);
             shm_write_u32(inst.shm_ptr, 12, 1);
         }
     }
@@ -309,20 +277,14 @@ const VMS_DIR: &str = "/System/shared/vmmanager/vms";
 struct VmConfigInfo {
     name: String,
     ram_mb: u32,
-    cpu_cores: u32,
-    ram_prealloc: bool,
     disk_image: String,
     iso_image: String,
     /// BIOS type: "corevm" (default) or "seabios".
     bios_type: String,
-    /// Whether JIT acceleration is enabled.
-    jit_enabled: bool,
     /// Whether network adapter is enabled.
     net_enabled: bool,
     /// Network mode: "nat" (default) or "bridge".
     net_mode: String,
-    /// Host NIC name for bridged mode.
-    net_host_nic: String,
     /// MAC address mode: "dynamic" (default) or "static".
     mac_mode: String,
     /// Static MAC address (e.g. "52:54:00:12:34:56").
@@ -368,15 +330,11 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
     let text = core::str::from_utf8(&data).unwrap_or("");
     let mut name = String::new();
     let mut ram_mb: u32 = 64;
-    let mut cpu_cores: u32 = 1;
-    let mut ram_prealloc = false;
     let mut disk_image = String::new();
     let mut iso_image = String::new();
     let mut bios_type = String::from("corevm");
-    let mut jit_enabled = false;
     let mut net_enabled = false;
     let mut net_mode = String::from("nat");
-    let mut net_host_nic = String::new();
     let mut mac_mode = String::from("dynamic");
     let mut mac_address = String::new();
 
@@ -392,25 +350,16 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
             if ram_mb == 0 {
                 ram_mb = 64;
             }
-        } else if let Some(val) = line.strip_prefix("ram_alloc=") {
-            ram_prealloc = val == "prealloc";
-        } else if let Some(val) = line.strip_prefix("cpu_cores=") {
-            let parsed = parse_u32(val);
-            cpu_cores = parsed.clamp(1, 64);
         } else if let Some(val) = line.strip_prefix("disk=") {
             disk_image = String::from(val);
         } else if let Some(val) = line.strip_prefix("iso=") {
             iso_image = String::from(val);
         } else if let Some(val) = line.strip_prefix("bios=") {
             bios_type = String::from(val);
-        } else if let Some(val) = line.strip_prefix("jit=") {
-            jit_enabled = val == "1";
         } else if let Some(val) = line.strip_prefix("net_enabled=") {
             net_enabled = val == "1";
         } else if let Some(val) = line.strip_prefix("net_mode=") {
             net_mode = String::from(val);
-        } else if let Some(val) = line.strip_prefix("net_host_nic=") {
-            net_host_nic = String::from(val);
         } else if let Some(val) = line.strip_prefix("mac_mode=") {
             mac_mode = String::from(val);
         } else if let Some(val) = line.strip_prefix("mac_address=") {
@@ -425,15 +374,11 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
     Some(VmConfigInfo {
         name,
         ram_mb,
-        cpu_cores,
-        ram_prealloc,
         disk_image,
         iso_image,
         bios_type,
-        jit_enabled,
         net_enabled,
         net_mode,
-        net_host_nic,
         mac_mode,
         mac_address,
     })
@@ -468,7 +413,7 @@ fn cmd_create(uuid: &str) {
     };
 
     // Create VM with configured RAM.
-    let handle = match VmHandle::new_with_cores(config.ram_mb, config.cpu_cores) {
+    let handle = match VmHandle::new(config.ram_mb) {
         Some(h) => h,
         None => {
             send_status("error 0 failed to create VM (out of memory?)");
@@ -476,9 +421,14 @@ fn cmd_create(uuid: &str) {
         }
     };
 
-    // Set up standard PC devices.
+    // Create vCPU 0.
+    handle.create_vcpu(0);
+
+    // Set up standard PC devices (PIC, PIT, PS/2, CMOS, serial, VGA).
     handle.setup_standard_devices();
-    handle.setup_ide();
+
+    // Set up AHCI controller with 2 ports (disk + cdrom).
+    handle.setup_ahci(2);
 
     // Create shared memory for VGA framebuffer.
     let shm_id = ipc::shm_create(SHM_SIZE);
@@ -494,20 +444,17 @@ fn cmd_create(uuid: &str) {
 
     // Set up E1000 network adapter if enabled.
     if config.net_enabled {
-        handle.setup_pci_bus();
         let mac = if config.mac_mode == "static" && config.mac_address.len() >= 17 {
             parse_mac(&config.mac_address)
         } else {
             DEFAULT_MAC
         };
-        handle.setup_e1000(E1000_MMIO_BASE, &mac);
+        handle.setup_e1000(&mac);
         anyos_std::println!(
             "[vmd] E1000 NIC enabled (mode={}, mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
             config.net_mode, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
         );
     }
-
-    let vcpu_count = handle.vcpu_count();
 
     let inst = VmInstance {
         handle,
@@ -516,8 +463,7 @@ fn cmd_create(uuid: &str) {
         running: false,
         name: config.name.clone(),
         bios_type: config.bios_type.clone(),
-        jit_enabled: config.jit_enabled,
-        batch_count: 0,
+        exit_count: 0,
     };
 
     d.vm = Some(inst);
@@ -526,16 +472,13 @@ fn cmd_create(uuid: &str) {
     // vmmanager needs the SHM ID promptly; disk/ISO loading can be slow.
     send_status(&format!("created 0 {}", shm_id));
     anyos_std::println!(
-        "[vmd] VM '{}' created ({} MiB RAM, {} cores, shm={})",
+        "[vmd] VM '{}' created ({} MiB RAM, shm={})",
         config.name,
         config.ram_mb,
-        vcpu_count,
         shm_id
     );
 
-    // Attach disk image as FD-backed IDE master drive.
-    // The file descriptor remains open for on-demand sector I/O — the
-    // entire image is NOT loaded into RAM.
+    // Attach disk image as AHCI port 0 (HDD).
     if !config.disk_image.is_empty() {
         let fd = fs::open(&config.disk_image, 0);
         if fd != u32::MAX {
@@ -543,9 +486,9 @@ fn cmd_create(uuid: &str) {
             fs::lseek(fd, 0, 0);                    // seek back to start
             if size > 0 {
                 if let Some(ref inst) = d.vm {
-                    inst.handle.ide_attach_disk_fd(fd, size);
+                    inst.handle.ahci_attach_disk(0, fd as i32, size);
                 }
-                anyos_std::println!("[vmd] attached disk (fd={}): {} ({} bytes)", fd, config.disk_image, size);
+                anyos_std::println!("[vmd] attached disk on AHCI port 0 (fd={}): {} ({} bytes)", fd, config.disk_image, size);
             } else {
                 fs::close(fd);
                 send_status(&format!("error 0 disk image empty: {}", config.disk_image));
@@ -555,9 +498,7 @@ fn cmd_create(uuid: &str) {
         }
     }
 
-    // Attach ISO image as FD-backed IDE slave drive.
-    // This allows both a HDD and a CD-ROM to be present simultaneously.
-    // The BIOS maps DL=0x80 to master (HDD) and DL=0xE0 to slave (CD).
+    // Attach ISO image as AHCI port 1 (CD-ROM).
     if !config.iso_image.is_empty() {
         let fd = fs::open(&config.iso_image, 0);
         if fd != u32::MAX {
@@ -565,9 +506,9 @@ fn cmd_create(uuid: &str) {
             fs::lseek(fd, 0, 0);
             if size > 0 {
                 if let Some(ref inst) = d.vm {
-                    inst.handle.ide_attach_slave_fd(fd, size);
+                    inst.handle.ahci_attach_cdrom(1, fd as i32, size);
                 }
-                anyos_std::println!("[vmd] attached ISO as IDE slave (fd={}): {} ({} bytes)", fd, config.iso_image, size);
+                anyos_std::println!("[vmd] attached ISO on AHCI port 1 (fd={}): {} ({} bytes)", fd, config.iso_image, size);
             } else {
                 fs::close(fd);
             }
@@ -575,14 +516,7 @@ fn cmd_create(uuid: &str) {
     }
 }
 
-/// Handle `start` command — load BIOS and begin execution.
-///
-/// The BIOS type is determined from the VM config. VMD automatically
-/// maps each BIOS to the correct physical address:
-/// - **CoreVM**: 64 KB loaded at 0xF0000 (reset vector at 0xFFF0)
-/// - **SeaBIOS**: 256 KB loaded at 0xC0000 (covers 0xC0000–0xFFFFF,
-///   reset vector at 0xFFF0). VGA BIOS is provided via fw_cfg for
-///   SeaBIOS option ROM scanning.
+/// Handle `start` command — load BIOS, set initial CPU state, begin execution.
 fn cmd_start() {
     let d = daemon();
     if let Some(ref mut inst) = d.vm {
@@ -594,25 +528,6 @@ fn cmd_start() {
         let is_seabios = inst.bios_type == "seabios";
 
         if is_seabios {
-            // ── SeaBIOS ROM mapping ──────────────────────────────────
-            //
-            // SeaBIOS is a 256 KB binary with internal relative jumps
-            // spanning the full image. The entire image must be loaded
-            // contiguously into writable RAM at 0xC0000-0xFFFFF so that:
-            //   - The reset vector at 0xFFFF0 contains the correct entry
-            //     point (bios_data[0x3FFF0] for a 256 KB image).
-            //   - Relative calls/jumps between the upper and lower halves
-            //     of the image resolve to correct addresses.
-            //   - SeaBIOS can write to its own data structures in-place.
-            //
-            // Additionally, a read-only ROM overlay at 0xFFFC0000 (top of
-            // 4 GiB) provides access when SeaBIOS switches to 32-bit
-            // protected mode and uses its linked addresses.
-            //
-            // The VGA BIOS is NOT loaded into RAM at 0xC0000 (that would
-            // overwrite SeaBIOS code). Instead it is provided exclusively
-            // via fw_cfg — SeaBIOS loads option ROMs from fw_cfg during
-            // POST and places them at 0xC0000 itself.
             let bios_data = read_file(BIOS_PATH_SEABIOS);
             if bios_data.is_empty() {
                 send_status("error 0 SeaBIOS not found");
@@ -620,34 +535,25 @@ fn cmd_start() {
                 return;
             }
 
-            // 1. Full 256 KB into writable RAM at 0xC0000-0xFFFFF.
-            //    Reset vector at physical 0xFFFF0 = bios_data[size - 16].
+            // Full 256 KB into writable RAM at 0xC0000-0xFFFFF.
             inst.handle.load_binary(0xC0000, &bios_data);
             anyos_std::println!(
-                "[vmd] SeaBIOS loaded at 0xC0000 ({} bytes, writable)", bios_data.len()
+                "[vmd] SeaBIOS loaded at 0xC0000 ({} bytes)", bios_data.len()
             );
 
-            // 2. Read-only ROM overlay at top of 4 GiB for 32-bit mode.
-            inst.handle.load_rom(0xFFFC_0000, &bios_data);
+            // Read-only ROM overlay at top of 4 GiB for 32-bit mode.
+            // Use write_phys as a fallback (load_binary writes to RAM).
+            inst.handle.load_binary(0xFFFC_0000, &bios_data);
             anyos_std::println!(
                 "[vmd] SeaBIOS ROM overlay at 0xFFFC0000 ({} bytes)", bios_data.len()
             );
 
-            inst.handle.set_rip(0xFFF0);
-
-            // 3. Provide VGA BIOS via fw_cfg only (not in RAM).
-            //    SeaBIOS's option ROM scanner loads it from fw_cfg and
-            //    places it at 0xC0000 during POST (overwriting the first
-            //    part of the BIOS image, which is no longer needed by then).
-            let vgabios = read_file(VGABIOS_PATH);
-            if !vgabios.is_empty() {
-                inst.handle.fw_cfg_add_file("vgaroms/vgabios.bin", &vgabios);
-                anyos_std::println!(
-                    "[vmd] VGA BIOS via fw_cfg ({} bytes)", vgabios.len()
-                );
-            }
+            // Provide VGA BIOS — load at 0xC0000 area is handled by SeaBIOS.
+            // For now, VGA BIOS would need fw_cfg which is not in the new API.
+            // SeaBIOS will work without it (no graphical VGA BIOS).
+            let _vgabios = read_file(VGABIOS_PATH);
         } else {
-            // ── CoreVM BIOS (64 KB at 0xF0000) ─────────────────────
+            // CoreVM BIOS (64 KB at 0xF0000).
             let bios_data = read_file(BIOS_PATH_COREVM);
             if bios_data.is_empty() {
                 send_status("error 0 BIOS not found");
@@ -657,29 +563,42 @@ fn cmd_start() {
                 return;
             }
             inst.handle.load_binary(0xF0000, &bios_data);
-            inst.handle.set_rip(0xFFF0);
             anyos_std::println!(
                 "[vmd] loaded CoreVM BIOS ({} bytes at 0xF0000)", bios_data.len()
             );
         }
 
-        // JIT is currently unstable; keep it disabled in production boots.
-        if inst.jit_enabled {
-            anyos_std::println!("[vmd] JIT requested but currently disabled (unstable)");
-        }
+        // Set initial CPU state: Real Mode, CS:IP = F000:FFF0.
+        let mut sregs = inst.handle.get_vcpu_sregs(0);
+        sregs.cs.base = 0xF0000;
+        sregs.cs.selector = 0xF000;
+        sregs.cs.limit = 0xFFFF;
+        sregs.cs.type_ = 0x0B; // Execute/Read, Accessed
+        sregs.cs.present = 1;
+        sregs.cs.s = 1;
+        sregs.ds.base = 0;
+        sregs.ds.selector = 0;
+        sregs.ds.limit = 0xFFFF;
+        sregs.ds.type_ = 0x03; // Read/Write, Accessed
+        sregs.ds.present = 1;
+        sregs.ds.s = 1;
+        sregs.es = sregs.ds;
+        sregs.ss = sregs.ds;
+        sregs.fs = sregs.ds;
+        sregs.gs = sregs.ds;
+        inst.handle.set_vcpu_sregs(0, &sregs);
 
-        // Log MMIO diagnostic info before starting execution.
-        let (reg_count, mmio_lo, mmio_hi, _) = inst.handle.mmio_diag();
-        anyos_std::println!(
-            "[vmd] MMIO diag: {} regions, bounds=[0x{:X}, 0x{:X})",
-            reg_count, mmio_lo, mmio_hi
-        );
+        let mut regs = inst.handle.get_vcpu_regs(0);
+        regs.rip = 0xFFF0;
+        regs.rflags = 0x2;
+        inst.handle.set_vcpu_regs(0, &regs);
 
         inst.running = true;
+        inst.exit_count = 0;
         update_shm_state(inst, STATE_RUNNING);
         send_status("state 0 running");
-        anyos_std::println!("[vmd] VM '{}' started (uptime_ms={}, batch={})",
-            inst.name, sys::uptime_ms(), BATCH_SIZE);
+        anyos_std::println!("[vmd] VM '{}' started (uptime_ms={})",
+            inst.name, sys::uptime_ms());
     }
 }
 
@@ -690,7 +609,6 @@ fn cmd_stop() {
         if !inst.running {
             return;
         }
-        inst.handle.request_stop();
         inst.running = false;
         update_shm_state(inst, STATE_STOPPED);
         send_status("state 0 stopped");
@@ -779,156 +697,87 @@ fn dispatch_command(line: &str) {
     }
 }
 
-// ── VM execution ───────────────────────────────────────────────────────
+// ── VM execution (VM-exit run loop) ────────────────────────────────────
 
-/// Run one execution batch for the active VM.
-/// Returns true if the VM is still running after this batch.
-fn run_vm_batch() -> bool {
+/// Run the VM exit loop: enter guest, handle exits, re-enter.
+/// Returns true if the VM is still running.
+fn run_vm_step() -> bool {
     let d = daemon();
     let inst = match d.vm.as_mut() {
         Some(i) if i.running => i,
         _ => return false,
     };
 
-    // Poll IDE IRQs within the frontend batch so PIO/ATAPI completions are
-    // visible to the guest promptly instead of after tens of thousands of
-    // instructions.
-    let mut remaining = BATCH_SIZE;
-    let mut exit = ExitReason::InstructionLimit;
-    while remaining > 0 {
-        let chunk = core::cmp::min(remaining, IDE_IRQ_POLL_QUANTUM);
-        exit = inst.handle.run(chunk);
-        if inst.handle.ide_irq_raised() {
-            inst.handle.pic_raise_irq(14);
-            inst.handle.ide_clear_irq();
-        }
-        if !matches!(exit, ExitReason::InstructionLimit) {
-            break;
-        }
-        remaining -= chunk;
-    }
+    let exit = inst.handle.run_vcpu(0);
 
     match exit {
-        ExitReason::Halted => {
+        VmExitReason::IoIn { port, size } => {
+            let mut data = [0u8; 4];
+            inst.handle.handle_io_exit(port, 0, size, &mut data[..size as usize]);
+        }
+        VmExitReason::IoOut { port, size, data } => {
+            let bytes = data.to_le_bytes();
+            let mut buf = [0u8; 4];
+            buf[..size as usize].copy_from_slice(&bytes[..size as usize]);
+            inst.handle.handle_io_exit(port, 1, size, &mut buf[..size as usize]);
+        }
+        VmExitReason::MmioRead { addr, size } => {
+            let mut data = [0u8; 8];
+            inst.handle.handle_mmio_exit(addr, 0, size, &mut data[..size as usize]);
+        }
+        VmExitReason::MmioWrite { addr, size, data } => {
+            let bytes = data.to_le_bytes();
+            let mut buf = [0u8; 8];
+            buf[..size as usize].copy_from_slice(&bytes[..size as usize]);
+            inst.handle.handle_mmio_exit(addr, 1, size, &mut buf[..size as usize]);
+        }
+        VmExitReason::Halted => {
             // HLT pauses until the next interrupt. Sleep briefly so the
             // host loop does not busy-spin.
             anyos_std::process::sleep_us(500);
-            // Drain serial and debug port output (SeaBIOS debug messages).
-            let serial_out = inst.handle.serial_take_output_vec();
-            if !serial_out.is_empty() {
-                if let Ok(text) = core::str::from_utf8(&serial_out) {
-                    anyos_std::print!("{}", text);
-                }
-            }
-            let debug_out = inst.handle.debug_take_output_vec();
-            if !debug_out.is_empty() {
-                if let Ok(text) = core::str::from_utf8(&debug_out) {
-                    anyos_std::print!("{}", text);
-                }
-            }
-            // Update framebuffer on HLT (SeaBIOS may have written to VGA).
-            update_shm_framebuffer(inst);
-            // Continue running — HLT is not a terminal state.
-            return true;
         }
-        ExitReason::Exception => {
+        VmExitReason::InterruptWindow => {
+            // Guest ready for interrupt injection, continue.
+        }
+        VmExitReason::Shutdown => {
+            // Triple fault.
             inst.running = false;
             update_shm_state(inst, STATE_ERROR);
             update_shm_framebuffer(inst);
-            let rip = inst.handle.last_error_rip();
-            if let Some(ref msg) = inst.handle.last_error() {
-                send_status(&format!("error 0 Exception at RIP=0x{:X}: {}", rip, msg));
-                anyos_std::println!("[vmd] exception at RIP=0x{:X}: {}", rip, msg);
-            } else {
-                send_status("error 0 unrecoverable exception");
-                anyos_std::println!("[vmd] unrecoverable exception at RIP=0x{:X}", rip);
-            }
+            send_status("error 0 VM shutdown (triple fault)");
+            anyos_std::println!("[vmd] VM shutdown (triple fault)");
             return false;
         }
-        ExitReason::InstructionLimit => {
-            inst.batch_count += 1;
-            if inst.batch_count % 50 == 0 && inst.batch_count <= 1000 {
-                let rip = inst.handle.rip();
-                let cs = inst.handle.cs();
-                let cs_base = inst.handle.cs_base();
-                let ds = inst.handle.ds();
-                let icount = inst.handle.instruction_count();
-                let mode = inst.handle.mode();
-                let cr0 = inst.handle.cr(0);
-                let eax = inst.handle.gpr(0);
-                let ecx = inst.handle.gpr(1);
-                let edx = inst.handle.gpr(2);
-                let ebx = inst.handle.gpr(3);
-                let esp = inst.handle.gpr(4);
-                let esi = inst.handle.gpr(6);
-                let edi = inst.handle.gpr(7);
-                // Physical fetch address = CS.base + RIP
-                let phys = cs_base.wrapping_add(rip);
-                let mut code = [0u8; 16];
-                for i in 0..16u64 {
-                    code[i as usize] = inst.handle.read_phys_u8(phys + i);
-                }
-                anyos_std::println!(
-                    "[vmd] diag: CS={:04X} (base=0x{:X}) IP=0x{:X} phys=0x{:X} mode={:?} CR0=0x{:X} ic={}",
-                    cs, cs_base, rip, phys, mode, cr0, icount
-                );
-                anyos_std::println!(
-                    "[vmd]  EAX={:08X} ECX={:08X} EDX={:08X} EBX={:08X} ESP={:08X} ESI={:08X} EDI={:08X} DS={:04X}",
-                    eax, ecx, edx, ebx, esp, esi, edi, ds
-                );
-                anyos_std::println!(
-                    "[vmd]  code@{:X}: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                    phys,
-                    code[0], code[1], code[2], code[3],
-                    code[4], code[5], code[6], code[7],
-                    code[8], code[9], code[10], code[11],
-                    code[12], code[13], code[14], code[15]
-                );
-                // Also dump bytes at 0x100000 to check decompressed kernel
-                let mut kern = [0u8; 16];
-                for i in 0..16u64 {
-                    kern[i as usize] = inst.handle.read_phys_u8(0x100000 + i);
-                }
-                anyos_std::println!(
-                    "[vmd]  kern@100000: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                    kern[0], kern[1], kern[2], kern[3],
-                    kern[4], kern[5], kern[6], kern[7],
-                    kern[8], kern[9], kern[10], kern[11],
-                    kern[12], kern[13], kern[14], kern[15]
-                );
-            }
-        }
-        ExitReason::StopRequested => {
+        VmExitReason::Error => {
             inst.running = false;
-            update_shm_state(inst, STATE_STOPPED);
+            update_shm_state(inst, STATE_ERROR);
             update_shm_framebuffer(inst);
-            send_status("state 0 stopped");
+            send_status("error 0 VM execution error");
+            anyos_std::println!("[vmd] VM execution error");
             return false;
         }
-        ExitReason::Breakpoint => {
-            // Continue running after breakpoint.
+        VmExitReason::MsrRead { .. } | VmExitReason::MsrWrite { .. } |
+        VmExitReason::CpuidExit { .. } | VmExitReason::Debug => {
+            // These are handled internally or can be ignored.
         }
     }
 
-    // Drain serial output and forward to vmmanager.
-    let serial_out = inst.handle.serial_take_output_vec();
-    if !serial_out.is_empty() {
-        if let Ok(text) = core::str::from_utf8(&serial_out) {
-            anyos_std::print!("{}", text);
-            send_status(&format!("serial 0 {}", text));
-        }
-    }
+    inst.exit_count += 1;
 
-    // Drain debug port output (SeaBIOS writes to port 0x402).
-    let debug_out = inst.handle.debug_take_output_vec();
-    if !debug_out.is_empty() {
-        if let Ok(text) = core::str::from_utf8(&debug_out) {
-            anyos_std::print!("{}", text);
+    // Periodic tasks: drain serial, update framebuffer.
+    if inst.exit_count % FB_UPDATE_INTERVAL == 0 {
+        // Drain serial output.
+        let serial_out = inst.handle.serial_take_output();
+        if !serial_out.is_empty() {
+            if let Ok(text) = core::str::from_utf8(&serial_out) {
+                anyos_std::print!("{}", text);
+                send_status(&format!("serial 0 {}", text));
+            }
         }
-    }
 
-    // Update shared memory framebuffer.
-    update_shm_framebuffer(inst);
+        // Update shared memory framebuffer.
+        update_shm_framebuffer(inst);
+    }
 
     true
 }
@@ -978,7 +827,7 @@ fn parse_mac(s: &str) -> [u8; 6] {
     mac
 }
 
-/// Convert a hex ASCII digit to its numeric value (0–15).
+/// Convert a hex ASCII digit to its numeric value (0-15).
 /// Returns 0xFF for invalid digits.
 fn hex_digit(b: u8) -> u8 {
     match b {
@@ -1008,7 +857,7 @@ fn parse_i16(s: &str) -> i16 {
 // ── Entry point ────────────────────────────────────────────────────────
 
 fn main() {
-    anyos_std::println!("[vmd] starting... (PIT: internal guest-timed)");
+    anyos_std::println!("[vmd] starting... (VM-exit run loop)");
 
     // Initialize libcorevm.
     anyos_std::println!("[vmd] loading libcorevm.so...");
@@ -1017,6 +866,13 @@ fn main() {
         anyos_std::process::exit(1);
     }
     anyos_std::println!("[vmd] libcorevm.so loaded OK");
+
+    // Check for hardware virtualization support.
+    if VmHandle::has_hw_support() {
+        anyos_std::println!("[vmd] hardware virtualization available");
+    } else {
+        anyos_std::println!("[vmd] no hardware virtualization, using software emulation");
+    }
 
     // Open IPC pipes (created by vmmanager before spawning us).
     anyos_std::println!("[vmd] opening IPC pipes...");
@@ -1043,9 +899,6 @@ fn main() {
     }
 
     // Spawn management thread for IPC command reception.
-    // The management thread continuously reads from cmd_pipe and forwards
-    // commands to the main loop via the atomic CMD_PENDING slot, ensuring
-    // IPC stays responsive even during heavy VM execution.
     unsafe { MGMT_CMD_PIPE = cmd_pipe; }
     let _mgmt = Thread::spawn(mgmt_thread_entry, "vmd-mgmt");
     anyos_std::println!("[vmd] management thread spawned");
@@ -1070,13 +923,11 @@ fn main() {
             }
         }
 
-        // Run VM execution batch if active.
-        let vm_active = run_vm_batch();
+        // Run VM exit loop step if active.
+        let vm_active = run_vm_step();
 
         if !vm_active {
             anyos_std::process::sleep(10);
-        } else {
-            anyos_std::process::sleep_us(500);
         }
     }
 }
