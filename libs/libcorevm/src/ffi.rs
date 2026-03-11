@@ -306,22 +306,17 @@ pub extern "C" fn corevm_pit_advance(handle: u64, ticks: u32) -> u32 {
             if fires > 0 && !vm.pic_ptr.is_null() {
                 let pic = unsafe { &mut *vm.pic_ptr };
                 pic.raise_irq(0);
-                // Debug: log PIC state on fire
-                static mut PIT_FIRE_DBG: u32 = 0;
-                unsafe { PIT_FIRE_DBG += 1; }
-                let dbg_cnt = unsafe { PIT_FIRE_DBG };
-                if dbg_cnt <= 10 {
-                    set_last_error(format!(
-                        "PIT fire#{}: IRR=0x{:02X} IMR=0x{:02X} ISR=0x{:02X} icw_step={} vec_off=0x{:02X}",
-                        dbg_cnt, pic.master.irr, pic.master.imr, pic.master.isr,
-                        pic.master.icw_step, pic.master.vector_offset
-                    ));
-                }
+                // Don't call acknowledge() here — with WHP, the pending
+                // interruption may be lost (e.g. cancel timer fires before
+                // guest processes it). The guest sends EOI via OUT 0x20
+                // which clears ISR through the PIC's I/O handler.
+                // Just inject; IRR stays set until the guest clears it.
                 if let Some(vector) = pic.get_interrupt_vector() {
-                    let irq = pic.irq_for_vector(vector).unwrap_or(0);
                     if vm.inject_interrupt(0, vector).is_ok() {
-                        let pic = unsafe { &mut *vm.pic_ptr };
-                        pic.acknowledge(irq);
+                        // Clear IRR (not ISR) so we don't re-inject every iteration.
+                        // The guest's EOI will be a no-op since ISR stays 0.
+                        let irq = pic.irq_for_vector(vector).unwrap_or(0);
+                        pic.lower_irq(irq);
                     }
                 }
             }
@@ -372,15 +367,12 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                     pic.raise_irq(irq);
                 }
             }
-            // Try to inject ONE pending PIC interrupt (WHP can only queue one).
-            // Only acknowledge if injection succeeds to avoid ISR lockup.
+            // Try to inject ONE pending PIC interrupt.
+            // No acknowledge — the guest sends EOI via port 0x20.
             {
                 let pic = unsafe { &mut *vm.pic_ptr };
                 if let Some(vector) = pic.get_interrupt_vector() {
-                    let irq = pic.irq_for_vector(vector).unwrap_or(0);
                     if vm.inject_interrupt(0, vector).is_ok() {
-                        let pic = unsafe { &mut *vm.pic_ptr };
-                        pic.acknowledge(irq);
                         injected += 1;
                     }
                 }
