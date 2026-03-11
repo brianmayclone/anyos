@@ -347,29 +347,32 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
             if vm.pic_ptr.is_null() {
                 return 0;
             }
-            static mut PS2_IRQ_RAISED: bool = false;
             // PS/2 keyboard → IRQ 1, mouse → IRQ 12
+            // Only raise when new data entered the output buffer (irq_needed),
+            // not every time OUTPUT_FULL is set — avoids duplicate deliveries.
             if let Some(ps2) = vm.ps2() {
-                let output_full = (ps2.status & 0x01) != 0;
-                if output_full && !unsafe { PS2_IRQ_RAISED } {
+                if ps2.irq_needed {
+                    ps2.irq_needed = false;
                     let is_mouse = (ps2.status & 0x20) != 0;
                     let irq = if is_mouse { 12 } else { 1 };
                     let pic = unsafe { &mut *vm.pic_ptr };
                     pic.raise_irq(irq);
-                    unsafe { PS2_IRQ_RAISED = true; }
                 }
             }
-            // Inject ONE pending PIC interrupt (highest priority).
+            // Inject ONE pending PIC interrupt (highest priority),
+            // but ONLY if the guest has interrupts enabled (RFLAGS.IF=1).
+            // Injecting while IF=0 crashes KVM (guest IDT may not be ready).
             {
-                let pic = unsafe { &mut *vm.pic_ptr };
-                if let Some(vector) = pic.get_interrupt_vector() {
-                    if vm.inject_interrupt(0, vector).is_ok() {
-                        let irq = pic.irq_for_vector(vector).unwrap_or(0);
-                        pic.lower_irq(irq);
-                        injected += 1;
-                        // Reset PS/2 flag after injection so next byte triggers new IRQ
-                        if irq == 1 || irq == 12 {
-                            unsafe { PS2_IRQ_RAISED = false; }
+                let if_set = vm.get_vcpu_regs(0)
+                    .map(|r| r.rflags & 0x200 != 0)
+                    .unwrap_or(false);
+                if if_set {
+                    let pic = unsafe { &mut *vm.pic_ptr };
+                    if let Some(vector) = pic.get_interrupt_vector() {
+                        if vm.inject_interrupt(0, vector).is_ok() {
+                            let irq = pic.irq_for_vector(vector).unwrap_or(0);
+                            pic.lower_irq(irq);
+                            injected += 1;
                         }
                     }
                 }

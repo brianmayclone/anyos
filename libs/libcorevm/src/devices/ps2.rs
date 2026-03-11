@@ -56,6 +56,8 @@ pub struct Ps2Controller {
     pub reset_requested: bool,
     /// Last byte read from port 0x60 (latched; real hardware holds last value).
     last_read: u8,
+    /// Set when new data enters the output buffer; cleared by the IRQ raiser.
+    pub irq_needed: bool,
 }
 
 /// Status register bit masks.
@@ -80,6 +82,7 @@ impl Ps2Controller {
             kbd_expecting_param: None,
             reset_requested: false,
             last_read: 0,
+            irq_needed: false,
         }
     }
 
@@ -161,10 +164,12 @@ impl Ps2Controller {
             self.output_buffer.push_back(byte);
             self.status |= STATUS_OUTPUT_FULL;
             self.status &= !STATUS_MOUSE_DATA;
+            self.irq_needed = true;
         } else if let Some(byte) = self.mouse_buffer.pop_front() {
             self.output_buffer.push_back(byte);
             self.status |= STATUS_OUTPUT_FULL;
             self.status |= STATUS_MOUSE_DATA;
+            self.irq_needed = true;
         }
     }
 
