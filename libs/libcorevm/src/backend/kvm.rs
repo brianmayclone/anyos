@@ -332,6 +332,7 @@ pub struct KvmBackend {
     vcpus: Vec<Option<KvmVcpu>>,
     mmap_size: usize,
     memory_slots: Vec<MemorySlot>,
+    stored_cpuid: Option<Vec<CpuidEntry>>,
 }
 
 impl KvmBackend {
@@ -366,6 +367,7 @@ impl KvmBackend {
                 vcpus: Vec::new(),
                 mmap_size: mmap_size as usize,
                 memory_slots: Vec::new(),
+                stored_cpuid: None,
             })
         }
     }
@@ -410,9 +412,36 @@ impl KvmBackend {
         }
     }
 
-    fn translate_phys(&self, addr: u64) -> Option<*mut u8> {
+    fn build_cpuid_buf(entries: &[CpuidEntry]) -> Vec<u8> {
+        let header_size = 8usize;
+        let entry_size = core::mem::size_of::<KvmCpuidEntry2>();
+        let total = header_size + entries.len() * entry_size;
+        let mut buf = vec![0u8; total];
+        let nent = entries.len() as u32;
+        buf[0..4].copy_from_slice(&nent.to_ne_bytes());
+        for (i, e) in entries.iter().enumerate() {
+            let off = header_size + i * entry_size;
+            let ke = KvmCpuidEntry2 {
+                function: e.function,
+                index: e.index,
+                flags: 0,
+                eax: e.eax, ebx: e.ebx, ecx: e.ecx, edx: e.edx,
+                _padding: [0; 3],
+            };
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    &ke as *const _ as *const u8,
+                    buf.as_mut_ptr().add(off),
+                    entry_size,
+                );
+            }
+        }
+        buf
+    }
+
+    fn translate_phys(&self, addr: u64, len: usize) -> Option<*mut u8> {
         for slot in &self.memory_slots {
-            if addr >= slot.guest_phys && addr < slot.guest_phys + slot.size {
+            if addr >= slot.guest_phys && addr + len as u64 <= slot.guest_phys + slot.size {
                 let offset = (addr - slot.guest_phys) as usize;
                 return Some(unsafe { slot.host_ptr.add(offset) });
             }
@@ -535,7 +564,7 @@ impl VmBackend for KvmBackend {
     }
 
     fn read_phys(&self, addr: u64, buf: &mut [u8]) -> Result<(), VmError> {
-        let ptr = self.translate_phys(addr).ok_or(VmError::MemoryMapFailed)?;
+        let ptr = self.translate_phys(addr, buf.len()).ok_or(VmError::MemoryMapFailed)?;
         unsafe {
             core::ptr::copy_nonoverlapping(ptr, buf.as_mut_ptr(), buf.len());
         }
@@ -543,7 +572,7 @@ impl VmBackend for KvmBackend {
     }
 
     fn write_phys(&mut self, addr: u64, buf: &[u8]) -> Result<(), VmError> {
-        let ptr = self.translate_phys(addr).ok_or(VmError::MemoryMapFailed)?;
+        let ptr = self.translate_phys(addr, buf.len()).ok_or(VmError::MemoryMapFailed)?;
         unsafe {
             core::ptr::copy_nonoverlapping(buf.as_ptr(), ptr, buf.len());
         }
@@ -575,6 +604,16 @@ impl VmBackend for KvmBackend {
                 kvm_run: run_ptr as *mut KvmRun,
                 mmap_size: self.mmap_size,
             };
+
+            // Apply stored CPUID if any
+            if let Some(ref entries) = self.stored_cpuid {
+                let buf = Self::build_cpuid_buf(entries);
+                let ret = sys_ioctl(vcpu_fd, KVM_SET_CPUID2, buf.as_ptr() as u64);
+                if ret < 0 {
+                    sys_close(vcpu_fd);
+                    return Err(VmError::BackendError(ret as i32));
+                }
+            }
 
             let idx = id as usize;
             while self.vcpus.len() <= idx {
@@ -813,6 +852,7 @@ impl VmBackend for KvmBackend {
             return Err(VmError::BackendError(ret as i32));
         }
 
+        events.exception.pending = 0;
         events.exception.injected = 1;
         events.exception.nr = vector;
         events.exception.has_error_code = if error_code.is_some() { 1 } else { 0 };
@@ -858,37 +898,10 @@ impl VmBackend for KvmBackend {
     }
 
     fn set_cpuid(&mut self, entries: &[CpuidEntry]) -> Result<(), VmError> {
-        // Build a buffer: header (nent: u32, padding: u32) + N entries
-        let header_size = 8usize; // nent + padding
-        let entry_size = core::mem::size_of::<KvmCpuidEntry2>();
-        let total = header_size + entries.len() * entry_size;
-        let mut buf = vec![0u8; total];
+        // Store for later vCPU creation
+        self.stored_cpuid = Some(entries.to_vec());
 
-        // Write nent
-        let nent = entries.len() as u32;
-        buf[0..4].copy_from_slice(&nent.to_ne_bytes());
-
-        // Write entries
-        for (i, e) in entries.iter().enumerate() {
-            let off = header_size + i * entry_size;
-            let ke = KvmCpuidEntry2 {
-                function: e.function,
-                index: e.index,
-                flags: 0,
-                eax: e.eax,
-                ebx: e.ebx,
-                ecx: e.ecx,
-                edx: e.edx,
-                _padding: [0; 3],
-            };
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    &ke as *const _ as *const u8,
-                    buf.as_mut_ptr().add(off),
-                    entry_size,
-                );
-            }
-        }
+        let buf = Self::build_cpuid_buf(entries);
 
         // Apply to all existing vCPUs
         for vcpu_opt in &self.vcpus {
