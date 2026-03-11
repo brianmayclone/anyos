@@ -800,11 +800,12 @@ let rdi = vm.gpr(GPR_RDI);  // 7
 
 All 59 functions exported by `libcorevm.so` (listed in `libs/libcorevm/exports.def`):
 
-### VM Lifecycle (5)
+### VM Lifecycle (6)
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
 | `corevm_create` | `(ram_mb: u32) -> u64` | Create VM, returns opaque handle (0 on failure) |
+| `corevm_host_virtualization_backend` | `() -> u32` | Detect host backend (0 = unavailable, 1 = Intel VT-x, 2 = AMD-V) |
 | `corevm_destroy` | `(h: u64)` | Destroy VM and free all resources |
 | `corevm_reset` | `(h: u64)` | Reset CPU/MMU to power-on state |
 | `corevm_run` | `(h: u64, max: u64) -> u32` | Execute instructions, returns ExitReason |

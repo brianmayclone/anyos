@@ -1,4 +1,4 @@
-//! libcorevm — userspace x86 virtual machine library for anyOS.
+//! libcorevm — userspace x86 virtual machine library for AnyOS.
 //!
 //! VM creation now requires host hardware virtualization support and selects
 //! either an Intel VT-x or AMD-V backend through a shared abstraction layer.
@@ -132,18 +132,21 @@ impl VmEngine {
     /// Create a new VM with the specified guest RAM size in bytes.
     ///
     /// The CPU starts in real mode at the standard reset vector (CS:IP = F000:FFF0).
-    pub fn new(ram_size: usize) -> Self {
+    pub fn new(ram_size: usize) -> Result<Self> {
         Self::new_with_vcpus(ram_size, 1)
     }
 
     /// Create a new VM with a configured logical CPU count.
-    pub fn new_with_vcpus(ram_size: usize, vcpu_count: u8) -> Self {
+    pub fn new_with_vcpus(ram_size: usize, vcpu_count: u8) -> Result<Self> {
         let virtualization = detect_hardware_virtualization();
-        assert!(
-            virtualization.is_available(),
-            "CoreVM requires Intel VT-x or AMD-V hardware virtualization support"
-        );
-        Self::new_with_vcpus_and_virtualization(ram_size, vcpu_count, virtualization)
+        if !virtualization.is_available() {
+            return Err(VmError::HardwareVirtualizationUnavailable);
+        }
+        Ok(Self::new_with_vcpus_and_virtualization(
+            ram_size,
+            vcpu_count,
+            virtualization,
+        ))
     }
 
     /// Create a new VM with an explicitly selected hardware virtualization backend.

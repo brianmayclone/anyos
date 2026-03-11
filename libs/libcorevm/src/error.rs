@@ -50,6 +50,8 @@ pub enum VmError {
     InstructionLimitExceeded,
     /// Guest memory allocation failed.
     OutOfMemory,
+    /// Host CPU lacks Intel VT-x / AMD-V virtualization support.
+    HardwareVirtualizationUnavailable,
     /// Triple fault — CPU shutdown (reset).
     Shutdown,
 }
@@ -119,6 +121,9 @@ impl fmt::Display for VmError {
             VmError::FetchFault(addr) => write!(f, "fetch fault at 0x{:016X}", addr),
             VmError::InstructionLimitExceeded => write!(f, "instruction limit exceeded"),
             VmError::OutOfMemory => write!(f, "out of guest memory"),
+            VmError::HardwareVirtualizationUnavailable => {
+                write!(f, "host hardware virtualization (Intel VT-x / AMD-V) unavailable")
+            }
             VmError::Shutdown => write!(f, "triple fault — CPU shutdown"),
         }
     }
