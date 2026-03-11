@@ -296,8 +296,14 @@ pub extern "C" fn corevm_pit_advance(handle: u64, ticks: u32) -> u32 {
                 pic.raise_irq(0);
                 if let Some(vector) = pic.get_interrupt_vector() {
                     let irq = pic.irq_for_vector(vector).unwrap_or(0);
-                    pic.acknowledge(irq);
-                    let _ = vm.inject_interrupt(0, vector);
+                    // Only acknowledge if injection succeeds. If the guest has
+                    // IF=0, WHP rejects the injection and we must leave the IRQ
+                    // in IRR so it can be retried later. Acknowledging on failure
+                    // permanently locks the PIC ISR since the guest never sends EOI.
+                    if vm.inject_interrupt(0, vector).is_ok() {
+                        let pic = unsafe { &mut *vm.pic_ptr };
+                        pic.acknowledge(irq);
+                    }
                 }
             }
             fires
@@ -329,16 +335,17 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                     pic.raise_irq(irq);
                 }
             }
-            // Drain all pending PIC interrupts
-            loop {
+            // Try to inject ONE pending PIC interrupt (WHP can only queue one).
+            // Only acknowledge if injection succeeds to avoid ISR lockup.
+            {
                 let pic = unsafe { &mut *vm.pic_ptr };
                 if let Some(vector) = pic.get_interrupt_vector() {
                     let irq = pic.irq_for_vector(vector).unwrap_or(0);
-                    pic.acknowledge(irq);
-                    let _ = vm.inject_interrupt(0, vector);
-                    injected += 1;
-                } else {
-                    break;
+                    if vm.inject_interrupt(0, vector).is_ok() {
+                        let pic = unsafe { &mut *vm.pic_ptr };
+                        pic.acknowledge(irq);
+                        injected += 1;
+                    }
                 }
             }
             injected

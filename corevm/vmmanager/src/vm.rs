@@ -429,6 +429,20 @@ fn vm_run_loop(
                 control.exited.store(true, Ordering::Relaxed);
                 break;
             }
+            12 => {
+                // StringIo — bulk REP INSB/OUTSB
+                corevm_handle_string_io_exit(
+                    handle, exit.port, exit.string_io_is_write,
+                    exit.string_io_count, exit.string_io_gpa,
+                    exit.string_io_step, exit.string_io_instr_len,
+                    exit.string_io_addr_size,
+                );
+                if diag_enabled {
+                    let dir = if exit.string_io_is_write != 0 { "OUT" } else { "IN" };
+                    diag.log(DiagCategory::IoPort, format!("STRING {} port=0x{:04X} count={} gpa=0x{:X}",
+                        dir, exit.port, exit.string_io_count, exit.string_io_gpa));
+                }
+            }
             other => {
                 // Other exits (MsrRead/Write, Cpuid, InterruptWindow, Debug)
                 if diag_enabled {

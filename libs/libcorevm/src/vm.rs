@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use crate::backend::{VmBackend, VmExitReason, VmError};
 use crate::backend::types::*;
 use crate::io::IoDispatch;
-use crate::memory::GuestMemory;
+use crate::memory::{GuestMemory, MemoryBus};
 
 use crate::devices::serial::Serial;
 use crate::devices::ps2::Ps2Controller;
