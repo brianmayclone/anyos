@@ -1286,6 +1286,14 @@ impl VmBackend for WhpBackend {
     }
 
     fn inject_interrupt(&mut self, id: u32, vector: u8) -> Result<(), VmError> {
+        // Check RFLAGS.IF — WHP silently drops pending interruptions when IF=0,
+        // which causes the caller to acknowledge the PIC (permanently locking ISR).
+        let mut rflags_val = WHV_REGISTER_VALUE { reg64: 0 };
+        self.get_regs_raw(id, &[REG_RFLAGS], core::slice::from_mut(&mut rflags_val))?;
+        let rflags = unsafe { rflags_val.reg64 };
+        if rflags & (1 << 9) == 0 {
+            return Err(VmError::BackendError(-1)); // IF=0, can't deliver
+        }
         // Set pending interruption register: bits[7:0]=vector, bits[11:8]=type(0=ext int), bit 12=deliver
         let val = WHV_REGISTER_VALUE::from_u64((vector as u64) | (0u64 << 8) | (1u64 << 12));
         self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[val])

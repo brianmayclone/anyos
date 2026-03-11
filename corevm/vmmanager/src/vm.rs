@@ -418,10 +418,16 @@ fn vm_run_loop(
                 break;
             }
             11 => {
-                // Error — fatal
-                if diag_enabled {
-                    diag.log(DiagCategory::Error, "VM Error exit".to_string());
-                }
+                // Error — fatal (triple fault / emulation failure)
+                let mut regs = VcpuRegs::default();
+                let mut sregs = VcpuSregs::default();
+                corevm_get_vcpu_regs(handle, 0, &mut regs);
+                corevm_get_vcpu_sregs(handle, 0, &mut sregs);
+                diag.log(DiagCategory::Error, format!(
+                    "VM Error exit — RIP=0x{:X} RSP=0x{:X} RFLAGS=0x{:X} CR0=0x{:X} CR3=0x{:X} CR4=0x{:X} CS.sel=0x{:X} CS.base=0x{:X}",
+                    regs.rip, regs.rsp, regs.rflags, sregs.cr0, sregs.cr3, sregs.cr4,
+                    sregs.cs.selector, sregs.cs.base
+                ));
                 update_framebuffer(handle, &fb, &diag, &mut fb_debug_count);
                 if let Ok(mut r) = control.exit_reason.lock() {
                     *r = "Error".into();
