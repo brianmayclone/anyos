@@ -44,6 +44,7 @@ pub mod fpu_state;
 pub mod sse_state;
 pub mod devices;
 pub mod jit;
+pub mod backend;
 #[cfg(feature = "host_test")]
 pub mod debugger;
 
