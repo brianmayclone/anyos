@@ -159,6 +159,8 @@ type FnDeleteVirtualProcessor = extern "system" fn(WHV_PARTITION_HANDLE, u32) ->
 type FnRunVirtualProcessor = extern "system" fn(WHV_PARTITION_HANDLE, u32, *mut u8, u32) -> i32;
 type FnGetVirtualProcessorRegisters = extern "system" fn(WHV_PARTITION_HANDLE, u32, *const u32, u32, *mut WHV_REGISTER_VALUE) -> i32;
 type FnSetVirtualProcessorRegisters = extern "system" fn(WHV_PARTITION_HANDLE, u32, *const u32, u32, *const WHV_REGISTER_VALUE) -> i32;
+// WHvRequestInterrupt(partition, *interrupt_control, size) -> HRESULT
+type FnRequestInterrupt = extern "system" fn(WHV_PARTITION_HANDLE, *const u8, u32) -> i32;
 
 struct WhpApi {
     get_capability: FnGetCapability,
@@ -173,6 +175,7 @@ struct WhpApi {
     run_vp: FnRunVirtualProcessor,
     get_regs: FnGetVirtualProcessorRegisters,
     set_regs: FnSetVirtualProcessorRegisters,
+    request_interrupt: Option<FnRequestInterrupt>,
 }
 
 // Windows API imports for DLL loading
@@ -313,6 +316,10 @@ impl WhpBackend {
                 run_vp: load!("WHvRunVirtualProcessor"),
                 get_regs: load!("WHvGetVirtualProcessorRegisters"),
                 set_regs: load!("WHvSetVirtualProcessorRegisters"),
+                request_interrupt: {
+                    let p = GetProcAddress(dll, b"WHvRequestInterrupt\0".as_ptr());
+                    if p.is_null() { None } else { Some(core::mem::transmute(p)) }
+                },
             };
 
             // Check if the hypervisor is present
@@ -1028,9 +1035,24 @@ impl VmBackend for WhpBackend {
     }
 
     fn inject_interrupt(&mut self, id: u32, vector: u8) -> Result<(), VmError> {
-        // WHV_INTERRUPT_CONTROL: bits[7:0]=vector, bits[11:8]=type(0=ext int), bit 12=deliver
-        let val = WHV_REGISTER_VALUE::from_u64((vector as u64) | (0u64 << 8) | (1u64 << 12));
-        self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[val])
+        if let Some(req_int) = self.api.request_interrupt {
+            // WHV_INTERRUPT_CONTROL structure (8 bytes):
+            // bits[1:0]  = Type (0=Fixed)
+            // bit 2      = DestinationMode (0=Physical)
+            // bit 3      = TriggerMode (0=Edge)
+            // bits[15:8] = Vector
+            // bits[63:32]= Destination (0 = BSP APIC ID)
+            let ctrl: u64 = (vector as u64) << 8; // Fixed, Physical, Edge, dest=0
+            let hr = (req_int)(self.partition, &ctrl as *const u64 as *const u8, 8);
+            if hr < 0 {
+                return Err(VmError::BackendError(hr));
+            }
+            Ok(())
+        } else {
+            // Fallback: set pending interruption register directly
+            let val = WHV_REGISTER_VALUE::from_u64((vector as u64) | (0u64 << 8) | (1u64 << 12));
+            self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[val])
+        }
     }
 
     fn inject_exception(&mut self, id: u32, vector: u8, error_code: Option<u32>) -> Result<(), VmError> {
