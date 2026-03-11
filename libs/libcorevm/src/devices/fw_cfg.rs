@@ -232,6 +232,7 @@ impl IoHandler for FwCfg {
         if port == 0x510 {
             let sel = val as u16;
             // Log selector accesses for boot diagnostics.
+            #[cfg(not(feature = "std"))]
             libsyscall::serial_print(format_args!(
                 "[fw_cfg] select 0x{:04X}\n", sel
             ));

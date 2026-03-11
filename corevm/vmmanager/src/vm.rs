@@ -332,6 +332,7 @@ fn vm_run_loop(
     let mut last_pit_tick = Instant::now();
     let fb_interval = Duration::from_millis(16); // ~60fps
     let mut consecutive_errors: u32 = 0;
+    let mut fb_debug_count: u32 = 0;
     const PIT_FREQ: u64 = 1_193_182; // 8254 PIT clock rate in Hz
 
     loop {
@@ -409,7 +410,7 @@ fn vm_run_loop(
                 if diag_enabled {
                     diag.log(DiagCategory::Error, "VM Shutdown (triple fault)".to_string());
                 }
-                update_framebuffer(handle, &fb);
+                update_framebuffer(handle, &fb, &diag, &mut fb_debug_count);
                 if let Ok(mut r) = control.exit_reason.lock() {
                     *r = "Shutdown".into();
                 }
@@ -421,7 +422,7 @@ fn vm_run_loop(
                 if diag_enabled {
                     diag.log(DiagCategory::Error, "VM Error exit".to_string());
                 }
-                update_framebuffer(handle, &fb);
+                update_framebuffer(handle, &fb, &diag, &mut fb_debug_count);
                 if let Ok(mut r) = control.exit_reason.lock() {
                     *r = "Error".into();
                 }
@@ -460,18 +461,27 @@ fn vm_run_loop(
 
         // Update framebuffer at ~60fps
         if last_fb_update.elapsed() >= fb_interval {
-            update_framebuffer(handle, &fb);
+            update_framebuffer(handle, &fb, &diag, &mut fb_debug_count);
             last_fb_update = Instant::now();
         }
     }
 }
 
 /// Read VGA state and update the shared framebuffer
-fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>) {
+fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>, diag: &DiagLog, fb_debug_count: &mut u32) {
     let mut fb_ptr: *const u8 = std::ptr::null();
     let mut fb_len: u32 = 0;
 
     let ret = corevm_vga_get_framebuffer(handle, &mut fb_ptr, &mut fb_len);
+
+    // Debug: log first few framebuffer update results
+    if *fb_debug_count < 5 {
+        *fb_debug_count += 1;
+        diag.log(DiagCategory::Info, format!(
+            "update_fb #{}: get_fb ret={} ptr_null={} len={}",
+            fb_debug_count, ret, fb_ptr.is_null(), fb_len
+        ));
+    }
 
     if ret == 0 && !fb_ptr.is_null() && fb_len > 0 {
         // The framebuffer returns raw pixel data; we need width/height/bpp from SVGA.
@@ -501,6 +511,17 @@ fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>) {
         if ret == 0 && !text_ptr.is_null() && text_len > 0 {
             let text_cells = unsafe { std::slice::from_raw_parts(text_ptr, text_len as usize) };
 
+            // Debug: log first non-zero text cells
+            if *fb_debug_count <= 6 {
+                *fb_debug_count = 6;
+                let non_zero = text_cells.iter().filter(|&&c| c != 0).count();
+                let first8: Vec<String> = text_cells.iter().take(8).map(|c| format!("{:04X}", c)).collect();
+                diag.log(DiagCategory::Info, format!(
+                    "text_buf: len={} non_zero={} first8=[{}]",
+                    text_len, non_zero, first8.join(" ")
+                ));
+            }
+
             if let Ok(mut fb_data) = fb.lock() {
                 fb_data.text_mode = true;
                 fb_data.text_buffer = text_cells.to_vec();
@@ -510,6 +531,12 @@ fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>) {
                 fb_data.height = th;
                 fb_data.dirty = true;
             }
+        } else if *fb_debug_count <= 6 {
+            *fb_debug_count = 6;
+            diag.log(DiagCategory::Info, format!(
+                "text_buf FAILED: ret={} ptr_null={} len={}",
+                ret, text_ptr.is_null(), text_len
+            ));
         }
     }
 }
@@ -559,12 +586,16 @@ fn load_bios(handle: u64, bios_type: &BiosType) -> Result<(), String> {
             let vgabios = std::fs::read(&vgabios_path)
                 .map_err(|e| format!("Failed to read VGA BIOS: {}", e))?;
 
-            // Load BIOS at 0xC0000 (within RAM region, works directly)
+            // Load full BIOS at 0xC0000 (256KB SeaBIOS covers 0xC0000-0xFFFFF).
+            // SeaBIOS needs the reset vector at 0xFFFF0 and its code/data here.
+            // During POST, SeaBIOS relocates its init code to high RAM and then
+            // loads VGA option ROM from fw_cfg into 0xC0000 (overwriting the
+            // no-longer-needed lower portion of the BIOS image).
             corevm_load_binary(handle, 0xC0000, bios.as_ptr(), bios.len() as u32);
 
             // ROM overlay at top of 4GB address space.
             // This is OUTSIDE the RAM region, so we must create a separate memory
-            // mapping. Allocate a 256KB buffer, copy BIOS into it, and register
+            // mapping. Allocate a page-aligned buffer, copy BIOS into it, and register
             // it as memory slot 1 at the high address.
             let rom_base = 0x1_0000_0000u64 - bios.len() as u64;
             let rom_size = bios.len();
@@ -587,14 +618,22 @@ fn load_bios(handle: u64, bios_type: &BiosType) -> Result<(), String> {
             }
             // Note: rom_ptr is intentionally leaked — it must remain valid for VM lifetime
 
-            // VGA BIOS: inject via fw_cfg so SeaBIOS loads it as option ROM
+            // VGA BIOS: inject via fw_cfg so SeaBIOS loads it as option ROM.
+            // SeaBIOS reads fw_cfg file directory during POST, finds the
+            // "vgaroms/vgabios.bin" entry, and loads it at 0xC0000 as option ROM.
             {
                 let name = b"vgaroms/vgabios.bin";
-                corevm_fw_cfg_add_file(
+                let fw_rc = corevm_fw_cfg_add_file(
                     handle,
                     name.as_ptr(), name.len() as u32,
                     vgabios.as_ptr(), vgabios.len() as u32,
                 );
+                if fw_rc != 0 {
+                    return Err(format!(
+                        "Failed to add VGA BIOS to fw_cfg (rc={}, vgabios_size={})",
+                        fw_rc, vgabios.len()
+                    ));
+                }
             }
 
             Ok(())
