@@ -9,6 +9,8 @@ crate-type = ["staticlib", "rlib"]
 [features]
 default = []
 host_test = []
+linux = ["std"]
+std = []
 
 [dependencies]
 libheap = { path = "../libheap" }

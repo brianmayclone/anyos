@@ -17,7 +17,7 @@
 //! All public functions are `extern "C"` with `#[no_mangle]` for use via `dl_sym()`.
 //! The new FFI layer will be added in a subsequent task.
 
-#![cfg_attr(not(feature = "host_test"), no_std)]
+#![cfg_attr(not(any(feature = "host_test", feature = "std")), no_std)]
 #![cfg_attr(not(feature = "host_test"), no_main)]
 
 extern crate alloc;

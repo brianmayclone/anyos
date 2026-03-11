@@ -6,6 +6,9 @@
 pub mod types;
 pub use types::*;
 
+#[cfg(feature = "linux")]
+pub mod kvm;
+
 #[derive(Debug, Clone)]
 pub enum VmError {
     NoHardwareSupport,
