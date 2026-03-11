@@ -18,7 +18,7 @@ use libcorevm::ffi::{
     corevm_load_binary,
     corevm_get_vcpu_regs, corevm_set_vcpu_regs,
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
-    corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode,
+    corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_lfb_addr,
     corevm_last_error, corevm_last_error_len,
     corevm_pit_advance, corevm_pit_debug, corevm_poll_irqs, corevm_cancel_vcpu,
     corevm_read_phys, corevm_debug_port_take_output,
@@ -76,15 +76,21 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     // Setup devices (includes PCI bus)
     corevm_setup_standard_devices(handle);
 
-    // Map VGA linear framebuffer at BAR0 address (0xFD000000, 16MB)
-    // This allows the guest to write directly to the framebuffer without MMIO trapping.
-    let vga_fb_size: usize = 0x100_0000; // 16MB
+    // Map VGA linear framebuffer RAM at both the Bochs VBE default address
+    // (0xE0000000, where SeaVGABIOS places the LFB) and the PCI BAR0 address
+    // (0xFD000000). 8MB matches the VRAM size reported by VBE_DISPI_INDEX_VIDEO_MEMORY_64K.
+    let vga_fb_size: usize = 0x80_0000; // 8MB
     let vga_fb_layout = std::alloc::Layout::from_size_align(vga_fb_size, 4096).unwrap();
     let vga_fb_ptr = unsafe { std::alloc::alloc_zeroed(vga_fb_layout) };
     if !vga_fb_ptr.is_null() {
-        let ret = corevm_set_memory_region(handle, 10, 0xFD00_0000, vga_fb_size as u64, vga_fb_ptr);
+        // Primary: Bochs VBE default LFB at 0xE0000000
+        let ret1 = corevm_set_memory_region(handle, 10, 0xE000_0000, vga_fb_size as u64, vga_fb_ptr);
+        // Secondary: PCI BAR0 at 0xFD000000 (same physical memory)
+        let ret2 = corevm_set_memory_region(handle, 11, 0xFD00_0000, vga_fb_size as u64, vga_fb_ptr);
         if entry.config.diagnostics {
-            entry.diag_log.log(DiagCategory::Info, format!("VGA LFB mapped at 0xFD000000 (16MB): ret={}", ret));
+            entry.diag_log.log(DiagCategory::Info, format!(
+                "VGA LFB mapped: 0xE0000000 ret={} 0xFD000000 ret={} (8MB)", ret1, ret2
+            ));
         }
     }
 
@@ -598,12 +604,21 @@ fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>, diag: &Diag
             }
         }
     } else if mode_ret == 0 && vga_w > 0 && vga_h > 0 && vga_bpp > 0 {
-        // Graphics mode — read linear framebuffer from guest physical memory at BAR0
+        // Graphics mode — try guest physical memory at BAR0 first (WHP path:
+        // guest writes directly to RAM at 0xFD000000, bypassing MMIO).
+        // Fall back to internal svga.framebuffer (software emulation path).
         let bytes_per_pixel = (vga_bpp as usize + 7) / 8;
         let fb_size = vga_w as usize * vga_h as usize * bytes_per_pixel;
         let mut raw_pixels = vec![0u8; fb_size];
-        let ret = corevm_read_phys(handle, 0xFD00_0000, raw_pixels.as_mut_ptr(), fb_size as u32);
-        if ret == 0 {
+        // Try Bochs VBE default LFB address (0xE0000000) first, then PCI BAR0
+        let mut lfb_addr = corevm_vga_get_lfb_addr(handle);
+        if lfb_addr == 0 { lfb_addr = 0xE000_0000; }
+        // SeaVGABIOS uses 0xE0000000 regardless of BAR0, so try that first
+        let mut phys_ret = corevm_read_phys(handle, 0xE000_0000, raw_pixels.as_mut_ptr(), fb_size as u32);
+        if phys_ret != 0 {
+            phys_ret = corevm_read_phys(handle, lfb_addr, raw_pixels.as_mut_ptr(), fb_size as u32);
+        }
+        if phys_ret == 0 {
             if let Ok(mut fb_data) = fb.lock() {
                 fb_data.text_mode = false;
                 fb_data.width = vga_w;
@@ -612,7 +627,7 @@ fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>, diag: &Diag
                 fb_data.dirty = true;
             }
         } else {
-            // Fallback: try internal framebuffer (software emulation path)
+            // Software emulation fallback: internal svga.framebuffer
             let mut fb_ptr: *const u8 = std::ptr::null();
             let mut fb_len: u32 = 0;
             let ret = corevm_vga_get_framebuffer(handle, &mut fb_ptr, &mut fb_len);

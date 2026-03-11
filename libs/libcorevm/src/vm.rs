@@ -129,6 +129,12 @@ impl Vm {
         self.io.register(0x1CE, 2, Box::new(SvgaVbePortProxy(self.svga_ptr)));
         // VGA legacy framebuffer MMIO at 0xA0000 (128KB)
         self.memory.add_mmio(0xA0000, 0x20000, Box::new(SvgaMmioProxy(self.svga_ptr)));
+        // VGA linear framebuffer MMIO at Bochs VBE default (0xE0000000, 8MB)
+        // and PCI BAR0 (0xFD000000). SeaVGABIOS uses 0xE0000000 for the LFB.
+        // For software emulation, these catch guest LFB writes directly.
+        // For hardware-virt (WHP/KVM), these are shadowed by RAM mappings.
+        self.memory.add_mmio(0xE000_0000, 0x80_0000, Box::new(SvgaLfbProxy(self.svga_ptr)));
+        self.memory.add_mmio(0xFD00_0000, 0x80_0000, Box::new(SvgaLfbProxy(self.svga_ptr)));
 
         // Debug port (0x402)
         let dbg = Box::new(DebugPort::new());
@@ -506,6 +512,38 @@ impl crate::memory::mmio::MmioHandler for SvgaMmioProxy {
     }
     fn write(&mut self, offset: u64, size: u8, val: u64) -> crate::error::Result<()> {
         unsafe { &mut *self.0 }.write(offset, size, val)
+    }
+}
+
+/// Proxy for VGA linear framebuffer MMIO at PCI BAR0 (0xFD000000, 16MB).
+/// Guest LFB writes go directly to the Svga framebuffer.
+struct SvgaLfbProxy(*mut Svga);
+unsafe impl Send for SvgaLfbProxy {}
+
+impl crate::memory::mmio::MmioHandler for SvgaLfbProxy {
+    fn read(&mut self, offset: u64, size: u8) -> crate::error::Result<u64> {
+        let svga = unsafe { &mut *self.0 };
+        let off = offset as usize;
+        if off >= svga.framebuffer.len() {
+            return Ok(0);
+        }
+        let mut val: u64 = 0;
+        let end = (off + size as usize).min(svga.framebuffer.len());
+        for i in off..end {
+            val |= (svga.framebuffer[i] as u64) << ((i - off) * 8);
+        }
+        Ok(val)
+    }
+    fn write(&mut self, offset: u64, size: u8, val: u64) -> crate::error::Result<()> {
+        let svga = unsafe { &mut *self.0 };
+        let off = offset as usize;
+        for i in 0..(size as usize) {
+            let idx = off + i;
+            if idx < svga.framebuffer.len() {
+                svga.framebuffer[idx] = ((val >> (i * 8)) & 0xFF) as u8;
+            }
+        }
+        Ok(())
     }
 }
 

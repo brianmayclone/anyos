@@ -306,19 +306,9 @@ pub extern "C" fn corevm_pit_advance(handle: u64, ticks: u32) -> u32 {
             if fires > 0 && !vm.pic_ptr.is_null() {
                 let pic = unsafe { &mut *vm.pic_ptr };
                 pic.raise_irq(0);
-                // Don't call acknowledge() here — with WHP, the pending
-                // interruption may be lost (e.g. cancel timer fires before
-                // guest processes it). The guest sends EOI via OUT 0x20
-                // which clears ISR through the PIC's I/O handler.
-                // Just inject; IRR stays set until the guest clears it.
-                if let Some(vector) = pic.get_interrupt_vector() {
-                    if vm.inject_interrupt(0, vector).is_ok() {
-                        // Clear IRR (not ISR) so we don't re-inject every iteration.
-                        // The guest's EOI will be a no-op since ISR stays 0.
-                        let irq = pic.irq_for_vector(vector).unwrap_or(0);
-                        pic.lower_irq(irq);
-                    }
-                }
+                // Only raise IRR here, don't inject. Injection is centralized
+                // in poll_irqs to avoid overwriting PendingInterruption (WHP
+                // can only hold one pending interrupt at a time).
             }
             fires
         }
@@ -357,25 +347,19 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
             if vm.pic_ptr.is_null() {
                 return 0;
             }
+            static mut PS2_IRQ_RAISED: bool = false;
             // PS/2 keyboard → IRQ 1, mouse → IRQ 12
-            // Only raise the IRQ once per new data; track with a static flag.
-            // The flag is cleared when the guest reads port 0x60 (handled by PS/2 device).
-            {
-                static mut PS2_IRQ_RAISED: bool = false;
-                if let Some(ps2) = vm.ps2() {
-                    let output_full = (ps2.status & 0x01) != 0;
-                    if output_full && !unsafe { PS2_IRQ_RAISED } {
-                        let is_mouse = (ps2.status & 0x20) != 0;
-                        let irq = if is_mouse { 12 } else { 1 };
-                        let pic = unsafe { &mut *vm.pic_ptr };
-                        pic.raise_irq(irq);
-                        unsafe { PS2_IRQ_RAISED = true; }
-                    } else if !output_full {
-                        unsafe { PS2_IRQ_RAISED = false; }
-                    }
+            if let Some(ps2) = vm.ps2() {
+                let output_full = (ps2.status & 0x01) != 0;
+                if output_full && !unsafe { PS2_IRQ_RAISED } {
+                    let is_mouse = (ps2.status & 0x20) != 0;
+                    let irq = if is_mouse { 12 } else { 1 };
+                    let pic = unsafe { &mut *vm.pic_ptr };
+                    pic.raise_irq(irq);
+                    unsafe { PS2_IRQ_RAISED = true; }
                 }
             }
-            // Try to inject ONE pending PIC interrupt.
+            // Inject ONE pending PIC interrupt (highest priority).
             {
                 let pic = unsafe { &mut *vm.pic_ptr };
                 if let Some(vector) = pic.get_interrupt_vector() {
@@ -383,6 +367,10 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                         let irq = pic.irq_for_vector(vector).unwrap_or(0);
                         pic.lower_irq(irq);
                         injected += 1;
+                        // Reset PS/2 flag after injection so next byte triggers new IRQ
+                        if irq == 1 || irq == 12 {
+                            unsafe { PS2_IRQ_RAISED = false; }
+                        }
                     }
                 }
             }
@@ -903,6 +891,29 @@ pub extern "C" fn corevm_vga_get_mode(
         }
         None => -1,
     }
+}
+
+/// Get the current VGA linear framebuffer physical address from PCI BAR0.
+/// SeaBIOS may relocate BARs during PCI enumeration, so this can differ
+/// from the initial 0xFD000000.  Returns the BAR0 address, or 0 on error.
+#[no_mangle]
+pub extern "C" fn corevm_vga_get_lfb_addr(handle: u64) -> u64 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return 0 };
+    if vm.pci_bus_ptr.is_null() { return 0; }
+    let pci_bus = unsafe { &*vm.pci_bus_ptr };
+    // VGA device is at bus 0, device 2, function 0
+    for dev in &pci_bus.devices {
+        if dev.bus == 0 && dev.device == 2 && dev.function == 0 {
+            // BAR0 at offset 0x10 (32-bit MMIO BAR)
+            let bar0 = (dev.config_space[0x10] as u32)
+                | ((dev.config_space[0x11] as u32) << 8)
+                | ((dev.config_space[0x12] as u32) << 16)
+                | ((dev.config_space[0x13] as u32) << 24);
+            // Mask off type bits (bits 0-3 for MMIO BAR)
+            return (bar0 & 0xFFFF_FFF0) as u64;
+        }
+    }
+    0
 }
 
 /// Get a pointer to the VGA text buffer (array of u16: char+attr pairs).
