@@ -20,9 +20,9 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 
 <br>
 
-<img src="assets/screenshots/shot3.png" alt="anyOS Desktop — Terminal and Activity Monitor" width="760">
+<img src="assets/screenshots/shot3.png" alt="anyOS Desktop — Finder with application list" width="760">
 
-<sub>Terminal and Activity Monitor running side by side on the anyOS desktop</sub>
+<sub>Finder browsing the Applications folder on the anyOS desktop</sub>
 
 <br><br>
 
@@ -43,31 +43,47 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 <tr>
 <td align="center" width="50%">
 <img src="assets/screenshots/shot1.png" width="100%"><br>
-<sub><b>Login Screen</b> — User authentication with wave wallpaper</sub>
+<sub><b>Login Screen</b> — User authentication with balloon wallpaper</sub>
 </td>
 <td align="center" width="50%">
 <img src="assets/screenshots/shot2.png" width="100%"><br>
-<sub><b>Desktop</b> — Menu bar, dock, and dynamic wallpaper</sub>
+<sub><b>Desktop</b> — Menu bar, dock, and wallpaper</sub>
 </td>
 </tr>
 <tr>
+<td align="center">
+<img src="assets/screenshots/shot3.png" width="100%"><br>
+<sub><b>Finder</b> — File browser with sidebar and application list</sub>
+</td>
 <td align="center">
 <img src="assets/screenshots/shot4.png" width="100%"><br>
-<sub><b>CPU Monitoring</b> — Real-time per-core graphs across 4 SMP cores</sub>
-</td>
-<td align="center">
-<img src="assets/screenshots/shot5.png" width="100%"><br>
-<sub><b>Finder</b> — File browser with sidebar and icon view</sub>
+<sub><b>Permissions</b> — Runtime app permission dialog</sub>
 </td>
 </tr>
 <tr>
 <td align="center">
-<img src="assets/screenshots/shot6.png" width="100%"><br>
-<sub><b>DOOM</b> — Running natively in a window</sub>
+<img src="assets/screenshots/shot5.png" width="100%"><br>
+<sub><b>GL Demo</b> — OpenGL ES 2.0 physics demo with reflections</sub>
 </td>
 <td align="center">
+<img src="assets/screenshots/shot6.png" width="100%"><br>
+<sub><b>Terminal & 3D</b> — Terminal and GL Demo running side by side</sub>
+</td>
+</tr>
+<tr>
+<td align="center">
 <img src="assets/screenshots/shot7.png" width="100%"><br>
-<sub><b>Quake & DOOM</b> — Classic games running side by side</sub>
+<sub><b>Activity Monitor</b> — Real-time CPU graphs and process list</sub>
+</td>
+<td align="center">
+<img src="assets/screenshots/shot8.png" width="100%"><br>
+<sub><b>Settings</b> — Display, accent colors, and wallpaper selection</sub>
+</td>
+</tr>
+<tr>
+<td align="center" colspan="2">
+<img src="assets/screenshots/shot9.png" width="50%"><br>
+<sub><b>anyBench</b> — System benchmark with Apple-style menu bar</sub>
 </td>
 </tr>
 </table>
