@@ -230,9 +230,9 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
     }
 
     // ── Try parallel rasterization via thread pool ─────────────────────
-    crate::thread_pool::ensure_pool(fb_h as u32);
-    let use_pool = crate::thread_pool::pool_active() && fb_h > 32
-        && (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN);
+    // Thread pool disabled: per-draw-call synchronization overhead eliminates gains.
+    // TODO: re-enable once draw calls are batched per frame (submit at swap_buffers).
+    let use_pool = false;
 
     static mut POOL_DBG: u32 = 0;
     if unsafe { POOL_DBG } < 3 {
@@ -481,9 +481,7 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
     let mut fs_exec = ShaderExec::new(fs_ir.num_regs, num_varyings);
 
     // ── Try parallel rasterization via thread pool ─────────────────────
-    crate::thread_pool::ensure_pool(fb_h as u32);
-    let use_pool = crate::thread_pool::pool_active() && fb_h > 32
-        && (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN);
+    let use_pool = false; // disabled: see draw() comment
 
     if use_pool {
         crate::thread_pool::set_tri_count(0);

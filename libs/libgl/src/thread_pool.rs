@@ -229,9 +229,11 @@ pub fn pool_active() -> bool {
 /// Even on single-core: 1 worker allows main thread to do vertex processing
 /// while worker does rasterization (overlapping with next frame's vertex work).
 fn optimal_worker_count() -> usize {
-    let cpus = syscall::cpu_count() as usize;
+    let raw = syscall::cpu_count();
+    // Syscall may return bogus values (e.g. 0xFFFFFFFF); clamp to sane range
+    let cpus = if raw == 0 || raw > 64 { 8 } else { raw as usize };
+    crate::serial_println!("[libgl] thread_pool: raw cpu_count={}, effective={}", raw, cpus);
     if cpus <= 1 {
-        // Single core: still use 1 worker for pipelining
         1
     } else {
         (cpus - 1).min(MAX_WORKERS)
