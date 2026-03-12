@@ -383,6 +383,23 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
     }
 }
 
+/// Debug: return PIC master state as packed u32.
+/// bits 0-7: IRR, 8-15: IMR, 16-23: ISR, 24: icw_step>0
+#[no_mangle]
+pub extern "C" fn corevm_pic_debug(handle: u64) -> u32 {
+    match get_vm(handle) {
+        Some(vm) => {
+            if vm.pic_ptr.is_null() { return 0xDEAD; }
+            let pic = unsafe { &*vm.pic_ptr };
+            (pic.master.irr as u32)
+                | ((pic.master.imr as u32) << 8)
+                | ((pic.master.isr as u32) << 16)
+                | if pic.master.icw_step > 0 { 1 << 24 } else { 0 }
+        }
+        None => 0xDEAD,
+    }
+}
+
 /// Inject an exception. Pass `error_code` < 0 for no error code.
 #[no_mangle]
 pub extern "C" fn corevm_inject_exception(handle: u64, vcpu_id: u32, vector: u8, error_code: i64) -> i32 {

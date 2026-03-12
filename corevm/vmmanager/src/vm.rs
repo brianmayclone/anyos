@@ -20,7 +20,7 @@ use libcorevm::ffi::{
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_lfb_addr,
     corevm_last_error, corevm_last_error_len,
-    corevm_pit_advance, corevm_pit_debug, corevm_poll_irqs, corevm_cancel_vcpu,
+    corevm_pit_advance, corevm_pit_debug, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu,
     corevm_read_phys, corevm_debug_port_take_output,
     corevm_fw_cfg_add_file, corevm_set_memory_region,
 };
@@ -439,7 +439,6 @@ fn vm_run_loop(
                 corevm_handle_mmio_exit(handle, exit.addr, 1, exit.size, data.as_mut_ptr(), 0, 0);
             }
             7 => {
-                // Halted — sleep briefly
                 if diag_enabled {
                     diag.log(DiagCategory::CpuState, "HLT".to_string());
                 }
@@ -489,8 +488,12 @@ fn vm_run_loop(
                         dir, exit.port, exit.string_io_count, exit.string_io_gpa));
                 }
             }
+            8 => {
+                // InterruptWindow — guest is now ready to accept interrupts.
+                // poll_irqs below will inject the pending interrupt.
+            }
             other => {
-                // Other exits (MsrRead/Write, Cpuid, InterruptWindow, Debug)
+                // Other exits (MsrRead/Write, Cpuid, Debug)
                 if diag_enabled {
                     diag.log(DiagCategory::Info, format!("Unhandled exit reason={}", other));
                 }
@@ -514,15 +517,15 @@ fn vm_run_loop(
                 last_pit_tick = Instant::now();
                 let fires = corevm_pit_advance(handle, ticks);
                 if fires > 0 {
-                    let mut tick_buf = [0u8; 4];
-                    corevm_read_phys(handle, 0x46C, tick_buf.as_mut_ptr(), 4);
-                    let bda_ticks = u32::from_le_bytes(tick_buf);
-                    let mut ivt_buf = [0u8; 4];
-                    corevm_read_phys(handle, 0x20, ivt_buf.as_mut_ptr(), 4);
-                    let ivt8 = u32::from_le_bytes(ivt_buf);
+                    let pic_st = corevm_pic_debug(handle);
+                    let mut regs = VcpuRegs::default();
+                    corevm_get_vcpu_regs(handle, 0, &mut regs);
+                    let if_flag = regs.rflags & 0x200 != 0;
                     diag.log(DiagCategory::Interrupt, format!(
-                        "PIT fired {} ticks={} BDA=0x{:X} IVT8=0x{:08X}",
-                        fires, ticks, bda_ticks, ivt8
+                        "PIT fired {} ticks={} PIC IRR={:#04x} IMR={:#04x} ISR={:#04x} icw={} IF={} exit={} RIP={:#x}",
+                        fires, ticks,
+                        pic_st & 0xFF, (pic_st >> 8) & 0xFF, (pic_st >> 16) & 0xFF,
+                        (pic_st >> 24) & 1, if_flag, exit.reason, regs.rip
                     ));
                 }
             }
@@ -548,7 +551,7 @@ fn vm_run_loop(
         // Poll device IRQs (PS/2 keyboard IRQ 1, mouse IRQ 12, etc.)
         let poll_inj = corevm_poll_irqs(handle);
         if poll_inj > 0 {
-            diag.log(DiagCategory::Interrupt, format!("poll_irqs injected {}", poll_inj));
+            diag.log(DiagCategory::Interrupt, format!("poll_irqs ret={:#010x}", poll_inj));
         }
 
         // Drain debug port output on every iteration

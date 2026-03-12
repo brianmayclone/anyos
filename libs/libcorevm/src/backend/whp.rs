@@ -15,7 +15,7 @@ fn whp_debug(args: core::fmt::Arguments) {
     use std::io::Write;
     static DEBUG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     let n = DEBUG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    if n >= 200 { return; }
+    if n >= 2000 { return; }
     // Try %TEMP%, fallback to current directory
     let path = std::env::var("TEMP")
         .map(|t| std::format!("{}\\whp_debug.log", t))
@@ -120,6 +120,7 @@ const WHV_EXIT_REASON_HALT: u32 = 0x00000008;
 const WHV_EXIT_REASON_CANCELED: u32 = 0x00002001;
 const WHV_EXIT_REASON_MSR: u32 = 0x00001000;
 const WHV_EXIT_REASON_CPUID: u32 = 0x00001001;
+const WHV_EXIT_REASON_INTERRUPT_WINDOW: u32 = 0x00000007;
 
 // WHV_REGISTER_NAME constants (from Windows SDK)
 const REG_RAX: u32 = 0x00000000;
@@ -159,6 +160,7 @@ const REG_CR4: u32 = 0x0000001F;
 const REG_EFER: u32 = 0x00002001;
 
 const REG_PENDING_INTERRUPTION: u32 = 0x80000000;
+const REG_DELIVERABILITY_NOTIFICATIONS: u32 = 0x80000004;
 
 // GP register names in order for get/set
 const GP_REG_NAMES: [u32; 18] = [
@@ -394,8 +396,11 @@ impl WhpBackend {
                 return Err(VmError::BackendErrorCtx(hr, "WHvSetPartitionProperty(ProcessorCount)"));
             }
 
-            // Enable extended VM exits for CPUID and MSR interception
-            let extended_exits: u64 = 0x3; // bit 0 = X64CpuidExit, bit 1 = X64MsrExit
+            // Enable extended VM exits for CPUID, MSR interception, and interrupt window
+            // bit 0 = X64CpuidExit, bit 1 = X64MsrExit
+            // InterruptWindow doesn't need an extended exit bit —
+            // it's controlled per-vCPU via WHvRegisterDeliverabilityNotifications
+            let extended_exits: u64 = 0x3;
             let hr = (api.set_property)(
                 partition,
                 WHV_PROPERTY_EXTENDED_VM_EXITS,
@@ -865,8 +870,25 @@ impl VmBackend for WhpBackend {
             // Instruction length is lower 4 bits of vp_context[2] (upper 4 bits = Cr8)
             let instr_len = (ctx.vp_context[2] & 0x0F) as u64;
 
+            // Debug: log when inner loop hits limit (late boot only)
+            if inner_loops == 64 {
+                static STUCK_TOTAL: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                let total = STUCK_TOTAL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                // Skip early boot, log after 1000 batch-limits
+                if total >= 1000 && total < 1010 {
+                    let rip = self.get_vcpu_regs(id).map(|r| r.rip).unwrap_or(0);
+                    let rflags = self.get_vcpu_regs(id).map(|r| r.rflags).unwrap_or(0);
+                    whp_debug(format_args!("late_stuck: exit={} rip={:#x} rflags={:#x} ilen={}", ctx.exit_reason, rip, rflags, instr_len));
+                }
+            }
+
             match ctx.exit_reason {
-                WHV_EXIT_REASON_HALT => return Ok(VmExitReason::Halted),
+                WHV_EXIT_REASON_HALT => {
+                    // Log RFLAGS at HALT to check if IF was set (sti; hlt pattern)
+                    let rfl = self.get_vcpu_regs(id).map(|r| r.rflags).unwrap_or(0);
+                    whp_debug(format_args!("HALT exit rflags={:#x} IF={}", rfl, (rfl & 0x200) != 0));
+                    return Ok(VmExitReason::Halted);
+                }
                 WHV_EXIT_REASON_IO_PORT => {
                     // WHV_X64_IO_PORT_ACCESS_CONTEXT layout (from Windows SDK):
                     // [0x00]     InstructionByteCount: u8
@@ -1202,6 +1224,10 @@ impl VmBackend for WhpBackend {
                     // Re-enter guest
                     continue;
                 }
+                WHV_EXIT_REASON_INTERRUPT_WINDOW => {
+                    whp_debug(format_args!("InterruptWindow exit!"));
+                    return Ok(VmExitReason::InterruptWindow);
+                }
                 WHV_EXIT_REASON_CANCELED => return Ok(VmExitReason::InterruptWindow),
                 WHV_EXIT_REASON_NONE => return Ok(VmExitReason::Error),
                 _ => return Ok(VmExitReason::Error),
@@ -1322,8 +1348,26 @@ impl VmBackend for WhpBackend {
         //   bits 1-3:   InterruptionType (0 = External interrupt)
         //   bit 4:      DeliverErrorCode (0)
         //   bits 16-31: InterruptionVector
+        //
+        // Do NOT pre-check RFLAGS.IF or interrupt shadow here. WHP handles
+        // the STI shadow + HLT case internally: setting PendingInterruption
+        // on a halted vCPU with STI blocking causes WHP to clear the shadow
+        // and deliver the interrupt on the next VM entry. Pre-checking shadow
+        // would create a deadlock (shadow persists across HALT exits, can only
+        // be cleared by interrupt delivery).
+        //
+        // If the vCPU is truly not interruptible (IF=0), WHP rejects the
+        // register write and we propagate the error to the caller.
         let val = 1u64 | (0u64 << 1) | ((vector as u64) << 16);
-        self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[WHV_REGISTER_VALUE::from_u64(val)])
+        let result = self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[WHV_REGISTER_VALUE::from_u64(val)]);
+        if result.is_err() {
+            static INJECT_FAIL_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = INJECT_FAIL_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 10 || cnt % 1000 == 0 {
+                whp_debug(format_args!("inject failed #{} vec={} err={:?}", cnt, vector, result));
+            }
+        }
+        result
     }
 
     fn inject_exception(&mut self, id: u32, vector: u8, error_code: Option<u32>) -> Result<(), VmError> {
@@ -1343,9 +1387,6 @@ impl VmBackend for WhpBackend {
     }
 
     fn request_interrupt_window(&mut self, _id: u32, _enable: bool) -> Result<(), VmError> {
-        // WHP handles interrupt windows via extended VM exits property
-        // This requires setting WHvPartitionPropertyCodeExtendedVmExits
-        // For now, this is a no-op; the caller polls interrupt readiness
         Ok(())
     }
 
