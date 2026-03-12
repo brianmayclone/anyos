@@ -1,7 +1,8 @@
+use crate::prelude::*;
 use crate::hir::*;
 use crate::intern::{Interner, Symbol};
 use crate::diagnostics::{Span, Diagnostic, Level};
-use anyos_anyos_std::collections::HashMap;
+use anyos_std::collections::HashMap;
 
 /// Result of name resolution
 pub struct ResolveResult {

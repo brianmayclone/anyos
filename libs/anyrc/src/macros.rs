@@ -1,9 +1,10 @@
+use crate::prelude::*;
 use crate::ast::*;
 use crate::intern::{Interner, Symbol};
 use crate::lexer::{Token, TokenKind, Keyword};
 use crate::parser::Parser;
 
-use anyos_anyos_std::collections::HashMap;
+use anyos_std::collections::HashMap;
 
 /// A registered macro definition.
 struct MacroDef {

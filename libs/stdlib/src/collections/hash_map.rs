@@ -40,7 +40,7 @@ impl Hasher for FnvHasher {
 
 /// Compute FNV-1a hash for any `Hash` type.
 #[inline]
-fn hash_key<K: Hash>(key: &K) -> u64 {
+fn hash_key<K: Hash + ?Sized>(key: &K) -> u64 {
     let mut hasher = FnvHasher::new();
     key.hash(&mut hasher);
     hasher.finish()
@@ -129,7 +129,12 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
     }
 
     /// Get a reference to the value for a key.
-    pub fn get(&self, key: &K) -> Option<&V> {
+    ///
+    /// Supports borrowed keys: e.g. `get("foo")` on `HashMap<String, V>`.
+    pub fn get<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> Option<&V>
+    where
+        K: core::borrow::Borrow<Q>,
+    {
         if self.buckets.is_empty() {
             return None;
         }
@@ -138,7 +143,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 
         for _ in 0..self.buckets.len() {
             match &self.buckets[idx] {
-                Some((k, v)) if *k == *key => return Some(v),
+                Some((k, v)) if k.borrow() == key => return Some(v),
                 Some(_) => idx = (idx + 1) & mask,
                 None => return None,
             }
@@ -147,7 +152,10 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
     }
 
     /// Get a mutable reference to the value for a key.
-    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+    pub fn get_mut<Q: Hash + Eq + ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: core::borrow::Borrow<Q>,
+    {
         if self.buckets.is_empty() {
             return None;
         }
@@ -156,7 +164,7 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 
         for _ in 0..self.buckets.len() {
             match &self.buckets[idx] {
-                Some((k, _)) if *k == *key => {
+                Some((k, _)) if k.borrow() == key => {
                     return self.buckets[idx].as_mut().map(|(_, v)| v);
                 }
                 Some(_) => idx = (idx + 1) & mask,
@@ -167,12 +175,18 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
     }
 
     /// Check if a key exists.
-    pub fn contains_key(&self, key: &K) -> bool {
+    pub fn contains_key<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: core::borrow::Borrow<Q>,
+    {
         self.get(key).is_some()
     }
 
     /// Remove a key-value pair, returning the value if it existed.
-    pub fn remove(&mut self, key: &K) -> Option<V> {
+    pub fn remove<Q: Hash + Eq + ?Sized>(&mut self, key: &Q) -> Option<V>
+    where
+        K: core::borrow::Borrow<Q>,
+    {
         if self.buckets.is_empty() {
             return None;
         }
@@ -181,10 +195,9 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 
         for _ in 0..self.buckets.len() {
             match &self.buckets[idx] {
-                Some((k, _)) if *k == *key => {
+                Some((k, _)) if k.borrow() == key => {
                     let removed = self.buckets[idx].take().unwrap();
                     self.len -= 1;
-                    // Backward-shift deletion to maintain probe chain integrity
                     self.backward_shift(idx);
                     return Some(removed.1);
                 }
@@ -221,6 +234,37 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
     /// Iterate over values.
     pub fn values(&self) -> Values<'_, K, V> {
         Values { inner: self.iter() }
+    }
+
+    /// Iterate over mutable values.
+    pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
+        ValuesMut { inner: self.buckets.iter_mut() }
+    }
+
+    /// Get or insert a value using the `Entry` API.
+    pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {
+        if self.buckets.is_empty() {
+            self.resize(INITIAL_CAPACITY);
+        } else if self.len * LOAD_FACTOR_DEN >= self.buckets.len() * LOAD_FACTOR_NUM {
+            self.resize(self.buckets.len() * 2);
+        }
+
+        let mask = self.buckets.len() - 1;
+        let mut idx = (hash_key(&key) as usize) & mask;
+
+        loop {
+            match &self.buckets[idx] {
+                Some((k, _)) if *k == key => {
+                    return Entry::Occupied(OccupiedEntry { map: self, idx });
+                }
+                Some(_) => {
+                    idx = (idx + 1) & mask;
+                }
+                None => {
+                    return Entry::Vacant(VacantEntry { map: self, key, idx });
+                }
+            }
+        }
     }
 
     // ── Internal ─────────────────────────────────────────────────────
@@ -411,5 +455,85 @@ impl<K: Hash + Eq, V> core::ops::Index<&K> for HashMap<K, V> {
 
     fn index(&self, key: &K) -> &V {
         self.get(key).expect("key not found in HashMap")
+    }
+}
+
+// ── ValuesMut ───────────────────────────────────────────────────────────
+
+pub struct ValuesMut<'a, K, V> {
+    inner: core::slice::IterMut<'a, Option<(K, V)>>,
+}
+
+impl<'a, K, V> Iterator for ValuesMut<'a, K, V> {
+    type Item = &'a mut V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.inner.next() {
+                Some(Some((_, v))) => return Some(v),
+                Some(None) => continue,
+                None => return None,
+            }
+        }
+    }
+}
+
+// ── Entry API ───────────────────────────────────────────────────────────
+
+pub enum Entry<'a, K, V> {
+    Occupied(OccupiedEntry<'a, K, V>),
+    Vacant(VacantEntry<'a, K, V>),
+}
+
+pub struct OccupiedEntry<'a, K, V> {
+    map: &'a mut HashMap<K, V>,
+    idx: usize,
+}
+
+pub struct VacantEntry<'a, K, V> {
+    map: &'a mut HashMap<K, V>,
+    key: K,
+    idx: usize,
+}
+
+impl<'a, K: Hash + Eq, V> Entry<'a, K, V> {
+    /// Get a mutable reference to the value, inserting a default if vacant.
+    pub fn or_insert(self, default: V) -> &'a mut V {
+        match self {
+            Entry::Occupied(e) => {
+                let (_, v) = e.map.buckets[e.idx].as_mut().unwrap();
+                v
+            }
+            Entry::Vacant(e) => {
+                e.map.buckets[e.idx] = Some((e.key, default));
+                e.map.len += 1;
+                let (_, v) = e.map.buckets[e.idx].as_mut().unwrap();
+                v
+            }
+        }
+    }
+
+    /// Get a mutable reference to the value, inserting a computed default if vacant.
+    pub fn or_insert_with<F: FnOnce() -> V>(self, f: F) -> &'a mut V {
+        match self {
+            Entry::Occupied(e) => {
+                let (_, v) = e.map.buckets[e.idx].as_mut().unwrap();
+                v
+            }
+            Entry::Vacant(e) => {
+                e.map.buckets[e.idx] = Some((e.key, f()));
+                e.map.len += 1;
+                let (_, v) = e.map.buckets[e.idx].as_mut().unwrap();
+                v
+            }
+        }
+    }
+
+    /// Get a mutable reference to the value, inserting the default value if vacant.
+    pub fn or_default(self) -> &'a mut V
+    where
+        V: Default,
+    {
+        self.or_insert_with(V::default)
     }
 }

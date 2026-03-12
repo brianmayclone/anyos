@@ -542,6 +542,7 @@ add_rust_user_program(ntp)
 add_rust_user_program(ntpd)
 add_rust_user_program(neofetch)
 add_rust_user_program(nvi)
+add_rust_user_program(anyrc)
 # Privileged sbin programs
 add_rust_sbin_program(adduser)
 add_rust_sbin_program(deluser)

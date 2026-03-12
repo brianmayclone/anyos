@@ -1,3 +1,4 @@
+use crate::prelude::*;
 use crate::diagnostics::Span;
 use crate::intern::{Interner, Symbol};
 

@@ -1,9 +1,10 @@
+use crate::prelude::*;
 use crate::hir::*;
 use crate::ast::{BinOp, Literal, Mutability};
 use crate::resolve::ResolveResult;
 use crate::intern::{Interner, Symbol};
 use crate::diagnostics::{Span, Diagnostic, Level};
-use anyos_anyos_std::collections::HashMap;
+use anyos_std::collections::HashMap;
 
 /// Internal type representation
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

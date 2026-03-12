@@ -1,3 +1,4 @@
+use crate::prelude::*;
 // ELF64 constants
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const ELFCLASS64: u8 = 2;

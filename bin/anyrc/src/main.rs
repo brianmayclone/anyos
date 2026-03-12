@@ -7,7 +7,7 @@ use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
 anyos_std::entry!(main);
 
 fn main() {
-    let mut args_buf = [0u8; 4096];
+    let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
 
     // Split raw argument string into individual args
@@ -137,7 +137,7 @@ fn read_file_to_string(path: &str) -> Option<String> {
 }
 
 fn write_file(path: &str, data: &[u8]) {
-    let fd = anyos_std::fs::create(path);
+    let fd = anyos_std::fs::open(path, anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC);
     if fd == u32::MAX {
         anyos_std::println!("anyrc: error: cannot create {}", path);
         anyos_std::process::exit(1);

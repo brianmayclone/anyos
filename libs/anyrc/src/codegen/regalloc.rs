@@ -1,4 +1,5 @@
-use anyos_anyos_std::collections::HashMap;
+use crate::prelude::*;
+use anyos_std::collections::HashMap;
 use crate::hir::DefId;
 use crate::mir::MirBody;
 use crate::typeck::TyKind;

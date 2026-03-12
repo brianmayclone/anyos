@@ -1,3 +1,4 @@
+use crate::prelude::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reg {
     RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI,

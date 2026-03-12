@@ -1,4 +1,5 @@
-use anyos_anyos_std::collections::HashMap;
+use crate::prelude::*;
+use anyos_std::collections::HashMap;
 
 use crate::ast::{BinOp, Literal, Mutability};
 use crate::hir::*;

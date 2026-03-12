@@ -2,6 +2,15 @@
 
 extern crate alloc;
 
+/// Prelude for no_std: common types available in every module.
+pub(crate) mod prelude {
+    pub use alloc::boxed::Box;
+    pub use alloc::string::{String, ToString};
+    pub use alloc::vec;
+    pub use alloc::vec::Vec;
+    pub use alloc::format;
+}
+
 pub mod intern;
 pub mod diagnostics;
 pub mod lexer;

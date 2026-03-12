@@ -1,4 +1,5 @@
-use anyos_anyos_std::collections::HashMap;
+use crate::prelude::*;
+use anyos_std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Symbol(u32);

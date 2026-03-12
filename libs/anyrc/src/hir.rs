@@ -1,3 +1,4 @@
+use crate::prelude::*;
 use crate::intern::Symbol;
 use crate::diagnostics::Span;
 use crate::ast::{BinOp, UnOp, Mutability, Visibility, Literal};
