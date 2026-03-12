@@ -3,7 +3,7 @@ AR = i686-elf-ar
 AS = i686-elf-gcc
 
 CFLAGS = -ffreestanding -nostdlib -nostdinc -fno-builtin -fno-stack-protector \
-         -Wall -Wextra -O2 -I include -m32
+         -w -O2 -I include -m32
 ASFLAGS = -m32
 
 SRCDIR = src

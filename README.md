@@ -271,21 +271,40 @@ rustup install nightly
 </details>
 
 <details>
-<summary><b>Windows</b> (x86_64)</summary>
+<summary><b>Windows</b> (x86_64 via WSL2)</summary>
 
-Requires MSYS2 or WSL for the cross-compiler. PowerShell build scripts are provided.
+Building on Windows requires **WSL2** with an Ubuntu (or Debian) distribution. All build steps run inside the WSL2 shell — no native Windows toolchain needed.
+
+```bash
+# 1. Install WSL2 (if not already installed)
+#    In PowerShell (Admin):
+#    wsl --install -d Ubuntu
+
+# 2. Inside WSL2, install the same prerequisites as Linux:
+sudo apt install nasm qemu-system-x86 cmake ninja-build
+
+# Rust nightly toolchain
+rustup install nightly
+
+# Cross-compiler for libc (run once)
+./scripts/setup_toolchain.sh
+
+# Build everything
+mkdir -p build && cd build
+cmake .. -G Ninja
+ninja
+```
+
+To run in QEMU, install QEMU for Windows and use the PowerShell helper:
 
 ```powershell
-# Install prerequisites via winget or manual download:
-# - Rust nightly: https://rustup.rs
-# - NASM: https://www.nasm.us
-# - QEMU: https://www.qemu.org
-# - CMake + Ninja: https://cmake.org
-# - i686-elf-gcc: run scripts/build_cross_compiler.ps1
-
-# Set up toolchain
-.\scripts\setup_toolchain.ps1
+# From PowerShell (outside WSL):
+.\scripts\run.ps1           # Bochs VGA (default)
+.\scripts\run.ps1 -Vmware   # VMware SVGA II
+.\scripts\run.ps1 -Kvm      # WHPX hardware virtualization
 ```
+
+Or run QEMU directly inside WSL2 (requires an X server like WSLg or VcXsrv).
 
 </details>
 
@@ -476,7 +495,7 @@ anyos/
   tools/                 Legacy build utilities (Python, kept as reference)
     gen_font.py            Bitmap font generator
     encode_mjv.py          MJV video encoder
-  scripts/               Build, run, debug scripts (.sh + .ps1)
+  scripts/               Build, run, debug scripts (.sh, run.ps1 for Windows QEMU)
   sysroot/               Disk filesystem template
   docs/                  API documentation
 ```

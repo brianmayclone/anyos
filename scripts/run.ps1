@@ -610,17 +610,19 @@ if ($Usb) {
 $kvmLabel = ""
 if ($Kvm) {
     # Check if Windows Hypervisor Platform is available
-    $whpx = Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -ErrorAction SilentlyContinue
-    if ($whpx -and $whpx.State -eq "Enabled") {
-        $args += "-accel", "whpx"
-        $args += "-cpu", "max"
+    #$whpx = Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -ErrorAction SilentlyContinue
+    #if ($whpx -and $whpx.State -eq "Enabled") {
+        $args += "-accel", "whpx,kernel-irqchip=off"
+        $args += "-smp", "cpus=1"
+        $args += "-cpu", "host"
+        $args += "-machine", "q35"
         $kvmLabel = ", WHPX enabled"
-    } else {
-        Write-Host "Error: Windows Hypervisor Platform (WHPX) is not enabled." -ForegroundColor Red
-        Write-Host "Enable with: Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform"
-        Write-Host "A reboot is required after enabling."
-        exit 1
-    }
+    #} else {
+    #    Write-Host "Error: Windows Hypervisor Platform (WHPX) is not enabled." -ForegroundColor Red
+    #    Write-Host "Enable with: Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform"
+    #    Write-Host "A reboot is required after enabling."
+    #    exit 1
+    #}
 }
 
 # VirtIO GPU: add USB tablet for absolute mouse (no VMware backdoor)

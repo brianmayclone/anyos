@@ -440,10 +440,10 @@ pub extern "C" fn corevm_pic_debug(handle: u64) -> u32 {
 /// This function is only active for the software LAPIC path.
 #[no_mangle]
 pub extern "C" fn corevm_lapic_timer_advance(handle: u64, _ticks: u64) -> u32 {
-    #[cfg(feature = "windows")]
-    { let _ = handle; return 0; } // XApic mode: WHP handles LAPIC timer
+    #[cfg(any(feature = "windows", feature = "anyos"))]
+    { let _ = handle; return 0; }
 
-    #[cfg(not(feature = "windows"))]
+    #[cfg(not(any(feature = "windows", feature = "anyos")))]
     match get_vm(handle) {
         Some(vm) => {
             vm.backend.lapic.poll_timer();
@@ -470,6 +470,10 @@ pub extern "C" fn corevm_lapic_timer_advance(handle: u64, _ticks: u64) -> u32 {
 /// and writes initial_count and current_count to out pointers.
 #[no_mangle]
 pub extern "C" fn corevm_lapic_debug(handle: u64, out_initial: *mut u32, out_current: *mut u32, out_lvt: *mut u32) -> u32 {
+    #[cfg(feature = "anyos")]
+    { let _ = (handle, out_initial, out_current, out_lvt); return 0; }
+
+    #[cfg(not(feature = "anyos"))]
     match get_vm(handle) {
         Some(vm) => {
             let lapic = &vm.backend.lapic;
@@ -758,7 +762,7 @@ pub extern "C" fn corevm_setup_acpi_tables(handle: u64) -> i32 {
     let fw_cfg = unsafe { &mut *vm.fw_cfg_ptr };
 
     let (rsdp, tables, loader) = crate::devices::acpi_tables::generate_acpi_tables();
-    dbg(&std::format!("Generated: rsdp={} tables={} loader={} bytes", rsdp.len(), tables.len(), loader.len()));
+    dbg(&alloc::format!("Generated: rsdp={} tables={} loader={} bytes", rsdp.len(), tables.len(), loader.len()));
 
     fw_cfg.add_file("etc/acpi/rsdp", rsdp);
     fw_cfg.add_file("etc/acpi/tables", tables);
