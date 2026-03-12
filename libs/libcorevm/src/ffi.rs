@@ -63,7 +63,7 @@ pub struct CExitReason {
     pub size: u8,
     pub _pad: u8,
     pub data_u32: u32,
-    pub _pad2: u32,
+    pub io_count: u32,
     pub addr: u64,
     pub data_u64: u64,
     pub msr_index: u32,
@@ -85,11 +85,11 @@ pub struct CExitReason {
 fn fill_exit(e: &mut CExitReason, reason: VmExitReason) {
     *e = CExitReason::default();
     match reason {
-        VmExitReason::IoIn { port, size } => {
-            e.reason = 0; e.port = port; e.size = size;
+        VmExitReason::IoIn { port, size, count } => {
+            e.reason = 0; e.port = port; e.size = size; e.io_count = count;
         }
-        VmExitReason::IoOut { port, size, data } => {
-            e.reason = 1; e.port = port; e.size = size; e.data_u32 = data;
+        VmExitReason::IoOut { port, size, data, count } => {
+            e.reason = 1; e.port = port; e.size = size; e.data_u32 = data; e.io_count = count;
         }
         VmExitReason::MmioRead { addr, size, dest_reg, instr_len } => {
             e.reason = 2; e.addr = addr; e.size = size;
@@ -748,6 +748,29 @@ pub extern "C" fn corevm_handle_io_exit(
                 let _ = vm.set_vcpu_regs(0, &regs);
             }
         }
+    }
+    0
+}
+
+/// Handle a KVM string I/O exit (REP INSB/OUTSB) with count > 1.
+/// Loops count times, calling the IO port handler for each iteration.
+/// Results are written directly to the kvm_run shared page.
+#[no_mangle]
+pub extern "C" fn corevm_complete_string_io(
+    handle: u64, vcpu_id: u32, port: u16, is_write: u8, size: u8, count: u32,
+) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+    #[cfg(feature = "linux")]
+    {
+        if is_write != 0 {
+            vm.complete_string_io_out(vcpu_id, port, size, count);
+        } else {
+            vm.complete_string_io_in(vcpu_id, port, size, count);
+        }
+    }
+    #[cfg(not(feature = "linux"))]
+    {
+        let _ = (vm, vcpu_id, port, is_write, size, count);
     }
     0
 }

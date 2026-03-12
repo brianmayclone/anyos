@@ -1578,9 +1578,9 @@ impl VmBackend for WhpBackend {
                     self.set_vcpu_regs(id, &regs)?;
 
                     return if is_write {
-                        Ok(VmExitReason::IoOut { port, size: access_size, data: rax as u32 })
+                        Ok(VmExitReason::IoOut { port, size: access_size, data: rax as u32, count: 1 })
                     } else {
-                        Ok(VmExitReason::IoIn { port, size: access_size })
+                        Ok(VmExitReason::IoIn { port, size: access_size, count: 1 })
                     };
                 }
                 WHV_EXIT_REASON_MEMORY_ACCESS => {

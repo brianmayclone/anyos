@@ -2,7 +2,7 @@
 
 use super::{CpuidEntry, DescriptorTable, SegmentReg, VcpuRegs, VcpuSregs, VmBackend, VmError, VmExitReason};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 // --- Thread-safe cancel support ---
 // Stores the raw pointer to kvm_run for vCPU 0 so cancel_vcpu can set immediate_exit
@@ -11,6 +11,13 @@ use core::sync::atomic::{AtomicU64, Ordering};
 static CANCEL_KVM_RUN: [AtomicU64; 4] = [
     AtomicU64::new(0), AtomicU64::new(0),
     AtomicU64::new(0), AtomicU64::new(0),
+];
+
+// Stores the thread ID (tid) of each vCPU thread for signal-based cancel.
+// Set by run_vcpu on first call. SIGUSR1 is sent to interrupt KVM_RUN.
+static VCPU_TID: [AtomicI32; 4] = [
+    AtomicI32::new(0), AtomicI32::new(0),
+    AtomicI32::new(0), AtomicI32::new(0),
 ];
 
 // Stores the VM fd for PIT channel 2 gate sync from Port 0x61.
@@ -30,7 +37,105 @@ pub fn kvm_sync_pit_ch2_gate(gate: bool) {
     }
 }
 
-/// Cancel a running KVM_RUN from any thread by setting immediate_exit = 1.
+/// Read PIT channel 2 output from the in-kernel KVM PIT.
+/// Called from Port61 read handler to return bit 5 (channel 2 OUT).
+///
+/// KVM_GET_PIT2 doesn't expose the live output state directly.
+/// We must compute it from the channel state (mode, count, gate, count_load_time).
+pub fn kvm_pit_ch2_output() -> bool {
+    let vm_fd = KVM_VM_FD.load(Ordering::Relaxed) as i32;
+    if vm_fd <= 0 { return false; }
+    unsafe {
+        let mut state = KvmPitState2::default();
+        let ret = sys_ioctl(vm_fd, KVM_GET_PIT2, &mut state as *mut _ as u64);
+        if ret < 0 { return false; }
+
+        let ch = &state.channels[2];
+        if ch.gate == 0 { return false; } // gate must be high for counting
+
+        // Get current time (CLOCK_MONOTONIC nanoseconds, same as ktime_t)
+        let now_ns = clock_gettime_mono_ns();
+        let load_ns = ch.count_load_time;
+        if load_ns == 0 { return false; } // not yet programmed
+
+        let elapsed_ns = if now_ns > load_ns { (now_ns - load_ns) as u64 } else { 0 };
+        // PIT frequency: 1193182 Hz → one tick every ~838.1 ns
+        let elapsed_ticks = elapsed_ns * 1193182 / 1_000_000_000;
+
+        let count = if ch.count == 0 { 0x10000u32 } else { ch.count }; // 0 means 65536
+
+        pit_output_for_mode(ch.mode, count, elapsed_ticks)
+    }
+}
+
+/// Compute PIT output for a given mode based on elapsed ticks since count load.
+fn pit_output_for_mode(mode: u8, count: u32, elapsed_ticks: u64) -> bool {
+    match mode {
+        0 => {
+            // Mode 0: Interrupt on terminal count.
+            // Output starts LOW, goes HIGH when count reaches 0.
+            elapsed_ticks >= count as u64
+        }
+        1 => {
+            // Mode 1: Hardware-retriggerable one-shot.
+            // Output goes LOW on gate trigger, HIGH when count reaches 0.
+            elapsed_ticks >= count as u64
+        }
+        2 | 6 => {
+            // Mode 2: Rate generator.
+            // Output is HIGH, goes LOW for one tick when count reaches 1, then reloads.
+            let pos = elapsed_ticks % count as u64;
+            pos != (count as u64 - 1)
+        }
+        3 | 7 => {
+            // Mode 3: Square wave.
+            // Output toggles every count/2 ticks.
+            let half = count as u64 / 2;
+            if half == 0 { return true; }
+            let pos = elapsed_ticks % count as u64;
+            pos < half
+        }
+        4 => {
+            // Mode 4: Software-triggered strobe.
+            // Output HIGH, goes LOW for one tick at terminal count.
+            elapsed_ticks != count as u64
+        }
+        5 => {
+            // Mode 5: Hardware-triggered strobe.
+            // Same as mode 4 but gate-triggered.
+            elapsed_ticks != count as u64
+        }
+        _ => false,
+    }
+}
+
+/// Get current CLOCK_MONOTONIC time in nanoseconds via clock_gettime syscall.
+unsafe fn clock_gettime_mono_ns() -> i64 {
+    #[repr(C)]
+    struct Timespec {
+        tv_sec: i64,
+        tv_nsec: i64,
+    }
+    let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
+    let ret: i64;
+    core::arch::asm!(
+        "syscall",
+        in("rax") 228_u64, // __NR_clock_gettime
+        in("rdi") 1_u64,   // CLOCK_MONOTONIC
+        in("rsi") &mut ts as *mut Timespec as u64,
+        lateout("rax") ret,
+        out("rcx") _,
+        out("r11") _,
+        options(nostack)
+    );
+    if ret < 0 { return 0; }
+    ts.tv_sec * 1_000_000_000 + ts.tv_nsec
+}
+
+/// Cancel a running KVM_RUN from any thread.
+/// Sets immediate_exit = 1 AND sends SIGUSR1 to the vCPU thread.
+/// immediate_exit alone only works at KVM_RUN entry; the signal is needed
+/// to kick the vCPU out of an already-running KVM_RUN.
 pub fn cancel_vcpu_kvm(vcpu_id: u32) -> i32 {
     if vcpu_id as usize >= CANCEL_KVM_RUN.len() { return -1; }
     let ptr = CANCEL_KVM_RUN[vcpu_id as usize].load(Ordering::Relaxed);
@@ -38,6 +143,12 @@ pub fn cancel_vcpu_kvm(vcpu_id: u32) -> i32 {
     unsafe {
         let kvm_run = ptr as *mut KvmRun;
         (*kvm_run).immediate_exit = 1;
+    }
+    // Send SIGUSR1 to interrupt a blocked KVM_RUN ioctl.
+    // The signal handler is a no-op; the ioctl returns -EINTR.
+    let tid = VCPU_TID[vcpu_id as usize].load(Ordering::Relaxed);
+    if tid > 0 {
+        unsafe { sys_tgkill(sys_getpid(), tid, 10); } // 10 = SIGUSR1
     }
     0
 }
@@ -134,6 +245,102 @@ unsafe fn sys_munmap(addr: u64, len: u64) -> i64 {
     );
     ret
 }
+
+unsafe fn sys_getpid() -> i32 {
+    let ret: i64;
+    core::arch::asm!(
+        "syscall",
+        in("rax") 39_u64, // getpid
+        lateout("rax") ret,
+        out("rcx") _,
+        out("r11") _,
+        options(nostack)
+    );
+    ret as i32
+}
+
+unsafe fn sys_gettid() -> i32 {
+    let ret: i64;
+    core::arch::asm!(
+        "syscall",
+        in("rax") 186_u64, // gettid
+        lateout("rax") ret,
+        out("rcx") _,
+        out("r11") _,
+        options(nostack)
+    );
+    ret as i32
+}
+
+unsafe fn sys_tgkill(tgid: i32, tid: i32, sig: i32) -> i64 {
+    let ret: i64;
+    core::arch::asm!(
+        "syscall",
+        in("rax") 234_u64, // tgkill
+        in("rdi") tgid as u64,
+        in("rsi") tid as u64,
+        in("rdx") sig as u64,
+        lateout("rax") ret,
+        out("rcx") _,
+        out("r11") _,
+        options(nostack)
+    );
+    ret
+}
+
+/// rt_sigaction syscall for installing signal handlers.
+unsafe fn sys_rt_sigaction(sig: i32, act: *const Sigaction, oldact: *mut Sigaction) -> i64 {
+    let ret: i64;
+    core::arch::asm!(
+        "syscall",
+        in("rax") 13_u64, // rt_sigaction
+        in("rdi") sig as u64,
+        in("rsi") act as u64,
+        in("rdx") oldact as u64,
+        in("r10") 8_u64, // sizeof(sigset_t) = 8 on x86_64
+        lateout("rax") ret,
+        out("rcx") _,
+        out("r11") _,
+        options(nostack)
+    );
+    ret
+}
+
+/// Minimal sigaction struct for rt_sigaction syscall on x86_64 Linux.
+#[repr(C)]
+struct Sigaction {
+    sa_handler: u64,    // function pointer or SIG_DFL/SIG_IGN
+    sa_flags: u64,
+    sa_restorer: u64,
+    sa_mask: u64,       // sigset_t (8 bytes on x86_64)
+}
+
+/// Empty SIGUSR1 handler — just needs to exist so the signal interrupts KVM_RUN.
+unsafe extern "C" fn sigusr1_handler(_sig: i32) {}
+
+/// Install SIGUSR1 handler. Must be called once before using signal-based cancel.
+pub fn install_sigusr1_handler() {
+    extern "C" {
+        fn kvm_sigreturn_trampoline();
+    }
+    unsafe {
+        let act = Sigaction {
+            sa_handler: sigusr1_handler as u64,
+            sa_flags: 0x04000000, // SA_RESTORER — required on x86_64
+            sa_restorer: kvm_sigreturn_trampoline as u64,
+            sa_mask: 0,
+        };
+        sys_rt_sigaction(10, &act, core::ptr::null_mut()); // 10 = SIGUSR1
+    }
+}
+
+// Sigreturn trampoline for SA_RESTORER (required on x86_64 Linux).
+core::arch::global_asm!(
+    ".global kvm_sigreturn_trampoline",
+    "kvm_sigreturn_trampoline:",
+    "mov rax, 15", // __NR_rt_sigreturn
+    "syscall",
+);
 
 unsafe fn sys_open(path: *const u8, flags: i32) -> i32 {
     let ret: i64;
@@ -516,14 +723,41 @@ impl KvmBackend {
             let mut cpuid_entries = Vec::new();
             for i in 0..nent {
                 let e = &*entries_ptr.add(i);
+                let mut eax = e.eax;
+                let mut ebx = e.ebx;
+                let mut ecx = e.ecx;
+                let mut edx = e.edx;
+
+                // Filter CPUID like the Hyper-V backend does:
+                // Hide paravirt features so the guest uses standard hardware paths.
+                if e.function == 1 {
+                    // Remove VMX (bit 5), x2APIC (bit 21), TSC-Deadline (bit 24),
+                    // hypervisor present (bit 31) from ECX
+                    ecx &= !(1 << 5);   // VMX
+                    ecx &= !(1 << 21);  // x2APIC
+                    ecx &= !(1 << 24);  // TSC-Deadline
+                    ecx &= !(1 << 31);  // Hypervisor present
+                }
+
+                // Zero out entire paravirt CPUID range (0x40000000 - 0x4000FFFF)
+                // Prevents guest from detecting KVM and using PV features
+                // (kvmclock, PV EOI, PV spinlocks, steal time) that may not
+                // work correctly in our nested VMM setup.
+                if e.function >= 0x40000000 && e.function <= 0x4000FFFF {
+                    eax = 0;
+                    ebx = 0;
+                    ecx = 0;
+                    edx = 0;
+                }
+
                 cpuid_entries.push(CpuidEntry {
                     function: e.function,
                     index: e.index,
                     flags: e.flags,
-                    eax: e.eax,
-                    ebx: e.ebx,
-                    ecx: e.ecx,
-                    edx: e.edx,
+                    eax,
+                    ebx,
+                    ecx,
+                    edx,
                 });
             }
 
@@ -592,6 +826,38 @@ impl KvmBackend {
                 let len = data.len().min(io.size as usize * io.count as usize);
                 core::ptr::copy_nonoverlapping(data.as_ptr(), dst, len);
             }
+        }
+    }
+
+    /// Write one iteration's data at a specific index in the kvm_run IO data buffer.
+    /// For string I/O (REP INSB) where count > 1.
+    pub fn set_io_response_at(&mut self, vcpu_id: u32, index: u32, data: &[u8]) {
+        if let Ok(vcpu) = self.get_vcpu(vcpu_id) {
+            unsafe {
+                let run = &*vcpu.kvm_run;
+                let io = &*(run.exit_data.as_ptr() as *const KvmRunExitIo);
+                let base = (vcpu.kvm_run as *mut u8).add(io.data_offset as usize);
+                let dst = base.add(index as usize * io.size as usize);
+                let len = data.len().min(io.size as usize);
+                core::ptr::copy_nonoverlapping(data.as_ptr(), dst, len);
+            }
+        }
+    }
+
+    /// Read one iteration's data from the kvm_run IO data buffer for string OUT.
+    pub fn get_io_data_at(&self, vcpu_id: u32, index: u32) -> u32 {
+        if let Ok(vcpu) = self.get_vcpu(vcpu_id) {
+            unsafe {
+                let run = &*vcpu.kvm_run;
+                let io = &*(run.exit_data.as_ptr() as *const KvmRunExitIo);
+                let base = (run as *const KvmRun as *const u8).add(io.data_offset as usize);
+                let src = base.add(index as usize * io.size as usize);
+                let mut val: u32 = 0;
+                core::ptr::copy_nonoverlapping(src, &mut val as *mut u32 as *mut u8, io.size as usize);
+                val
+            }
+        } else {
+            0
         }
     }
 
@@ -859,6 +1125,14 @@ impl VmBackend for KvmBackend {
         let fd = vcpu.fd;
         let run = vcpu.kvm_run;
 
+        // Store this thread's TID on first call so cancel can send SIGUSR1
+        if (id as usize) < VCPU_TID.len() {
+            let tid = VCPU_TID[id as usize].load(Ordering::Relaxed);
+            if tid == 0 {
+                VCPU_TID[id as usize].store(unsafe { sys_gettid() }, Ordering::Relaxed);
+            }
+        }
+
         // Reset immediate_exit before entering KVM_RUN
         unsafe { (*run).immediate_exit = 0; }
 
@@ -889,11 +1163,13 @@ impl VmBackend for KvmBackend {
                             port: io.port,
                             size: io.size,
                             data: val,
+                            count: io.count,
                         })
                     } else {
                         Ok(VmExitReason::IoIn {
                             port: io.port,
                             size: io.size,
+                            count: io.count,
                         })
                     }
                 }

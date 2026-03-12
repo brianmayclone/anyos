@@ -50,6 +50,10 @@ struct Args {
     timeout: u32,
     show_screen: bool,
     show_regs: bool,
+    kernel: String,
+    initrd: String,
+    append: String,
+    send_keys: Vec<(u32, Vec<u8>)>,  // (delay_ms, scancodes)
 }
 
 fn parse_args() -> Args {
@@ -62,6 +66,10 @@ fn parse_args() -> Args {
         timeout: 30,
         show_screen: false,
         show_regs: false,
+        kernel: String::new(),
+        initrd: String::new(),
+        append: String::new(),
+        send_keys: Vec::new(),
     };
 
     let mut i = 1;
@@ -77,6 +85,51 @@ fn parse_args() -> Args {
             "-t" => { i += 1; if i < argv.len() { args.timeout = argv[i].parse().unwrap_or(30); } }
             "-s" => { args.show_screen = true; }
             "-g" => { args.show_regs = true; }
+            "-k" => { i += 1; if i < argv.len() { args.kernel = argv[i].clone(); } }
+            "--initrd" => { i += 1; if i < argv.len() { args.initrd = argv[i].clone(); } }
+            "--append" => { i += 1; if i < argv.len() { args.append = argv[i].clone(); } }
+            "--key" => {
+                // --key <delay_ms>:<keyname> e.g. --key 2000:enter --key 5000:esc
+                i += 1;
+                if i < argv.len() {
+                    if let Some((delay_str, key_name)) = argv[i].split_once(':') {
+                        let delay: u32 = delay_str.parse().unwrap_or(1000);
+                        let scancodes = match key_name {
+                            "enter" | "return" => vec![0x1C],
+                            "esc" | "escape" => vec![0x01],
+                            "space" => vec![0x39],
+                            "tab" => vec![0x0F],
+                            "up" => vec![0xE0, 0x48],
+                            "down" => vec![0xE0, 0x50],
+                            "left" => vec![0xE0, 0x4B],
+                            "right" => vec![0xE0, 0x4D],
+                            "f1" => vec![0x3B],
+                            "f2" => vec![0x3C],
+                            "f3" => vec![0x3D],
+                            "f4" => vec![0x3E],
+                            "f5" => vec![0x3F],
+                            "f6" => vec![0x40],
+                            "f7" => vec![0x41],
+                            "f8" => vec![0x42],
+                            "f9" => vec![0x43],
+                            "f10" => vec![0x44],
+                            "f12" => vec![0x58],
+                            _ => {
+                                // Try as raw scancode hex (e.g. "1c")
+                                if let Ok(sc) = u8::from_str_radix(key_name, 16) {
+                                    vec![sc]
+                                } else {
+                                    eprintln!("[vmctl] Unknown key: {}", key_name);
+                                    vec![]
+                                }
+                            }
+                        };
+                        if !scancodes.is_empty() {
+                            args.send_keys.push((delay, scancodes));
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -158,8 +211,8 @@ fn set_initial_cpu_state(handle: u64) {
 fn main() {
     let args = parse_args();
 
-    if args.iso.is_empty() && args.disk.is_empty() {
-        eprintln!("Usage: vmctl run -r <mb> -i <iso> [-d <disk>] -b seabios -t <secs> -s -g");
+    if args.iso.is_empty() && args.disk.is_empty() && args.kernel.is_empty() {
+        eprintln!("Usage: vmctl run -r <mb> -i <iso> [-d <disk>] [-k <kernel> --initrd <initrd> --append <cmdline>] -b seabios -t <secs> -s -g");
         std::process::exit(1);
     }
 
@@ -224,7 +277,73 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Direct kernel boot via fw_cfg (like QEMU -kernel/-initrd/-append)
+    if !args.kernel.is_empty() {
+        // Load the linuxboot DMA option ROM (SeaBIOS scans for it)
+        let linuxboot_paths = [
+            "/usr/share/qemu/linuxboot_dma.bin",
+            "/usr/share/seabios/linuxboot_dma.bin",
+        ];
+        let mut found_rom = false;
+        for path in &linuxboot_paths {
+            if let Ok(rom) = std::fs::read(path) {
+                let name = b"genroms/linuxboot_dma.bin";
+                corevm_fw_cfg_add_file(handle, name.as_ptr(), name.len() as u32,
+                    rom.as_ptr(), rom.len() as u32);
+                eprintln!("[vmctl] LinuxBoot ROM: {} ({} bytes)", path, rom.len());
+                found_rom = true;
+                break;
+            }
+        }
+        if !found_rom {
+            eprintln!("[vmctl] WARNING: linuxboot_dma.bin not found, direct kernel boot may fail");
+        }
+
+        // Load kernel via fw_cfg
+        let kernel = std::fs::read(&args.kernel)
+            .unwrap_or_else(|e| { eprintln!("[vmctl] ERROR: Cannot read kernel: {}", e); std::process::exit(1); });
+        let kname = b"etc/vmlinuz";  // SeaBIOS/linuxboot looks for this name
+        // Keep kernel data alive
+        let kernel_ptr = kernel.as_ptr();
+        let kernel_len = kernel.len();
+        std::mem::forget(kernel);
+        corevm_fw_cfg_add_file(handle, kname.as_ptr(), kname.len() as u32,
+            kernel_ptr, kernel_len as u32);
+        eprintln!("[vmctl] Kernel: {} ({} bytes)", args.kernel, kernel_len);
+
+        // Load initrd if specified
+        if !args.initrd.is_empty() {
+            let initrd = std::fs::read(&args.initrd)
+                .unwrap_or_else(|e| { eprintln!("[vmctl] ERROR: Cannot read initrd: {}", e); std::process::exit(1); });
+            let iname = b"etc/initrd";
+            let initrd_ptr = initrd.as_ptr();
+            let initrd_len = initrd.len();
+            std::mem::forget(initrd);
+            corevm_fw_cfg_add_file(handle, iname.as_ptr(), iname.len() as u32,
+                initrd_ptr, initrd_len as u32);
+            eprintln!("[vmctl] Initrd: {} ({} bytes)", args.initrd, initrd_len);
+        }
+
+        // Kernel command line
+        if !args.append.is_empty() {
+            let cmdline = args.append.as_bytes();
+            // Need null-terminated command line
+            let mut cmdline_buf = args.append.clone().into_bytes();
+            cmdline_buf.push(0);
+            let cname = b"etc/cmdline";
+            let cmdline_ptr = cmdline_buf.as_ptr();
+            let cmdline_len = cmdline_buf.len();
+            std::mem::forget(cmdline_buf);
+            corevm_fw_cfg_add_file(handle, cname.as_ptr(), cname.len() as u32,
+                cmdline_ptr, cmdline_len as u32);
+            eprintln!("[vmctl] Cmdline: {}", args.append);
+        }
+    }
+
     set_initial_cpu_state(handle);
+
+    // Install SIGUSR1 handler so cancel_vcpu can interrupt KVM_RUN mid-execution
+    libcorevm::backend::kvm::install_sigusr1_handler();
 
     // Timer thread to cancel vCPU periodically (needed for PIT/IRQ delivery)
     let cancel_handle = handle;
@@ -237,6 +356,24 @@ fn main() {
         }
     });
 
+    // Key injection thread: schedule keypresses at specified delays
+    if !args.send_keys.is_empty() {
+        let key_handle = handle;
+        let keys = args.send_keys.clone();
+        thread::spawn(move || {
+            for (delay_ms, scancodes) in &keys {
+                thread::sleep(Duration::from_millis(*delay_ms as u64));
+                for &sc in scancodes {
+                    corevm_ps2_key_press(key_handle, sc);
+                    thread::sleep(Duration::from_millis(30));
+                    corevm_ps2_key_release(key_handle, sc);
+                    thread::sleep(Duration::from_millis(30));
+                }
+                eprintln!("[vmctl] Sent key at {}ms: {:?}", delay_ms, scancodes);
+            }
+        });
+    }
+
     eprintln!("[vmctl] VM started (timeout={}s)", args.timeout);
     println!("--- SERIAL OUTPUT ---");
 
@@ -247,6 +384,8 @@ fn main() {
     let mut exit_reason = "timeout";
     let mut last_state = Instant::now();
     let mut last_pit_tick = Instant::now();
+    let mut exit_types = [0u64; 16]; // count by exit.reason
+    let mut total_irqs: u64 = 0;
 
     loop {
         let mut exit = CExitReason::default();
@@ -259,20 +398,30 @@ fn main() {
 
         match exit.reason {
             0 => { // IoIn
-                let mut data = [0u8; 4];
-                corevm_handle_io_exit(handle, exit.port, 0, exit.size, data.as_mut_ptr());
+                if exit.io_count > 1 {
+                    // String I/O (REP INSB): handle all iterations at once
+                    corevm_complete_string_io(handle, 0, exit.port, 0, exit.size, exit.io_count);
+                } else {
+                    let mut data = [0u8; 4];
+                    corevm_handle_io_exit(handle, exit.port, 0, exit.size, data.as_mut_ptr());
+                }
             }
             1 => { // IoOut
-                // Capture COM1 serial output
-                if exit.port == 0x3F8 && exit.size == 1 {
-                    let ch = (exit.data_u32 & 0xFF) as u8;
-                    if ch >= 0x20 || ch == b'\n' || ch == b'\r' || ch == b'\t' {
-                        print!("{}", ch as char);
-                        serial_bytes += 1;
+                if exit.io_count > 1 {
+                    // String I/O (REP OUTSB): handle all iterations at once
+                    corevm_complete_string_io(handle, 0, exit.port, 1, exit.size, exit.io_count);
+                } else {
+                    // Capture COM1 serial output
+                    if exit.port == 0x3F8 && exit.size == 1 {
+                        let ch = (exit.data_u32 & 0xFF) as u8;
+                        if ch >= 0x20 || ch == b'\n' || ch == b'\r' || ch == b'\t' {
+                            print!("{}", ch as char);
+                            serial_bytes += 1;
+                        }
                     }
+                    let mut data = exit.data_u32.to_le_bytes();
+                    corevm_handle_io_exit(handle, exit.port, 1, exit.size, data.as_mut_ptr());
                 }
-                let mut data = exit.data_u32.to_le_bytes();
-                corevm_handle_io_exit(handle, exit.port, 1, exit.size, data.as_mut_ptr());
             }
             2 => { // MmioRead
                 let mut data = [0u8; 8];
@@ -334,7 +483,7 @@ fn main() {
         }
 
         // Poll IRQs
-        corevm_poll_irqs(handle);
+        total_irqs += corevm_poll_irqs(handle) as u64;
 
         // Drain debug port
         {
@@ -348,6 +497,9 @@ fn main() {
         }
 
         exit_count += 1;
+        if (exit.reason as usize) < exit_types.len() {
+            exit_types[exit.reason as usize] += 1;
+        }
 
         // Periodic state dump (every 2s)
         if last_state.elapsed() >= Duration::from_secs(2) {
@@ -368,6 +520,32 @@ fn main() {
                 if sregs.cr0 & 1 != 0 { 1 } else { 0 },
                 if sregs.cr0 & (1 << 31) != 0 { 1 } else { 0 },
                 vga_line);
+            // Exit type distribution: 0=IoIn 1=IoOut 2=MmioRd 3=MmioWr 7=Hlt 9=Shutdown 13=Cancel
+            eprintln!("[vm-exits] IO={}/{} MMIO={}/{} Hlt={} Cancel={} Other={}",
+                exit_types[0], exit_types[1], exit_types[2], exit_types[3],
+                exit_types[7], exit_types[13],
+                exit_types[4]+exit_types[5]+exit_types[6]+exit_types[8]+exit_types[9]+exit_types[10]+exit_types[11]+exit_types[12]);
+            // VGA mode and framebuffer info
+            {
+                let mut w: u32 = 0;
+                let mut h: u32 = 0;
+                let mut bpp: u8 = 0;
+                let mode_rc = corevm_vga_get_mode(handle, &mut w, &mut h, &mut bpp);
+                let lfb_addr = corevm_vga_get_lfb_addr(handle);
+                let fb_nonzero = if !vga_fb_ptr.is_null() {
+                    let fb = unsafe { core::slice::from_raw_parts(vga_fb_ptr, vga_fb_size) };
+                    fb.iter().take(1024 * 4 * 100).filter(|&&b| b != 0).count()
+                } else { 0 };
+                eprintln!("[vm-gfx] mode={}x{}x{} rc={} lfb={:#x} fb_nonzero={} irqs={}",
+                    w, h, bpp, mode_rc, lfb_addr, fb_nonzero, total_irqs);
+            }
+            // Check BIOS tick counter at BDA 0x40:0x6C (physical 0x46C)
+            {
+                let mut tick_buf = [0u8; 4];
+                corevm_read_phys(handle, 0x046C, tick_buf.as_mut_ptr(), 4);
+                let bios_ticks = u32::from_le_bytes(tick_buf);
+                eprintln!("[vm-timer] BIOS_ticks={} (~{:.1}s)", bios_ticks, bios_ticks as f64 / 18.2);
+            }
         }
 
         // Check timeout
@@ -386,6 +564,9 @@ fn main() {
     println!("runtime_ms: {}", runtime.as_millis());
     println!("exit_count: {}", exit_count);
     println!("serial_bytes: {}", serial_bytes);
+    println!("exit_types: IoIn={} IoOut={} MmioRd={} MmioWr={} Hlt={} Cancel={} Shutdown={} Err={}",
+        exit_types[0], exit_types[1], exit_types[2], exit_types[3],
+        exit_types[7], exit_types[13], exit_types[9], exit_types[11]);
     println!("--- END SUMMARY ---\n");
 
     if args.show_screen {
@@ -422,10 +603,12 @@ fn main() {
             sregs.ss.selector, sregs.ss.base, sregs.es.selector, sregs.fs.selector, sregs.gs.selector);
         println!("--- END REGISTERS ---");
 
-        // Dump code at RIP — translate virtual to physical via kernel text mapping
+        // Dump code at RIP — translate virtual to physical
         let rip = regs.rip;
         let phys_rip = if rip >= 0xFFFFFFFF80000000 {
-            rip - 0xFFFFFFFF80000000 // kernel text direct mapping
+            rip - 0xFFFFFFFF80000000 // 64-bit kernel text direct mapping
+        } else if rip >= 0xC0000000 && rip < 0x100000000 {
+            rip - 0xC0000000 // 32-bit kernel PAGE_OFFSET mapping
         } else {
             rip
         };
@@ -434,6 +617,15 @@ fn main() {
         print!("Code at RIP={:016X} (phys={:08X}): ", rip, phys_rip);
         for b in &code { print!("{:02X} ", b); }
         println!();
+    }
+
+    // Save framebuffer as raw image file for inspection
+    if !vga_fb_ptr.is_null() {
+        let fb_path = "/tmp/corevm-framebuffer.raw";
+        let fb = unsafe { core::slice::from_raw_parts(vga_fb_ptr, 1024 * 768 * 4) };
+        if let Ok(()) = std::fs::write(fb_path, fb) {
+            eprintln!("[vmctl] Framebuffer saved to {} (1024x768x32 BGRA)", fb_path);
+        }
     }
 
     corevm_destroy(handle);

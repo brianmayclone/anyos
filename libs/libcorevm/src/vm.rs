@@ -110,8 +110,12 @@ impl Vm {
         // Port 61 (speaker gate, needs PIT pointer)
         let mut port61 = Port61::new(pit_ptr);
         // On Linux/KVM, sync PIT channel 2 gate to the in-kernel PIT
+        // and read channel 2 output from the in-kernel PIT (not the userspace one).
         #[cfg(feature = "linux")]
-        port61.set_gate_sync(crate::backend::kvm::kvm_sync_pit_ch2_gate);
+        {
+            port61.set_gate_sync(crate::backend::kvm::kvm_sync_pit_ch2_gate);
+            port61.set_pit_output(crate::backend::kvm::kvm_pit_ch2_output);
+        }
         self.io.register(0x61, 1, Box::new(port61));
 
         // CMOS (0x70-0x71)
@@ -416,6 +420,27 @@ impl Vm {
     #[cfg(feature = "linux")]
     pub fn set_mmio_response(&mut self, vcpu_id: u32, data: &[u8]) {
         self.backend.set_mmio_response(vcpu_id, data);
+    }
+
+    /// Handle KVM string I/O IN (REP INSB): loop count times, calling port_in
+    /// for each iteration and writing results to the kvm_run data buffer.
+    #[cfg(feature = "linux")]
+    pub fn complete_string_io_in(&mut self, vcpu_id: u32, port: u16, size: u8, count: u32) {
+        for i in 0..count {
+            let val = self.io.port_in(port, size).unwrap_or(0xFFFF_FFFF);
+            let bytes = val.to_le_bytes();
+            self.backend.set_io_response_at(vcpu_id, i, &bytes[..size as usize]);
+        }
+    }
+
+    /// Handle KVM string I/O OUT (REP OUTSB): loop count times, reading data
+    /// from the kvm_run data buffer and calling port_out for each iteration.
+    #[cfg(feature = "linux")]
+    pub fn complete_string_io_out(&mut self, vcpu_id: u32, port: u16, size: u8, count: u32) {
+        for i in 0..count {
+            let val = self.backend.get_io_data_at(vcpu_id, i);
+            let _ = self.io.port_out(port, size, val);
+        }
     }
 
     // ── Physical memory access ──

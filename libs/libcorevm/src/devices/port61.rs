@@ -19,11 +19,16 @@ use super::pit::Pit;
 /// in-kernel PIT on Linux/KVM. Set via `set_gate_sync`.
 pub type GateSyncFn = fn(bool);
 
+/// Optional callback for reading PIT channel 2 output from the in-kernel PIT
+/// on Linux/KVM. Returns true if channel 2 output pin is high.
+pub type PitOutputFn = fn() -> bool;
+
 pub struct Port61 {
     pit: *mut Pit,
     control: u8,
     refresh_toggle: bool,
     gate_sync: Option<GateSyncFn>,
+    pit_output: Option<PitOutputFn>,
 }
 
 impl core::fmt::Debug for Port61 {
@@ -47,6 +52,7 @@ impl Port61 {
             control: 0,
             refresh_toggle: false,
             gate_sync: None,
+            pit_output: None,
         }
     }
 
@@ -55,12 +61,22 @@ impl Port61 {
     pub fn set_gate_sync(&mut self, f: GateSyncFn) {
         self.gate_sync = Some(f);
     }
+
+    /// Set a callback that reads PIT channel 2 output from the hardware
+    /// backend (e.g., in-kernel KVM PIT via KVM_GET_PIT2).
+    pub fn set_pit_output(&mut self, f: PitOutputFn) {
+        self.pit_output = Some(f);
+    }
 }
 
 impl IoHandler for Port61 {
     fn read(&mut self, _port: u16, _size: u8) -> Result<u32> {
         // Bit 5 reflects PIT channel 2 OUT.
-        let pit_out = if self.pit.is_null() {
+        // On Linux/KVM, read from in-kernel PIT via callback (the userspace PIT
+        // isn't programmed since port 0x43/0x42 go to the in-kernel PIT).
+        let pit_out = if let Some(f) = self.pit_output {
+            if f() { 1 } else { 0 }
+        } else if self.pit.is_null() {
             0
         } else if unsafe { (*self.pit).channels[2].output } {
             1

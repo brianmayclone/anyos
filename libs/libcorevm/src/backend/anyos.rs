@@ -394,9 +394,9 @@ impl VmBackend for AnyOsBackend {
                 let port = exit_info.io_port;
                 let size = exit_info.access_size;
                 if exit_info.is_read != 0 {
-                    Ok(VmExitReason::IoIn { port, size })
+                    Ok(VmExitReason::IoIn { port, size, count: 1 })
                 } else {
-                    Ok(VmExitReason::IoOut { port, size, data: exit_info.io_data as u32 })
+                    Ok(VmExitReason::IoOut { port, size, data: exit_info.io_data as u32, count: 1 })
                 }
             }
             EXIT_REASON_EPT_VIOLATION => {
