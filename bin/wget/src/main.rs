@@ -301,21 +301,10 @@ fn fmt_u32_into(val: u32, buf: &mut [u8; 16]) -> usize {
 }
 
 fn fmt_u32_at(val: u32, buf: &mut [u8]) -> usize {
-    if val == 0 {
-        buf[0] = b'0';
-        return 1;
-    }
-    let mut tmp = [0u8; 10];
-    let mut len = 0;
-    let mut v = val;
-    while v > 0 {
-        tmp[len] = b'0' + (v % 10) as u8;
-        v /= 10;
-        len += 1;
-    }
-    for i in 0..len {
-        buf[i] = tmp[len - 1 - i];
-    }
+    let mut tmp = [0u8; 12];
+    let s = anyos_std::fmt::fmt_u32(&mut tmp, val);
+    let len = s.len();
+    buf[..len].copy_from_slice(s.as_bytes());
     len
 }
 

@@ -85,6 +85,26 @@ impl Error {
     }
 }
 
+// ── DLL / shared library errors ──────────────────────────────────────────────
+
+/// Errors that can occur when loading or resolving shared libraries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DllError {
+    /// The library file could not be found or loaded.
+    LoadFailed,
+    /// A required symbol was not found in the library.
+    SymbolNotFound,
+}
+
+impl fmt::Display for DllError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DllError::LoadFailed => f.write_str("failed to load shared library"),
+            DllError::SymbolNotFound => f.write_str("symbol not found in shared library"),
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

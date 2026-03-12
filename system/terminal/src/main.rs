@@ -5945,13 +5945,9 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
 
 // ─── Global State (anyui singleton pattern) ──────────────────────────────────
 
-static mut APP: Option<TerminalApp> = None;
+anyos_std::global_app_state!(TerminalApp);
 static mut CANVAS: Option<anyui::Canvas> = None;
 static mut TAB_BAR: Option<anyui::TabBar> = None;
-
-fn app() -> &'static mut TerminalApp {
-    unsafe { APP.as_mut().unwrap() }
-}
 
 fn get_canvas() -> anyui::Canvas {
     unsafe { CANVAS.unwrap() }

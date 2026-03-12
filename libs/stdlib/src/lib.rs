@@ -16,6 +16,7 @@ pub mod crypto;
 pub mod dll;
 pub mod env;
 pub mod error;
+pub mod fmt;
 pub mod fs;
 pub mod heap;
 pub mod i18n;
@@ -26,6 +27,7 @@ pub mod log;
 pub mod json;
 pub mod kbd;
 pub mod net;
+pub mod path;
 pub mod permissions;
 pub mod prelude;
 pub mod process;
@@ -33,6 +35,35 @@ pub mod sys;
 pub mod ui;
 pub mod users;
 pub mod xml;
+
+// ── Global app state macro ──────────────────────────────────────────────────
+
+/// Declare a global `static mut APP: Option<T>` with a type-safe accessor.
+///
+/// Generates:
+/// - `static mut APP: Option<$ty> = None;`
+/// - `fn app() -> &'static mut $ty` (panics if uninitialized)
+///
+/// # Usage
+/// ```ignore
+/// anyos_std::global_app_state!(AppState);
+///
+/// fn main() {
+///     unsafe { APP = Some(AppState { ... }); }
+///     app().do_something();
+/// }
+/// ```
+#[macro_export]
+macro_rules! global_app_state {
+    ($ty:ty) => {
+        static mut APP: Option<$ty> = None;
+
+        #[inline(always)]
+        fn app() -> &'static mut $ty {
+            unsafe { APP.as_mut().expect(concat!(stringify!($ty), " not initialized")) }
+        }
+    };
+}
 
 // Re-export alloc types for user convenience
 pub use alloc::boxed::Box;

@@ -53,10 +53,7 @@ struct AppState {
     title_label_id: u32,
 }
 
-static mut APP: Option<AppState> = None;
-fn app() -> &'static mut AppState {
-    unsafe { APP.as_mut().unwrap() }
-}
+anyos_std::global_app_state!(AppState);
 
 // ── Main ────────────────────────────────────────────────────────────────────
 

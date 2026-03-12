@@ -342,46 +342,16 @@ fn app() -> &'static mut AppState {
     unsafe { APP.as_mut().unwrap() }
 }
 
-// ── Number formatting (no_std) ─────────────────────────────────────────
+// ── Number formatting (delegates to anyos_std::fmt) ────────────────────
 
-/// Format a `u32` value into a decimal string within `buf`.
-fn fmt_u32<'a>(buf: &'a mut [u8], val: u32) -> &'a str {
-    if val == 0 {
-        buf[0] = b'0';
-        return unsafe { core::str::from_utf8_unchecked(&buf[..1]) };
-    }
-    let mut v = val;
-    let mut tmp = [0u8; 12];
-    let mut n = 0;
-    while v > 0 {
-        tmp[n] = b'0' + (v % 10) as u8;
-        v /= 10;
-        n += 1;
-    }
-    for i in 0..n {
-        buf[i] = tmp[n - 1 - i];
-    }
-    unsafe { core::str::from_utf8_unchecked(&buf[..n]) }
+use anyos_std::fmt as stdfmt;
+
+fn fmt_u32<'a>(buf: &'a mut [u8; 12], val: u32) -> &'a str {
+    stdfmt::fmt_u32(buf, val)
 }
 
-/// Format a `u64` value into a decimal string within `buf`.
-fn fmt_u64<'a>(buf: &'a mut [u8], val: u64) -> &'a str {
-    if val == 0 {
-        buf[0] = b'0';
-        return unsafe { core::str::from_utf8_unchecked(&buf[..1]) };
-    }
-    let mut v = val;
-    let mut tmp = [0u8; 20];
-    let mut n = 0;
-    while v > 0 {
-        tmp[n] = b'0' + (v % 10) as u8;
-        v /= 10;
-        n += 1;
-    }
-    for i in 0..n {
-        buf[i] = tmp[n - 1 - i];
-    }
-    unsafe { core::str::from_utf8_unchecked(&buf[..n]) }
+fn fmt_u64<'a>(buf: &'a mut [u8; 20], val: u64) -> &'a str {
+    stdfmt::fmt_u64(buf, val)
 }
 
 /// Build a label + value string (e.g. "RAM: 64 MB") into `buf`.

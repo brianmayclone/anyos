@@ -54,12 +54,7 @@ struct AppState {
     git_panel_id: u32,
 }
 
-static mut APP: Option<AppState> = None;
-
-/// Access the global app state. Safe because all callbacks run on the UI thread.
-fn app() -> &'static mut AppState {
-    unsafe { APP.as_mut().expect("app not initialized") }
-}
+anyos_std::global_app_state!(AppState);
 
 // ════════════════════════════════════════════════════════════════
 //  Entry point

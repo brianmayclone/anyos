@@ -477,22 +477,12 @@ fn generate_floor_texture(size: u32) -> Vec<u8> {
 }
 
 /// Format a u32 into a decimal string. Returns number of bytes written.
-fn fmt_u32(mut val: u32, buf: &mut [u8; 16]) -> usize {
-    if val == 0 {
-        buf[0] = b'0';
-        return 1;
-    }
-    let mut tmp = [0u8; 10];
-    let mut i = 0;
-    while val > 0 {
-        tmp[i] = b'0' + (val % 10) as u8;
-        val /= 10;
-        i += 1;
-    }
-    for j in 0..i {
-        buf[j] = tmp[i - 1 - j];
-    }
-    i
+fn fmt_u32(val: u32, buf: &mut [u8; 16]) -> usize {
+    let mut tmp = [0u8; 12];
+    let s = anyos_std::fmt::fmt_u32(&mut tmp, val);
+    let b = s.as_bytes();
+    buf[..b.len()].copy_from_slice(b);
+    b.len()
 }
 
 // ── Render state ─────────────────────────────────────────────────────────────

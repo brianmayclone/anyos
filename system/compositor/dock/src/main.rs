@@ -93,8 +93,7 @@ struct DockApp {
     mag_start_time: u32,
 }
 
-static mut APP: Option<DockApp> = None;
-fn app() -> &'static mut DockApp { unsafe { APP.as_mut().unwrap() } }
+anyos_std::global_app_state!(DockApp);
 
 /// Compute the dock window rectangle based on position and screen size.
 fn dock_window_rect(geom: &DockGeometry, screen_w: u32, screen_h: u32) -> (i32, i32, u32, u32) {

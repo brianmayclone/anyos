@@ -71,11 +71,13 @@ impl Desktop {
                 let flags = shm_id_and_flags & 0xFFFF;
 
                 if shm_id == 0 || width == 0 || height == 0 {
+                    anyos_std::println!("[ipc] CREATE_WINDOW rejected: shm={} w={} h={}", shm_id, width, height);
                     return None;
                 }
 
                 let shm_addr = anyos_std::ipc::shm_map(shm_id);
                 if shm_addr == 0 {
+                    anyos_std::println!("[ipc] CREATE_WINDOW shm_map failed for shm_id={}", shm_id);
                     return None;
                 }
 
@@ -159,10 +161,12 @@ impl Desktop {
                 let window_id = cmd[1];
                 let shm_id = cmd[2];
                 if shm_id == 0 {
+                    anyos_std::println!("[ipc] SET_MENU rejected: shm_id=0 for win={}", window_id);
                     return None;
                 }
                 let shm_addr = anyos_std::ipc::shm_map(shm_id);
                 if shm_addr == 0 {
+                    anyos_std::println!("[ipc] SET_MENU shm_map failed for shm_id={}", shm_id);
                     return None;
                 }
                 let data = unsafe {
@@ -195,10 +199,12 @@ impl Desktop {
                 let icon_id = cmd[2];
                 let shm_id = cmd[3];
                 if shm_id == 0 {
+                    anyos_std::println!("[ipc] ADD_STATUS_ICON rejected: shm_id=0 tid={}", app_tid);
                     return None;
                 }
                 let shm_addr = anyos_std::ipc::shm_map(shm_id);
                 if shm_addr == 0 {
+                    anyos_std::println!("[ipc] ADD_STATUS_ICON shm_map failed for shm_id={}", shm_id);
                     return None;
                 }
                 let pixel_data = unsafe {
@@ -250,6 +256,7 @@ impl Desktop {
                 let new_h = cmd[4];
 
                 if new_shm_id == 0 || new_w == 0 || new_h == 0 {
+                    anyos_std::println!("[ipc] RESIZE_SHM rejected: shm={} w={} h={} win={}", new_shm_id, new_w, new_h, window_id);
                     return None;
                 }
 
@@ -259,6 +266,7 @@ impl Desktop {
 
                     let new_shm_addr = anyos_std::ipc::shm_map(new_shm_id);
                     if new_shm_addr == 0 {
+                        anyos_std::println!("[ipc] RESIZE_SHM shm_map failed for shm_id={}", new_shm_id);
                         return None;
                     }
 
@@ -443,10 +451,12 @@ impl Desktop {
             proto::CMD_SET_WALLPAPER => {
                 let shm_id = cmd[1];
                 if shm_id == 0 {
+                    anyos_std::println!("[ipc] SET_WALLPAPER rejected: shm_id=0");
                     return None;
                 }
                 let shm_addr = anyos_std::ipc::shm_map(shm_id);
                 if shm_addr == 0 {
+                    anyos_std::println!("[ipc] SET_WALLPAPER shm_map failed for shm_id={}", shm_id);
                     return None;
                 }
                 let data = unsafe {

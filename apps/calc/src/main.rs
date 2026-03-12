@@ -200,64 +200,13 @@ impl Calc {
 }
 
 // ---- Number formatting ----
+/// Wrapper around `anyos_std::fmt::fmt_f64` that maps NaN/inf to "Error"
+/// for calculator display.
 fn fmt_f64(val: f64) -> String {
-    if val != val { return String::from("Error"); }
-    if val == f64::INFINITY || val == f64::NEG_INFINITY {
+    if val != val || val == f64::INFINITY || val == f64::NEG_INFINITY {
         return String::from("Error");
     }
-    if val == 0.0 { return String::from("0"); }
-
-    let neg = val < 0.0;
-    let v = if neg { -val } else { val };
-
-    // Integer check
-    let int_part = v as u64;
-    let frac = v - int_part as f64;
-    if frac.abs() < 1e-9 && int_part < 1_000_000_000_000 {
-        let mut s = fmt_u64(int_part);
-        if neg { s.insert(0, '-'); }
-        return s;
-    }
-
-    // Decimal formatting
-    let mut s = String::new();
-    if neg { s.push('-'); }
-    s.push_str(&fmt_u64(int_part));
-    s.push('.');
-
-    let mut f = frac;
-    let mut dec = [0u8; 10];
-    for d in dec.iter_mut() {
-        f *= 10.0;
-        let digit = f as u8;
-        *d = digit;
-        f -= digit as f64;
-    }
-    // Strip trailing zeros
-    let mut last = 0;
-    for i in 0..10 {
-        if dec[i] != 0 { last = i; }
-    }
-    for i in 0..=last {
-        s.push((b'0' + dec[i]) as char);
-    }
-    s
-}
-
-fn fmt_u64(mut val: u64) -> String {
-    if val == 0 { return String::from("0"); }
-    let mut buf = [0u8; 20];
-    let mut i = 20;
-    while val > 0 {
-        i -= 1;
-        buf[i] = b'0' + (val % 10) as u8;
-        val /= 10;
-    }
-    let mut s = String::new();
-    for &b in &buf[i..] {
-        s.push(b as char);
-    }
-    s
+    anyos_std::fmt::fmt_f64(val)
 }
 
 fn parse_f64(s: &str) -> f64 {

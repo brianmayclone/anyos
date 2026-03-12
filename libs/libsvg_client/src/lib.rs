@@ -25,56 +25,14 @@
 
 extern crate alloc;
 
-use dynlink::{DlHandle, dl_open, dl_sym};
-
-// ── Function pointer table ────────────────────────────────────────────
-
-struct SvgLib {
-    _handle: DlHandle,
-    /// `svg_probe(data, len, out_w, out_h) -> i32`
-    probe_fn:         extern "C" fn(*const u8, u32, *mut f32, *mut f32) -> i32,
-    /// `svg_render(data, len, out_pixels, out_w, out_h) -> i32`
-    render_fn:        extern "C" fn(*const u8, u32, *mut u32, u32, u32) -> i32,
-    /// `svg_render_to_size(data, len, out_pixels, out_w, out_h, bg_color) -> i32`
-    render_bg_fn:     extern "C" fn(*const u8, u32, *mut u32, u32, u32, u32) -> i32,
-}
-
-static mut LIB: Option<SvgLib> = None;
-
-#[inline]
-fn lib() -> &'static SvgLib {
-    unsafe { LIB.as_ref().expect("libsvg not loaded — call libsvg_client::init() first") }
-}
-
-/// Resolve a function pointer from the loaded handle, or panic.
-unsafe fn resolve<T: Copy>(handle: &DlHandle, name: &str) -> T {
-    let ptr = dl_sym(handle, name).expect("symbol not found in libsvg.so");
-    core::mem::transmute_copy::<*const (), T>(&ptr)
-}
-
-// ── Public API ────────────────────────────────────────────────────────
-
-/// Load and initialise `libsvg.so`. Must be called once before any other
-/// function in this module.
-///
-/// Returns `true` on success, `false` if the library could not be opened.
-pub fn init() -> bool {
-    let handle = match dl_open("/Libraries/libsvg.so") {
-        Some(h) => h,
-        None => return false,
-    };
-
-    unsafe {
-        let lib = SvgLib {
-            probe_fn:     resolve(&handle, "svg_probe"),
-            render_fn:    resolve(&handle, "svg_render"),
-            render_bg_fn: resolve(&handle, "svg_render_to_size"),
-            _handle:      handle,
-        };
-        LIB = Some(lib);
+dynlink::dll_exports! {
+    lib_path: "/Libraries/libsvg.so",
+    lib_struct: SvgLib,
+    symbols: {
+        svg_probe(data: *const u8, len: u32, out_w: *mut f32, out_h: *mut f32) -> i32,
+        svg_render(data: *const u8, len: u32, out_pixels: *mut u32, out_w: u32, out_h: u32) -> i32,
+        svg_render_to_size(data: *const u8, len: u32, out_pixels: *mut u32, out_w: u32, out_h: u32, bg_color: u32) -> i32,
     }
-
-    true
 }
 
 /// Probe an SVG document and return its declared canvas dimensions.
@@ -86,7 +44,7 @@ pub fn init() -> bool {
 pub fn probe(data: &[u8]) -> Option<(f32, f32)> {
     let mut w: f32 = 0.0;
     let mut h: f32 = 0.0;
-    let rc = (lib().probe_fn)(data.as_ptr(), data.len() as u32, &mut w, &mut h);
+    let rc = (lib().svg_probe)(data.as_ptr(), data.len() as u32, &mut w, &mut h);
     if rc == 0 { Some((w, h)) } else { None }
 }
 
@@ -104,7 +62,7 @@ pub fn render(data: &[u8], pixels: &mut [u32], out_w: u32, out_h: u32) -> bool {
     if pixels.len() < (out_w as usize) * (out_h as usize) {
         return false;
     }
-    let rc = (lib().render_fn)(
+    let rc = (lib().svg_render)(
         data.as_ptr(), data.len() as u32,
         pixels.as_mut_ptr(), out_w, out_h,
     );
@@ -130,7 +88,7 @@ pub fn render_to_size(
     if pixels.len() < (out_w as usize) * (out_h as usize) {
         return false;
     }
-    let rc = (lib().render_bg_fn)(
+    let rc = (lib().svg_render_to_size)(
         data.as_ptr(), data.len() as u32,
         pixels.as_mut_ptr(), out_w, out_h,
         bg_color,

@@ -415,29 +415,19 @@ fn fmt_pos(x: i32, y: i32, buf: &mut [u8]) -> usize {
 }
 
 fn fmt_i32(val: i32, buf: &mut [u8]) -> usize {
-    if val < 0 {
-        buf[0] = b'-';
-        return 1 + fmt_u32((-val) as u32, &mut buf[1..]);
-    }
-    fmt_u32(val as u32, buf)
+    let mut tmp = [0u8; 14];
+    let s = anyos_std::fmt::fmt_i32(&mut tmp, val);
+    let b = s.as_bytes();
+    buf[..b.len()].copy_from_slice(b);
+    b.len()
 }
 
-fn fmt_u32(mut val: u32, buf: &mut [u8]) -> usize {
-    if val == 0 {
-        buf[0] = b'0';
-        return 1;
-    }
-    let mut digits = [0u8; 10];
-    let mut i = 0;
-    while val > 0 {
-        digits[i] = b'0' + (val % 10) as u8;
-        val /= 10;
-        i += 1;
-    }
-    for j in 0..i {
-        buf[j] = digits[i - 1 - j];
-    }
-    i
+fn fmt_u32(val: u32, buf: &mut [u8]) -> usize {
+    let mut tmp = [0u8; 12];
+    let s = anyos_std::fmt::fmt_u32(&mut tmp, val);
+    let b = s.as_bytes();
+    buf[..b.len()].copy_from_slice(b);
+    b.len()
 }
 
 // ── Drawing logic ────────────────────────────────────────────────────

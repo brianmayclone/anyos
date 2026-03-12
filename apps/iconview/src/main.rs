@@ -57,11 +57,7 @@ struct AppState {
     init_done: bool,
 }
 
-static mut APP: Option<AppState> = None;
-
-fn app() -> &'static mut AppState {
-    unsafe { APP.as_mut().unwrap() }
-}
+anyos_std::global_app_state!(AppState);
 
 // ── ico.pak binary parser ────────────────────────────────────────────────────
 

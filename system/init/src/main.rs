@@ -159,21 +159,10 @@ fn trim_bytes(b: &[u8]) -> &[u8] {
 // ─── Formatting ─────────────────────────────────────────────────────────────
 
 fn fmt_u32(buf: &mut [u8], val: u32) -> usize {
-    if val == 0 {
-        buf[0] = b'0';
-        return 1;
-    }
-    let mut v = val;
-    let mut tmp = [0u8; 10];
-    let mut n = 0;
-    while v > 0 {
-        tmp[n] = b'0' + (v % 10) as u8;
-        v /= 10;
-        n += 1;
-    }
-    for i in 0..n {
-        buf[i] = tmp[n - 1 - i];
-    }
+    let mut tmp = [0u8; 12];
+    let s = anyos_std::fmt::fmt_u32(&mut tmp, val);
+    let n = s.len();
+    buf[..n].copy_from_slice(s.as_bytes());
     n
 }
 

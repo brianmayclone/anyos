@@ -1227,8 +1227,7 @@ struct AppState {
     btn_newfolder: anyui::IconButton,
 }
 
-static mut APP: Option<AppState> = None;
-fn app() -> &'static mut AppState { unsafe { APP.as_mut().unwrap() } }
+anyos_std::global_app_state!(AppState);
 
 // ─── Grid Population ──────────────────────────────────────────────────────────
 

@@ -175,11 +175,7 @@ struct AppState {
     status_label: ui::Label,
 }
 
-static mut APP: Option<AppState> = None;
-
-fn app() -> &'static mut AppState {
-    unsafe { APP.as_mut().expect("APP not initialized") }
-}
+anyos_std::global_app_state!(AppState);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

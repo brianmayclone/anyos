@@ -162,6 +162,132 @@ pub fn dl_sym(handle: &DlHandle, name: &str) -> Option<*const ()> {
     None
 }
 
+// ── dll_exports! macro ──────────────────────────────────────────────────────
+
+/// Generate the boilerplate for a shared-library client crate.
+///
+/// Generates a private struct holding function pointers, a `static mut` global,
+/// a `lib()` accessor, and a public `init() -> bool` that loads the library
+/// and resolves all symbols.
+///
+/// # Example
+/// ```ignore
+/// dynlink::dll_exports! {
+///     lib_path: "/Libraries/libfont.so",
+///     lib_struct: FontLib,
+///     init_call: "font_init",  // optional: symbol called after resolve
+///     symbols: {
+///         font_load(path_ptr: *const u8, len: u32) -> u32,
+///         font_unload(id: u32) -> (),
+///     }
+/// }
+///
+/// // Now you can call:  init(), and lib().font_load, lib().font_unload, etc.
+/// ```
+#[macro_export]
+macro_rules! dll_exports {
+    (
+        lib_path: $path:expr,
+        lib_struct: $name:ident,
+        init_call: $init_sym:expr,
+        symbols: {
+            $( $sym:ident ( $($pname:ident : $pty:ty),* $(,)? ) -> $ret:ty ),+ $(,)?
+        }
+    ) => {
+        struct $name {
+            _handle: $crate::DlHandle,
+            $( $sym: extern "C" fn( $($pty),* ) -> $ret, )+
+        }
+
+        static mut LIB: Option<$name> = None;
+
+        /// Get a reference to the loaded library. Panics if not initialized.
+        pub(crate) fn lib() -> &'static $name {
+            unsafe { LIB.as_ref().expect(concat!(stringify!($name), " not loaded")) }
+        }
+
+        /// Load the shared library and resolve all symbols. Call once at program start.
+        pub fn init() -> bool {
+            let handle = match $crate::dl_open($path) {
+                Some(h) => h,
+                None => return false,
+            };
+
+            unsafe {
+                let lib = $name {
+                    $(
+                        $sym: {
+                            let ptr = match $crate::dl_sym(&handle, stringify!($sym)) {
+                                Some(p) => p,
+                                None => return false,
+                            };
+                            core::mem::transmute_copy::<*const (), extern "C" fn( $($pty),* ) -> $ret>(&ptr)
+                        },
+                    )+
+                    _handle: handle,
+                };
+                // Call init symbol
+                let init_ptr = match $crate::dl_sym(&lib._handle, $init_sym) {
+                    Some(p) => p,
+                    None => {
+                        LIB = Some(lib);
+                        return true;
+                    }
+                };
+                let init_fn: extern "C" fn() = core::mem::transmute_copy::<*const (), extern "C" fn()>(&init_ptr);
+                (init_fn)();
+                LIB = Some(lib);
+            }
+            true
+        }
+    };
+    // Variant without init_call
+    (
+        lib_path: $path:expr,
+        lib_struct: $name:ident,
+        symbols: {
+            $( $sym:ident ( $($pname:ident : $pty:ty),* $(,)? ) -> $ret:ty ),+ $(,)?
+        }
+    ) => {
+        struct $name {
+            _handle: $crate::DlHandle,
+            $( $sym: extern "C" fn( $($pty),* ) -> $ret, )+
+        }
+
+        static mut LIB: Option<$name> = None;
+
+        /// Get a reference to the loaded library. Panics if not initialized.
+        pub(crate) fn lib() -> &'static $name {
+            unsafe { LIB.as_ref().expect(concat!(stringify!($name), " not loaded")) }
+        }
+
+        /// Load the shared library and resolve all symbols. Call once at program start.
+        pub fn init() -> bool {
+            let handle = match $crate::dl_open($path) {
+                Some(h) => h,
+                None => return false,
+            };
+
+            unsafe {
+                let lib = $name {
+                    $(
+                        $sym: {
+                            let ptr = match $crate::dl_sym(&handle, stringify!($sym)) {
+                                Some(p) => p,
+                                None => return false,
+                            };
+                            core::mem::transmute_copy::<*const (), extern "C" fn( $($pty),* ) -> $ret>(&ptr)
+                        },
+                    )+
+                    _handle: handle,
+                };
+                LIB = Some(lib);
+            }
+            true
+        }
+    };
+}
+
 /// ELF hash function (SysV ABI).
 fn elf_hash(name: &[u8]) -> u32 {
     let mut h: u32 = 0;

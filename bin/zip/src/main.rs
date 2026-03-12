@@ -53,14 +53,7 @@ fn add_dir_recursive(writer: &libzip_client::ZipWriter, path: &str, prefix: &str
     }
 }
 
-/// Get the last path component.
-fn basename(path: &str) -> &str {
-    let path = path.trim_end_matches('/');
-    match path.rfind('/') {
-        Some(pos) => &path[pos + 1..],
-        None => path,
-    }
-}
+use anyos_std::path::basename;
 
 fn main() {
     if !libzip_client::init() {

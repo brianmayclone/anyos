@@ -131,11 +131,7 @@ struct AppState {
     loading_more: bool,
 }
 
-static mut APP: Option<AppState> = None;
-
-pub(crate) fn app() -> &'static mut AppState {
-    unsafe { APP.as_mut().unwrap() }
-}
+anyos_std::global_app_state!(AppState);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers

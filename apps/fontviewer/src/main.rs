@@ -35,11 +35,7 @@ struct State {
 }
 
 fn basename(path: &str) -> &str {
-    if let Some(pos) = path.rfind('/') {
-        &path[pos + 1..]
-    } else {
-        path
-    }
+    anyos_std::path::basename(path)
 }
 
 fn render(win: u32, st: &State) {

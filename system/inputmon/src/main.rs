@@ -151,13 +151,12 @@ fn parse_u32(s: &str) -> Option<u32> {
     Some(val)
 }
 
-fn fmt_u32(mut val: u32, buf: &mut [u8; 4]) -> usize {
-    if val == 0 { buf[0] = b'0'; return 1; }
-    let mut tmp = [0u8; 4];
-    let mut len = 0;
-    while val > 0 && len < 4 { tmp[len] = b'0' + (val % 10) as u8; val /= 10; len += 1; }
-    for i in 0..len { buf[i] = tmp[len - 1 - i]; }
-    len
+fn fmt_u32(val: u32, buf: &mut [u8; 4]) -> usize {
+    let mut tmp = [0u8; 12];
+    let s = anyos_std::fmt::fmt_u32(&mut tmp, val);
+    let n = s.len().min(4);
+    buf[..n].copy_from_slice(&s.as_bytes()[..n]);
+    n
 }
 
 // ── Popup drawing ────────────────────────────────────────────────────────────

@@ -16,64 +16,25 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
-use dynlink::{dl_open, dl_sym, DlHandle};
-
-// ── Function pointer cache ──────────────────────────────────────────────────
 
 /// Progress callback type: `(received_bytes, total_bytes, userdata)`.
 /// `total_bytes` is 0 if the server did not provide Content-Length.
 pub type ProgressCallback = extern "C" fn(u32, u32, u64);
 
-struct LibHttp {
-    _handle: DlHandle,
-    init_fn: extern "C" fn() -> u32,
-    get: extern "C" fn(*const u8, u32, *mut u8, u32) -> u32,
-    download: extern "C" fn(*const u8, u32, *const u8, u32) -> u32,
-    download_progress: extern "C" fn(*const u8, u32, *const u8, u32,
-        Option<ProgressCallback>, u64) -> u32,
-    post: extern "C" fn(*const u8, u32, *const u8, u32, *const u8, u32, *mut u8, u32) -> u32,
-    last_status: extern "C" fn() -> u32,
-    last_error: extern "C" fn() -> u32,
-}
-
-static mut LIB: Option<LibHttp> = None;
-
-fn lib() -> &'static LibHttp {
-    unsafe { LIB.as_ref().expect("libhttp not loaded — call init() first") }
-}
-
-unsafe fn resolve<T: Copy>(handle: &DlHandle, name: &str) -> T {
-    let ptr = dl_sym(handle, name)
-        .unwrap_or_else(|| panic!("libhttp: symbol not found: {}", name));
-    unsafe { core::mem::transmute_copy::<*const (), T>(&ptr) }
-}
-
-// ── Initialization ──────────────────────────────────────────────────────────
-
-/// Load libhttp.so and initialize the library. Returns true on success.
-pub fn init() -> bool {
-    let handle = match dl_open("/Libraries/libhttp.so") {
-        Some(h) => h,
-        None => return false,
-    };
-
-    unsafe {
-        let lib = LibHttp {
-            init_fn: resolve(&handle, "libhttp_init"),
-            get: resolve(&handle, "libhttp_get"),
-            download: resolve(&handle, "libhttp_download"),
-            download_progress: resolve(&handle, "libhttp_download_progress"),
-            post: resolve(&handle, "libhttp_post"),
-            last_status: resolve(&handle, "libhttp_last_status"),
-            last_error: resolve(&handle, "libhttp_last_error"),
-            _handle: handle,
-        };
-        LIB = Some(lib);
+dynlink::dll_exports! {
+    lib_path: "/Libraries/libhttp.so",
+    lib_struct: LibHttp,
+    init_call: "libhttp_init",
+    symbols: {
+        libhttp_get(url: *const u8, url_len: u32, buf: *mut u8, buf_len: u32) -> u32,
+        libhttp_download(url: *const u8, url_len: u32, path: *const u8, path_len: u32) -> u32,
+        libhttp_download_progress(url: *const u8, url_len: u32, path: *const u8, path_len: u32,
+            cb: Option<ProgressCallback>, userdata: u64) -> u32,
+        libhttp_post(url: *const u8, url_len: u32, body: *const u8, body_len: u32,
+            ct: *const u8, ct_len: u32, buf: *mut u8, buf_len: u32) -> u32,
+        libhttp_last_status() -> u32,
+        libhttp_last_error() -> u32,
     }
-
-    // Call libhttp_init() to initialize the library
-    let result = (lib().init_fn)();
-    result == 1
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -88,7 +49,7 @@ pub fn init() -> bool {
 pub fn get(url: &str) -> Option<Vec<u8>> {
     let buf_size: usize = 4 * 1024 * 1024; // 4 MiB
     let mut buf = vec![0u8; buf_size];
-    let n = (lib().get)(
+    let n = (lib().libhttp_get)(
         url.as_ptr(), url.len() as u32,
         buf.as_mut_ptr(), buf.len() as u32,
     );
@@ -106,7 +67,7 @@ pub fn get(url: &str) -> Option<Vec<u8>> {
 /// Returns the number of bytes written to `buf`, or `None` on error.
 /// More memory-efficient than `get()` when you know the max response size.
 pub fn get_into(url: &str, buf: &mut [u8]) -> Option<usize> {
-    let n = (lib().get)(
+    let n = (lib().libhttp_get)(
         url.as_ptr(), url.len() as u32,
         buf.as_mut_ptr(), buf.len() as u32,
     );
@@ -118,7 +79,7 @@ pub fn get_into(url: &str, buf: &mut [u8]) -> Option<usize> {
 /// Returns true on success, false on error.
 /// More memory-efficient than `get()` for large files.
 pub fn download(url: &str, path: &str) -> bool {
-    let result = (lib().download)(
+    let result = (lib().libhttp_download)(
         url.as_ptr(), url.len() as u32,
         path.as_ptr(), path.len() as u32,
     );
@@ -136,7 +97,7 @@ pub fn download_progress(
     callback: ProgressCallback,
     userdata: u64,
 ) -> bool {
-    let result = (lib().download_progress)(
+    let result = (lib().libhttp_download_progress)(
         url.as_ptr(), url.len() as u32,
         path.as_ptr(), path.len() as u32,
         Some(callback), userdata,
@@ -149,7 +110,7 @@ pub fn download_progress(
 /// Returns `Some(response_body)` on success, `None` on error.
 pub fn post(url: &str, body: &[u8], content_type: &str) -> Option<Vec<u8>> {
     let mut buf = vec![0u8; 256 * 1024];
-    let n = (lib().post)(
+    let n = (lib().libhttp_post)(
         url.as_ptr(), url.len() as u32,
         body.as_ptr(), body.len() as u32,
         content_type.as_ptr(), content_type.len() as u32,
@@ -162,7 +123,7 @@ pub fn post(url: &str, body: &[u8], content_type: &str) -> Option<Vec<u8>> {
 
 /// Returns the HTTP status code of the last request (e.g. 200, 404, 0 if no request).
 pub fn last_status() -> u32 {
-    (lib().last_status)()
+    (lib().libhttp_last_status)()
 }
 
 /// Returns the error code of the last request.
@@ -179,5 +140,5 @@ pub fn last_status() -> u32 {
 /// - 8: Output buffer too small
 /// - 9: File write error
 pub fn last_error() -> u32 {
-    (lib().last_error)()
+    (lib().libhttp_last_error)()
 }

@@ -205,8 +205,7 @@ struct NotifyApp {
     needs_redraw: bool,
 }
 
-static mut APP: Option<NotifyApp> = None;
-fn app() -> &'static mut NotifyApp { unsafe { APP.as_mut().unwrap() } }
+anyos_std::global_app_state!(NotifyApp);
 
 // ── Entry Point ─────────────────────────────────────────────────────────────
 

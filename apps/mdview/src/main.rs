@@ -59,16 +59,12 @@ struct AppState {
     active: usize,
 }
 
-static mut APP: Option<AppState> = None;
-
-fn app() -> &'static mut AppState {
-    unsafe { APP.as_mut().unwrap() }
-}
+anyos_std::global_app_state!(AppState);
 
 // ── Utility ──────────────────────────────────────────────────────────────────
 
 fn basename(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
+    anyos_std::path::basename(path)
 }
 
 fn tab_labels(files: &[OpenFile]) -> String {

@@ -50,12 +50,15 @@ pub fn sys_devlist(buf_ptr: u32, buf_size: u32) -> u32 {
 pub fn sys_devopen(path_ptr: u32, _flags: u32) -> u32 {
     let path = unsafe { read_user_str(path_ptr) };
     let devices = crate::drivers::hal::list_devices();
-    if devices.iter().any(|(p, _, _)| p == path) { 0 } else { u32::MAX }
+    // ENOENT = 2
+    if devices.iter().any(|(p, _, _)| p == path) { 0 } else { (-2i32) as u32 }
 }
 
 pub fn sys_devclose(_handle: u32) -> u32 { 0 }
-pub fn sys_devread(_handle: u32, _buf_ptr: u32, _len: u32) -> u32 { u32::MAX }
-pub fn sys_devwrite(_handle: u32, _buf_ptr: u32, _len: u32) -> u32 { u32::MAX }
+/// Unimplemented — returns -ENOSYS (38).
+pub fn sys_devread(_handle: u32, _buf_ptr: u32, _len: u32) -> u32 { (-38i32) as u32 }
+/// Unimplemented — returns -ENOSYS (38).
+pub fn sys_devwrite(_handle: u32, _buf_ptr: u32, _len: u32) -> u32 { (-38i32) as u32 }
 /// sys_devioctl - Send ioctl to a device by driver type.
 /// handle = DriverType as u32 (0=Block,1=Char,2=Network,3=Display,4=Input,5=Audio,6=Output,7=Sensor)
 pub fn sys_devioctl(dtype: u32, cmd: u32, arg: u32) -> u32 {
@@ -69,11 +72,11 @@ pub fn sys_devioctl(dtype: u32, cmd: u32, arg: u32) -> u32 {
         5 => DriverType::Audio,
         6 => DriverType::Output,
         7 => DriverType::Sensor,
-        _ => return u32::MAX,
+        _ => return (-22i32) as u32, // EINVAL
     };
     match device_ioctl_by_type(driver_type, cmd, arg) {
         Ok(val) => val,
-        Err(_) => u32::MAX,
+        Err(_) => (-5i32) as u32, // EIO
     }
 }
 pub fn sys_irqwait(_irq: u32) -> u32 { 0 }
@@ -107,6 +110,6 @@ pub fn sys_set_dll_u32(dll_base_lo: u32, offset: u32, value: u32) -> u32 {
     if crate::task::dll::set_dll_u32(dll_base, offset as u64, value) {
         0
     } else {
-        u32::MAX
+        (-22i32) as u32 // EINVAL
     }
 }

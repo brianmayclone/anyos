@@ -411,7 +411,7 @@ fn display_filename(path: &str) -> String {
 }
 
 fn basename(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
+    anyos_std::path::basename(path)
 }
 
 fn read_file(path: &str) -> Option<alloc::vec::Vec<u8>> {
