@@ -231,7 +231,7 @@ struct MemorySlot {
 #[inline]
 fn host_tsc() -> u64 {
     #[cfg(target_arch = "x86_64")]
-    unsafe { core::arch::x86_64::_rdtsc() }
+    unsafe { core::arch::x86_64::_rdtsc() as u64 }
     #[cfg(not(target_arch = "x86_64"))]
     { 0 }
 }
@@ -1257,6 +1257,22 @@ impl VmBackend for WhpBackend {
                             }
                         }
                         self.set_vcpu_regs(id, &new_regs)?;
+
+                        // After LAPIC MMIO, check if timer fired and try to inject.
+                        // This is critical during calibration: guest polls current_count
+                        // in a loop, and we need to deliver the interrupt promptly.
+                        if let Some(vec) = self.lapic.poll_timer() {
+                            if new_regs.rflags & 0x200 != 0 {
+                                let _ = self.inject_interrupt(id, vec);
+                            }
+                        } else if self.lapic.timer_irq_pending {
+                            if new_regs.rflags & 0x200 != 0 {
+                                if let Some(vec) = self.lapic.take_timer_irq() {
+                                    let _ = self.inject_interrupt(id, vec);
+                                }
+                            }
+                        }
+
                         continue; // re-enter guest
                     }
 
