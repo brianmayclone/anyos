@@ -538,7 +538,7 @@ pub struct SoftIoapic {
     irq_level: [bool; IOAPIC_NUM_PINS],
     /// Pending interrupts to deliver via WHvRequestInterrupt.
     /// Each entry: (vector, dest_apic_id, dest_mode, trigger_mode, delivery_mode)
-    pending: Vec<IoapicInterrupt>,
+    pub pending: Vec<IoapicInterrupt>,
 }
 
 #[derive(Clone, Copy)]
@@ -759,7 +759,13 @@ impl WhpBackend {
                 set_regs: load!("WHvSetVirtualProcessorRegisters"),
                 request_interrupt: {
                     let p = GetProcAddress(dll, b"WHvRequestInterrupt\0".as_ptr());
-                    if p.is_null() { None } else { Some(core::mem::transmute(p)) }
+                    if p.is_null() {
+                        whp_debug(format_args!("WHvRequestInterrupt NOT found in DLL"));
+                        None
+                    } else {
+                        whp_debug(format_args!("WHvRequestInterrupt found at {:p}", p));
+                        Some(core::mem::transmute(p))
+                    }
                 },
                 cancel_run: load!("WHvCancelRunVirtualProcessor"),
             };
@@ -799,19 +805,29 @@ impl WhpBackend {
 
             // Enable extended VM exits for CPUID, MSR, and exception interception
             // bit 0 = X64CpuidExit, bit 1 = X64MsrExit, bit 2 = ExceptionExit
-            // InterruptWindow doesn't need an extended exit bit —
-            // it's controlled per-vCPU via WHvRegisterDeliverabilityNotifications
+            // Try property code 0x2 first (Windows SDK), fall back to 0x1 (older?)
             let extended_exits: u64 = 0x7;
             let hr = (api.set_property)(
                 partition,
-                WHV_PROPERTY_EXTENDED_VM_EXITS,
+                0x00000002, // WHvPartitionPropertyCodeExtendedVmExits
                 &extended_exits as *const u64 as *const u8,
                 core::mem::size_of::<u64>() as u32,
             );
             if hr < 0 {
-                whp_debug(format_args!("ExtendedVmExits set FAILED: hr={:#x}", hr));
+                whp_debug(format_args!("ExtendedVmExits(0x2) FAILED hr={:#x}, trying 0x1", hr));
+                let hr2 = (api.set_property)(
+                    partition,
+                    0x00000001,
+                    &extended_exits as *const u64 as *const u8,
+                    core::mem::size_of::<u64>() as u32,
+                );
+                if hr2 < 0 {
+                    whp_debug(format_args!("ExtendedVmExits(0x1) also FAILED hr={:#x}", hr2));
+                } else {
+                    whp_debug(format_args!("ExtendedVmExits(0x1) OK: {:#x}", extended_exits));
+                }
             } else {
-                whp_debug(format_args!("ExtendedVmExits set OK: {:#x}", extended_exits));
+                whp_debug(format_args!("ExtendedVmExits(0x2) OK: {:#x}", extended_exits));
             }
 
             // Exception exit bitmap: catch #DF and #UD.
@@ -830,8 +846,6 @@ impl WhpBackend {
             }
 
             // XApic emulation — WHP handles LAPIC internally (timer, ISR/IRR, EOI).
-            // PIC interrupts injected via WHvRegisterPendingEvent (0x80000002)
-            // with WHV_X64_PENDING_EXT_INT_EVENT (EventType=5), same as QEMU/WHPX.
             // WHvPartitionPropertyCodeLocalApicEmulationMode = 0x00001005
             let apic_mode: u32 = 1;
             let hr = (api.set_property)(
@@ -841,7 +855,9 @@ impl WhpBackend {
                 core::mem::size_of::<u32>() as u32,
             );
             if hr < 0 {
-                // Non-fatal
+                whp_debug(format_args!("LocalApicEmulationMode(xApic=1) FAILED hr={:#x}", hr));
+            } else {
+                whp_debug(format_args!("LocalApicEmulationMode set to xApic(1)"));
             }
 
             let hr = (api.setup_partition)(partition);
@@ -1158,43 +1174,50 @@ impl WhpBackend {
 }
 
 impl WhpBackend {
-    /// Deliver pending IOAPIC interrupts via WHvRequestInterrupt.
-    /// This sends interrupts through WHP's LAPIC (not PIC ExtInt path).
+    /// Deliver pending IOAPIC interrupts via direct PendingEvent ExtInt injection.
+    /// WHvRequestInterrupt returns success but WHP's internal LAPIC never delivers,
+    /// so we bypass it entirely and inject the same way as PIC interrupts.
+    /// PendingEvent can only hold one event, so we inject the first and re-queue the rest.
     fn deliver_ioapic_pending(&mut self) {
         let pending = self.ioapic.take_pending();
         if pending.is_empty() { return; }
-        let req_fn = match self.api.request_interrupt {
-            Some(f) => f,
-            None => return,
-        };
-        for intr in &pending {
-            let mut ctrl = WhvInterruptControl {
-                type_and_flags: 0,
-                destination: intr.dest as u32,
-                vector: intr.vector as u32,
-            };
-            // Type[0:7]: 0=Fixed, 1=LowestPriority
-            ctrl.type_and_flags = intr.delivery as u64;
-            // DestinationMode[8:11]: 0=physical, 1=logical
-            if intr.dest_mode != 0 { ctrl.type_and_flags |= 1 << 8; }
-            // TriggerMode[12:15]: 0=edge, 1=level
-            if intr.trigger != 0 { ctrl.type_and_flags |= 1 << 12; }
 
-            let hr = unsafe {
-                req_fn(
-                    self.partition,
-                    &ctrl as *const WhvInterruptControl as *const u8,
-                    core::mem::size_of::<WhvInterruptControl>() as u32,
-                )
-            };
-            {
-                static IOAPIC_INTR_CTR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                let cnt = IOAPIC_INTR_CTR.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                if cnt < 50 || (hr < 0 && cnt < 500) {
-                    whp_debug(format_args!("IOAPIC->LAPIC: hr={:#x} vec={} dest={} dm={} trig={} del={}",
-                        hr, intr.vector, intr.dest, intr.dest_mode, intr.trigger, intr.delivery));
-                }
+        // Check RFLAGS.IF — can only inject if interrupts are enabled
+        let mut rflags_val = [WHV_REGISTER_VALUE::default()];
+        let if_set = if self.get_regs_raw(0, &[REG_RFLAGS], &mut rflags_val).is_ok() {
+            (unsafe { rflags_val[0].reg64 } & 0x200) != 0
+        } else {
+            false
+        };
+
+        if !if_set {
+            // Can't inject now — put them all back and request interrupt window
+            for intr in pending {
+                self.ioapic.pending.push(intr);
             }
+            let _ = self.request_interrupt_window(0, true);
+            return;
+        }
+
+        // Inject the first one via PendingEvent ExtInt (same as PIC path)
+        let first = &pending[0];
+        {
+            static IOAPIC_INTR_CTR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            let cnt = IOAPIC_INTR_CTR.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if cnt < 50 {
+                whp_debug(format_args!("IOAPIC direct inject: vec={} dest={} dm={} trig={} del={}",
+                    first.vector, first.dest, first.dest_mode, first.trigger, first.delivery));
+            }
+        }
+        let _ = self.inject_interrupt(0, first.vector);
+
+        // Re-queue remaining interrupts
+        if pending.len() > 1 {
+            for intr in &pending[1..] {
+                self.ioapic.pending.push(intr.clone());
+            }
+            // Request interrupt window so we get called again for the rest
+            let _ = self.request_interrupt_window(0, true);
         }
     }
 
@@ -1376,6 +1399,7 @@ impl VmBackend for WhpBackend {
                                 | 0x01CE | 0x01CF | 0x01D0  // Bochs VBE
                                 | 0x0070 | 0x0071            // CMOS
                                 | 0x03D4 | 0x03D5            // VGA CRTC
+                                | 0x00ED                     // Linux I/O delay port
                             )
                         }
                         WHV_EXIT_REASON_MEMORY_ACCESS => {
@@ -1698,6 +1722,7 @@ impl VmBackend for WhpBackend {
                         let mut regs = self.get_vcpu_regs(id)?;
                         // Read critical MSRs from WHP virtual registers; others return fixed values
                         let whp_msr_reg = match msr_num {
+                            0x1B => Some(REG_APIC_BASE),
                             0xC000_0080 => Some(REG_EFER),
                             0x174 => Some(REG_SYSENTER_CS),
                             0x175 => Some(REG_SYSENTER_ESP),
@@ -1718,7 +1743,6 @@ impl VmBackend for WhpBackend {
                                 0
                             }
                         } else { match msr_num {
-                            0x1B => 0xFEE0_0800, // IA32_APIC_BASE: base=0xFEE00000, enable=1 (bit 11)
                             0x17 => 0, // IA32_PLATFORM_ID
                             0x1A0 => (1 << 11), // IA32_MISC_ENABLE: BTS unavailable (bit 11)
                             0xFE => 0, // IA32_MTRRCAP
@@ -1749,6 +1773,7 @@ impl VmBackend for WhpBackend {
                         }
                         // Forward critical MSR writes to WHP virtual registers
                         let whp_reg = match msr_num {
+                            0x1B => Some(REG_APIC_BASE),
                             0xC000_0080 => Some(REG_EFER),
                             0x174 => Some(REG_SYSENTER_CS),
                             0x175 => Some(REG_SYSENTER_ESP),
@@ -1838,9 +1863,10 @@ impl VmBackend for WhpBackend {
                 }
                 WHV_EXIT_REASON_INTERRUPT_WINDOW => {
                     // Guest is now interruptible (IF=1). Disable the notification
-                    // and return so vm.rs can inject PIC interrupts.
-                    // LAPIC timer is handled by WHP internally in XApic mode.
+                    // and deliver any re-queued IOAPIC interrupts before returning
+                    // to vm.rs for PIC interrupt injection.
                     let _ = self.request_interrupt_window(id, false);
+                    self.deliver_ioapic_pending();
                     return Ok(VmExitReason::InterruptWindow);
                 }
                 WHV_EXIT_REASON_UNSUPPORTED_FEATURE => {
@@ -2033,8 +2059,7 @@ impl VmBackend for WhpBackend {
 
     fn inject_interrupt(&mut self, id: u32, vector: u8) -> Result<(), VmError> {
         // XApic mode: use WHvRegisterPendingEvent (0x80000002) with
-        // WHV_X64_PENDING_EXT_INT_EVENT (EventType=5). This is the same
-        // approach QEMU/WHPX uses for PIC interrupt injection.
+        // WHV_X64_PENDING_EXT_INT_EVENT (EventType=5).
         //
         // WHV_X64_PENDING_EXT_INT_EVENT layout (128-bit register):
         //   bit 0:     EventPending = 1
@@ -2043,13 +2068,13 @@ impl VmBackend for WhpBackend {
         //   bits 8-15: Vector
         //   bits 16-63: Reserved = 0
         //   bits 64-127: Reserved = 0
+        //
         // Clear HaltSuspend in InternalActivityState — if the vCPU is in HLT,
-        // writing PendingEvent alone won't wake it. QEMU does this same dance.
+        // writing PendingEvent alone won't wake it.
         let mut activity = [WHV_REGISTER_VALUE::default()];
         if self.get_regs_raw(id, &[REG_INTERNAL_ACTIVITY_STATE], &mut activity).is_ok() {
             let state = unsafe { activity[0].reg64 };
             if state & 2 != 0 {
-                // Bit 1 = HaltSuspend — clear it
                 let cleared = WHV_REGISTER_VALUE::from_u64(state & !2);
                 let _ = self.set_regs_raw(id, &[REG_INTERNAL_ACTIVITY_STATE], &[cleared]);
             }
