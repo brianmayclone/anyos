@@ -365,8 +365,15 @@ impl Desktop {
                 );
             }
             CursorShape::Hidden => {
-                // Hide the hardware cursor by sending CURSOR_SHOW(0)
-                self.compositor.gpu_cmds.push([crate::compositor::gpu::GPU_CURSOR_SHOW, 0, 0, 0, 0, 0, 0, 0, 0]);
+                // Define a 1x1 fully transparent cursor instead of CURSOR_SHOW(0).
+                // VMware host cursor integration ignores CURSOR_ON=0 and keeps
+                // showing the host pointer.  A transparent cursor tricks the host
+                // into thinking a cursor is active while displaying nothing.
+                // NOTE: pixel data must be static — define_hw_cursor captures a
+                // raw pointer that is read later by flush_gpu().
+                static TRANSPARENT: [u32; 1] = [0x00000000];
+                self.compositor.define_hw_cursor(1, 1, 0, 0, &TRANSPARENT);
+                self.compositor.gpu_cmds.push([crate::compositor::gpu::GPU_CURSOR_SHOW, 1, 0, 0, 0, 0, 0, 0, 0]);
                 self.compositor.flush_gpu();
                 return;
             }

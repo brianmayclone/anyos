@@ -11,6 +11,13 @@ use crate::mesh::{ChunkMesh, FLOATS_PER_VERTEX};
 type Mat4 = [f32; 16];
 
 // ---------------------------------------------------------------------------
+// Day/Night cycle constants
+// ---------------------------------------------------------------------------
+
+/// Full day cycle duration in milliseconds (10 minutes).
+const DAY_CYCLE_MS: u32 = 10 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
 // Shaders
 // ---------------------------------------------------------------------------
 
@@ -19,13 +26,14 @@ const VS_BLOCK: &str =
 attribute vec2 aTexCoord;
 attribute float aLight;
 uniform mat4 uMVP;
+uniform float uSunBrightness;
 varying vec2 vTexCoord;
 varying float vLighting;
 varying float vDist;
 void main() {
     gl_Position = uMVP * vec4(aPosition, 1.0);
     vTexCoord = aTexCoord;
-    vLighting = aLight;
+    vLighting = aLight * uSunBrightness;
     vDist = gl_Position.w;
 }
 ";
@@ -60,9 +68,47 @@ const FS_SKY: &str =
 "varying vec2 vPos;
 uniform vec3 uSkyTop;
 uniform vec3 uSkyHorizon;
+uniform vec3 uSkyBottom;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+uniform float uSunSize;
+uniform vec3 uCamFwd;
+uniform vec3 uCamRight;
+uniform vec3 uCamUp;
+uniform float uTanHalfFov;
+uniform float uAspect;
 void main() {
-    float t = clamp(vPos.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 color = mix(uSkyHorizon, uSkyTop, t);
+    // Reconstruct view ray from screen position using camera basis vectors
+    vec3 ray = normalize(uCamFwd
+        + vPos.x * uCamRight * uTanHalfFov * uAspect
+        + vPos.y * uCamUp * uTanHalfFov);
+
+    // Sky gradient based on vertical angle
+    float elevation = ray.y;
+    vec3 color;
+    if (elevation > 0.0) {
+        // Above horizon: horizon -> top
+        float t = clamp(elevation * 2.5, 0.0, 1.0);
+        color = mix(uSkyHorizon, uSkyTop, t);
+    } else {
+        // Below horizon: horizon -> bottom (ground haze)
+        float t = clamp(-elevation * 4.0, 0.0, 1.0);
+        color = mix(uSkyHorizon, uSkyBottom, t);
+    }
+
+    // Sun disc
+    float sun_dot = dot(ray, uSunDir);
+    if (sun_dot > uSunSize) {
+        float t = (sun_dot - uSunSize) / (1.0 - uSunSize);
+        color = mix(color, uSunColor, clamp(t * 3.0, 0.0, 1.0));
+    }
+    // Sun glow (larger soft halo)
+    float glow_size = uSunSize - 0.04;
+    if (sun_dot > glow_size && glow_size < 1.0) {
+        float t = (sun_dot - glow_size) / (1.0 - glow_size);
+        color = mix(color, uSunColor, t * t * 0.4);
+    }
+
     gl_FragColor = vec4(color, 1.0);
 }
 ";
@@ -82,12 +128,22 @@ pub struct Renderer {
     pub u_fog_start: i32,
     pub u_fog_end: i32,
     pub u_texture: i32,
+    pub u_sun_brightness: i32,
     pub a_position: i32,
     pub a_texcoord: i32,
     pub a_light: i32,
     // Sky shader locations
     pub u_sky_top: i32,
     pub u_sky_horizon: i32,
+    pub u_sky_bottom: i32,
+    pub u_sun_dir: i32,
+    pub u_sun_color: i32,
+    pub u_sun_size: i32,
+    pub u_cam_fwd: i32,
+    pub u_cam_right: i32,
+    pub u_cam_up: i32,
+    pub u_tan_half_fov: i32,
+    pub u_aspect: i32,
     pub a_sky_pos: i32,
     // Chunk VBOs: (vbo_id, vertex_count)
     pub chunk_vbos: BTreeMap<(i32, i32), (u32, u32)>,
@@ -147,6 +203,7 @@ impl Renderer {
         let u_fog_start = gl::get_uniform_location(block_program, "uFogStart");
         let u_fog_end = gl::get_uniform_location(block_program, "uFogEnd");
         let u_texture = gl::get_uniform_location(block_program, "uTexture");
+        let u_sun_brightness = gl::get_uniform_location(block_program, "uSunBrightness");
 
         let a_position = gl::get_attrib_location(block_program, "aPosition");
         let a_texcoord = gl::get_attrib_location(block_program, "aTexCoord");
@@ -154,6 +211,15 @@ impl Renderer {
 
         let u_sky_top = gl::get_uniform_location(sky_program, "uSkyTop");
         let u_sky_horizon = gl::get_uniform_location(sky_program, "uSkyHorizon");
+        let u_sky_bottom = gl::get_uniform_location(sky_program, "uSkyBottom");
+        let u_sun_dir = gl::get_uniform_location(sky_program, "uSunDir");
+        let u_sun_color = gl::get_uniform_location(sky_program, "uSunColor");
+        let u_sun_size = gl::get_uniform_location(sky_program, "uSunSize");
+        let u_cam_fwd = gl::get_uniform_location(sky_program, "uCamFwd");
+        let u_cam_right = gl::get_uniform_location(sky_program, "uCamRight");
+        let u_cam_up = gl::get_uniform_location(sky_program, "uCamUp");
+        let u_tan_half_fov = gl::get_uniform_location(sky_program, "uTanHalfFov");
+        let u_aspect = gl::get_uniform_location(sky_program, "uAspect");
         let a_sky_pos = gl::get_attrib_location(sky_program, "aPosition");
 
         anyos_std::println!("forger: block prog={} sky prog={}", block_program, sky_program);
@@ -170,11 +236,21 @@ impl Renderer {
             u_fog_start,
             u_fog_end,
             u_texture,
+            u_sun_brightness,
             a_position,
             a_texcoord,
             a_light,
             u_sky_top,
             u_sky_horizon,
+            u_sky_bottom,
+            u_sun_dir,
+            u_sun_color,
+            u_sun_size,
+            u_cam_fwd,
+            u_cam_right,
+            u_cam_up,
+            u_tan_half_fov,
+            u_aspect,
             a_sky_pos,
             chunk_vbos: BTreeMap::new(),
             yaw: 0.0,
@@ -212,9 +288,23 @@ impl Renderer {
     }
 
     pub fn render(&mut self, cam_x: f32, cam_y: f32, cam_z: f32, width: u32, height: u32) {
-        // Fixed noon lighting (no day/night cycle for performance)
-        let sky_top = [0.3f32, 0.5, 0.9];
-        let sky_horizon = [0.6f32, 0.7, 0.9];
+        // ── Day/Night cycle ──────────────────────────────────────────
+        let now = anyos_std::sys::uptime_ms();
+        let day_progress = (now % DAY_CYCLE_MS) as f32 / DAY_CYCLE_MS as f32;
+
+        // Sun angle: 0.0 = sunrise (east), 0.25 = noon (top), 0.5 = sunset (west), 0.75 = midnight
+        let sun_angle = day_progress * 2.0 * gl::PI;
+        let sun_elevation = gl::sin(sun_angle);  // -1 to 1, positive = above horizon
+        let sun_x = gl::cos(sun_angle);           // East-west component
+        let sun_y = sun_elevation;
+        let sun_z = 0.3 * gl::sin(sun_angle);     // Slight Z drift for realism
+        // Normalize sun direction
+        let sun_len = gl::sqrt(sun_x * sun_x + sun_y * sun_y + sun_z * sun_z);
+        let sun_dir = [sun_x / sun_len, sun_y / sun_len, sun_z / sun_len];
+
+        // Compute sky colors and lighting based on sun elevation
+        let (sky_top, sky_horizon, sky_bottom, sun_color, sun_brightness) =
+            compute_sky_colors(sun_elevation);
 
         // Smooth fog distance
         let fog_speed = 0.02;
@@ -235,6 +325,38 @@ impl Renderer {
 
         gl::uniform3f(self.u_sky_top, sky_top[0], sky_top[1], sky_top[2]);
         gl::uniform3f(self.u_sky_horizon, sky_horizon[0], sky_horizon[1], sky_horizon[2]);
+        gl::uniform3f(self.u_sky_bottom, sky_bottom[0], sky_bottom[1], sky_bottom[2]);
+        gl::uniform3f(self.u_sun_dir, sun_dir[0], sun_dir[1], sun_dir[2]);
+        gl::uniform3f(self.u_sun_color, sun_color[0], sun_color[1], sun_color[2]);
+        // Sun disc angular size (cosine of half-angle; ~0.995 = small disc)
+        let sun_size = if sun_elevation > -0.1 { 0.9985 } else { 2.0 }; // hide below horizon
+        gl::uniform1f(self.u_sun_size, sun_size);
+
+        // Camera basis vectors for sky ray reconstruction
+        let aspect = width as f32 / height as f32;
+        let fov_rad = 70.0 * gl::PI / 180.0;
+        let tan_half_fov = gl::tan(fov_rad * 0.5);
+
+        let cy = gl::cos(self.yaw);
+        let sy = gl::sin(self.yaw);
+        let cp = gl::cos(self.pitch);
+        let sp = gl::sin(self.pitch);
+
+        // Forward, right, up vectors (same as look_matrix)
+        let fwd = [sy * cp, -sp, -cy * cp];
+        let right = [cy, 0.0, sy];
+        // up = right × forward
+        let up = [
+            right[1] * fwd[2] - right[2] * fwd[1],
+            right[2] * fwd[0] - right[0] * fwd[2],
+            right[0] * fwd[1] - right[1] * fwd[0],
+        ];
+
+        gl::uniform3f(self.u_cam_fwd, fwd[0], fwd[1], fwd[2]);
+        gl::uniform3f(self.u_cam_right, right[0], right[1], right[2]);
+        gl::uniform3f(self.u_cam_up, up[0], up[1], up[2]);
+        gl::uniform1f(self.u_tan_half_fov, tan_half_fov);
+        gl::uniform1f(self.u_aspect, aspect);
 
         gl::bind_buffer(gl::GL_ARRAY_BUFFER, self.sky_vbo);
         gl::enable_vertex_attrib_array(self.a_sky_pos as u32);
@@ -250,8 +372,7 @@ impl Renderer {
 
         gl::use_program(self.block_program);
 
-        // Build matrices
-        let aspect = width as f32 / height as f32;
+        // Build view-projection matrix for block pass
         let proj = perspective(70.0, aspect, 0.1, 1000.0);
         let view = look_matrix(cam_x, cam_y, cam_z, self.yaw, self.pitch);
         let mvp = mat4_mul(&proj, &view);
@@ -285,6 +406,7 @@ impl Renderer {
         gl::uniform3f(self.u_fog_color, sky_horizon[0], sky_horizon[1], sky_horizon[2]);
         gl::uniform1f(self.u_fog_start, fog_start);
         gl::uniform1f(self.u_fog_end, fog_end);
+        gl::uniform1f(self.u_sun_brightness, sun_brightness);
 
         gl::active_texture(gl::GL_TEXTURE0);
         gl::bind_texture(gl::GL_TEXTURE_2D, self.atlas_tex);
@@ -344,6 +466,68 @@ impl Renderer {
         } else if fps > 12.0 {
             self.target_fog_distance = (self.target_fog_distance + 4.0).min(64.0);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Day/Night cycle — sky color computation
+// ---------------------------------------------------------------------------
+
+/// Linearly interpolate two RGB colors.
+fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    let t = t.clamp(0.0, 1.0);
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+/// Compute sky colors, sun color, and block brightness from sun elevation (-1..1).
+fn compute_sky_colors(sun_elev: f32) -> ([f32; 3], [f32; 3], [f32; 3], [f32; 3], f32) {
+    // Sky palettes for different times of day
+    //                 top              horizon          bottom (ground haze)
+    let day_top     = [0.25, 0.45, 0.90];
+    let day_horiz   = [0.55, 0.65, 0.90];
+    let day_bottom  = [0.40, 0.50, 0.55];
+
+    let sunset_top    = [0.15, 0.15, 0.45];
+    let sunset_horiz  = [0.85, 0.40, 0.15];
+    let sunset_bottom = [0.50, 0.25, 0.10];
+
+    let night_top     = [0.01, 0.01, 0.05];
+    let night_horiz   = [0.02, 0.02, 0.08];
+    let night_bottom  = [0.01, 0.01, 0.03];
+
+    let sun_color_day    = [1.0, 0.95, 0.8];
+    let sun_color_sunset = [1.0, 0.5, 0.1];
+
+    if sun_elev > 0.15 {
+        // Full day
+        let brightness = 0.7 + 0.3 * sun_elev.min(1.0);
+        (day_top, day_horiz, day_bottom, sun_color_day, brightness)
+    } else if sun_elev > 0.0 {
+        // Sunrise/sunset transition (0.0 .. 0.15)
+        let t = sun_elev / 0.15;
+        let top = lerp3(sunset_top, day_top, t);
+        let horiz = lerp3(sunset_horiz, day_horiz, t);
+        let bottom = lerp3(sunset_bottom, day_bottom, t);
+        let sun_col = lerp3(sun_color_sunset, sun_color_day, t);
+        let brightness = 0.4 + 0.3 * t;
+        (top, horiz, bottom, sun_col, brightness)
+    } else if sun_elev > -0.15 {
+        // Dusk/dawn transition (horizon glow, -0.15 .. 0.0)
+        let t = (sun_elev + 0.15) / 0.15; // 0 at -0.15, 1 at 0.0
+        let top = lerp3(night_top, sunset_top, t);
+        let horiz = lerp3(night_horiz, sunset_horiz, t);
+        let bottom = lerp3(night_bottom, sunset_bottom, t);
+        let sun_col = lerp3([0.3, 0.1, 0.05], sun_color_sunset, t);
+        let brightness = 0.15 + 0.25 * t;
+        (top, horiz, bottom, sun_col, brightness)
+    } else {
+        // Night
+        let brightness = 0.15;
+        (night_top, night_horiz, night_bottom, [0.1, 0.1, 0.2], brightness)
     }
 }
 
@@ -427,12 +611,7 @@ fn look_matrix(x: f32, y: f32, z: f32, yaw: f32, pitch: f32) -> Mat4 {
     let ry = 0.0;
     let rz = sy;
 
-    // Up vector (right x forward)
-    let ux = -sy * sp;
-    let uy = -cp; // Note: negated because we look along -Z convention
-    let uz = cy * sp;
-
-    // Correct up: should be right x forward
+    // Correct up: right x forward
     let ux2 = ry * fz - rz * fy;
     let uy2 = rz * fx - rx * fz;
     let uz2 = rx * fy - ry * fx;

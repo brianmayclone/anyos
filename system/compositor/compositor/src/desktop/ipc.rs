@@ -699,6 +699,11 @@ impl Desktop {
         // Build response — SHM compositing mode (no direct FB)
         let stride = self.compositor.fb_pitch / 4; // pitch in pixels
 
+        // Hide cursor immediately so pointer lock engages right away
+        // (don't wait for app callback — mouse moves between now and then
+        // would still go through the normal clamped path).
+        self.set_cursor_shape(super::cursors::CursorShape::Hidden);
+
         // Damage entire screen for full recomposition
         self.compositor.damage_all();
 
@@ -759,6 +764,12 @@ impl Desktop {
                 layer.visible = true;
             }
         }
+
+        // Restore cursor and clamp mouse position back to screen bounds
+        self.set_cursor_shape(super::cursors::CursorShape::Arrow);
+        self.mouse_x = self.mouse_x.clamp(0, self.screen_width as i32 - 1);
+        self.mouse_y = self.mouse_y.clamp(0, self.screen_height as i32 - 1);
+        self.compositor.move_hw_cursor(self.mouse_x, self.mouse_y);
 
         // Damage entire screen for full recomposition
         self.compositor.damage_all();
