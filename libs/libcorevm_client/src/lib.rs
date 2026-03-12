@@ -131,6 +131,7 @@ pub enum VmExitReason {
     InterruptWindow,
     Shutdown,
     Debug,
+    StringIo { port: u16, size: u8, is_out: bool, count: u32 },
     Error,
 }
 
@@ -148,6 +149,12 @@ impl VmExitReason {
             8 => VmExitReason::InterruptWindow,
             9 => VmExitReason::Shutdown,
             10 => VmExitReason::Debug,
+            12 => VmExitReason::StringIo {
+                port: c.port,
+                size: c.size,
+                is_out: c.data_u32 != 0,
+                count: c.addr as u32,
+            },
             _ => VmExitReason::Error,
         }
     }
@@ -202,13 +209,21 @@ struct CoreVmLib {
     // I/O and MMIO exit dispatch
     handle_io_exit: extern "C" fn(u64, u16, u8, u8, *mut u8) -> i32,
     handle_mmio_exit: extern "C" fn(u64, u64, u8, u8, *mut u8, u8, u8) -> i32,
+    handle_string_io_exit: extern "C" fn(u64, u16, u8, u8, *mut u8, u32) -> i32,
 
     // Device setup
     setup_standard_devices: extern "C" fn(u64) -> i32,
     setup_e1000: extern "C" fn(u64, *const u8) -> i32,
     setup_ahci: extern "C" fn(u64, u8) -> i32,
+    setup_acpi_tables: extern "C" fn(u64) -> i32,
+    fw_cfg_add_file: extern "C" fn(u64, *const u8, u32, *const u8, u32) -> i32,
     ahci_attach_disk: extern "C" fn(u64, u32, i32, u64) -> i32,
     ahci_attach_cdrom: extern "C" fn(u64, u32, i32, u64) -> i32,
+
+    // Timer & IRQ polling
+    pit_advance: extern "C" fn(u64, u32) -> u32,
+    poll_irqs: extern "C" fn(u64) -> u32,
+    lapic_timer_advance: extern "C" fn(u64, u64) -> u32,
 
     // PS/2 input
     ps2_key_press: extern "C" fn(u64, u8) -> i32,
@@ -222,6 +237,10 @@ struct CoreVmLib {
     // VGA
     vga_get_framebuffer: extern "C" fn(u64, *mut *const u8, *mut u32) -> i32,
     vga_get_text_buffer: extern "C" fn(u64, *mut *const u16, *mut u32) -> i32,
+    vga_get_mode: extern "C" fn(u64, *mut u32, *mut u32, *mut u32) -> i32,
+    vga_get_lfb_addr: extern "C" fn(u64) -> u64,
+    // Debug
+    debug_port_take_output: extern "C" fn(u64, *mut u8, u32) -> i32,
 }
 
 /// Singleton holding the loaded library.
@@ -290,12 +309,19 @@ pub fn init() -> bool {
             // I/O and MMIO exit dispatch
             handle_io_exit: resolve(&handle, "corevm_handle_io_exit"),
             handle_mmio_exit: resolve(&handle, "corevm_handle_mmio_exit"),
+            handle_string_io_exit: resolve(&handle, "corevm_handle_string_io_exit"),
             // Device setup
             setup_standard_devices: resolve(&handle, "corevm_setup_standard_devices"),
             setup_e1000: resolve(&handle, "corevm_setup_e1000"),
             setup_ahci: resolve(&handle, "corevm_setup_ahci"),
+            setup_acpi_tables: resolve(&handle, "corevm_setup_acpi_tables"),
+            fw_cfg_add_file: resolve(&handle, "corevm_fw_cfg_add_file"),
             ahci_attach_disk: resolve(&handle, "corevm_ahci_attach_disk"),
             ahci_attach_cdrom: resolve(&handle, "corevm_ahci_attach_cdrom"),
+            // Timer & IRQ polling
+            pit_advance: resolve(&handle, "corevm_pit_advance"),
+            poll_irqs: resolve(&handle, "corevm_poll_irqs"),
+            lapic_timer_advance: resolve(&handle, "corevm_lapic_timer_advance"),
             // PS/2 input
             ps2_key_press: resolve(&handle, "corevm_ps2_key_press"),
             ps2_key_release: resolve(&handle, "corevm_ps2_key_release"),
@@ -306,6 +332,9 @@ pub fn init() -> bool {
             // VGA
             vga_get_framebuffer: resolve(&handle, "corevm_vga_get_framebuffer"),
             vga_get_text_buffer: resolve(&handle, "corevm_vga_get_text_buffer"),
+            vga_get_mode: resolve(&handle, "corevm_vga_get_mode"),
+            vga_get_lfb_addr: resolve(&handle, "corevm_vga_get_lfb_addr"),
+            debug_port_take_output: resolve(&handle, "corevm_debug_port_take_output"),
             // Handle
             _handle: handle,
         };
@@ -483,6 +512,11 @@ impl VmHandle {
         (lib().handle_mmio_exit)(self.handle, addr, direction, size, data.as_mut_ptr(), dest_reg, instr_len)
     }
 
+    /// Dispatch a string I/O (REP INS/OUTS) exit to device handlers.
+    pub fn handle_string_io_exit(&self, port: u16, direction: u8, size: u8, data: &mut [u8], count: u32) -> i32 {
+        (lib().handle_string_io_exit)(self.handle, port, direction, size, data.as_mut_ptr(), count)
+    }
+
     // ── Device setup ─────────────────────────────────────────────
 
     /// Register all standard chipset devices (PIC, PIT, PS/2, CMOS, serial, VGA).
@@ -500,6 +534,16 @@ impl VmHandle {
         (lib().setup_ahci)(self.handle, num_ports)
     }
 
+    /// Set up ACPI tables (RSDP, RSDT, FADT, MADT, DSDT) and register them via fw_cfg.
+    pub fn setup_acpi_tables(&self) -> i32 {
+        (lib().setup_acpi_tables)(self.handle)
+    }
+
+    /// Add a file to the fw_cfg device (used by SeaBIOS to find ROMs and tables).
+    pub fn fw_cfg_add_file(&self, name: &str, data: &[u8]) -> i32 {
+        (lib().fw_cfg_add_file)(self.handle, name.as_ptr(), name.len() as u32, data.as_ptr(), data.len() as u32)
+    }
+
     /// Attach a disk image to an AHCI port (fd-backed).
     pub fn ahci_attach_disk(&self, port: u32, fd: i32, size: u64) -> i32 {
         (lib().ahci_attach_disk)(self.handle, port, fd, size)
@@ -508,6 +552,24 @@ impl VmHandle {
     /// Attach a CD-ROM image to an AHCI port (fd-backed).
     pub fn ahci_attach_cdrom(&self, port: u32, fd: i32, size: u64) -> i32 {
         (lib().ahci_attach_cdrom)(self.handle, port, fd, size)
+    }
+
+    // ── Timer & IRQ polling ─────────────────────────────────────
+
+    /// Advance the PIT by the given number of ticks and deliver any pending IRQ 0.
+    pub fn pit_advance(&self, ticks: u32) -> u32 {
+        (lib().pit_advance)(self.handle, ticks)
+    }
+
+    /// Poll all device IRQs (PS/2, AHCI, etc.) and route pending interrupts
+    /// through the PIC/IOAPIC. Returns a bitmask of pending vectors.
+    pub fn poll_irqs(&self) -> u32 {
+        (lib().poll_irqs)(self.handle)
+    }
+
+    /// Advance the LAPIC timer by the given number of TSC ticks.
+    pub fn lapic_timer_advance(&self, ticks: u64) -> u32 {
+        (lib().lapic_timer_advance)(self.handle, ticks)
     }
 
     // ── PS/2 input ───────────────────────────────────────────────
@@ -578,6 +640,28 @@ impl VmHandle {
         let mut v = Vec::with_capacity(len as usize);
         v.extend_from_slice(slice);
         Some(v)
+    }
+
+    /// Get current VGA mode info: (width, height, bpp).
+    pub fn vga_get_mode(&self) -> (u32, u32, u32) {
+        let (mut w, mut h, mut bpp) = (0u32, 0u32, 0u32);
+        (lib().vga_get_mode)(self.handle, &mut w, &mut h, &mut bpp);
+        (w, h, bpp)
+    }
+
+    /// Get the VGA linear framebuffer physical address.
+    pub fn vga_get_lfb_addr(&self) -> u64 {
+        (lib().vga_get_lfb_addr)(self.handle)
+    }
+
+    /// Take debug port (0xE9) output bytes.
+    pub fn debug_port_take_output(&self) -> Vec<u8> {
+        let mut buf = [0u8; 4096];
+        let n = (lib().debug_port_take_output)(self.handle, buf.as_mut_ptr(), buf.len() as u32);
+        if n <= 0 { return Vec::new(); }
+        let mut v = Vec::with_capacity(n as usize);
+        v.extend_from_slice(&buf[..n as usize]);
+        v
     }
 }
 

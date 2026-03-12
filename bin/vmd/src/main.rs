@@ -56,7 +56,7 @@ const VGABIOS_PATH: &str = "/System/shared/corevm/bios/vgabios.bin";
 const DEFAULT_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
 /// Number of VM exits between framebuffer updates.
-const FB_UPDATE_INTERVAL: u64 = 1000;
+const FB_UPDATE_INTERVAL: u64 = 200;
 
 /// SHM state constants (written to offset 16).
 const STATE_STOPPED: u32 = 0;
@@ -195,44 +195,48 @@ fn update_shm_framebuffer(inst: &VmInstance) {
         return;
     }
 
-    // Try text mode first.
-    if let Some(text_buf) = inst.handle.vga_text_buffer() {
-        let cols: u32 = 80;
-        let rows: u32 = 25;
-        unsafe {
-            shm_write_u32(inst.shm_ptr, 0, cols);
-            shm_write_u32(inst.shm_ptr, 4, rows);
-            shm_write_u32(inst.shm_ptr, 8, 0); // bpp=0 means text mode
+    // Query actual VGA mode for correct dimensions.
+    let (mode_w, mode_h, mode_bpp) = inst.handle.vga_get_mode();
 
-            // Copy text buffer (u16 cells).
-            let payload = inst.shm_ptr.add(SHM_HEADER);
-            let src = text_buf.as_ptr() as *const u8;
-            let byte_len = (text_buf.len() * 2).min(SHM_SIZE as usize - SHM_HEADER);
-            core::ptr::copy_nonoverlapping(src, payload, byte_len);
+    if mode_bpp == 0 {
+        // Text mode: mode_w = cols, mode_h = rows.
+        if let Some(text_buf) = inst.handle.vga_text_buffer() {
+            let cols = if mode_w > 0 { mode_w } else { 80 };
+            let rows = if mode_h > 0 { mode_h } else { 25 };
+            unsafe {
+                shm_write_u32(inst.shm_ptr, 0, cols);
+                shm_write_u32(inst.shm_ptr, 4, rows);
+                shm_write_u32(inst.shm_ptr, 8, 0); // bpp=0 means text mode
 
-            // Set dirty flag last (acts as release fence).
-            shm_write_u32(inst.shm_ptr, 12, 1);
+                let payload = inst.shm_ptr.add(SHM_HEADER);
+                let src = text_buf.as_ptr() as *const u8;
+                let byte_len = (text_buf.len() * 2).min(SHM_SIZE as usize - SHM_HEADER);
+                core::ptr::copy_nonoverlapping(src, payload, byte_len);
+
+                // Set dirty flag last (acts as release fence).
+                shm_write_u32(inst.shm_ptr, 12, 1);
+            }
         }
-    } else if let Some((fb, w, h, bpp)) = inst.handle.vga_framebuffer() {
-        // If w/h/bpp are 0 from FFI, use sensible defaults.
-        let (w, h, bpp) = if w == 0 || h == 0 || bpp == 0 {
-            (640u32, 480u32, 32u8)
-        } else {
-            (w, h, bpp)
-        };
-        let bytes_per_pixel = ((bpp as usize) + 7) / 8;
-        let byte_len = (w as usize * h as usize * bytes_per_pixel)
-            .min(SHM_SIZE as usize - SHM_HEADER)
-            .min(fb.len());
-        unsafe {
-            shm_write_u32(inst.shm_ptr, 0, w);
-            shm_write_u32(inst.shm_ptr, 4, h);
-            shm_write_u32(inst.shm_ptr, 8, bpp as u32);
+    } else {
+        // Graphics mode.
+        if let Some((fb, _, _, _)) = inst.handle.vga_framebuffer() {
+            let w = mode_w;
+            let h = mode_h;
+            let bpp = mode_bpp;
+            let bytes_per_pixel = ((bpp as usize) + 7) / 8;
+            let byte_len = (w as usize * h as usize * bytes_per_pixel)
+                .min(SHM_SIZE as usize - SHM_HEADER)
+                .min(fb.len());
+            unsafe {
+                shm_write_u32(inst.shm_ptr, 0, w);
+                shm_write_u32(inst.shm_ptr, 4, h);
+                shm_write_u32(inst.shm_ptr, 8, bpp);
 
-            let payload = inst.shm_ptr.add(SHM_HEADER);
-            core::ptr::copy_nonoverlapping(fb.as_ptr(), payload, byte_len);
+                let payload = inst.shm_ptr.add(SHM_HEADER);
+                core::ptr::copy_nonoverlapping(fb.as_ptr(), payload, byte_len);
 
-            shm_write_u32(inst.shm_ptr, 12, 1);
+                shm_write_u32(inst.shm_ptr, 12, 1);
+            }
         }
     }
 }
@@ -422,7 +426,11 @@ fn cmd_create(uuid: &str) {
     };
 
     // Create vCPU 0.
-    handle.create_vcpu(0);
+    if handle.create_vcpu(0) != 0 {
+        send_status("error 0 failed to create vCPU");
+        anyos_std::println!("[vmd] ERROR: failed to create vCPU 0");
+        return;
+    }
 
     // Set up standard PC devices (PIC, PIT, PS/2, CMOS, serial, VGA).
     handle.setup_standard_devices();
@@ -535,23 +543,30 @@ fn cmd_start() {
                 return;
             }
 
-            // Full 256 KB into writable RAM at 0xC0000-0xFFFFF.
-            inst.handle.load_binary(0xC0000, &bios_data);
-            anyos_std::println!(
-                "[vmd] SeaBIOS loaded at 0xC0000 ({} bytes)", bios_data.len()
-            );
-
-            // Read-only ROM overlay at top of 4 GiB for 32-bit mode.
-            // Use write_phys as a fallback (load_binary writes to RAM).
+            // Load SeaBIOS at top of 4 GiB (reset vector area).
+            // For a 256 KB BIOS: load at 0xFFFC0000 (4G - 256K).
             inst.handle.load_binary(0xFFFC_0000, &bios_data);
             anyos_std::println!(
-                "[vmd] SeaBIOS ROM overlay at 0xFFFC0000 ({} bytes)", bios_data.len()
+                "[vmd] SeaBIOS loaded at 0xFFFC0000 ({} bytes)", bios_data.len()
             );
 
-            // Provide VGA BIOS — load at 0xC0000 area is handled by SeaBIOS.
-            // For now, VGA BIOS would need fw_cfg which is not in the new API.
-            // SeaBIOS will work without it (no graphical VGA BIOS).
-            let _vgabios = read_file(VGABIOS_PATH);
+            // Also shadow into low memory for real-mode BIOS calls.
+            // SeaBIOS needs the last 64 KB at 0xF0000 for real-mode compatibility.
+            let bios_len = bios_data.len();
+            if bios_len >= 0x10000 {
+                let offset = bios_len - 0x10000;
+                inst.handle.load_binary(0xF0000, &bios_data[offset..]);
+            }
+
+            // Set up ACPI tables before BIOS starts.
+            inst.handle.setup_acpi_tables();
+
+            // Load VGA BIOS as option ROM at 0xC0000.
+            let vgabios = read_file(VGABIOS_PATH);
+            if !vgabios.is_empty() {
+                inst.handle.load_binary(0xC0000, &vgabios);
+                anyos_std::println!("[vmd] VGA BIOS loaded at 0xC0000 ({} bytes)", vgabios.len());
+            }
         } else {
             // CoreVM BIOS (64 KB at 0xF0000).
             let bios_data = read_file(BIOS_PATH_COREVM);
@@ -568,10 +583,19 @@ fn cmd_start() {
             );
         }
 
-        // Set initial CPU state: Real Mode, CS:IP = F000:FFF0.
+        // Set initial CPU state: Real Mode.
         let mut sregs = inst.handle.get_vcpu_sregs(0);
-        sregs.cs.base = 0xF0000;
-        sregs.cs.selector = 0xF000;
+        if is_seabios {
+            // SeaBIOS reset vector: CS.base=0xFFFF0000, IP=0xFFF0
+            // → first fetch at physical 0xFFFFFFF0 (top of 4 GiB).
+            sregs.cs.base = 0xFFFF_0000;
+            sregs.cs.selector = 0xF000;
+        } else {
+            // CoreVM BIOS: CS.base=0xF0000, IP=0xFFF0
+            // → first fetch at physical 0xFFFF0 (within 64 KB BIOS area).
+            sregs.cs.base = 0xF0000;
+            sregs.cs.selector = 0xF000;
+        }
         sregs.cs.limit = 0xFFFF;
         sregs.cs.type_ = 0x0B; // Execute/Read, Accessed
         sregs.cs.present = 1;
@@ -731,6 +755,12 @@ fn run_vm_step() -> bool {
             buf[..size as usize].copy_from_slice(&bytes[..size as usize]);
             inst.handle.handle_mmio_exit(addr, 1, size, &mut buf[..size as usize], 0, 0);
         }
+        VmExitReason::StringIo { port, size, is_out, count } => {
+            let direction = if is_out { 1u8 } else { 0u8 };
+            let total = (count as usize) * (size as usize);
+            let mut buf = alloc::vec![0u8; total.min(4096)];
+            inst.handle.handle_string_io_exit(port, direction, size, &mut buf, count);
+        }
         VmExitReason::Halted => {
             // HLT pauses until the next interrupt. Sleep briefly so the
             // host loop does not busy-spin.
@@ -763,6 +793,20 @@ fn run_vm_step() -> bool {
     }
 
     inst.exit_count += 1;
+
+    // Advance PIT timer (~1193 ticks per ms, estimate ~1ms per VM-exit batch).
+    inst.handle.pit_advance(1193);
+
+    // Poll device IRQs and route through PIC/IOAPIC.
+    let pending_vector = inst.handle.poll_irqs();
+
+    // If there's a pending interrupt, inject it into the vCPU.
+    if pending_vector != 0 && pending_vector != u32::MAX {
+        inst.handle.inject_interrupt(0, pending_vector as u8);
+    }
+
+    // Advance LAPIC timer (~1M TSC ticks per ms).
+    inst.handle.lapic_timer_advance(1_000_000);
 
     // Periodic tasks: drain serial, update framebuffer.
     if inst.exit_count % FB_UPDATE_INTERVAL == 0 {

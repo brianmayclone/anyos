@@ -1087,24 +1087,41 @@ fn start_selected_vm() {
     entry.status_pipe = status_pipe;
     entry.vmd_tid = vmd_tid;
 
-    // Wait briefly for vmd to connect to pipes.
-    anyos_std::process::sleep(50);
-
-    // Send VM creation command — vmd reads full config by UUID.
-    let create_cmd = format!("create {}", entry.config.uuid);
-    ipc::pipe_write(cmd_pipe, create_cmd.as_bytes());
-
-    // Poll for "created" response with SHM ID (up to 2 seconds).
+    // Wait for vmd to signal "ready" before sending commands (up to 5 seconds).
     let mut resp_buf = [0u8; 256];
-    let mut got_created = false;
-    for _ in 0..40 {
+    let mut vmd_ready = false;
+    for _ in 0..100 {
         anyos_std::process::sleep(50);
         let n = ipc::pipe_read(status_pipe, &mut resp_buf);
         if n == 0 || n == u32::MAX {
             continue;
         }
         let resp = core::str::from_utf8(&resp_buf[..n as usize]).unwrap_or("");
-        // May receive "ready" first, then "created 0 <shm_id>" in a later read.
+        if resp.split('\n').any(|l| l.trim() == "ready") {
+            vmd_ready = true;
+            break;
+        }
+    }
+    if !vmd_ready {
+        anyos_std::println!("vmmanager: WARNING: vmd did not become ready");
+        a.status_label.set_text("Error: vmd timeout");
+        a.status_label.set_text_color(0xFFFF4040);
+        return;
+    }
+
+    // Send VM creation command — vmd reads full config by UUID.
+    let create_cmd = format!("create {}", entry.config.uuid);
+    ipc::pipe_write(cmd_pipe, create_cmd.as_bytes());
+
+    // Poll for "created" response with SHM ID (up to 5 seconds).
+    let mut got_created = false;
+    for _ in 0..100 {
+        anyos_std::process::sleep(50);
+        let n = ipc::pipe_read(status_pipe, &mut resp_buf);
+        if n == 0 || n == u32::MAX {
+            continue;
+        }
+        let resp = core::str::from_utf8(&resp_buf[..n as usize]).unwrap_or("");
         for line in resp.split('\n') {
             let line = line.trim();
             if line.starts_with("created") {
