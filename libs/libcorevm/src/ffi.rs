@@ -361,7 +361,7 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
             }
             // Inject ONE pending PIC interrupt (highest priority),
             // but ONLY if the guest has interrupts enabled (RFLAGS.IF=1).
-            // Injecting while IF=0 crashes KVM (guest IDT may not be ready).
+            // PendingInterruption requires IF=1.
             {
                 let if_set = vm.get_vcpu_regs(0)
                     .map(|r| r.rflags & 0x200 != 0)
@@ -402,13 +402,17 @@ pub extern "C" fn corevm_pic_debug(handle: u64) -> u32 {
 
 /// Poll LAPIC timer (TSC-based). Injects interrupt if timer fired and IF=1.
 /// Returns the vector injected (>0) or 0.
+/// NOTE: In XApic mode (WHP), the LAPIC timer is handled internally by WHP.
+/// This function is only active for the software LAPIC path.
 #[no_mangle]
 pub extern "C" fn corevm_lapic_timer_advance(handle: u64, _ticks: u64) -> u32 {
+    #[cfg(feature = "windows")]
+    { let _ = handle; return 0; } // XApic mode: WHP handles LAPIC timer
+
+    #[cfg(not(feature = "windows"))]
     match get_vm(handle) {
         Some(vm) => {
-            // Poll timer — checks host TSC internally
             vm.backend.lapic.poll_timer();
-            // Try to inject pending timer IRQ
             if let Some(vector) = vm.backend.lapic.take_timer_irq() {
                 if vm.get_vcpu_regs(0)
                     .map(|r| r.rflags & 0x200 != 0)
@@ -418,7 +422,6 @@ pub extern "C" fn corevm_lapic_timer_advance(handle: u64, _ticks: u64) -> u32 {
                         return vector as u32;
                     }
                 }
-                // Couldn't inject (IF=0) — re-pend and request interrupt window
                 vm.backend.lapic.timer_irq_pending = true;
                 let _ = vm.request_interrupt_window(0, true);
             }

@@ -121,6 +121,29 @@ const WHV_EXIT_REASON_CANCELED: u32 = 0x00002001;
 const WHV_EXIT_REASON_MSR: u32 = 0x00001000;
 const WHV_EXIT_REASON_CPUID: u32 = 0x00001001;
 const WHV_EXIT_REASON_INTERRUPT_WINDOW: u32 = 0x00000007;
+const WHV_EXIT_REASON_APIC_EOI: u32 = 0x00000009;
+
+/// WHV_INTERRUPT_CONTROL for WHvRequestInterrupt (XApic mode).
+/// Layout: [0..8] u64 bitfield (Type:2, DestMode:1, TriggerMode:1, Reserved:60),
+///         [8..12] Destination (APIC ID), [12..16] Vector.
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct WhvInterruptControl {
+    type_and_flags: u64, // bits 0-1: Type (0=Fixed), bit 2: DestMode (0=Physical), bit 3: TriggerMode (0=Edge)
+    destination: u32,    // target APIC ID
+    vector: u32,         // interrupt vector
+}
+
+impl WhvInterruptControl {
+    /// Create a fixed, edge-triggered, physical-destination interrupt to APIC ID 0.
+    fn fixed_edge(vector: u8) -> Self {
+        WhvInterruptControl {
+            type_and_flags: 0, // Type=Fixed(0), DestMode=Physical(0), TriggerMode=Edge(0)
+            destination: 0,    // BSP (APIC ID 0)
+            vector: vector as u32,
+        }
+    }
+}
 
 // WHV_REGISTER_NAME constants (from Windows SDK)
 const REG_RAX: u32 = 0x00000000;
@@ -174,6 +197,7 @@ const REG_CSTAR: u32 = 0x0000200A;
 const REG_SFMASK: u32 = 0x0000200B;
 
 const REG_PENDING_INTERRUPTION: u32 = 0x80000000;
+const REG_PENDING_EVENT: u32 = 0x80000002; // WHvRegisterPendingEvent — 128-bit, for ExtInt injection in XApic mode
 const REG_DELIVERABILITY_NOTIFICATIONS: u32 = 0x80000004;
 
 // GP register names in order for get/set
@@ -607,12 +631,11 @@ impl WhpBackend {
                 // Non-fatal: some WHP versions may not support extended exits
             }
 
-            // Disable APIC emulation — we handle PIC interrupts via
-            // PendingInterruption register. APIC emulation intercepts
-            // interrupt delivery and prevents PendingInterruption from working.
+            // XApic emulation — WHP handles LAPIC internally (timer, ISR/IRR, EOI).
+            // PIC interrupts injected via WHvRegisterPendingEvent (0x80000002)
+            // with WHV_X64_PENDING_EXT_INT_EVENT (EventType=5), same as QEMU/WHPX.
             // WHvPartitionPropertyCodeLocalApicEmulationMode = 0x00001005
-            // WHvX64LocalApicEmulationModeNone = 0
-            let apic_mode: u32 = 0;
+            let apic_mode: u32 = 1;
             let hr = (api.set_property)(
                 partition,
                 0x00001005,
@@ -1009,6 +1032,20 @@ impl VmBackend for WhpBackend {
         if hr < 0 {
             return Err(VmError::BackendErrorCtx(hr, "WHvGetVirtualProcessorRegisters(RIP) after create"));
         }
+
+        // Set IA32_APIC_BASE to standard xAPIC mode: base=0xFEE00000, BSP=1, Enable=1.
+        // Without this, WHP may inherit the host's x2APIC-enabled value (bit 10 set),
+        // causing the guest kernel to try x2APIC MSR access which our soft LAPIC can't handle.
+        // bit 8 = BSP, bit 11 = APIC Global Enable, bit 10 must be CLEAR (no x2APIC)
+        let apic_base_val = 0xFEE0_0000u64 | (1 << 8) | (1 << 11); // 0xFEE00900
+        let _ = self.set_regs_raw(id, &[REG_APIC_BASE], &[WHV_REGISTER_VALUE::from_u64(apic_base_val)]);
+
+        // Also log what APIC_BASE was before we set it, for debugging
+        let mut apic_val = [WHV_REGISTER_VALUE::default()];
+        if self.get_regs_raw(id, &[REG_APIC_BASE], &mut apic_val).is_ok() {
+            whp_debug(format_args!("APIC_BASE after set: {:#x}", unsafe { apic_val[0].reg64 }));
+        }
+
         Ok(())
     }
 
@@ -1226,93 +1263,14 @@ impl VmBackend for WhpBackend {
                         instr_len
                     };
 
-                    // Handle LAPIC MMIO internally (0xFEE00000-0xFEE00FFF)
+                    // LAPIC MMIO (0xFEE00000) handled by WHP in XApic mode — no exits expected.
                     if gpa >= 0xFEE0_0000 && gpa < 0xFEE0_1000 {
-                        let lapic_off = gpa & 0xFFF;
-                        {
-                            static LAPIC_LOG_CTR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                            let cnt = LAPIC_LOG_CTR.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                            // Always log writes; log reads for first 500 + every 1000th
-                            if is_write {
-                                whp_debug(format_args!("LAPIC WR [{:#05x}] = {:#x} rip={:#x}", lapic_off, write_data, regs.rip));
-                            } else if cnt < 500 || cnt % 1000 == 0 {
-                                let val = self.lapic.read(gpa);
-                                whp_debug(format_args!("LAPIC RD [{:#05x}] = {:#x} rip={:#x} armed={} init={:#x} pend={}",
-                                    lapic_off, val, regs.rip, self.lapic.timer_armed, self.lapic.timer_initial, self.lapic.timer_irq_pending));
-                            }
-                        }
+                        whp_debug(format_args!("LAPIC MMIO in XApic mode: gpa={:#x} write={} data={:#x} rip={:#x}",
+                            gpa, is_write, write_data, regs.rip));
                         let mut new_regs = regs;
                         new_regs.rip += instr_len;
-                        if is_write {
-                            self.lapic.write(gpa, write_data as u32);
-                        } else {
-                            // LAPIC read: put result in destination register
-                            // For MOV r, [mem] the destination is the reg field of ModR/M
-                            let val = self.lapic.read(gpa) as u64;
-                            // The most common pattern is MOV EAX, [addr] — put in RAX
-                            // More precisely, decode the dest reg from ModR/M
-                            if instr_byte_count > 0 {
-                                let mut pi = 0;
-                                let mut mmio_rex = 0u8;
-                                while pi < instr_bytes.len() {
-                                    match instr_bytes[pi] {
-                                        0x66 | 0x67 | 0xF0 | 0xF2 | 0xF3
-                                        | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 => { pi += 1; }
-                                        b @ 0x40..=0x4F => { mmio_rex = b; pi += 1; }
-                                        _ => break,
-                                    }
-                                }
-                                if pi < instr_bytes.len() {
-                                    let op = instr_bytes[pi];
-                                    if (op == 0x8B || op == 0x8A) && pi + 1 < instr_bytes.len() {
-                                        let modrm = instr_bytes[pi + 1];
-                                        let mut dest = ((modrm >> 3) & 7) as usize;
-                                        if (mmio_rex & 0x04) != 0 { dest += 8; } // REX.R
-                                        match dest {
-                                            0 => new_regs.rax = val,
-                                            1 => new_regs.rcx = val,
-                                            2 => new_regs.rdx = val,
-                                            3 => new_regs.rbx = val,
-                                            4 => new_regs.rsp = val,
-                                            5 => new_regs.rbp = val,
-                                            6 => new_regs.rsi = val,
-                                            7 => new_regs.rdi = val,
-                                            8 => new_regs.r8 = val,
-                                            9 => new_regs.r9 = val,
-                                            10 => new_regs.r10 = val,
-                                            11 => new_regs.r11 = val,
-                                            12 => new_regs.r12 = val,
-                                            13 => new_regs.r13 = val,
-                                            14 => new_regs.r14 = val,
-                                            15 => new_regs.r15 = val,
-                                            _ => new_regs.rax = val,
-                                        }
-                                    } else {
-                                        new_regs.rax = val;
-                                    }
-                                } else {
-                                    new_regs.rax = val;
-                                }
-                            } else {
-                                new_regs.rax = val;
-                            }
-                        }
                         self.set_vcpu_regs(id, &new_regs)?;
-
-                        // After LAPIC MMIO, check if timer fired and try to inject.
-                        self.lapic.poll_timer();
-                        if self.lapic.timer_irq_pending {
-                            if new_regs.rflags & 0x200 != 0 {
-                                if let Some(vec) = self.lapic.take_timer_irq() {
-                                    let _ = self.inject_interrupt(id, vec);
-                                }
-                            } else {
-                                // IF=0: request interrupt window so WHP tells us when IF→1
-                                let _ = self.request_interrupt_window(id, true);
-                            }
-                        }
-
-                        continue; // re-enter guest
+                        continue;
                     }
 
                     // Handle IOAPIC MMIO internally (0xFEC00000-0xFEC00FFF)
@@ -1523,9 +1481,12 @@ impl VmBackend for WhpBackend {
                     }
 
                     // WHP runs on real hardware — most features work natively.
-                    // Only filter VMX (nested virtualization not supported).
+                    // Filter features we don't emulate.
                     if leaf == 1 {
                         ecx &= !(1 << 5);  // Remove VMX
+                        ecx &= !(1 << 21); // Remove x2APIC (we emulate xAPIC via MMIO only)
+                        ecx &= !(1 << 24); // Remove TSC-Deadline (we don't handle MSR 0x6E0)
+                        ecx &= !(1 << 31); // Remove hypervisor present (avoid PV code paths)
                     }
 
                     // Hide Hyper-V signature so Linux uses standard LAPIC timer
@@ -1546,15 +1507,15 @@ impl VmBackend for WhpBackend {
                 }
                 WHV_EXIT_REASON_INTERRUPT_WINDOW => {
                     // Guest is now interruptible (IF=1). Disable the notification
-                    // and inject any pending LAPIC timer interrupt.
+                    // and return so vm.rs can inject PIC interrupts.
+                    // LAPIC timer is handled by WHP internally in XApic mode.
                     let _ = self.request_interrupt_window(id, false);
-                    self.lapic.poll_timer();
-                    if let Some(vec) = self.lapic.take_timer_irq() {
-                        let _ = self.inject_interrupt(id, vec);
-                        continue; // re-enter guest with interrupt pending
-                    }
-                    // No LAPIC interrupt — return so vm.rs can inject PIC interrupts
                     return Ok(VmExitReason::InterruptWindow);
+                }
+                WHV_EXIT_REASON_APIC_EOI => {
+                    // XApic mode: guest EOI'd. For level-triggered IOAPIC
+                    // interrupts we'd clear remote IRR here. Log and continue.
+                    continue;
                 }
                 WHV_EXIT_REASON_CANCELED => return Ok(VmExitReason::InterruptWindow),
                 WHV_EXIT_REASON_NONE => return Ok(VmExitReason::Error),
@@ -1671,28 +1632,25 @@ impl VmBackend for WhpBackend {
     }
 
     fn inject_interrupt(&mut self, id: u32, vector: u8) -> Result<(), VmError> {
-        // WHV_X64_PENDING_INTERRUPTION_REGISTER layout:
-        //   bit 0:      InterruptionPending (1)
-        //   bits 1-3:   InterruptionType (0 = External interrupt)
-        //   bit 4:      DeliverErrorCode (0)
-        //   bits 16-31: InterruptionVector
+        // XApic mode: use WHvRegisterPendingEvent (0x80000002) with
+        // WHV_X64_PENDING_EXT_INT_EVENT (EventType=5). This is the same
+        // approach QEMU/WHPX uses for PIC interrupt injection.
         //
-        // Do NOT pre-check RFLAGS.IF or interrupt shadow here. WHP handles
-        // the STI shadow + HLT case internally: setting PendingInterruption
-        // on a halted vCPU with STI blocking causes WHP to clear the shadow
-        // and deliver the interrupt on the next VM entry. Pre-checking shadow
-        // would create a deadlock (shadow persists across HALT exits, can only
-        // be cleared by interrupt delivery).
-        //
-        // If the vCPU is truly not interruptible (IF=0), WHP rejects the
-        // register write and we propagate the error to the caller.
-        let val = 1u64 | (0u64 << 1) | ((vector as u64) << 16);
-        let result = self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[WHV_REGISTER_VALUE::from_u64(val)]);
+        // WHV_X64_PENDING_EXT_INT_EVENT layout (128-bit register):
+        //   bit 0:     EventPending = 1
+        //   bits 1-3:  EventType = 5 (WHvX64PendingEventExtInt)
+        //   bits 4-7:  Reserved = 0
+        //   bits 8-15: Vector
+        //   bits 16-63: Reserved = 0
+        //   bits 64-127: Reserved = 0
+        let lo: u64 = 1 | (5u64 << 1) | ((vector as u64) << 8);
+        let val = WHV_REGISTER_VALUE { reg128: [lo, 0] };
+        let result = self.set_regs_raw(id, &[REG_PENDING_EVENT], &[val]);
         if result.is_err() {
             static INJECT_FAIL_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
             let cnt = INJECT_FAIL_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             if cnt < 10 || cnt % 1000 == 0 {
-                whp_debug(format_args!("inject failed #{} vec={} err={:?}", cnt, vector, result));
+                whp_debug(format_args!("inject_ext_int failed #{} vec={} err={:?}", cnt, vector, result));
             }
         }
         result

@@ -544,24 +544,24 @@ fn vm_run_loop(
             let mut lapic_cur = 0u32;
             let mut lapic_lvt = 0u32;
             let lapic_st = corevm_lapic_debug(handle, &mut lapic_init, &mut lapic_cur, &mut lapic_lvt);
+            // Read VGA text buffer first 160 bytes (2 lines of 80 chars, char+attr pairs)
+            let mut vga_buf = [0u8; 160];
+            corevm_read_phys(handle, 0xB8000, vga_buf.as_mut_ptr(), 160);
+            let vga_line: String = (0..80).map(|i| {
+                let ch = vga_buf[i * 2];
+                if ch >= 0x20 && ch < 0x7F { ch as char } else { ' ' }
+            }).collect::<String>().trim_end().to_string();
             diag.log(DiagCategory::Interrupt, format!(
-                "BDA ticks=0x{:08X} IVT[8]=0x{:08X} LAPIC armed={} pend={} div={} init={:#x} cur={:#x} lvt={:#x}",
+                "BDA ticks=0x{:08X} IVT[8]=0x{:08X} LAPIC armed={} pend={} div={} init={:#x} cur={:#x} lvt={:#x} VGA=[{}]",
                 bda_ticks, ivt8,
                 lapic_st & 1, (lapic_st >> 1) & 1, (lapic_st >> 2) & 0xFF,
-                lapic_init, lapic_cur, lapic_lvt
+                lapic_init, lapic_cur, lapic_lvt,
+                vga_line
             ));
         }
 
-        // Advance LAPIC timer: use elapsed nanoseconds as bus ticks (~1 GHz bus clock)
-        {
-            let lapic_ticks = pit_elapsed.as_nanos() as u64;
-            if lapic_ticks > 0 {
-                let vec = corevm_lapic_timer_advance(handle, lapic_ticks);
-                if vec > 0 && diag_enabled {
-                    diag.log(DiagCategory::Interrupt, format!("LAPIC timer fired vec={}", vec));
-                }
-            }
-        }
+        // LAPIC timer is handled by WHP internally in XApic mode.
+        // No need to call corevm_lapic_timer_advance.
 
         // Poll device IRQs (PS/2 keyboard IRQ 1, mouse IRQ 12, etc.)
         let poll_inj = corevm_poll_irqs(handle);
