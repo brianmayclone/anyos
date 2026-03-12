@@ -3,7 +3,7 @@ use crate::ast::{BinOp, Literal, Mutability};
 use crate::resolve::ResolveResult;
 use crate::intern::{Interner, Symbol};
 use crate::diagnostics::{Span, Diagnostic, Level};
-use std::collections::HashMap;
+use anyos_anyos_std::collections::HashMap;
 
 /// Internal type representation
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -209,13 +209,13 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Resolve all infer vars
-        let mut expr_types = std::mem::take(&mut self.expr_types);
+        let mut expr_types = core::mem::take(&mut self.expr_types);
         for ty in expr_types.values_mut() {
             *ty = self.resolve_ty_full(ty.clone());
         }
 
         // Also resolve types in generic_call_substs
-        let mut generic_call_substs = std::mem::take(&mut self.generic_call_substs);
+        let mut generic_call_substs = core::mem::take(&mut self.generic_call_substs);
         for (_, (_, substs)) in generic_call_substs.iter_mut() {
             for ty in substs.iter_mut() {
                 *ty = self.resolve_ty_full(ty.clone());
@@ -224,18 +224,18 @@ impl<'a> TypeChecker<'a> {
 
         TypeckResult {
             expr_types,
-            struct_defs: std::mem::take(&mut self.struct_defs),
+            struct_defs: core::mem::take(&mut self.struct_defs),
             fn_sigs: self.fn_sigs.clone(),
-            errors: std::mem::take(&mut self.errors),
+            errors: core::mem::take(&mut self.errors),
             generic_call_substs,
-            generic_fn_defs: std::mem::take(&mut self.generic_fn_defs),
-            enum_variants: std::mem::take(&mut self.enum_variant_fields),
-            const_values: std::mem::take(&mut self.const_values),
-            static_defs: std::mem::take(&mut self.static_defs),
-            closure_defs: std::mem::take(&mut self.closure_defs),
-            trait_methods: std::mem::take(&mut self.trait_methods),
-            trait_impls: std::mem::take(&mut self.trait_impls),
-            trait_names: std::mem::take(&mut self.trait_names),
+            generic_fn_defs: core::mem::take(&mut self.generic_fn_defs),
+            enum_variants: core::mem::take(&mut self.enum_variant_fields),
+            const_values: core::mem::take(&mut self.const_values),
+            static_defs: core::mem::take(&mut self.static_defs),
+            closure_defs: core::mem::take(&mut self.closure_defs),
+            trait_methods: core::mem::take(&mut self.trait_methods),
+            trait_impls: core::mem::take(&mut self.trait_impls),
+            trait_names: core::mem::take(&mut self.trait_names),
             type_def_to_name: self.type_name_to_def.iter()
                 .filter(|(name, _)| self.interner.resolve(**name) != "Self")
                 .map(|(name, &def_id)| (def_id, *name))
@@ -261,7 +261,7 @@ impl<'a> TypeChecker<'a> {
             }
             HirItemKind::Fn(f) => {
                 // Set up generic params for this function
-                let old_generics = std::mem::take(&mut self.current_generic_params);
+                let old_generics = core::mem::take(&mut self.current_generic_params);
                 let mut n_type_params = 0u32;
                 for gp in &f.generics.params {
                     if let HirGenericParam::Type(name, _, _, _) = gp {
@@ -466,7 +466,7 @@ impl<'a> TypeChecker<'a> {
 
     fn check_fn(&mut self, f: &HirFnDef) {
         // Set up generic params for this function's body
-        let old_generics = std::mem::take(&mut self.current_generic_params);
+        let old_generics = core::mem::take(&mut self.current_generic_params);
         let mut n_type_params = 0u32;
         for gp in &f.generics.params {
             if let HirGenericParam::Type(name, _, _, _) = gp {

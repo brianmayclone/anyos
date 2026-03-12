@@ -161,6 +161,17 @@ anyOS includes **CoreVM**, a pure-software x86 virtual machine built entirely in
 
 See **[CoreVM API Reference](docs/corevm-api.md)** for the complete documentation.
 
+### anyrc — Self-Hosted Rust Compiler
+
+- **anyrc** — native Rust subset compiler running on anyOS itself
+- Custom x86_64 machine code backend (no LLVM/Cranelift dependency)
+- Full compiler pipeline: Lexer → Parser → HIR → MIR → Borrow Checker → Codegen → ELF
+- Supports structs, enums, generics, traits, closures, `unsafe`, inline assembly, modules
+- NLL-style borrow checker and Hindley-Milner type inference
+- Goal: self-hosting (anyrc compiles itself and the anyOS kernel on anyOS)
+
+See **[anyrc Documentation](docs/anyrc-api.md)** for the full reference.
+
 ### C Toolchain & Shell
 
 - **TCC** (Tiny C Compiler) 0.9.27 running natively on the OS
@@ -553,6 +564,7 @@ DLIB programs link against lightweight client stub crates (e.g. `libimage_client
 - **[libjs API](docs/libjs-api.md)** — JavaScript engine
 - **[libwebview API](docs/libwebview-api.md)** — HTML/CSS/JS rendering engine
 - **[Services](docs/services.md)** — System services documentation
+- **[anyrc Compiler](docs/anyrc-api.md)** — Self-hosted Rust subset compiler (pipeline, CLI, supported features)
 - **[Package Manager](docs/ami.md)** — AMI package manager / system info daemon
 
 ---

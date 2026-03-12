@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use anyos_anyos_std::collections::HashMap;
 
 use crate::ast::{BinOp, Literal, Mutability};
 use crate::hir::*;
@@ -1212,10 +1212,10 @@ impl<'a> MirBuilder<'a> {
                 });
 
                 // Save current builder state
-                let saved_blocks = std::mem::take(&mut self.blocks);
-                let saved_locals = std::mem::take(&mut self.locals);
+                let saved_blocks = core::mem::take(&mut self.blocks);
+                let saved_locals = core::mem::take(&mut self.locals);
                 let saved_current_block = self.current_block;
-                let saved_var_map = std::mem::take(&mut self.var_map);
+                let saved_var_map = core::mem::take(&mut self.var_map);
 
                 self.blocks = Vec::new();
                 self.locals = Vec::new();
@@ -1255,8 +1255,8 @@ impl<'a> MirBuilder<'a> {
                 self.terminate(Terminator::Return);
 
                 // Extract the built closure body
-                closure_blocks = std::mem::take(&mut self.blocks);
-                closure_locals = std::mem::take(&mut self.locals);
+                closure_blocks = core::mem::take(&mut self.blocks);
+                closure_locals = core::mem::take(&mut self.locals);
 
                 // Restore builder state
                 self.blocks = saved_blocks;

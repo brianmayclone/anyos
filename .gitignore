@@ -25,3 +25,6 @@ packages/
 third_party/ladybird*
 *.iso
 .worktrees/
+a.out
+docs/plans/
+docs/superpowers/

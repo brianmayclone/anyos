@@ -106,8 +106,8 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         use crate::codegen::regalloc::ty_size;
 
         // First pass: collect field counts as fallback for structs not in typeck
-        let mut map: std::collections::HashMap<crate::hir::DefId, usize> = std::collections::HashMap::new();
-        fn collect_struct_counts(items: &[HirItem], map: &mut std::collections::HashMap<crate::hir::DefId, usize>) {
+        let mut map: anyos_std::collections::HashMap<crate::hir::DefId, usize> = anyos_std::collections::HashMap::new();
+        fn collect_struct_counts(items: &[HirItem], map: &mut anyos_std::collections::HashMap<crate::hir::DefId, usize>) {
             for item in items {
                 match &item.kind {
                     HirItemKind::Struct(s) => { map.insert(s.def_id, s.fields.len()); }
@@ -143,7 +143,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     // 9a. Build struct field offset map
     let field_offsets: regalloc::StructFieldOffsets = {
         use crate::codegen::regalloc::ty_size;
-        let mut offsets = std::collections::HashMap::new();
+        let mut offsets = anyos_std::collections::HashMap::new();
         for (def_id, fields) in &typeck_result.struct_defs {
             let mut field_offsets_vec = Vec::new();
             let mut offset = 0i32;

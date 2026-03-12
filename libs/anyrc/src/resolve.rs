@@ -1,7 +1,7 @@
 use crate::hir::*;
 use crate::intern::{Interner, Symbol};
 use crate::diagnostics::{Span, Diagnostic, Level};
-use std::collections::HashMap;
+use anyos_anyos_std::collections::HashMap;
 
 /// Result of name resolution
 pub struct ResolveResult {
@@ -109,11 +109,11 @@ impl<'a> Resolver<'a> {
         self.collect_variant_indices_recursive(&krate.items, &mut variant_indices);
 
         ResolveResult {
-            resolutions: std::mem::take(&mut self.resolutions),
-            errors: std::mem::take(&mut self.errors),
+            resolutions: core::mem::take(&mut self.resolutions),
+            errors: core::mem::take(&mut self.errors),
             impl_methods: self.impl_methods.clone(),
             variant_indices,
-            intrinsic_fns: std::mem::take(&mut self.intrinsic_fns),
+            intrinsic_fns: core::mem::take(&mut self.intrinsic_fns),
         }
     }
 
@@ -344,7 +344,7 @@ impl<'a> Resolver<'a> {
                     scope = mod_scope;
                     // Continue to next segment
                     // If this is the last segment, return this def_id
-                    if std::ptr::eq(&seg, path.last().unwrap()) {
+                    if core::ptr::eq(&seg, path.last().unwrap()) {
                         return Some(mod_def_id);
                     }
                 } else {

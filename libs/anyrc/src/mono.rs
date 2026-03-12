@@ -4,7 +4,7 @@ use crate::mir::*;
 use crate::mir_build::MirBuilder;
 use crate::resolve::ResolveResult;
 use crate::typeck::{TyKind, TypeckResult, IntTy, UintTy, FloatTy};
-use std::collections::{HashMap, HashSet};
+use anyos_std::collections::{HashMap, HashSet};
 
 /// Mangle a function name with its type arguments
 fn mangle_name(base: &str, substs: &[TyKind]) -> String {

@@ -385,7 +385,7 @@ impl<'a> Lexer<'a> {
                     while self.pos < self.src.len() && Self::is_ident_cont(self.peek()) {
                         self.pos += 1;
                     }
-                    let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
+                    let text = core::str::from_utf8(&self.src[start..self.pos]).unwrap();
                     if let Some(kw) = keyword_from_str(text) {
                         TokenKind::Kw(kw)
                     } else {
@@ -425,7 +425,7 @@ impl<'a> Lexer<'a> {
                     while self.pos < self.src.len() && Self::is_ident_cont(self.peek()) {
                         self.pos += 1;
                     }
-                    let text = std::str::from_utf8(&self.src[lt_start..self.pos]).unwrap();
+                    let text = core::str::from_utf8(&self.src[lt_start..self.pos]).unwrap();
                     let sym = self.interner.intern(text);
                     TokenKind::Lifetime(sym)
                 } else {

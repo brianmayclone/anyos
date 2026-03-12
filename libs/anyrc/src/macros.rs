@@ -3,7 +3,7 @@ use crate::intern::{Interner, Symbol};
 use crate::lexer::{Token, TokenKind, Keyword};
 use crate::parser::Parser;
 
-use std::collections::HashMap;
+use anyos_anyos_std::collections::HashMap;
 
 /// A registered macro definition.
 struct MacroDef {
@@ -457,7 +457,7 @@ fn tokens_match(a: &TokenKind, b: &TokenKind) -> bool {
         (TokenKind::IntLit(a), TokenKind::IntLit(b)) => a == b,
         (TokenKind::FloatLit(a), TokenKind::FloatLit(b)) => a == b,
         (TokenKind::Kw(a), TokenKind::Kw(b)) => a == b,
-        _ => std::mem::discriminant(a) == std::mem::discriminant(b),
+        _ => core::mem::discriminant(a) == core::mem::discriminant(b),
     }
 }
 

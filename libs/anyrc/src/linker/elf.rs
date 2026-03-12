@@ -506,7 +506,7 @@ pub fn parse_object(data: &[u8]) -> Option<ObjectFile> {
     // Collect user sections (PROGBITS, NOBITS)
     let mut sections = Vec::new();
     // Map from raw section index to our section index
-    let mut sec_index_map = std::collections::HashMap::new();
+    let mut sec_index_map = anyos_std::collections::HashMap::new();
     for (i, shdr) in shdrs.iter().enumerate() {
         if shdr.sh_type == SHT_PROGBITS || shdr.sh_type == SHT_NOBITS {
             let name = read_str(shstrtab, shdr.sh_name);
@@ -528,7 +528,7 @@ pub fn parse_object(data: &[u8]) -> Option<ObjectFile> {
 
     // Find symtab
     let mut symbols = Vec::new();
-    let mut raw_sym_to_our: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut raw_sym_to_our: anyos_std::collections::HashMap<usize, usize> = anyos_std::collections::HashMap::new();
     let mut raw_syms: Vec<(String, Option<usize>, u64, u64, u8, u8)> = Vec::new();
 
     for shdr in &shdrs {

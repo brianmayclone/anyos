@@ -3,12 +3,8 @@ name = "anyrc"
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-
 [lib]
 name = "anyrc"
 
-[features]
-default = ["host"]
-host = []
-anyos = []
+[dependencies]
+anyos_std = { path = "../stdlib" }

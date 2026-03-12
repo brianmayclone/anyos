@@ -81,6 +81,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyrc"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "anyrc-cli"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "anyrc",
+]
+
+[[package]]
 name = "anytrace"
 version = "0.1.0"
 dependencies = [

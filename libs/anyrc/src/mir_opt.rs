@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use anyos_std::collections::HashSet;
 
 use crate::mir::*;
 

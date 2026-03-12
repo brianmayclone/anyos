@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use anyos_std::collections::{HashMap, HashSet};
 
 use crate::diagnostics::{Diagnostic, Level, Span};
 use crate::hir::DefId;

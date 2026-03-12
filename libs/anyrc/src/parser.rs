@@ -47,7 +47,7 @@ impl<'a> Parser<'a> {
     }
 
     fn at(&self, kind: &TokenKind) -> bool {
-        std::mem::discriminant(&self.current().kind) == std::mem::discriminant(kind)
+        core::mem::discriminant(&self.current().kind) == core::mem::discriminant(kind)
             || self.current().kind == *kind
     }
 

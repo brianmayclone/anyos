@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use anyos_anyos_std::collections::HashMap;
 use super::elf;
 
 /// Link one or more ELF object files into an executable.
