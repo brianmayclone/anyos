@@ -106,7 +106,11 @@ impl Vm {
         self.pit_ptr = pit_ptr;
 
         // Port 61 (speaker gate, needs PIT pointer)
-        self.io.register(0x61, 1, Box::new(Port61::new(pit_ptr)));
+        let mut port61 = Port61::new(pit_ptr);
+        // On Linux/KVM, sync PIT channel 2 gate to the in-kernel PIT
+        #[cfg(feature = "linux")]
+        port61.set_gate_sync(crate::backend::kvm::kvm_sync_pit_ch2_gate);
+        self.io.register(0x61, 1, Box::new(port61));
 
         // CMOS (0x70-0x71)
         self.io.register(0x70, 2, Box::new(Cmos::new(ram_size)));

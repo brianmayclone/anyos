@@ -121,6 +121,7 @@ fn fill_exit(e: &mut CExitReason, reason: VmExitReason) {
         VmExitReason::Shutdown => e.reason = 9,
         VmExitReason::Debug => e.reason = 10,
         VmExitReason::Error => e.reason = 11,
+        VmExitReason::Cancelled => e.reason = 13,
     }
 }
 
@@ -279,7 +280,7 @@ pub extern "C" fn corevm_inject_interrupt(handle: u64, vcpu_id: u32, vector: u8)
     }
 }
 
-/// Cancel a running WHvRunVirtualProcessor call, causing it to return.
+/// Cancel a running vCPU, causing run_vcpu to return with Cancelled.
 /// Safe to call from any thread — uses atomic globals, no VM registry access.
 #[no_mangle]
 pub extern "C" fn corevm_cancel_vcpu(_handle: u64, vcpu_id: u32) -> i32 {
@@ -287,15 +288,60 @@ pub extern "C" fn corevm_cancel_vcpu(_handle: u64, vcpu_id: u32) -> i32 {
     {
         crate::backend::whp::cancel_vcpu_global(vcpu_id)
     }
-    #[cfg(not(feature = "windows"))]
+    #[cfg(feature = "linux")]
+    {
+        let _ = _handle;
+        crate::backend::kvm::cancel_vcpu_kvm(vcpu_id)
+    }
+    #[cfg(feature = "anyos")]
     { let _ = (_handle, vcpu_id); 0 }
 }
 
 /// Advance the PIT timer by `ticks` clock cycles.
 /// If channel 0 fires, raises IRQ0 on the PIC and injects the resulting
 /// interrupt vector into vCPU 0. Returns the number of IRQ0 fires.
+///
+/// On Linux/KVM: the in-kernel PIT handles channel 0 IRQ 0 automatically,
+/// but we still need to tick the userspace PIT for channel 2 (used by
+/// port 0x61 for BIOS/bootloader delay loops).
 #[no_mangle]
 pub extern "C" fn corevm_pit_advance(handle: u64, ticks: u32) -> u32 {
+    #[cfg(feature = "linux")]
+    {
+        // Sync channel 2 config from in-kernel PIT, then tick userspace PIT.
+        // The in-kernel PIT handles port 0x40-0x43 writes (mode, count config),
+        // but port 0x61 reads the userspace PIT's channel 2 output.
+        match get_vm(handle) {
+            Some(vm) => {
+                let (count, _status, mode, gate, ret) = vm.backend.get_pit2_debug();
+                if ret >= 0 {
+                    if let Some(pit) = vm.pit_mut() {
+                        let ch = &mut pit.channels[2];
+                        // Sync configuration from in-kernel PIT to userspace PIT
+                        // only if config changed (mode or count written by guest)
+                        if mode < 6 && (!ch.enabled || ch.mode != mode || ch.count != count as u16) {
+                            ch.mode = mode;
+                            ch.count = count as u16;
+                            ch.current = count as u16;
+                            ch.gate = gate != 0;
+                            ch.enabled = true;
+                            // Modes 2,3 start with output HIGH; mode 0 starts LOW
+                            ch.output = matches!(mode, 2 | 3);
+                        }
+                        ch.gate = gate != 0;
+                        // Tick channel 2 only (not channel 0 — in-kernel PIT does that)
+                        for _ in 0..ticks {
+                            ch.tick();
+                        }
+                    }
+                }
+                0
+            }
+            None => 0,
+        }
+    }
+
+    #[cfg(not(feature = "linux"))]
     match get_vm(handle) {
         Some(vm) => {
             let fires = if let Some(pit) = vm.pit_mut() {
@@ -344,49 +390,72 @@ pub extern "C" fn corevm_pit_debug(handle: u64) -> u64 {
 /// Checks PS/2 keyboard (IRQ 1) and mouse (IRQ 12). If a device has pending
 /// data, raises the corresponding IRQ on the PIC and injects the resulting
 /// interrupt vector into vCPU 0. Returns the number of interrupts injected.
+///
+/// On Linux/KVM: uses KVM_IRQ_LINE to signal the in-kernel irqchip.
+/// The in-kernel PIC/IOAPIC/LAPIC handles vector injection automatically.
 #[no_mangle]
 pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
     match get_vm(handle) {
         Some(vm) => {
             let mut injected = 0u32;
-            if vm.pic_ptr.is_null() {
-                return 0;
-            }
+
             // PS/2 keyboard → IRQ 1, mouse → IRQ 12
             if let Some(ps2) = vm.ps2() {
                 if ps2.irq_needed {
                     ps2.irq_needed = false;
                     let is_mouse = (ps2.status & 0x20) != 0;
                     let irq: u8 = if is_mouse { 12 } else { 1 };
-                    let pic = unsafe { &mut *vm.pic_ptr };
-                    pic.raise_irq(irq);
-                    // Also route through IOAPIC (for APIC mode guests like Windows)
-                    #[cfg(feature = "windows")]
+                    #[cfg(feature = "linux")]
                     {
-                        vm.backend.ioapic_set_irq(irq, true);
-                        vm.backend.ioapic_set_irq(irq, false);
+                        let _ = vm.backend.set_irq_line(irq as u32, true);
+                        let _ = vm.backend.set_irq_line(irq as u32, false);
+                        injected += 1;
+                    }
+                    #[cfg(not(feature = "linux"))]
+                    {
+                        if !vm.pic_ptr.is_null() {
+                            let pic = unsafe { &mut *vm.pic_ptr };
+                            pic.raise_irq(irq);
+                        }
+                        #[cfg(feature = "windows")]
+                        {
+                            vm.backend.ioapic_set_irq(irq, true);
+                            vm.backend.ioapic_set_irq(irq, false);
+                        }
                     }
                 }
             }
-            // AHCI IRQ → route through PIC (IRQ 11) and IOAPIC
+
+            // AHCI IRQ → IRQ 11
             if !vm.ahci_ptr.is_null() {
                 let ahci = unsafe { &mut *vm.ahci_ptr };
                 if ahci.irq_raised() {
                     ahci.clear_irq();
-                    let pic = unsafe { &mut *vm.pic_ptr };
-                    pic.raise_irq(11);
-                    #[cfg(feature = "windows")]
+                    #[cfg(feature = "linux")]
                     {
-                        vm.backend.ioapic_set_irq(11, true);
-                        vm.backend.ioapic_set_irq(11, false);
+                        let _ = vm.backend.set_irq_line(11, true);
+                        let _ = vm.backend.set_irq_line(11, false);
+                        injected += 1;
+                    }
+                    #[cfg(not(feature = "linux"))]
+                    {
+                        if !vm.pic_ptr.is_null() {
+                            let pic = unsafe { &mut *vm.pic_ptr };
+                            pic.raise_irq(11);
+                        }
+                        #[cfg(feature = "windows")]
+                        {
+                            vm.backend.ioapic_set_irq(11, true);
+                            vm.backend.ioapic_set_irq(11, false);
+                        }
                     }
                 }
             }
-            // PIC interrupt injection: inject ONE at a time.
-            // WHP's PendingEvent register holds only one interrupt — injecting
-            // multiple in a loop overwrites earlier ones, losing them.
-            // If more are pending, request an interrupt window for the next cycle.
-            {
+
+            // Software PIC injection (non-Linux only).
+            // On KVM/Linux the in-kernel irqchip handles injection automatically.
+            #[cfg(not(feature = "linux"))]
+            if !vm.pic_ptr.is_null() {
                 let if_set = vm.get_vcpu_regs(0)
                     .map(|r| r.rflags & 0x200 != 0)
                     .unwrap_or(false);
@@ -397,20 +466,19 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                             let irq = pic.irq_for_vector(vector).unwrap_or(0);
                             pic.lower_irq(irq);
                             injected += 1;
-                            // If more interrupts pending, request window for next delivery
                             if pic.get_interrupt_vector().is_some() {
                                 let _ = vm.request_interrupt_window(0, true);
                             }
                         }
                     }
                 } else {
-                    // IF=0: can't inject now, request window notification
                     let pic = unsafe { &*vm.pic_ptr };
                     if pic.get_interrupt_vector().is_some() {
                         let _ = vm.request_interrupt_window(0, true);
                     }
                 }
             }
+
             injected
         }
         None => 0,
@@ -440,10 +508,10 @@ pub extern "C" fn corevm_pic_debug(handle: u64) -> u32 {
 /// This function is only active for the software LAPIC path.
 #[no_mangle]
 pub extern "C" fn corevm_lapic_timer_advance(handle: u64, _ticks: u64) -> u32 {
-    #[cfg(any(feature = "windows", feature = "anyos"))]
-    { let _ = handle; return 0; }
+    #[cfg(not(feature = "windows"))]
+    { let _ = (handle, _ticks); return 0; }
 
-    #[cfg(not(any(feature = "windows", feature = "anyos")))]
+    #[cfg(feature = "windows")]
     match get_vm(handle) {
         Some(vm) => {
             vm.backend.lapic.poll_timer();
@@ -470,10 +538,10 @@ pub extern "C" fn corevm_lapic_timer_advance(handle: u64, _ticks: u64) -> u32 {
 /// and writes initial_count and current_count to out pointers.
 #[no_mangle]
 pub extern "C" fn corevm_lapic_debug(handle: u64, out_initial: *mut u32, out_current: *mut u32, out_lvt: *mut u32) -> u32 {
-    #[cfg(feature = "anyos")]
+    #[cfg(not(feature = "windows"))]
     { let _ = (handle, out_initial, out_current, out_lvt); return 0; }
 
-    #[cfg(not(feature = "anyos"))]
+    #[cfg(feature = "windows")]
     match get_vm(handle) {
         Some(vm) => {
             let lapic = &vm.backend.lapic;
@@ -811,10 +879,9 @@ impl AhciPciMmioWrapper {
 impl crate::memory::mmio::MmioHandler for AhciPciMmioWrapper {
     fn read(&mut self, offset: u64, size: u8) -> crate::error::Result<u64> {
         let bar_base = self.bar5_base();
-        // offset is relative to our MMIO registration base (0xFEBF_0000)
         let abs_addr = AHCI_MMIO_BASE + offset;
         if abs_addr < bar_base || abs_addr >= bar_base + 0x1000 {
-            return Ok(0xFFFFFFFF); // not in BAR range
+            return Ok(0xFFFFFFFF);
         }
         let ahci_offset = abs_addr - bar_base;
         let ahci = unsafe { &mut *self.ahci };
@@ -825,7 +892,7 @@ impl crate::memory::mmio::MmioHandler for AhciPciMmioWrapper {
         let bar_base = self.bar5_base();
         let abs_addr = AHCI_MMIO_BASE + offset;
         if abs_addr < bar_base || abs_addr >= bar_base + 0x1000 {
-            return Ok(()); // not in BAR range
+            return Ok(());
         }
         let ahci_offset = abs_addr - bar_base;
         let ahci = unsafe { &mut *self.ahci };

@@ -48,6 +48,7 @@ pub struct VcpuSregs {
 pub struct CpuidEntry {
     pub function: u32,
     pub index: u32,
+    pub flags: u32,
     pub eax: u32, pub ebx: u32, pub ecx: u32, pub edx: u32,
 }
 

@@ -25,6 +25,11 @@ fn write_u32(buf: &mut Vec<u8>, offset: usize, val: u32) {
     buf[offset..offset + 4].copy_from_slice(&b);
 }
 
+fn write_u64(buf: &mut Vec<u8>, offset: usize, val: u64) {
+    let b = val.to_le_bytes();
+    buf[offset..offset + 8].copy_from_slice(&b);
+}
+
 fn write_acpi_header(buf: &mut Vec<u8>, offset: usize, sig: &[u8; 4], length: u32, revision: u8) {
     buf[offset..offset + 4].copy_from_slice(sig);
     write_u32(buf, offset + 4, length);
@@ -37,28 +42,46 @@ fn write_acpi_header(buf: &mut Vec<u8>, offset: usize, sig: &[u8; 4], length: u3
     write_u32(buf, offset + 32, 1); // creator revision
 }
 
+/// Build ACPI 2.0 RSDP (36 bytes).
 fn build_rsdp() -> Vec<u8> {
     let mut r = vec![0u8; 36];
     r[0..8].copy_from_slice(b"RSD PTR ");
-    // [8] checksum = 0, patched by loader
+    // [8] checksum (bytes 0..20), patched by loader
     r[9..15].copy_from_slice(b"ANYOS\0");
-    r[15] = 0; // revision 0 = ACPI 1.0
+    r[15] = 2; // revision 2 = ACPI 2.0+
     // [16..20] RSDT address = 0, patched by loader
+    // [20..24] length = 36
+    r[20..24].copy_from_slice(&36u32.to_le_bytes());
+    // [24..32] XSDT address = 0, patched by loader
+    // [32] extended checksum (bytes 0..36), patched by loader
+    // [33..36] reserved
     r
 }
 
-fn build_rsdt() -> Vec<u8> {
-    let mut t = vec![0u8; 44];
-    write_acpi_header(&mut t, 0, b"RSDT", 44, 1);
-    // [36..40] FADT pointer, [40..44] MADT pointer — patched by loader
+/// Build XSDT with 64-bit pointers to FADT and MADT (36 + 2*8 = 52 bytes).
+fn build_xsdt() -> Vec<u8> {
+    let mut t = vec![0u8; 52];
+    write_acpi_header(&mut t, 0, b"XSDT", 52, 1);
+    // [36..44] FADT pointer (u64), [44..52] MADT pointer (u64) — patched by loader
     t
 }
 
+/// Write a Generic Address Structure (GAS, 12 bytes) for system I/O space.
+fn write_gas_io(buf: &mut Vec<u8>, offset: usize, addr: u64, bit_width: u8) {
+    buf[offset] = 1; // address_space_id = System I/O
+    buf[offset + 1] = bit_width;
+    buf[offset + 2] = 0; // register_bit_offset
+    buf[offset + 3] = if bit_width == 32 { 3 } else if bit_width == 16 { 2 } else { 1 }; // access_size
+    write_u64(buf, offset + 4, addr);
+}
+
+/// Build FADT revision 3 (ACPI 2.0), 244 bytes.
 fn build_fadt() -> Vec<u8> {
-    let mut t = vec![0u8; 116];
-    write_acpi_header(&mut t, 0, b"FACP", 116, 1);
-    // [36] FIRMWARE_CTRL, [40] DSDT — patched by loader
-    t[44] = 1; // INT_MODEL
+    let mut t = vec![0u8; 244];
+    write_acpi_header(&mut t, 0, b"FACP", 244, 3);
+    // [36] FIRMWARE_CTRL (u32), patched by loader
+    // [40] DSDT (u32), patched by loader
+    t[45] = 0; // Preferred_PM_Profile = unspecified
     // SCI_INT = 9
     write_u16(&mut t, 46, 9);
     // PM1a_EVT_BLK
@@ -81,10 +104,25 @@ fn build_fadt() -> Vec<u8> {
     write_u16(&mut t, 96, 0x0065);
     // P_LVL3_LAT
     write_u16(&mut t, 98, 0x03E9);
-    // IAPC_BOOT_ARCH
+    // IAPC_BOOT_ARCH (8042, legacy devices)
     write_u16(&mut t, 109, 0x0003);
-    // FLAGS
+    // FLAGS: WBINVD | PROC_C1 | SLP_BUTTON | RTC_S4 | TMR_VAL_EXT
     write_u32(&mut t, 112, 0x000000A5);
+
+    // ACPI 2.0 extended fields (offset 132+)
+    // X_FIRMWARE_CTRL (u64 at offset 132), patched by loader
+    // X_DSDT (u64 at offset 140), patched by loader
+
+    // Extended GAS fields for PM registers
+    // X_PM1a_EVT_BLK (offset 148, 12 bytes)
+    write_gas_io(&mut t, 148, 0xB000, 32);
+    // X_PM1a_CNT_BLK (offset 172, 12 bytes)
+    write_gas_io(&mut t, 172, 0xB004, 16);
+    // X_PM_TMR_BLK (offset 208, 12 bytes)
+    write_gas_io(&mut t, 208, 0xB008, 32);
+    // X_GPE0_BLK (offset 220, 12 bytes)
+    write_gas_io(&mut t, 220, 0xB020, 32);
+
     t
 }
 
@@ -123,7 +161,7 @@ fn build_dsdt() -> Vec<u8> {
     ];
     let total_len = 36 + aml.len();
     let mut t = vec![0u8; total_len];
-    write_acpi_header(&mut t, 0, b"DSDT", total_len as u32, 1);
+    write_acpi_header(&mut t, 0, b"DSDT", total_len as u32, 2);
     t[36..].copy_from_slice(aml);
     t
 }
@@ -131,7 +169,7 @@ fn build_dsdt() -> Vec<u8> {
 fn build_madt() -> Vec<u8> {
     let len: u32 = 114;
     let mut t = vec![0u8; len as usize];
-    write_acpi_header(&mut t, 0, b"APIC", len, 1);
+    write_acpi_header(&mut t, 0, b"APIC", len, 3);
     // Local APIC address
     write_u32(&mut t, 36, 0xFEE0_0000);
     // Flags (PCAT_COMPAT)
@@ -213,7 +251,7 @@ fn loader_add_checksum(file: &[u8; FILESZ], offset: u32, start: u32, length: u32
     cmd
 }
 
-/// Generate ACPI tables for SeaBIOS fw_cfg.
+/// Generate ACPI 2.0 tables for SeaBIOS fw_cfg.
 /// Returns (rsdp_data, tables_data, loader_data).
 pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let tables_file = make_name(TABLES_NAME);
@@ -221,36 +259,41 @@ pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 
     let rsdp = build_rsdp();
 
-    let rsdt = build_rsdt();
+    let xsdt = build_xsdt();
     let fadt = build_fadt();
     let facs = build_facs();
     let dsdt = build_dsdt();
     let madt = build_madt();
 
-    let rsdt_off: u32 = 0;
-    let fadt_off = rsdt.len() as u32;
+    let xsdt_off: u32 = 0;
+    let fadt_off = xsdt.len() as u32;
     let facs_off = fadt_off + fadt.len() as u32;
     let dsdt_off = facs_off + facs.len() as u32;
     let madt_off = dsdt_off + dsdt.len() as u32;
     let madt_len = madt.len() as u32;
 
     let mut tables = Vec::with_capacity((madt_off + madt_len) as usize);
-    tables.extend_from_slice(&rsdt);
+    tables.extend_from_slice(&xsdt);
     tables.extend_from_slice(&fadt);
     tables.extend_from_slice(&facs);
     tables.extend_from_slice(&dsdt);
     tables.extend_from_slice(&madt);
 
     // Pre-fill pointer fields with intra-buffer offsets.
-    // ADD_POINTER adds the allocated base address of src to the u32 at dest[offset].
-    // RSDT -> FADT
-    write_u32(&mut tables, (rsdt_off + 36) as usize, fadt_off);
-    // RSDT -> MADT
-    write_u32(&mut tables, (rsdt_off + 40) as usize, madt_off);
-    // FADT -> FACS
+    // ADD_POINTER adds the allocated base address of src to the value at dest[offset].
+
+    // XSDT -> FADT (u64 at offset 36)
+    write_u64(&mut tables, (xsdt_off + 36) as usize, fadt_off as u64);
+    // XSDT -> MADT (u64 at offset 44)
+    write_u64(&mut tables, (xsdt_off + 44) as usize, madt_off as u64);
+    // FADT -> FACS (u32 at offset 36)
     write_u32(&mut tables, (fadt_off + 36) as usize, facs_off);
-    // FADT -> DSDT
+    // FADT -> DSDT (u32 at offset 40)
     write_u32(&mut tables, (fadt_off + 40) as usize, dsdt_off);
+    // FADT -> X_FIRMWARE_CTRL (u64 at offset 132)
+    write_u64(&mut tables, (fadt_off + 132) as usize, facs_off as u64);
+    // FADT -> X_DSDT (u64 at offset 140)
+    write_u64(&mut tables, (fadt_off + 140) as usize, dsdt_off as u64);
 
     let mut loader = Vec::new();
     let mut emit = |cmd: [u8; 128]| loader.extend_from_slice(&cmd);
@@ -259,19 +302,24 @@ pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     emit(loader_allocate(&tables_file, 64, 1));
     emit(loader_allocate(&rsdp_file, 16, 2));
 
-    // 2. RSDP -> RSDT pointer
-    emit(loader_add_pointer(&rsdp_file, &tables_file, 16, 4));
+    // 2. RSDP -> XSDT pointer (u64 at offset 24)
+    emit(loader_add_pointer(&rsdp_file, &tables_file, 24, 8));
+    // RSDP v1 checksum (bytes 0..20)
     emit(loader_add_checksum(&rsdp_file, 8, 0, 20));
+    // RSDP v2 extended checksum (bytes 0..36)
+    emit(loader_add_checksum(&rsdp_file, 32, 0, 36));
 
-    // 3. FADT -> FACS, FADT -> DSDT
+    // 3. FADT -> FACS (u32), FADT -> DSDT (u32), FADT -> X_FIRMWARE_CTRL (u64), FADT -> X_DSDT (u64)
     emit(loader_add_pointer(&tables_file, &tables_file, fadt_off + 36, 4));
     emit(loader_add_pointer(&tables_file, &tables_file, fadt_off + 40, 4));
-    emit(loader_add_checksum(&tables_file, fadt_off + 9, fadt_off, 116));
+    emit(loader_add_pointer(&tables_file, &tables_file, fadt_off + 132, 8));
+    emit(loader_add_pointer(&tables_file, &tables_file, fadt_off + 140, 8));
+    emit(loader_add_checksum(&tables_file, fadt_off + 9, fadt_off, 244));
 
-    // 4. RSDT -> FADT, RSDT -> MADT
-    emit(loader_add_pointer(&tables_file, &tables_file, rsdt_off + 36, 4));
-    emit(loader_add_pointer(&tables_file, &tables_file, rsdt_off + 40, 4));
-    emit(loader_add_checksum(&tables_file, rsdt_off + 9, rsdt_off, 44));
+    // 4. XSDT -> FADT, XSDT -> MADT (u64 pointers)
+    emit(loader_add_pointer(&tables_file, &tables_file, xsdt_off + 36, 8));
+    emit(loader_add_pointer(&tables_file, &tables_file, xsdt_off + 44, 8));
+    emit(loader_add_checksum(&tables_file, xsdt_off + 9, xsdt_off, 52));
 
     // 5. DSDT and MADT checksums
     let dsdt_len = dsdt.len() as u32;

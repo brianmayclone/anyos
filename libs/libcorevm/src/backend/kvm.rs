@@ -2,6 +2,45 @@
 
 use super::{CpuidEntry, DescriptorTable, SegmentReg, VcpuRegs, VcpuSregs, VmBackend, VmError, VmExitReason};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+// --- Thread-safe cancel support ---
+// Stores the raw pointer to kvm_run for vCPU 0 so cancel_vcpu can set immediate_exit
+// from any thread without holding &mut KvmBackend.
+// Supports up to 4 vCPUs. Each entry stores the *mut KvmRun as u64.
+static CANCEL_KVM_RUN: [AtomicU64; 4] = [
+    AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0),
+];
+
+// Stores the VM fd for PIT channel 2 gate sync from Port 0x61.
+static KVM_VM_FD: AtomicU64 = AtomicU64::new(0);
+
+/// Sync PIT channel 2 gate to in-kernel PIT.
+/// Called from Port61 write handler via gate_sync callback.
+pub fn kvm_sync_pit_ch2_gate(gate: bool) {
+    let vm_fd = KVM_VM_FD.load(Ordering::Relaxed) as i32;
+    if vm_fd <= 0 { return; }
+    unsafe {
+        let mut state = KvmPitState2::default();
+        let ret = sys_ioctl(vm_fd, KVM_GET_PIT2, &mut state as *mut _ as u64);
+        if ret < 0 { return; }
+        state.channels[2].gate = if gate { 1 } else { 0 };
+        sys_ioctl(vm_fd, KVM_SET_PIT2, &state as *const _ as u64);
+    }
+}
+
+/// Cancel a running KVM_RUN from any thread by setting immediate_exit = 1.
+pub fn cancel_vcpu_kvm(vcpu_id: u32) -> i32 {
+    if vcpu_id as usize >= CANCEL_KVM_RUN.len() { return -1; }
+    let ptr = CANCEL_KVM_RUN[vcpu_id as usize].load(Ordering::Relaxed);
+    if ptr == 0 { return -1; }
+    unsafe {
+        let kvm_run = ptr as *mut KvmRun;
+        (*kvm_run).immediate_exit = 1;
+    }
+    0
+}
 
 // ── KVM ioctl numbers (x86_64 Linux) ──────────────────────────────────────
 
@@ -19,6 +58,12 @@ const KVM_INTERRUPT: u64 = 0x4004_AE86;
 const KVM_SET_CPUID2: u64 = 0x4008_AE90;
 const KVM_GET_VCPU_EVENTS: u64 = 0x8040_AE9F;
 const KVM_SET_VCPU_EVENTS: u64 = 0x4040_AEA0;
+const KVM_CREATE_IRQCHIP: u64 = 0xAE60;
+const KVM_IRQ_LINE: u64 = 0x4008_AE61;
+const KVM_CREATE_PIT2: u64 = 0x4040_AE77;
+const KVM_GET_SUPPORTED_CPUID: u64 = 0xC008_AE05;
+const KVM_GET_PIT2: u64 = 0x8070_AE9F;
+const KVM_SET_PIT2: u64 = 0x4070_AEA0;
 
 // Exit reasons
 const KVM_EXIT_IO: u32 = 2;
@@ -297,6 +342,50 @@ struct KvmCpuidEntry2 {
     _padding: [u32; 3],
 }
 
+/// kvm_pit_config for KVM_CREATE_PIT2
+#[repr(C)]
+struct KvmPitConfig {
+    flags: u32,
+    _pad: [u32; 15],
+}
+
+/// kvm_pit_channel_state — per-channel state in kvm_pit_state2
+#[repr(C)]
+#[derive(Default)]
+struct KvmPitChannelState {
+    count: u32,
+    latched_count: u16,
+    count_latched: u8,
+    status_latched: u8,
+    status: u8,
+    read_state: u8,
+    write_state: u8,
+    write_latch: u8,
+    rw_mode: u8,
+    mode: u8,
+    bcd: u8,
+    gate: u8,
+    count_load_time: i64,
+}
+
+/// kvm_pit_state2 for KVM_GET_PIT2
+#[repr(C)]
+#[derive(Default)]
+struct KvmPitState2 {
+    channels: [KvmPitChannelState; 3],
+    flags: u32,
+    _reserved: [u32; 9],
+}
+
+/// kvm_irq_level for KVM_IRQ_LINE
+#[repr(C)]
+struct KvmIrqLevel {
+    /// IRQ number (bits 31:0) — for irqchip: GSI number.
+    irq: u32,
+    /// 1 = assert, 0 = deassert.
+    level: u32,
+}
+
 // ── Memory region tracking for read_phys / write_phys ─────────────────────
 
 struct MemorySlot {
@@ -361,14 +450,120 @@ impl KvmBackend {
                 return Err(VmError::BackendError(vm_fd));
             }
 
-            Ok(Self {
+            // Create in-kernel irqchip (PIC, IOAPIC, LAPIC).
+            let ret = sys_ioctl(vm_fd, KVM_CREATE_IRQCHIP, 0);
+            if ret < 0 {
+                sys_close(vm_fd);
+                sys_close(kvm_fd);
+                return Err(VmError::BackendError(ret as i32));
+            }
+
+            // Create in-kernel PIT (i8254 timer).
+            let pit_config = KvmPitConfig {
+                flags: 0, // KVM_PIT_SPEAKER_DUMMY = 0 (no speaker)
+                _pad: [0; 15],
+            };
+            let ret = sys_ioctl(
+                vm_fd,
+                KVM_CREATE_PIT2,
+                &pit_config as *const _ as u64,
+            );
+            if ret < 0 {
+                sys_close(vm_fd);
+                sys_close(kvm_fd);
+                return Err(VmError::BackendError(ret as i32));
+            }
+
+            let mut backend = Self {
                 kvm_fd,
                 vm_fd,
                 vcpus: Vec::new(),
                 mmap_size: mmap_size as usize,
                 memory_slots: Vec::new(),
                 stored_cpuid: None,
-            })
+            };
+
+            // Store VM fd globally for PIT channel 2 gate sync
+            KVM_VM_FD.store(vm_fd as u64, Ordering::Relaxed);
+
+            // Auto-load host CPUID so vCPUs get proper feature flags (APIC, etc.)
+            let _ = backend.load_host_cpuid();
+
+            Ok(backend)
+        }
+    }
+
+    /// Fetch host-supported CPUID entries via KVM_GET_SUPPORTED_CPUID and store them.
+    /// Must be called before creating vCPUs.
+    pub fn load_host_cpuid(&mut self) -> Result<(), VmError> {
+        unsafe {
+            // Allocate buffer for up to 256 CPUID entries
+            const MAX_ENTRIES: usize = 256;
+            let buf_size = 8 + MAX_ENTRIES * core::mem::size_of::<KvmCpuidEntry2>();
+            let mut buf = alloc::vec![0u8; buf_size];
+            // nent = MAX_ENTRIES at offset 0 (u32)
+            let nent_ptr = buf.as_mut_ptr() as *mut u32;
+            *nent_ptr = MAX_ENTRIES as u32;
+
+            let ret = sys_ioctl(self.kvm_fd, KVM_GET_SUPPORTED_CPUID, buf.as_mut_ptr() as u64);
+            if ret < 0 {
+                return Err(VmError::BackendError(ret as i32));
+            }
+
+            let nent = *nent_ptr as usize;
+            let entries_ptr = buf.as_ptr().add(8) as *const KvmCpuidEntry2;
+
+            let mut cpuid_entries = Vec::new();
+            for i in 0..nent {
+                let e = &*entries_ptr.add(i);
+                cpuid_entries.push(CpuidEntry {
+                    function: e.function,
+                    index: e.index,
+                    flags: e.flags,
+                    eax: e.eax,
+                    ebx: e.ebx,
+                    ecx: e.ecx,
+                    edx: e.edx,
+                });
+            }
+
+            self.stored_cpuid = Some(cpuid_entries);
+            Ok(())
+        }
+    }
+
+    /// Query the in-kernel PIT channel 2 output state via KVM_GET_PIT2.
+    /// Returns true if the channel 2 output pin is high.
+    pub fn get_pit2_channel2_output(&self) -> bool {
+        unsafe {
+            let mut state = KvmPitState2::default();
+            let ret = sys_ioctl(self.vm_fd, KVM_GET_PIT2, &mut state as *mut _ as u64);
+            if ret < 0 { return false; }
+            // Channel 2 output is encoded in the status byte, bit 7 = OUT pin
+            (state.channels[2].status & 0x80) != 0
+        }
+    }
+
+    /// Debug: return raw PIT channel 2 state for diagnostics.
+    /// Returns (count, status, mode, gate, ret_code)
+    pub fn get_pit2_debug(&self) -> (u32, u8, u8, u8, i64) {
+        unsafe {
+            let mut state = KvmPitState2::default();
+            let ret = sys_ioctl(self.vm_fd, KVM_GET_PIT2, &mut state as *mut _ as u64);
+            let ch = &state.channels[2];
+            (ch.count, ch.status, ch.mode, ch.gate, ret)
+        }
+    }
+
+    /// Set the in-kernel PIT channel 2 gate via KVM_SET_PIT2.
+    /// Called when port 0x61 bit 0 changes.
+    pub fn set_pit2_channel2_gate(&self, gate: bool) {
+        unsafe {
+            let mut state = KvmPitState2::default();
+            let ret = sys_ioctl(self.vm_fd, KVM_GET_PIT2, &mut state as *mut _ as u64);
+            if ret < 0 { return; }
+            state.channels[2].gate = if gate { 1 } else { 0 };
+            sys_ioctl(self.vm_fd, KVM_SET_PIT2, &state as *const _ as u64);
         }
     }
 
@@ -424,7 +619,7 @@ impl KvmBackend {
             let ke = KvmCpuidEntry2 {
                 function: e.function,
                 index: e.index,
-                flags: 0,
+                flags: e.flags,
                 eax: e.eax, ebx: e.ebx, ecx: e.ecx, edx: e.edx,
                 _padding: [0; 3],
             };
@@ -447,6 +642,22 @@ impl KvmBackend {
             }
         }
         None
+    }
+
+    /// Assert or deassert an IRQ line on the in-kernel irqchip.
+    /// `irq` is the GSI (Global System Interrupt) number.
+    pub fn set_irq_line(&self, irq: u32, level: bool) -> Result<(), VmError> {
+        let irq_level = KvmIrqLevel {
+            irq,
+            level: if level { 1 } else { 0 },
+        };
+        let ret = unsafe {
+            sys_ioctl(self.vm_fd, KVM_IRQ_LINE, &irq_level as *const _ as u64)
+        };
+        if ret < 0 {
+            return Err(VmError::BackendError(ret as i32));
+        }
+        Ok(())
     }
 }
 
@@ -615,6 +826,11 @@ impl VmBackend for KvmBackend {
                 }
             }
 
+            // Register kvm_run pointer for thread-safe cancel
+            if (id as usize) < CANCEL_KVM_RUN.len() {
+                CANCEL_KVM_RUN[id as usize].store(vcpu.kvm_run as u64, Ordering::Relaxed);
+            }
+
             let idx = id as usize;
             while self.vcpus.len() <= idx {
                 self.vcpus.push(None);
@@ -627,6 +843,10 @@ impl VmBackend for KvmBackend {
     fn destroy_vcpu(&mut self, id: u32) -> Result<(), VmError> {
         let idx = id as usize;
         if idx < self.vcpus.len() {
+            // Clear cancel pointer
+            if idx < CANCEL_KVM_RUN.len() {
+                CANCEL_KVM_RUN[idx].store(0, Ordering::Relaxed);
+            }
             self.vcpus[idx] = None; // Drop handles cleanup
             Ok(())
         } else {
@@ -639,10 +859,16 @@ impl VmBackend for KvmBackend {
         let fd = vcpu.fd;
         let run = vcpu.kvm_run;
 
+        // Reset immediate_exit before entering KVM_RUN
+        unsafe { (*run).immediate_exit = 0; }
+
         let ret = unsafe { sys_ioctl(fd, KVM_RUN, 0) };
         if ret < 0 {
-            // EINTR (4) is retriable but we report it; EAGAIN similarly
             let errno = (-ret) as i32;
+            // EINTR means we were cancelled via immediate_exit — not an error
+            if errno == 4 { // EINTR
+                return Ok(VmExitReason::Cancelled);
+            }
             return Err(VmError::BackendError(errno));
         }
 

@@ -210,16 +210,22 @@ impl IoHandler for FwCfg {
     ///
     /// Returns the next byte of the currently selected item. Reading past
     /// the end returns 0x00.
-    fn read(&mut self, port: u16, _size: u8) -> Result<u32> {
+    fn read(&mut self, port: u16, size: u8) -> Result<u32> {
         if port == 0x511 {
             let data = self.get_item_data();
-            let val = if self.offset < data.len() {
-                data[self.offset]
-            } else {
-                0x00
-            };
-            self.offset += 1;
-            Ok(val as u32)
+            // Support multi-byte reads (size 1, 2, or 4)
+            let bytes = (size as usize).max(1).min(4);
+            let mut val: u32 = 0;
+            for i in 0..bytes {
+                let b = if self.offset < data.len() {
+                    data[self.offset]
+                } else {
+                    0x00
+                };
+                val |= (b as u32) << (i * 8);
+                self.offset += 1;
+            }
+            Ok(val)
         } else {
             Ok(0xFF)
         }
@@ -231,8 +237,31 @@ impl IoHandler for FwCfg {
     fn write(&mut self, port: u16, _size: u8, val: u32) -> Result<()> {
         if port == 0x510 {
             let sel = val as u16;
-            // Log selector accesses for boot diagnostics.
-            #[cfg(not(feature = "std"))]
+            #[cfg(feature = "linux")]
+            {
+                let file_info = if sel >= 0x0020 {
+                    self.files.iter().find(|f| f.selector == sel)
+                        .map(|f| {
+                            let name_end = f.name.iter().position(|&b| b == 0).unwrap_or(56);
+                            alloc::format!(" -> '{}' ({} bytes)",
+                                core::str::from_utf8(&f.name[..name_end]).unwrap_or("?"), f.data.len())
+                        })
+                        .unwrap_or_else(|| alloc::format!(" -> (no file)"))
+                } else if sel == 0x0019 {
+                    // Log file directory contents
+                    alloc::format!(" [FILE_DIR: {} files: {}]",
+                        self.files.len(),
+                        self.files.iter().map(|f| {
+                            let ne = f.name.iter().position(|&b| b == 0).unwrap_or(56);
+                            alloc::format!("{}(sel={:#x},{}b)",
+                                core::str::from_utf8(&f.name[..ne]).unwrap_or("?"), f.selector, f.data.len())
+                        }).collect::<alloc::vec::Vec<_>>().join(", "))
+                } else {
+                    alloc::string::String::new()
+                };
+                eprintln!("[fw_cfg] select 0x{:04X}{}", sel, file_info);
+            }
+            #[cfg(not(any(feature = "linux", feature = "std")))]
             libsyscall::serial_print(format_args!(
                 "[fw_cfg] select 0x{:04X}\n", sel
             ));

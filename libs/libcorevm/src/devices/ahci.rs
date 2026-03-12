@@ -458,6 +458,7 @@ impl Ahci {
 
             let prdt_base = ctba + 0x80;
 
+
             match command {
                 ATA_CMD_IDENTIFY | ATA_CMD_IDENTIFY_PACKET => {
                     let id = port.drive.build_identify();

@@ -156,7 +156,7 @@ impl PitChannel {
     ///
     /// Returns `true` if the channel's output transitions from low to high,
     /// indicating an interrupt should be raised (relevant for channel 0).
-    fn tick(&mut self) -> bool {
+    pub fn tick(&mut self) -> bool {
         if !self.enabled || !self.gate {
             return false;
         }

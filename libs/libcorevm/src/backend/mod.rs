@@ -74,6 +74,8 @@ pub enum VmExitReason {
     Shutdown,
     Debug,
     Error,
+    /// vCPU was cancelled (immediate_exit on KVM, WHvCancelRunVirtualProcessor on WHP).
+    Cancelled,
 }
 
 /// Hardware virtualization backend trait.

@@ -1211,6 +1211,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vmctl"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libcorevm_client",
+]
+
+[[package]]
 name = "vmd"
 version = "0.1.0"
 dependencies = [

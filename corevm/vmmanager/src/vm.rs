@@ -435,6 +435,13 @@ fn vm_run_loop(
             }
             1 => {
                 // IoOut — dispatch to device
+                // Capture serial port COM1 (0x3F8) data register output
+                if exit.port == 0x3F8 && exit.size == 1 {
+                    let ch = (exit.data_u32 & 0xFF) as u8;
+                    if ch >= 0x20 || ch == b'\n' || ch == b'\r' || ch == b'\t' {
+                        eprint!("{}", ch as char);
+                    }
+                }
                 if diag_enabled {
                     diag.log(DiagCategory::IoPort, format!("OUT port=0x{:04X} size={} data=0x{:X}", exit.port, exit.size, exit.data_u32));
                 }
@@ -544,6 +551,56 @@ fn vm_run_loop(
                         (pic_st >> 24) & 1, if_flag, exit.reason, regs.rip
                     ));
                 }
+            }
+        }
+
+        // Periodic stderr state dump (time-based, every 2 seconds)
+        static mut LAST_STATE_DUMP: Option<Instant> = None;
+        static mut EXIT_COUNTS: [u64; 16] = [0; 16];
+        unsafe {
+            if (exit.reason as usize) < 16 { EXIT_COUNTS[exit.reason as usize] += 1; }
+            let now = Instant::now();
+            let should_dump = match LAST_STATE_DUMP {
+                None => { LAST_STATE_DUMP = Some(now); true }
+                Some(last) => {
+                    if now.duration_since(last).as_secs() >= 2 {
+                        LAST_STATE_DUMP = Some(now);
+                        true
+                    } else {
+                        false
+                    }
+                }
+            };
+            if should_dump {
+                let mut regs = VcpuRegs::default();
+                let mut sregs = VcpuSregs::default();
+                corevm_get_vcpu_regs(handle, 0, &mut regs);
+                corevm_get_vcpu_sregs(handle, 0, &mut sregs);
+                // Read VGA text buffer (first 2 lines)
+                let mut vga_buf = [0u8; 160];
+                corevm_read_phys(handle, 0xB8000, vga_buf.as_mut_ptr(), 160);
+                let vga_line: String = (0..80).map(|i| {
+                    let ch = vga_buf[i * 2];
+                    if ch >= 0x20 && ch < 0x7F { ch as char } else { ' ' }
+                }).collect::<String>().trim_end().to_string();
+                // Read a few bytes from VBE framebuffer at 0xE0000000 to check if graphics mode active
+                let mut fb_sample = [0u8; 16];
+                corevm_read_phys(handle, 0xE000_0000, fb_sample.as_mut_ptr(), 16);
+                let fb_nonzero = fb_sample.iter().any(|&b| b != 0);
+                eprintln!("[vm-state] exit={} RIP={:#x} CS={:#x} CR0={:#x} RFLAGS={:#x} IF={} PE={} PG={} FB={} VGA=[{}] exits=[io:{}/{} mmio:{}/{} hlt:{} cancel:{} shut:{} err:{}]",
+                    exit.reason, regs.rip, sregs.cs.selector, sregs.cr0, regs.rflags,
+                    if regs.rflags & 0x200 != 0 { 1 } else { 0 },
+                    if sregs.cr0 & 1 != 0 { 1 } else { 0 },
+                    if sregs.cr0 & (1 << 31) != 0 { 1 } else { 0 },
+                    if fb_nonzero { "data" } else { "empty" },
+                    vga_line,
+                    EXIT_COUNTS[0], EXIT_COUNTS[1],  // IoIn, IoOut
+                    EXIT_COUNTS[2], EXIT_COUNTS[3],  // MmioRead, MmioWrite
+                    EXIT_COUNTS[7],                   // Halted
+                    EXIT_COUNTS[8],                   // InterruptWindow / Cancel
+                    EXIT_COUNTS[9],                   // Shutdown
+                    EXIT_COUNTS[11],                  // Error
+                );
             }
         }
 

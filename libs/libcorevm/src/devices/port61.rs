@@ -15,11 +15,24 @@ use super::pit::Pit;
 /// - bit 1: speaker data enable (latched only)
 /// - bit 4: refresh clock toggle (synthetic, flips on each read)
 /// - bit 5: PIT channel 2 output
-#[derive(Debug)]
+/// Optional callback for synchronizing PIT channel 2 gate to the
+/// in-kernel PIT on Linux/KVM. Set via `set_gate_sync`.
+pub type GateSyncFn = fn(bool);
+
 pub struct Port61 {
     pit: *mut Pit,
     control: u8,
     refresh_toggle: bool,
+    gate_sync: Option<GateSyncFn>,
+}
+
+impl core::fmt::Debug for Port61 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Port61")
+            .field("control", &self.control)
+            .field("refresh_toggle", &self.refresh_toggle)
+            .finish()
+    }
 }
 
 impl Port61 {
@@ -33,7 +46,14 @@ impl Port61 {
             pit,
             control: 0,
             refresh_toggle: false,
+            gate_sync: None,
         }
+    }
+
+    /// Set a callback that synchronizes the PIT channel 2 gate to the
+    /// hardware backend (e.g., in-kernel KVM PIT).
+    pub fn set_gate_sync(&mut self, f: GateSyncFn) {
+        self.gate_sync = Some(f);
     }
 }
 
@@ -68,9 +88,13 @@ impl IoHandler for Port61 {
 
     fn write(&mut self, _port: u16, _size: u8, val: u32) -> Result<()> {
         self.control = (val as u8) & 0x03;
+        let gate = (self.control & 0x01) != 0;
         if !self.pit.is_null() {
-            let gate = (self.control & 0x01) != 0;
             unsafe { (*self.pit).channels[2].gate = gate; }
+        }
+        // Sync gate to in-kernel PIT (Linux/KVM)
+        if let Some(sync) = self.gate_sync {
+            sync(gate);
         }
         Ok(())
     }
