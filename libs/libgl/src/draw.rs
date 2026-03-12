@@ -26,9 +26,7 @@ pub fn draw_elements(
     offset: usize,
 ) {
     if unsafe { crate::USE_HW_BACKEND } {
-        // For now, fall back to software for indexed drawing
-        // (vertex buffer DMA for indexed access needs additional work)
-        rasterizer::draw_elements(ctx, mode, count, type_, offset);
+        draw_elements_hw(ctx, mode, count, type_, offset);
     } else {
         rasterizer::draw_elements(ctx, mode, count, type_, offset);
     }
@@ -302,6 +300,214 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
     svga.cmd.shader_destroy(cid, vs_id, SVGA3D_SHADERTYPE_VS);
     svga.cmd.shader_destroy(cid, fs_id, SVGA3D_SHADERTYPE_PS);
     svga.cmd.set_shader(cid, SVGA3D_SHADERTYPE_VS, 0); // unbind
+    svga.cmd.set_shader(cid, SVGA3D_SHADERTYPE_PS, 0);
+    svga.cmd.submit();
+}
+
+/// Hardware-accelerated indexed draw via SVGA3D.
+fn draw_elements_hw(
+    ctx: &mut GlContext,
+    mode: GLenum,
+    count: GLsizei,
+    type_: GLenum,
+    offset: usize,
+) {
+    use crate::svga3d::*;
+    use crate::compiler::backend_dx9;
+
+    if count <= 0 { return; }
+
+    let prim_type = match gl_mode_to_svga3d(mode) {
+        Some(pt) => pt,
+        None => {
+            rasterizer::draw_elements(ctx, mode, count, type_, offset);
+            return;
+        }
+    };
+
+    let svga = match unsafe { crate::SVGA3D.as_mut() } {
+        Some(s) => s,
+        None => return,
+    };
+
+    let prog_id = ctx.current_program;
+    let program = match ctx.shaders.get_program(prog_id) {
+        Some(p) if p.linked => p,
+        _ => return,
+    };
+
+    // Compile shaders to DX9 bytecode
+    let vs_ir = match &program.vs_ir { Some(ir) => ir, None => return };
+    let fs_ir = match &program.fs_ir { Some(ir) => ir, None => return };
+    let (vs_bytecode, vs_consts) = backend_dx9::compile(vs_ir, true);
+    let (fs_bytecode, fs_consts) = backend_dx9::compile(fs_ir, false);
+
+    // Upload shaders
+    let vs_id = svga.alloc_shader();
+    let fs_id = svga.alloc_shader();
+    svga.cmd.shader_define(svga.context_id, vs_id, SVGA3D_SHADERTYPE_VS, &vs_bytecode);
+    svga.cmd.shader_define(svga.context_id, fs_id, SVGA3D_SHADERTYPE_PS, &fs_bytecode);
+    svga.cmd.set_shader(svga.context_id, SVGA3D_SHADERTYPE_VS, vs_id);
+    svga.cmd.set_shader(svga.context_id, SVGA3D_SHADERTYPE_PS, fs_id);
+
+    // Upload uniforms
+    let uniforms = rasterizer::collect_uniforms(program);
+    for (i, u) in uniforms.iter().enumerate() {
+        svga.cmd.set_shader_const_f(svga.context_id, i as u32, SVGA3D_SHADERTYPE_VS, u);
+        svga.cmd.set_shader_const_f(svga.context_id, i as u32, SVGA3D_SHADERTYPE_PS, u);
+    }
+    for &(creg, vals) in &vs_consts {
+        svga.cmd.set_shader_const_f(svga.context_id, creg, SVGA3D_SHADERTYPE_VS, &vals);
+    }
+    for &(creg, vals) in &fs_consts {
+        svga.cmd.set_shader_const_f(svga.context_id, creg, SVGA3D_SHADERTYPE_PS, &vals);
+    }
+
+    // Render states
+    let cid = svga.context_id;
+    svga.cmd.set_render_states(cid, &[
+        (SVGA3D_RS_ZENABLE, ctx.depth_test as u32),
+        (SVGA3D_RS_ZWRITEENABLE, ctx.depth_mask as u32),
+        (SVGA3D_RS_ZFUNC, gl_depth_func_to_svga3d(ctx.depth_func)),
+        (SVGA3D_RS_BLENDENABLE, ctx.blend as u32),
+        (SVGA3D_RS_SRCBLEND, gl_blend_to_svga3d(ctx.blend_src_rgb)),
+        (SVGA3D_RS_DSTBLEND, gl_blend_to_svga3d(ctx.blend_dst_rgb)),
+        (SVGA3D_RS_CULLMODE, gl_cull_to_svga3d(ctx.cull_face, ctx.cull_face_mode)),
+    ]);
+
+    // Read index buffer from bound element array buffer
+    let ebo_id = ctx.bound_element_buffer;
+    let index_data: &[u8] = if ebo_id != 0 {
+        if let Some(buf) = ctx.buffers.get(ebo_id) {
+            &buf.data
+        } else {
+            return;
+        }
+    } else {
+        return;
+    };
+
+    // Determine index size and build u16 index array for SVGA3D
+    // SVGA3D expects 16-bit or 32-bit indices; we always use 16-bit for simplicity
+    let mut indices_u16: Vec<u16> = Vec::with_capacity(count as usize);
+    let mut max_index: u32 = 0;
+    for i in 0..count as usize {
+        let idx = crate::rasterizer::read_index(index_data, type_, offset, i);
+        if idx > max_index { max_index = idx; }
+        indices_u16.push(idx as u16);
+    }
+
+    // Fetch all referenced vertices
+    let attrib_count = program.attributes.len();
+    let vertex_stride = (attrib_count * 4 * 4) as u32;
+    let num_verts = (max_index + 1) as usize;
+
+    let mut vertex_data: Vec<f32> = Vec::with_capacity(num_verts * attrib_count * 4);
+    for vi in 0..num_verts {
+        for attr in &program.attributes {
+            let loc = attr.location as usize;
+            if loc < ctx.attribs.len() && ctx.attribs[loc].enabled {
+                let va = &ctx.attribs[loc];
+                let fetched = crate::rasterizer::vertex::fetch_single_attribute(
+                    ctx, va.size, va.typ, va.stride, va.offset, va.buffer_id, vi as u32,
+                );
+                vertex_data.extend_from_slice(&fetched);
+            } else {
+                vertex_data.extend_from_slice(&[0.0, 0.0, 0.0, 1.0]);
+            }
+        }
+    }
+
+    // Create vertex buffer surface
+    let vb_sid = svga.alloc_surface();
+    let total_vb_bytes = vertex_stride * num_verts as u32;
+    let vb_width_pixels = total_vb_bytes / 4;
+    svga.cmd.surface_define(vb_sid, SVGA3D_SURFACE_HINT_VERTEXBUFFER, SVGA3D_X8R8G8B8, vb_width_pixels, 1);
+
+    // Create index buffer surface (2 bytes per index, padded to 4-byte pixels)
+    let ib_sid = svga.alloc_surface();
+    let ib_bytes_total = (count as u32) * 2;
+    let ib_width_pixels = (ib_bytes_total + 3) / 4;
+    svga.cmd.surface_define(ib_sid, SVGA3D_SURFACE_HINT_INDEXBUFFER, SVGA3D_X8R8G8B8, ib_width_pixels, 1);
+
+    svga.cmd.submit();
+
+    // DMA vertex data
+    let vb_bytes: &[u8] = unsafe {
+        core::slice::from_raw_parts(vertex_data.as_ptr() as *const u8, vertex_data.len() * 4)
+    };
+    let dma_ret = crate::syscall::gpu_3d_surface_dma(vb_sid, vb_bytes, vb_width_pixels, 1);
+    if dma_ret != 0 {
+        svga.cmd.surface_destroy(vb_sid);
+        svga.cmd.surface_destroy(ib_sid);
+        svga.cmd.submit();
+        return;
+    }
+
+    // DMA index data
+    let ib_bytes: &[u8] = unsafe {
+        core::slice::from_raw_parts(indices_u16.as_ptr() as *const u8, indices_u16.len() * 2)
+    };
+    let ib_dma_ret = crate::syscall::gpu_3d_surface_dma(ib_sid, ib_bytes, ib_width_pixels, 1);
+    if ib_dma_ret != 0 {
+        svga.cmd.surface_destroy(vb_sid);
+        svga.cmd.surface_destroy(ib_sid);
+        svga.cmd.submit();
+        return;
+    }
+
+    // Build vertex declaration
+    let mut vertex_decl_words: Vec<u32> = Vec::new();
+    for (ai, _attr) in program.attributes.iter().enumerate() {
+        let offset_in_vertex = (ai * 16) as u32;
+        vertex_decl_words.push(SVGA3D_DECLTYPE_FLOAT4);
+        vertex_decl_words.push(0);
+        vertex_decl_words.push(if ai == 0 { SVGA3D_DECLUSAGE_POSITION } else { SVGA3D_DECLUSAGE_TEXCOORD });
+        vertex_decl_words.push(if ai == 0 { 0 } else { (ai - 1) as u32 });
+        vertex_decl_words.push(vb_sid);
+        vertex_decl_words.push(offset_in_vertex);
+        vertex_decl_words.push(vertex_stride);
+        vertex_decl_words.push(0);
+        vertex_decl_words.push((num_verts - 1) as u32);
+    }
+
+    // Primitive range with index buffer
+    let prim_count = match prim_type {
+        SVGA3D_PRIMITIVE_TRIANGLELIST => (count / 3) as u32,
+        SVGA3D_PRIMITIVE_TRIANGLESTRIP | SVGA3D_PRIMITIVE_TRIANGLEFAN => (count - 2) as u32,
+        _ => count as u32,
+    };
+
+    let prim_range_words = [
+        prim_type,
+        prim_count,
+        ib_sid,  // indexArray.surfaceId
+        0,       // indexArray.offset
+        2,       // indexArray.stride (2 bytes per u16 index)
+        2,       // indexWidth (2 = 16-bit indices)
+        0,       // indexBias
+    ];
+
+    svga.cmd.draw_primitives(
+        cid,
+        attrib_count as u32,
+        1,
+        &vertex_decl_words,
+        &prim_range_words,
+    );
+
+    let draw_ret = svga.cmd.submit();
+    if unsafe { crate::DIAG_FRAME } < 3 {
+        crate::serial_println!("[libgl] DRAW_ELEMENTS_HW: ib_sid={} verts={} indices={} prims={} ret={}",
+            ib_sid, num_verts, count, prim_count, draw_ret);
+    }
+
+    // Clean up
+    svga.cmd.surface_destroy(vb_sid);
+    svga.cmd.surface_destroy(ib_sid);
+    svga.cmd.shader_destroy(cid, vs_id, SVGA3D_SHADERTYPE_VS);
+    svga.cmd.shader_destroy(cid, fs_id, SVGA3D_SHADERTYPE_PS);
+    svga.cmd.set_shader(cid, SVGA3D_SHADERTYPE_VS, 0);
     svga.cmd.set_shader(cid, SVGA3D_SHADERTYPE_PS, 0);
     svga.cmd.submit();
 }

@@ -31,6 +31,7 @@ pub mod simd;
 pub mod fxaa;
 pub mod svga3d;
 pub mod physics;
+pub mod thread_pool;
 
 mod syscall;
 
@@ -123,29 +124,27 @@ fn check_cpu_features() {
 pub extern "C" fn gl_init(width: u32, height: u32) {
     check_cpu_features();
 
-    // Try to initialize SVGA3D hardware backend
+    // SVGA3D hardware backend disabled — not yet functional.
+    // Keep the query for diagnostics only.
     let has_hw = syscall::gpu_3d_has_hw();
     let hw_ver = syscall::gpu_3d_hw_version();
-    serial_println!("[libgl] 3D query: has_hw={}, hw_version=0x{:08X}", has_hw, hw_ver);
-    if has_hw {
-        let mut state = svga3d::Svga3dState::new();
-        if state.init(width, height) {
-            serial_println!("[libgl] SVGA3D hardware backend initialized ({}x{}) cid={} color_sid={} depth_sid={}",
-                width, height, state.context_id, state.color_sid, state.depth_sid);
-            unsafe {
-                SVGA3D = Some(state);
-                USE_HW_BACKEND = true;
-            }
-        } else {
-            serial_println!("[libgl] SVGA3D init failed, falling back to software");
-        }
-    }
+    serial_println!("[libgl] 3D query: has_hw={}, hw_version=0x{:08X} (HW backend disabled)", has_hw, hw_ver);
 
-    // Always initialize the software context (needed for state tracking and fallback)
+    // Always use software rasterizer + parallel thread pool
     unsafe {
         CTX = Some(GlContext::new(width, height));
     }
+    thread_pool::ensure_pool(height);
+
     serial_println!("[libgl] gl_init done ({}x{}, hw={})", width, height, unsafe { USE_HW_BACKEND });
+}
+
+/// Shut down libgl — stops worker threads and frees resources.
+/// Should be called when the application exits.
+#[no_mangle]
+pub extern "C" fn gl_deinit() {
+    thread_pool::shutdown_pool();
+    serial_println!("[libgl] gl_deinit done");
 }
 
 /// Resize the GL framebuffer without destroying shaders, buffers, or textures.

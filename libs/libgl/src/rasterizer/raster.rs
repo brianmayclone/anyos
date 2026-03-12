@@ -313,18 +313,18 @@ pub fn rasterize_triangle(
 
 /// Edge function: signed area of triangle (a, b, c).
 #[inline(always)]
-fn edge_fn(a: &[f32; 3], b: &[f32; 3], c: &[f32; 3]) -> f32 {
+pub fn edge_fn(a: &[f32; 3], b: &[f32; 3], c: &[f32; 3]) -> f32 {
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
 #[inline(always)]
-fn min3(a: f32, b: f32, c: f32) -> f32 {
+pub fn min3(a: f32, b: f32, c: f32) -> f32 {
     let m = if a < b { a } else { b };
     if m < c { m } else { c }
 }
 
 #[inline(always)]
-fn max3(a: f32, b: f32, c: f32) -> f32 {
+pub fn max3(a: f32, b: f32, c: f32) -> f32 {
     let m = if a > b { a } else { b };
     if m > c { m } else { c }
 }
@@ -333,7 +333,7 @@ fn max3(a: f32, b: f32, c: f32) -> f32 {
 ///
 /// Simple division — the compiler optimizes this on both x86_64 and aarch64.
 #[inline(always)]
-fn fast_rcp(x: f32) -> f32 {
+pub fn fast_rcp(x: f32) -> f32 {
     1.0 / x
 }
 
