@@ -422,6 +422,17 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
             return Err("ELF64 segment in kernel space");
         }
 
+        // Validate: vaddr must be above the kernel identity-mapped region.
+        // The kernel identity-maps the first 128 MiB (0x0 - 0x08000000) of
+        // physical memory. User programs link at 0x08000000 (stdlib/link.ld).
+        // If a broken binary has segments below this boundary, loading it
+        // would write to physical addresses used by kernel data structures
+        // (via the identity mapping), causing silent memory corruption and
+        // spinlock deadlocks. Reject early with a clear error.
+        if vaddr < 0x0800_0000 {
+            return Err("ELF64 segment below 128 MiB identity-map boundary");
+        }
+
         // Allocate pages for this segment
         let page_start = vaddr & !0xFFF;
         let seg_total = match vaddr.checked_add(memsz).and_then(|v| v.checked_add(PAGE_SIZE - 1)) {
@@ -534,6 +545,12 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
     }
 
     let brk = (max_vaddr_end + PAGE_SIZE - 1) & !0xFFF;
+
+    // Validate entry point: must be above identity-map boundary
+    if entry < 0x0800_0000 || entry >= 0x0000_8000_0000_0000 {
+        return Err("ELF64 entry point outside valid user address range");
+    }
+
     Ok(ElfLoadResult { entry, brk, pages_mapped: total_pages })
 }
 
@@ -576,6 +593,11 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
 
         if vaddr >= 0xC000_0000 {
             return Err("ELF32 segment in kernel space");
+        }
+
+        // Reject segments below identity-map boundary (see ELF64 comment).
+        if vaddr < 0x0800_0000 {
+            return Err("ELF32 segment below 128 MiB identity-map boundary");
         }
 
         let page_start = vaddr & !0xFFF;
