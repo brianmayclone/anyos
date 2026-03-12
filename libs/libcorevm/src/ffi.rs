@@ -303,12 +303,17 @@ pub extern "C" fn corevm_pit_advance(handle: u64, ticks: u32) -> u32 {
             } else {
                 return 0;
             };
-            if fires > 0 && !vm.pic_ptr.is_null() {
-                let pic = unsafe { &mut *vm.pic_ptr };
-                pic.raise_irq(0);
-                // Only raise IRR here, don't inject. Injection is centralized
-                // in poll_irqs to avoid overwriting PendingInterruption (WHP
-                // can only hold one pending interrupt at a time).
+            if fires > 0 {
+                if !vm.pic_ptr.is_null() {
+                    let pic = unsafe { &mut *vm.pic_ptr };
+                    pic.raise_irq(0);
+                }
+                // Also route through IOAPIC (pin 2 = remapped IRQ 0 per MADT)
+                #[cfg(feature = "windows")]
+                {
+                    vm.backend.ioapic_set_irq(2, true);
+                    vm.backend.ioapic_set_irq(2, false);
+                }
             }
             fires
         }
@@ -354,9 +359,17 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                 if ps2.irq_needed {
                     ps2.irq_needed = false;
                     let is_mouse = (ps2.status & 0x20) != 0;
-                    let irq = if is_mouse { 12 } else { 1 };
-                    let pic = unsafe { &mut *vm.pic_ptr };
-                    pic.raise_irq(irq);
+                    let irq: u8 = if is_mouse { 12 } else { 1 };
+                    if !vm.pic_ptr.is_null() {
+                        let pic = unsafe { &mut *vm.pic_ptr };
+                        pic.raise_irq(irq);
+                    }
+                    // Also route through IOAPIC
+                    #[cfg(feature = "windows")]
+                    {
+                        vm.backend.ioapic_set_irq(irq, true);
+                        vm.backend.ioapic_set_irq(irq, false);
+                    }
                 }
             }
             // Inject ONE pending PIC interrupt (highest priority),

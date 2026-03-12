@@ -484,33 +484,100 @@ impl SoftLapic {
 }
 
 /// Minimal IOAPIC state for indirect register access at 0xFEC00000.
+const IOAPIC_NUM_PINS: usize = 24;
+
 pub struct SoftIoapic {
     pub ioregsel: u32,
-    regs: [u32; 64], // indirect registers
+    id: u32,
+    /// Redirection table: 24 entries, each 64-bit.
+    redir: [u64; IOAPIC_NUM_PINS],
+    /// Interrupt Request Register — one bit per pin.
+    irr: u32,
+    /// Pin level state for level-triggered handling.
+    irq_level: [bool; IOAPIC_NUM_PINS],
+    /// Pending interrupts to deliver via WHvRequestInterrupt.
+    /// Each entry: (vector, dest_apic_id, dest_mode, trigger_mode, delivery_mode)
+    pending: Vec<IoapicInterrupt>,
 }
+
+#[derive(Clone, Copy)]
+pub struct IoapicInterrupt {
+    pub vector: u8,
+    pub dest: u8,
+    pub dest_mode: u8,   // 0=physical, 1=logical
+    pub trigger: u8,     // 0=edge, 1=level
+    pub delivery: u8,    // 0=fixed, 1=lowest-pri
+}
+
+// Redirection entry bits
+const REDIR_MASKED: u64    = 1 << 16;
+const REDIR_LEVEL: u64     = 1 << 15;
+const REDIR_REMOTE_IRR: u64 = 1 << 14;
+const REDIR_DESTMODE: u64  = 1 << 11;
+const REDIR_DELIV_STATUS: u64 = 1 << 12;
+const REDIR_RO_BITS: u64   = REDIR_REMOTE_IRR | REDIR_DELIV_STATUS;
 
 impl SoftIoapic {
     fn new() -> Self {
-        let mut regs = [0u32; 64];
-        regs[0x00] = 0x00; // IOAPICID
-        regs[0x01] = 0x00170020; // IOAPICVER: version=0x20, max_redir=23 (24 entries)
-        regs[0x02] = 0x00; // IOAPICARB
-        // Redirection entries (2 regs each, starting at index 0x10):
-        // Default: all masked (bit 16 = 1)
-        for i in 0..24 {
-            regs[0x10 + i * 2] = 0x00010000; // masked, edge, fixed, physical
-            regs[0x10 + i * 2 + 1] = 0x00000000; // destination = 0
+        let mut redir = [0u64; IOAPIC_NUM_PINS];
+        for e in redir.iter_mut() {
+            *e = REDIR_MASKED; // all masked by default
         }
-        SoftIoapic { ioregsel: 0, regs }
+        SoftIoapic {
+            ioregsel: 0,
+            id: 0,
+            redir,
+            irr: 0,
+            irq_level: [false; IOAPIC_NUM_PINS],
+            pending: Vec::new(),
+        }
+    }
+
+    fn read_reg(&self, index: u32) -> u32 {
+        match index {
+            0x00 => self.id,
+            0x01 => ((IOAPIC_NUM_PINS as u32 - 1) << 16) | 0x20, // version
+            0x02 => self.id, // arbitration
+            0x10..=0x3F => {
+                let pin = ((index - 0x10) / 2) as usize;
+                if pin < IOAPIC_NUM_PINS {
+                    if (index & 1) == 0 { self.redir[pin] as u32 }
+                    else { (self.redir[pin] >> 32) as u32 }
+                } else { 0 }
+            }
+            _ => 0,
+        }
+    }
+
+    fn write_reg(&mut self, index: u32, val: u32) {
+        match index {
+            0x00 => self.id = val & 0x0F00_0000,
+            0x01 | 0x02 => {} // read-only
+            0x10..=0x3F => {
+                let pin = ((index - 0x10) / 2) as usize;
+                if pin < IOAPIC_NUM_PINS {
+                    let entry = &mut self.redir[pin];
+                    let ro = *entry & REDIR_RO_BITS;
+                    if (index & 1) == 0 {
+                        *entry = (*entry & 0xFFFF_FFFF_0000_0000) | ((val as u64) & !REDIR_RO_BITS) | ro;
+                    } else {
+                        *entry = (*entry & 0x0000_0000_FFFF_FFFF) | ((val as u64) << 32);
+                    }
+                    // Edge mode clears Remote IRR (Linux workaround)
+                    if (*entry & REDIR_LEVEL) == 0 {
+                        *entry &= !REDIR_REMOTE_IRR;
+                    }
+                    self.service();
+                }
+            }
+            _ => {}
+        }
     }
 
     fn read(&self, offset: u64) -> u32 {
         match offset & 0xFF {
             0x00 => self.ioregsel,
-            0x10 => {
-                let idx = self.ioregsel as usize;
-                if idx < 64 { self.regs[idx] } else { 0 }
-            }
+            0x10 => self.read_reg(self.ioregsel),
             _ => 0,
         }
     }
@@ -518,15 +585,81 @@ impl SoftIoapic {
     fn write(&mut self, offset: u64, val: u32) {
         match offset & 0xFF {
             0x00 => self.ioregsel = val,
-            0x10 => {
-                let idx = self.ioregsel as usize;
-                // Registers 0x01 (IOAPICVER) and 0x02 (IOAPICARB) are read-only
-                if idx < 64 && idx != 0x01 && idx != 0x02 {
-                    self.regs[idx] = val;
-                }
-            }
+            0x10 => self.write_reg(self.ioregsel, val),
             _ => {}
         }
+    }
+
+    /// Assert or deassert an IRQ pin (like QEMU ioapic_set_irq).
+    pub fn set_irq(&mut self, pin: u8, level: bool) {
+        let i = pin as usize;
+        if i >= IOAPIC_NUM_PINS { return; }
+        let entry = self.redir[i];
+        let is_level = (entry & REDIR_LEVEL) != 0;
+
+        if is_level {
+            if level {
+                self.irr |= 1 << pin;
+                self.irq_level[i] = true;
+                if (entry & REDIR_REMOTE_IRR) == 0 {
+                    self.service();
+                }
+            } else {
+                self.irq_level[i] = false;
+                self.irr &= !(1 << pin);
+            }
+        } else {
+            // Edge-triggered
+            if level {
+                if (entry & REDIR_MASKED) != 0 { return; }
+                self.irr |= 1 << pin;
+                self.service();
+            }
+        }
+    }
+
+    /// Service loop: scan IRR and produce pending interrupts for WHvRequestInterrupt.
+    fn service(&mut self) {
+        for i in 0..IOAPIC_NUM_PINS {
+            if (self.irr & (1 << i)) == 0 { continue; }
+            let entry = self.redir[i];
+            if (entry & REDIR_MASKED) != 0 { continue; }
+            let dm = ((entry >> 8) & 7) as u8;
+            if dm > 1 { continue; } // only Fixed(0) and LowestPri(1)
+            let is_level = (entry & REDIR_LEVEL) != 0;
+
+            if is_level {
+                if (entry & REDIR_REMOTE_IRR) != 0 { continue; }
+                self.redir[i] |= REDIR_REMOTE_IRR;
+            } else {
+                self.irr &= !(1 << i);
+            }
+
+            self.pending.push(IoapicInterrupt {
+                vector: (entry & 0xFF) as u8,
+                dest: ((entry >> 56) & 0xFF) as u8,
+                dest_mode: if (entry & REDIR_DESTMODE) != 0 { 1 } else { 0 },
+                trigger: if is_level { 1 } else { 0 },
+                delivery: dm,
+            });
+        }
+    }
+
+    /// Take pending interrupts for delivery.
+    pub fn take_pending(&mut self) -> Vec<IoapicInterrupt> {
+        core::mem::take(&mut self.pending)
+    }
+
+    /// EOI broadcast from LAPIC — clear Remote IRR on matching entries.
+    pub fn eoi_vector(&mut self, vector: u8) {
+        for i in 0..IOAPIC_NUM_PINS {
+            let entry = &mut self.redir[i];
+            if (*entry & REDIR_LEVEL) == 0 { continue; }
+            if (*entry & 0xFF) as u8 != vector { continue; }
+            if (*entry & REDIR_REMOTE_IRR) == 0 { continue; }
+            *entry &= !REDIR_REMOTE_IRR;
+        }
+        self.service();
     }
 }
 
@@ -962,6 +1095,54 @@ impl WhpBackend {
     }
 }
 
+impl WhpBackend {
+    /// Deliver pending IOAPIC interrupts via WHvRequestInterrupt.
+    /// This sends interrupts through WHP's LAPIC (not PIC ExtInt path).
+    fn deliver_ioapic_pending(&mut self) {
+        let pending = self.ioapic.take_pending();
+        if pending.is_empty() { return; }
+        let req_fn = match self.api.request_interrupt {
+            Some(f) => f,
+            None => return,
+        };
+        for intr in &pending {
+            let mut ctrl = WhvInterruptControl {
+                type_and_flags: 0,
+                destination: intr.dest as u32,
+                vector: intr.vector as u32,
+            };
+            // Type: 0=Fixed, 1=LowestPriority
+            ctrl.type_and_flags = intr.delivery as u64;
+            // Bit 2: DestinationMode (0=physical, 1=logical)
+            if intr.dest_mode != 0 { ctrl.type_and_flags |= 1 << 2; }
+            // Bit 3: TriggerMode (0=edge, 1=level)
+            if intr.trigger != 0 { ctrl.type_and_flags |= 1 << 3; }
+
+            let hr = unsafe {
+                req_fn(
+                    self.partition,
+                    &ctrl as *const WhvInterruptControl as *const u8,
+                    core::mem::size_of::<WhvInterruptControl>() as u32,
+                )
+            };
+            if hr < 0 {
+                static IOAPIC_FAIL_CTR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                let cnt = IOAPIC_FAIL_CTR.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                if cnt < 20 {
+                    whp_debug(format_args!("WHvRequestInterrupt failed: hr={:#x} vec={} dest={} dm={} trig={}",
+                        hr, intr.vector, intr.dest, intr.dest_mode, intr.trigger));
+                }
+            }
+        }
+    }
+
+    /// Route a device IRQ through the IOAPIC and deliver via WHvRequestInterrupt.
+    pub fn ioapic_set_irq(&mut self, pin: u8, level: bool) {
+        self.ioapic.set_irq(pin, level);
+        self.deliver_ioapic_pending();
+    }
+}
+
 impl VmBackend for WhpBackend {
     fn destroy(&mut self) {
         unsafe {
@@ -1295,6 +1476,7 @@ impl VmBackend for WhpBackend {
                         new_regs.rip += instr_len;
                         if is_write {
                             self.ioapic.write(mmio_off, write_data as u32);
+                            self.deliver_ioapic_pending();
                         } else {
                             let val = self.ioapic.read(mmio_off) as u64;
                             // Decode dest register same as LAPIC
@@ -1516,8 +1698,15 @@ impl VmBackend for WhpBackend {
                     return Ok(VmExitReason::InterruptWindow);
                 }
                 WHV_EXIT_REASON_APIC_EOI => {
-                    // XApic mode: guest EOI'd. For level-triggered IOAPIC
-                    // interrupts we'd clear remote IRR here. Log and continue.
+                    // XApic mode: guest EOI'd. Extract vector from exit data
+                    // and clear Remote IRR in IOAPIC for level-triggered entries.
+                    let eoi_vector = u32::from_le_bytes([
+                        ctx.exit_data[0], ctx.exit_data[1],
+                        ctx.exit_data[2], ctx.exit_data[3],
+                    ]) as u8;
+                    self.ioapic.eoi_vector(eoi_vector);
+                    // Deliver any re-triggered IOAPIC interrupts
+                    self.deliver_ioapic_pending();
                     continue;
                 }
                 WHV_EXIT_REASON_CANCELED => return Ok(VmExitReason::InterruptWindow),
