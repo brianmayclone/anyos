@@ -400,29 +400,15 @@ pub extern "C" fn corevm_pic_debug(handle: u64) -> u32 {
     }
 }
 
-/// Advance LAPIC timer by `ticks` bus clocks.
-/// Returns the vector to inject (>0) or 0 if no interrupt.
-/// If a timer interrupt fires AND the guest has IF=1, injects it directly.
+/// Poll LAPIC timer (TSC-based). Injects interrupt if timer fired and IF=1.
+/// Returns the vector injected (>0) or 0.
 #[no_mangle]
-pub extern "C" fn corevm_lapic_timer_advance(handle: u64, ticks: u64) -> u32 {
+pub extern "C" fn corevm_lapic_timer_advance(handle: u64, _ticks: u64) -> u32 {
     match get_vm(handle) {
         Some(vm) => {
-            // Advance timer
-            if let Some(vector) = vm.backend.lapic.advance_timer(ticks) {
-                // Try to inject directly
-                if vm.get_vcpu_regs(0)
-                    .map(|r| r.rflags & 0x200 != 0)
-                    .unwrap_or(false)
-                {
-                    if vm.inject_interrupt(0, vector).is_ok() {
-                        return vector as u32;
-                    }
-                }
-                // Couldn't inject — leave pending for next poll
-                vm.backend.lapic.timer_irq_pending = true;
-                return 0;
-            }
-            // Check if there's a pending timer IRQ from a previous fire
+            // Poll timer — checks host TSC internally
+            vm.backend.lapic.poll_timer();
+            // Try to inject pending timer IRQ
             if let Some(vector) = vm.backend.lapic.take_timer_irq() {
                 if vm.get_vcpu_regs(0)
                     .map(|r| r.rflags & 0x200 != 0)
@@ -432,6 +418,7 @@ pub extern "C" fn corevm_lapic_timer_advance(handle: u64, ticks: u64) -> u32 {
                         return vector as u32;
                     }
                 }
+                // Couldn't inject — re-pend for next poll
                 vm.backend.lapic.timer_irq_pending = true;
             }
             0

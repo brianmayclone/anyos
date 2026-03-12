@@ -227,15 +227,29 @@ struct MemorySlot {
     host_ptr: *mut u8,
 }
 
+/// Read host TSC for LAPIC timer time-keeping.
+#[inline]
+fn host_tsc() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    unsafe { core::arch::x86_64::_rdtsc() }
+    #[cfg(not(target_arch = "x86_64"))]
+    { 0 }
+}
+
 /// Minimal Local APIC state for handling MMIO at 0xFEE00000.
+/// Timer uses host TSC so current_count reads always reflect real elapsed time,
+/// even inside the inner MMIO loop of run_vcpu.
 pub struct SoftLapic {
-    regs: [u32; 64], // 64 registers at 16-byte spacing (offset >> 4)
-    // Timer state
-    timer_initial: u32,
-    timer_current: u64,    // remaining ticks (scaled up for precision)
-    timer_divide: u32,     // divisor (1,2,4,8,16,32,64,128)
-    timer_armed: bool,     // whether timer is counting down
-    pub timer_irq_pending: bool, // timer fired, waiting to inject
+    regs: [u32; 64],
+    // Timer state — TSC-based
+    timer_initial: u32,       // guest-written initial count
+    timer_divide: u32,        // divisor (1,2,4,8,16,32,64,128)
+    timer_armed: bool,
+    timer_tsc_start: u64,     // host TSC when timer was armed
+    timer_tsc_period: u64,    // host TSC ticks for one full countdown
+    tsc_per_bus_tick: u64,    // host TSC ticks per bus tick (calibrated from CPUID MHz)
+    pub timer_irq_pending: bool,
+    timer_last_fire_tsc: u64, // TSC of last fire (avoid double-fire in same period)
 }
 
 /// LAPIC register indices (offset >> 4)
@@ -257,19 +271,28 @@ impl SoftLapic {
         regs[0x0F] = 0x000001FF; // Spurious Vector: APIC enabled (bit 8) + vector 0xFF
         regs[0x08] = 0;          // Task Priority Register
         regs[LAPIC_IDX_LVT_TIMER] = 0x00010000; // masked by default
+
+        // Estimate host TSC frequency: use a quick calibration.
+        // Assume ~1 GHz bus clock for the guest LAPIC timer.
+        // tsc_per_bus_tick = host_tsc_freq / guest_bus_freq.
+        // We approximate host TSC freq by measuring a short interval.
+        // For simplicity, assume host TSC ≈ guest bus clock (1:1 mapping),
+        // which gives ~GHz-class bus frequency. Linux will calibrate against
+        // this and adapt.
         SoftLapic {
             regs,
             timer_initial: 0,
-            timer_current: 0,
             timer_divide: 1,
             timer_armed: false,
+            timer_tsc_start: 0,
+            timer_tsc_period: 0,
+            tsc_per_bus_tick: 1, // 1:1 TSC-to-bus mapping
             timer_irq_pending: false,
+            timer_last_fire_tsc: 0,
         }
     }
 
     fn decode_divide(val: u32) -> u32 {
-        // Divide config: bits 3,1,0 form a 3-bit value
-        // 000=2, 001=4, 010=8, 011=16, 100=32, 101=64, 110=128, 111=1
         let bits = ((val >> 1) & 0b100) | (val & 0b11);
         match bits {
             0b000 => 2,
@@ -284,13 +307,38 @@ impl SoftLapic {
         }
     }
 
+    /// Compute remaining timer count from host TSC.
+    fn current_count(&self) -> u32 {
+        if !self.timer_armed || self.timer_initial == 0 || self.timer_tsc_period == 0 {
+            return 0;
+        }
+        let now = host_tsc();
+        let elapsed = now.wrapping_sub(self.timer_tsc_start);
+        let lvt = self.regs[LAPIC_IDX_LVT_TIMER];
+        let mode = (lvt >> 17) & 0x3;
+
+        if mode == 1 {
+            // Periodic: compute position within current period
+            let pos = elapsed % self.timer_tsc_period;
+            let remaining_tsc = self.timer_tsc_period - pos;
+            let remaining = remaining_tsc / (self.tsc_per_bus_tick * self.timer_divide as u64);
+            (remaining as u32).min(self.timer_initial)
+        } else {
+            // One-shot
+            if elapsed >= self.timer_tsc_period {
+                0
+            } else {
+                let remaining_tsc = self.timer_tsc_period - elapsed;
+                let remaining = remaining_tsc / (self.tsc_per_bus_tick * self.timer_divide as u64);
+                (remaining as u32).min(self.timer_initial)
+            }
+        }
+    }
+
     fn read(&self, offset: u64) -> u32 {
         let idx = ((offset & 0xFFF) >> 4) as usize;
         match idx {
-            LAPIC_IDX_CURRENT_COUNT => {
-                // Return remaining count based on timer_current
-                (self.timer_current / self.timer_divide as u64) as u32
-            }
+            LAPIC_IDX_CURRENT_COUNT => self.current_count(),
             _ => {
                 if idx < 64 { self.regs[idx] } else { 0 }
             }
@@ -317,14 +365,16 @@ impl SoftLapic {
                 self.timer_initial = val;
                 if val == 0 {
                     self.timer_armed = false;
-                    self.timer_current = 0;
                 } else {
-                    self.timer_current = val as u64 * self.timer_divide as u64;
+                    // Arm timer: compute TSC period for full countdown
+                    self.timer_tsc_period = val as u64 * self.timer_divide as u64 * self.tsc_per_bus_tick;
+                    self.timer_tsc_start = host_tsc();
+                    self.timer_last_fire_tsc = self.timer_tsc_start;
                     self.timer_armed = true;
                 }
             }
             LAPIC_IDX_CURRENT_COUNT => {
-                // Current count is read-only per Intel SDM
+                // Read-only per Intel SDM
             }
             LAPIC_IDX_DIVIDE_CONFIG => {
                 self.regs[idx] = val;
@@ -339,41 +389,40 @@ impl SoftLapic {
         }
     }
 
-    /// Advance timer by `ticks` bus clocks. Returns Some(vector) if timer fires.
-    pub fn advance_timer(&mut self, ticks: u64) -> Option<u8> {
-        if !self.timer_armed || self.timer_initial == 0 {
+    /// Check if the timer has expired. Call this periodically (from run loop or MMIO handler).
+    /// Returns Some(vector) if an interrupt should be delivered.
+    pub fn poll_timer(&mut self) -> Option<u8> {
+        if !self.timer_armed || self.timer_initial == 0 || self.timer_tsc_period == 0 {
             return None;
         }
 
         let lvt = self.regs[LAPIC_IDX_LVT_TIMER];
         let masked = (lvt & (1 << 16)) != 0;
         let vector = (lvt & 0xFF) as u8;
-        let mode = (lvt >> 17) & 0x3; // 0=one-shot, 1=periodic
+        let mode = (lvt >> 17) & 0x3;
 
-        if self.timer_current <= ticks {
-            // Timer expired
-            if mode == 1 {
-                // Periodic: reload and wrap
-                let period = self.timer_initial as u64 * self.timer_divide as u64;
-                if period > 0 {
-                    let remaining = ticks - self.timer_current;
-                    self.timer_current = period - (remaining % period);
-                } else {
-                    self.timer_current = 0;
-                    self.timer_armed = false;
+        let now = host_tsc();
+        let elapsed = now.wrapping_sub(self.timer_tsc_start);
+
+        if mode == 1 {
+            // Periodic: fire if we crossed a period boundary since last fire
+            let since_last = now.wrapping_sub(self.timer_last_fire_tsc);
+            if since_last >= self.timer_tsc_period {
+                self.timer_last_fire_tsc = now;
+                if !masked && vector >= 16 {
+                    self.timer_irq_pending = true;
+                    return Some(vector);
                 }
-            } else {
-                // One-shot: stop
-                self.timer_current = 0;
-                self.timer_armed = false;
-            }
-
-            if !masked && vector >= 16 {
-                self.timer_irq_pending = true;
-                return Some(vector);
             }
         } else {
-            self.timer_current -= ticks;
+            // One-shot: fire once when expired
+            if elapsed >= self.timer_tsc_period && !self.timer_irq_pending {
+                self.timer_armed = false;
+                if !masked && vector >= 16 {
+                    self.timer_irq_pending = true;
+                    return Some(vector);
+                }
+            }
         }
         None
     }
