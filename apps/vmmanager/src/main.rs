@@ -1097,13 +1097,15 @@ fn start_selected_vm() {
             continue;
         }
         let resp = core::str::from_utf8(&resp_buf[..n as usize]).unwrap_or("");
+        anyos_std::println!("vmmanager: pipe_read got {} bytes: '{}'", n, resp);
         if resp.split('\n').any(|l| l.trim() == "ready") {
             vmd_ready = true;
+            anyos_std::println!("vmmanager: vmd is ready");
             break;
         }
     }
     if !vmd_ready {
-        anyos_std::println!("vmmanager: WARNING: vmd did not become ready");
+        anyos_std::println!("vmmanager: WARNING: vmd did not become ready (100 polls exhausted)");
         a.status_label.set_text("Error: vmd timeout");
         a.status_label.set_text_color(0xFFFF4040);
         return;
@@ -1111,6 +1113,7 @@ fn start_selected_vm() {
 
     // Send VM creation command — vmd reads full config by UUID.
     let create_cmd = format!("create {}", entry.config.uuid);
+    anyos_std::println!("vmmanager: sending create command: '{}'", create_cmd);
     ipc::pipe_write(cmd_pipe, create_cmd.as_bytes());
 
     // Poll for "created" response with SHM ID (up to 5 seconds).

@@ -125,6 +125,8 @@ fn mgmt_thread_entry() {
 
         let n = ipc::pipe_read(pipe_id, &mut buf);
         if n > 0 && n != u32::MAX {
+            anyos_std::println!("[vmd-mgmt] received {} bytes: {}", n,
+                core::str::from_utf8(&buf[..n as usize]).unwrap_or("(invalid utf8)"));
             // Wait for main thread to consume the previous command.
             while CMD_PENDING.load(Ordering::Acquire) {
                 if MGMT_STOP.load(Ordering::Relaxed) {
@@ -949,6 +951,7 @@ fn main() {
 
     // Signal readiness.
     send_status("ready");
+    anyos_std::println!("[vmd] sent 'ready' to vmmanager");
 
     // Main loop: dispatch commands from mgmt thread, run VM, repeat.
     loop {
