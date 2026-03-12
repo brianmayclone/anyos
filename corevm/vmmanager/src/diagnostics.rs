@@ -63,6 +63,8 @@ struct DiagLogInner {
     exit_count: u64,
     /// Debug port (0x402) accumulated text output
     debug_text: String,
+    /// WHP debug output (IOAPIC, exits, APIC events)
+    whp_text: String,
 }
 
 impl DiagLog {
@@ -76,6 +78,7 @@ impl DiagLog {
                 irq_count: 0,
                 exit_count: 0,
                 debug_text: String::new(),
+                whp_text: String::new(),
             })),
         }
     }
@@ -126,6 +129,27 @@ impl DiagLog {
         self.inner.lock().map(|i| i.debug_text.clone()).unwrap_or_default()
     }
 
+    pub fn append_whp_text(&self, text: &str) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.whp_text.push_str(text);
+            // Cap at 256KB to avoid unbounded growth
+            if inner.whp_text.len() > 256 * 1024 {
+                let drain = inner.whp_text.len() - 128 * 1024;
+                inner.whp_text.drain(..drain);
+            }
+        }
+    }
+
+    pub fn whp_text(&self) -> String {
+        self.inner.lock().map(|i| i.whp_text.clone()).unwrap_or_default()
+    }
+
+    pub fn clear_whp_text(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.whp_text.clear();
+        }
+    }
+
     pub fn clear(&self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.entries.clear();
@@ -151,6 +175,7 @@ pub struct DiagnosticsWindow {
 enum DiagTab {
     Log,
     BiosLog,
+    WhpDebug,
 }
 
 impl DiagnosticsWindow {
@@ -197,12 +222,14 @@ impl DiagnosticsWindow {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.active_tab, DiagTab::Log, "VM Log");
                     ui.selectable_value(&mut self.active_tab, DiagTab::BiosLog, "BIOS Log");
+                    ui.selectable_value(&mut self.active_tab, DiagTab::WhpDebug, "WHP Debug");
                 });
                 ui.separator();
 
                 match self.active_tab {
                     DiagTab::Log => self.show_log_tab(ui, log),
                     DiagTab::BiosLog => self.show_bios_log_tab(ui, log),
+                    DiagTab::WhpDebug => self.show_whp_debug_tab(ui, log),
                 }
             });
 
@@ -262,6 +289,23 @@ impl DiagnosticsWindow {
                         }
                     });
                 }
+            });
+    }
+
+    fn show_whp_debug_tab(&self, ui: &mut egui::Ui, log: &DiagLog) {
+        ui.horizontal(|ui| {
+            if ui.small_button("Clear").clicked() {
+                log.clear_whp_text();
+            }
+        });
+        ui.separator();
+        let text = log.whp_text();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
+                ui.label(egui::RichText::new(&text).color(egui::Color32::from_rgb(220, 200, 150)));
             });
     }
 

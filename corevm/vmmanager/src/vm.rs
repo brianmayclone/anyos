@@ -26,6 +26,15 @@ use libcorevm::ffi::{
 };
 use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
 
+/// Callback for WHP debug output — routes messages to DiagLog's WHP tab.
+#[cfg(target_os = "windows")]
+extern "C" fn whp_debug_callback(ctx: *mut std::ffi::c_void, msg: *const u8, len: u32) {
+    if ctx.is_null() || msg.is_null() { return; }
+    let diag = unsafe { &*(ctx as *const DiagLog) };
+    let text = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg, len as usize)) };
+    diag.append_whp_text(text);
+}
+
 /// Retrieve the last error message from libcorevm.
 pub fn get_last_error_public() -> Option<String> {
     let len = corevm_last_error_len() as usize;
@@ -151,6 +160,14 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         exited: AtomicBool::new(false),
         exit_reason: Mutex::new(String::new()),
     });
+
+    // Register WHP debug callback to route output to the diagnostics UI
+    #[cfg(target_os = "windows")]
+    {
+        let diag_for_whp = Box::new(entry.diag_log.clone());
+        let ctx = Box::into_raw(diag_for_whp) as *mut std::ffi::c_void;
+        libcorevm::ffi::corevm_set_whp_debug_callback(Some(whp_debug_callback), ctx);
+    }
 
     let fb = entry.framebuffer.clone();
     let control_clone = control.clone();

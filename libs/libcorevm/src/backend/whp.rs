@@ -10,13 +10,48 @@ use core::ffi::c_void;
 use super::{VmBackend, VmError, VmExitReason};
 use super::types::*;
 
-/// Write debug line to whp_debug.log in %TEMP% or current dir (first 200 lines only).
+/// Global callback for WHP debug output. Set by the host application to
+/// route debug messages to its diagnostics UI instead of log files.
+static WHP_DEBUG_CB: core::sync::atomic::AtomicPtr<c_void> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+static WHP_DEBUG_CTX: core::sync::atomic::AtomicPtr<c_void> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+type WhpDebugFn = extern "C" fn(ctx: *mut c_void, msg: *const u8, len: u32);
+
+/// Register a callback to receive WHP debug output.
+#[no_mangle]
+pub extern "C" fn corevm_set_whp_debug_callback(
+    cb: Option<extern "C" fn(*mut c_void, *const u8, u32)>,
+    ctx: *mut c_void,
+) {
+    match cb {
+        Some(f) => {
+            WHP_DEBUG_CB.store(f as *mut c_void, core::sync::atomic::Ordering::Release);
+            WHP_DEBUG_CTX.store(ctx, core::sync::atomic::Ordering::Release);
+        }
+        None => {
+            WHP_DEBUG_CB.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
+            WHP_DEBUG_CTX.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+/// Write a debug line. Routes to the registered callback if set, otherwise to a log file.
 fn whp_debug(args: core::fmt::Arguments) {
+    let cb_ptr = WHP_DEBUG_CB.load(core::sync::atomic::Ordering::Acquire);
+    if !cb_ptr.is_null() {
+        let msg = std::format!("{}\n", args);
+        let cb: WhpDebugFn = unsafe { core::mem::transmute(cb_ptr) };
+        let ctx = WHP_DEBUG_CTX.load(core::sync::atomic::Ordering::Acquire);
+        cb(ctx, msg.as_ptr(), msg.len() as u32);
+        return;
+    }
+    // Fallback: file-based logging
     use std::io::Write;
     static DEBUG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     let n = DEBUG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     if n >= 20000 { return; }
-    // Try %TEMP%, fallback to current directory
     let path = std::env::var("TEMP")
         .map(|t| std::format!("{}\\whp_debug.log", t))
         .unwrap_or_else(|_| std::string::String::from("whp_debug.log"));
@@ -108,6 +143,7 @@ pub fn cancel_vcpu_global(vcpu_id: u32) -> i32 {
 
 const WHV_PROPERTY_PROCESSOR_COUNT: u32 = 0x00001FFF; // WHvPartitionPropertyCodeProcessorCount
 const WHV_PROPERTY_EXTENDED_VM_EXITS: u32 = 0x00000001; // WHvPartitionPropertyCodeExtendedVmExits
+const WHV_PROPERTY_EXCEPTION_EXIT_BITMAP: u32 = 0x00000003; // WHvPartitionPropertyCodeExceptionExitBitmap
 
 const WHV_MAP_GPA_RANGE_FLAG_READ: u32 = 0x1;
 const WHV_MAP_GPA_RANGE_FLAG_WRITE: u32 = 0x2;
@@ -116,6 +152,8 @@ const WHV_MAP_GPA_RANGE_FLAG_EXECUTE: u32 = 0x4;
 const WHV_EXIT_REASON_NONE: u32 = 0x00000000;
 const WHV_EXIT_REASON_MEMORY_ACCESS: u32 = 0x00000001;
 const WHV_EXIT_REASON_IO_PORT: u32 = 0x00000002;
+const WHV_EXIT_REASON_UNRECOVERABLE_EXCEPTION: u32 = 0x00000004;
+const WHV_EXIT_REASON_INVALID_VP_STATE: u32 = 0x00000005;
 const WHV_EXIT_REASON_HALT: u32 = 0x00000008;
 const WHV_EXIT_REASON_CANCELED: u32 = 0x00002001;
 const WHV_EXIT_REASON_MSR: u32 = 0x00001000;
@@ -626,6 +664,10 @@ impl SoftIoapic {
             if (entry & REDIR_MASKED) != 0 { continue; }
             let dm = ((entry >> 8) & 7) as u8;
             if dm > 1 { continue; } // only Fixed(0) and LowestPri(1)
+            let vector = (entry & 0xFF) as u8;
+            // Vectors 0-15 are reserved for exceptions — skip invalid entries
+            // (guest may clear entries to 0 before reprogramming).
+            if vector < 16 { continue; }
             let is_level = (entry & REDIR_LEVEL) != 0;
 
             if is_level {
@@ -636,7 +678,7 @@ impl SoftIoapic {
             }
 
             self.pending.push(IoapicInterrupt {
-                vector: (entry & 0xFF) as u8,
+                vector,
                 dest: ((entry >> 56) & 0xFF) as u8,
                 dest_mode: if (entry & REDIR_DESTMODE) != 0 { 1 } else { 0 },
                 trigger: if is_level { 1 } else { 0 },
@@ -765,6 +807,20 @@ impl WhpBackend {
             );
             if hr < 0 {
                 // Non-fatal: some WHP versions may not support extended exits
+            }
+
+            // Exception exit bitmap: exit on #DF (8) to catch double faults.
+            // Without this, WHP silently resets the VP on triple fault.
+            let exc_bitmap: u64 = 1u64 << 8;
+            let hr = (api.set_property)(
+                partition,
+                WHV_PROPERTY_EXCEPTION_EXIT_BITMAP,
+                &exc_bitmap as *const u64 as *const u8,
+                core::mem::size_of::<u64>() as u32,
+            );
+            if hr < 0 {
+                // Non-fatal: older WHP may not support this
+                whp_debug(format_args!("ExceptionExitBitmap set failed: hr={:#x}", hr));
             }
 
             // XApic emulation — WHP handles LAPIC internally (timer, ISR/IRR, EOI).
@@ -1125,12 +1181,12 @@ impl WhpBackend {
                     core::mem::size_of::<WhvInterruptControl>() as u32,
                 )
             };
-            if hr < 0 {
-                static IOAPIC_FAIL_CTR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                let cnt = IOAPIC_FAIL_CTR.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                if cnt < 20 {
-                    whp_debug(format_args!("WHvRequestInterrupt failed: hr={:#x} vec={} dest={} dm={} trig={}",
-                        hr, intr.vector, intr.dest, intr.dest_mode, intr.trigger));
+            {
+                static IOAPIC_INTR_CTR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                let cnt = IOAPIC_INTR_CTR.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                if cnt < 50 || (hr < 0 && cnt < 500) {
+                    whp_debug(format_args!("IOAPIC->LAPIC: hr={:#x} vec={} dest={} dm={} trig={} del={}",
+                        hr, intr.vector, intr.dest, intr.dest_mode, intr.trigger, intr.delivery));
                 }
             }
         }
@@ -1288,6 +1344,63 @@ impl VmBackend for WhpBackend {
             let ctx = unsafe { exit_ctx.assume_init() };
             // Instruction length is lower 4 bits of vp_context[2] (upper 4 bits = Cr8)
             let instr_len = (ctx.vp_context[2] & 0x0F) as u64;
+
+            // Post-IOAPIC exit logging: start logging after first IOAPIC MMIO access,
+            // skip noisy exits (CPUID at same RIP, debug port 0x402).
+            {
+                static IOAPIC_SEEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+                static POST_IOAPIC_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+                // Detect IOAPIC MMIO (GPA 0xFEC00000..0xFEC00FFF)
+                if ctx.exit_reason == WHV_EXIT_REASON_MEMORY_ACCESS {
+                    let gpa = u64::from_le_bytes([
+                        ctx.exit_data[0x18], ctx.exit_data[0x19], ctx.exit_data[0x1A], ctx.exit_data[0x1B],
+                        ctx.exit_data[0x1C], ctx.exit_data[0x1D], ctx.exit_data[0x1E], ctx.exit_data[0x1F],
+                    ]);
+                    if gpa >= 0xFEC0_0000 && gpa < 0xFEC0_1000 {
+                        IOAPIC_SEEN.store(true, core::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+
+                if IOAPIC_SEEN.load(core::sync::atomic::Ordering::Relaxed) {
+                    // Skip CPUID (0x1001) and debug port 0x402 writes
+                    let is_noisy = ctx.exit_reason == WHV_EXIT_REASON_CPUID
+                        || (ctx.exit_reason == WHV_EXIT_REASON_IO_PORT && {
+                            let port = u16::from_le_bytes([ctx.exit_data[0x18], ctx.exit_data[0x19]]);
+                            port == 0x0402 || (port >= 0x03C0 && port <= 0x03DF)
+                                || port == 0x01CE || port == 0x01CF
+                        })
+                        || ctx.exit_reason == WHV_EXIT_REASON_CANCELED;
+
+                    if !is_noisy {
+                        let n = POST_IOAPIC_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        if n < 500 {
+                            let rip = u64::from_le_bytes([
+                                ctx.vp_context[24], ctx.vp_context[25], ctx.vp_context[26], ctx.vp_context[27],
+                                ctx.vp_context[28], ctx.vp_context[29], ctx.vp_context[30], ctx.vp_context[31],
+                            ]);
+                            let extra = match ctx.exit_reason {
+                                WHV_EXIT_REASON_IO_PORT => {
+                                    let port = u16::from_le_bytes([ctx.exit_data[0x18], ctx.exit_data[0x19]]);
+                                    let is_write = ctx.exit_data[0x14] & 1;
+                                    std::format!(" port={:#06x} wr={}", port, is_write)
+                                }
+                                WHV_EXIT_REASON_MEMORY_ACCESS => {
+                                    let gpa = u64::from_le_bytes([
+                                        ctx.exit_data[0x18], ctx.exit_data[0x19], ctx.exit_data[0x1A], ctx.exit_data[0x1B],
+                                        ctx.exit_data[0x1C], ctx.exit_data[0x1D], ctx.exit_data[0x1E], ctx.exit_data[0x1F],
+                                    ]);
+                                    let access = ctx.exit_data[0x14] & 0x3;
+                                    let dir = if access == 1 { "WR" } else { "RD" };
+                                    std::format!(" {} gpa={:#x}", dir, gpa)
+                                }
+                                _ => std::format!(" exit={:#x}", ctx.exit_reason),
+                            };
+                            whp_debug(format_args!("[post-ioapic:{}] rip={:#x}{}", n, rip, extra));
+                        }
+                    }
+                }
+            }
 
             // Debug: log when inner loop hits limit (late boot only)
             if inner_loops == 64 {
@@ -1709,9 +1822,41 @@ impl VmBackend for WhpBackend {
                     self.deliver_ioapic_pending();
                     continue;
                 }
+                WHV_EXIT_REASON_UNRECOVERABLE_EXCEPTION | WHV_EXIT_REASON_INVALID_VP_STATE => {
+                    let regs = self.get_vcpu_regs(id).unwrap_or_default();
+                    let sregs = self.get_vcpu_sregs(id).unwrap_or_default();
+                    // WHV_VP_EXCEPTION_CONTEXT layout:
+                    // [0x00] InstructionByteCount(u8), [0x14] ExceptionInfo(u32),
+                    // [0x18] ExceptionType(u8), [0x1C] ErrorCode(u32), [0x20] ExceptionParameter(u64)
+                    let exc_type = ctx.exit_data[0x18];
+                    let err_code = u32::from_le_bytes([
+                        ctx.exit_data[0x1C], ctx.exit_data[0x1D],
+                        ctx.exit_data[0x1E], ctx.exit_data[0x1F],
+                    ]);
+                    let exc_param = u64::from_le_bytes([
+                        ctx.exit_data[0x20], ctx.exit_data[0x21], ctx.exit_data[0x22], ctx.exit_data[0x23],
+                        ctx.exit_data[0x24], ctx.exit_data[0x25], ctx.exit_data[0x26], ctx.exit_data[0x27],
+                    ]);
+                    whp_debug(format_args!(
+                        "EXCEPTION EXIT: exit={:#x} vec=#{} err_code={:#x} param={:#x} RIP={:#x} RSP={:#x} RFLAGS={:#x} CR0={:#x} CR3={:#x} CR4={:#x} CS={:#x} SS={:#x} EFER={:#x}",
+                        ctx.exit_reason, exc_type, err_code, exc_param,
+                        regs.rip, regs.rsp, regs.rflags,
+                        sregs.cr0, sregs.cr3, sregs.cr4,
+                        sregs.cs.selector, sregs.ss.selector, sregs.efer
+                    ));
+                    return Ok(VmExitReason::Shutdown);
+                }
                 WHV_EXIT_REASON_CANCELED => return Ok(VmExitReason::InterruptWindow),
-                WHV_EXIT_REASON_NONE => return Ok(VmExitReason::Error),
-                _ => return Ok(VmExitReason::Error),
+                WHV_EXIT_REASON_NONE => {
+                    whp_debug(format_args!("EXIT_REASON_NONE"));
+                    return Ok(VmExitReason::Error);
+                }
+                unknown => {
+                    let regs = self.get_vcpu_regs(id).unwrap_or_default();
+                    whp_debug(format_args!("UNKNOWN exit reason={:#x} RIP={:#x} RSP={:#x} RFLAGS={:#x} CR0={:#x}",
+                        unknown, regs.rip, regs.rsp, regs.rflags, 0));
+                    return Ok(VmExitReason::Error);
+                }
             }
         }
     }

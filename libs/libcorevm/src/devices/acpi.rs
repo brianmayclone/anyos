@@ -18,11 +18,10 @@
 use crate::error::Result;
 use crate::io::IoHandler;
 
-/// Approximate guest instructions per PM timer tick.
-///
-/// The PM timer runs at 3.579545 MHz. On the current host-test workloads we
-/// see early Linux execute at roughly 35 MIPS, so a 10:1 ratio yields a
-/// workable free-running timer without depending on host wall-clock APIs.
+/// PM timer frequency: 3.579545 MHz.
+const PM_TIMER_HZ: u64 = 3_579_545;
+
+/// Approximate guest instructions per PM timer tick (host_test fallback).
 const PM_TIMER_INSTS_PER_TICK: u64 = 10;
 
 /// ACPI Power Management I/O device.
@@ -34,21 +33,18 @@ const PM_TIMER_INSTS_PER_TICK: u64 = 10;
 #[derive(Debug)]
 pub struct AcpiPm {
     /// PM1a Status Register (offset 0x00).
-    ///
-    /// Bits are write-1-to-clear. Bit 0 = TMR_STS (timer overflow),
-    /// Bit 8 = PWRBTN_STS, Bit 10 = RTC_STS.
     pm1_status: u16,
     /// PM1a Enable Register (offset 0x02).
     pm1_enable: u16,
     /// PM1a Control Register (offset 0x04).
-    ///
-    /// Bit 13 = SLP_EN (triggers sleep), Bits 12:10 = SLP_TYP.
     pm1_control: u16,
     /// PM Timer counter (offset 0x08, 32-bit read-only).
-    /// SeaBIOS only cares that it changes between reads.
     timer_count: u32,
     /// Fractional guest instruction credits toward the next PM timer tick.
     instruction_credit: u64,
+    /// Wall-clock epoch for std platforms (used in WHP mode).
+    #[cfg(feature = "std")]
+    epoch: std::time::Instant,
 }
 
 impl AcpiPm {
@@ -60,10 +56,13 @@ impl AcpiPm {
             pm1_control: 0,
             timer_count: 0,
             instruction_credit: 0,
+            #[cfg(feature = "std")]
+            epoch: std::time::Instant::now(),
         }
     }
 
     /// Advance the free-running PM timer by guest execution progress.
+    /// Used in host_test (non-WHP) mode.
     pub fn advance(&mut self, guest_instructions: u64) {
         self.instruction_credit = self.instruction_credit.saturating_add(guest_instructions);
         if self.instruction_credit < PM_TIMER_INSTS_PER_TICK {
@@ -83,16 +82,25 @@ impl AcpiPm {
             self.pm1_status |= 1;
         }
     }
+
+    /// Get the current PM timer value. On std platforms, uses wall-clock time
+    /// for accurate 3.579545 MHz free-running counter.
+    fn timer_value(&self) -> u32 {
+        #[cfg(feature = "std")]
+        {
+            let elapsed_us = self.epoch.elapsed().as_micros() as u64;
+            // ticks = elapsed_us * 3579545 / 1000000
+            let ticks = elapsed_us.wrapping_mul(PM_TIMER_HZ) / 1_000_000;
+            ticks as u32
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            self.timer_count
+        }
+    }
 }
 
 impl IoHandler for AcpiPm {
-    /// Read from ACPI PM I/O registers.
-    ///
-    /// Port offsets are relative to PMBASE (0xB000):
-    /// - 0x00-0x01: PM1a Status
-    /// - 0x02-0x03: PM1a Enable
-    /// - 0x04-0x05: PM1a Control
-    /// - 0x08-0x0B: PM Timer (32-bit, free-running)
     fn read(&mut self, port: u16, size: u8) -> Result<u32> {
         let offset = port & 0x3F;
         let val = match offset {
@@ -105,7 +113,7 @@ impl IoHandler for AcpiPm {
             // PM Timer — free-running 32-bit counter with byte/word subaccesses.
             0x08..=0x0B => {
                 let shift = ((offset - 0x08) * 8) as u32;
-                self.timer_count >> shift
+                self.timer_value() >> shift
             }
             _ => 0,
         };

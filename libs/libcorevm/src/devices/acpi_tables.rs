@@ -96,8 +96,35 @@ fn build_facs() -> Vec<u8> {
 }
 
 fn build_dsdt() -> Vec<u8> {
-    let mut t = vec![0u8; 36];
-    write_acpi_header(&mut t, 0, b"DSDT", 36, 1);
+    // Minimal AML: Scope(\_SB_) { Device(PCI0) { _HID=PNP0A03, _UID=0, _BBN=0 } }
+    // Windows ACPI driver requires at least a PCI root device in the DSDT.
+    #[rustfmt::skip]
+    let aml: &[u8] = &[
+        // Scope(\_SB_)
+        0x10,                               // ScopeOp
+        35,                                  // PkgLength
+        0x5C, 0x5F, 0x53, 0x42, 0x5F,      // NameString: \_SB_
+        // Device(PCI0)
+        0x5B, 0x82,                          // ExtOpPrefix + DeviceOp
+        27,                                  // PkgLength
+        0x50, 0x43, 0x49, 0x30,             // NameSeg: PCI0
+        // Name(_HID, EisaId("PNP0A03"))
+        0x08,                                // NameOp
+        0x5F, 0x48, 0x49, 0x44,             // "_HID"
+        0x0C,                                // DWordPrefix
+        0x41, 0xD0, 0x0A, 0x03,             // EISA ID for PNP0A03
+        // Name(_UID, 0)
+        0x08,                                // NameOp
+        0x5F, 0x55, 0x49, 0x44,             // "_UID"
+        0x00,                                // ZeroOp
+        // Name(_BBN, 0)
+        0x08,                                // NameOp
+        0x5F, 0x42, 0x42, 0x4E, 0x00,       // "_BBN" + ZeroOp
+    ];
+    let total_len = 36 + aml.len();
+    let mut t = vec![0u8; total_len];
+    write_acpi_header(&mut t, 0, b"DSDT", total_len as u32, 1);
+    t[36..].copy_from_slice(aml);
     t
 }
 
@@ -247,7 +274,8 @@ pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     emit(loader_add_checksum(&tables_file, rsdt_off + 9, rsdt_off, 44));
 
     // 5. DSDT and MADT checksums
-    emit(loader_add_checksum(&tables_file, dsdt_off + 9, dsdt_off, 36));
+    let dsdt_len = dsdt.len() as u32;
+    emit(loader_add_checksum(&tables_file, dsdt_off + 9, dsdt_off, dsdt_len));
     emit(loader_add_checksum(&tables_file, madt_off + 9, madt_off, madt_len));
 
     (rsdp, tables, loader)

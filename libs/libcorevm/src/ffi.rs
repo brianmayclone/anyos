@@ -372,20 +372,22 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                     }
                 }
             }
-            // Inject ONE pending PIC interrupt (highest priority),
-            // but ONLY if the guest has interrupts enabled (RFLAGS.IF=1).
-            // PendingInterruption requires IF=1.
+            // Inject ALL pending PIC interrupts while IF=1.
+            // Injecting only one per cycle caused starvation: PIT (IRQ0)
+            // fires every ~50ms and always wins priority, starving IRQ1/12.
             {
                 let if_set = vm.get_vcpu_regs(0)
                     .map(|r| r.rflags & 0x200 != 0)
                     .unwrap_or(false);
                 if if_set {
                     let pic = unsafe { &mut *vm.pic_ptr };
-                    if let Some(vector) = pic.get_interrupt_vector() {
+                    while let Some(vector) = pic.get_interrupt_vector() {
                         if vm.inject_interrupt(0, vector).is_ok() {
                             let irq = pic.irq_for_vector(vector).unwrap_or(0);
                             pic.lower_irq(irq);
                             injected += 1;
+                        } else {
+                            break;
                         }
                     }
                 }
@@ -1068,3 +1070,7 @@ pub extern "C" fn corevm_vga_get_text_buffer(
         None => -1,
     }
 }
+
+// Re-export WHP debug callback setter for use by vmmanager.
+#[cfg(feature = "windows")]
+pub use crate::backend::whp::corevm_set_whp_debug_callback;

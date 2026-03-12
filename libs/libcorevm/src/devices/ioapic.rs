@@ -186,6 +186,11 @@ impl IoApic {
                 continue; // only Fixed (0) and LowestPri (1)
             }
             let vector = (entry & 0xFF) as u8;
+            // Vectors 0-15 are reserved for CPU exceptions; skip invalid entries
+            // (e.g. guest clears entry to 0 before reprogramming).
+            if vector < 16 {
+                continue;
+            }
             let is_level = (entry & REDIR_LEVEL_TRIGGERED) != 0;
 
             if is_level {
