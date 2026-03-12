@@ -321,6 +321,18 @@ fn main() {
             }
         }
 
+        // Advance CMOS RTC periodic timer
+        {
+            let now = Instant::now();
+            let elapsed_us = now.duration_since(last_pit_tick).as_micros() as u64;
+            if elapsed_us > 0 {
+                let rtc_ticks = (elapsed_us * 32768) / 1_000_000;
+                if rtc_ticks > 0 {
+                    corevm_cmos_advance(handle, rtc_ticks);
+                }
+            }
+        }
+
         // Poll IRQs
         corevm_poll_irqs(handle);
 

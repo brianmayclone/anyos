@@ -222,6 +222,7 @@ struct CoreVmLib {
 
     // Timer & IRQ polling
     pit_advance: extern "C" fn(u64, u32) -> u32,
+    cmos_advance: extern "C" fn(u64, u64) -> u32,
     poll_irqs: extern "C" fn(u64) -> u32,
     lapic_timer_advance: extern "C" fn(u64, u64) -> u32,
 
@@ -320,6 +321,7 @@ pub fn init() -> bool {
             ahci_attach_cdrom: resolve(&handle, "corevm_ahci_attach_cdrom"),
             // Timer & IRQ polling
             pit_advance: resolve(&handle, "corevm_pit_advance"),
+            cmos_advance: resolve(&handle, "corevm_cmos_advance"),
             poll_irqs: resolve(&handle, "corevm_poll_irqs"),
             lapic_timer_advance: resolve(&handle, "corevm_lapic_timer_advance"),
             // PS/2 input
@@ -559,6 +561,12 @@ impl VmHandle {
     /// Advance the PIT by the given number of ticks and deliver any pending IRQ 0.
     pub fn pit_advance(&self, ticks: u32) -> u32 {
         (lib().pit_advance)(self.handle, ticks)
+    }
+
+    /// Advance the CMOS RTC periodic timer. `ticks_32768` is in units of
+    /// the 32.768 kHz base clock. Returns 1 if IRQ 8 fired.
+    pub fn cmos_advance(&self, ticks_32768: u64) -> u32 {
+        (lib().cmos_advance)(self.handle, ticks_32768)
     }
 
     /// Poll all device IRQs (PS/2, AHCI, etc.) and route pending interrupts

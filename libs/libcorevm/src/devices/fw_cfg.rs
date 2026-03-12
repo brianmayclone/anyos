@@ -261,7 +261,7 @@ impl IoHandler for FwCfg {
                 };
                 eprintln!("[fw_cfg] select 0x{:04X}{}", sel, file_info);
             }
-            #[cfg(not(any(feature = "linux", feature = "std")))]
+            #[cfg(all(feature = "anyos", not(any(feature = "linux", feature = "std"))))]
             libsyscall::serial_print(format_args!(
                 "[fw_cfg] select 0x{:04X}\n", sel
             ));

@@ -8,14 +8,14 @@ crate-type = ["staticlib", "rlib"]
 
 [features]
 default = ["anyos"]
-anyos = []
+anyos = ["libheap", "libsyscall"]
 host_test = []
 linux = ["std"]
 windows = ["std"]
 std = []
 
 [dependencies]
-libheap = { path = "../libheap" }
-libsyscall = { path = "../libsyscall" }
+libheap = { path = "../libheap", optional = true }
+libsyscall = { path = "../libsyscall", optional = true }
 
 [workspace]

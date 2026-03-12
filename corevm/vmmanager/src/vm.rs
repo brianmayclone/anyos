@@ -20,7 +20,7 @@ use libcorevm::ffi::{
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_lfb_addr,
     corevm_last_error, corevm_last_error_len,
-    corevm_pit_advance, corevm_pit_debug, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu, corevm_lapic_timer_advance, corevm_lapic_debug,
+    corevm_pit_advance, corevm_pit_debug, corevm_cmos_advance, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu, corevm_lapic_timer_advance, corevm_lapic_debug,
     corevm_read_phys, corevm_debug_port_take_output,
     corevm_fw_cfg_add_file, corevm_set_memory_region,
 };
@@ -551,6 +551,15 @@ fn vm_run_loop(
                         (pic_st >> 24) & 1, if_flag, exit.reason, regs.rip
                     ));
                 }
+            }
+        }
+
+        // Advance CMOS RTC periodic timer based on wall-clock elapsed time.
+        // 32.768 kHz base clock → ticks = elapsed_us * 32768 / 1_000_000
+        {
+            let rtc_ticks = (pit_elapsed.as_micros() as u64 * 32768) / 1_000_000;
+            if rtc_ticks > 0 {
+                corevm_cmos_advance(handle, rtc_ticks);
             }
         }
 

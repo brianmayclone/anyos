@@ -41,6 +41,7 @@ pub struct Vm {
     pub debug_port_ptr: *mut crate::devices::debug_port::DebugPort,
     pub pci_bus_ptr: *mut crate::devices::bus::PciBus,
     pub fw_cfg_ptr: *mut crate::devices::fw_cfg::FwCfg,
+    pub cmos_ptr: *mut crate::devices::cmos::Cmos,
 }
 
 impl Vm {
@@ -75,6 +76,7 @@ impl Vm {
             debug_port_ptr: core::ptr::null_mut(),
             pci_bus_ptr: core::ptr::null_mut(),
             fw_cfg_ptr: core::ptr::null_mut(),
+            cmos_ptr: core::ptr::null_mut(),
         })
     }
 
@@ -113,7 +115,10 @@ impl Vm {
         self.io.register(0x61, 1, Box::new(port61));
 
         // CMOS (0x70-0x71)
-        self.io.register(0x70, 2, Box::new(Cmos::new(ram_size)));
+        let cmos = Box::new(Cmos::new(ram_size));
+        let cmos_ptr = &*cmos as *const Cmos as *mut Cmos;
+        self.io.register(0x70, 2, cmos);
+        self.cmos_ptr = cmos_ptr;
 
         // PS/2 controller (0x60 and 0x64 — register as 0x60 count=5)
         let ps2 = Box::new(Ps2Controller::new());
@@ -484,6 +489,14 @@ impl Vm {
             None
         } else {
             Some(unsafe { &mut *self.pit_ptr })
+        }
+    }
+
+    pub fn cmos_mut(&mut self) -> Option<&mut crate::devices::cmos::Cmos> {
+        if self.cmos_ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *self.cmos_ptr })
         }
     }
 }

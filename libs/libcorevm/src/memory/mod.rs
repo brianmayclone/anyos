@@ -440,6 +440,7 @@ impl MemoryBus for GuestMemory {
         if addr as usize >= self.ram.size() {
             let n = UNMAPPED_READ_COUNT.fetch_add(1, Ordering::Relaxed);
             if n < 50 {
+                #[cfg(feature = "anyos")]
                 libsyscall::serial_print(format_args!(
                     "[mem-diag] unmapped read16 #{}: addr=0x{:08X}\n", n, addr
                 ));
@@ -467,6 +468,7 @@ impl MemoryBus for GuestMemory {
         if addr as usize >= self.ram.size() {
             let n = UNMAPPED_READ_COUNT.fetch_add(1, Ordering::Relaxed);
             if n < 50 {
+                #[cfg(feature = "anyos")]
                 libsyscall::serial_print(format_args!(
                     "[mem-diag] unmapped read32 #{}: addr=0x{:08X}\n", n, addr
                 ));

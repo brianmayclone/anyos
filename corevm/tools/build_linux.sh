@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
-cd "$(dirname "$0")/../vmmanager"
+SCRIPT_DIR="$(dirname "$0")"
+cd "$SCRIPT_DIR/../vmmanager"
+
+# Always clean libcorevm artifacts to avoid stale builds
+cargo clean -p libcorevm 2>/dev/null || true
 
 if [ "$1" = "--clean" ]; then
     cargo clean

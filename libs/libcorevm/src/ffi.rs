@@ -385,6 +385,45 @@ pub extern "C" fn corevm_pit_debug(handle: u64) -> u64 {
     }
 }
 
+/// Advance the CMOS RTC periodic timer by `ticks_32768` ticks of the
+/// 32.768 kHz base clock. Returns 1 if IRQ 8 should fire, 0 otherwise.
+/// On KVM, raises IRQ 8 via KVM_IRQ_LINE when the periodic timer fires.
+#[no_mangle]
+pub extern "C" fn corevm_cmos_advance(handle: u64, ticks_32768: u64) -> u32 {
+    match get_vm(handle) {
+        Some(vm) => {
+            let fired = if let Some(cmos) = vm.cmos_mut() {
+                cmos.advance(ticks_32768)
+            } else {
+                return 0;
+            };
+            if fired {
+                #[cfg(feature = "linux")]
+                {
+                    let _ = vm.backend.set_irq_line(8, true);
+                    let _ = vm.backend.set_irq_line(8, false);
+                }
+                #[cfg(not(feature = "linux"))]
+                {
+                    if !vm.pic_ptr.is_null() {
+                        let pic = unsafe { &mut *vm.pic_ptr };
+                        pic.raise_irq(8);
+                    }
+                    #[cfg(feature = "windows")]
+                    {
+                        vm.backend.ioapic_set_irq(8, true);
+                        vm.backend.ioapic_set_irq(8, false);
+                    }
+                }
+                1
+            } else {
+                0
+            }
+        }
+        None => 0,
+    }
+}
+
 /// Poll all device IRQ sources and inject any pending interrupts.
 ///
 /// Checks PS/2 keyboard (IRQ 1) and mouse (IRQ 12). If a device has pending
