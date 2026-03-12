@@ -696,43 +696,18 @@ impl Desktop {
             bg.visible = false;
         }
 
-        // Build response
+        // Build response — SHM compositing mode (no direct FB)
         let stride = self.compositor.fb_pitch / 4; // pitch in pixels
-        // Always try to grant direct framebuffer access — apps that don't
-        // need it simply ignore fb_ptr=0 and use SHM compositing.
-        let fb_ptr: u32 = {
-            let owner_tid = self.windows[idx].owner_tid;
-            let mut fb_info = anyos_std::ipc::FbMapInfo {
-                fb_addr: 0, width: 0, height: 0, pitch: 0,
-            };
-            if owner_tid != 0 && anyos_std::ipc::grant_framebuffer(owner_tid, &mut fb_info) == 0 {
-                self.windows[idx].fullscreen_direct_fb = true;
-                // Hide the fullscreen window's layer too — the app writes directly
-                // to VRAM, so compositing would overwrite it with stale SHM content.
-                let lid = self.windows[idx].layer_id;
-                if let Some(layer) = self.compositor.get_layer_mut(lid) {
-                    layer.visible = false;
-                }
-                fb_info.fb_addr
-            } else {
-                0
-            }
-        };
 
-        // Damage entire screen for recomposition — but only if no direct FB
-        // was granted (direct FB mode skips compositing entirely, so damage
-        // would just be drained without effect; worse, if compose() runs before
-        // the direct_fb flag is checked it overwrites VRAM with stale content).
-        if !self.windows[idx].fullscreen_direct_fb {
-            self.compositor.damage_all();
-        }
+        // Damage entire screen for full recomposition
+        self.compositor.damage_all();
 
         Some([
             proto::RESP_FULLSCREEN_ENTERED,
             window_id,
             (sw << 16) | (sh & 0xFFFF),
             stride,
-            fb_ptr,
+            0, // fb_ptr = 0 → SHM compositing
         ])
     }
 
@@ -746,17 +721,7 @@ impl Desktop {
         if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
             let win = &mut self.windows[idx];
 
-            // Don't revoke direct framebuffer here — the app may still be
-            // writing to 0x19000000 because it hasn't processed the EXIT event
-            // yet.  We schedule a lazy revoke: store the TID so we can revoke
-            // when the app acknowledges (destroys the window, or next fullscreen
-            // grant overwrites the mapping anyway).
-            if win.fullscreen_direct_fb && win.owner_tid != 0 {
-                self.pending_fb_revoke = Some((win.owner_tid, 3));
-            }
-
             win.fullscreen = false;
-            win.fullscreen_direct_fb = false;
 
             // Restore saved bounds
             if let Some((sx, sy, sw, sh)) = win.saved_bounds_fs.take() {

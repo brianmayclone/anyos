@@ -41,8 +41,6 @@ struct GameState {
     last_mouse_y: i32,
     mouse_captured: bool,
     fullscreen: bool,
-    fs_fb_ptr: *mut u32,
-    fs_stride: u32,
 }
 
 static mut STATE: Option<GameState> = None;
@@ -150,8 +148,6 @@ fn main() {
             last_mouse_y: 300,
             mouse_captured: false,
             fullscreen: false,
-            fs_fb_ptr: core::ptr::null_mut(),
-            fs_stride: 0,
         });
     }
 
@@ -258,24 +254,12 @@ fn main() {
         let s = unsafe { STATE.as_mut().unwrap() };
         s.fullscreen = true;
         if let Some(info) = libanyui_client::get_fullscreen_info() {
-            // Always update dimensions to physical screen size
             s.canvas_w = info.width;
             s.canvas_h = info.height;
             s.fb_w = info.width / 2;
             s.fb_h = info.height / 2;
             gl::gl_resize(s.fb_w, s.fb_h);
             gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
-            if info.fb_ptr != 0 {
-                // Direct framebuffer mode
-                s.fs_fb_ptr = info.fb_ptr as *mut u32;
-                s.fs_stride = info.stride;
-                gl::gl_init_fullscreen(
-                    s.fs_fb_ptr,
-                    info.width,
-                    info.height,
-                    info.stride,
-                );
-            }
         }
         // Hide cursor and capture mouse in fullscreen
         s.window.set_cursor_visible(false);
@@ -287,8 +271,6 @@ fn main() {
     window_ref.on_fullscreen_exit(|_| {
         let s = unsafe { STATE.as_mut().unwrap() };
         s.fullscreen = false;
-        s.fs_fb_ptr = core::ptr::null_mut();
-        s.fs_stride = 0;
         gl::gl_exit_fullscreen();
         // Show cursor and release capture when leaving fullscreen
         s.window.set_cursor_visible(true);
@@ -383,36 +365,18 @@ fn game_tick() {
         let ch = s.canvas_h as usize;
         let rw = s.fb_w as usize;
         let rh = s.fb_h as usize;
-        if s.fullscreen && !s.fs_fb_ptr.is_null() {
-            // In fullscreen with direct FB: write directly to GPU VRAM,
-            // bypassing SHM compositing for maximum performance.
-            let stride = s.fs_stride as usize;
-            let dst = unsafe { core::slice::from_raw_parts_mut(s.fs_fb_ptr, stride * ch) };
-            for cy in 0..ch {
-                let sy = (cy * rh / ch).min(rh - 1);
-                let src_row = sy * rw;
-                let dst_row = cy * stride;
-                for cx in 0..cw {
-                    let sx = (cx * rw / cw).min(rw - 1);
-                    dst[dst_row + cx] = src[src_row + sx];
-                }
+        // Upscale from render buffer to canvas (works for both windowed and fullscreen)
+        let mut upscaled = vec![0u32; cw * ch];
+        for cy in 0..ch {
+            let sy = (cy * rh / ch).min(rh - 1);
+            let src_row = sy * rw;
+            let dst_row = cy * cw;
+            for cx in 0..cw {
+                let sx = (cx * rw / cw).min(rw - 1);
+                upscaled[dst_row + cx] = src[src_row + sx];
             }
-            // Tell the GPU to refresh the screen (required for SVGA)
-            libanyui_client::flush_display(0, 0, cw as u32, ch as u32);
-        } else {
-            // Windowed mode: upscale into a buffer and copy to the Canvas widget
-            let mut upscaled = vec![0u32; cw * ch];
-            for cy in 0..ch {
-                let sy = (cy * rh / ch).min(rh - 1);
-                let src_row = sy * rw;
-                let dst_row = cy * cw;
-                for cx in 0..cw {
-                    let sx = (cx * rw / cw).min(rw - 1);
-                    upscaled[dst_row + cx] = src[src_row + sx];
-                }
-            }
-            s.canvas.copy_pixels_from(&upscaled);
         }
+        s.canvas.copy_pixels_from(&upscaled);
     }
 
     // Debug: print camera and pixel samples once per second

@@ -419,23 +419,6 @@ fn management_loop(
             }
         }
 
-        // ── Process deferred framebuffer revoke ──
-        // After exiting fullscreen with direct FB, we defer the revoke by a few
-        // ticks so the app has time to process the EXIT event and stop writing.
-        {
-            acquire_lock();
-            let desktop = unsafe { desktop_ref() };
-            if let Some((tid, ref mut countdown)) = desktop.pending_fb_revoke {
-                if *countdown == 0 {
-                    anyos_std::ipc::revoke_framebuffer(tid);
-                    desktop.pending_fb_revoke = None;
-                } else {
-                    *countdown -= 1;
-                }
-            }
-            release_lock();
-        }
-
         // ── Check for logout request ──
         {
             acquire_lock();

@@ -187,8 +187,6 @@ pub struct WindowInfo {
     pub fullscreen_capable: bool,
     /// Saved window bounds before entering fullscreen: (x, y, width, height).
     pub saved_bounds_fs: Option<(i32, i32, u32, u32)>,
-    /// Whether this window has direct framebuffer access in fullscreen mode.
-    pub fullscreen_direct_fb: bool,
     /// Original flags before fullscreen (to restore borderless state etc.).
     pub saved_flags_fs: u32,
 }
@@ -424,7 +422,6 @@ impl Desktop {
             fullscreen: false,
             fullscreen_capable: false,
             saved_bounds_fs: None,
-            fullscreen_direct_fb: false,
             saved_flags_fs: 0,
         };
 
@@ -1169,7 +1166,6 @@ impl Desktop {
             fullscreen: false,
             fullscreen_capable: false,
             saved_bounds_fs: None,
-            fullscreen_direct_fb: false,
             saved_flags_fs: 0,
         };
 
@@ -1256,7 +1252,6 @@ impl Desktop {
             fullscreen: false,
             fullscreen_capable: false,
             saved_bounds_fs: None,
-            fullscreen_direct_fb: false,
             saved_flags_fs: 0,
         };
 
@@ -1352,7 +1347,6 @@ impl Desktop {
             fullscreen: false,
             fullscreen_capable: false,
             saved_bounds_fs: None,
-            fullscreen_direct_fb: false,
             saved_flags_fs: 0,
         };
 
