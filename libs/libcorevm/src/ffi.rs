@@ -418,8 +418,9 @@ pub extern "C" fn corevm_lapic_timer_advance(handle: u64, _ticks: u64) -> u32 {
                         return vector as u32;
                     }
                 }
-                // Couldn't inject — re-pend for next poll
+                // Couldn't inject (IF=0) — re-pend and request interrupt window
                 vm.backend.lapic.timer_irq_pending = true;
+                let _ = vm.request_interrupt_window(0, true);
             }
             0
         }

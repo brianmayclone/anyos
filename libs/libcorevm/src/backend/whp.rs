@@ -1259,17 +1259,15 @@ impl VmBackend for WhpBackend {
                         self.set_vcpu_regs(id, &new_regs)?;
 
                         // After LAPIC MMIO, check if timer fired and try to inject.
-                        // This is critical during calibration: guest polls current_count
-                        // in a loop, and we need to deliver the interrupt promptly.
-                        if let Some(vec) = self.lapic.poll_timer() {
-                            if new_regs.rflags & 0x200 != 0 {
-                                let _ = self.inject_interrupt(id, vec);
-                            }
-                        } else if self.lapic.timer_irq_pending {
+                        self.lapic.poll_timer();
+                        if self.lapic.timer_irq_pending {
                             if new_regs.rflags & 0x200 != 0 {
                                 if let Some(vec) = self.lapic.take_timer_irq() {
                                     let _ = self.inject_interrupt(id, vec);
                                 }
+                            } else {
+                                // IF=0: request interrupt window so WHP tells us when IF→1
+                                let _ = self.request_interrupt_window(id, true);
                             }
                         }
 
@@ -1418,7 +1416,15 @@ impl VmBackend for WhpBackend {
                     continue;
                 }
                 WHV_EXIT_REASON_INTERRUPT_WINDOW => {
-                    whp_debug(format_args!("InterruptWindow exit!"));
+                    // Guest is now interruptible (IF=1). Disable the notification
+                    // and inject any pending LAPIC timer interrupt.
+                    let _ = self.request_interrupt_window(id, false);
+                    self.lapic.poll_timer();
+                    if let Some(vec) = self.lapic.take_timer_irq() {
+                        let _ = self.inject_interrupt(id, vec);
+                        continue; // re-enter guest with interrupt pending
+                    }
+                    // No LAPIC interrupt — return so vm.rs can inject PIC interrupts
                     return Ok(VmExitReason::InterruptWindow);
                 }
                 WHV_EXIT_REASON_CANCELED => return Ok(VmExitReason::InterruptWindow),
@@ -1579,8 +1585,9 @@ impl VmBackend for WhpBackend {
         self.set_regs_raw(id, &[REG_PENDING_INTERRUPTION], &[WHV_REGISTER_VALUE::from_u64(val)])
     }
 
-    fn request_interrupt_window(&mut self, _id: u32, _enable: bool) -> Result<(), VmError> {
-        Ok(())
+    fn request_interrupt_window(&mut self, id: u32, enable: bool) -> Result<(), VmError> {
+        let val: u64 = if enable { 1 } else { 0 };
+        self.set_regs_raw(id, &[REG_DELIVERABILITY_NOTIFICATIONS], &[WHV_REGISTER_VALUE::from_u64(val)])
     }
 
     fn set_cpuid(&mut self, _entries: &[CpuidEntry]) -> Result<(), VmError> {
