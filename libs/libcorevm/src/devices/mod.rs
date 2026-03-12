@@ -33,5 +33,6 @@ pub mod debug_port;
 pub mod ioapic;
 pub mod lapic;
 pub mod acpi;
+pub mod acpi_tables;
 pub mod apm;
 pub mod ahci;

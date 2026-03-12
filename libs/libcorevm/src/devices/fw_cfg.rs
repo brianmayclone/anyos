@@ -236,6 +236,26 @@ impl IoHandler for FwCfg {
             libsyscall::serial_print(format_args!(
                 "[fw_cfg] select 0x{:04X}\n", sel
             ));
+            #[cfg(feature = "std")]
+            {
+                use std::io::Write;
+                let path = std::env::var("TEMP")
+                    .map(|t| std::format!("{}\\fw_cfg_debug.log", t))
+                    .unwrap_or_else(|_| std::string::String::from("fw_cfg_debug.log"));
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                    let file_info = if sel >= 0x0020 {
+                        self.files.iter().find(|f| f.selector == sel)
+                            .map(|f| {
+                                let name_end = f.name.iter().position(|&b| b == 0).unwrap_or(56);
+                                std::format!(" -> file '{}' ({} bytes)", std::string::String::from_utf8_lossy(&f.name[..name_end]), f.data.len())
+                            })
+                            .unwrap_or_else(|| std::string::String::from(" -> (no file)"))
+                    } else {
+                        std::string::String::new()
+                    };
+                    let _ = writeln!(f, "[fw_cfg] select 0x{:04X}{}", sel, file_info);
+                }
+            }
             self.selector = sel;
             self.offset = 0;
         }

@@ -696,6 +696,43 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) -> i32 {
     }
 }
 
+/// Generate and register ACPI tables via fw_cfg.
+/// Must be called after corevm_setup_standard_devices (needs fw_cfg device).
+#[no_mangle]
+pub extern "C" fn corevm_setup_acpi_tables(handle: u64) -> i32 {
+    fn dbg(msg: &str) {
+        #[cfg(feature = "windows")]
+        {
+            use std::io::Write;
+            let path = std::env::var("TEMP")
+                .map(|t| std::format!("{}\\acpi_debug.log", t))
+                .unwrap_or_else(|_| std::string::String::from("acpi_debug.log"));
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = writeln!(f, "{}", msg);
+            }
+        }
+    }
+    dbg("corevm_setup_acpi_tables called");
+    let vm = match get_vm(handle) {
+        Some(v) => v,
+        None => { dbg("get_vm returned None"); return -1; }
+    };
+    if vm.fw_cfg_ptr.is_null() {
+        dbg("fw_cfg_ptr is NULL");
+        return -1;
+    }
+    let fw_cfg = unsafe { &mut *vm.fw_cfg_ptr };
+
+    let (rsdp, tables, loader) = crate::devices::acpi_tables::generate_acpi_tables();
+    dbg(&std::format!("Generated: rsdp={} tables={} loader={} bytes", rsdp.len(), tables.len(), loader.len()));
+
+    fw_cfg.add_file("etc/acpi/rsdp", rsdp);
+    fw_cfg.add_file("etc/acpi/tables", tables);
+    fw_cfg.add_file("etc/table-loader", loader);
+    dbg("ACPI files registered in fw_cfg");
+    0
+}
+
 // ── Device-specific FFI ─────────────────────────────────────────────────────
 
 /// Set up the E1000 NIC with the given MAC address (6 bytes).

@@ -13,7 +13,7 @@ use libcorevm::ffi::{
     CExitReason,
     corevm_create, corevm_create_vcpu, corevm_destroy,
     corevm_run_vcpu, corevm_handle_io_exit, corevm_handle_mmio_exit, corevm_handle_string_io_exit,
-    corevm_setup_standard_devices, corevm_setup_ahci,
+    corevm_setup_standard_devices, corevm_setup_acpi_tables, corevm_setup_ahci,
     corevm_ahci_attach_disk, corevm_ahci_attach_cdrom,
     corevm_load_binary,
     corevm_get_vcpu_regs, corevm_set_vcpu_regs,
@@ -75,6 +75,8 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
 
     // Setup devices (includes PCI bus)
     corevm_setup_standard_devices(handle);
+    let acpi_rc = corevm_setup_acpi_tables(handle);
+    entry.diag_log.log(DiagCategory::Info, format!("ACPI tables setup: rc={}", acpi_rc));
 
     // Map VGA linear framebuffer RAM at both the Bochs VBE default address
     // (0xE0000000, where SeaVGABIOS places the LFB) and the PCI BAR0 address

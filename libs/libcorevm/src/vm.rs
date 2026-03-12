@@ -141,8 +141,8 @@ impl Vm {
         self.debug_port_ptr = &*dbg as *const DebugPort as *mut DebugPort;
         self.io.register(0x402, 1, dbg);
 
-        // ACPI PM (0x600-0x607)
-        self.io.register(0x600, 8, Box::new(AcpiPm::new()));
+        // ACPI PM at PMBASE 0xB000 (matches FADT PM1a_EVT_BLK)
+        self.io.register(0xB000, 0x40, Box::new(AcpiPm::new()));
 
         // APM (0xB2-0xB3)
         self.io.register(0xB2, 2, Box::new(ApmControl::new()));
