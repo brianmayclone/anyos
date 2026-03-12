@@ -44,9 +44,10 @@ pub const EVENT_MOUSE_MOVE: u32 = 16;
 pub const EVENT_SUBMIT: u32 = 17;
 pub const EVENT_FULLSCREEN_ENTER: u32 = 18;
 pub const EVENT_FULLSCREEN_EXIT: u32 = 19;
+pub const EVENT_KEY_UP: u32 = 20;
 
-/// Number of callback slots (EVENT_CLICK=1 .. EVENT_SUBMIT=17, index 0 unused).
-const NUM_CALLBACK_SLOTS: usize = 18;
+/// Number of callback slots (EVENT_CLICK=1 .. EVENT_KEY_UP=20, index 0 unused).
+const NUM_CALLBACK_SLOTS: usize = 21;
 
 // ── Key codes (must match compositor's encode_scancode output) ───────
 

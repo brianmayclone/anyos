@@ -28,6 +28,7 @@ pub struct Player {
     pub right: bool,
     pub jump: bool,
     pub descend: bool,
+    pub ascend: bool,
 }
 
 impl Player {
@@ -44,6 +45,7 @@ impl Player {
             right: false,
             jump: false,
             descend: false,
+            ascend: false,
         }
     }
 
@@ -60,6 +62,7 @@ impl Player {
             right: false,
             jump: false,
             descend: false,
+            ascend: false,
         }
     }
 
@@ -112,7 +115,7 @@ impl Player {
 
         let vy = if flying {
             let mut v = 0.0f32;
-            if self.jump {
+            if self.ascend || self.jump {
                 v += FLY_SPEED;
             }
             if self.descend {

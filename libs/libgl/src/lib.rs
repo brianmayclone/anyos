@@ -63,6 +63,9 @@ static mut FULLSCREEN_WIDTH: u32 = 0;
 static mut FULLSCREEN_HEIGHT: u32 = 0;
 static mut FULLSCREEN_STRIDE: u32 = 0; // in pixels (pitch / 4)
 
+/// Whether the cursor is currently captured (hidden + grabbed).
+static mut CURSOR_CAPTURED: bool = false;
+
 /// Frame counter for diagnostic output (first N frames only).
 pub(crate) static mut DIAG_FRAME: u32 = 0;
 
@@ -249,6 +252,24 @@ pub extern "C" fn gl_exit_fullscreen() {
         FULLSCREEN_STRIDE = 0;
     }
     serial_println!("[libgl] Fullscreen mode exited");
+}
+
+/// Set cursor captured state. When captured, the cursor should be hidden
+/// and mouse input delivers relative deltas (infinite movement).
+/// Returns the previous captured state (0 or 1).
+#[no_mangle]
+pub extern "C" fn gl_set_cursor_captured(captured: u32) -> u32 {
+    unsafe {
+        let prev = if CURSOR_CAPTURED { 1u32 } else { 0 };
+        CURSOR_CAPTURED = captured != 0;
+        prev
+    }
+}
+
+/// Query whether the cursor is currently captured.
+#[no_mangle]
+pub extern "C" fn gl_get_cursor_captured() -> u32 {
+    unsafe { if CURSOR_CAPTURED { 1 } else { 0 } }
 }
 
 /// Swap buffers in fullscreen mode — copies the rendered frame directly to the

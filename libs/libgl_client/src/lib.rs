@@ -94,6 +94,9 @@ struct LibGl {
     init_fullscreen: extern "C" fn(*mut u32, u32, u32, u32),
     exit_fullscreen: extern "C" fn(),
     swap_buffers_fullscreen: extern "C" fn() -> u32,
+    // Cursor capture
+    set_cursor_captured: extern "C" fn(u32) -> u32,
+    get_cursor_captured: extern "C" fn() -> u32,
     // State
     get_error: extern "C" fn() -> GLenum,
     get_string: extern "C" fn(GLenum) -> *const u8,
@@ -244,6 +247,8 @@ pub fn init() -> bool {
             init_fullscreen: resolve(&handle, "gl_init_fullscreen"),
             exit_fullscreen: resolve(&handle, "gl_exit_fullscreen"),
             swap_buffers_fullscreen: resolve(&handle, "gl_swap_buffers_fullscreen"),
+            set_cursor_captured: resolve(&handle, "gl_set_cursor_captured"),
+            get_cursor_captured: resolve(&handle, "gl_get_cursor_captured"),
             get_error: resolve(&handle, "glGetError"),
             get_string: resolve(&handle, "glGetString"),
             enable: resolve(&handle, "glEnable"),
@@ -384,6 +389,15 @@ pub fn gl_exit_fullscreen() { (lib().exit_fullscreen)(); }
 /// Swap buffers in fullscreen mode (copies directly to mapped framebuffer).
 /// Returns true (1) if copy was performed, false (0) if not in fullscreen mode.
 pub fn swap_buffers_fullscreen() -> bool { (lib().swap_buffers_fullscreen)() != 0 }
+
+/// Set cursor captured state (for FPS-style mouse grab).
+/// Returns the previous state.
+pub fn set_cursor_captured(captured: bool) -> bool {
+    (lib().set_cursor_captured)(if captured { 1 } else { 0 }) != 0
+}
+
+/// Query whether the cursor is currently captured.
+pub fn get_cursor_captured() -> bool { (lib().get_cursor_captured)() != 0 }
 
 /// Get the current error.
 pub fn get_error() -> GLenum { (lib().get_error)() }

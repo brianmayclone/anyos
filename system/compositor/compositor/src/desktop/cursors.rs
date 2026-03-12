@@ -46,6 +46,7 @@ pub enum CursorShape {
     ResizeNWSE,
     ResizeNESW,
     Move,
+    Hidden,
 }
 
 // ── Arrow Cursor ───────────────────────────────────────────────────────────
@@ -362,6 +363,12 @@ impl Desktop {
                     HW_MOVE_HOT_Y,
                     &HW_MOVE,
                 );
+            }
+            CursorShape::Hidden => {
+                // Hide the hardware cursor by sending CURSOR_SHOW(0)
+                self.compositor.gpu_cmds.push([crate::compositor::gpu::GPU_CURSOR_SHOW, 0, 0, 0, 0, 0, 0, 0, 0]);
+                self.compositor.flush_gpu();
+                return;
             }
         }
         // Re-assert cursor position after shape change to ensure visibility.

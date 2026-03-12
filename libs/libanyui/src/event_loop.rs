@@ -947,6 +947,14 @@ pub fn run_once() -> u32 {
                             st.tracked_modifiers &= !control::MOD_SHIFT;
                         }
                     }
+
+                    // Store key info for the callback
+                    st.last_keycode = keycode;
+                    st.last_char_code = char_code;
+                    st.last_modifiers = ev[4] | st.tracked_modifiers;
+
+                    // Dispatch KEY_UP to the window
+                    fire_event_callback(&st.controls, win_id, control::EVENT_KEY_UP, &mut pending_cbs);
                 }
 
                 compositor::EVT_MOUSE_SCROLL => {

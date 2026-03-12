@@ -166,22 +166,47 @@ fn main() {
         physics::set_flying(s.player.body_id, true);
     }
 
-    // Keyboard handler
+    // Keyboard handlers
     let window_ref = unsafe { &STATE.as_ref().unwrap().window };
     window_ref.on_key_down(|ke| {
         let s = unsafe { STATE.as_mut().unwrap() };
-        let kc = ke.keycode;
-        match kc {
-            k if k == b'w' as u32 || k == b'W' as u32 => s.player.forward = true,
-            k if k == b's' as u32 || k == b'S' as u32 => s.player.backward = true,
-            k if k == b'a' as u32 || k == b'A' as u32 => s.player.left = true,
-            k if k == b'd' as u32 || k == b'D' as u32 => s.player.right = true,
-            k if k == b' ' as u32 => s.player.jump = true,
-            k if k == b'c' as u32 || k == b'C' as u32 => s.player.descend = true,
-            k if k == b'f' as u32 || k == b'F' as u32 => s.player.toggle_fly(),
-            k if k == b'1' as u32 => s.player.scroll_block(-1),
-            k if k == b'2' as u32 => s.player.scroll_block(1),
-            k if k == libanyui_client::KEY_ESCAPE => s.mouse_captured = false,
+        // Use char_code for character keys (ASCII), keycode for special keys (scancodes)
+        let ch = ke.char_code;
+        match ch {
+            c if c == b'w' as u32 || c == b'W' as u32 => s.player.forward = true,
+            c if c == b's' as u32 || c == b'S' as u32 => s.player.backward = true,
+            c if c == b'a' as u32 || c == b'A' as u32 => s.player.left = true,
+            c if c == b'd' as u32 || c == b'D' as u32 => s.player.right = true,
+            c if c == b' ' as u32 => s.player.jump = true,
+            c if c == b'f' as u32 || c == b'F' as u32 => s.player.ascend = true,
+            c if c == b'c' as u32 || c == b'C' as u32 => s.player.descend = true,
+            c if c == b'g' as u32 || c == b'G' as u32 => s.player.toggle_fly(),
+            c if c == b'1' as u32 => s.player.scroll_block(-1),
+            c if c == b'2' as u32 => s.player.scroll_block(1),
+            _ => {
+                // Check scancode for special keys (char_code=0 for non-printable)
+                if ke.keycode == libanyui_client::KEY_ESCAPE {
+                    s.mouse_captured = false;
+                    if s.fullscreen {
+                        s.window.set_cursor_visible(true);
+                        gl::set_cursor_captured(false);
+                    }
+                }
+            }
+        }
+    });
+
+    window_ref.on_key_up(|ke| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        let ch = ke.char_code;
+        match ch {
+            c if c == b'w' as u32 || c == b'W' as u32 => s.player.forward = false,
+            c if c == b's' as u32 || c == b'S' as u32 => s.player.backward = false,
+            c if c == b'a' as u32 || c == b'A' as u32 => s.player.left = false,
+            c if c == b'd' as u32 || c == b'D' as u32 => s.player.right = false,
+            c if c == b' ' as u32 => s.player.jump = false,
+            c if c == b'f' as u32 || c == b'F' as u32 => s.player.ascend = false,
+            c if c == b'c' as u32 || c == b'C' as u32 => s.player.descend = false,
             _ => {}
         }
     });
@@ -194,6 +219,10 @@ fn main() {
             s.mouse_captured = true;
             s.last_mouse_x = x;
             s.last_mouse_y = y;
+            if s.fullscreen {
+                s.window.set_cursor_visible(false);
+                gl::set_cursor_captured(true);
+            }
             return;
         }
         let (ex, ey, ez) = s.player.eye_position();
@@ -228,23 +257,17 @@ fn main() {
     window_ref.on_fullscreen_enter(|_| {
         let s = unsafe { STATE.as_mut().unwrap() };
         s.fullscreen = true;
-        // Use the canvas's actual dimensions (logical, after layout) — these match
-        // the canvas pixel buffer size.  info.width/height are physical screen pixels
-        // which may differ due to DPI scaling, causing copy_pixels_from to clip.
-        let cw = s.canvas.get_stride();
-        let ch = s.canvas.get_height();
-        if cw > 0 && ch > 0 {
-            s.canvas_w = cw;
-            s.canvas_h = ch;
-        }
-        s.fb_w = s.canvas_w / 2;
-        s.fb_h = s.canvas_h / 2;
-        gl::gl_resize(s.fb_w, s.fb_h);
-        gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
         if let Some(info) = libanyui_client::get_fullscreen_info() {
             if info.fb_ptr != 0 {
                 s.fs_fb_ptr = info.fb_ptr as *mut u32;
                 s.fs_stride = info.stride;
+                // Use physical screen dimensions for fullscreen rendering
+                s.canvas_w = info.width;
+                s.canvas_h = info.height;
+                s.fb_w = info.width / 2;
+                s.fb_h = info.height / 2;
+                gl::gl_resize(s.fb_w, s.fb_h);
+                gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
                 gl::gl_init_fullscreen(
                     s.fs_fb_ptr,
                     info.width,
@@ -253,6 +276,10 @@ fn main() {
                 );
             }
         }
+        // Hide cursor and capture mouse in fullscreen
+        s.window.set_cursor_visible(false);
+        gl::set_cursor_captured(true);
+        s.mouse_captured = true;
         anyos_std::println!("forger: fullscreen ENTER canvas={}x{} render={}x{}", s.canvas_w, s.canvas_h, s.fb_w, s.fb_h);
     });
 
@@ -262,6 +289,9 @@ fn main() {
         s.fs_fb_ptr = core::ptr::null_mut();
         s.fs_stride = 0;
         gl::gl_exit_fullscreen();
+        // Show cursor and release capture when leaving fullscreen
+        s.window.set_cursor_visible(true);
+        gl::set_cursor_captured(false);
         // Restore canvas size from actual widget
         let w = s.canvas.get_stride();
         let h = s.canvas.get_height();
@@ -312,14 +342,6 @@ fn game_tick() {
 
     // Physics/player update
     s.player.update(1.0 / 60.0);
-
-    // Clear movement flags (re-set by key repeat events)
-    s.player.forward = false;
-    s.player.backward = false;
-    s.player.left = false;
-    s.player.right = false;
-    s.player.jump = false;
-    s.player.descend = false;
 
     // Ensure chunks around player (limit to 3 to keep SW rasterizer manageable)
     let (px, _, pz) = s.player.position();

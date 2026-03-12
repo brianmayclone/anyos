@@ -1,4 +1,4 @@
-use crate::{Container, Control, Widget, lib, events, KIND_WINDOW, EVENT_CLOSE, EVENT_RESIZE, EVENT_KEY, EVENT_FULLSCREEN_ENTER, EVENT_FULLSCREEN_EXIT};
+use crate::{Container, Control, Widget, lib, events, KIND_WINDOW, EVENT_CLOSE, EVENT_RESIZE, EVENT_KEY, EVENT_KEY_UP, EVENT_FULLSCREEN_ENTER, EVENT_FULLSCREEN_EXIT};
 use crate::events::{EventArgs, ClickEvent};
 use crate::KeyEvent;
 
@@ -84,6 +84,20 @@ impl Window {
             f(&ke);
         });
         (lib().on_event_fn)(self.container.ctrl.id, EVENT_KEY, thunk, ud);
+    }
+
+    /// Hide or show the mouse cursor for this window.
+    pub fn set_cursor_visible(&self, visible: bool) {
+        (lib().set_cursor_visible)(self.container.ctrl.id, if visible { 1 } else { 0 });
+    }
+
+    /// Register a typed key-up handler on this window.
+    pub fn on_key_up(&self, mut f: impl FnMut(&KeyEvent) + 'static) {
+        let (thunk, ud) = events::register(move |_id, _| {
+            let ke = crate::get_key_info();
+            f(&ke);
+        });
+        (lib().on_event_fn)(self.container.ctrl.id, EVENT_KEY_UP, thunk, ud);
     }
 
     /// Mark this window as fullscreen-capable.

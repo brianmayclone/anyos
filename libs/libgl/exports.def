@@ -112,3 +112,5 @@ EXPORTS
     gl_init_fullscreen
     gl_exit_fullscreen
     gl_swap_buffers_fullscreen
+    gl_set_cursor_captured
+    gl_get_cursor_captured

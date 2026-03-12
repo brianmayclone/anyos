@@ -2591,6 +2591,22 @@ pub extern "C" fn anyui_get_fullscreen_info(out: *mut u32) -> u32 {
     1
 }
 
+/// Hide or show the mouse cursor for a window.
+/// visible=0 hides the cursor, visible=1 shows it.
+/// Uses cursor shape 0xFF (hidden) via CMD_SET_CURSOR.
+#[no_mangle]
+pub extern "C" fn anyui_set_cursor_visible(win_id: ControlId, visible: u32) {
+    let st = state();
+    if let Some(wi) = st.windows.iter().position(|&w| w == win_id) {
+        let comp_win_id = st.comp_windows[wi].window_id;
+        // 0xFF = hidden cursor shape, 0 = default arrow
+        let shape = if visible != 0 { 0u32 } else { 0xFF };
+        let cmd: [u32; 5] = [0x1018, comp_win_id, shape, 0, 0];
+        crate::syscall::evt_chan_emit(st.channel_id, &cmd);
+        st.current_cursor = shape;
+    }
+}
+
 /// Minimize a window (move off-screen, compositor saves bounds for later restore).
 #[no_mangle]
 pub extern "C" fn anyui_minimize_window(win_id: ControlId) {

@@ -359,6 +359,7 @@ impl Desktop {
                     3 => super::cursors::CursorShape::ResizeNWSE,
                     4 => super::cursors::CursorShape::ResizeNESW,
                     5 => super::cursors::CursorShape::Move,
+                    0xFF => super::cursors::CursorShape::Hidden,
                     _ => super::cursors::CursorShape::Arrow,
                 };
                 self.set_cursor_shape(shape);

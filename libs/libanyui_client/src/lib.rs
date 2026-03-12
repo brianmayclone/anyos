@@ -122,6 +122,7 @@ pub const EVENT_MOUSE_MOVE: u32 = 16;
 pub const EVENT_SUBMIT: u32 = 17;
 pub const EVENT_FULLSCREEN_ENTER: u32 = 18;
 pub const EVENT_FULLSCREEN_EXIT: u32 = 19;
+pub const EVENT_KEY_UP: u32 = 20;
 
 /// Callback type: extern "C" fn(control_id: u32, event_type: u32, userdata: u64)
 pub type Callback = extern "C" fn(u32, u32, u64);
@@ -163,6 +164,7 @@ struct AnyuiLib {
     minimize_window: extern "C" fn(u32),
     set_fullscreen_capable: extern "C" fn(u32, u32),
     get_fullscreen_info: extern "C" fn(*mut u32) -> u32,
+    set_cursor_visible: extern "C" fn(u32, u32),
     // Layout
     set_padding: extern "C" fn(u32, i32, i32, i32, i32),
     set_margin: extern "C" fn(u32, i32, i32, i32, i32),
@@ -422,6 +424,7 @@ pub fn init() -> bool {
             minimize_window: resolve(&handle, "anyui_minimize_window"),
             set_fullscreen_capable: resolve(&handle, "anyui_set_fullscreen_capable"),
             get_fullscreen_info: resolve(&handle, "anyui_get_fullscreen_info"),
+            set_cursor_visible: resolve(&handle, "anyui_set_cursor_visible"),
             // Layout
             set_padding: resolve(&handle, "anyui_set_padding"),
             set_margin: resolve(&handle, "anyui_set_margin"),
