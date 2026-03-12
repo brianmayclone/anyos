@@ -2607,6 +2607,27 @@ pub extern "C" fn anyui_set_cursor_visible(win_id: ControlId, visible: u32) {
     }
 }
 
+/// Flush a region of the display after direct framebuffer writes.
+///
+/// When a fullscreen app has been granted direct framebuffer access (fb_ptr != 0
+/// in the FULLSCREEN_ENTER event), it writes pixels directly to GPU VRAM. The GPU
+/// display controller (SVGA) requires an explicit update command to refresh the
+/// changed region on screen. This function sends CMD_FLUSH_DISPLAY to the compositor,
+/// which issues the GPU update command.
+///
+/// # Parameters
+/// - `x`, `y`: Top-left corner of the dirty region (in pixels).
+/// - `w`, `h`: Width and height of the dirty region (in pixels).
+///
+/// Pass (0, 0, screen_width, screen_height) to flush the entire screen.
+/// Has no effect if the app does not have direct framebuffer access.
+#[no_mangle]
+pub extern "C" fn anyui_flush_display(x: u32, y: u32, w: u32, h: u32) {
+    let st = state();
+    let cmd: [u32; 5] = [0x1033, x, y, w, h];
+    crate::syscall::evt_chan_emit(st.channel_id, &cmd);
+}
+
 /// Minimize a window (move off-screen, compositor saves bounds for later restore).
 #[no_mangle]
 pub extern "C" fn anyui_minimize_window(win_id: ControlId) {

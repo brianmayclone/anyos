@@ -165,6 +165,7 @@ struct AnyuiLib {
     set_fullscreen_capable: extern "C" fn(u32, u32),
     get_fullscreen_info: extern "C" fn(*mut u32) -> u32,
     set_cursor_visible: extern "C" fn(u32, u32),
+    flush_display: extern "C" fn(u32, u32, u32, u32),
     // Layout
     set_padding: extern "C" fn(u32, i32, i32, i32, i32),
     set_margin: extern "C" fn(u32, i32, i32, i32, i32),
@@ -425,6 +426,7 @@ pub fn init() -> bool {
             set_fullscreen_capable: resolve(&handle, "anyui_set_fullscreen_capable"),
             get_fullscreen_info: resolve(&handle, "anyui_get_fullscreen_info"),
             set_cursor_visible: resolve(&handle, "anyui_set_cursor_visible"),
+            flush_display: resolve(&handle, "anyui_flush_display"),
             // Layout
             set_padding: resolve(&handle, "anyui_set_padding"),
             set_margin: resolve(&handle, "anyui_set_margin"),
@@ -1124,6 +1126,23 @@ pub fn get_fullscreen_info() -> Option<FullscreenInfo> {
     } else {
         None
     }
+}
+
+/// Flush a display region after direct framebuffer writes.
+///
+/// When in fullscreen mode with direct framebuffer access (`fb_ptr != 0` from
+/// [`get_fullscreen_info()`]), the app writes pixels directly to GPU VRAM.
+/// After writing, call this function to tell the GPU to refresh the updated
+/// region on screen. Without this call, changes may not be visible on
+/// virtualized displays (e.g. SVGA).
+///
+/// # Arguments
+/// * `x`, `y` - Top-left corner of the dirty region (pixels)
+/// * `w`, `h` - Size of the dirty region (pixels)
+///
+/// Pass `(0, 0, screen_width, screen_height)` to flush the entire screen.
+pub fn flush_display(x: u32, y: u32, w: u32, h: u32) {
+    (lib().flush_display)(x, y, w, h);
 }
 
 // ── Notification API ─────────────────────────────────────────────────

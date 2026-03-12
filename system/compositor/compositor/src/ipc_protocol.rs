@@ -249,6 +249,11 @@ pub const CMD_REQUEST_FULLSCREEN: u32 = 0x1031;
 /// Compositor restores saved window bounds and responds with RESP_FULLSCREEN_EXITED.
 pub const CMD_EXIT_FULLSCREEN: u32 = 0x1032;
 
+/// Flush a region of the display after direct framebuffer writes.
+/// [CMD, x, y, w, h]
+/// Only valid when the window has direct framebuffer access.
+pub const CMD_FLUSH_DISPLAY: u32 = 0x1033;
+
 // ── Compositor → App: Notification Events ────────────────────────────────
 
 /// Notification clicked by user: [EVT, notification_id, sender_tid, 0, 0]

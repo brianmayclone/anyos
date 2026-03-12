@@ -258,16 +258,17 @@ fn main() {
         let s = unsafe { STATE.as_mut().unwrap() };
         s.fullscreen = true;
         if let Some(info) = libanyui_client::get_fullscreen_info() {
+            // Always update dimensions to physical screen size
+            s.canvas_w = info.width;
+            s.canvas_h = info.height;
+            s.fb_w = info.width / 2;
+            s.fb_h = info.height / 2;
+            gl::gl_resize(s.fb_w, s.fb_h);
+            gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
             if info.fb_ptr != 0 {
+                // Direct framebuffer mode
                 s.fs_fb_ptr = info.fb_ptr as *mut u32;
                 s.fs_stride = info.stride;
-                // Use physical screen dimensions for fullscreen rendering
-                s.canvas_w = info.width;
-                s.canvas_h = info.height;
-                s.fb_w = info.width / 2;
-                s.fb_h = info.height / 2;
-                gl::gl_resize(s.fb_w, s.fb_h);
-                gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
                 gl::gl_init_fullscreen(
                     s.fs_fb_ptr,
                     info.width,
@@ -383,9 +384,8 @@ fn game_tick() {
         let rw = s.fb_w as usize;
         let rh = s.fb_h as usize;
         if s.fullscreen && !s.fs_fb_ptr.is_null() {
-            // In fullscreen: write directly to the compositor framebuffer,
-            // bypassing the Canvas widget whose pixel buffer may not match
-            // the physical screen dimensions (especially on first entry).
+            // In fullscreen with direct FB: write directly to GPU VRAM,
+            // bypassing SHM compositing for maximum performance.
             let stride = s.fs_stride as usize;
             let dst = unsafe { core::slice::from_raw_parts_mut(s.fs_fb_ptr, stride * ch) };
             for cy in 0..ch {
@@ -397,6 +397,8 @@ fn game_tick() {
                     dst[dst_row + cx] = src[src_row + sx];
                 }
             }
+            // Tell the GPU to refresh the screen (required for SVGA)
+            libanyui_client::flush_display(0, 0, cw as u32, ch as u32);
         } else {
             // Windowed mode: upscale into a buffer and copy to the Canvas widget
             let mut upscaled = vec![0u32; cw * ch];

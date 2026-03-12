@@ -536,10 +536,17 @@ impl Desktop {
                     self.windows[idx].fullscreen_capable = true;
                     self.windows[idx].flags |= WIN_FLAG_FULLSCREEN_CAPABLE;
                     if auto_enter && self.fullscreen_window.is_none() {
-                        let tid = self.windows[idx].owner_tid;
-                        let resp = self.enter_fullscreen(window_id, false);
-                        let target = self.get_sub_id_for_tid(tid);
-                        return resp.map(|r| (target, r));
+                        if let Some(resp) = self.enter_fullscreen(window_id, false) {
+                            // Push as a window event so libanyui receives it as EVT_FULLSCREEN_ENTER
+                            // resp = [RESP, win_id, (sw<<16)|sh, stride, fb_ptr]
+                            self.push_event(window_id, [
+                                EVENT_FULLSCREEN_ENTER,
+                                resp[2], // (sw<<16)|sh
+                                resp[3], // stride
+                                resp[4], // fb_ptr
+                                0,
+                            ]);
+                        }
                     }
                 }
                 None
@@ -551,10 +558,15 @@ impl Desktop {
                     if !self.windows[idx].fullscreen_capable {
                         return None;
                     }
-                    let tid = self.windows[idx].owner_tid;
-                    let resp = self.enter_fullscreen(window_id, want_direct_fb);
-                    let target = self.get_sub_id_for_tid(tid);
-                    return resp.map(|r| (target, r));
+                    if let Some(resp) = self.enter_fullscreen(window_id, want_direct_fb) {
+                        self.push_event(window_id, [
+                            EVENT_FULLSCREEN_ENTER,
+                            resp[2], // (sw<<16)|sh
+                            resp[3], // stride
+                            resp[4], // fb_ptr
+                            0,
+                        ]);
+                    }
                 }
                 None
             }
@@ -571,6 +583,18 @@ impl Desktop {
                 } else {
                     None
                 }
+            }
+            proto::CMD_FLUSH_DISPLAY => {
+                // App has direct FB access and wants the GPU to refresh a region
+                let x = cmd[1];
+                let y = cmd[2];
+                let w = cmd[3];
+                let h = cmd[4];
+                if w > 0 && h > 0 {
+                    self.compositor.queue_gpu_update(x, y, w, h);
+                    self.compositor.flush_gpu();
+                }
+                None
             }
             _ => None,
         }
@@ -619,7 +643,7 @@ impl Desktop {
     /// Enter fullscreen mode for a window.
     /// Saves current bounds, sets window to screen size (borderless), hides menubar.
     /// Returns the RESP_FULLSCREEN_ENTERED response payload if successful.
-    pub fn enter_fullscreen(&mut self, window_id: u32, want_direct_fb: bool) -> Option<[u32; 5]> {
+    pub fn enter_fullscreen(&mut self, window_id: u32, _want_direct_fb: bool) -> Option<[u32; 5]> {
         // Already in fullscreen?
         if self.fullscreen_window.is_some() {
             return None;
@@ -672,18 +696,36 @@ impl Desktop {
             bg.visible = false;
         }
 
-        // Damage entire screen for recomposition
-        self.compositor.damage_all();
-
         // Build response
         let stride = self.compositor.fb_pitch / 4; // pitch in pixels
-        let fb_ptr: u32 = if want_direct_fb {
-            // TODO: Phase 5 — grant direct framebuffer access via kernel syscall
-            // For now, return 0 (SHM compositing mode)
-            0
-        } else {
-            0
+        // Always try to grant direct framebuffer access — apps that don't
+        // need it simply ignore fb_ptr=0 and use SHM compositing.
+        let fb_ptr: u32 = {
+            let owner_tid = self.windows[idx].owner_tid;
+            let mut fb_info = anyos_std::ipc::FbMapInfo {
+                fb_addr: 0, width: 0, height: 0, pitch: 0,
+            };
+            if owner_tid != 0 && anyos_std::ipc::grant_framebuffer(owner_tid, &mut fb_info) == 0 {
+                self.windows[idx].fullscreen_direct_fb = true;
+                // Hide the fullscreen window's layer too — the app writes directly
+                // to VRAM, so compositing would overwrite it with stale SHM content.
+                let lid = self.windows[idx].layer_id;
+                if let Some(layer) = self.compositor.get_layer_mut(lid) {
+                    layer.visible = false;
+                }
+                fb_info.fb_addr
+            } else {
+                0
+            }
         };
+
+        // Damage entire screen for recomposition — but only if no direct FB
+        // was granted (direct FB mode skips compositing entirely, so damage
+        // would just be drained without effect; worse, if compose() runs before
+        // the direct_fb flag is checked it overwrites VRAM with stale content).
+        if !self.windows[idx].fullscreen_direct_fb {
+            self.compositor.damage_all();
+        }
 
         Some([
             proto::RESP_FULLSCREEN_ENTERED,
@@ -703,6 +745,16 @@ impl Desktop {
 
         if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
             let win = &mut self.windows[idx];
+
+            // Don't revoke direct framebuffer here — the app may still be
+            // writing to 0x19000000 because it hasn't processed the EXIT event
+            // yet.  We schedule a lazy revoke: store the TID so we can revoke
+            // when the app acknowledges (destroys the window, or next fullscreen
+            // grant overwrites the mapping anyway).
+            if win.fullscreen_direct_fb && win.owner_tid != 0 {
+                self.pending_fb_revoke = Some((win.owner_tid, 3));
+            }
+
             win.fullscreen = false;
             win.fullscreen_direct_fb = false;
 

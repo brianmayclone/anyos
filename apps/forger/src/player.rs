@@ -135,7 +135,7 @@ impl Player {
 
     pub fn mouse_move(&mut self, dx: f32, dy: f32) {
         self.yaw += dx * MOUSE_SENS;
-        self.pitch -= dy * MOUSE_SENS;
+        self.pitch += dy * MOUSE_SENS;
         if self.pitch < -1.5 {
             self.pitch = -1.5;
         }

@@ -169,6 +169,19 @@ pub fn map_framebuffer() -> Option<FbMapInfo> {
     if ret == 0 { Some(info) } else { None }
 }
 
+/// Grant a target thread direct access to the GPU framebuffer.
+/// Compositor-only. Maps the FB at VA 0x19000000 in the target process.
+/// On success, writes [fb_va, width, height, pitch] to `out_info` and returns 0.
+pub fn grant_framebuffer(target_tid: u32, out_info: &mut FbMapInfo) -> u32 {
+    syscall2(SYS_GRANT_FRAMEBUFFER, target_tid as u64, out_info as *mut FbMapInfo as u64)
+}
+
+/// Revoke a target thread's direct framebuffer access.
+/// Compositor-only. Returns 0 on success.
+pub fn revoke_framebuffer(target_tid: u32) -> u32 {
+    syscall1(SYS_REVOKE_FRAMEBUFFER, target_tid as u64)
+}
+
 /// Submit GPU acceleration commands. Returns number of commands executed.
 /// Each command is [u32; 9]: { cmd_type, args[0..8] }.
 pub fn gpu_command(cmds: &[[u32; 9]]) -> u32 {

@@ -188,4 +188,5 @@ EXPORTS
     anyui_set_fullscreen_capable
     anyui_get_fullscreen_info
     anyui_set_cursor_visible
+    anyui_flush_display
     anyui_tabbar_show_plus

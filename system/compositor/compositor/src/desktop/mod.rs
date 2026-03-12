@@ -175,6 +175,12 @@ pub struct Desktop {
 
     /// Window ID of the currently fullscreen window, or None.
     pub(crate) fullscreen_window: Option<u32>,
+
+    /// TID whose direct framebuffer mapping should be revoked lazily.
+    /// Set when exiting fullscreen with direct FB — we defer the revoke so the
+    /// app has time to process the FULLSCREEN_EXIT event and stop writing to the FB.
+    /// The u32 is the TID, the u8 is a countdown (ticks remaining before revoke).
+    pub(crate) pending_fb_revoke: Option<(u32, u8)>,
 }
 
 impl Desktop {
@@ -240,6 +246,7 @@ impl Desktop {
             last_click_y: 0,
             vnc_buttons: 0,
             fullscreen_window: None,
+            pending_fb_revoke: None,
         };
 
         if desktop.has_gpu_accel {
@@ -829,6 +836,21 @@ impl Desktop {
     /// Run the full compose cycle (damage → composite → cursor → flush → collect ACKs).
     /// Returns `true` if actual damage was composited (pixels changed on screen).
     pub fn compose(&mut self) -> bool {
+        // When a fullscreen app has direct framebuffer access, it owns VRAM.
+        // Skip compositing entirely to avoid overwriting the app's direct writes
+        // with stale back-buffer content.
+        if let Some(fs_id) = self.fullscreen_window {
+            let has_direct_fb = self.windows.iter()
+                .any(|w| w.id == fs_id && w.fullscreen_direct_fb);
+            if has_direct_fb {
+                // Drain any pending damage so it doesn't accumulate
+                self.compositor.damage.clear();
+                // Still process GPU commands (e.g. flush_display from the app)
+                self.compositor.flush_gpu();
+                return false;
+            }
+        }
+
         let had_damage = self.compositor.compose();
 
         if self.compositor.has_hw_cursor() {

@@ -549,7 +549,8 @@ impl Control for TextEditor {
         // Scaled metrics for the monospace editor
         let s_font_size = crate::draw::scale_font(self.font_size);
         let s_line_h = crate::theme::scale(self.line_height);
-        let s_char_w = crate::theme::scale(self.char_width);
+        let (s_char_w, _) = crate::draw::measure_text_ex(b"M", self.font_id, s_font_size);
+        let s_char_w = if s_char_w > 0 { s_char_w } else { crate::theme::scale(8) };
         let s_gutter_w = crate::theme::scale(self.gutter_width);
         let s_scroll_y = crate::theme::scale_i32(self.scroll_y);
         let s_scroll_x = crate::theme::scale_i32(self.scroll_x);

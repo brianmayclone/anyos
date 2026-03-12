@@ -109,6 +109,22 @@ impl Desktop {
     }
 
     pub(crate) fn apply_mouse_move(&mut self, dx: i32, dy: i32) {
+        // Pointer lock: when a fullscreen window has hidden the cursor,
+        // skip clamping, HW cursor movement, drag/resize/hover logic —
+        // just forward raw deltas to the fullscreen app.
+        if self.fullscreen_window.is_some() && self.current_cursor == CursorShape::Hidden {
+            // Accumulate unclamped so the app can compute deltas normally
+            self.mouse_x += dx;
+            self.mouse_y += dy;
+            if let Some(fs_win_id) = self.fullscreen_window {
+                self.push_event(
+                    fs_win_id,
+                    [EVENT_MOUSE_MOVE, self.mouse_x as u32, self.mouse_y as u32, 0, 0],
+                );
+            }
+            return;
+        }
+
         self.mouse_x = (self.mouse_x + dx).clamp(0, self.screen_width as i32 - 1);
         self.mouse_y = (self.mouse_y + dy).clamp(0, self.screen_height as i32 - 1);
 
@@ -718,14 +734,12 @@ impl Desktop {
                         .unwrap_or(false);
                     if is_capable {
                         if let Some(resp) = self.enter_fullscreen(focused, false) {
-                            let sw = self.screen_width;
-                            let sh = self.screen_height;
-                            let stride = self.compositor.fb_pitch / 4;
+                            // resp = [RESP_FULLSCREEN_ENTERED, win_id, (sw<<16)|sh, stride, fb_ptr]
                             self.push_event(focused, [
                                 EVENT_FULLSCREEN_ENTER,
-                                (sw << 16) | (sh & 0xFFFF),
-                                stride,
-                                0, // fb_ptr (0 = SHM mode)
+                                resp[2], // (sw<<16)|sh
+                                resp[3], // stride
+                                resp[4], // fb_ptr (direct FB if granted, 0 otherwise)
                                 0,
                             ]);
                         }

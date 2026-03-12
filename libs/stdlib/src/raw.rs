@@ -201,6 +201,8 @@ pub(crate) const SYS_CHPASSWD: u32 = 234;
 pub(crate) const SYS_GPU_VRAM_SIZE: u32 = 256;
 pub(crate) const SYS_VRAM_MAP: u32 = 257;
 pub(crate) const SYS_GPU_REGISTER_BACKBUFFER: u32 = 258;
+pub(crate) const SYS_GRANT_FRAMEBUFFER: u32 = 259;
+pub(crate) const SYS_REVOKE_FRAMEBUFFER: u32 = 261;
 
 // App permissions
 pub(crate) const SYS_PERM_CHECK: u32 = 250;
