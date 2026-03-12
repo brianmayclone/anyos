@@ -1,12 +1,14 @@
 //! Tile-based parallel rasterization thread pool.
 //!
-//! Splits the framebuffer into horizontal bands and distributes rasterization
-//! across worker threads. Fully transparent to client applications — the pool
-//! is initialized automatically on first use and all synchronization is internal.
+//! Frame-level batching: draw calls collect triangles + render state into
+//! sub-batches during the frame. At `gl_swap_buffers`, all sub-batches are
+//! submitted to workers in one go — ONE wake-up per frame, not per draw call.
 //!
-//! Workers use `sleep_us(10)` when idle to avoid wasting CPU cycles.
+//! Fully transparent to client applications — the pool is initialized
+//! automatically at `gl_init` and workers are cleaned up at `gl_deinit`
+//! (or when the process exits, if the kernel supports it).
 
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 use crate::syscall;
 use crate::rasterizer::ClipVertex;
 use crate::rasterizer::raster::ResolvedTexture;
@@ -14,13 +16,16 @@ use crate::rasterizer::raster::ResolvedTexture;
 /// Maximum number of worker threads (hard cap).
 const MAX_WORKERS: usize = 7;
 
-/// Maximum triangles per batch (screen-space, after clipping).
+/// Maximum triangles per frame (screen-space, after clipping).
 const MAX_TRIS: usize = 16384;
 
-/// Stack size per worker thread (32 KiB).
-const WORKER_STACK_SIZE: usize = 32 * 1024;
+/// Maximum sub-batches per frame (one per draw call).
+const MAX_SUB_BATCHES: usize = 64;
 
-// ── Shared work data (written by main thread, read by workers) ───────────
+/// Stack size per worker thread (64 KiB — needs room for ShaderExec).
+const WORKER_STACK_SIZE: usize = 64 * 1024;
+
+// ── Shared work data ─────────────────────────────────────────────────────
 
 /// A screen-space triangle ready for rasterization.
 #[derive(Clone, Copy)]
@@ -34,18 +39,11 @@ pub struct ScreenTri {
     pub s2: [f32; 3],
 }
 
-/// Per-batch parameters shared between main thread and all workers.
+/// Per-draw-call render state + triangle range.
 #[repr(C)]
-struct BatchParams {
-    // Framebuffer raw pointers (non-overlapping y-bands → no data race)
-    color_ptr: *mut u32,
-    depth_ptr: *mut f32,
-    fb_w: u32,
-    fb_h: u32,
-
-    // Triangle list
-    tris: *const ScreenTri,
-    tri_count: u32,
+struct SubBatch {
+    tri_start: u32,
+    tri_end: u32,
 
     // Rasterization parameters
     depth_test: bool,
@@ -55,7 +53,7 @@ struct BatchParams {
     blend_src: u32,
     blend_dst: u32,
 
-    // Fast path texture (null if using general path)
+    // Fast path texture
     fast_tex_data: *const u32,
     fast_tex_w: u32,
     fast_tex_h: u32,
@@ -73,8 +71,8 @@ struct BatchParams {
     fs_jit: Option<crate::compiler::backend_jit::JitFn>,
 }
 
-unsafe impl Send for BatchParams {}
-unsafe impl Sync for BatchParams {}
+unsafe impl Send for SubBatch {}
+unsafe impl Sync for SubBatch {}
 
 /// Worker state machine.
 const WORKER_IDLE: u32 = 0;
@@ -96,17 +94,27 @@ static mut POOL: Option<ThreadPool> = None;
 struct ThreadPool {
     num_workers: usize,
     workers: [WorkerCtl; MAX_WORKERS],
-    batch: BatchParams,
+
+    // Framebuffer pointers (set once at flush, read by workers)
+    color_ptr: *mut u32,
+    depth_ptr: *mut f32,
+    fb_w: u32,
+    fb_h: u32,
+
+    // Triangle buffer (filled during draw calls)
     tri_buf: [ScreenTri; MAX_TRIS],
     tri_count: usize,
+
+    // Sub-batch list (filled during draw calls, processed at flush)
+    sub_batches: [SubBatch; MAX_SUB_BATCHES],
+    sub_batch_count: usize,
 }
 
-// Worker thread IDs (to keep threads alive)
+// Worker thread IDs and stacks
 static mut WORKER_TIDS: [u32; MAX_WORKERS] = [0; MAX_WORKERS];
-// Worker stack addresses (to keep allocations alive)
 static mut WORKER_STACKS: [u64; MAX_WORKERS] = [0; MAX_WORKERS];
 
-/// Initialize the thread pool with `n` workers. Called once.
+/// Initialize the thread pool with `n` workers.
 fn init_pool(n: usize, fb_h: u32) {
     let n = n.min(MAX_WORKERS);
     if n == 0 { return; }
@@ -119,9 +127,14 @@ fn init_pool(n: usize, fb_h: u32) {
                 band_min_y: 0,
                 band_max_y: 0,
             }),
-            batch: core::mem::zeroed(),
+            color_ptr: core::ptr::null_mut(),
+            depth_ptr: core::ptr::null_mut(),
+            fb_w: 0,
+            fb_h: 0,
             tri_buf: core::mem::zeroed(),
             tri_count: 0,
+            sub_batches: core::mem::zeroed(),
+            sub_batch_count: 0,
         });
         pool.num_workers = n;
 
@@ -135,13 +148,8 @@ fn init_pool(n: usize, fb_h: u32) {
 
         // Spawn worker threads
         static WORKER_ENTRIES: [fn(); MAX_WORKERS] = [
-            worker_entry_0,
-            worker_entry_1,
-            worker_entry_2,
-            worker_entry_3,
-            worker_entry_4,
-            worker_entry_5,
-            worker_entry_6,
+            worker_entry_0, worker_entry_1, worker_entry_2, worker_entry_3,
+            worker_entry_4, worker_entry_5, worker_entry_6,
         ];
 
         for i in 0..n {
@@ -152,7 +160,6 @@ fn init_pool(n: usize, fb_h: u32) {
                 return;
             }
             WORKER_STACKS[i] = stack_addr;
-            // x86_64 ABI: RSP = stack_top - 8 at function entry
             let stack_top = (stack_addr as usize) + WORKER_STACK_SIZE - 8;
             let tid = syscall::thread_create(WORKER_ENTRIES[i], stack_top, "gl_worker");
             if tid == 0 {
@@ -169,7 +176,7 @@ fn init_pool(n: usize, fb_h: u32) {
     }
 }
 
-// Worker entry points (one per slot, routes to generic worker_main)
+// Worker entry points
 fn worker_entry_0() { worker_main(0); }
 fn worker_entry_1() { worker_main(1); }
 fn worker_entry_2() { worker_main(2); }
@@ -178,38 +185,44 @@ fn worker_entry_4() { worker_main(4); }
 fn worker_entry_5() { worker_main(5); }
 fn worker_entry_6() { worker_main(6); }
 
-/// Worker main loop. Waits for work, rasterizes its band, signals done.
+/// Worker main loop. Sleeps until work arrives, processes ALL sub-batches
+/// for its y-band, then signals done.
 fn worker_main(id: usize) {
     loop {
-        // Wait for work with increasing sleep intervals to avoid burning CPU
         let pool = unsafe { POOL.as_ref().unwrap() };
         let ctl = &pool.workers[id];
 
+        // Wait for work — tight spin first, then sleep
         let mut idle_spins: u32 = 0;
         loop {
             let s = ctl.state.load(Ordering::Acquire);
             if s == WORKER_WORK { break; }
             if s == WORKER_EXIT { return; }
-            // Exponential backoff: 100µs → 500µs → 1ms (cap)
-            let sleep = if idle_spins < 10 { 100 } else if idle_spins < 50 { 500 } else { 1000 };
-            syscall::sleep_us(sleep);
+            if idle_spins < 50 {
+                core::hint::spin_loop();
+            } else {
+                syscall::sleep_us(100);
+            }
             idle_spins = idle_spins.saturating_add(1);
         }
 
-        // Do work
+        // Process all sub-batches for our y-band
         let pool = unsafe { POOL.as_ref().unwrap() };
-        let batch = &pool.batch;
         let min_y = ctl.band_min_y as i32;
         let max_y = ctl.band_max_y as i32 - 1; // inclusive
 
-        if batch.tri_count > 0 && !batch.color_ptr.is_null() {
-            let tris = unsafe { core::slice::from_raw_parts(batch.tris, batch.tri_count as usize) };
+        for sb_idx in 0..pool.sub_batch_count {
+            let sb = &pool.sub_batches[sb_idx];
+            let start = sb.tri_start as usize;
+            let end = sb.tri_end as usize;
+            if start >= end { continue; }
 
+            let tris = &pool.tri_buf[start..end];
             for tri in tris {
-                if batch.use_fast_path {
-                    rasterize_tri_fast_band(batch, tri, min_y, max_y);
+                if sb.use_fast_path {
+                    rasterize_tri_fast_band(pool, sb, tri, min_y, max_y);
                 } else {
-                    rasterize_tri_band(batch, tri, min_y, max_y, id);
+                    rasterize_tri_band(pool, sb, tri, min_y, max_y, id);
                 }
             }
         }
@@ -225,19 +238,11 @@ pub fn pool_active() -> bool {
 }
 
 /// Determine optimal worker count based on available CPU cores.
-/// Returns `max(cpu_count - 1, 1)` clamped to MAX_WORKERS.
-/// Even on single-core: 1 worker allows main thread to do vertex processing
-/// while worker does rasterization (overlapping with next frame's vertex work).
 fn optimal_worker_count() -> usize {
     let raw = syscall::cpu_count();
-    // Syscall may return bogus values (e.g. 0xFFFFFFFF); clamp to sane range
     let cpus = if raw == 0 || raw > 64 { 8 } else { raw as usize };
     crate::serial_println!("[libgl] thread_pool: raw cpu_count={}, effective={}", raw, cpus);
-    if cpus <= 1 {
-        1
-    } else {
-        (cpus - 1).min(MAX_WORKERS)
-    }
+    if cpus <= 1 { 1 } else { (cpus - 1).min(MAX_WORKERS) }
 }
 
 /// Ensure pool is initialized for the given framebuffer height.
@@ -269,13 +274,10 @@ pub fn shutdown_pool() {
     unsafe {
         if let Some(pool) = POOL.as_mut() {
             let n = pool.num_workers;
-            // Signal all workers to exit
             for i in 0..n {
                 pool.workers[i].state.store(WORKER_EXIT, Ordering::Release);
             }
-            // Wait briefly for workers to see the exit signal
             syscall::sleep_us(2000);
-            // Free stacks
             for i in 0..n {
                 if WORKER_STACKS[i] != 0 {
                     syscall::munmap(WORKER_STACKS[i], WORKER_STACK_SIZE as u32);
@@ -290,73 +292,102 @@ pub fn shutdown_pool() {
     }
 }
 
-/// Get mutable ref to the triangle buffer for filling.
-pub fn tri_buffer() -> &'static mut [ScreenTri; MAX_TRIS] {
-    unsafe { &mut POOL.as_mut().unwrap().tri_buf }
+// ── Frame-level batching API ─────────────────────────────────────────────
+
+/// Append triangles from one draw call into the frame buffer.
+/// Returns the number of triangles actually added.
+pub fn append_tris(tris: &[ScreenTri]) -> usize {
+    let pool = unsafe { match POOL.as_mut() { Some(p) => p, None => return 0 } };
+    let avail = MAX_TRIS - pool.tri_count;
+    let n = tris.len().min(avail);
+    if n == 0 { return 0; }
+    pool.tri_buf[pool.tri_count..pool.tri_count + n].copy_from_slice(&tris[..n]);
+    pool.tri_count += n;
+    n
 }
 
-/// Get current triangle count.
-pub fn tri_count() -> usize {
-    unsafe { POOL.as_ref().unwrap().tri_count }
+/// Begin a sub-batch for the current draw call's render state.
+/// Call this BEFORE `append_tris`. Returns the tri_start index.
+pub fn begin_sub_batch() -> Option<u32> {
+    let pool = unsafe { match POOL.as_mut() { Some(p) => p, None => return None } };
+    if pool.sub_batch_count >= MAX_SUB_BATCHES { return None; }
+    Some(pool.tri_count as u32)
 }
 
-/// Set triangle count.
-pub fn set_tri_count(n: usize) {
-    unsafe { POOL.as_mut().unwrap().tri_count = n.min(MAX_TRIS); }
-}
-
-/// Maximum triangles the buffer can hold.
-pub fn max_tris() -> usize {
-    MAX_TRIS
-}
-
-/// Submit a batch of triangles for parallel rasterization.
-/// The main thread also participates by rasterizing a band.
-pub fn submit_batch(
-    ctx: &mut crate::state::GlContext,
+/// Finalize a sub-batch after appending triangles.
+pub fn end_sub_batch(
+    tri_start: u32,
+    depth_test: bool,
+    depth_func: u32,
+    depth_mask: bool,
+    blend_enabled: bool,
+    blend_src: u32,
+    blend_dst: u32,
     fast: Option<(&ResolvedTexture, f32, f32, f32)>,
     fs_ir: *const crate::compiler::ir::Program,
     uniforms: &[[f32; 4]],
     num_varyings: usize,
     fs_jit: Option<crate::compiler::backend_jit::JitFn>,
 ) {
-    let pool = unsafe { POOL.as_mut().unwrap() };
-    let n = pool.num_workers;
-    if n == 0 || pool.tri_count == 0 { return; }
+    let pool = unsafe { match POOL.as_mut() { Some(p) => p, None => return } };
+    let tri_end = pool.tri_count as u32;
+    if tri_end <= tri_start { return; } // no triangles added
+    if pool.sub_batch_count >= MAX_SUB_BATCHES { return; }
 
-    let fb_w = ctx.default_fb.width;
-    let fb_h = ctx.default_fb.height;
-
-    // Fill batch params
-    pool.batch.color_ptr = ctx.default_fb.color.as_mut_ptr();
-    pool.batch.depth_ptr = ctx.default_fb.depth.as_mut_ptr();
-    pool.batch.fb_w = fb_w;
-    pool.batch.fb_h = fb_h;
-    pool.batch.tris = pool.tri_buf.as_ptr();
-    pool.batch.tri_count = pool.tri_count as u32;
-    pool.batch.depth_test = ctx.depth_test;
-    pool.batch.depth_func = ctx.depth_func;
-    pool.batch.depth_mask = ctx.depth_mask;
-    pool.batch.blend_enabled = ctx.blend;
-    pool.batch.blend_src = ctx.blend_src_rgb;
-    pool.batch.blend_dst = ctx.blend_dst_rgb;
-    pool.batch.num_varyings = num_varyings;
-    pool.batch.fs_jit = fs_jit;
-    pool.batch.fs_ir_ptr = fs_ir;
-    pool.batch.uniforms_ptr = uniforms.as_ptr();
-    pool.batch.uniforms_len = uniforms.len();
+    let idx = pool.sub_batch_count;
+    let sb = &mut pool.sub_batches[idx];
+    sb.tri_start = tri_start;
+    sb.tri_end = tri_end;
+    sb.depth_test = depth_test;
+    sb.depth_func = depth_func;
+    sb.depth_mask = depth_mask;
+    sb.blend_enabled = blend_enabled;
+    sb.blend_src = blend_src;
+    sb.blend_dst = blend_dst;
+    sb.fs_ir_ptr = fs_ir;
+    sb.uniforms_ptr = uniforms.as_ptr();
+    sb.uniforms_len = uniforms.len();
+    sb.num_varyings = num_varyings;
+    sb.fs_jit = fs_jit;
 
     if let Some((tex, mr, mg, mb)) = fast {
-        pool.batch.use_fast_path = true;
-        pool.batch.fast_tex_data = tex.data;
-        pool.batch.fast_tex_w = tex.width;
-        pool.batch.fast_tex_h = tex.height;
-        pool.batch.fast_tex_len = tex.len;
-        pool.batch.fast_mat_r = mr;
-        pool.batch.fast_mat_g = mg;
-        pool.batch.fast_mat_b = mb;
+        sb.use_fast_path = true;
+        sb.fast_tex_data = tex.data;
+        sb.fast_tex_w = tex.width;
+        sb.fast_tex_h = tex.height;
+        sb.fast_tex_len = tex.len;
+        sb.fast_mat_r = mr;
+        sb.fast_mat_g = mg;
+        sb.fast_mat_b = mb;
     } else {
-        pool.batch.use_fast_path = false;
+        sb.use_fast_path = false;
+    }
+
+    pool.sub_batch_count = idx + 1;
+}
+
+/// Flush all accumulated sub-batches: wake workers, wait for completion, reset.
+/// Called from `gl_swap_buffers`.
+pub fn flush_frame(ctx: &mut crate::state::GlContext) {
+    let pool = unsafe { match POOL.as_mut() { Some(p) => p, None => return } };
+    let n = pool.num_workers;
+    if n == 0 || pool.sub_batch_count == 0 {
+        pool.tri_count = 0;
+        pool.sub_batch_count = 0;
+        return;
+    }
+
+    // Set framebuffer pointers for this frame
+    pool.color_ptr = ctx.default_fb.color.as_mut_ptr();
+    pool.depth_ptr = ctx.default_fb.depth.as_mut_ptr();
+    pool.fb_w = ctx.default_fb.width;
+    pool.fb_h = ctx.default_fb.height;
+
+    static mut FLUSH_DBG: u32 = 0;
+    if unsafe { FLUSH_DBG } < 5 {
+        unsafe { FLUSH_DBG += 1; }
+        crate::serial_println!("[libgl] flush_frame: {} sub-batches, {} tris, {} workers",
+            pool.sub_batch_count, pool.tri_count, n);
     }
 
     // Signal all workers to start
@@ -364,30 +395,47 @@ pub fn submit_batch(
         pool.workers[i].state.store(WORKER_WORK, Ordering::Release);
     }
 
-    // Main thread also rasterizes a band (the last band, after all workers)
-    // Actually, main thread does no band — all n bands are covered by n workers.
-    // Main thread just waits for completion.
-
     // Wait for all workers to finish
     for i in 0..n {
         let mut wait_spins: u32 = 0;
         loop {
             let s = pool.workers[i].state.load(Ordering::Acquire);
             if s == WORKER_DONE { break; }
-            // First few checks are tight spins (work should be fast),
-            // then back off to avoid burning CPU
-            if wait_spins < 20 {
+            if wait_spins < 100 {
                 core::hint::spin_loop();
             } else {
-                syscall::sleep_us(50);
+                syscall::sleep_us(10);
             }
             wait_spins += 1;
         }
         pool.workers[i].state.store(WORKER_IDLE, Ordering::Release);
     }
 
+    // Reset for next frame
     pool.tri_count = 0;
+    pool.sub_batch_count = 0;
 }
+
+/// Get mutable ref to the triangle buffer for direct filling.
+pub fn tri_buffer_slice(start: usize, count: usize) -> Option<&'static mut [ScreenTri]> {
+    let pool = unsafe { POOL.as_mut()? };
+    let end = start + count;
+    if end > MAX_TRIS { return None; }
+    Some(&mut pool.tri_buf[start..end])
+}
+
+/// Current triangle count.
+pub fn tri_count() -> usize {
+    unsafe { POOL.as_ref().map_or(0, |p| p.tri_count) }
+}
+
+/// Add to triangle count (after direct buffer fill).
+pub fn advance_tri_count(n: usize) {
+    unsafe { if let Some(p) = POOL.as_mut() { p.tri_count = (p.tri_count + n).min(MAX_TRIS); } }
+}
+
+/// Maximum triangles the buffer can hold.
+pub fn max_tris() -> usize { MAX_TRIS }
 
 // ── Band-restricted rasterization ──────────────────────────────────────────
 
@@ -397,14 +445,13 @@ use crate::rasterizer::MAX_VARYINGS;
 use crate::simd::Vec4;
 
 /// Rasterize one triangle in fast path, restricted to [band_min_y, band_max_y].
-fn rasterize_tri_fast_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32, band_max_y: i32) {
+fn rasterize_tri_fast_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_min_y: i32, band_max_y: i32) {
     let s0 = &tri.s0;
     let s1 = &tri.s1;
     let s2 = &tri.s2;
-    let fb_w = batch.fb_w as i32;
-    let fb_h = batch.fb_h as i32;
+    let fb_w = pool.fb_w as i32;
+    let fb_h = pool.fb_h as i32;
 
-    // Bounding box clipped to band
     let min_x = min3(s0[0], s1[0], s2[0]).max(0.0) as i32;
     let max_x = (crate::rasterizer::math::ceil(max3(s0[0], s1[0], s2[0])) as i32).min(fb_w - 1);
     let min_y = (min3(s0[1], s1[1], s2[1]).max(0.0) as i32).max(band_min_y);
@@ -433,18 +480,18 @@ fn rasterize_tri_fast_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32
     let v2_uv = [tri.v2.varyings[1][0] * inv_w2c, tri.v2.varyings[1][1] * inv_w2c];
 
     let z0 = s0[2]; let z1 = s1[2]; let z2 = s2[2];
-    let fb_width = batch.fb_w;
+    let fb_width = pool.fb_w;
 
-    let tex_data = batch.fast_tex_data;
-    let tex_w = batch.fast_tex_w;
-    let tex_h = batch.fast_tex_h;
+    let tex_data = sb.fast_tex_data;
+    let tex_w = sb.fast_tex_w;
+    let tex_h = sb.fast_tex_h;
     let tex_w_f = tex_w as f32;
     let tex_h_f = tex_h as f32;
     let tex_w_max = (tex_w - 1) as i32;
     let tex_h_max = (tex_h - 1) as i32;
-    let mat_r = batch.fast_mat_r;
-    let mat_g = batch.fast_mat_g;
-    let mat_b = batch.fast_mat_b;
+    let mat_r = sb.fast_mat_r;
+    let mat_g = sb.fast_mat_g;
+    let mat_b = sb.fast_mat_b;
 
     let mut a12 = s1[1] - s2[1];
     let mut b12 = s2[0] - s1[0];
@@ -466,9 +513,9 @@ fn rasterize_tri_fast_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32
         a01 = -a01; b01 = -b01;
     }
 
-    let depth_test = batch.depth_test;
-    let depth_func = batch.depth_func;
-    let depth_mask = batch.depth_mask;
+    let depth_test = sb.depth_test;
+    let depth_func = sb.depth_func;
+    let depth_mask = sb.depth_mask;
 
     for py in min_y..=max_y {
         let mut span_left = min_x;
@@ -517,7 +564,7 @@ fn rasterize_tri_fast_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32
                     let fb_idx = (row_base + px as u32) as usize;
 
                     if depth_test {
-                        let cur = unsafe { *batch.depth_ptr.add(fb_idx) };
+                        let cur = unsafe { *pool.depth_ptr.add(fb_idx) };
                         if !fragment::depth_test(depth, cur, depth_func) {
                             w0 += a12; w1 += a20; w2 += a01;
                             continue;
@@ -555,9 +602,9 @@ fn rasterize_tri_fast_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32
 
                     unsafe {
                         if depth_mask {
-                            *batch.depth_ptr.add(fb_idx) = depth;
+                            *pool.depth_ptr.add(fb_idx) = depth;
                         }
-                        *batch.color_ptr.add(fb_idx) = color;
+                        *pool.color_ptr.add(fb_idx) = color;
                     }
                 }
                 w0 += a12; w1 += a20; w2 += a01;
@@ -568,12 +615,12 @@ fn rasterize_tri_fast_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32
 }
 
 /// Rasterize one triangle in general path, restricted to [band_min_y, band_max_y].
-fn rasterize_tri_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32, band_max_y: i32, worker_id: usize) {
+fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_min_y: i32, band_max_y: i32, _worker_id: usize) {
     let s0 = &tri.s0;
     let s1 = &tri.s1;
     let s2 = &tri.s2;
-    let fb_w = batch.fb_w as i32;
-    let fb_h = batch.fb_h as i32;
+    let fb_w = pool.fb_w as i32;
+    let fb_h = pool.fb_h as i32;
 
     let min_x = min3(s0[0], s1[0], s2[0]).max(0.0) as i32;
     let max_x = (crate::rasterizer::math::ceil(max3(s0[0], s1[0], s2[0])) as i32).min(fb_w - 1);
@@ -598,7 +645,7 @@ fn rasterize_tri_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32, ban
     let inv_w1c = 1.0 / w1_clip;
     let inv_w2c = 1.0 / w2_clip;
 
-    let nv = batch.num_varyings.min(MAX_VARYINGS);
+    let nv = sb.num_varyings.min(MAX_VARYINGS);
     let mut v0_persp = [[0.0f32; 4]; MAX_VARYINGS];
     let mut v1_persp = [[0.0f32; 4]; MAX_VARYINGS];
     let mut v2_persp = [[0.0f32; 4]; MAX_VARYINGS];
@@ -612,7 +659,7 @@ fn rasterize_tri_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32, ban
     }
 
     let z0 = s0[2]; let z1 = s1[2]; let z2 = s2[2];
-    let fb_width = batch.fb_w;
+    let fb_width = pool.fb_w;
     let tex_sample_addr = raster::real_tex_sample as usize;
 
     let mut a12 = s1[1] - s2[1];
@@ -635,18 +682,17 @@ fn rasterize_tri_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32, ban
         a01 = -a01; b01 = -b01;
     }
 
-    let depth_test_enabled = batch.depth_test;
-    let depth_func = batch.depth_func;
-    let depth_mask = batch.depth_mask;
-    let blend_enabled = batch.blend_enabled;
-    let blend_src = batch.blend_src;
-    let blend_dst = batch.blend_dst;
+    let depth_test_enabled = sb.depth_test;
+    let depth_func = sb.depth_func;
+    let depth_mask = sb.depth_mask;
+    let blend_enabled = sb.blend_enabled;
+    let blend_src = sb.blend_src;
+    let blend_dst = sb.blend_dst;
 
-    let uniforms = unsafe { core::slice::from_raw_parts(batch.uniforms_ptr, batch.uniforms_len) };
-    let fs_ir = unsafe { &*batch.fs_ir_ptr };
-    let fs_jit = batch.fs_jit;
+    let uniforms = unsafe { core::slice::from_raw_parts(sb.uniforms_ptr, sb.uniforms_len) };
+    let fs_ir = unsafe { &*sb.fs_ir_ptr };
+    let fs_jit = sb.fs_jit;
 
-    // Each worker needs its own ShaderExec (stack-allocated)
     let mut fs_exec = crate::compiler::backend_sw::ShaderExec::new(fs_ir.num_regs, nv);
     let mut varying_buf = [[0.0f32; 4]; MAX_VARYINGS];
 
@@ -697,7 +743,7 @@ fn rasterize_tri_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32, ban
                     let fb_idx = (row_base + px as u32) as usize;
 
                     if depth_test_enabled {
-                        let cur = unsafe { *batch.depth_ptr.add(fb_idx) };
+                        let cur = unsafe { *pool.depth_ptr.add(fb_idx) };
                         if !fragment::depth_test(depth, cur, depth_func) {
                             w0 += a12; w1 += a20; w2 += a01;
                             continue;
@@ -760,7 +806,7 @@ fn rasterize_tri_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32, ban
                     let color = (a << 24) | (r << 16) | (g << 8) | b;
 
                     let final_color = if blend_enabled {
-                        let dst = unsafe { *batch.color_ptr.add(fb_idx) };
+                        let dst = unsafe { *pool.color_ptr.add(fb_idx) };
                         fragment::blend(color, dst, blend_src, blend_dst)
                     } else {
                         color
@@ -768,9 +814,9 @@ fn rasterize_tri_band(batch: &BatchParams, tri: &ScreenTri, band_min_y: i32, ban
 
                     unsafe {
                         if depth_mask {
-                            *batch.depth_ptr.add(fb_idx) = depth;
+                            *pool.depth_ptr.add(fb_idx) = depth;
                         }
-                        *batch.color_ptr.add(fb_idx) = final_color;
+                        *pool.color_ptr.add(fb_idx) = final_color;
                     }
                 }
                 w0 += a12; w1 += a20; w2 += a01;

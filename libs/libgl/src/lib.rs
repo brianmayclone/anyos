@@ -130,12 +130,11 @@ pub extern "C" fn gl_init(width: u32, height: u32) {
     let hw_ver = syscall::gpu_3d_hw_version();
     serial_println!("[libgl] 3D query: has_hw={}, hw_version=0x{:08X} (HW backend disabled)", has_hw, hw_ver);
 
-    // Software rasterizer (thread pool disabled — synchronization overhead too high)
+    // Software rasterizer with parallel thread pool
     unsafe {
         CTX = Some(GlContext::new(width, height));
     }
-    // TODO: re-enable thread_pool once batching across draw calls is implemented
-    // thread_pool::ensure_pool(height);
+    thread_pool::ensure_pool(height);
 
     serial_println!("[libgl] gl_init done ({}x{}, hw={})", width, height, unsafe { USE_HW_BACKEND });
 }
@@ -198,7 +197,10 @@ pub extern "C" fn gl_swap_buffers() -> *const u32 {
         }
     }
 
+    // Flush all batched triangles from this frame to worker threads
     let c = ctx();
+    thread_pool::flush_frame(c);
+
     if c.fxaa_enabled {
         let w = c.default_fb.width;
         let h = c.default_fb.height;
@@ -284,6 +286,9 @@ pub extern "C" fn gl_swap_buffers_fullscreen() -> u32 {
     }
 
     let c = ctx();
+
+    // Flush batched triangles from this frame
+    thread_pool::flush_frame(c);
 
     // Apply FXAA if enabled
     if c.fxaa_enabled {
