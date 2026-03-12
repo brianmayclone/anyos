@@ -353,18 +353,14 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                 return 0;
             }
             // PS/2 keyboard → IRQ 1, mouse → IRQ 12
-            // Only raise when new data entered the output buffer (irq_needed),
-            // not every time OUTPUT_FULL is set — avoids duplicate deliveries.
             if let Some(ps2) = vm.ps2() {
                 if ps2.irq_needed {
                     ps2.irq_needed = false;
                     let is_mouse = (ps2.status & 0x20) != 0;
                     let irq: u8 = if is_mouse { 12 } else { 1 };
-                    if !vm.pic_ptr.is_null() {
-                        let pic = unsafe { &mut *vm.pic_ptr };
-                        pic.raise_irq(irq);
-                    }
-                    // Also route through IOAPIC
+                    let pic = unsafe { &mut *vm.pic_ptr };
+                    pic.raise_irq(irq);
+                    // Also route through IOAPIC (for APIC mode guests like Windows)
                     #[cfg(feature = "windows")]
                     {
                         vm.backend.ioapic_set_irq(irq, true);
@@ -372,23 +368,46 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                     }
                 }
             }
-            // Inject ALL pending PIC interrupts while IF=1.
-            // Injecting only one per cycle caused starvation: PIT (IRQ0)
-            // fires every ~50ms and always wins priority, starving IRQ1/12.
+            // AHCI IRQ → route through PIC (IRQ 11) and IOAPIC
+            if !vm.ahci_ptr.is_null() {
+                let ahci = unsafe { &mut *vm.ahci_ptr };
+                if ahci.irq_raised() {
+                    ahci.clear_irq();
+                    let pic = unsafe { &mut *vm.pic_ptr };
+                    pic.raise_irq(11);
+                    #[cfg(feature = "windows")]
+                    {
+                        vm.backend.ioapic_set_irq(11, true);
+                        vm.backend.ioapic_set_irq(11, false);
+                    }
+                }
+            }
+            // PIC interrupt injection: inject ONE at a time.
+            // WHP's PendingEvent register holds only one interrupt — injecting
+            // multiple in a loop overwrites earlier ones, losing them.
+            // If more are pending, request an interrupt window for the next cycle.
             {
                 let if_set = vm.get_vcpu_regs(0)
                     .map(|r| r.rflags & 0x200 != 0)
                     .unwrap_or(false);
                 if if_set {
                     let pic = unsafe { &mut *vm.pic_ptr };
-                    while let Some(vector) = pic.get_interrupt_vector() {
+                    if let Some(vector) = pic.get_interrupt_vector() {
                         if vm.inject_interrupt(0, vector).is_ok() {
                             let irq = pic.irq_for_vector(vector).unwrap_or(0);
                             pic.lower_irq(irq);
                             injected += 1;
-                        } else {
-                            break;
+                            // If more interrupts pending, request window for next delivery
+                            if pic.get_interrupt_vector().is_some() {
+                                let _ = vm.request_interrupt_window(0, true);
+                            }
                         }
+                    }
+                } else {
+                    // IF=0: can't inject now, request window notification
+                    let pic = unsafe { &*vm.pic_ptr };
+                    if pic.get_interrupt_vector().is_some() {
+                        let _ = vm.request_interrupt_window(0, true);
                     }
                 }
             }

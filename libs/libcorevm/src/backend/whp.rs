@@ -142,7 +142,7 @@ pub fn cancel_vcpu_global(vcpu_id: u32) -> i32 {
 // --- WHP constants ---
 
 const WHV_PROPERTY_PROCESSOR_COUNT: u32 = 0x00001FFF; // WHvPartitionPropertyCodeProcessorCount
-const WHV_PROPERTY_EXTENDED_VM_EXITS: u32 = 0x00000001; // WHvPartitionPropertyCodeExtendedVmExits
+const WHV_PROPERTY_EXTENDED_VM_EXITS: u32 = 0x00000002; // WHvPartitionPropertyCodeExtendedVmExits
 const WHV_PROPERTY_EXCEPTION_EXIT_BITMAP: u32 = 0x00000003; // WHvPartitionPropertyCodeExceptionExitBitmap
 
 const WHV_MAP_GPA_RANGE_FLAG_READ: u32 = 0x1;
@@ -154,20 +154,22 @@ const WHV_EXIT_REASON_MEMORY_ACCESS: u32 = 0x00000001;
 const WHV_EXIT_REASON_IO_PORT: u32 = 0x00000002;
 const WHV_EXIT_REASON_UNRECOVERABLE_EXCEPTION: u32 = 0x00000004;
 const WHV_EXIT_REASON_INVALID_VP_STATE: u32 = 0x00000005;
+const WHV_EXIT_REASON_UNSUPPORTED_FEATURE: u32 = 0x00000006;
 const WHV_EXIT_REASON_HALT: u32 = 0x00000008;
 const WHV_EXIT_REASON_CANCELED: u32 = 0x00002001;
 const WHV_EXIT_REASON_MSR: u32 = 0x00001000;
 const WHV_EXIT_REASON_CPUID: u32 = 0x00001001;
+const WHV_EXIT_REASON_EXCEPTION: u32 = 0x00001002;
 const WHV_EXIT_REASON_INTERRUPT_WINDOW: u32 = 0x00000007;
 const WHV_EXIT_REASON_APIC_EOI: u32 = 0x00000009;
 
 /// WHV_INTERRUPT_CONTROL for WHvRequestInterrupt (XApic mode).
-/// Layout: [0..8] u64 bitfield (Type:2, DestMode:1, TriggerMode:1, Reserved:60),
+/// Layout: [0..8] u64 bitfield (Type[0:7], DestMode[8:11], TriggerMode[12:15], Reserved[16:63]),
 ///         [8..12] Destination (APIC ID), [12..16] Vector.
 #[repr(C)]
 #[derive(Copy, Clone)]
 struct WhvInterruptControl {
-    type_and_flags: u64, // bits 0-1: Type (0=Fixed), bit 2: DestMode (0=Physical), bit 3: TriggerMode (0=Edge)
+    type_and_flags: u64, // bits 0-7: Type (0=Fixed,1=LowestPri), bits 8-11: DestMode, bits 12-15: TriggerMode
     destination: u32,    // target APIC ID
     vector: u32,         // interrupt vector
 }
@@ -237,6 +239,7 @@ const REG_SFMASK: u32 = 0x0000200B;
 const REG_PENDING_INTERRUPTION: u32 = 0x80000000;
 const REG_PENDING_EVENT: u32 = 0x80000002; // WHvRegisterPendingEvent — 128-bit, for ExtInt injection in XApic mode
 const REG_DELIVERABILITY_NOTIFICATIONS: u32 = 0x80000004;
+const REG_INTERNAL_ACTIVITY_STATE: u32 = 0x80000005; // WHvX64RegisterInternalActivityState
 
 // GP register names in order for get/set
 const GP_REG_NAMES: [u32; 18] = [
@@ -794,11 +797,11 @@ impl WhpBackend {
                 return Err(VmError::BackendErrorCtx(hr, "WHvSetPartitionProperty(ProcessorCount)"));
             }
 
-            // Enable extended VM exits for CPUID, MSR interception, and interrupt window
-            // bit 0 = X64CpuidExit, bit 1 = X64MsrExit
+            // Enable extended VM exits for CPUID, MSR, and exception interception
+            // bit 0 = X64CpuidExit, bit 1 = X64MsrExit, bit 2 = ExceptionExit
             // InterruptWindow doesn't need an extended exit bit —
             // it's controlled per-vCPU via WHvRegisterDeliverabilityNotifications
-            let extended_exits: u64 = 0x3;
+            let extended_exits: u64 = 0x7;
             let hr = (api.set_property)(
                 partition,
                 WHV_PROPERTY_EXTENDED_VM_EXITS,
@@ -806,12 +809,14 @@ impl WhpBackend {
                 core::mem::size_of::<u64>() as u32,
             );
             if hr < 0 {
-                // Non-fatal: some WHP versions may not support extended exits
+                whp_debug(format_args!("ExtendedVmExits set FAILED: hr={:#x}", hr));
+            } else {
+                whp_debug(format_args!("ExtendedVmExits set OK: {:#x}", extended_exits));
             }
 
-            // Exception exit bitmap: exit on #DF (8) to catch double faults.
+            // Exception exit bitmap: catch #DF and #UD.
             // Without this, WHP silently resets the VP on triple fault.
-            let exc_bitmap: u64 = 1u64 << 8;
+            let exc_bitmap: u64 = (1u64 << 6) | (1u64 << 8);
             let hr = (api.set_property)(
                 partition,
                 WHV_PROPERTY_EXCEPTION_EXIT_BITMAP,
@@ -819,8 +824,9 @@ impl WhpBackend {
                 core::mem::size_of::<u64>() as u32,
             );
             if hr < 0 {
-                // Non-fatal: older WHP may not support this
-                whp_debug(format_args!("ExceptionExitBitmap set failed: hr={:#x}", hr));
+                whp_debug(format_args!("ExceptionExitBitmap set FAILED: hr={:#x}", hr));
+            } else {
+                whp_debug(format_args!("ExceptionExitBitmap set OK: {:#x}", exc_bitmap));
             }
 
             // XApic emulation — WHP handles LAPIC internally (timer, ISR/IRR, EOI).
@@ -1167,12 +1173,12 @@ impl WhpBackend {
                 destination: intr.dest as u32,
                 vector: intr.vector as u32,
             };
-            // Type: 0=Fixed, 1=LowestPriority
+            // Type[0:7]: 0=Fixed, 1=LowestPriority
             ctrl.type_and_flags = intr.delivery as u64;
-            // Bit 2: DestinationMode (0=physical, 1=logical)
-            if intr.dest_mode != 0 { ctrl.type_and_flags |= 1 << 2; }
-            // Bit 3: TriggerMode (0=edge, 1=level)
-            if intr.trigger != 0 { ctrl.type_and_flags |= 1 << 3; }
+            // DestinationMode[8:11]: 0=physical, 1=logical
+            if intr.dest_mode != 0 { ctrl.type_and_flags |= 1 << 8; }
+            // TriggerMode[12:15]: 0=edge, 1=level
+            if intr.trigger != 0 { ctrl.type_and_flags |= 1 << 12; }
 
             let hr = unsafe {
                 req_fn(
@@ -1345,11 +1351,10 @@ impl VmBackend for WhpBackend {
             // Instruction length is lower 4 bits of vp_context[2] (upper 4 bits = Cr8)
             let instr_len = (ctx.vp_context[2] & 0x0F) as u64;
 
-            // Post-IOAPIC exit logging: start logging after first IOAPIC MMIO access,
-            // skip noisy exits (CPUID at same RIP, debug port 0x402).
+            // Log ALL exits after IOAPIC init to trace the reboot cause
             {
                 static IOAPIC_SEEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-                static POST_IOAPIC_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                static EXIT_LOG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
                 // Detect IOAPIC MMIO (GPA 0xFEC00000..0xFEC00FFF)
                 if ctx.exit_reason == WHV_EXIT_REASON_MEMORY_ACCESS {
@@ -1363,40 +1368,65 @@ impl VmBackend for WhpBackend {
                 }
 
                 if IOAPIC_SEEN.load(core::sync::atomic::Ordering::Relaxed) {
-                    // Skip CPUID (0x1001) and debug port 0x402 writes
-                    let is_noisy = ctx.exit_reason == WHV_EXIT_REASON_CPUID
-                        || (ctx.exit_reason == WHV_EXIT_REASON_IO_PORT && {
+                    // Filter out noisy exits: VGA palette, debug port, IOAPIC MMIO, CPUID, CANCEL
+                    let skip = match ctx.exit_reason {
+                        WHV_EXIT_REASON_IO_PORT => {
                             let port = u16::from_le_bytes([ctx.exit_data[0x18], ctx.exit_data[0x19]]);
-                            port == 0x0402 || (port >= 0x03C0 && port <= 0x03DF)
-                                || port == 0x01CE || port == 0x01CF
-                        })
-                        || ctx.exit_reason == WHV_EXIT_REASON_CANCELED;
-
-                    if !is_noisy {
-                        let n = POST_IOAPIC_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                            matches!(port, 0x03C8 | 0x03C9 | 0x03C6 | 0x03DA | 0x0402
+                                | 0x01CE | 0x01CF | 0x01D0  // Bochs VBE
+                                | 0x0070 | 0x0071            // CMOS
+                                | 0x03D4 | 0x03D5            // VGA CRTC
+                            )
+                        }
+                        WHV_EXIT_REASON_MEMORY_ACCESS => {
+                            let gpa = u64::from_le_bytes([
+                                ctx.exit_data[0x18], ctx.exit_data[0x19], ctx.exit_data[0x1A], ctx.exit_data[0x1B],
+                                ctx.exit_data[0x1C], ctx.exit_data[0x1D], ctx.exit_data[0x1E], ctx.exit_data[0x1F],
+                            ]);
+                            // Skip IOAPIC and LAPIC MMIO, VGA framebuffer
+                            (0xFEC0_0000..0xFEC0_1000).contains(&gpa)
+                                || (0xFEE0_0000..0xFEE0_1000).contains(&gpa)
+                                || gpa < 0xC0000 && gpa >= 0xA0000
+                        }
+                        0x2001 => true, // CANCEL
+                        0x1001 => true, // CPUID
+                        0x1000 => true, // MSR
+                        _ => false,
+                    };
+                    if !skip {
+                        let n = EXIT_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                         if n < 500 {
                             let rip = u64::from_le_bytes([
                                 ctx.vp_context[24], ctx.vp_context[25], ctx.vp_context[26], ctx.vp_context[27],
                                 ctx.vp_context[28], ctx.vp_context[29], ctx.vp_context[30], ctx.vp_context[31],
                             ]);
-                            let extra = match ctx.exit_reason {
+                            let detail = match ctx.exit_reason {
                                 WHV_EXIT_REASON_IO_PORT => {
                                     let port = u16::from_le_bytes([ctx.exit_data[0x18], ctx.exit_data[0x19]]);
-                                    let is_write = ctx.exit_data[0x14] & 1;
-                                    std::format!(" port={:#06x} wr={}", port, is_write)
+                                    let access = u32::from_le_bytes([ctx.exit_data[0x14], ctx.exit_data[0x15], ctx.exit_data[0x16], ctx.exit_data[0x17]]);
+                                    let wr = if access & 1 != 0 { "W" } else { "R" };
+                                    let rax = u64::from_le_bytes([
+                                        ctx.exit_data[0x20], ctx.exit_data[0x21], ctx.exit_data[0x22], ctx.exit_data[0x23],
+                                        ctx.exit_data[0x24], ctx.exit_data[0x25], ctx.exit_data[0x26], ctx.exit_data[0x27],
+                                    ]);
+                                    std::format!("IO {}{:#06x} val={:#x}", wr, port, rax & 0xFF)
                                 }
                                 WHV_EXIT_REASON_MEMORY_ACCESS => {
                                     let gpa = u64::from_le_bytes([
                                         ctx.exit_data[0x18], ctx.exit_data[0x19], ctx.exit_data[0x1A], ctx.exit_data[0x1B],
                                         ctx.exit_data[0x1C], ctx.exit_data[0x1D], ctx.exit_data[0x1E], ctx.exit_data[0x1F],
                                     ]);
-                                    let access = ctx.exit_data[0x14] & 0x3;
-                                    let dir = if access == 1 { "WR" } else { "RD" };
-                                    std::format!(" {} gpa={:#x}", dir, gpa)
+                                    std::format!("MMIO gpa={:#x}", gpa)
                                 }
-                                _ => std::format!(" exit={:#x}", ctx.exit_reason),
+                                WHV_EXIT_REASON_HALT => std::format!("HALT"),
+                                0x1000 => std::format!("MSR"),
+                                WHV_EXIT_REASON_UNRECOVERABLE_EXCEPTION => std::format!("UNRECOVERABLE"),
+                                WHV_EXIT_REASON_INVALID_VP_STATE => std::format!("INVALID_VP"),
+                                0x7 => std::format!("IRQ_WINDOW"),
+                                0x9 => std::format!("APIC_EOI"),
+                                other => std::format!("exit={:#x}", other),
                             };
-                            whp_debug(format_args!("[post-ioapic:{}] rip={:#x}{}", n, rip, extra));
+                            whp_debug(format_args!("[{}] rip={:#x} {}", n, rip, detail));
                         }
                     }
                 }
@@ -1762,24 +1792,28 @@ impl VmBackend for WhpBackend {
                         data[0x0C], data[0x0D], data[0x0E], data[0x0F],
                     ]) as u32;
 
-                    // Execute CPUID on host and pass through (with some filtering)
-                    let (mut eax, mut ebx, mut ecx, mut edx) = (0u32, 0u32, 0u32, 0u32);
-                    unsafe {
-                        core::arch::asm!(
-                            "push rbx",
-                            "cpuid",
-                            "mov {ebx_out:e}, ebx",
-                            "pop rbx",
-                            inout("eax") leaf => eax,
-                            ebx_out = out(reg) ebx,
-                            inout("ecx") subleaf => ecx,
-                            out("edx") edx,
-                            options(nostack),
-                        );
-                    }
+                    // Use WHP's DefaultResults — these are the sanitized values WHP
+                    // would have returned if CPUID interception was disabled. Using
+                    // native CPUID returns host values altered by Hyper-V which may
+                    // expose features WHP doesn't virtualize.
+                    let mut eax = u64::from_le_bytes([
+                        data[0x20], data[0x21], data[0x22], data[0x23],
+                        data[0x24], data[0x25], data[0x26], data[0x27],
+                    ]) as u32;
+                    let mut ecx = u64::from_le_bytes([
+                        data[0x28], data[0x29], data[0x2A], data[0x2B],
+                        data[0x2C], data[0x2D], data[0x2E], data[0x2F],
+                    ]) as u32;
+                    let mut edx = u64::from_le_bytes([
+                        data[0x30], data[0x31], data[0x32], data[0x33],
+                        data[0x34], data[0x35], data[0x36], data[0x37],
+                    ]) as u32;
+                    let mut ebx = u64::from_le_bytes([
+                        data[0x38], data[0x39], data[0x3A], data[0x3B],
+                        data[0x3C], data[0x3D], data[0x3E], data[0x3F],
+                    ]) as u32;
 
-                    // WHP runs on real hardware — most features work natively.
-                    // Filter features we don't emulate.
+                    // Additional filtering on top of WHP defaults
                     if leaf == 1 {
                         ecx &= !(1 << 5);  // Remove VMX
                         ecx &= !(1 << 21); // Remove x2APIC (we emulate xAPIC via MMIO only)
@@ -1788,7 +1822,6 @@ impl VmBackend for WhpBackend {
                     }
 
                     // Hide Hyper-V signature so Linux uses standard LAPIC timer
-                    // instead of Hyper-V synthetic timers (MSR 0x40000022/23).
                     if leaf >= 0x40000000 && leaf <= 0x4000FFFF {
                         eax = 0; ebx = 0; ecx = 0; edx = 0;
                     }
@@ -1809,6 +1842,36 @@ impl VmBackend for WhpBackend {
                     // LAPIC timer is handled by WHP internally in XApic mode.
                     let _ = self.request_interrupt_window(id, false);
                     return Ok(VmExitReason::InterruptWindow);
+                }
+                WHV_EXIT_REASON_UNSUPPORTED_FEATURE => {
+                    let regs = self.get_vcpu_regs(id)?;
+                    whp_debug(format_args!("UNSUPPORTED_FEATURE exit RIP={:#x}", regs.rip));
+                    return Ok(VmExitReason::Error);
+                }
+                WHV_EXIT_REASON_EXCEPTION => {
+                    // Exception exit: fired by ExceptionExitBitmap (#UD=6, #DF=8).
+                    // WHV_VP_EXCEPTION_CONTEXT layout:
+                    // [0x00] InstructionByteCount(u8), [0x01..04] Rsvd, [0x04..14] InstructionBytes
+                    // [0x14] ExceptionInfo(u32), [0x18] ExceptionType(u8), [0x1C] ErrorCode(u32)
+                    // [0x20] ExceptionParameter(u64)
+                    let exc_type = ctx.exit_data[0x18];
+                    let err_code = u32::from_le_bytes([
+                        ctx.exit_data[0x1C], ctx.exit_data[0x1D],
+                        ctx.exit_data[0x1E], ctx.exit_data[0x1F],
+                    ]);
+                    let regs = self.get_vcpu_regs(id)?;
+                    let sregs = self.get_vcpu_sregs(id)?;
+                    whp_debug(format_args!(
+                        "EXCEPTION: vec=#{} err={:#x} RIP={:#x} RSP={:#x} RFLAGS={:#x} CR0={:#x} CR3={:#x} CS={:#x}",
+                        exc_type, err_code, regs.rip, regs.rsp, regs.rflags,
+                        sregs.cr0, sregs.cr3, sregs.cs.selector
+                    ));
+                    // #DF (8) is fatal — return Shutdown so the VM stops
+                    if exc_type == 8 {
+                        return Ok(VmExitReason::Shutdown);
+                    }
+                    // #UD (6) — log and return error
+                    return Ok(VmExitReason::Error);
                 }
                 WHV_EXIT_REASON_APIC_EOI => {
                     // XApic mode: guest EOI'd. Extract vector from exit data
@@ -1980,6 +2043,18 @@ impl VmBackend for WhpBackend {
         //   bits 8-15: Vector
         //   bits 16-63: Reserved = 0
         //   bits 64-127: Reserved = 0
+        // Clear HaltSuspend in InternalActivityState — if the vCPU is in HLT,
+        // writing PendingEvent alone won't wake it. QEMU does this same dance.
+        let mut activity = [WHV_REGISTER_VALUE::default()];
+        if self.get_regs_raw(id, &[REG_INTERNAL_ACTIVITY_STATE], &mut activity).is_ok() {
+            let state = unsafe { activity[0].reg64 };
+            if state & 2 != 0 {
+                // Bit 1 = HaltSuspend — clear it
+                let cleared = WHV_REGISTER_VALUE::from_u64(state & !2);
+                let _ = self.set_regs_raw(id, &[REG_INTERNAL_ACTIVITY_STATE], &[cleared]);
+            }
+        }
+
         let lo: u64 = 1 | (5u64 << 1) | ((vector as u64) << 8);
         let val = WHV_REGISTER_VALUE { reg128: [lo, 0] };
         let result = self.set_regs_raw(id, &[REG_PENDING_EVENT], &[val]);
