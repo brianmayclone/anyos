@@ -15,7 +15,7 @@ fn whp_debug(args: core::fmt::Arguments) {
     use std::io::Write;
     static DEBUG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     let n = DEBUG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    if n >= 2000 { return; }
+    if n >= 20000 { return; }
     // Try %TEMP%, fallback to current directory
     let path = std::env::var("TEMP")
         .map(|t| std::format!("{}\\whp_debug.log", t))
@@ -159,6 +159,20 @@ const REG_CR3: u32 = 0x0000001E;
 const REG_CR4: u32 = 0x0000001F;
 const REG_EFER: u32 = 0x00002001;
 
+// MSR-backed registers
+const REG_TSC: u32 = 0x00002000;
+// REG_EFER = 0x00002001 (above)
+const REG_KERNEL_GS_BASE: u32 = 0x00002002;
+const REG_APIC_BASE: u32 = 0x00002003;
+const REG_PAT: u32 = 0x00002004;
+const REG_SYSENTER_CS: u32 = 0x00002005;
+const REG_SYSENTER_EIP: u32 = 0x00002006;
+const REG_SYSENTER_ESP: u32 = 0x00002007;
+const REG_STAR: u32 = 0x00002008;
+const REG_LSTAR: u32 = 0x00002009;
+const REG_CSTAR: u32 = 0x0000200A;
+const REG_SFMASK: u32 = 0x0000200B;
+
 const REG_PENDING_INTERRUPTION: u32 = 0x80000000;
 const REG_DELIVERABILITY_NOTIFICATIONS: u32 = 0x80000004;
 
@@ -240,11 +254,11 @@ fn host_tsc() -> u64 {
 /// Timer uses host TSC so current_count reads always reflect real elapsed time,
 /// even inside the inner MMIO loop of run_vcpu.
 pub struct SoftLapic {
-    regs: [u32; 64],
+    pub regs: [u32; 64],
     // Timer state — TSC-based
-    timer_initial: u32,       // guest-written initial count
-    timer_divide: u32,        // divisor (1,2,4,8,16,32,64,128)
-    timer_armed: bool,
+    pub timer_initial: u32,       // guest-written initial count
+    pub timer_divide: u32,        // divisor (1,2,4,8,16,32,64,128)
+    pub timer_armed: bool,
     timer_tsc_start: u64,     // host TSC when timer was armed
     timer_tsc_period: u64,    // host TSC ticks for one full countdown
     tsc_per_bus_tick: u64,    // host TSC ticks per bus tick (calibrated from CPUID MHz)
@@ -308,7 +322,7 @@ impl SoftLapic {
     }
 
     /// Compute remaining timer count from host TSC.
-    fn current_count(&self) -> u32 {
+    pub fn current_count(&self) -> u32 {
         if !self.timer_armed || self.timer_initial == 0 || self.timer_tsc_period == 0 {
             return 0;
         }
@@ -383,6 +397,11 @@ impl SoftLapic {
             LAPIC_IDX_LVT_TIMER => {
                 self.regs[idx] = val;
             }
+            0x02 | 0x03 => {
+                // APIC ID (0x020) and Version (0x030) are read-only.
+                // Linux verify_local_APIC() writes a test pattern and expects
+                // the value to NOT change. If it does, APIC is deemed broken.
+            }
             _ => {
                 if idx < 64 { self.regs[idx] = val; }
             }
@@ -441,8 +460,8 @@ impl SoftLapic {
 }
 
 /// Minimal IOAPIC state for indirect register access at 0xFEC00000.
-struct SoftIoapic {
-    ioregsel: u32,
+pub struct SoftIoapic {
+    pub ioregsel: u32,
     regs: [u32; 64], // indirect registers
 }
 
@@ -685,12 +704,12 @@ fn decode_mmio_instruction(instr: &[u8], regs: &VcpuRegs) -> (u8, u64) {
     match opcode {
         // MOV r/m8, r8 (write)
         0x88 => {
-            let reg_val = get_reg_from_modrm(instr.get(i + 1).copied().unwrap_or(0), regs, true);
+            let reg_val = get_reg_from_modrm(instr.get(i + 1).copied().unwrap_or(0), regs, true, rex);
             (1, reg_val)
         }
         // MOV r/m16/32/64, r16/32/64 (write)
         0x89 => {
-            let reg_val = get_reg_from_modrm(instr.get(i + 1).copied().unwrap_or(0), regs, false);
+            let reg_val = get_reg_from_modrm(instr.get(i + 1).copied().unwrap_or(0), regs, false, rex);
             (size, reg_val)
         }
         // MOV r8, r/m8 (read)
@@ -739,11 +758,16 @@ fn decode_mmio_instruction(instr: &[u8], regs: &VcpuRegs) -> (u8, u64) {
     }
 }
 
-/// Extract the register value indicated by the reg field of ModR/M byte
-fn get_reg_from_modrm(modrm: u8, regs: &VcpuRegs, byte_reg: bool) -> u64 {
-    let reg = ((modrm >> 3) & 7) as usize;
-    let vals = [regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi];
-    let v = if reg < 8 { vals[reg] } else { 0 };
+/// Extract the register value indicated by the reg field of ModR/M byte.
+/// `rex` is the REX prefix byte (0 if none). REX.R extends the reg field to 4 bits.
+fn get_reg_from_modrm(modrm: u8, regs: &VcpuRegs, byte_reg: bool, rex: u8) -> u64 {
+    let mut reg = ((modrm >> 3) & 7) as usize;
+    if (rex & 0x04) != 0 { reg += 8; } // REX.R
+    let vals: [u64; 16] = [
+        regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
+        regs.r8,  regs.r9,  regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
+    ];
+    let v = vals[reg];
     if byte_reg { v & 0xFF } else { v }
 }
 
@@ -1012,7 +1036,7 @@ impl VmBackend for WhpBackend {
             // This sets the destination register with the device's read value.
             if let Some((value, dest_reg)) = self.pending_mmio_read.take() {
                 let mut regs = self.get_vcpu_regs(id)?;
-                whp_debug(format_args!("apply MMIO: val=0x{:X} dreg={} rip=0x{:X} rax=0x{:X}", value, dest_reg, regs.rip, regs.rax));
+                // apply MMIO logging removed to save budget
                 match dest_reg {
                     0 => regs.rax = value,
                     1 => regs.rcx = value,
@@ -1028,10 +1052,7 @@ impl VmBackend for WhpBackend {
                     whp_debug(format_args!("set_vcpu_regs FAILED: {:?}", e));
                     return Err(e);
                 }
-                // Verify
-                if let Ok(v) = self.get_vcpu_regs(id) {
-                    whp_debug(format_args!("verify: rax=0x{:X} rcx=0x{:X} rdx=0x{:X} rbx=0x{:X}", v.rax, v.rcx, v.rdx, v.rbx));
-                }
+                // verify logging removed to save budget
             }
 
             let mut exit_ctx = core::mem::MaybeUninit::<WHV_RUN_VP_EXIT_CONTEXT>::uninit();
@@ -1061,9 +1082,6 @@ impl VmBackend for WhpBackend {
 
             match ctx.exit_reason {
                 WHV_EXIT_REASON_HALT => {
-                    // Log RFLAGS at HALT to check if IF was set (sti; hlt pattern)
-                    let rfl = self.get_vcpu_regs(id).map(|r| r.rflags).unwrap_or(0);
-                    whp_debug(format_args!("HALT exit rflags={:#x} IF={}", rfl, (rfl & 0x200) != 0));
                     return Ok(VmExitReason::Halted);
                 }
                 WHV_EXIT_REASON_IO_PORT => {
@@ -1210,6 +1228,19 @@ impl VmBackend for WhpBackend {
 
                     // Handle LAPIC MMIO internally (0xFEE00000-0xFEE00FFF)
                     if gpa >= 0xFEE0_0000 && gpa < 0xFEE0_1000 {
+                        let lapic_off = gpa & 0xFFF;
+                        {
+                            static LAPIC_LOG_CTR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                            let cnt = LAPIC_LOG_CTR.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                            // Always log writes; log reads for first 500 + every 1000th
+                            if is_write {
+                                whp_debug(format_args!("LAPIC WR [{:#05x}] = {:#x} rip={:#x}", lapic_off, write_data, regs.rip));
+                            } else if cnt < 500 || cnt % 1000 == 0 {
+                                let val = self.lapic.read(gpa);
+                                whp_debug(format_args!("LAPIC RD [{:#05x}] = {:#x} rip={:#x} armed={} init={:#x} pend={}",
+                                    lapic_off, val, regs.rip, self.lapic.timer_armed, self.lapic.timer_initial, self.lapic.timer_irq_pending));
+                            }
+                        }
                         let mut new_regs = regs;
                         new_regs.rip += instr_len;
                         if is_write {
@@ -1222,11 +1253,12 @@ impl VmBackend for WhpBackend {
                             // More precisely, decode the dest reg from ModR/M
                             if instr_byte_count > 0 {
                                 let mut pi = 0;
+                                let mut mmio_rex = 0u8;
                                 while pi < instr_bytes.len() {
                                     match instr_bytes[pi] {
                                         0x66 | 0x67 | 0xF0 | 0xF2 | 0xF3
-                                        | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65
-                                        | 0x40..=0x4F => { pi += 1; }
+                                        | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 => { pi += 1; }
+                                        b @ 0x40..=0x4F => { mmio_rex = b; pi += 1; }
                                         _ => break,
                                     }
                                 }
@@ -1234,7 +1266,8 @@ impl VmBackend for WhpBackend {
                                     let op = instr_bytes[pi];
                                     if (op == 0x8B || op == 0x8A) && pi + 1 < instr_bytes.len() {
                                         let modrm = instr_bytes[pi + 1];
-                                        let dest = ((modrm >> 3) & 7) as usize;
+                                        let mut dest = ((modrm >> 3) & 7) as usize;
+                                        if (mmio_rex & 0x04) != 0 { dest += 8; } // REX.R
                                         match dest {
                                             0 => new_regs.rax = val,
                                             1 => new_regs.rcx = val,
@@ -1244,6 +1277,14 @@ impl VmBackend for WhpBackend {
                                             5 => new_regs.rbp = val,
                                             6 => new_regs.rsi = val,
                                             7 => new_regs.rdi = val,
+                                            8 => new_regs.r8 = val,
+                                            9 => new_regs.r9 = val,
+                                            10 => new_regs.r10 = val,
+                                            11 => new_regs.r11 = val,
+                                            12 => new_regs.r12 = val,
+                                            13 => new_regs.r13 = val,
+                                            14 => new_regs.r14 = val,
+                                            15 => new_regs.r15 = val,
                                             _ => new_regs.rax = val,
                                         }
                                     } else {
@@ -1277,6 +1318,18 @@ impl VmBackend for WhpBackend {
                     // Handle IOAPIC MMIO internally (0xFEC00000-0xFEC00FFF)
                     if gpa >= 0xFEC0_0000 && gpa < 0xFEC0_1000 {
                         let mmio_off = gpa - 0xFEC0_0000;
+                        {
+                            static IOAPIC_LOG_CTR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                            let cnt = IOAPIC_LOG_CTR.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                            if is_write {
+                                whp_debug(format_args!("IOAPIC WR [{:#05x}] = {:#x} rip={:#x} sel={:#x}",
+                                    mmio_off, write_data, regs.rip, self.ioapic.ioregsel));
+                            } else if cnt < 200 || cnt % 1000 == 0 {
+                                let val = self.ioapic.read(mmio_off);
+                                whp_debug(format_args!("IOAPIC RD [{:#05x}] = {:#x} rip={:#x} sel={:#x}",
+                                    mmio_off, val, regs.rip, self.ioapic.ioregsel));
+                            }
+                        }
                         let mut new_regs = regs;
                         new_regs.rip += instr_len;
                         if is_write {
@@ -1286,16 +1339,18 @@ impl VmBackend for WhpBackend {
                             // Decode dest register same as LAPIC
                             if instr_byte_count > 0 {
                                 let mut pi = 0;
+                                let mut io_rex = 0u8;
                                 while pi < instr_bytes.len() {
                                     match instr_bytes[pi] {
                                         0x66 | 0x67 | 0xF0 | 0xF2 | 0xF3
-                                        | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65
-                                        | 0x40..=0x4F => { pi += 1; }
+                                        | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 => { pi += 1; }
+                                        b @ 0x40..=0x4F => { io_rex = b; pi += 1; }
                                         _ => break,
                                     }
                                 }
                                 if pi < instr_bytes.len() && (instr_bytes[pi] == 0x8B || instr_bytes[pi] == 0x8A) && pi + 1 < instr_bytes.len() {
-                                    let dest = ((instr_bytes[pi + 1] >> 3) & 7) as usize;
+                                    let mut dest = ((instr_bytes[pi + 1] >> 3) & 7) as usize;
+                                    if (io_rex & 0x04) != 0 { dest += 8; }
                                     match dest {
                                         0 => new_regs.rax = val,
                                         1 => new_regs.rcx = val,
@@ -1305,6 +1360,14 @@ impl VmBackend for WhpBackend {
                                         5 => new_regs.rbp = val,
                                         6 => new_regs.rsi = val,
                                         7 => new_regs.rdi = val,
+                                        8 => new_regs.r8 = val,
+                                        9 => new_regs.r9 = val,
+                                        10 => new_regs.r10 = val,
+                                        11 => new_regs.r11 = val,
+                                        12 => new_regs.r12 = val,
+                                        13 => new_regs.r13 = val,
+                                        14 => new_regs.r14 = val,
+                                        15 => new_regs.r15 = val,
                                         _ => new_regs.rax = val,
                                     }
                                 } else {
@@ -1328,8 +1391,6 @@ impl VmBackend for WhpBackend {
                         return Ok(VmExitReason::MmioWrite { addr: gpa, size: access_size, data: write_data });
                     } else {
                         let dest_reg = decode_mmio_dest_reg(instr_bytes);
-                        whp_debug(format_args!("MMIO RD gpa=0x{:X} sz={} dreg={} ilen={} instr={:02X?}",
-                            gpa, access_size, dest_reg, instr_len, &instr_bytes[..instr_byte_count.min(8)]));
                         return Ok(VmExitReason::MmioRead {
                             addr: gpa, size: access_size, dest_reg,
                             instr_len: 0, // RIP already advanced
@@ -1344,17 +1405,79 @@ impl VmBackend for WhpBackend {
                     // [0x10..18] Rdx: u64
                     let data = &ctx.exit_data;
                     let access_info = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                    let msr_num = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
                     let is_write = (access_info & 1) != 0;
 
                     if !is_write {
-                        // RDMSR: return 0 in RAX:RDX
                         let mut regs = self.get_vcpu_regs(id)?;
-                        regs.rax = 0;
-                        regs.rdx = 0;
+                        // Read critical MSRs from WHP virtual registers; others return fixed values
+                        let whp_msr_reg = match msr_num {
+                            0xC000_0080 => Some(REG_EFER),
+                            0x174 => Some(REG_SYSENTER_CS),
+                            0x175 => Some(REG_SYSENTER_ESP),
+                            0x176 => Some(REG_SYSENTER_EIP),
+                            0x277 => Some(REG_PAT),
+                            0xC000_0081 => Some(REG_STAR),
+                            0xC000_0082 => Some(REG_LSTAR),
+                            0xC000_0083 => Some(REG_CSTAR),
+                            0xC000_0084 => Some(REG_SFMASK),
+                            0xC000_0102 => Some(REG_KERNEL_GS_BASE),
+                            _ => None,
+                        };
+                        let val: u64 = if let Some(reg_id) = whp_msr_reg {
+                            let mut v = [WHV_REGISTER_VALUE::default()];
+                            if self.get_regs_raw(id, &[reg_id], &mut v).is_ok() {
+                                unsafe { v[0].reg64 }
+                            } else {
+                                0
+                            }
+                        } else { match msr_num {
+                            0x1B => 0xFEE0_0800, // IA32_APIC_BASE: base=0xFEE00000, enable=1 (bit 11)
+                            0x17 => 0, // IA32_PLATFORM_ID
+                            0x1A0 => (1 << 11), // IA32_MISC_ENABLE: BTS unavailable (bit 11)
+                            0xFE => 0, // IA32_MTRRCAP
+                            _ => {
+                                static MSR_LOG_CTR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                                let cnt = MSR_LOG_CTR.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                                if cnt < 100 || cnt % 1000 == 0 {
+                                    whp_debug(format_args!("RDMSR {:#x} = 0 (unhandled) rip={:#x}", msr_num, regs.rip));
+                                }
+                                0
+                            }
+                        }};
+                        regs.rax = val & 0xFFFF_FFFF;
+                        regs.rdx = val >> 32;
                         regs.rip += instr_len;
                         self.set_vcpu_regs(id, &regs)?;
                     } else {
-                        // WRMSR: ignore, just advance RIP
+                        let rax = u64::from_le_bytes([data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15]]);
+                        let rdx = u64::from_le_bytes([data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23]]);
+                        let val = (rdx << 32) | (rax & 0xFFFF_FFFF);
+                        {
+                            static WRMSR_LOG_CTR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                            let cnt = WRMSR_LOG_CTR.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                            if cnt < 100 || cnt % 1000 == 0 {
+                                let cur_rip = self.get_vcpu_regs(id).map(|r| r.rip).unwrap_or(0);
+                                whp_debug(format_args!("WRMSR {:#x} = {:#x} rip={:#x}", msr_num, val, cur_rip));
+                            }
+                        }
+                        // Forward critical MSR writes to WHP virtual registers
+                        let whp_reg = match msr_num {
+                            0xC000_0080 => Some(REG_EFER),
+                            0x174 => Some(REG_SYSENTER_CS),
+                            0x175 => Some(REG_SYSENTER_ESP),
+                            0x176 => Some(REG_SYSENTER_EIP),
+                            0x277 => Some(REG_PAT),
+                            0xC000_0081 => Some(REG_STAR),
+                            0xC000_0082 => Some(REG_LSTAR),
+                            0xC000_0083 => Some(REG_CSTAR),
+                            0xC000_0084 => Some(REG_SFMASK),
+                            0xC000_0102 => Some(REG_KERNEL_GS_BASE),
+                            _ => None,
+                        };
+                        if let Some(reg_id) = whp_reg {
+                            let _ = self.set_regs_raw(id, &[reg_id], &[WHV_REGISTER_VALUE::from_u64(val)]);
+                        }
                         let mut regs = self.get_vcpu_regs(id)?;
                         regs.rip += instr_len;
                         self.set_vcpu_regs(id, &regs)?;
@@ -1403,6 +1526,12 @@ impl VmBackend for WhpBackend {
                     // Only filter VMX (nested virtualization not supported).
                     if leaf == 1 {
                         ecx &= !(1 << 5);  // Remove VMX
+                    }
+
+                    // Hide Hyper-V signature so Linux uses standard LAPIC timer
+                    // instead of Hyper-V synthetic timers (MSR 0x40000022/23).
+                    if leaf >= 0x40000000 && leaf <= 0x4000FFFF {
+                        eax = 0; ebx = 0; ecx = 0; edx = 0;
                     }
 
                     let mut regs = self.get_vcpu_regs(id)?;

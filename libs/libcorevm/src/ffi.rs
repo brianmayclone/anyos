@@ -428,6 +428,26 @@ pub extern "C" fn corevm_lapic_timer_advance(handle: u64, _ticks: u64) -> u32 {
     }
 }
 
+/// Debug: return LAPIC timer state.
+/// Returns [armed:1|pending:1|divide:8|mode:2|vec:8|masked:1] in low bits,
+/// and writes initial_count and current_count to out pointers.
+#[no_mangle]
+pub extern "C" fn corevm_lapic_debug(handle: u64, out_initial: *mut u32, out_current: *mut u32, out_lvt: *mut u32) -> u32 {
+    match get_vm(handle) {
+        Some(vm) => {
+            let lapic = &vm.backend.lapic;
+            if !out_initial.is_null() { unsafe { *out_initial = lapic.timer_initial; } }
+            if !out_current.is_null() { unsafe { *out_current = lapic.current_count(); } }
+            let lvt = lapic.regs[0x32]; // LVT Timer
+            if !out_lvt.is_null() { unsafe { *out_lvt = lvt; } }
+            let armed = lapic.timer_armed as u32;
+            let pending = lapic.timer_irq_pending as u32;
+            armed | (pending << 1) | (lapic.timer_divide << 2)
+        }
+        None => 0xDEAD,
+    }
+}
+
 /// Inject an exception. Pass `error_code` < 0 for no error code.
 #[no_mangle]
 pub extern "C" fn corevm_inject_exception(handle: u64, vcpu_id: u32, vector: u8, error_code: i64) -> i32 {

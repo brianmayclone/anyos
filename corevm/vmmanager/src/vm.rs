@@ -20,7 +20,7 @@ use libcorevm::ffi::{
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_lfb_addr,
     corevm_last_error, corevm_last_error_len,
-    corevm_pit_advance, corevm_pit_debug, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu, corevm_lapic_timer_advance,
+    corevm_pit_advance, corevm_pit_debug, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu, corevm_lapic_timer_advance, corevm_lapic_debug,
     corevm_read_phys, corevm_debug_port_take_output,
     corevm_fw_cfg_add_file, corevm_set_memory_region,
 };
@@ -439,9 +439,6 @@ fn vm_run_loop(
                 corevm_handle_mmio_exit(handle, exit.addr, 1, exit.size, data.as_mut_ptr(), 0, 0);
             }
             7 => {
-                if diag_enabled {
-                    diag.log(DiagCategory::CpuState, "HLT".to_string());
-                }
                 thread::sleep(Duration::from_millis(1));
             }
             9 => {
@@ -543,8 +540,15 @@ fn vm_run_loop(
             let mut ivt_buf = [0u8; 4];
             corevm_read_phys(handle, 0x20, ivt_buf.as_mut_ptr(), 4);
             let ivt8 = u32::from_le_bytes(ivt_buf);
+            let mut lapic_init = 0u32;
+            let mut lapic_cur = 0u32;
+            let mut lapic_lvt = 0u32;
+            let lapic_st = corevm_lapic_debug(handle, &mut lapic_init, &mut lapic_cur, &mut lapic_lvt);
             diag.log(DiagCategory::Interrupt, format!(
-                "BDA ticks=0x{:08X} IVT[8]=0x{:08X}", bda_ticks, ivt8
+                "BDA ticks=0x{:08X} IVT[8]=0x{:08X} LAPIC armed={} pend={} div={} init={:#x} cur={:#x} lvt={:#x}",
+                bda_ticks, ivt8,
+                lapic_st & 1, (lapic_st >> 1) & 1, (lapic_st >> 2) & 0xFF,
+                lapic_init, lapic_cur, lapic_lvt
             ));
         }
 
