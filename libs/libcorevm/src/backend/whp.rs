@@ -520,7 +520,10 @@ impl SoftIoapic {
             0x00 => self.ioregsel = val,
             0x10 => {
                 let idx = self.ioregsel as usize;
-                if idx < 64 { self.regs[idx] = val; }
+                // Registers 0x01 (IOAPICVER) and 0x02 (IOAPICARB) are read-only
+                if idx < 64 && idx != 0x01 && idx != 0x02 {
+                    self.regs[idx] = val;
+                }
             }
             _ => {}
         }
