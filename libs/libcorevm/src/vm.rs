@@ -20,11 +20,11 @@ use crate::devices::ahci::Ahci;
 /// PS/2 key injection, VGA framebuffer).
 pub struct Vm {
     #[cfg(feature = "linux")]
-    backend: crate::backend::kvm::KvmBackend,
+    pub backend: crate::backend::kvm::KvmBackend,
     #[cfg(feature = "anyos")]
-    backend: crate::backend::anyos::AnyOsBackend,
+    pub backend: crate::backend::anyos::AnyOsBackend,
     #[cfg(feature = "windows")]
-    backend: crate::backend::whp::WhpBackend,
+    pub backend: crate::backend::whp::WhpBackend,
 
     pub memory: GuestMemory,
     pub io: IoDispatch,

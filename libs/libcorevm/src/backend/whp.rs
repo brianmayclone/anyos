@@ -228,9 +228,25 @@ struct MemorySlot {
 }
 
 /// Minimal Local APIC state for handling MMIO at 0xFEE00000.
-struct SoftLapic {
+pub struct SoftLapic {
     regs: [u32; 64], // 64 registers at 16-byte spacing (offset >> 4)
+    // Timer state
+    timer_initial: u32,
+    timer_current: u64,    // remaining ticks (scaled up for precision)
+    timer_divide: u32,     // divisor (1,2,4,8,16,32,64,128)
+    timer_armed: bool,     // whether timer is counting down
+    pub timer_irq_pending: bool, // timer fired, waiting to inject
 }
+
+/// LAPIC register indices (offset >> 4)
+const LAPIC_IDX_EOI: usize = 0x0B;
+const LAPIC_IDX_SVR: usize = 0x0F;
+const LAPIC_IDX_ISR0: usize = 0x10;
+const LAPIC_IDX_ICR_LO: usize = 0x30;
+const LAPIC_IDX_LVT_TIMER: usize = 0x32;
+const LAPIC_IDX_INITIAL_COUNT: usize = 0x38;
+const LAPIC_IDX_CURRENT_COUNT: usize = 0x39;
+const LAPIC_IDX_DIVIDE_CONFIG: usize = 0x3E;
 
 impl SoftLapic {
     fn new() -> Self {
@@ -240,25 +256,137 @@ impl SoftLapic {
         regs[0x0E] = 0x0FFFFFFF; // Logical Destination Format: flat model
         regs[0x0F] = 0x000001FF; // Spurious Vector: APIC enabled (bit 8) + vector 0xFF
         regs[0x08] = 0;          // Task Priority Register
-        SoftLapic { regs }
+        regs[LAPIC_IDX_LVT_TIMER] = 0x00010000; // masked by default
+        SoftLapic {
+            regs,
+            timer_initial: 0,
+            timer_current: 0,
+            timer_divide: 1,
+            timer_armed: false,
+            timer_irq_pending: false,
+        }
+    }
+
+    fn decode_divide(val: u32) -> u32 {
+        // Divide config: bits 3,1,0 form a 3-bit value
+        // 000=2, 001=4, 010=8, 011=16, 100=32, 101=64, 110=128, 111=1
+        let bits = ((val >> 1) & 0b100) | (val & 0b11);
+        match bits {
+            0b000 => 2,
+            0b001 => 4,
+            0b010 => 8,
+            0b011 => 16,
+            0b100 => 32,
+            0b101 => 64,
+            0b110 => 128,
+            0b111 => 1,
+            _ => 1,
+        }
     }
 
     fn read(&self, offset: u64) -> u32 {
         let idx = ((offset & 0xFFF) >> 4) as usize;
-        if idx < 64 { self.regs[idx] } else { 0 }
+        match idx {
+            LAPIC_IDX_CURRENT_COUNT => {
+                // Return remaining count based on timer_current
+                (self.timer_current / self.timer_divide as u64) as u32
+            }
+            _ => {
+                if idx < 64 { self.regs[idx] } else { 0 }
+            }
+        }
     }
 
     fn write(&mut self, offset: u64, val: u32) {
         let idx = ((offset & 0xFFF) >> 4) as usize;
         match idx {
-            0x0B => {} // EOI: write-only, acknowledge interrupt
-            0x30 => {} // ICR write (trigger IPI) - ignore for single CPU
-            0x0F => {  // SVR: preserve APIC enable bit
-                if idx < 64 { self.regs[idx] = val; }
+            LAPIC_IDX_EOI => {
+                // EOI: clear highest-priority ISR bit
+                for i in (0..8).rev() {
+                    let isr_idx = LAPIC_IDX_ISR0 + i;
+                    if isr_idx < 64 && self.regs[isr_idx] != 0 {
+                        let bit = 31 - self.regs[isr_idx].leading_zeros();
+                        self.regs[isr_idx] &= !(1 << bit);
+                        break;
+                    }
+                }
+            }
+            LAPIC_IDX_ICR_LO => {} // IPI - ignore for single CPU
+            LAPIC_IDX_INITIAL_COUNT => {
+                self.regs[idx] = val;
+                self.timer_initial = val;
+                if val == 0 {
+                    self.timer_armed = false;
+                    self.timer_current = 0;
+                } else {
+                    self.timer_current = val as u64 * self.timer_divide as u64;
+                    self.timer_armed = true;
+                }
+            }
+            LAPIC_IDX_CURRENT_COUNT => {
+                // Current count is read-only per Intel SDM
+            }
+            LAPIC_IDX_DIVIDE_CONFIG => {
+                self.regs[idx] = val;
+                self.timer_divide = Self::decode_divide(val);
+            }
+            LAPIC_IDX_LVT_TIMER => {
+                self.regs[idx] = val;
             }
             _ => {
                 if idx < 64 { self.regs[idx] = val; }
             }
+        }
+    }
+
+    /// Advance timer by `ticks` bus clocks. Returns Some(vector) if timer fires.
+    pub fn advance_timer(&mut self, ticks: u64) -> Option<u8> {
+        if !self.timer_armed || self.timer_initial == 0 {
+            return None;
+        }
+
+        let lvt = self.regs[LAPIC_IDX_LVT_TIMER];
+        let masked = (lvt & (1 << 16)) != 0;
+        let vector = (lvt & 0xFF) as u8;
+        let mode = (lvt >> 17) & 0x3; // 0=one-shot, 1=periodic
+
+        if self.timer_current <= ticks {
+            // Timer expired
+            if mode == 1 {
+                // Periodic: reload and wrap
+                let period = self.timer_initial as u64 * self.timer_divide as u64;
+                if period > 0 {
+                    let remaining = ticks - self.timer_current;
+                    self.timer_current = period - (remaining % period);
+                } else {
+                    self.timer_current = 0;
+                    self.timer_armed = false;
+                }
+            } else {
+                // One-shot: stop
+                self.timer_current = 0;
+                self.timer_armed = false;
+            }
+
+            if !masked && vector >= 16 {
+                self.timer_irq_pending = true;
+                return Some(vector);
+            }
+        } else {
+            self.timer_current -= ticks;
+        }
+        None
+    }
+
+    /// Check and clear pending timer IRQ.
+    pub fn take_timer_irq(&mut self) -> Option<u8> {
+        if self.timer_irq_pending {
+            self.timer_irq_pending = false;
+            let lvt = self.regs[LAPIC_IDX_LVT_TIMER];
+            let vector = (lvt & 0xFF) as u8;
+            if vector >= 16 { Some(vector) } else { None }
+        } else {
+            None
         }
     }
 }
@@ -311,7 +439,7 @@ pub struct WhpBackend {
     partition: WHV_PARTITION_HANDLE,
     memory_slots: Vec<MemorySlot>,
     api: WhpApi,
-    lapic: SoftLapic,
+    pub lapic: SoftLapic,
     ioapic: SoftIoapic,
     /// Pending MMIO read response: (value, dest_reg).
     /// Set by the FFI handler after dispatching to the device.

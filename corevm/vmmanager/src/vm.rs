@@ -20,7 +20,7 @@ use libcorevm::ffi::{
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_lfb_addr,
     corevm_last_error, corevm_last_error_len,
-    corevm_pit_advance, corevm_pit_debug, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu,
+    corevm_pit_advance, corevm_pit_debug, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu, corevm_lapic_timer_advance,
     corevm_read_phys, corevm_debug_port_take_output,
     corevm_fw_cfg_add_file, corevm_set_memory_region,
 };
@@ -546,6 +546,17 @@ fn vm_run_loop(
             diag.log(DiagCategory::Interrupt, format!(
                 "BDA ticks=0x{:08X} IVT[8]=0x{:08X}", bda_ticks, ivt8
             ));
+        }
+
+        // Advance LAPIC timer: use elapsed nanoseconds as bus ticks (~1 GHz bus clock)
+        {
+            let lapic_ticks = pit_elapsed.as_nanos() as u64;
+            if lapic_ticks > 0 {
+                let vec = corevm_lapic_timer_advance(handle, lapic_ticks);
+                if vec > 0 && diag_enabled {
+                    diag.log(DiagCategory::Interrupt, format!("LAPIC timer fired vec={}", vec));
+                }
+            }
         }
 
         // Poll device IRQs (PS/2 keyboard IRQ 1, mouse IRQ 12, etc.)

@@ -400,6 +400,46 @@ pub extern "C" fn corevm_pic_debug(handle: u64) -> u32 {
     }
 }
 
+/// Advance LAPIC timer by `ticks` bus clocks.
+/// Returns the vector to inject (>0) or 0 if no interrupt.
+/// If a timer interrupt fires AND the guest has IF=1, injects it directly.
+#[no_mangle]
+pub extern "C" fn corevm_lapic_timer_advance(handle: u64, ticks: u64) -> u32 {
+    match get_vm(handle) {
+        Some(vm) => {
+            // Advance timer
+            if let Some(vector) = vm.backend.lapic.advance_timer(ticks) {
+                // Try to inject directly
+                if vm.get_vcpu_regs(0)
+                    .map(|r| r.rflags & 0x200 != 0)
+                    .unwrap_or(false)
+                {
+                    if vm.inject_interrupt(0, vector).is_ok() {
+                        return vector as u32;
+                    }
+                }
+                // Couldn't inject — leave pending for next poll
+                vm.backend.lapic.timer_irq_pending = true;
+                return 0;
+            }
+            // Check if there's a pending timer IRQ from a previous fire
+            if let Some(vector) = vm.backend.lapic.take_timer_irq() {
+                if vm.get_vcpu_regs(0)
+                    .map(|r| r.rflags & 0x200 != 0)
+                    .unwrap_or(false)
+                {
+                    if vm.inject_interrupt(0, vector).is_ok() {
+                        return vector as u32;
+                    }
+                }
+                vm.backend.lapic.timer_irq_pending = true;
+            }
+            0
+        }
+        None => 0,
+    }
+}
+
 /// Inject an exception. Pass `error_code` < 0 for no error code.
 #[no_mangle]
 pub extern "C" fn corevm_inject_exception(handle: u64, vcpu_id: u32, vector: u8, error_code: i64) -> i32 {
