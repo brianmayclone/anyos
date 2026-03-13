@@ -270,6 +270,44 @@ pub extern "C" fn corevm_set_vcpu_sregs(handle: u64, vcpu_id: u32, sregs: *const
     }
 }
 
+/// Read the in-kernel LAPIC register page (1024 bytes).
+/// Only available on Linux/KVM. Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn corevm_get_lapic(handle: u64, vcpu_id: u32, buf: *mut u8) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+    if buf.is_null() { return -1; }
+    #[cfg(feature = "linux")]
+    {
+        match vm.backend.get_lapic(vcpu_id) {
+            Ok(data) => { unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), buf, 1024); } 0 }
+            Err(_) => -1,
+        }
+    }
+    #[cfg(not(feature = "linux"))]
+    { -1 }
+}
+
+/// Read the in-kernel irqchip state (512 bytes).
+/// chip_id: 0=PIC master, 1=PIC slave, 2=IOAPIC.
+#[no_mangle]
+pub extern "C" fn corevm_get_irqchip(handle: u64, chip_id: u32, buf: *mut u8) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+    if buf.is_null() { return -1; }
+    #[cfg(feature = "linux")]
+    {
+        match vm.backend.get_irqchip(chip_id) {
+            Ok(data) => {
+                let len = data.len().min(512);
+                unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), buf, len); }
+                0
+            }
+            Err(_) => -1,
+        }
+    }
+    #[cfg(not(feature = "linux"))]
+    { -1 }
+}
+
 // ── Interrupt injection ─────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -465,19 +503,25 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                 }
             }
 
-            // AHCI IRQ → IRQ 11
+            // AHCI IRQ → IRQ 11 (level-triggered)
             if !vm.ahci_ptr.is_null() {
                 let ahci = unsafe { &mut *vm.ahci_ptr };
-                if ahci.irq_raised() {
-                    ahci.clear_irq();
-                    #[cfg(feature = "linux")]
-                    {
+                let want_asserted = ahci.irq_raised();
+                #[cfg(feature = "linux")]
+                {
+                    if want_asserted && !vm.ahci_irq_asserted {
                         let _ = vm.backend.set_irq_line(11, true);
-                        let _ = vm.backend.set_irq_line(11, false);
+                        vm.ahci_irq_asserted = true;
                         injected += 1;
+                    } else if !want_asserted && vm.ahci_irq_asserted {
+                        let _ = vm.backend.set_irq_line(11, false);
+                        vm.ahci_irq_asserted = false;
                     }
-                    #[cfg(not(feature = "linux"))]
-                    {
+                }
+                #[cfg(not(feature = "linux"))]
+                {
+                    if want_asserted {
+                        ahci.clear_irq();
                         if !vm.pic_ptr.is_null() {
                             let pic = unsafe { &mut *vm.pic_ptr };
                             pic.raise_irq(11);

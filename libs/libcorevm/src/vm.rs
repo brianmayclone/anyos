@@ -42,6 +42,11 @@ pub struct Vm {
     pub pci_bus_ptr: *mut crate::devices::bus::PciBus,
     pub fw_cfg_ptr: *mut crate::devices::fw_cfg::FwCfg,
     pub cmos_ptr: *mut crate::devices::cmos::Cmos,
+
+    /// Tracks whether AHCI IRQ 11 is currently asserted on the in-kernel irqchip.
+    /// Used for level-triggered interrupt semantics: only call set_irq_line when
+    /// the state changes.
+    pub ahci_irq_asserted: bool,
 }
 
 impl Vm {
@@ -77,6 +82,7 @@ impl Vm {
             pci_bus_ptr: core::ptr::null_mut(),
             fw_cfg_ptr: core::ptr::null_mut(),
             cmos_ptr: core::ptr::null_mut(),
+            ahci_irq_asserted: false,
         })
     }
 
@@ -160,10 +166,13 @@ impl Vm {
         // APM (0xB2-0xB3)
         self.io.register(0xB2, 2, Box::new(ApmControl::new()));
 
-        // fw_cfg (0x510-0x511)
-        let fw_cfg = Box::new(FwCfg::new(ram_size as u64));
+        // fw_cfg (0x510-0x51B: selector, data, DMA ports)
+        let mut fw_cfg = Box::new(FwCfg::new(ram_size as u64));
+        // Give fw_cfg access to guest RAM for DMA operations.
+        let (ram_ptr, ram_len) = self.memory.ram_mut_ptr();
+        fw_cfg.set_ram(ram_ptr, ram_len);
         self.fw_cfg_ptr = &*fw_cfg as *const FwCfg as *mut FwCfg;
-        self.io.register(0x510, 2, fw_cfg);
+        self.io.register(0x510, 12, fw_cfg);
 
         // PCI bus (0xCF8-0xCFF)
         // Add standard PCI devices before registering the bus with I/O dispatcher.
@@ -216,11 +225,15 @@ impl Vm {
         // IDE (0x1F0-0x1F7, 0x3F6, 0x170-0x177, 0x376)
         self.io.register(0x1F0, 8, Box::new(Ide::new()));
 
-        // I/O APIC MMIO (0xFEC00000, 4KB)
-        self.memory.add_mmio(0xFEC0_0000, 0x1000, Box::new(IoApic::new()));
-
-        // Local APIC MMIO (0xFEE00000, 4KB)
-        self.memory.add_mmio(0xFEE0_0000, 0x1000, Box::new(Lapic::new()));
+        // I/O APIC and Local APIC MMIO.
+        // On Linux/KVM with KVM_CREATE_IRQCHIP, these are handled in-kernel.
+        // Registering userspace handlers would intercept accesses and prevent
+        // the in-kernel IRQCHIP from working (no timer interrupts, etc.).
+        #[cfg(not(feature = "linux"))]
+        {
+            self.memory.add_mmio(0xFEC0_0000, 0x1000, Box::new(IoApic::new()));
+            self.memory.add_mmio(0xFEE0_0000, 0x1000, Box::new(Lapic::new()));
+        }
 
         // Now register PIC pair covering both master and slave port ranges.
         // Registered AFTER all other port-I/O devices so it has lowest priority.

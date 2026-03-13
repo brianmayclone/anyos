@@ -342,6 +342,13 @@ fn main() {
 
     set_initial_cpu_state(handle);
 
+    // Write COM1 base address into BDA so SeaBIOS finds the serial port.
+    // BDA segment 0x0040, offset 0x00 = COM1 base address (physical 0x400).
+    {
+        let com1_base: u16 = 0x03F8;
+        corevm_write_phys(handle, 0x400, com1_base.to_le_bytes().as_ptr(), 2);
+    }
+
     // Install SIGUSR1 handler so cancel_vcpu can interrupt KVM_RUN mid-execution
     libcorevm::backend::kvm::install_sigusr1_handler();
 
@@ -363,12 +370,45 @@ fn main() {
         thread::spawn(move || {
             for (delay_ms, scancodes) in &keys {
                 thread::sleep(Duration::from_millis(*delay_ms as u64));
+
+                // Method 1: PS/2 hardware injection (IRQ 1)
                 for &sc in scancodes {
                     corevm_ps2_key_press(key_handle, sc);
-                    thread::sleep(Duration::from_millis(30));
+                    thread::sleep(Duration::from_millis(50));
                     corevm_ps2_key_release(key_handle, sc);
-                    thread::sleep(Duration::from_millis(30));
+                    thread::sleep(Duration::from_millis(50));
                 }
+
+                // Method 2: Also inject directly into BIOS keyboard buffer (BDA)
+                // This works even if the guest's INT 09h handler isn't set up properly.
+                // BDA keyboard buffer: 0x41E-0x43E (circular, 16 entries of 2 bytes)
+                // Head pointer at 0x41A, tail pointer at 0x41C
+                // Each entry: low byte = ASCII, high byte = scancode
+                let bios_key: u16 = match scancodes.first() {
+                    Some(&0x1C) => 0x1C0D, // Enter: ASCII 0x0D, scancode 0x1C
+                    Some(&0x01) => 0x011B, // Esc: ASCII 0x1B, scancode 0x01
+                    Some(&0x39) => 0x3920, // Space: ASCII 0x20, scancode 0x39
+                    _ => 0,
+                };
+                if bios_key != 0 {
+                    // BDA keyboard buffer: segment 0x0040, offsets 0x1A..0x3E
+                    // Physical base = 0x400. Head/tail store BDA-relative offsets.
+                    const BDA_BASE: u64 = 0x400;
+                    let mut buf = [0u8; 4];
+                    corevm_read_phys(key_handle, BDA_BASE + 0x1A, buf.as_mut_ptr(), 4);
+                    let head = u16::from_le_bytes([buf[0], buf[1]]);
+                    let tail = u16::from_le_bytes([buf[2], buf[3]]);
+                    // Write key at BDA_BASE + tail offset
+                    let key_bytes = bios_key.to_le_bytes();
+                    corevm_write_phys(key_handle, BDA_BASE + tail as u64, key_bytes.as_ptr(), 2);
+                    // Advance tail (circular: 0x1E to 0x3C, wrap to 0x1E)
+                    let new_tail = if tail + 2 >= 0x3E { 0x1E } else { tail + 2 };
+                    let tail_bytes = new_tail.to_le_bytes();
+                    corevm_write_phys(key_handle, BDA_BASE + 0x1C, tail_bytes.as_ptr(), 2);
+                    eprintln!("[vmctl] BDA keyboard inject: key={:#06x} phys={:#06x} tail {:#06x}->{:#06x}",
+                        bios_key, BDA_BASE + tail as u64, tail, new_tail);
+                }
+
                 eprintln!("[vmctl] Sent key at {}ms: {:?}", delay_ms, scancodes);
             }
         });
@@ -386,6 +426,8 @@ fn main() {
     let mut last_pit_tick = Instant::now();
     let mut exit_types = [0u64; 16]; // count by exit.reason
     let mut total_irqs: u64 = 0;
+    let mut mmio_addrs: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+    let mut io_ports: std::collections::HashMap<u16, u64> = std::collections::HashMap::new();
 
     loop {
         let mut exit = CExitReason::default();
@@ -398,15 +440,22 @@ fn main() {
 
         match exit.reason {
             0 => { // IoIn
+                *io_ports.entry(exit.port).or_insert(0) += 1;
                 if exit.io_count > 1 {
-                    // String I/O (REP INSB): handle all iterations at once
                     corevm_complete_string_io(handle, 0, exit.port, 0, exit.size, exit.io_count);
                 } else {
                     let mut data = [0u8; 4];
                     corevm_handle_io_exit(handle, exit.port, 0, exit.size, data.as_mut_ptr());
+                    if exit.port >= 0x3F8 && exit.port <= 0x3FF {
+                        eprintln!("[serial-dbg] IN  port={:#06x} size={} -> data={:#x}", exit.port, exit.size, u32::from_le_bytes(data));
+                    }
                 }
             }
             1 => { // IoOut
+                *io_ports.entry(exit.port).or_insert(0) += 1;
+                if exit.port >= 0x3F8 && exit.port <= 0x3FF {
+                    eprintln!("[serial-dbg] OUT port={:#06x} size={} data={:#x}", exit.port, exit.size, exit.data_u32);
+                }
                 if exit.io_count > 1 {
                     // String I/O (REP OUTSB): handle all iterations at once
                     corevm_complete_string_io(handle, 0, exit.port, 1, exit.size, exit.io_count);
@@ -424,10 +473,12 @@ fn main() {
                 }
             }
             2 => { // MmioRead
+                *mmio_addrs.entry(exit.addr & !0xFFF).or_insert(0) += 1;
                 let mut data = [0u8; 8];
                 corevm_handle_mmio_exit(handle, exit.addr, 0, exit.size, data.as_mut_ptr(), exit.mmio_dest_reg, exit.mmio_instr_len);
             }
             3 => { // MmioWrite
+                *mmio_addrs.entry(exit.addr & !0xFFF).or_insert(0) += 1;
                 let mut data = exit.data_u64.to_le_bytes();
                 corevm_handle_mmio_exit(handle, exit.addr, 1, exit.size, data.as_mut_ptr(), 0, 0);
             }
@@ -491,7 +542,8 @@ fn main() {
             let n = corevm_debug_port_take_output(handle, dbg.as_mut_ptr(), dbg.len() as u32);
             if n > 0 {
                 if let Ok(s) = std::str::from_utf8(&dbg[..n as usize]) {
-                    eprint!("{}", s);
+                    print!("{}", s);
+                    serial_bytes += n as u64;
                 }
             }
         }
@@ -546,6 +598,16 @@ fn main() {
                 let bios_ticks = u32::from_le_bytes(tick_buf);
                 eprintln!("[vm-timer] BIOS_ticks={} (~{:.1}s)", bios_ticks, bios_ticks as f64 / 18.2);
             }
+            // Check BDA keyboard buffer: head @ 0x41A, tail @ 0x41C
+            {
+                let mut kbd_buf = [0u8; 4];
+                corevm_read_phys(handle, 0x041A, kbd_buf.as_mut_ptr(), 4);
+                let head = u16::from_le_bytes([kbd_buf[0], kbd_buf[1]]);
+                let tail = u16::from_le_bytes([kbd_buf[2], kbd_buf[3]]);
+                if head != tail {
+                    eprintln!("[vm-kbd] BDA kbd buf head={:#06x} tail={:#06x} (keys pending!)", head, tail);
+                }
+            }
         }
 
         // Check timeout
@@ -556,6 +618,244 @@ fn main() {
 
     running.store(false, std::sync::atomic::Ordering::Relaxed);
     let runtime = start.elapsed();
+
+    // MMIO address distribution
+    if !mmio_addrs.is_empty() {
+        let mut addrs: Vec<_> = mmio_addrs.iter().collect();
+        addrs.sort_by(|a, b| b.1.cmp(a.1));
+        eprintln!("[vmctl] MMIO address distribution (page-aligned):");
+        for (addr, count) in addrs.iter().take(10) {
+            eprintln!("  {:#010x}: {} accesses", addr, count);
+        }
+    }
+
+    // IO port distribution
+    if !io_ports.is_empty() {
+        let mut ports: Vec<_> = io_ports.iter().collect();
+        ports.sort_by(|a, b| b.1.cmp(a.1));
+        eprintln!("[vmctl] IO port distribution:");
+        for (port, count) in ports.iter().take(50) {
+            eprintln!("  {:#06x}: {} accesses", port, count);
+        }
+    }
+
+    // LAPIC register dump (Linux/KVM only)
+    {
+        let mut lapic = [0u8; 1024];
+        if corevm_get_lapic(handle, 0, lapic.as_mut_ptr()) == 0 {
+            // Key LAPIC registers (offsets from Intel SDM Vol 3A, Table 10-1)
+            let read32 = |off: usize| u32::from_le_bytes([lapic[off], lapic[off+1], lapic[off+2], lapic[off+3]]);
+            let apic_id = read32(0x020);
+            let apic_ver = read32(0x030);
+            let tpr = read32(0x080);
+            let svr = read32(0x0F0);  // Spurious Vector Register
+            let isr0 = read32(0x100);
+            let irr0 = read32(0x200);
+            let esr = read32(0x280);
+            let lvt_timer = read32(0x320);
+            let lvt_lint0 = read32(0x350);
+            let lvt_lint1 = read32(0x360);
+            let timer_init = read32(0x380);
+            let timer_cur = read32(0x390);
+            let timer_div = read32(0x3E0);
+            eprintln!("[lapic] ID={:#x} VER={:#x} TPR={:#x} SVR={:#x}", apic_id, apic_ver, tpr, svr);
+            eprintln!("[lapic] ISR0={:#010x} IRR0={:#010x} ESR={:#x}", isr0, irr0, esr);
+            eprintln!("[lapic] LVT_TIMER={:#010x} LVT_LINT0={:#010x} LVT_LINT1={:#010x}", lvt_timer, lvt_lint0, lvt_lint1);
+            eprintln!("[lapic] TimerInit={} TimerCur={} TimerDiv={:#x}", timer_init, timer_cur, timer_div);
+            // Decode LVT Timer: bit 16=masked, bits 18:17=mode (00=one-shot, 01=periodic, 10=TSC-Deadline)
+            let masked = (lvt_timer >> 16) & 1;
+            let mode = (lvt_timer >> 17) & 3;
+            let vector = lvt_timer & 0xFF;
+            let mode_str = match mode { 0 => "one-shot", 1 => "periodic", 2 => "TSC-deadline", _ => "?" };
+            eprintln!("[lapic] Timer: vector={:#x} mode={} masked={}", vector, mode_str, masked);
+            // SVR: bit 8 = APIC software enable
+            let apic_enabled = (svr >> 8) & 1;
+            eprintln!("[lapic] APIC software enabled={}", apic_enabled);
+            // Full IRR and ISR (8 x 32-bit each)
+            let mut irr_any = false;
+            let mut isr_any = false;
+            for i in 0..8 {
+                let irr = read32(0x200 + i * 0x10);
+                let isr = read32(0x100 + i * 0x10);
+                if irr != 0 { eprintln!("[lapic] IRR[{}]={:#010x}", i, irr); irr_any = true; }
+                if isr != 0 { eprintln!("[lapic] ISR[{}]={:#010x}", i, isr); isr_any = true; }
+            }
+            if !irr_any { eprintln!("[lapic] IRR: all zero (no pending interrupts)"); }
+            if !isr_any { eprintln!("[lapic] ISR: all zero (no in-service interrupts)"); }
+        }
+    }
+    // IOAPIC redirection table dump
+    {
+        let mut ioapic = [0u8; 512];
+        if corevm_get_irqchip(handle, 2, ioapic.as_mut_ptr()) == 0 {
+            // KVM IOAPIC state: base_address(u64), ioregsel(u32), id(u32), irr(u32), pad(u32)
+            // Then 24 redirection entries: each 8 bytes (u64)
+            // Offset of entries: 8 + 4 + 4 + 4 + 4 = 24
+            let read64 = |off: usize| u64::from_le_bytes([
+                ioapic[off], ioapic[off+1], ioapic[off+2], ioapic[off+3],
+                ioapic[off+4], ioapic[off+5], ioapic[off+6], ioapic[off+7]
+            ]);
+            let read32 = |off: usize| u32::from_le_bytes([ioapic[off], ioapic[off+1], ioapic[off+2], ioapic[off+3]]);
+            let base = read64(0);
+            let ioregsel = read32(8);
+            let id = read32(12);
+            let irr = read32(16);
+            eprintln!("[ioapic] base={:#x} ioregsel={:#x} id={:#x} irr={:#010x}", base, ioregsel, id, irr);
+            // Dump first 16 redirection entries
+            for i in 0..16u32 {
+                let entry = read64(24 + i as usize * 8);
+                let vector = entry & 0xFF;
+                let delivery = (entry >> 8) & 7;
+                let dest_mode = (entry >> 11) & 1;
+                let polarity = (entry >> 13) & 1;
+                let trigger = (entry >> 15) & 1;
+                let masked = (entry >> 16) & 1;
+                let dest = (entry >> 56) & 0xFF;
+                if entry != 0x10000 && entry != 0 { // Skip default masked entries
+                    eprintln!("[ioapic] pin {}: vec={:#04x} del={} dest_mode={} pol={} trig={} mask={} dest={}",
+                        i, vector, delivery, dest_mode, polarity, trigger, masked, dest);
+                }
+            }
+        }
+    }
+
+    // RSDP scan: verify ACPI tables are in guest RAM
+    {
+        let rsdp_sig = b"RSD PTR ";
+        let mut rsdp_found = false;
+        // Scan EBDA (first 1KB at segment from BDA[0x40E]) and BIOS ROM area (0xE0000-0xFFFFF)
+        let scan_regions: &[(u64, u64)] = &[
+            (0x9FC00, 0xA0000),      // EBDA (default location)
+            (0xE0000, 0x100000),     // BIOS ROM area
+        ];
+        for &(start, end) in scan_regions {
+            let region_size = (end - start) as usize;
+            let mut buf = vec![0u8; region_size];
+            corevm_read_phys(handle, start, buf.as_mut_ptr(), region_size as u32);
+            // Scan on 16-byte boundaries (RSDP must be 16-byte aligned)
+            let mut off = 0;
+            while off + 8 <= region_size {
+                if &buf[off..off+8] == rsdp_sig {
+                    let phys = start + off as u64;
+                    eprintln!("[acpi] Found RSDP at phys {:#x}", phys);
+                    rsdp_found = true;
+                    if off + 36 <= region_size {
+                        let revision = buf[off + 15];
+                        let rsdt_addr = u32::from_le_bytes([buf[off+16], buf[off+17], buf[off+18], buf[off+19]]);
+                        eprintln!("[acpi] RSDP revision={} RSDT={:#x}", revision, rsdt_addr);
+                        if revision >= 2 && off + 36 <= region_size {
+                            let xsdt_addr = u64::from_le_bytes([
+                                buf[off+24], buf[off+25], buf[off+26], buf[off+27],
+                                buf[off+28], buf[off+29], buf[off+30], buf[off+31]
+                            ]);
+                            eprintln!("[acpi] RSDP XSDT={:#x}", xsdt_addr);
+                            // Try to read XSDT header
+                            if xsdt_addr > 0 && xsdt_addr < args.ram_mb as u64 * 1024 * 1024 {
+                                let mut xsdt_hdr = [0u8; 52];
+                                corevm_read_phys(handle, xsdt_addr, xsdt_hdr.as_mut_ptr(), 52);
+                                let sig = core::str::from_utf8(&xsdt_hdr[0..4]).unwrap_or("????");
+                                let len = u32::from_le_bytes([xsdt_hdr[4], xsdt_hdr[5], xsdt_hdr[6], xsdt_hdr[7]]);
+                                eprintln!("[acpi] XSDT sig='{}' len={}", sig, len);
+                                // Read table pointers from XSDT
+                                let num_entries = (len as usize - 36) / 8;
+                                for i in 0..num_entries.min(8) {
+                                    let off = 36 + i * 8;
+                                    let ptr = u64::from_le_bytes([
+                                        xsdt_hdr[off], xsdt_hdr[off+1], xsdt_hdr[off+2], xsdt_hdr[off+3],
+                                        xsdt_hdr[off+4], xsdt_hdr[off+5], xsdt_hdr[off+6], xsdt_hdr[off+7]
+                                    ]);
+                                    // Read table signature
+                                    if ptr > 0 && ptr < args.ram_mb as u64 * 1024 * 1024 {
+                                        let mut tsig = [0u8; 8];
+                                        corevm_read_phys(handle, ptr, tsig.as_mut_ptr(), 8);
+                                        let s = core::str::from_utf8(&tsig[0..4]).unwrap_or("????");
+                                        let tlen = u32::from_le_bytes([tsig[4], tsig[5], tsig[6], tsig[7]]);
+                                        eprintln!("[acpi] XSDT[{}] -> {:#x} sig='{}' len={}", i, ptr, s, tlen);
+                                    } else {
+                                        eprintln!("[acpi] XSDT[{}] -> {:#x} (out of range)", i, ptr);
+                                    }
+                                }
+                            }
+                        }
+                        if rsdt_addr > 0 && (rsdt_addr as u64) < args.ram_mb as u64 * 1024 * 1024 {
+                            let mut rsdt_hdr = [0u8; 44];
+                            corevm_read_phys(handle, rsdt_addr as u64, rsdt_hdr.as_mut_ptr(), 44);
+                            let sig = core::str::from_utf8(&rsdt_hdr[0..4]).unwrap_or("????");
+                            let len = u32::from_le_bytes([rsdt_hdr[4], rsdt_hdr[5], rsdt_hdr[6], rsdt_hdr[7]]);
+                            eprintln!("[acpi] RSDT sig='{}' len={}", sig, len);
+                        }
+                    }
+                    break;
+                }
+                off += 16; // RSDP is 16-byte aligned
+            }
+            if rsdp_found { break; }
+        }
+        if !rsdp_found {
+            eprintln!("[acpi] WARNING: No RSDP found in EBDA or BIOS ROM area!");
+        }
+    }
+
+    // VGA text screen dump (always, not just with -s flag)
+    {
+        eprintln!("[vga-text] First 10 lines of VGA text buffer:");
+        for row in 0..10usize {
+            let mut vga_row = [0u8; 160];
+            corevm_read_phys(handle, 0xB8000 + (row * 160) as u64, vga_row.as_mut_ptr(), 160);
+            let line: String = (0..80).map(|col| {
+                let ch = vga_row[col * 2];
+                if ch >= 0x20 && ch < 0x7F { ch as char } else { ' ' }
+            }).collect::<String>().trim_end().to_string();
+            if !line.is_empty() {
+                eprintln!("[vga-text] {:2}: {}", row, line);
+            }
+        }
+    }
+
+    // Search for kernel messages in guest RAM
+    {
+        let patterns: &[&[u8]] = &[
+            b"not syncing",
+            b"APIC: ",
+            b"Kernel panic",
+            b"ACPI: ",
+            b"disable_apic",
+        ];
+        let scan_end = (args.ram_mb as u64 * 1024 * 1024).min(64 * 1024 * 1024);
+        let mut page = [0u8; 4096];
+        let mut matches_found = 0u32;
+        let mut addr = 0x100000u64;
+        while addr < scan_end && matches_found < 5 {
+            corevm_read_phys(handle, addr, page.as_mut_ptr(), 4096);
+            for pattern in patterns {
+                if pattern.len() > 4096 { continue; }
+                for i in 0..4096 - pattern.len() {
+                    if &page[i..i + pattern.len()] == *pattern {
+                        let phys = addr + i as u64;
+                        // Read context around the match
+                        let ctx_start = if phys > 256 { phys - 256 } else { 0 };
+                        let mut ctx = vec![0u8; 1024];
+                        corevm_read_phys(handle, ctx_start, ctx.as_mut_ptr(), ctx.len() as u32);
+                        // Extract printable ASCII around the match
+                        let text: String = ctx.iter().filter_map(|&b| {
+                            if b >= 0x20 && b < 0x7F { Some(b as char) }
+                            else if b == b'\n' || b == b'\r' { Some(' ') }
+                            else { None }
+                        }).collect();
+                        let pat_str = core::str::from_utf8(pattern).unwrap_or("?");
+                        eprintln!("[kernel-scan] '{}' at {:#x}: ...{}...",
+                            pat_str, phys, &text[..text.len().min(200)]);
+                        matches_found += 1;
+                        break;
+                    }
+                }
+            }
+            addr += 4096;
+        }
+        if matches_found == 0 {
+            eprintln!("[kernel-scan] No kernel messages found in first {}MB of RAM", scan_end / 1024 / 1024);
+        }
+    }
 
     println!("\n--- END SERIAL OUTPUT ---\n");
 

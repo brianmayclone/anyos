@@ -172,6 +172,8 @@ const KVM_SET_VCPU_EVENTS: u64 = 0x4040_AEA0;
 const KVM_CREATE_IRQCHIP: u64 = 0xAE60;
 const KVM_IRQ_LINE: u64 = 0x4008_AE61;
 const KVM_CREATE_PIT2: u64 = 0x4040_AE77;
+const KVM_GET_LAPIC: u64 = 0x8400_AE8E;
+const KVM_GET_IRQCHIP: u64 = 0xC208_AE62;
 const KVM_GET_SUPPORTED_CPUID: u64 = 0xC008_AE05;
 const KVM_GET_PIT2: u64 = 0x8070_AE9F;
 const KVM_SET_PIT2: u64 = 0x4070_AEA0;
@@ -731,12 +733,8 @@ impl KvmBackend {
                 // Filter CPUID like the Hyper-V backend does:
                 // Hide paravirt features so the guest uses standard hardware paths.
                 if e.function == 1 {
-                    // Remove VMX (bit 5), x2APIC (bit 21), TSC-Deadline (bit 24),
-                    // hypervisor present (bit 31) from ECX
-                    ecx &= !(1 << 5);   // VMX
-                    ecx &= !(1 << 21);  // x2APIC
-                    ecx &= !(1 << 24);  // TSC-Deadline
-                    ecx &= !(1 << 31);  // Hypervisor present
+                    ecx &= !(1 << 5);   // VMX — not useful inside guest
+                    ecx &= !(1 << 31);  // Hypervisor present — hide KVM
                 }
 
                 // Zero out entire paravirt CPUID range (0x40000000 - 0x4000FFFF)
@@ -908,6 +906,29 @@ impl KvmBackend {
             }
         }
         None
+    }
+
+    /// Read the in-kernel LAPIC register page (1024 bytes) for a vCPU.
+    pub fn get_lapic(&self, vcpu_idx: u32) -> Result<[u8; 1024], VmError> {
+        let vcpu = self.vcpus.get(vcpu_idx as usize)
+            .and_then(|v| v.as_ref())
+            .ok_or(VmError::BackendError(-1))?;
+        let mut regs = [0u8; 1024];
+        let ret = unsafe { sys_ioctl(vcpu.fd, KVM_GET_LAPIC, regs.as_mut_ptr() as u64) };
+        if ret < 0 { return Err(VmError::BackendError(ret as i32)); }
+        Ok(regs)
+    }
+
+    /// Read the in-kernel irqchip state.
+    /// chip_id: 0=PIC master, 1=PIC slave, 2=IOAPIC.
+    /// Returns up to 512 bytes of chip-specific state.
+    pub fn get_irqchip(&self, chip_id: u32) -> Result<Vec<u8>, VmError> {
+        // kvm_irqchip: u32 chip_id, u32 pad, then 512 bytes of data
+        let mut buf = vec![0u8; 4 + 4 + 512];
+        buf[0..4].copy_from_slice(&chip_id.to_le_bytes());
+        let ret = unsafe { sys_ioctl(self.vm_fd, KVM_GET_IRQCHIP, buf.as_mut_ptr() as u64) };
+        if ret < 0 { return Err(VmError::BackendError(ret as i32)); }
+        Ok(buf[8..].to_vec()) // skip chip_id + pad
     }
 
     /// Assert or deassert an IRQ line on the in-kernel irqchip.

@@ -58,6 +58,14 @@ fn build_rsdp() -> Vec<u8> {
     r
 }
 
+/// Build RSDT with 32-bit pointers to FADT and MADT (36 + 2*4 = 44 bytes).
+fn build_rsdt() -> Vec<u8> {
+    let mut t = vec![0u8; 44];
+    write_acpi_header(&mut t, 0, b"RSDT", 44, 1);
+    // [36..40] FADT pointer (u32), [40..44] MADT pointer (u32) — patched by loader
+    t
+}
+
 /// Build XSDT with 64-bit pointers to FADT and MADT (36 + 2*8 = 52 bytes).
 fn build_xsdt() -> Vec<u8> {
     let mut t = vec![0u8; 52];
@@ -133,41 +141,249 @@ fn build_facs() -> Vec<u8> {
     t
 }
 
+/// Build AML for a simple ISA device: Name(_HID, EisaId(id))
+/// Plus _CRS resource template with I/O range and IRQ.
+fn aml_isa_device(name: &[u8; 4], eisa_id: [u8; 4], io_min: u16, io_len: u8, irq: Option<u8>) -> Vec<u8> {
+    let mut dev = Vec::new();
+    // Name(_HID, EisaId(...))
+    dev.extend_from_slice(&[0x08]); // NameOp
+    dev.extend_from_slice(b"_HID");
+    dev.extend_from_slice(&[0x0C]); // DWordPrefix
+    dev.extend_from_slice(&eisa_id);
+
+    // _CRS resource template
+    let mut crs_body = Vec::new();
+    // I/O descriptor (small): tag=0x47, length=7
+    crs_body.extend_from_slice(&[0x47, 0x01]); // I/O port descriptor, decode 16-bit
+    crs_body.extend_from_slice(&io_min.to_le_bytes()); // _MIN
+    crs_body.extend_from_slice(&io_min.to_le_bytes()); // _MAX
+    crs_body.push(0x01); // _ALN (alignment)
+    crs_body.push(io_len); // _LEN
+    // IRQ descriptor (small): tag=0x22/0x23, length=2
+    if let Some(irq_num) = irq {
+        let irq_mask: u16 = 1 << irq_num;
+        crs_body.push(0x22); // IRQ descriptor
+        crs_body.extend_from_slice(&irq_mask.to_le_bytes());
+    }
+    // End tag
+    crs_body.extend_from_slice(&[0x79, 0x00]);
+
+    // Name(_CRS, ResourceTemplate() { ... })
+    dev.extend_from_slice(&[0x08]); // NameOp
+    dev.extend_from_slice(b"_CRS");
+    // Buffer: BufferOp(0x11) PkgLength BufferSize data
+    // body after PkgLength = BytePrefix(1) + size(1) + crs_body
+    let buf_body_len = 2 + crs_body.len();
+    dev.push(0x11); // BufferOp
+    aml_push_pkg_len(&mut dev, buf_body_len);
+    dev.push(0x0A); // BytePrefix
+    dev.push(crs_body.len() as u8);
+    dev.extend_from_slice(&crs_body);
+
+    // Wrap in Device(name): DeviceOp(5B 82) PkgLength NameSeg body
+    // body after PkgLength = name(4) + dev contents
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0x5B, 0x82]); // DeviceOp
+    let dev_body_len = 4 + dev.len();
+    aml_push_pkg_len(&mut out, dev_body_len);
+    out.extend_from_slice(name);
+    out.extend_from_slice(&dev);
+    out
+}
+
+/// Compute the number of bytes needed for a PkgLength field that encodes
+/// a total length (= PkgLength bytes + body bytes).  `body_len` is the size
+/// of everything that comes *after* the PkgLength field.
+fn aml_pkg_len_size(body_len: usize) -> usize {
+    // Try each encoding width; the total includes the PkgLength field itself.
+    if body_len + 1 < 0x40 { return 1; }
+    if body_len + 2 < 0x1000 { return 2; }
+    if body_len + 3 < 0x100000 { return 3; }
+    4
+}
+
+/// Push an AML PkgLength encoding for a block whose body (everything after
+/// PkgLength) is `body_len` bytes.
+fn aml_push_pkg_len(buf: &mut Vec<u8>, body_len: usize) {
+    let n = aml_pkg_len_size(body_len);
+    let total = body_len + n;
+    match n {
+        1 => {
+            buf.push(total as u8);
+        }
+        2 => {
+            buf.push(0x40 | (total & 0x0F) as u8);
+            buf.push((total >> 4) as u8);
+        }
+        3 => {
+            buf.push(0x80 | (total & 0x0F) as u8);
+            buf.push((total >> 4) as u8);
+            buf.push((total >> 12) as u8);
+        }
+        _ => {
+            buf.push(0xC0 | (total & 0x0F) as u8);
+            buf.push((total >> 4) as u8);
+            buf.push((total >> 12) as u8);
+            buf.push((total >> 20) as u8);
+        }
+    }
+}
+
+/// EISA ID encoding: 3-char compressed + 4-hex product ID
+/// E.g., "PNP0A03" → [0x41, 0xD0, 0x0A, 0x03]
+fn eisa_id(s: &str) -> [u8; 4] {
+    let b = s.as_bytes();
+    let c1 = (b[0] - b'@') & 0x1F;
+    let c2 = (b[1] - b'@') & 0x1F;
+    let c3 = (b[2] - b'@') & 0x1F;
+    let prod = u16::from_str_radix(&s[3..7], 16).unwrap_or(0);
+    [
+        (c1 << 2) | (c2 >> 3),
+        (c2 << 5) | c3,
+        (prod >> 8) as u8,
+        prod as u8,
+    ]
+}
+
 fn build_dsdt() -> Vec<u8> {
-    // Minimal AML: Scope(\_SB_) { Device(PCI0) { _HID=PNP0A03, _UID=0, _BBN=0 } }
-    // Windows ACPI driver requires at least a PCI root device in the DSDT.
-    #[rustfmt::skip]
-    let aml: &[u8] = &[
-        // Scope(\_SB_)
-        0x10,                               // ScopeOp
-        35,                                  // PkgLength
-        0x5C, 0x5F, 0x53, 0x42, 0x5F,      // NameString: \_SB_
-        // Device(PCI0)
-        0x5B, 0x82,                          // ExtOpPrefix + DeviceOp
-        27,                                  // PkgLength
-        0x50, 0x43, 0x49, 0x30,             // NameSeg: PCI0
-        // Name(_HID, EisaId("PNP0A03"))
-        0x08,                                // NameOp
-        0x5F, 0x48, 0x49, 0x44,             // "_HID"
-        0x0C,                                // DWordPrefix
-        0x41, 0xD0, 0x0A, 0x03,             // EISA ID for PNP0A03
-        // Name(_UID, 0)
-        0x08,                                // NameOp
-        0x5F, 0x55, 0x49, 0x44,             // "_UID"
-        0x00,                                // ZeroOp
-        // Name(_BBN, 0)
-        0x08,                                // NameOp
-        0x5F, 0x42, 0x42, 0x4E, 0x00,       // "_BBN" + ZeroOp
-    ];
+    // Build comprehensive DSDT with ISA devices and PCI interrupt routing.
+    // Devices:
+    //   \_SB_.PCI0       PNP0A03  PCI root bridge
+    //   \_SB_.PCI0.ISA_  PNP0A00  ISA bridge (under PCI bus)
+    //   \_SB_.PCI0.ISA_.KBD  PNP0303  PS/2 keyboard (IRQ 1)
+    //   \_SB_.PCI0.ISA_.MOU  PNP0F13  PS/2 mouse (IRQ 12)
+    //   \_SB_.PCI0.ISA_.COM1 PNP0501  Serial port COM1 (IRQ 4)
+    //   \_SB_.PCI0.ISA_.RTC0 PNP0B00  RTC/CMOS (IRQ 8)
+    //   \_SB_.PCI0.ISA_.TIMR PNP0100  System timer (IRQ 0)
+    //   \_SB_.PCI0.ISA_.SPKR PNP0800  Speaker
+    //   \_SB_.PCI0._PRT  PCI interrupt routing table
+
+    let mut aml = Vec::new();
+
+    // ── Build \_SB_ scope contents ──
+
+    // Build ISA device children
+    let kbd  = aml_isa_device(b"KBD_", eisa_id("PNP0303"), 0x0060, 1, Some(1));
+    let mou  = aml_isa_device(b"MOU_", eisa_id("PNP0F13"), 0x0060, 1, Some(12));
+    let com1 = aml_isa_device(b"COM1", eisa_id("PNP0501"), 0x03F8, 8, Some(4));
+    let rtc  = aml_isa_device(b"RTC0", eisa_id("PNP0B00"), 0x0070, 2, Some(8));
+    let timr = aml_isa_device(b"TIMR", eisa_id("PNP0100"), 0x0040, 4, Some(0));
+    let spkr = aml_isa_device(b"SPKR", eisa_id("PNP0800"), 0x0061, 1, None);
+
+    // ISA bridge device (contains all ISA children)
+    let mut isa_inner = Vec::new();
+    // Name(_HID, EisaId("PNP0A00"))
+    isa_inner.extend_from_slice(&[0x08]); // NameOp
+    isa_inner.extend_from_slice(b"_HID");
+    isa_inner.extend_from_slice(&[0x0C]); // DWordPrefix
+    isa_inner.extend_from_slice(&eisa_id("PNP0A00"));
+    isa_inner.extend_from_slice(&kbd);
+    isa_inner.extend_from_slice(&mou);
+    isa_inner.extend_from_slice(&com1);
+    isa_inner.extend_from_slice(&rtc);
+    isa_inner.extend_from_slice(&timr);
+    isa_inner.extend_from_slice(&spkr);
+
+    let mut isa_dev = Vec::new();
+    isa_dev.extend_from_slice(&[0x5B, 0x82]); // DeviceOp
+    let isa_body_len = 4 + isa_inner.len();
+    aml_push_pkg_len(&mut isa_dev, isa_body_len);
+    isa_dev.extend_from_slice(b"ISA_");
+    isa_dev.extend_from_slice(&isa_inner);
+
+    // PCI0 interrupt routing table _PRT
+    // Maps PCI device pins to IOAPIC GSI numbers.
+    // Our PCI topology:
+    //   00:00.0 = i440FX host bridge
+    //   00:01.0 = PIIX3 ISA bridge
+    //   00:02.0 = VGA (doesn't use IRQ)
+    //   00:03.0 = AHCI (IRQ 11)
+    //
+    // _PRT format: Package { Package { address, pin, source, source_index } ... }
+    // With IOAPIC, source=0 and source_index=GSI number.
+    let mut prt = Vec::new();
+
+    // Helper: one _PRT entry: Package(4) { DWord addr, Byte pin, Zero, Byte gsi }
+    fn prt_entry(buf: &mut Vec<u8>, dev: u32, pin: u8, gsi: u8) {
+        buf.push(0x12); // PackageOp
+        // Body after PkgLength: NumElements(1) + DWordPrefix(1) + DWord(4) +
+        //   BytePrefix(1) + pin(1) + Zero(1) + BytePrefix(1) + gsi(1) = 11
+        buf.push(12);   // PkgLength (= 1 + 11 body bytes)
+        buf.push(4);    // NumElements
+        // Address (u64 encoded as DWord high + DWord low... actually just 32-bit)
+        buf.push(0x0C); // DWordPrefix
+        buf.extend_from_slice(&((dev << 16) as u32 | 0xFFFF).to_le_bytes());
+        buf.push(0x0A); buf.push(pin);  // BytePrefix + pin
+        buf.push(0x00); // Zero (source name = none, use GSI)
+        buf.push(0x0A); buf.push(gsi);  // BytePrefix + GSI
+    }
+
+    // AHCI at dev 3, INTA → GSI 11
+    prt_entry(&mut prt, 3, 0, 11);
+    // Also add dev 3 INTB/C/D for completeness
+    prt_entry(&mut prt, 3, 1, 11);
+    prt_entry(&mut prt, 3, 2, 11);
+    prt_entry(&mut prt, 3, 3, 11);
+
+    // Wrap in Package: PackageOp PkgLength NumElements entries...
+    let mut prt_pkg = Vec::new();
+    prt_pkg.push(0x12); // PackageOp
+    let prt_body_len = 1 + prt.len(); // numElements + entries
+    aml_push_pkg_len(&mut prt_pkg, prt_body_len);
+    prt_pkg.push(4); // NumElements = 4 entries
+    prt_pkg.extend_from_slice(&prt);
+
+    // Name(_PRT, Package() { ... })
+    let mut prt_name = Vec::new();
+    prt_name.push(0x08); // NameOp
+    prt_name.extend_from_slice(b"_PRT");
+    prt_name.extend_from_slice(&prt_pkg);
+
+    // PCI0 device
+    let mut pci0_inner = Vec::new();
+    // Name(_HID, EisaId("PNP0A03"))
+    pci0_inner.extend_from_slice(&[0x08]); // NameOp
+    pci0_inner.extend_from_slice(b"_HID");
+    pci0_inner.extend_from_slice(&[0x0C, 0x41, 0xD0, 0x0A, 0x03]);
+    // Name(_UID, 0)
+    pci0_inner.extend_from_slice(&[0x08]); // NameOp
+    pci0_inner.extend_from_slice(b"_UID");
+    pci0_inner.push(0x00);
+    // Name(_BBN, 0)
+    pci0_inner.extend_from_slice(&[0x08]); // NameOp
+    pci0_inner.extend_from_slice(b"_BBN");
+    pci0_inner.push(0x00);
+    // _PRT
+    pci0_inner.extend_from_slice(&prt_name);
+    // ISA bridge
+    pci0_inner.extend_from_slice(&isa_dev);
+
+    let mut pci0_dev = Vec::new();
+    pci0_dev.extend_from_slice(&[0x5B, 0x82]); // DeviceOp
+    let pci0_body_len = 4 + pci0_inner.len();
+    aml_push_pkg_len(&mut pci0_dev, pci0_body_len);
+    pci0_dev.extend_from_slice(b"PCI0");
+    pci0_dev.extend_from_slice(&pci0_inner);
+
+    // Scope(\_SB_) { PCI0 device }
+    let mut scope = Vec::new();
+    scope.push(0x10); // ScopeOp
+    let scope_body_len = 5 + pci0_dev.len(); // \_SB_ name (5 bytes: \ _SB_) + devices
+    aml_push_pkg_len(&mut scope, scope_body_len);
+    scope.extend_from_slice(&[0x5C, 0x5F, 0x53, 0x42, 0x5F]); // \_SB_
+    scope.extend_from_slice(&pci0_dev);
+
+    aml.extend_from_slice(&scope);
+
     let total_len = 36 + aml.len();
     let mut t = vec![0u8; total_len];
     write_acpi_header(&mut t, 0, b"DSDT", total_len as u32, 2);
-    t[36..].copy_from_slice(aml);
+    t[36..].copy_from_slice(&aml);
     t
 }
 
 fn build_madt() -> Vec<u8> {
-    let len: u32 = 114;
+    let len: u32 = 104; // header(44) + local_apic(8) + ioapic(12) + 4*override(40)
     let mut t = vec![0u8; len as usize];
     write_acpi_header(&mut t, 0, b"APIC", len, 3);
     // Local APIC address
@@ -193,8 +409,11 @@ fn build_madt() -> Vec<u8> {
     off += 12;
 
     // Interrupt Source Overrides (type=2, len=10)
+    // Note: IRQ 0 → GSI 2 override deliberately omitted.
+    // KVM's in-kernel PIT delivers timer interrupts at GSI 0 (IRQ 0).
+    // With the override, Linux would configure IOAPIC pin 2 for timer
+    // but KVM delivers on pin 0, causing timer interrupts to be lost.
     let overrides: &[(u8, u32, u16)] = &[
-        (0, 2, 0x0000),
         (5, 5, 0x000D),
         (9, 9, 0x000D),
         (10, 10, 0x000D),
@@ -257,22 +476,33 @@ pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let tables_file = make_name(TABLES_NAME);
     let rsdp_file = make_name(RSDP_NAME);
 
-    let rsdp = build_rsdp();
+    let mut rsdp = build_rsdp();
 
+    let rsdt = build_rsdt();
     let xsdt = build_xsdt();
     let fadt = build_fadt();
     let facs = build_facs();
     let dsdt = build_dsdt();
     let madt = build_madt();
 
-    let xsdt_off: u32 = 0;
-    let fadt_off = xsdt.len() as u32;
+    // Layout: RSDT | XSDT | FADT | FACS | DSDT | MADT
+    let rsdt_off: u32 = 0;
+    let xsdt_off = rsdt.len() as u32;
+
+    // Pre-fill RSDP pointer fields with intra-buffer offsets.
+    // The loader ADD_POINTER will add the tables base address to these.
+    // RSDP[16..20] = RSDT offset within tables buffer
+    rsdp[16..20].copy_from_slice(&rsdt_off.to_le_bytes());
+    // RSDP[24..32] = XSDT offset within tables buffer
+    rsdp[24..32].copy_from_slice(&(xsdt_off as u64).to_le_bytes());
+    let fadt_off = xsdt_off + xsdt.len() as u32;
     let facs_off = fadt_off + fadt.len() as u32;
     let dsdt_off = facs_off + facs.len() as u32;
     let madt_off = dsdt_off + dsdt.len() as u32;
     let madt_len = madt.len() as u32;
 
     let mut tables = Vec::with_capacity((madt_off + madt_len) as usize);
+    tables.extend_from_slice(&rsdt);
     tables.extend_from_slice(&xsdt);
     tables.extend_from_slice(&fadt);
     tables.extend_from_slice(&facs);
@@ -282,6 +512,10 @@ pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     // Pre-fill pointer fields with intra-buffer offsets.
     // ADD_POINTER adds the allocated base address of src to the value at dest[offset].
 
+    // RSDT -> FADT (u32 at offset 36)
+    write_u32(&mut tables, (rsdt_off + 36) as usize, fadt_off);
+    // RSDT -> MADT (u32 at offset 40)
+    write_u32(&mut tables, (rsdt_off + 40) as usize, madt_off);
     // XSDT -> FADT (u64 at offset 36)
     write_u64(&mut tables, (xsdt_off + 36) as usize, fadt_off as u64);
     // XSDT -> MADT (u64 at offset 44)
@@ -302,11 +536,12 @@ pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     emit(loader_allocate(&tables_file, 64, 1));
     emit(loader_allocate(&rsdp_file, 16, 2));
 
-    // 2. RSDP -> XSDT pointer (u64 at offset 24)
+    // 2. RSDP -> RSDT pointer (u32 at offset 16) and XSDT pointer (u64 at offset 24)
+    emit(loader_add_pointer(&rsdp_file, &tables_file, 16, 4));
     emit(loader_add_pointer(&rsdp_file, &tables_file, 24, 8));
-    // RSDP v1 checksum (bytes 0..20)
+    // RSDP v1 checksum (bytes 0..20) — covers RSDT pointer
     emit(loader_add_checksum(&rsdp_file, 8, 0, 20));
-    // RSDP v2 extended checksum (bytes 0..36)
+    // RSDP v2 extended checksum (bytes 0..36) — covers XSDT pointer
     emit(loader_add_checksum(&rsdp_file, 32, 0, 36));
 
     // 3. FADT -> FACS (u32), FADT -> DSDT (u32), FADT -> X_FIRMWARE_CTRL (u64), FADT -> X_DSDT (u64)
@@ -316,12 +551,17 @@ pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     emit(loader_add_pointer(&tables_file, &tables_file, fadt_off + 140, 8));
     emit(loader_add_checksum(&tables_file, fadt_off + 9, fadt_off, 244));
 
-    // 4. XSDT -> FADT, XSDT -> MADT (u64 pointers)
+    // 4. RSDT -> FADT, RSDT -> MADT (u32 pointers)
+    emit(loader_add_pointer(&tables_file, &tables_file, rsdt_off + 36, 4));
+    emit(loader_add_pointer(&tables_file, &tables_file, rsdt_off + 40, 4));
+    emit(loader_add_checksum(&tables_file, rsdt_off + 9, rsdt_off, 44));
+
+    // 5. XSDT -> FADT, XSDT -> MADT (u64 pointers)
     emit(loader_add_pointer(&tables_file, &tables_file, xsdt_off + 36, 8));
     emit(loader_add_pointer(&tables_file, &tables_file, xsdt_off + 44, 8));
     emit(loader_add_checksum(&tables_file, xsdt_off + 9, xsdt_off, 52));
 
-    // 5. DSDT and MADT checksums
+    // 6. DSDT and MADT checksums
     let dsdt_len = dsdt.len() as u32;
     emit(loader_add_checksum(&tables_file, dsdt_off + 9, dsdt_off, dsdt_len));
     emit(loader_add_checksum(&tables_file, madt_off + 9, madt_off, madt_len));
