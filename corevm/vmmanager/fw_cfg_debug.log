@@ -526,3 +526,7 @@
 [fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
 [fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
 [fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001

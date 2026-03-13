@@ -23,7 +23,6 @@ use libcorevm::ffi::{
     corevm_pit_advance, corevm_pit_debug, corevm_cmos_advance, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu, corevm_lapic_timer_advance, corevm_lapic_debug,
     corevm_read_phys, corevm_debug_port_take_output,
     corevm_fw_cfg_add_file, corevm_set_memory_region,
-    corevm_complete_string_io,
 };
 use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
 
