@@ -57,6 +57,7 @@ Stage 2 is a modular NASM bootloader (~32 KB) that handles hardware setup, confi
 | `menu.asm` | Interactive boot menu UI with keyboard navigation |
 | `font.asm` | 8x16 bitmap font renderer for VESA framebuffer |
 | `chainload.asm` | Entry dispatch, chainload sequence, custom boot parameter input |
+| `exfat.asm` | Minimal read-only exFAT driver (init, directory search, file read) |
 
 ### Boot Flow
 
@@ -69,7 +70,13 @@ Stage 2 (0x8000)
     ├── Query E820 memory map
     ├── Enter unreal mode (32-bit addressing in real mode)
     ├── Set VESA VBE graphics mode (32bpp)
-    ├── Load boot logo (0x20000), font (0x28000), config (0x30000)
+    ├── Detect boot medium (CD-ROM vs HDD)
+    │     ├── HDD path (exFAT):
+    │     │     ├── exfat_init → mount exFAT filesystem at sector 128+
+    │     │     └── Load /System/krnl64, /boot/boot.cfg, /boot/logo.bin,
+    │     │           /boot/font.bin from exFAT
+    │     └── CD-ROM path (raw sectors, legacy):
+    │           └── Load files from patched sector LBAs (El Torito layout)
     ├── Parse boot.cfg
     ├── Display splash screen (timeout countdown)
     │     └── Press Escape → open boot menu
@@ -92,7 +99,7 @@ Stage 2 (0x8000)
 
 ## Boot Configuration (boot.cfg)
 
-The bootloader reads an INI-style configuration file from `/System/boot.cfg` on the boot disk. The file is loaded into memory at `0x30000` (max 8 KB).
+The bootloader reads an INI-style configuration file from `/boot/boot.cfg` on the boot disk (HDD exFAT path). For CD-ROM/ISO boot, the configuration is loaded from a patched raw sector LBA using the legacy sector-based loading path. The file is loaded into memory at `0x30000` (max 8 KB).
 
 ### Global Options
 
@@ -271,6 +278,19 @@ The bootloader passes a `BootInfo` structure at physical address `0x9000` to the
 0x100000+        Kernel binary (loaded here for long mode jump)
 ```
 
+### Disk Sector Layout
+
+**HDD (exFAT):**
+```
+Sector 0:        MBR (Stage 1)
+Sectors 1-63:    Stage 2 (~7.5 KB)
+Sectors 64-127:  Reserved
+Sector 128+:     exFAT filesystem (kernel, boot assets, configuration)
+```
+
+**ISO/CD-ROM (legacy raw-sector layout):**
+The ISO boot path does not use exFAT. Boot assets (logo, font, config) are embedded at fixed patched sector LBAs within the El Torito load image, as in previous releases.
+
 ---
 
 ## Source Files
@@ -291,9 +311,10 @@ bootloader/
     menu.asm              Interactive boot menu UI
     font.asm              8x16 bitmap font renderer
     chainload.asm         Entry dispatch, chainload, custom params input
+    exfat.asm             Minimal read-only exFAT driver (HDD boot only)
   uefi/
     Cargo.toml            Rust UEFI bootloader crate
     src/main.rs           UEFI kernel loader
 ```
 
-The boot configuration file is located at `sysroot/System/boot.cfg` and is installed to `/System/boot.cfg` on the boot disk.
+The boot configuration file is located at `sysroot/boot/boot.cfg` and is installed to `/boot/boot.cfg` on the HDD exFAT partition. For ISO/CD-ROM boot, the legacy raw-sector path is used instead.
