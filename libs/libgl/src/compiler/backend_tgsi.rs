@@ -55,6 +55,8 @@ struct TgsiCtx<'a> {
     num_temps: u32,
     /// Number of CONST registers (uniform slots).
     num_consts: u32,
+    /// Maps IR register → sampler unit index for TexSample.
+    sampler_map: Vec<u32>,
 }
 
 impl<'a> TgsiCtx<'a> {
@@ -84,11 +86,33 @@ impl<'a> TgsiCtx<'a> {
             }
         }
 
-        // Count uniform CONST slots
-        let mut num_consts = 0u32;
-        for u in &prog.uniforms {
-            let slots = if u.components == 16 { 4 } else if u.components == 9 { 3 } else { 1 };
-            num_consts += slots;
+        // Find the actual max CONST index referenced by LoadUniform instructions
+        let mut max_const_idx = 0u32;
+        let mut has_const = false;
+        for inst in &prog.instructions {
+            if let Inst::LoadUniform(_, idx) = inst {
+                has_const = true;
+                if *idx >= max_const_idx {
+                    max_const_idx = *idx;
+                }
+            }
+        }
+        let num_consts = if has_const { max_const_idx + 1 } else { 0 };
+
+        // Build sampler register → unit mapping from TexSample instructions
+        let mut sampler_map = Vec::new();
+        sampler_map.resize(prog.num_regs as usize, 0u32);
+        let mut next_samp = 0u32;
+        for inst in &prog.instructions {
+            if let Inst::TexSample(_, samp_reg, _) = inst {
+                if sampler_map[*samp_reg as usize] == 0 && next_samp == 0 {
+                    // First sampler gets unit 0
+                    next_samp = 1;
+                } else if sampler_map[*samp_reg as usize] == 0 {
+                    sampler_map[*samp_reg as usize] = next_samp;
+                    next_samp += 1;
+                }
+            }
         }
 
         Self {
@@ -101,6 +125,7 @@ impl<'a> TgsiCtx<'a> {
             imm_map,
             num_temps: prog.num_regs,
             num_consts,
+            sampler_map,
         }
     }
 
@@ -162,8 +187,7 @@ impl<'a> TgsiCtx<'a> {
 
     fn emit_immediates(&mut self) {
         for imm in &self.immediates {
-            let _ = write!(self.out, "IMM[{}] FLT32 {{ {}, {}, {}, {} }}\n",
-                self.immediates.iter().position(|v| core::ptr::eq(v, imm)).unwrap_or(0),
+            let _ = write!(self.out, "IMM FLT32 {{ {}, {}, {}, {} }}\n",
                 FmtFloat(imm[0]), FmtFloat(imm[1]),
                 FmtFloat(imm[2]), FmtFloat(imm[3]));
         }
@@ -359,13 +383,12 @@ impl<'a> TgsiCtx<'a> {
             }
 
             Inst::TexSample(d, sampler, coord) => {
-                // TEX dst, coord, SAMP[n], 2D
-                // sampler reg index = sampler unit
+                // TEX dst, coord, SAMP[unit], 2D
                 let dst = self.dst(*d);
                 let coord_s = self.src(*coord);
-                // The sampler register value is the texture unit index
+                let unit = self.sampler_map.get(*sampler as usize).copied().unwrap_or(0);
                 let mut line = String::new();
-                let _ = write!(line, "TEX {}, {}, SAMP[{}], 2D", dst, coord_s, sampler);
+                let _ = write!(line, "TEX {}, {}, SAMP[{}], 2D", dst, coord_s, unit);
                 self.emit(&line);
             }
 

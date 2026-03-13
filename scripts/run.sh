@@ -183,7 +183,7 @@ for arg in "$@"; do
                 fi
             fi
             if [ -z "$USB_FLAGS" ]; then
-                USB_FLAGS="-usb -device usb-tablet"
+                USB_FLAGS="-usb -device usb-kbd -device usb-tablet"
             fi
             ;;
         --ide)
@@ -576,7 +576,7 @@ if [ "$VGA" = "virgl" ]; then
     RES_W="${RESOLUTION%%x*}"
     RES_H="${RESOLUTION#*x}"
     VGA_FLAGS="-vga none -device virtio-vga-gl,edid=on,xres=$RES_W,yres=$RES_H"
-    DISPLAY_FLAGS="-display gtk,gl=on,grab-on-hover=on"
+    DISPLAY_FLAGS="-display sdl,gl=on"
     VGA_LABEL="Virtio GPU + virgl (${RES_W}x${RES_H}, 3D)"
     RES_LABEL=", res: ${RESOLUTION}"
 elif [ "$VGA" = "virtio" ]; then
