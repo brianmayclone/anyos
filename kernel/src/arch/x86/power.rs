@@ -266,6 +266,17 @@ fn init_intel_legacy_pstate() {
 
 fn init_amd_pstates() {
     unsafe {
+        // Under a hypervisor (KVM, etc.) the AMD P-state MSRs are typically
+        // not accessible and RDMSR will #GP.  Fall back to TSC.
+        let (_, _, ecx1, _) = crate::arch::x86::cpuid::cpuid(1, 0);
+        if ecx1 & (1 << 31) != 0 {
+            let tsc_mhz = (crate::arch::x86::pit::tsc_hz() / 1_000_000) as u32;
+            MAX_FREQ_MHZ.store(tsc_mhz, Ordering::Relaxed);
+            BASE_FREQ_MHZ.store(tsc_mhz, Ordering::Relaxed);
+            crate::serial_verbose_println!("  AMD: hypervisor detected, using TSC={}MHz", tsc_mhz);
+            return;
+        }
+
         // Read P-state 0 definition (highest performance)
         let pstate0 = rdmsr(MSR_AMD_PSTATE_DEF_BASE);
         if pstate0 & (1 << 63) != 0 {
@@ -295,6 +306,11 @@ fn amd_pstate_frequency(pstate: u64) -> u32 {
 
 fn amd_current_frequency() -> u32 {
     unsafe {
+        // Under a hypervisor these MSRs are not available
+        let (_, _, ecx1, _) = crate::arch::x86::cpuid::cpuid(1, 0);
+        if ecx1 & (1 << 31) != 0 {
+            return BASE_FREQ_MHZ.load(Ordering::Relaxed);
+        }
         let status = rdmsr(MSR_AMD_PSTATE_STATUS);
         let cur_pstate = (status & 0x7) as u32;
         let pstate_def = rdmsr(MSR_AMD_PSTATE_DEF_BASE + cur_pstate);
