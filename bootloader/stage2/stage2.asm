@@ -147,10 +147,8 @@ stage2_entry:
 .boot_default:
     movzx ax, byte [cfg_default]
 .execute:
-    SERIAL_OUT 'E'           ; execute_entry
-    ; AL = entry index to boot
-    movzx bx, al               ; execute_entry expects BX = entry index
-    call execute_entry
+    ; Save selected entry index
+    push ax
 
     SERIAL_OUT '9'           ; Step 9: load kernel
 
@@ -159,8 +157,15 @@ stage2_entry:
 
     SERIAL_OUT 'B'           ; Step 10: boot info
 
-    ; Step 10: Fill BootInfo structure
+    ; Step 10: Fill BootInfo structure (zeros boot_params)
     call fill_boot_info
+
+    SERIAL_OUT 'E'           ; execute_entry (writes params AFTER fill_boot_info)
+
+    ; Step 10b: Execute entry — copies params to BootInfo AFTER zeroing
+    pop ax
+    movzx bx, al               ; execute_entry expects BX = entry index
+    call execute_entry
 
     SERIAL_OUT 'P'           ; Step 11: protected mode
 
