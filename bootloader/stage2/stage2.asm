@@ -289,4 +289,5 @@ fill_boot_info:
 %include "splash.asm"
 %include "menu.asm"
 %include "chainload.asm"
+%include "exfat.asm"
 %include "protected_mode.asm"
