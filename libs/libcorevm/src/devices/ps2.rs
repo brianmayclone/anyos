@@ -40,7 +40,9 @@ pub struct Ps2Controller {
     pub mouse_enabled: bool,
     /// Whether the keyboard port is enabled.
     pub keyboard_enabled: bool,
-    /// Active scancode set (1, 2, or 3). Defaults to scancode set 2.
+    /// Active scancode set (1, 2, or 3). Defaults to scancode set 1.
+    /// We default to set 1 because the external API (key_press/key_release)
+    /// receives set-1 scancodes from the host input layer.
     pub scancode_set: u8,
     /// Buffered mouse data packets.
     pub mouse_buffer: VecDeque<u8>,
@@ -77,7 +79,7 @@ impl Ps2Controller {
             expecting_data: None,
             mouse_enabled: false,
             keyboard_enabled: true,
-            scancode_set: 2,
+            scancode_set: 1,
             mouse_buffer: VecDeque::new(),
             keyboard_buffer: VecDeque::new(),
             write_to_mouse: false,
@@ -91,8 +93,8 @@ impl Ps2Controller {
 
     /// Enqueue a keyboard make (press) scancode.
     ///
-    /// The scancode is pushed into the keyboard buffer and will be
-    /// delivered to the guest on the next read from port 0x60.
+    /// The caller provides a scancode set 1 make code. This is always
+    /// injected as-is because the host input layer uses set 1.
     pub fn key_press(&mut self, scancode: u8) {
         if self.keyboard_enabled {
             self.keyboard_buffer.push_back(scancode);
@@ -102,17 +104,13 @@ impl Ps2Controller {
 
     /// Enqueue a keyboard break (release) scancode.
     ///
-    /// For scancode set 2, the break code is the two-byte sequence
-    /// `0xF0, scancode`. For set 1, the break code is `scancode | 0x80`.
+    /// The caller provides a scancode set 1 make code. The break code
+    /// is always `scancode | 0x80` (set 1 format), regardless of the
+    /// guest-selected scancode set, because the host input layer
+    /// provides set 1 scancodes exclusively.
     pub fn key_release(&mut self, scancode: u8) {
         if self.keyboard_enabled {
-            if self.scancode_set == 1 {
-                self.keyboard_buffer.push_back(scancode | 0x80);
-            } else {
-                // Scancode set 2 (and 3): break prefix + make code.
-                self.keyboard_buffer.push_back(0xF0);
-                self.keyboard_buffer.push_back(scancode);
-            }
+            self.keyboard_buffer.push_back(scancode | 0x80);
             self.update_output_buffer();
         }
     }
@@ -262,14 +260,14 @@ impl Ps2Controller {
             }
             0xF6 => {
                 // Set default parameters.
-                self.scancode_set = 2;
+                self.scancode_set = 1;
                 self.keyboard_buffer.push_back(0xFA);
             }
             0xFF => {
                 // Reset keyboard.
                 self.keyboard_buffer.push_back(0xFA); // ACK
                 self.keyboard_buffer.push_back(0xAA); // self-test passed
-                self.scancode_set = 2;
+                self.scancode_set = 1;
             }
             _ => {
                 // Unknown command — ACK anyway (many guests expect this).

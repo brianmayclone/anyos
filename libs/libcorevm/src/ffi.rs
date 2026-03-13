@@ -989,6 +989,10 @@ pub extern "C" fn corevm_setup_acpi_tables(handle: u64) -> i32 {
 // ── Device-specific FFI ─────────────────────────────────────────────────────
 
 /// Set up the E1000 NIC with the given MAC address (6 bytes).
+///
+/// Registers the E1000 as:
+/// - MMIO region at 0xFEBC0000 (128 KB) for register access
+/// - PCI device 00:04.0 (Intel 82540EM, 8086:100E) so the guest can discover it
 #[no_mangle]
 pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
     let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
@@ -996,6 +1000,21 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
     let m: [u8; 6] = unsafe { [*mac, *mac.add(1), *mac.add(2), *mac.add(3), *mac.add(4), *mac.add(5)] };
     let e1000 = crate::devices::e1000::E1000::new(m);
     vm.memory.add_mmio(0xFEBC_0000, 0x2_0000, Box::new(e1000));
+
+    // Register E1000 as a PCI device so the guest can discover it via PCI scan.
+    if !vm.pci_bus_ptr.is_null() {
+        let pci_bus = unsafe { &mut *vm.pci_bus_ptr };
+        // Intel 82540EM: vendor 8086, device 100E, class 02 (Network), subclass 00 (Ethernet)
+        let mut pci_dev = crate::devices::bus::PciDevice::new(0x8086, 0x100E, 0x02, 0x00, 0x00);
+        pci_dev.device = 4; // PCI slot 00:04.0
+        // BAR0: MMIO at 0xFEBC0000, size 128 KB
+        pci_dev.set_bar(0, 0xFEBC_0000, 0x2_0000, true);
+        // Interrupt: IRQ 11, pin INTA
+        pci_dev.set_interrupt(11, 1);
+        // Subsystem ID (common for 82540EM)
+        pci_dev.set_subsystem(0x8086, 0x001E);
+        pci_bus.add_device(pci_dev);
+    }
     0
 }
 
