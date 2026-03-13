@@ -193,3 +193,336 @@
 [fw_cfg] select 0x0005
 [fw_cfg] select 0x8002 -> (no file)
 [fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E
+[fw_cfg] select 0x0000
+[fw_cfg] select 0x0001
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x000D
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x8000 -> (no file)
+[fw_cfg] select 0x8001 -> (no file)
+[fw_cfg] select 0x0019
+[fw_cfg] select 0x8003 -> (no file)
+[fw_cfg] select 0x0004
+[fw_cfg] select 0x000F
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x0005
+[fw_cfg] select 0x8002 -> (no file)
+[fw_cfg] select 0x0022 -> file 'etc/table-loader' (1920 bytes)
+[fw_cfg] select 0x0021 -> file 'etc/acpi/tables' (546 bytes)
+[fw_cfg] select 0x0020 -> file 'etc/acpi/rsdp' (36 bytes)
+[fw_cfg] select 0x0023 -> file 'vgaroms/vgabios.bin' (38912 bytes)
+[fw_cfg] select 0x000E

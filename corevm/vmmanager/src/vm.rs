@@ -23,6 +23,7 @@ use libcorevm::ffi::{
     corevm_pit_advance, corevm_pit_debug, corevm_cmos_advance, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu, corevm_lapic_timer_advance, corevm_lapic_debug,
     corevm_read_phys, corevm_debug_port_take_output,
     corevm_fw_cfg_add_file, corevm_set_memory_region,
+    corevm_complete_string_io,
 };
 use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
 
@@ -173,6 +174,10 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         let ctx = Box::into_raw(diag_for_whp) as *mut std::ffi::c_void;
         libcorevm::ffi::corevm_set_whp_debug_callback(Some(whp_debug_callback), ctx);
     }
+
+    // Install SIGUSR1 handler so cancel_vcpu can interrupt KVM_RUN (Linux/KVM only)
+    #[cfg(target_os = "linux")]
+    libcorevm::backend::kvm::install_sigusr1_handler();
 
     let fb = entry.framebuffer.clone();
     let control_clone = control.clone();
@@ -443,17 +448,17 @@ fn vm_run_loop(
             }
             1 => {
                 // IoOut — dispatch to device
-                // Capture serial port COM1 (0x3F8) data register output
-                if exit.port == 0x3F8 && exit.size == 1 {
-                    let ch = (exit.data_u32 & 0xFF) as u8;
-                    if ch >= 0x20 || ch == b'\n' || ch == b'\r' || ch == b'\t' {
-                        eprint!("{}", ch as char);
-                    }
-                }
                 if exit.io_count > 1 {
                     // String I/O (REP OUTSB): handle all iterations at once
                     corevm_complete_string_io(handle, 0, exit.port, 1, exit.size, exit.io_count);
                 } else {
+                    // Capture serial port COM1 (0x3F8) data register output
+                    if exit.port == 0x3F8 && exit.size == 1 {
+                        let ch = (exit.data_u32 & 0xFF) as u8;
+                        if ch >= 0x20 || ch == b'\n' || ch == b'\r' || ch == b'\t' {
+                            eprint!("{}", ch as char);
+                        }
+                    }
                     if diag_enabled {
                         diag.log(DiagCategory::IoPort, format!("OUT port=0x{:04X} size={} data=0x{:X}", exit.port, exit.size, exit.data_u32));
                     }
@@ -527,6 +532,9 @@ fn vm_run_loop(
             8 => {
                 // InterruptWindow — guest is now ready to accept interrupts.
                 // poll_irqs below will inject the pending interrupt.
+            }
+            13 => {
+                // Cancelled — timer kicked us out of KVM_RUN
             }
             other => {
                 // Other exits (MsrRead/Write, Cpuid, Debug)
