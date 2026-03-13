@@ -21,6 +21,19 @@ if(ANYOS_RESET)
   set(MKIMAGE_RESET_FLAG "--reset")
 endif()
 
+# Generate boot font for bootloader splash screen
+set(BOOT_FONT_BIN ${CMAKE_BINARY_DIR}/boot_font.bin)
+add_custom_command(
+  OUTPUT ${BOOT_FONT_BIN}
+  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/generate_boot_font.py ${BOOT_FONT_BIN}
+  DEPENDS ${CMAKE_SOURCE_DIR}/tools/generate_boot_font.py
+  COMMENT "Generating boot font (8x16 bitmap)"
+)
+
+# Boot assets
+set(BOOT_CFG ${CMAKE_SOURCE_DIR}/sysroot/System/boot.cfg)
+set(BOOT_LOGO ${CMAKE_SOURCE_DIR}/kernel/src/graphics/boot_logo.bin)
+
 add_custom_command(
   OUTPUT ${DISK_IMAGE}
   COMMAND ${MKIMAGE_EXECUTABLE}
@@ -31,6 +44,9 @@ add_custom_command(
     --image-size 256
     --sysroot ${SYSROOT_DIR}
     --fs-start 8192
+    --boot-cfg ${BOOT_CFG}
+    --boot-logo ${BOOT_LOGO}
+    --boot-font ${BOOT_FONT_BIN}
     ${MKIMAGE_RESET_FLAG}
   DEPENDS
     ${CMAKE_BINARY_DIR}/stage1.bin
@@ -45,6 +61,9 @@ add_custom_command(
     ${C_TOOLCHAIN_DEPS}
     ${MKIMAGE_EXECUTABLE}
     ${PROVISION_DEPS}
+    ${BOOT_FONT_BIN}
+    ${BOOT_CFG}
+    ${BOOT_LOGO}
   COMMENT "Creating bootable disk image (256 MiB, exFAT filesystem)"
 )
 
