@@ -58,6 +58,8 @@ pub struct Ps2Controller {
     last_read: u8,
     /// Set when new data enters the output buffer; cleared by the IRQ raiser.
     pub irq_needed: bool,
+    /// Alternation flag for fair scheduling between keyboard and mouse buffers.
+    mouse_priority: bool,
 }
 
 /// Status register bit masks.
@@ -83,6 +85,7 @@ impl Ps2Controller {
             reset_requested: false,
             last_read: 0,
             irq_needed: false,
+            mouse_priority: false,
         }
     }
 
@@ -152,24 +155,48 @@ impl Ps2Controller {
 
     /// Transfer buffered device data into the output buffer for guest reading.
     ///
-    /// Keyboard data takes priority over mouse data. The status register
-    /// is updated to reflect whether data is available and its source.
+    /// Alternates between keyboard and mouse data to prevent starvation.
+    /// Without this, keyboard init ACKs can block all mouse responses,
+    /// causing the guest's mouse driver init to time out.
     fn update_output_buffer(&mut self) {
         if self.status & STATUS_OUTPUT_FULL != 0 {
             // Output buffer already has data; do not overwrite.
             return;
         }
 
-        if let Some(byte) = self.keyboard_buffer.pop_front() {
+        // Alternate: if both buffers have data, alternate between them
+        // to prevent mouse starvation during init sequences.
+        let serve_mouse_first = self.mouse_priority
+            && !self.mouse_buffer.is_empty()
+            && !self.keyboard_buffer.is_empty();
+
+        let byte_and_source = if serve_mouse_first {
+            self.mouse_buffer.pop_front().map(|b| (b, true))
+        } else if let Some(byte) = self.keyboard_buffer.pop_front() {
+            Some((byte, false))
+        } else {
+            self.mouse_buffer.pop_front().map(|b| (b, true))
+        };
+
+        if let Some((byte, is_mouse)) = byte_and_source {
             self.output_buffer.push_back(byte);
             self.status |= STATUS_OUTPUT_FULL;
-            self.status &= !STATUS_MOUSE_DATA;
+            if is_mouse {
+                self.status |= STATUS_MOUSE_DATA;
+            } else {
+                self.status &= !STATUS_MOUSE_DATA;
+            }
             self.irq_needed = true;
-        } else if let Some(byte) = self.mouse_buffer.pop_front() {
-            self.output_buffer.push_back(byte);
-            self.status |= STATUS_OUTPUT_FULL;
-            self.status |= STATUS_MOUSE_DATA;
-            self.irq_needed = true;
+            // Toggle priority for next call when both buffers have data
+            self.mouse_priority = !self.mouse_priority;
+        }
+    }
+
+    /// Try to fill the output buffer if it's empty and device buffers have data.
+    /// Called proactively from poll_irqs to ensure cross-thread data gets delivered.
+    pub fn try_fill_output(&mut self) {
+        if self.status & STATUS_OUTPUT_FULL == 0 {
+            self.update_output_buffer();
         }
     }
 

@@ -65,8 +65,26 @@ impl Vm {
         let io = IoDispatch::new();
 
         // Register guest RAM with the backend.
-        let (ptr, size) = memory.ram_mut_ptr();
-        backend.set_memory_region(0, 0, size as u64, ptr)?;
+        // PCI devices (VGA LFB, BIOS ROM, AHCI BAR, etc.) occupy the region
+        // 0xE0000000–0xFFFFFFFF ("PCI hole"). Guest RAM that would fall into
+        // this range must be relocated above 4 GB, just like real hardware
+        // and QEMU do.
+        const PCI_HOLE_START: u64 = 0xE000_0000; // 3.5 GB
+        const PCI_HOLE_END: u64   = 0x1_0000_0000; // 4 GB
+
+        let (ptr, total_size) = memory.ram_mut_ptr();
+        let total = total_size as u64;
+
+        if total <= PCI_HOLE_START {
+            // RAM fits entirely below the PCI hole — single slot.
+            backend.set_memory_region(0, 0, total, ptr)?;
+        } else {
+            // Split: slot 0 = below PCI hole, slot 3 = above 4 GB.
+            backend.set_memory_region(0, 0, PCI_HOLE_START, ptr)?;
+            let above_4g = total - PCI_HOLE_START;
+            let above_ptr = unsafe { ptr.add(PCI_HOLE_START as usize) };
+            backend.set_memory_region(3, PCI_HOLE_END, above_4g, above_ptr)?;
+        }
 
         Ok(Self {
             backend,
@@ -154,6 +172,11 @@ impl Vm {
         // For hardware-virt (WHP/KVM), these are shadowed by RAM mappings.
         self.memory.add_mmio(0xE000_0000, 0x80_0000, Box::new(SvgaLfbProxy(self.svga_ptr)));
         self.memory.add_mmio(0xFD00_0000, 0x80_0000, Box::new(SvgaLfbProxy(self.svga_ptr)));
+        // Bochs dispi register MMIO — covers both the PCI BAR2 default (0xFEBE0000)
+        // and where SeaBIOS typically maps it (0xFE002000).
+        // The PCI BAR mechanism will remap this, but register both common locations.
+        self.memory.add_mmio(0xFEBE_0000, 0x1000, Box::new(SvgaDispiMmioProxy(self.svga_ptr)));
+        self.memory.add_mmio(0xFE00_2000, 0x1000, Box::new(SvgaDispiMmioProxy(self.svga_ptr)));
 
         // Debug port (0x402)
         let dbg = Box::new(DebugPort::new());
@@ -242,6 +265,32 @@ impl Vm {
         let pic = Box::new(PicPair::new());
         self.pic_ptr = &*pic as *const PicPair as *mut PicPair;
         self.io.register(0x20, 0x82, pic);
+    }
+
+    /// Map the VGA linear framebuffer (8 MiB at GPA 0xE0000000) as a
+    /// hypervisor memory region for fast direct guest access.
+    ///
+    /// Without this, every guest write to the VGA LFB generates an MMIO
+    /// exit which is extremely slow for framebuffer-intensive operations.
+    /// With this mapping, guest writes go directly to the SVGA device's
+    /// framebuffer buffer and the display update reads from it.
+    ///
+    /// Must be called AFTER `setup_standard_devices()` (which creates the
+    /// SVGA device).
+    #[cfg(feature = "linux")]
+    pub fn setup_vga_lfb_mapping(&mut self) -> Result<(), VmError> {
+        if self.svga_ptr.is_null() {
+            return Ok(());
+        }
+        let svga = unsafe { &mut *self.svga_ptr };
+        let fb_ptr = svga.framebuffer_mut_ptr();
+        let fb_size = crate::devices::svga::VGA_VRAM_SIZE as u64;
+        // Slot 2: VGA LFB at 0xE0000000 (8 MiB) — VBE dispi default address.
+        // Slot 4: VGA LFB at 0xFD000000 (8 MiB) — PCI BAR0 address.
+        // Both map to the same host buffer so the guest can use either address.
+        // (Slot 0 = RAM below PCI hole, slot 1 = reserved for BIOS ROM, slot 3 = RAM above 4GB)
+        self.backend.set_memory_region(2, 0xE000_0000, fb_size, fb_ptr)?;
+        self.backend.set_memory_region(4, 0xFD00_0000, fb_size, fb_ptr)
     }
 
     // ── VmBackend delegations ──
@@ -554,6 +603,73 @@ impl crate::io::IoHandler for SvgaVbePortProxy {
     }
     fn write(&mut self, port: u16, size: u8, val: u32) -> crate::error::Result<()> {
         unsafe { &mut *self.0 }.write(port, size, val)
+    }
+}
+
+/// Proxy for Bochs VBE dispi MMIO registers (PCI BAR2).
+/// The bochs DRM driver reads VBE registers via MMIO at offset = index * 2.
+struct SvgaDispiMmioProxy(*mut Svga);
+unsafe impl Send for SvgaDispiMmioProxy {}
+
+impl crate::memory::mmio::MmioHandler for SvgaDispiMmioProxy {
+    fn read(&mut self, offset: u64, size: u8) -> crate::error::Result<u64> {
+        let svga = unsafe { &mut *self.0 };
+        // QEMU Bochs VBE MMIO layout in BAR2:
+        //   0x000-0x3FF: VGA I/O ports (0x3C0-0x3DF) mapped at offset = port - 0x3C0
+        //   0x400-0x4FF: VGA I/O ports aliased
+        //   0x500-0x5FF: VBE dispi registers at offset 0x500 + index * 2
+        //   0x600+:      QEMU extended registers
+        if offset >= 0x500 && offset < 0x600 {
+            // VBE dispi registers
+            let idx = ((offset - 0x500) / 2) as usize;
+            if idx < svga.vbe_regs.len() {
+                let val = svga.vbe_regs[idx] as u64;
+                return Ok(match size {
+                    1 => if offset & 1 == 0 { val & 0xFF } else { (val >> 8) & 0xFF },
+                    2 => val,
+                    4 => {
+                        let hi = if idx + 1 < svga.vbe_regs.len() { svga.vbe_regs[idx + 1] as u64 } else { 0 };
+                        val | (hi << 16)
+                    }
+                    _ => val,
+                });
+            }
+            return Ok(0);
+        } else if offset < 0x400 {
+            // VGA I/O port emulation via MMIO
+            let port = 0x3C0 + offset as u16;
+            let result = <Svga as crate::io::IoHandler>::read(svga, port, size);
+            return result.map(|v| v as u64);
+        }
+        Ok(0xFFFF_FFFF)
+    }
+    fn write(&mut self, offset: u64, _size: u8, val: u64) -> crate::error::Result<()> {
+        let svga = unsafe { &mut *self.0 };
+        if offset >= 0x500 && offset < 0x600 {
+            // VBE dispi registers
+            let idx = ((offset - 0x500) / 2) as usize;
+            let v = val as u16;
+            if idx < svga.vbe_regs.len() {
+                svga.vbe_regs[idx] = v;
+                // VBE_DISPI_INDEX_ENABLE (4): mode switch.
+                if idx == 4 && (v & 0x01) != 0 {
+                    let w = svga.vbe_regs[1] as u32;
+                    let h = svga.vbe_regs[2] as u32;
+                    let bpp = svga.vbe_regs[3] as u8;
+                    if w > 0 && h > 0 && bpp > 0 {
+                        svga.set_mode(crate::devices::svga::VgaMode::LinearFramebuffer { width: w, height: h, bpp });
+                    }
+                } else if idx == 4 && (v & 0x01) == 0 {
+                    svga.set_mode(crate::devices::svga::VgaMode::Text80x25);
+                }
+            }
+            return Ok(());
+        } else if offset < 0x400 {
+            // VGA I/O port emulation via MMIO
+            let port = 0x3C0 + offset as u16;
+            return <Svga as crate::io::IoHandler>::write(svga, port, _size, val as u32);
+        }
+        Ok(())
     }
 }
 

@@ -177,7 +177,7 @@ for test in "${TESTS[@]}"; do
             run_test \
                 "ventoy" \
                 "$ISO_DIR/ventoy-1.1.10-livecd.iso" \
-                512 \
+                1024 \
                 60 \
                 "" \
                 "Ventoy"

@@ -96,9 +96,29 @@ struct GuestDma {
     len: usize,
 }
 
+/// PCI hole constants for guest physical → host offset translation.
+/// Guest RAM > 3.5GB is split: 0..0xE0000000 and 0x100000000..
+/// Host memory is contiguous, so GPA 0x100000000+ maps to host offset 0xE0000000+.
+const PCI_HOLE_START: u64 = 0xE000_0000;
+const PCI_HOLE_END: u64   = 0x1_0000_0000;
+
 impl GuestDma {
+    /// Translate guest physical address to host memory offset,
+    /// accounting for the PCI hole (0xE0000000–0xFFFFFFFF).
+    #[inline]
+    fn gpa_to_offset(&self, gpa: u64) -> Option<usize> {
+        if gpa < PCI_HOLE_START {
+            Some(gpa as usize)
+        } else if gpa >= PCI_HOLE_END {
+            // Above-4G RAM is stored contiguously after the below-hole RAM
+            Some((PCI_HOLE_START + (gpa - PCI_HOLE_END)) as usize)
+        } else {
+            None // PCI hole — not RAM
+        }
+    }
+
     fn read_bytes(&self, addr: u64, count: usize) -> Option<Vec<u8>> {
-        let a = addr as usize;
+        let a = self.gpa_to_offset(addr)?;
         if a + count > self.len { return None; }
         let mut buf = vec![0u8; count];
         unsafe { core::ptr::copy_nonoverlapping(self.ptr.add(a), buf.as_mut_ptr(), count); }
@@ -106,7 +126,7 @@ impl GuestDma {
     }
 
     fn write_bytes(&self, addr: u64, data: &[u8]) {
-        let a = addr as usize;
+        let a = match self.gpa_to_offset(addr) { Some(o) => o, None => return };
         if a + data.len() > self.len { return; }
         unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(a), data.len()); }
     }
@@ -568,7 +588,10 @@ impl Ahci {
             }
             PORT_SERR => { self.ports[idx].serr &= !val; }
             PORT_SACT => { self.ports[idx].sact |= val; }
-            PORT_CI => { self.ports[idx].ci |= val; self.process_commands(idx); }
+            PORT_CI => {
+                self.ports[idx].ci |= val;
+                self.process_commands(idx);
+            }
             PORT_FBS => { self.ports[idx].fbs = val; }
             _ => {}
         }

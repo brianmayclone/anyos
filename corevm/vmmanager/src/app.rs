@@ -8,7 +8,7 @@ use crate::config::VmConfig;
 use crate::dialogs::{AboutDialog, CreateDiskDialog, CreateVmDialog, SnapshotsDialog};
 use crate::display::DisplayWidget;
 use crate::filebrowser::FileBrowserDialog;
-use crate::input::{self, MouseCapture};
+use crate::input;
 use crate::platform;
 use crate::diagnostics::{DiagLog, DiagnosticsWindow};
 use crate::settings::SettingsDialog;
@@ -82,7 +82,6 @@ pub struct CoreVmApp {
     pub layout: SidebarLayout,
     pub selected_vm: Option<String>,  // UUID
     pub display: DisplayWidget,
-    pub mouse_capture: MouseCapture,
     pub settings_dialog: Option<SettingsDialog>,
     pub create_vm_dialog: Option<CreateVmDialog>,
     pub create_disk_dialog: Option<CreateDiskDialog>,
@@ -125,7 +124,6 @@ impl CoreVmApp {
             layout,
             selected_vm: None,
             display: DisplayWidget::new(),
-            mouse_capture: MouseCapture::default(),
             settings_dialog: None,
             create_vm_dialog: None,
             create_disk_dialog: None,
@@ -372,22 +370,16 @@ impl eframe::App for CoreVmApp {
             if let Some(uuid) = &self.selected_vm.clone() {
                 // Extract state and data from vm without holding borrow on self
                 let vm_info = self.find_vm(uuid).map(|vm| {
-                    (vm.state, vm.framebuffer.clone())
+                    (vm.state, vm.framebuffer.clone(), vm.vm_handle)
                 });
-                // Get vm_handle for input injection
-                let vm_handle = self.find_vm(uuid).and_then(|vm| vm.vm_handle);
 
-                if let Some((state, fb)) = vm_info {
+                if let Some((state, fb, vm_handle)) = vm_info {
                     if state == VmState::Running || state == VmState::Paused {
-                        let (display_focused, display_rect) = if let Ok(fb_data) = fb.lock() {
-                            self.display.show(ui, ctx, &fb_data)
+                        let (display_focused, _display_rect) = if let Ok(fb_data) = fb.lock() {
+                            self.display.show(ui, ctx, &fb_data, vm_handle)
                         } else {
                             (false, None)
                         };
-                        // Handle mouse input on the display area
-                        if let (Some(rect), Some(handle)) = (display_rect, vm_handle) {
-                            self.mouse_capture.handle_mouse(ui, rect, handle);
-                        }
                         self.display_focused = display_focused;
                     } else {
                         self.display_focused = false;

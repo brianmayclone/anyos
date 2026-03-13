@@ -386,6 +386,9 @@ pub struct DisplayWidget {
     texture: Option<egui::TextureHandle>,
     last_width: u32,
     last_height: u32,
+    last_mouse_pos: Option<egui::Pos2>,
+    last_mouse_buttons: u8,
+    mouse_debug_counter: u64,
 }
 
 impl DisplayWidget {
@@ -394,6 +397,9 @@ impl DisplayWidget {
             texture: None,
             last_width: 0,
             last_height: 0,
+            last_mouse_pos: None,
+            last_mouse_buttons: 0,
+            mouse_debug_counter: 0,
         }
     }
 
@@ -433,7 +439,7 @@ impl DisplayWidget {
 
     /// Render the display, filling available space while maintaining aspect ratio.
     /// Returns (focused, Option<display_rect>) for keyboard/mouse capture.
-    pub fn show(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, fb: &FrameBufferData) -> (bool, Option<egui::Rect>) {
+    pub fn show(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, fb: &FrameBufferData, vm_handle: Option<u64>) -> (bool, Option<egui::Rect>) {
         self.update_texture(ctx, fb);
 
         let display_id = egui::Id::new("vm_display_area");
@@ -453,8 +459,8 @@ impl DisplayWidget {
 
                 let size = egui::vec2(disp_w, disp_h);
 
-                // Allocate interactive area for the display
-                let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+                // Allocate interactive area for the display (click_and_drag for mouse)
+                let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
 
                 // Draw the texture
                 if ui.is_rect_visible(rect) {
@@ -467,13 +473,18 @@ impl DisplayWidget {
                 }
 
                 // Click to focus
-                if response.clicked() {
+                if response.clicked() || response.drag_started() {
                     ui.memory_mut(|m| m.request_focus(display_id));
                 }
 
                 // Auto-focus when VM is running
                 if !ui.memory(|m| m.has_focus(display_id)) {
                     ui.memory_mut(|m| m.request_focus(display_id));
+                }
+
+                // Mouse handling: send PS/2 mouse events when hovering over display
+                if let Some(handle) = vm_handle {
+                    self.handle_mouse_input(ui, rect, handle, &response);
                 }
 
                 let focused = ui.memory(|m| m.has_focus(display_id));
@@ -485,5 +496,59 @@ impl DisplayWidget {
             });
         }
         (false, None)
+    }
+
+    /// Handle mouse input over the display area and inject PS/2 events into the VM.
+    fn handle_mouse_input(&mut self, ui: &egui::Ui, display_rect: egui::Rect, vm_handle: u64, _response: &egui::Response) {
+        // Use latest_pos() instead of hover_pos() — hover_pos returns None during
+        // continuous repaint (request_repaint every frame). latest_pos() always
+        // returns the last known pointer position from the windowing system.
+        let pointer_pos = ui.input(|i| i.pointer.latest_pos());
+
+        // Read current button state
+        let buttons = ui.input(|i| {
+            let mut b = 0u8;
+            if i.pointer.button_down(egui::PointerButton::Primary) { b |= 1; }
+            if i.pointer.button_down(egui::PointerButton::Secondary) { b |= 2; }
+            if i.pointer.button_down(egui::PointerButton::Middle) { b |= 4; }
+            b
+        });
+
+        // Debug: log state periodically
+        self.mouse_debug_counter += 1;
+        if self.mouse_debug_counter % 300 == 0 {
+            let ps2_state = libcorevm::ffi::corevm_ps2_mouse_state(vm_handle);
+            eprintln!("[mouse-debug] latest_pos={:?} in_rect={} buttons={} ps2_enabled={} ps2_buf={}",
+                pointer_pos,
+                pointer_pos.map_or(false, |p| display_rect.contains(p)),
+                buttons,
+                ps2_state & 1, (ps2_state >> 8) & 0xFF);
+        }
+
+        if let Some(pos) = pointer_pos {
+            if display_rect.contains(pos) {
+                // Pointer is over the display area
+                if let Some(last) = self.last_mouse_pos {
+                    let dx = (pos.x - last.x) as i16;
+                    let dy = (pos.y - last.y) as i16;
+                    if dx != 0 || dy != 0 {
+                        libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, dx, dy, buttons);
+                    } else if buttons != self.last_mouse_buttons {
+                        // Button state changed without movement
+                        libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, 0, 0, buttons);
+                    }
+                }
+                self.last_mouse_pos = Some(pos);
+            } else {
+                // Pointer left the display area
+                if self.last_mouse_pos.is_some() {
+                    self.last_mouse_pos = None;
+                    if self.last_mouse_buttons != 0 {
+                        libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, 0, 0, 0);
+                    }
+                }
+            }
+        }
+        self.last_mouse_buttons = buttons;
     }
 }

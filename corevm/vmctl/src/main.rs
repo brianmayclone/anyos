@@ -234,14 +234,11 @@ fn main() {
     corevm_setup_acpi_tables(handle);
     corevm_setup_ahci(handle, 6);
 
-    // Map VGA framebuffer (same as vmmanager)
-    let vga_fb_size: usize = 0x80_0000;
-    let vga_layout = std::alloc::Layout::from_size_align(vga_fb_size, 4096).unwrap();
-    let vga_fb_ptr = unsafe { std::alloc::alloc_zeroed(vga_layout) };
-    if !vga_fb_ptr.is_null() {
-        corevm_set_memory_region(handle, 10, 0xE000_0000, vga_fb_size as u64, vga_fb_ptr);
-        corevm_set_memory_region(handle, 11, 0xFD00_0000, vga_fb_size as u64, vga_fb_ptr);
-    }
+    // VGA LFB is mapped internally by setup_standard_devices via KVM slot 1.
+    // Get the SVGA framebuffer pointer for reading display output.
+    let mut vga_fb_ptr: *const u8 = core::ptr::null();
+    let mut vga_fb_size: u32 = 0;
+    corevm_vga_get_framebuffer(handle, &mut vga_fb_ptr as *mut *const u8 as *mut *const u8, &mut vga_fb_size);
 
     // Attach ISO
     if !args.iso.is_empty() {
@@ -284,59 +281,67 @@ fn main() {
             "/usr/share/qemu/linuxboot_dma.bin",
             "/usr/share/seabios/linuxboot_dma.bin",
         ];
-        let mut found_rom = false;
         for path in &linuxboot_paths {
             if let Ok(rom) = std::fs::read(path) {
                 let name = b"genroms/linuxboot_dma.bin";
                 corevm_fw_cfg_add_file(handle, name.as_ptr(), name.len() as u32,
                     rom.as_ptr(), rom.len() as u32);
                 eprintln!("[vmctl] LinuxBoot ROM: {} ({} bytes)", path, rom.len());
-                found_rom = true;
+                std::mem::forget(rom);
                 break;
             }
         }
-        if !found_rom {
-            eprintln!("[vmctl] WARNING: linuxboot_dma.bin not found, direct kernel boot may fail");
-        }
 
-        // Load kernel via fw_cfg
+        // Load kernel
         let kernel = std::fs::read(&args.kernel)
             .unwrap_or_else(|e| { eprintln!("[vmctl] ERROR: Cannot read kernel: {}", e); std::process::exit(1); });
-        let kname = b"etc/vmlinuz";  // SeaBIOS/linuxboot looks for this name
-        // Keep kernel data alive
-        let kernel_ptr = kernel.as_ptr();
-        let kernel_len = kernel.len();
-        std::mem::forget(kernel);
-        corevm_fw_cfg_add_file(handle, kname.as_ptr(), kname.len() as u32,
-            kernel_ptr, kernel_len as u32);
-        eprintln!("[vmctl] Kernel: {} ({} bytes)", args.kernel, kernel_len);
+        eprintln!("[vmctl] Kernel: {} ({} bytes)", args.kernel, kernel.len());
 
-        // Load initrd if specified
-        if !args.initrd.is_empty() {
-            let initrd = std::fs::read(&args.initrd)
+        // Load initrd
+        let initrd = if !args.initrd.is_empty() {
+            let data = std::fs::read(&args.initrd)
                 .unwrap_or_else(|e| { eprintln!("[vmctl] ERROR: Cannot read initrd: {}", e); std::process::exit(1); });
-            let iname = b"etc/initrd";
-            let initrd_ptr = initrd.as_ptr();
-            let initrd_len = initrd.len();
-            std::mem::forget(initrd);
-            corevm_fw_cfg_add_file(handle, iname.as_ptr(), iname.len() as u32,
-                initrd_ptr, initrd_len as u32);
-            eprintln!("[vmctl] Initrd: {} ({} bytes)", args.initrd, initrd_len);
+            eprintln!("[vmctl] Initrd: {} ({} bytes)", args.initrd, data.len());
+            data
+        } else {
+            Vec::new()
+        };
+
+        // Build command line
+        let cmdline = if !args.append.is_empty() {
+            eprintln!("[vmctl] Cmdline: {}", args.append);
+            args.append.as_bytes().to_vec()
+        } else {
+            Vec::new()
+        };
+
+        // Set up kernel boot via fw_cfg (legacy selectors + etc/linuxboot)
+        corevm_fw_cfg_set_kernel(
+            handle,
+            kernel.as_ptr(), kernel.len() as u32,
+            initrd.as_ptr(), initrd.len() as u32,
+            cmdline.as_ptr(), cmdline.len() as u32,
+        );
+        std::mem::forget(kernel);
+        std::mem::forget(initrd);
+
+        // Set boot order: linuxboot ROM first (before DVD/CD)
+        // This ensures direct kernel boot takes priority over ISO boot.
+        {
+            let bootorder = b"/rom@genroms/linuxboot_dma.bin\n\0";
+            let bname = b"bootorder";
+            corevm_fw_cfg_add_file(handle, bname.as_ptr(), bname.len() as u32,
+                bootorder.as_ptr(), bootorder.len() as u32);
         }
 
-        // Kernel command line
+        // Also add file-based entries for linuxboot_dma.bin compatibility
         if !args.append.is_empty() {
-            let cmdline = args.append.as_bytes();
-            // Need null-terminated command line
             let mut cmdline_buf = args.append.clone().into_bytes();
             cmdline_buf.push(0);
             let cname = b"etc/cmdline";
-            let cmdline_ptr = cmdline_buf.as_ptr();
-            let cmdline_len = cmdline_buf.len();
-            std::mem::forget(cmdline_buf);
             corevm_fw_cfg_add_file(handle, cname.as_ptr(), cname.len() as u32,
-                cmdline_ptr, cmdline_len as u32);
-            eprintln!("[vmctl] Cmdline: {}", args.append);
+                cmdline_buf.as_ptr(), cmdline_buf.len() as u32);
+            std::mem::forget(cmdline_buf);
         }
     }
 
@@ -352,13 +357,16 @@ fn main() {
     // Install SIGUSR1 handler so cancel_vcpu can interrupt KVM_RUN mid-execution
     libcorevm::backend::kvm::install_sigusr1_handler();
 
-    // Timer thread to cancel vCPU periodically (needed for PIT/IRQ delivery)
+    // Timer thread to cancel vCPU periodically (needed for CMOS/RTC advance and
+    // AHCI IRQ polling when guest is in HLT/idle state).
+    // With KVM in-kernel IRQCHIP, LAPIC/PIT timers are handled by KVM internally,
+    // so we only need periodic wakeups for device polling — 100ms is sufficient.
     let cancel_handle = handle;
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let running2 = running.clone();
     thread::spawn(move || {
         while running2.load(std::sync::atomic::Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(100));
             corevm_cancel_vcpu(cancel_handle, 0);
         }
     });
@@ -424,6 +432,7 @@ fn main() {
     let mut exit_reason = "timeout";
     let mut last_state = Instant::now();
     let mut last_pit_tick = Instant::now();
+    let mut last_rtc_tick = Instant::now();
     let mut exit_types = [0u64; 16]; // count by exit.reason
     let mut total_irqs: u64 = 0;
     let mut mmio_addrs: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
@@ -466,6 +475,10 @@ fn main() {
                         if ch >= 0x20 || ch == b'\n' || ch == b'\r' || ch == b'\t' {
                             print!("{}", ch as char);
                             serial_bytes += 1;
+                            if ch == b'\n' {
+                                use std::io::Write;
+                                let _ = std::io::stdout().flush();
+                            }
                         }
                     }
                     let mut data = exit.data_u32.to_le_bytes();
@@ -521,14 +534,15 @@ fn main() {
             }
         }
 
-        // Advance CMOS RTC periodic timer
+        // Advance CMOS RTC periodic timer (32.768 kHz base clock)
         {
             let now = Instant::now();
-            let elapsed_us = now.duration_since(last_pit_tick).as_micros() as u64;
-            if elapsed_us > 0 {
+            let elapsed_us = now.duration_since(last_rtc_tick).as_micros() as u64;
+            if elapsed_us >= 100 {
                 let rtc_ticks = (elapsed_us * 32768) / 1_000_000;
                 if rtc_ticks > 0 {
                     corevm_cmos_advance(handle, rtc_ticks);
+                    last_rtc_tick = now;
                 }
             }
         }
@@ -584,12 +598,24 @@ fn main() {
                 let mut bpp: u8 = 0;
                 let mode_rc = corevm_vga_get_mode(handle, &mut w, &mut h, &mut bpp);
                 let lfb_addr = corevm_vga_get_lfb_addr(handle);
-                let fb_nonzero = if !vga_fb_ptr.is_null() {
-                    let fb = unsafe { core::slice::from_raw_parts(vga_fb_ptr, vga_fb_size) };
-                    fb.iter().take(1024 * 4 * 100).filter(|&&b| b != 0).count()
-                } else { 0 };
-                eprintln!("[vm-gfx] mode={}x{}x{} rc={} lfb={:#x} fb_nonzero={} irqs={}",
-                    w, h, bpp, mode_rc, lfb_addr, fb_nonzero, total_irqs);
+                let (fb_nonzero, fb_total_nz, fb_offset) = if !vga_fb_ptr.is_null() {
+                    let fb = unsafe { core::slice::from_raw_parts(vga_fb_ptr, vga_fb_size as usize) };
+                    let head_nz = fb.iter().take(1024 * 4 * 100).filter(|&&b| b != 0).count();
+                    let total_nz = fb.iter().filter(|&&b| b != 0).count();
+                    // Find first non-zero 4KB page beyond the first 100 lines
+                    let mut off = 0usize;
+                    for page_start in (0..fb.len()).step_by(4096) {
+                        let page_end = (page_start + 4096).min(fb.len());
+                        if fb[page_start..page_end].iter().any(|&b| b != 0) {
+                            off = page_start;
+                            break;
+                        }
+                    }
+                    (head_nz, total_nz, off)
+                } else { (0, 0, 0) };
+                let vbe_fb_off = corevm_vga_get_fb_offset(handle);
+                eprintln!("[vm-gfx] mode={}x{}x{} rc={} lfb={:#x} fb_nz={}/{} off={:#x} vbe_off={:#x} irqs={}",
+                    w, h, bpp, mode_rc, lfb_addr, fb_nonzero, fb_total_nz, fb_offset, vbe_fb_off, total_irqs);
             }
             // Check BIOS tick counter at BDA 0x40:0x6C (physical 0x46C)
             {
@@ -597,6 +623,30 @@ fn main() {
                 corevm_read_phys(handle, 0x046C, tick_buf.as_mut_ptr(), 4);
                 let bios_ticks = u32::from_le_bytes(tick_buf);
                 eprintln!("[vm-timer] BIOS_ticks={} (~{:.1}s)", bios_ticks, bios_ticks as f64 / 18.2);
+            }
+            // LAPIC diagnostics (KVM in-kernel IRQCHIP)
+            {
+                let mut lapic_buf = [0u8; 1024];
+                let rc = corevm_get_lapic(handle, 0, lapic_buf.as_mut_ptr());
+                if rc == 0 {
+                    // LAPIC registers at 16-byte aligned offsets (only first 4 bytes of each 16-byte slot)
+                    let read32 = |off: usize| -> u32 {
+                        u32::from_le_bytes([lapic_buf[off], lapic_buf[off+1], lapic_buf[off+2], lapic_buf[off+3]])
+                    };
+                    let apic_id = read32(0x20);        // APIC ID
+                    let lvt_timer = read32(0x320);     // LVT Timer
+                    let timer_icr = read32(0x380);     // Timer Initial Count
+                    let timer_ccr = read32(0x390);     // Timer Current Count
+                    let timer_dcr = read32(0x3E0);     // Timer Divide Config
+                    let spurious = read32(0xF0);       // Spurious Interrupt Vector
+                    let isr0 = read32(0x100);          // In-Service Register bits 0-31
+                    let irr0 = read32(0x200);          // IRQ Request Register bits 0-31
+                    let irr1 = read32(0x210);          // IRQ Request Register bits 32-63
+                    let irr7 = read32(0x270);          // IRQ Request Register bits 224-255 (timer vec 0xEC=236)
+                    let isr7 = read32(0x170);          // In-Service Register bits 224-255
+                    eprintln!("[vm-lapic] id={} spur={:#x} lvt_timer={:#010x} icr={} ccr={} dcr={:#x} isr0={:#x} irr0={:#x} irr7={:#x} isr7={:#x}",
+                        apic_id >> 24, spurious, lvt_timer, timer_icr, timer_ccr, timer_dcr, isr0, irr0, irr7, isr7);
+                }
             }
             // Check BDA keyboard buffer: head @ 0x41A, tail @ 0x41C
             {
@@ -815,17 +865,22 @@ fn main() {
     // Search for kernel messages in guest RAM
     {
         let patterns: &[&[u8]] = &[
-            b"not syncing",
-            b"APIC: ",
-            b"Kernel panic",
-            b"ACPI: ",
-            b"disable_apic",
+            b"vesafb:",
+            b"Console: ",
+            b"Run /init",
+            b"Freeing unused",
+            b"fb0: ",
+            b"bochs-drm",
+            b"Xorg",
+            b"xinit",
+            b"login",
+            b"EXT4",
         ];
-        let scan_end = (args.ram_mb as u64 * 1024 * 1024).min(64 * 1024 * 1024);
+        let scan_end = (args.ram_mb as u64 * 1024 * 1024).min(256 * 1024 * 1024);
         let mut page = [0u8; 4096];
         let mut matches_found = 0u32;
         let mut addr = 0x100000u64;
-        while addr < scan_end && matches_found < 5 {
+        while addr < scan_end && matches_found < 15 {
             corevm_read_phys(handle, addr, page.as_mut_ptr(), 4096);
             for pattern in patterns {
                 if pattern.len() > 4096 { continue; }
@@ -919,12 +974,18 @@ fn main() {
         println!();
     }
 
-    // Save framebuffer as raw image file for inspection
-    if !vga_fb_ptr.is_null() {
+    // Save framebuffer as raw image file for inspection.
+    // Use VBE offset registers to find where bochs-drm placed its framebuffer.
+    if !vga_fb_ptr.is_null() && vga_fb_size > 0 {
+        let fb_offset = corevm_vga_get_fb_offset(handle) as usize;
         let fb_path = "/tmp/corevm-framebuffer.raw";
-        let fb = unsafe { core::slice::from_raw_parts(vga_fb_ptr, 1024 * 768 * 4) };
-        if let Ok(()) = std::fs::write(fb_path, fb) {
-            eprintln!("[vmctl] Framebuffer saved to {} (1024x768x32 BGRA)", fb_path);
+        let avail = (vga_fb_size as usize).saturating_sub(fb_offset);
+        let save_size = (1024 * 768 * 4).min(avail);
+        if save_size > 0 {
+            let fb = unsafe { core::slice::from_raw_parts(vga_fb_ptr.add(fb_offset), save_size) };
+            if let Ok(()) = std::fs::write(fb_path, fb) {
+                eprintln!("[vmctl] Framebuffer saved to {} (1024x768x32 BGRA, vram_offset=0x{:x})", fb_path, fb_offset);
+            }
         }
     }
 

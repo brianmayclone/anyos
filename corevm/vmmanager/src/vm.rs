@@ -18,10 +18,10 @@ use libcorevm::ffi::{
     corevm_load_binary, corevm_complete_string_io,
     corevm_get_vcpu_regs, corevm_set_vcpu_regs,
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
-    corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_lfb_addr,
+    corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_lfb_addr, corevm_vga_get_fb_offset,
     corevm_last_error, corevm_last_error_len,
     corevm_pit_advance, corevm_pit_debug, corevm_cmos_advance, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu, corevm_lapic_timer_advance, corevm_lapic_debug,
-    corevm_read_phys, corevm_debug_port_take_output,
+    corevm_read_phys, corevm_write_phys, corevm_debug_port_take_output,
     corevm_fw_cfg_add_file, corevm_set_memory_region,
 };
 use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
@@ -92,23 +92,9 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     let acpi_rc = corevm_setup_acpi_tables(handle);
     entry.diag_log.log(DiagCategory::Info, format!("ACPI tables setup: rc={}", acpi_rc));
 
-    // Map VGA linear framebuffer RAM at both the Bochs VBE default address
-    // (0xE0000000, where SeaVGABIOS places the LFB) and the PCI BAR0 address
-    // (0xFD000000). 8MB matches the VRAM size reported by VBE_DISPI_INDEX_VIDEO_MEMORY_64K.
-    let vga_fb_size: usize = 0x80_0000; // 8MB
-    let vga_fb_layout = std::alloc::Layout::from_size_align(vga_fb_size, 4096).unwrap();
-    let vga_fb_ptr = unsafe { std::alloc::alloc_zeroed(vga_fb_layout) };
-    if !vga_fb_ptr.is_null() {
-        // Primary: Bochs VBE default LFB at 0xE0000000
-        let ret1 = corevm_set_memory_region(handle, 10, 0xE000_0000, vga_fb_size as u64, vga_fb_ptr);
-        // Secondary: PCI BAR0 at 0xFD000000 (same physical memory)
-        let ret2 = corevm_set_memory_region(handle, 11, 0xFD00_0000, vga_fb_size as u64, vga_fb_ptr);
-        if entry.config.diagnostics {
-            entry.diag_log.log(DiagCategory::Info, format!(
-                "VGA LFB mapped: 0xE0000000 ret={} 0xFD000000 ret={} (8MB)", ret1, ret2
-            ));
-        }
-    }
+    // VGA LFB is already mapped by setup_standard_devices → setup_vga_lfb_mapping
+    // at slot 2 (0xE0000000, 8MB) pointing to the SVGA device's internal framebuffer.
+    // No additional mapping needed here.
 
     // Setup AHCI controller (replaces IDE)
     corevm_setup_ahci(handle, 6);
@@ -156,6 +142,13 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
             sregs.idt.base, sregs.idt.limit,
             sregs.cr4, sregs.efer
         ));
+    }
+
+    // Write COM1 base address into BDA so SeaBIOS finds the serial port.
+    // BDA segment 0x0040, offset 0x00 = COM1 base address (physical 0x400).
+    {
+        let com1_base: u16 = 0x03F8;
+        corevm_write_phys(handle, 0x400, com1_base.to_le_bytes().as_ptr(), 2);
     }
 
     // Setup shared state
@@ -380,6 +373,12 @@ fn vm_run_loop(
     let fb_interval = Duration::from_millis(16); // ~60fps
     let mut consecutive_errors: u32 = 0;
     let mut fb_debug_count: u32 = 0;
+
+    // Re-install SIGUSR1 handler in the VM thread to ensure it wasn't
+    // overridden by eframe/winit signal handlers in the main thread.
+    #[cfg(target_os = "linux")]
+    libcorevm::backend::kvm::install_sigusr1_handler();
+
     // Timer thread: periodically cancel run_vcpu so the main loop can
     // advance PIT, inject IRQs, and handle other events.
     let cancel_control = control.clone();
@@ -732,21 +731,45 @@ fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>, diag: &Diag
             }
         }
     } else if mode_ret == 0 && vga_w > 0 && vga_h > 0 && vga_bpp > 0 {
-        // Graphics mode — try guest physical memory at BAR0 first (WHP path:
-        // guest writes directly to RAM at 0xFD000000, bypassing MMIO).
-        // Fall back to internal svga.framebuffer (software emulation path).
+        // Graphics mode — read from the SVGA device's internal framebuffer.
+        // With KVM, setup_vga_lfb_mapping maps 0xE0000000 directly to the
+        // SVGA framebuffer buffer, so guest writes update it in-place.
         let bytes_per_pixel = (vga_bpp as usize + 7) / 8;
         let fb_size = vga_w as usize * vga_h as usize * bytes_per_pixel;
+
+        // bochs-drm places its framebuffer at an offset within VRAM using
+        // VBE_DISPI_INDEX_X/Y_OFFSET registers. Query the byte offset.
+        let vram_offset = corevm_vga_get_fb_offset(handle);
+
+        // Read LFB via corevm_read_phys (reads from KVM memory region = SVGA buffer)
         let mut raw_pixels = vec![0u8; fb_size];
-        // Try Bochs VBE default LFB address (0xE0000000) first, then PCI BAR0
-        let mut lfb_addr = corevm_vga_get_lfb_addr(handle);
-        if lfb_addr == 0 { lfb_addr = 0xE000_0000; }
-        // SeaVGABIOS uses 0xE0000000 regardless of BAR0, so try that first
-        let mut phys_ret = corevm_read_phys(handle, 0xE000_0000, raw_pixels.as_mut_ptr(), fb_size as u32);
-        if phys_ret != 0 {
-            phys_ret = corevm_read_phys(handle, lfb_addr, raw_pixels.as_mut_ptr(), fb_size as u32);
-        }
-        if phys_ret == 0 {
+        let read_addr = 0xE000_0000u64 + vram_offset;
+        let phys_ret = corevm_read_phys(handle, read_addr, raw_pixels.as_mut_ptr(), fb_size as u32);
+        let have_pixels = if phys_ret == 0 {
+            // Check if LFB has actual data (guest may have switched to text mode)
+            raw_pixels.iter().take(64).any(|&b| b != 0)
+        } else {
+            // Fallback: read internal SVGA framebuffer directly
+            let mut fb_ptr: *const u8 = std::ptr::null();
+            let mut fb_len: u32 = 0;
+            corevm_vga_get_framebuffer(handle, &mut fb_ptr, &mut fb_len);
+            if !fb_ptr.is_null() && fb_len > 0 {
+                let off = vram_offset as usize;
+                let avail = (fb_len as usize).saturating_sub(off);
+                let len = avail.min(fb_size);
+                if len > 0 {
+                    let raw = unsafe { std::slice::from_raw_parts(fb_ptr.add(off), len) };
+                    raw_pixels[..len].copy_from_slice(raw);
+                    raw.iter().take(64).any(|&b| b != 0)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+
+        if have_pixels {
             if let Ok(mut fb_data) = fb.lock() {
                 fb_data.text_mode = false;
                 fb_data.width = vga_w;
@@ -755,20 +778,29 @@ fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>, diag: &Diag
                 fb_data.dirty = true;
             }
         } else {
-            // Software emulation fallback: internal svga.framebuffer
-            let mut fb_ptr: *const u8 = std::ptr::null();
-            let mut fb_len: u32 = 0;
-            let ret = corevm_vga_get_framebuffer(handle, &mut fb_ptr, &mut fb_len);
-            if ret == 0 && !fb_ptr.is_null() && fb_len > 0 {
-                let raw = unsafe { std::slice::from_raw_parts(fb_ptr, fb_len as usize) };
-                if let Ok(mut fb_data) = fb.lock() {
-                    fb_data.text_mode = false;
-                    fb_data.width = vga_w;
-                    fb_data.height = vga_h;
-                    display::render_graphics_mode(raw, vga_w, vga_h, vga_bpp, &mut fb_data.pixels);
-                    fb_data.dirty = true;
-                }
-            }
+            // LFB is empty — guest switched to text mode without VBE disable.
+            render_text_fallback(handle, fb);
+        }
+    }
+}
+
+/// Fallback: render text mode when graphics mode reports empty LFB.
+/// This handles the case where the guest switches to text mode via VGA
+/// register programming without disabling VBE.
+fn render_text_fallback(handle: u64, fb: &Arc<Mutex<FrameBufferData>>) {
+    let mut text_ptr: *const u16 = std::ptr::null();
+    let mut text_len: u32 = 0;
+    let ret = corevm_vga_get_text_buffer(handle, &mut text_ptr, &mut text_len);
+    if ret == 0 && !text_ptr.is_null() && text_len > 0 {
+        let text_cells = unsafe { std::slice::from_raw_parts(text_ptr, text_len as usize) };
+        if let Ok(mut fb_data) = fb.lock() {
+            fb_data.text_mode = true;
+            fb_data.text_buffer = text_cells.to_vec();
+            let buf = fb_data.text_buffer.clone();
+            let (tw, th) = display::render_text_mode(&buf, &mut fb_data.pixels);
+            fb_data.width = tw;
+            fb_data.height = th;
+            fb_data.dirty = true;
         }
     }
 }

@@ -751,23 +751,28 @@ impl KvmBackend {
                 let mut ecx = e.ecx;
                 let mut edx = e.edx;
 
-                // Filter CPUID like the Hyper-V backend does:
-                // Hide paravirt features so the guest uses standard hardware paths.
+                // Filter CPUID: hide VMX, fix initial APIC ID for vCPU 0.
+                // Keep TSC-Deadline, hypervisor present, and KVM paravirt
+                // features — the in-kernel IRQCHIP/LAPIC handles them
+                // properly and 64-bit Linux kernels need them for stable
+                // timekeeping (kvmclock, TSC-deadline timer).
                 if e.function == 1 {
                     ecx &= !(1 << 5);   // VMX — not useful inside guest
-                    ecx &= !(1 << 31);  // Hypervisor present — hide KVM
+                    // Fix initial APIC ID in EBX[31:24] to 0 for vCPU 0.
+                    // KVM_GET_SUPPORTED_CPUID returns the host CPU's APIC ID
+                    // which causes "APIC ID mismatch" firmware bug warnings
+                    // and can break LAPIC timer delivery.
+                    ebx = (ebx & 0x00FF_FFFF) | (0 << 24);
                 }
 
-                // Zero out entire paravirt CPUID range (0x40000000 - 0x4000FFFF)
-                // Prevents guest from detecting KVM and using PV features
-                // (kvmclock, PV EOI, PV spinlocks, steal time) that may not
-                // work correctly in our nested VMM setup.
-                if e.function >= 0x40000000 && e.function <= 0x4000FFFF {
-                    eax = 0;
-                    ebx = 0;
-                    ecx = 0;
+                // Fix x2APIC topology (leaf 0xB): EDX = x2APIC ID = 0
+                if e.function == 0xB {
                     edx = 0;
                 }
+
+                // Keep KVM paravirtualization (kvmclock, PV EOI, etc.)
+                // — the in-kernel IRQCHIP handles these correctly and they
+                // provide much better timekeeping than bare TSC/PIT.
 
                 cpuid_entries.push(CpuidEntry {
                     function: e.function,

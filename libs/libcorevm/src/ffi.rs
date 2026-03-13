@@ -461,9 +461,10 @@ pub extern "C" fn corevm_cmos_advance(handle: u64, ticks_32768: u64) -> u32 {
 
 /// Poll all device IRQ sources and inject any pending interrupts.
 ///
-/// Checks PS/2 keyboard (IRQ 1) and mouse (IRQ 12). If a device has pending
-/// data, raises the corresponding IRQ on the PIC and injects the resulting
-/// interrupt vector into vCPU 0. Returns the number of interrupts injected.
+/// Checks PS/2 keyboard (IRQ 1) and mouse (IRQ 12). Proactively drains
+/// device buffers and fires IRQs — does NOT rely on the `irq_needed` flag
+/// alone, since it may be set from a different thread (UI thread) without
+/// memory barriers.
 ///
 /// On Linux/KVM: uses KVM_IRQ_LINE to signal the in-kernel irqchip.
 /// The in-kernel PIC/IOAPIC/LAPIC handles vector injection automatically.
@@ -475,7 +476,18 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
 
             // PS/2 keyboard → IRQ 1, mouse → IRQ 12
             if let Some(ps2) = vm.ps2() {
-                if ps2.irq_needed {
+                // Proactively try to fill output buffer from device buffers.
+                // This ensures data injected from the UI thread (mouse_move)
+                // gets moved to the output buffer even if update_output_buffer
+                // was called while STATUS_OUTPUT_FULL was set.
+                ps2.try_fill_output();
+
+                // Fire IRQ if output buffer has data ready for the guest.
+                // Check the actual buffer state rather than relying solely
+                // on irq_needed (which may not be visible cross-thread).
+                let need_irq = ps2.irq_needed
+                    || (ps2.status & 0x01 != 0); // STATUS_OUTPUT_FULL
+                if need_irq {
                     ps2.irq_needed = false;
                     let is_mouse = (ps2.status & 0x20) != 0;
                     let irq: u8 = if is_mouse { 12 } else { 1 };
@@ -898,11 +910,41 @@ pub extern "C" fn corevm_fw_cfg_add_file(
     0
 }
 
+/// Set up direct kernel boot via fw_cfg legacy selectors.
+/// Parses a Linux bzImage, splits it into setup + kernel, computes addresses.
+#[no_mangle]
+pub extern "C" fn corevm_fw_cfg_set_kernel(
+    handle: u64,
+    kernel: *const u8, kernel_len: u32,
+    initrd: *const u8, initrd_len: u32,
+    cmdline: *const u8, cmdline_len: u32,
+) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+    if vm.fw_cfg_ptr.is_null() { return -1; }
+    let kernel_slice = if kernel.is_null() || kernel_len == 0 { &[] }
+        else { unsafe { core::slice::from_raw_parts(kernel, kernel_len as usize) } };
+    let initrd_slice = if initrd.is_null() || initrd_len == 0 { &[] }
+        else { unsafe { core::slice::from_raw_parts(initrd, initrd_len as usize) } };
+    let cmdline_slice = if cmdline.is_null() || cmdline_len == 0 { &[] }
+        else { unsafe { core::slice::from_raw_parts(cmdline, cmdline_len as usize) } };
+    let fw_cfg = unsafe { &mut *vm.fw_cfg_ptr };
+    fw_cfg.set_kernel(kernel_slice, initrd_slice, cmdline_slice);
+    0
+}
+
 /// Register all standard chipset devices into the VM.
 #[no_mangle]
 pub extern "C" fn corevm_setup_standard_devices(handle: u64) -> i32 {
     match get_vm(handle) {
-        Some(vm) => { vm.setup_standard_devices(); 0 }
+        Some(vm) => {
+            vm.setup_standard_devices();
+            // Map VGA LFB as a hypervisor memory region for fast access.
+            #[cfg(feature = "linux")]
+            if let Err(_) = vm.setup_vga_lfb_mapping() {
+                eprintln!("[corevm] Warning: failed to map VGA LFB as KVM region");
+            }
+            0
+        }
         None => -1,
     }
 }
@@ -1148,6 +1190,23 @@ pub extern "C" fn corevm_ps2_mouse_move(handle: u64, dx: i16, dy: i16, buttons: 
     }
 }
 
+/// Debug: query PS/2 mouse state.
+/// Returns: bit 0 = mouse_enabled, bits 8..15 = mouse_buffer length, bits 16..23 = keyboard_buffer length.
+/// Returns 0xFFFFFFFF if no PS/2 controller.
+#[no_mangle]
+pub extern "C" fn corevm_ps2_mouse_state(handle: u64) -> u32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return 0xFFFFFFFF };
+    match vm.ps2() {
+        Some(ps2) => {
+            let enabled = if ps2.mouse_enabled { 1u32 } else { 0 };
+            let mbuf = (ps2.mouse_buffer.len() as u32 & 0xFF) << 8;
+            let kbuf = (ps2.keyboard_buffer.len() as u32 & 0xFF) << 16;
+            enabled | mbuf | kbuf
+        }
+        None => 0xFFFFFFFF,
+    }
+}
+
 /// Get a pointer to the VGA framebuffer pixel data.
 /// Sets `*out_ptr` and `*out_len`. Returns 0 on success, -1 on error.
 /// Returns len=0 when in text mode (caller should use get_text_buffer instead).
@@ -1159,12 +1218,10 @@ pub extern "C" fn corevm_vga_get_framebuffer(
     if out_ptr.is_null() || out_len.is_null() { return -1; }
     match vm.svga() {
         Some(svga) => {
-            // Only return framebuffer in graphics modes; in text mode return empty
-            // so the caller falls through to get_text_buffer.
-            if svga.mode == crate::devices::svga::VgaMode::Text80x25 {
-                unsafe { *out_ptr = core::ptr::null(); *out_len = 0; }
-                return 0;
-            }
+            // Always return the full VRAM buffer. On KVM/WHP it is mapped as
+            // a hypervisor memory region and the guest writes directly to it.
+            // The caller can check corevm_vga_get_mode() if it needs to know
+            // whether the guest is in text or graphics mode.
             let fb = svga.get_framebuffer();
             unsafe {
                 *out_ptr = fb.as_ptr();
@@ -1232,6 +1289,30 @@ pub extern "C" fn corevm_vga_get_lfb_addr(handle: u64) -> u64 {
         }
     }
     0
+}
+
+/// Get the byte offset into VRAM where the display framebuffer starts.
+///
+/// bochs-drm (Linux DRM driver) uses VBE_DISPI_INDEX_X_OFFSET (reg 8) and
+/// VBE_DISPI_INDEX_Y_OFFSET (reg 9) to place its framebuffer at an arbitrary
+/// offset within VRAM.  The display start is at:
+///   `(y_offset * virt_width + x_offset) * bytes_per_pixel`
+///
+/// Returns the byte offset, or 0 if the offset registers are zero or on error.
+#[no_mangle]
+pub extern "C" fn corevm_vga_get_fb_offset(handle: u64) -> u64 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return 0 };
+    match vm.svga() {
+        Some(svga) => {
+            let x_off = svga.vbe_regs[8] as u64;   // VBE_DISPI_INDEX_X_OFFSET
+            let y_off = svga.vbe_regs[9] as u64;   // VBE_DISPI_INDEX_Y_OFFSET
+            let virt_w = svga.vbe_regs[6] as u64;  // VBE_DISPI_INDEX_VIRT_WIDTH
+            let bpp = svga.vbe_regs[3] as u64;     // VBE_DISPI_INDEX_BPP
+            let bytes_pp = (bpp + 7) / 8;
+            (y_off * virt_w + x_off) * bytes_pp
+        }
+        None => 0,
+    }
 }
 
 /// Get a pointer to the VGA text buffer (array of u16: char+attr pairs).

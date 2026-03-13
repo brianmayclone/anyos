@@ -61,8 +61,10 @@ pub struct FwCfg {
     selector: u16,
     /// Current read offset within the selected item's data.
     offset: usize,
-    /// Guest RAM size in bytes.
+    /// Guest RAM size below PCI hole (reported via FW_CFG_RAM_SIZE).
     ram_size: u64,
+    /// Guest RAM above 4 GB (relocated from PCI hole region).
+    ram_above_4g: u64,
     /// File directory entries.
     files: Vec<FwCfgFileEntry>,
     /// DMA address accumulator (high 32 bits written first).
@@ -71,6 +73,18 @@ pub struct FwCfg {
     ram_ptr: *mut u8,
     /// Size of guest RAM in bytes.
     ram_len: usize,
+    // --- Legacy kernel boot data (selectors 0x07-0x18) ---
+    kernel_addr: u32,
+    kernel_size: u32,
+    kernel_data: Vec<u8>,
+    initrd_addr: u32,
+    initrd_size: u32,
+    initrd_data: Vec<u8>,
+    cmdline_data: Vec<u8>,
+    setup_addr: u32,
+    setup_size: u32,
+    setup_data: Vec<u8>,
+    kernel_entry: u32,
 }
 
 // Safety: FwCfg is only used from the single VM thread.
@@ -90,16 +104,47 @@ struct FwCfgFileEntry {
 
 impl FwCfg {
     /// Create a new fw_cfg device with the given RAM size.
+    ///
+    /// `ram_size` is the total guest RAM in bytes. If it exceeds the PCI hole
+    /// start (0xE0000000 = 3.5 GB), FW_CFG_RAM_SIZE reports only the below-4G
+    /// portion and the excess is reported via e820 above 4 GB.
     pub fn new(ram_size: u64) -> Self {
-        FwCfg {
+        const PCI_HOLE_START: u64 = 0xE000_0000;
+        const PCI_HOLE_END: u64   = 0x1_0000_0000;
+
+        // RAM visible below the PCI hole.
+        let ram_below = if ram_size > PCI_HOLE_START { PCI_HOLE_START } else { ram_size };
+        // RAM relocated above 4 GB.
+        let ram_above_4g = if ram_size > PCI_HOLE_START { ram_size - PCI_HOLE_START } else { 0 };
+
+        let mut fw = FwCfg {
             selector: 0,
             offset: 0,
-            ram_size,
+            ram_size: ram_below,
+            ram_above_4g,
             files: Vec::new(),
             dma_addr_high: 0,
             ram_ptr: core::ptr::null_mut(),
             ram_len: 0,
+            kernel_addr: 0,
+            kernel_size: 0,
+            kernel_data: Vec::new(),
+            initrd_addr: 0,
+            initrd_size: 0,
+            initrd_data: Vec::new(),
+            cmdline_data: Vec::new(),
+            setup_addr: 0,
+            setup_size: 0,
+            setup_data: Vec::new(),
+            kernel_entry: 0,
+        };
+
+        // Tell SeaBIOS about RAM above 4 GB.
+        if ram_above_4g > 0 {
+            fw.add_file("etc/ram-size-over-4g", ram_above_4g.to_le_bytes().to_vec());
         }
+
+        fw
     }
 
     /// Set the guest RAM pointer for DMA operations.
@@ -109,6 +154,90 @@ impl FwCfg {
     pub fn set_ram(&mut self, ptr: *mut u8, len: usize) {
         self.ram_ptr = ptr;
         self.ram_len = len;
+    }
+
+    /// Set up direct kernel boot via legacy fw_cfg selectors.
+    ///
+    /// Parses a Linux bzImage, splits it into setup header and protected-mode
+    /// kernel, computes load addresses, and populates both legacy fw_cfg
+    /// selectors (0x07-0x18) and the `etc/linuxboot` file for linuxboot_dma.bin.
+    pub fn set_kernel(&mut self, bzimage: &[u8], initrd: &[u8], cmdline: &[u8]) {
+        if bzimage.len() < 0x202 {
+            return; // Too small to be a bzImage
+        }
+
+        // Parse the Linux boot protocol header.
+        // Offset 0x1F1: setup_sects (number of 512-byte setup sectors)
+        let setup_sects = bzimage[0x1F1] as u32;
+        let setup_sects = if setup_sects == 0 { 4 } else { setup_sects };
+        let setup_size = (setup_sects + 1) * 512;
+
+        // Split bzImage into setup header and protected-mode kernel.
+        let setup_end = (setup_size as usize).min(bzimage.len());
+        self.setup_data = bzimage[..setup_end].to_vec();
+        self.setup_size = setup_end as u32;
+        self.kernel_data = bzimage[setup_end..].to_vec();
+        self.kernel_size = self.kernel_data.len() as u32;
+
+        // Standard load addresses for bzImage boot.
+        self.setup_addr = 0x10000;  // Real-mode setup at 64KB
+        self.kernel_addr = 0x100000; // Protected-mode kernel at 1MB
+        self.kernel_entry = 0x100000;
+
+        // Command line at 0x20000 (128KB).
+        let mut cmdline_buf = cmdline.to_vec();
+        if !cmdline_buf.ends_with(&[0]) {
+            cmdline_buf.push(0);
+        }
+        self.cmdline_data = cmdline_buf;
+
+        // Initrd: load at top of low RAM minus initrd size, page-aligned.
+        self.initrd_data = initrd.to_vec();
+        self.initrd_size = initrd.len() as u32;
+        if !initrd.is_empty() {
+            let ram_top = self.ram_size as u32;
+            let initrd_addr = (ram_top - self.initrd_size) & !0xFFF;
+            self.initrd_addr = initrd_addr;
+        }
+
+        // Patch the setup header with initrd info and cmdline pointer.
+        // Offset 0x218: ramdisk_image (4 bytes LE)
+        // Offset 0x21C: ramdisk_size (4 bytes LE)
+        // Offset 0x228: cmd_line_ptr (4 bytes LE)
+        if self.setup_data.len() >= 0x230 {
+            let initrd_addr_bytes = self.initrd_addr.to_le_bytes();
+            self.setup_data[0x218..0x21C].copy_from_slice(&initrd_addr_bytes);
+            let initrd_size_bytes = self.initrd_size.to_le_bytes();
+            self.setup_data[0x21C..0x220].copy_from_slice(&initrd_size_bytes);
+            let cmdline_addr: u32 = 0x20000;
+            self.setup_data[0x228..0x22C].copy_from_slice(&cmdline_addr.to_le_bytes());
+
+            // Set type_of_loader to 0xFF (unknown bootloader).
+            self.setup_data[0x210] = 0xFF;
+            // Set loadflags: LOADED_HIGH (bit 0) = 1.
+            self.setup_data[0x211] |= 0x01;
+        }
+
+        // Create the etc/linuxboot file for linuxboot_dma.bin.
+        // Format: 8 x u32 LE (kernel_addr, kernel_size, setup_addr, setup_size,
+        //                       cmdline_addr, cmdline_size, initrd_addr, initrd_size)
+        let mut lb = Vec::with_capacity(32);
+        lb.extend_from_slice(&self.kernel_addr.to_le_bytes());
+        lb.extend_from_slice(&self.kernel_size.to_le_bytes());
+        lb.extend_from_slice(&self.setup_addr.to_le_bytes());
+        lb.extend_from_slice(&self.setup_size.to_le_bytes());
+        lb.extend_from_slice(&0x20000u32.to_le_bytes()); // cmdline_addr
+        lb.extend_from_slice(&(self.cmdline_data.len() as u32).to_le_bytes());
+        lb.extend_from_slice(&self.initrd_addr.to_le_bytes());
+        lb.extend_from_slice(&self.initrd_size.to_le_bytes());
+        self.add_file("etc/linuxboot", lb);
+
+        #[cfg(feature = "linux")]
+        eprintln!("[fw_cfg] kernel: setup={}B@{:#x} kernel={}B@{:#x} initrd={}B@{:#x} cmdline={}B",
+            self.setup_size, self.setup_addr,
+            self.kernel_size, self.kernel_addr,
+            self.initrd_size, self.initrd_addr,
+            self.cmdline_data.len());
     }
 
     /// Add a named file to the fw_cfg file directory.
@@ -178,11 +307,19 @@ impl FwCfg {
                 1u32.to_le_bytes().to_vec()
             }
             FW_CFG_E820_TABLE => {
-                // Additional e820 entries. SeaBIOS already gets RAM info from
-                // FW_CFG_RAM_SIZE and CMOS, so don't duplicate RAM entries here.
-                // Return 0 entries — SeaBIOS builds the full e820 map itself.
+                // Additional e820 entries for RAM above 4 GB.
+                // SeaBIOS builds the below-4G e820 map from FW_CFG_RAM_SIZE and CMOS.
                 let mut data = Vec::new();
-                data.extend_from_slice(&0u32.to_le_bytes()); // count = 0
+                if self.ram_above_4g > 0 {
+                    // One entry: RAM starting at 4 GB.
+                    data.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+                    // Each entry: address (u64 LE), length (u64 LE), type (u32 LE)
+                    data.extend_from_slice(&0x1_0000_0000u64.to_le_bytes()); // address = 4 GB
+                    data.extend_from_slice(&self.ram_above_4g.to_le_bytes()); // length
+                    data.extend_from_slice(&1u32.to_le_bytes()); // type 1 = RAM
+                } else {
+                    data.extend_from_slice(&0u32.to_le_bytes()); // count = 0
+                }
                 data
             }
             FW_CFG_FILE_DIR => {
@@ -208,6 +345,21 @@ impl FwCfg {
                 }
                 Vec::new()
             }
+            // Legacy kernel boot selectors (populated by set_kernel).
+            0x07 => self.kernel_addr.to_le_bytes().to_vec(), // FW_CFG_KERNEL_ADDR
+            0x08 => self.kernel_size.to_le_bytes().to_vec(), // FW_CFG_KERNEL_SIZE
+            0x09 => self.cmdline_data.clone(),               // FW_CFG_KERNEL_CMDLINE
+            0x0A => self.initrd_addr.to_le_bytes().to_vec(), // FW_CFG_INITRD_ADDR
+            0x0B => self.initrd_size.to_le_bytes().to_vec(), // FW_CFG_INITRD_SIZE
+            0x10 => self.kernel_entry.to_le_bytes().to_vec(),// FW_CFG_KERNEL_ENTRY
+            0x11 => self.kernel_data.clone(),                // FW_CFG_KERNEL_DATA
+            0x12 => self.initrd_data.clone(),                // FW_CFG_INITRD_DATA
+            0x13 => 0x20000u32.to_le_bytes().to_vec(),       // FW_CFG_CMDLINE_ADDR
+            0x14 => (self.cmdline_data.len() as u32).to_le_bytes().to_vec(), // FW_CFG_CMDLINE_SIZE
+            0x15 => self.cmdline_data.clone(),               // FW_CFG_CMDLINE_DATA
+            0x16 => self.setup_addr.to_le_bytes().to_vec(),  // FW_CFG_SETUP_ADDR
+            0x17 => self.setup_size.to_le_bytes().to_vec(),  // FW_CFG_SETUP_SIZE
+            0x18 => self.setup_data.clone(),                 // FW_CFG_SETUP_DATA
             _ => {
                 // Unknown key: return empty.
                 Vec::new()
@@ -401,7 +553,24 @@ impl IoHandler for FwCfg {
                 let low = u32::from_be(val);
                 let desc_addr = ((self.dma_addr_high as u64) << 32) | (low as u64);
                 #[cfg(feature = "linux")]
-                eprintln!("[fw_cfg] DMA transfer: desc_addr={:#x} sel={:#x}", desc_addr, self.selector);
+                {
+                    // Log the DMA descriptor details before processing
+                    if let Some(desc) = self.guest_read(desc_addr, 16) {
+                        let ctl = u32::from_be_bytes([desc[0], desc[1], desc[2], desc[3]]);
+                        let len = u32::from_be_bytes([desc[4], desc[5], desc[6], desc[7]]);
+                        let addr = u64::from_be_bytes([desc[8], desc[9], desc[10], desc[11],
+                                                       desc[12], desc[13], desc[14], desc[15]]);
+                        let new_sel = if ctl & 0x08 != 0 { (ctl >> 16) as u16 } else { self.selector };
+                        let op = if ctl & 0x02 != 0 { "READ" }
+                                 else if ctl & 0x04 != 0 { "SKIP" }
+                                 else if ctl & 0x10 != 0 { "WRITE" }
+                                 else { "NOP" };
+                        eprintln!("[fw_cfg] DMA {}: sel={:#x} len={} addr={:#x} (prev_sel={:#x})",
+                            op, new_sel, len, addr, self.selector);
+                    } else {
+                        eprintln!("[fw_cfg] DMA transfer: desc_addr={:#x} sel={:#x}", desc_addr, self.selector);
+                    }
+                }
                 self.process_dma(desc_addr);
                 self.dma_addr_high = 0;
             }

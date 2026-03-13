@@ -110,14 +110,17 @@ pub struct Svga {
     pub vbe_regs: [u16; 20],
 }
 
+/// VGA VRAM size: 8 MiB (matches VBE_DISPI_INDEX_VIDEO_MEMORY_64K = 128).
+pub const VGA_VRAM_SIZE: usize = 8 * 1024 * 1024;
+
 impl Svga {
     /// Create a new VGA adapter starting in 80x25 text mode.
     ///
-    /// The framebuffer is allocated large enough for the specified
-    /// resolution at 32 bpp (used when switching to linear framebuffer
-    /// mode).
+    /// The framebuffer is allocated at a fixed 8 MiB VRAM size (matching
+    /// the VBE-reported video memory). On `std` targets, it is page-aligned
+    /// so it can be mapped as a KVM/WHP memory region for fast guest access.
     pub fn new(width: u32, height: u32) -> Self {
-        let fb_size = (width * height * 4) as usize;
+        let fb_size = VGA_VRAM_SIZE;
         let mut dac_palette = [[0u8; 3]; 256];
 
         // Initialize the first 16 palette entries with standard VGA colors.
@@ -143,9 +146,23 @@ impl Svga {
             dac_palette[i] = *color;
         }
 
+        // Allocate framebuffer with page alignment for hypervisor mapping.
+        #[cfg(feature = "std")]
+        let framebuffer = {
+            use core::alloc::Layout;
+            let layout = Layout::from_size_align(fb_size, 4096).expect("invalid layout");
+            let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+            if ptr.is_null() {
+                panic!("Failed to allocate VGA VRAM ({} bytes)", fb_size);
+            }
+            unsafe { Vec::from_raw_parts(ptr, fb_size, fb_size) }
+        };
+        #[cfg(not(feature = "std"))]
+        let framebuffer = vec![0u8; fb_size];
+
         Svga {
             mode: VgaMode::Text80x25,
-            framebuffer: vec![0u8; fb_size],
+            framebuffer,
             text_buffer: vec![0x0720u16; 80 * 25], // space with light gray on black
             dac_palette,
             dac_write_index: 0,
@@ -198,6 +215,12 @@ impl Svga {
         &self.framebuffer
     }
 
+    /// Get a mutable raw pointer to the framebuffer for hypervisor mapping.
+    /// The buffer is page-aligned and VGA_VRAM_SIZE bytes.
+    pub fn framebuffer_mut_ptr(&mut self) -> *mut u8 {
+        self.framebuffer.as_mut_ptr()
+    }
+
     /// Get a reference to the text mode buffer.
     ///
     /// Each entry is a `u16`: low byte = ASCII character, high byte =
@@ -236,11 +259,15 @@ impl Svga {
         };
 
         let fb_size = (new_width as usize) * (new_height as usize) * ((new_bpp as usize + 7) / 8);
+        // The framebuffer is allocated at VGA_VRAM_SIZE (8 MiB). Do NOT resize
+        // it — the buffer may be mapped as a hypervisor memory region and
+        // reallocation would invalidate the mapping.
         if fb_size > self.framebuffer.len() {
-            self.framebuffer.resize(fb_size, 0);
+            // Mode exceeds VRAM — should not happen with 8MB VRAM.
+            return;
         }
-        // Clear the framebuffer on mode switch.
-        for byte in self.framebuffer.iter_mut() {
+        // Clear the active portion of the framebuffer on mode switch.
+        for byte in self.framebuffer[..fb_size].iter_mut() {
             *byte = 0;
         }
 
@@ -390,6 +417,16 @@ impl IoHandler for Svga {
                     if idx < self.attr_regs.len() {
                         self.attr_regs[idx] = byte;
                     }
+                    // Detect text/graphics mode from Attribute Mode Control (index 0x10)
+                    // Bit 0: 0 = text mode, 1 = graphics mode
+                    if idx == 0x10 {
+                        if byte & 0x01 == 0 {
+                            // Text mode
+                            if let VgaMode::LinearFramebuffer { .. } | VgaMode::Graphics320x200x256 | VgaMode::Graphics640x480x16 = self.mode {
+                                self.mode = VgaMode::Text80x25;
+                            }
+                        }
+                    }
                 }
                 self.attr_flip_flop = !self.attr_flip_flop;
             }
@@ -431,6 +468,17 @@ impl IoHandler for Svga {
                 let idx = (self.gc_index & 0x0F) as usize;
                 if idx < self.gc_regs.len() {
                     self.gc_regs[idx] = byte;
+                }
+                // Detect text/graphics mode from GC register 6 (Miscellaneous)
+                // Bits 3:2 = memory map: 11 = 0xB8000 (color text), 10 = 0xB0000 (mono text)
+                if idx == 6 {
+                    let mem_map = (byte >> 2) & 3;
+                    if mem_map >= 2 {
+                        // Text mode memory map (0xB0000 or 0xB8000)
+                        if let VgaMode::LinearFramebuffer { .. } | VgaMode::Graphics320x200x256 | VgaMode::Graphics640x480x16 = self.mode {
+                            self.mode = VgaMode::Text80x25;
+                        }
+                    }
                 }
             }
             0x3D4 => self.crtc_index = byte,

@@ -61,16 +61,26 @@ pub struct Cmos {
 impl Cmos {
     /// Create a new CMOS device pre-populated with memory size information.
     ///
-    /// `ram_size_bytes` is the total guest RAM size. The constructor populates
-    /// the base memory (640 KB), extended memory (above 1 MB), and extended
-    /// memory above 16 MB fields in the NVRAM.
+    /// `ram_size_bytes` is the total guest RAM size. CMOS reports only the
+    /// portion below the PCI hole (3.5 GB). RAM above that is relocated
+    /// above 4 GB and reported via fw_cfg/e820 instead.
     pub fn new(ram_size_bytes: usize) -> Self {
+        const PCI_HOLE_START: usize = 0xE000_0000; // 3.5 GB
+        const PCI_HOLE_END: usize   = 0x1_0000_0000; // 4 GB
+
+        // RAM below PCI hole (for below-4G CMOS fields).
+        let ram_below = if ram_size_bytes > PCI_HOLE_START { PCI_HOLE_START } else { ram_size_bytes };
+        // RAM above 4 GB (relocated from the PCI hole region).
+        let ram_above_4g: usize = if ram_size_bytes > PCI_HOLE_START { ram_size_bytes - PCI_HOLE_START } else { 0 };
+
         let mut data = [0u8; 128];
 
         // Status Register A: divider = 010 (32.768 kHz), rate = 0110 (1024 Hz).
         data[0x0A] = 0x26;
-        // Status Register B: 24-hour mode, binary (not BCD), no interrupts.
-        data[0x0B] = 0x02 | 0x04; // bit 1 = 24h, bit 2 = binary
+        // Status Register B: 24-hour mode, BCD format, no interrupts.
+        // BCD is the standard for PC-compatible RTC and is what SeaBIOS
+        // and Linux expect by default.
+        data[0x0B] = 0x02; // bit 1 = 24h, bit 2 = 0 → BCD mode
         // Status Register C: no interrupt flags pending.
         data[0x0C] = 0x00;
         // Status Register D: RTC valid (battery OK).
@@ -93,8 +103,8 @@ impl Cmos {
         // Registers 0x17/0x18 and 0x30/0x31 represent only the 1MB-16MB range,
         // capped at 15360 KB (= 15 MB = 16 MB - 1 MB). Memory above 16 MB is
         // reported separately in registers 0x34/0x35.
-        let extended_kb = if ram_size_bytes > 1024 * 1024 {
-            let ext = (ram_size_bytes - 1024 * 1024) / 1024;
+        let extended_kb = if ram_below > 1024 * 1024 {
+            let ext = (ram_below - 1024 * 1024) / 1024;
             // Cap at 15360 KB (the 1MB-16MB range).
             if ext > 15360 { 15360u16 } else { ext as u16 }
         } else {
@@ -105,9 +115,9 @@ impl Cmos {
         data[0x30] = extended_kb as u8;
         data[0x31] = (extended_kb >> 8) as u8;
 
-        // Extended memory above 16 MB (in 64 KB units).
-        let above_16mb = if ram_size_bytes > 16 * 1024 * 1024 {
-            let units = (ram_size_bytes - 16 * 1024 * 1024) / (64 * 1024);
+        // Extended memory above 16 MB (in 64 KB units), below PCI hole only.
+        let above_16mb = if ram_below > 16 * 1024 * 1024 {
+            let units = (ram_below - 16 * 1024 * 1024) / (64 * 1024);
             if units > 0xFFFF { 0xFFFF } else { units as u16 }
         } else {
             0
@@ -115,8 +125,68 @@ impl Cmos {
         data[0x34] = above_16mb as u8;
         data[0x35] = (above_16mb >> 8) as u8;
 
-        // Century register: BCD 0x20 for year 20xx.
-        data[0x32] = 0x20;
+        // Memory above 4 GB in 64KB units (CMOS registers 0x5B-0x5D, 3 bytes).
+        // SeaBIOS reads these for RamSizeOver4G.
+        if ram_above_4g > 0 {
+            let units_64k = ram_above_4g / (64 * 1024);
+            data[0x5B] = units_64k as u8;
+            data[0x5C] = (units_64k >> 8) as u8;
+            data[0x5D] = (units_64k >> 16) as u8;
+        }
+
+        // Initialize RTC time from host clock (UTC).
+        // Register B bit 2 = binary mode, bit 1 = 24h mode.
+        #[cfg(feature = "std")]
+        {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            // BCD encoding helper
+            let bin2bcd = |v: u8| -> u8 { ((v / 10) << 4) | (v % 10) };
+            // Convert Unix timestamp to broken-down time (UTC).
+            let days = secs / 86400;
+            let day_secs = secs % 86400;
+            let sec = (day_secs % 60) as u8;
+            let min = ((day_secs / 60) % 60) as u8;
+            let hour = (day_secs / 3600) as u8;
+            data[0x00] = bin2bcd(sec);
+            data[0x02] = bin2bcd(min);
+            data[0x04] = bin2bcd(hour);
+            // Day-of-week: 1970-01-01 was Thursday (day_of_week=4).
+            data[0x06] = ((days + 4) % 7 + 1) as u8;    // 1=Sun..7=Sat (not BCD)
+            // Year/month/day from days since 1970-01-01.
+            let (y, m, d) = {
+                let mut y = 1970u32;
+                let mut rem = days;
+                loop {
+                    let ydays = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366u64 } else { 365 };
+                    if rem < ydays { break; }
+                    rem -= ydays;
+                    y += 1;
+                }
+                let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+                let mdays: [u8; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+                let mut m = 0u32;
+                for md in &mdays {
+                    if rem < *md as u64 { break; }
+                    rem -= *md as u64;
+                    m += 1;
+                }
+                (y, m + 1, rem as u32 + 1)
+            };
+            data[0x07] = bin2bcd(d as u8);
+            data[0x08] = bin2bcd(m as u8);
+            data[0x09] = bin2bcd((y % 100) as u8);
+            data[0x32] = bin2bcd((y / 100) as u8);       // century (BCD)
+            eprintln!("[cmos] RTC init: {}-{:02}-{:02} {:02}:{:02}:{:02} UTC (BCD regs: yr={:#x} cen={:#x})",
+                y, m, d, hour, min, sec, data[0x09], data[0x32]);
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            // Century register: BCD 0x20 for year 20xx.
+            data[0x32] = 0x20;
+        }
 
         Cmos {
             index: 0,
