@@ -103,6 +103,9 @@ typedef struct {
     int         image_size; /* MiB */
     int         fs_start;   /* sector */
     int         reset;      /* 1 = force full rebuild, 0 = incremental if possible */
+    const char *boot_cfg;   /* Path to boot.cfg */
+    const char *boot_logo;  /* Path to boot_logo.bin (RGBA format) */
+    const char *boot_font;  /* Path to boot_font.bin (8x16 bitmap font) */
 } Args;
 
 /* ── FAT16 formatter state ────────────────────────────────────────────── */

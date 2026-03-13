@@ -140,6 +140,67 @@ uint64_t read_le64(const uint8_t *p) {
     return (uint64_t)read_le32(p) | ((uint64_t)read_le32(p + 4) << 32);
 }
 
+/* ── Boot logo RGBA→RGB conversion with nearest-neighbor downscale ────── */
+
+/*
+ * Convert RGBA boot logo to RGB for bootloader (downscale to fit 8 KB).
+ * Input: [width:u32 LE][height:u32 LE][RGBA pixels]
+ * Output: [width:u32 LE][height:u32 LE][RGB pixels] (black = transparent)
+ * Returns allocated buffer, sets *out_size. NULL on error.
+ */
+static uint8_t *convert_logo_for_bootloader(const uint8_t *data, size_t size,
+                                             size_t *out_size) {
+    if (size < 8) return NULL;
+    uint32_t src_w = read_le32(data);
+    uint32_t src_h = read_le32(data + 4);
+    if (src_w == 0 || src_h == 0) return NULL;
+    if (size < 8 + (size_t)src_w * src_h * 4) return NULL;
+
+    /* Max pixels that fit: (8192 - 8 header) / 3 = 2728 → ~52x52 */
+    uint32_t max_pixels = (8192 - 8) / 3;
+    uint32_t max_dim = 52;
+
+    uint32_t dst_w, dst_h;
+    if (src_w <= max_dim && src_h <= max_dim &&
+        (size_t)src_w * src_h <= max_pixels) {
+        dst_w = src_w;
+        dst_h = src_h;
+    } else {
+        /* Scale down so max(w,h) = max_dim */
+        uint32_t bigger = src_w > src_h ? src_w : src_h;
+        dst_w = (uint32_t)((uint64_t)src_w * max_dim / bigger);
+        dst_h = (uint32_t)((uint64_t)src_h * max_dim / bigger);
+        if (dst_w == 0) dst_w = 1;
+        if (dst_h == 0) dst_h = 1;
+    }
+
+    size_t buf_size = 8 + (size_t)dst_w * dst_h * 3;
+    uint8_t *buf = malloc(buf_size);
+    if (!buf) return NULL;
+
+    write_le32(buf, dst_w);
+    write_le32(buf + 4, dst_h);
+
+    const uint8_t *pixels = data + 8;
+    uint8_t *out = buf + 8;
+    for (uint32_t y = 0; y < dst_h; y++) {
+        uint32_t sy = y * src_h / dst_h;
+        for (uint32_t x = 0; x < dst_w; x++) {
+            uint32_t sx = x * src_w / dst_w;
+            const uint8_t *p = pixels + ((size_t)sy * src_w + sx) * 4;
+            uint8_t a = p[3];
+            /* Pre-multiply with alpha, black background for transparent */
+            out[0] = (uint8_t)((uint16_t)p[0] * a / 255);
+            out[1] = (uint8_t)((uint16_t)p[1] * a / 255);
+            out[2] = (uint8_t)((uint16_t)p[2] * a / 255);
+            out += 3;
+        }
+    }
+
+    *out_size = buf_size;
+    return buf;
+}
+
 /* ── BIOS image creation ──────────────────────────────────────────────── */
 
 void create_bios_image(const Args *args) {
@@ -165,7 +226,7 @@ void create_bios_image(const Args *args) {
     free(kelf);
 
     uint32_t kernel_sectors = (uint32_t)((flat_size + SECTOR_SIZE - 1) / SECTOR_SIZE);
-    uint32_t kernel_start = 64;
+    uint32_t kernel_start = 100;
 
     printf("Stage 1: %zu bytes (1 sector)\n", s1_size);
     printf("Stage 2: %zu bytes (%zu sectors)\n", s2_size,
@@ -178,10 +239,16 @@ void create_bios_image(const Args *args) {
         fatal("kernel ends at sector %u, overlaps filesystem at sector %d",
               kernel_end, args->fs_start);
 
-    /* Patch stage2 with kernel location */
-    if (s2_size >= 8) {
+    /* Patch stage2 with kernel location and boot resource locations */
+    if (s2_size >= 20) {
         write_le16(s2 + 2, (uint16_t)kernel_sectors);
         write_le32(s2 + 4, kernel_start);
+        write_le16(s2 + 8,  64);   /* config_lba */
+        write_le16(s2 + 10, 16);   /* config_sectors */
+        write_le16(s2 + 12, 80);   /* logo_lba */
+        write_le16(s2 + 14, 16);   /* logo_sectors */
+        write_le16(s2 + 16, 96);   /* font_lba */
+        write_le16(s2 + 18, 4);    /* font_sectors */
     }
 
     /* Create or load image */
@@ -218,6 +285,64 @@ void create_bios_image(const Args *args) {
     /* Always write boot sectors + kernel (even in incremental mode) */
     memcpy(image, s1, s1_size);
     memcpy(image + SECTOR_SIZE, s2, s2_size);
+
+    /* Write boot.cfg to sectors 64-79 (8 KB, zero-padded) */
+    {
+        uint8_t *cfg_area = image + 64 * SECTOR_SIZE;
+        memset(cfg_area, 0, 16 * SECTOR_SIZE);
+        if (args->boot_cfg) {
+            size_t cfg_size;
+            uint8_t *cfg = read_file(args->boot_cfg, &cfg_size);
+            if (!cfg) fatal("cannot read boot.cfg '%s'", args->boot_cfg);
+            if (cfg_size > 16 * SECTOR_SIZE)
+                cfg_size = 16 * SECTOR_SIZE;
+            memcpy(cfg_area, cfg, cfg_size);
+            free(cfg);
+            printf("boot.cfg: %s (%zu bytes)\n", args->boot_cfg, cfg_size);
+        } else {
+            const char *default_cfg = "timeout=3\ndefault=0\n\n[anyOS]\nkernel=0\n";
+            memcpy(cfg_area, default_cfg, strlen(default_cfg));
+            printf("boot.cfg: default (built-in)\n");
+        }
+    }
+
+    /* Write boot_logo.bin to sectors 80-95 (8 KB) */
+    {
+        uint8_t *logo_area = image + 80 * SECTOR_SIZE;
+        memset(logo_area, 0, 16 * SECTOR_SIZE);
+        if (args->boot_logo) {
+            size_t logo_size;
+            uint8_t *logo = read_file(args->boot_logo, &logo_size);
+            if (!logo) fatal("cannot read boot logo '%s'", args->boot_logo);
+            size_t rgb_size;
+            uint8_t *rgb = convert_logo_for_bootloader(logo, logo_size, &rgb_size);
+            free(logo);
+            if (!rgb) fatal("boot logo conversion failed");
+            if (rgb_size > 16 * SECTOR_SIZE)
+                rgb_size = 16 * SECTOR_SIZE;
+            memcpy(logo_area, rgb, rgb_size);
+            free(rgb);
+            printf("boot_logo: %s (converted to %zu bytes RGB)\n",
+                   args->boot_logo, rgb_size);
+        }
+    }
+
+    /* Write boot_font.bin to sectors 96-99 (2 KB) */
+    {
+        uint8_t *font_area = image + 96 * SECTOR_SIZE;
+        memset(font_area, 0, 4 * SECTOR_SIZE);
+        if (args->boot_font) {
+            size_t font_size;
+            uint8_t *font = read_file(args->boot_font, &font_size);
+            if (!font) fatal("cannot read boot font '%s'", args->boot_font);
+            if (font_size > 4 * SECTOR_SIZE)
+                font_size = 4 * SECTOR_SIZE;
+            memcpy(font_area, font, font_size);
+            free(font);
+            printf("boot_font: %s (%zu bytes)\n", args->boot_font, font_size);
+        }
+    }
+
     memcpy(image + (size_t)kernel_start * SECTOR_SIZE, kernel, flat_size);
 
     /* Write MBR partition table (bytes 446-509 of sector 0).
@@ -623,6 +748,12 @@ static int parse_args(int argc, char **argv, Args *args) {
             args->image_size = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--fs-start") == 0 && i + 1 < argc) {
             args->fs_start = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--boot-cfg") == 0 && i + 1 < argc) {
+            args->boot_cfg = argv[++i];
+        } else if (strcmp(argv[i], "--boot-logo") == 0 && i + 1 < argc) {
+            args->boot_logo = argv[++i];
+        } else if (strcmp(argv[i], "--boot-font") == 0 && i + 1 < argc) {
+            args->boot_font = argv[++i];
         } else if (strcmp(argv[i], "--reset") == 0) {
             args->reset = 1;
         } else if (strcmp(argv[i], "-h") == 0 ||
