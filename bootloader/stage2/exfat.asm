@@ -37,27 +37,31 @@ exfat_init:
     mov ecx, 1
     call load_sectors_32
 
+    ; Use ESI as base pointer for TEMP_BUFFER accesses
+    ; (TEMP_BUFFER = 0x10000 exceeds 16-bit, needs 32-bit addressing)
+    mov esi, TEMP_BUFFER
+
     ; Verify "EXFAT   " signature at offset 3
-    cmp dword [TEMP_BUFFER + 3], 'EXFA'
+    a32 cmp dword [esi + 3], 'EXFA'
     jne .init_fail
-    cmp dword [TEMP_BUFFER + 7], 'T   '
+    a32 cmp dword [esi + 7], 'T   '
     jne .init_fail
 
     ; Validate BytesPerSectorShift == 9
-    cmp byte [TEMP_BUFFER + 108], 9
+    a32 cmp byte [esi + 108], 9
     jne .init_fail
 
     ; Parse boot sector fields
-    mov eax, [TEMP_BUFFER + 80]        ; FatOffset
+    a32 mov eax, [esi + 80]            ; FatOffset
     mov [exfat_fat_offset], eax
-    mov eax, [TEMP_BUFFER + 88]        ; ClusterHeapOffset
+    a32 mov eax, [esi + 88]            ; ClusterHeapOffset
     mov [exfat_heap_offset], eax
-    mov eax, [TEMP_BUFFER + 96]        ; FirstClusterOfRootDirectory
+    a32 mov eax, [esi + 96]            ; FirstClusterOfRootDirectory
     mov [exfat_root_cluster], eax
     mov [exfat_cur_dir_cluster], eax
-    mov al, [TEMP_BUFFER + 108]        ; BytesPerSectorShift
+    a32 mov al, [esi + 108]            ; BytesPerSectorShift
     mov [exfat_bps_shift], al
-    mov al, [TEMP_BUFFER + 109]        ; SectorsPerClusterShift
+    a32 mov al, [esi + 109]            ; SectorsPerClusterShift
     mov [exfat_spc_shift], al
 
     popa
@@ -398,7 +402,9 @@ exfat_read_file:
 
     ; Contiguous: single read from FirstCluster
     mov eax, [_rf_first_cluster]
+    push ecx                   ; Save sector count (exfat_cluster_to_lba clobbers ECX)
     call exfat_cluster_to_lba
+    pop ecx                    ; Restore sector count
     call load_sectors_32       ; EDI advances
     jmp .rf_done
 
