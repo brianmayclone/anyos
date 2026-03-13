@@ -394,10 +394,17 @@ void create_bios_image(const Args *args) {
                 boot_dir = exfat_create_dir(&exfat, exfat.root_cluster, "boot",
                                             0, 0, 0755, time(NULL));
 
+            /* Delete existing entries first (sysroot may have already added them) */
+            ExFatNode *boot_tree = exfat_read_dir_tree(&exfat, boot_dir);
+
             if (args->boot_cfg) {
                 size_t sz;
                 uint8_t *d = read_file(args->boot_cfg, &sz);
                 if (d) {
+                    if (boot_tree) {
+                        ExFatNode *old = exfat_find_child(boot_tree, "boot.cfg");
+                        if (old) { exfat_free_clusters(&exfat, old); exfat_delete_entry(&exfat, old); }
+                    }
                     exfat_add_file(&exfat, boot_dir, "boot.cfg", d, sz, 0, 0, 0644, time(NULL));
                     free(d);
                     printf("  /boot/boot.cfg (%zu bytes)\n", sz);
@@ -411,6 +418,10 @@ void create_bios_image(const Args *args) {
                     uint8_t *rgb = convert_logo_for_bootloader(d, sz, &rgb_sz);
                     free(d);
                     if (rgb) {
+                        if (boot_tree) {
+                            ExFatNode *old = exfat_find_child(boot_tree, "logo.bin");
+                            if (old) { exfat_free_clusters(&exfat, old); exfat_delete_entry(&exfat, old); }
+                        }
                         exfat_add_file(&exfat, boot_dir, "logo.bin", rgb, rgb_sz, 0, 0, 0644, time(NULL));
                         free(rgb);
                         printf("  /boot/logo.bin (%zu bytes)\n", rgb_sz);
@@ -421,11 +432,16 @@ void create_bios_image(const Args *args) {
                 size_t sz;
                 uint8_t *d = read_file(args->boot_font, &sz);
                 if (d) {
+                    if (boot_tree) {
+                        ExFatNode *old = exfat_find_child(boot_tree, "font.bin");
+                        if (old) { exfat_free_clusters(&exfat, old); exfat_delete_entry(&exfat, old); }
+                    }
                     exfat_add_file(&exfat, boot_dir, "font.bin", d, sz, 0, 0, 0644, time(NULL));
                     free(d);
                     printf("  /boot/font.bin (%zu bytes)\n", sz);
                 }
             }
+            if (boot_tree) exfat_free_tree(boot_tree);
         }
 
         exfat_flush(&exfat);

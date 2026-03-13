@@ -187,6 +187,7 @@ stage2_entry:
     mov edi, LOGO_LOAD_ADDR
     call exfat_read_file
     jc .exfat_skip_logo
+    mov word [logo_sectors], 1     ; Signal splash/menu that logo is loaded
     SERIAL_OUT 'L'
 .exfat_skip_logo:
 

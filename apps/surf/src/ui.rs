@@ -62,6 +62,14 @@ pub(crate) fn update_status() {
     let st = crate::state();
     let text = st.tabs[st.active_tab].status_text.clone();
     st.status_label.set_text(&text);
+
+    // Update the URL progress bar visibility.
+    let loading = st.tabs[st.active_tab].is_loading;
+    st.url_progress.set_visible(loading);
+    if loading {
+        // Indeterminate style: show full bar animating.
+        st.url_progress.set_state(100);
+    }
 }
 
 /// Rebuild the tab-bar labels from all open tabs and highlight the active one.
@@ -74,11 +82,11 @@ pub(crate) fn update_tab_labels() {
         }
         let label = tab.tab_label();
         // Truncate overly long tab labels to keep the tab bar readable.
-        if label.len() > 20 {
-            labels.push_str(&label[..20]);
+        if label.len() > 24 {
+            labels.push_str(&label[..24]);
             labels.push_str("...");
         } else {
-            labels.push_str(label);
+            labels.push_str(&label);
         }
     }
     st.tab_bar_view.set_text(&labels);
@@ -132,17 +140,11 @@ pub(crate) fn close_tab(idx: usize) {
 // DevTools console panel
 // ═══════════════════════════════════════════════════════════
 
-/// Toggle the DevTools console panel open/closed.
+/// Toggle the DevTools console window open/closed.
 pub(crate) fn toggle_devtools() {
     let st = crate::state();
     st.devtools_open = !st.devtools_open;
-    let (label, height) = if st.devtools_open {
-        ("DevTools \u{25B2}", 200u32)   // ▲
-    } else {
-        ("DevTools \u{25BC}", 0u32)     // ▼
-    };
-    st.btn_devtools.set_text(label);
-    st.devtools_panel.set_size(0, height);
+    st.devtools_win.set_visible(st.devtools_open);
     if st.devtools_open {
         update_devtools();
     }

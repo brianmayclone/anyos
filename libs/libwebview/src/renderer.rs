@@ -1,11 +1,10 @@
-//! Per-tile canvas renderer with compositor-driven smooth scrolling.
+//! Display-list renderer with compositor-driven smooth scrolling.
 //!
-//! Static content (text, backgrounds, borders, images) is drawn into cached
-//! tile strips (doc_width × 256px).  Each tile is a separate Canvas control
-//! positioned at its document Y coordinate inside the content_view.  The
-//! compositor's ScrollView handles smooth pixel-level scrolling natively —
-//! zero per-frame work from the application.  Only new tiles entering the
-//! pre-render zone are rasterized and created (~900 KB each).
+//! After layout, the tree is flattened into a sorted `Vec<DrawCmd>` (the
+//! display list).  Each tile is rasterized by binary-searching for the
+//! first command that overlaps the tile Y range, then linearly executing
+//! commands until they fall below the tile.  This is O(k) per tile where
+//! k = commands visible in the tile, compared to O(n) for a full tree walk.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -20,9 +19,6 @@ use crate::style::TextDeco;
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Maximum total decoded image bytes in the cache (128 MiB).
-/// With the mmap-backed allocator providing access to the full 512 MiB mmap
-/// region, we can afford a generous image cache.  LRU eviction ensures the
-/// cache stays within budget even on image-heavy pages.
 const IMAGE_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
 
 /// Image cache entry (decoded pixel data).
@@ -43,9 +39,6 @@ impl ImageEntry {
 }
 
 /// LRU cache of decoded images with a total byte-size cap.
-///
-/// When inserting a new image would exceed `IMAGE_CACHE_MAX_BYTES`,
-/// the least-recently-used entries are evicted until there is room.
 pub struct ImageCache {
     pub entries: Vec<ImageEntry>,
     generation: u64,
@@ -68,8 +61,7 @@ impl ImageCache {
         None
     }
 
-    /// Read-only lookup (no LRU bump).  Used by the pixel walk where we
-    /// cannot hold a `&mut ImageCache`.
+    /// Read-only lookup (no LRU bump).
     pub fn get_ref(&self, src: &str) -> Option<&ImageEntry> {
         self.entries.iter().find(|e| e.src == src)
     }
@@ -78,7 +70,6 @@ impl ImageCache {
     pub fn add(&mut self, src: String, pixels: Vec<u32>, width: u32, height: u32) {
         let new_bytes = pixels.len() * 4;
 
-        // Replace existing entry for the same URL.
         if let Some(entry) = self.entries.iter_mut().find(|e| e.src == src) {
             self.total_bytes -= entry.byte_size();
             entry.pixels = pixels;
@@ -104,7 +95,6 @@ impl ImageCache {
         self.total_bytes = 0;
     }
 
-    /// Evict LRU entries until total_bytes ≤ IMAGE_CACHE_MAX_BYTES.
     fn evict_to_budget(&mut self) {
         while self.total_bytes > IMAGE_CACHE_MAX_BYTES && !self.entries.is_empty() {
             let min_idx = self.entries.iter().enumerate()
@@ -118,12 +108,9 @@ impl ImageCache {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Hit regions (for link/submit click handling on the canvas)
+// Hit regions
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// A clickable region on the canvas.
-///
-/// Coordinates are in **absolute document space** (not canvas-local).
 pub struct HitRegion {
     pub x: i32,
     pub y: i32,
@@ -132,11 +119,8 @@ pub struct HitRegion {
     pub kind: HitKind,
 }
 
-/// The kind of a clickable hit region.
 pub enum HitKind {
-    /// A hyperlink with URL.
     Link(String),
-    /// A form submit button with DOM node_id.
     Submit(usize),
 }
 
@@ -144,109 +128,336 @@ pub enum HitKind {
 // Persistent form controls
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// A persistent form control — created once, updated on relayout.
 pub struct FormControl {
-    /// The libanyui control ID.
     pub control_id: u32,
-    /// The DOM node ID of the form element.
     pub node_id: usize,
-    /// The form field kind.
     pub kind: FormFieldKind,
-    /// The input name attribute (for form submission).
     pub name: String,
-    /// Whether this control was seen during the current render pass.
     seen: bool,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Display list — flat, Y-sorted draw commands
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A single draw command in absolute document coordinates.
+struct DrawCmd {
+    /// Absolute document X.
+    x: i32,
+    /// Absolute document Y (sort key).
+    y: i32,
+    /// Width of the drawn element.
+    w: i32,
+    /// Height of the drawn element.
+    h: i32,
+    /// The drawing operation.
+    kind: DrawKind,
+}
+
+enum DrawKind {
+    /// Fill a rectangle with a solid or alpha-blended color.
+    Rect { color: u32 },
+    /// Draw a text string.
+    Text { color: u32, font_id: u32, font_size: u16, text: String },
+    /// Blit an image (looked up from ImageCache by src URL at rasterize time).
+    Image { src: String },
+}
+
+/// A Y-sorted display list built from the layout tree.
+///
+/// Replacing the recursive `walk_pixels` tree walk with a flat sorted list
+/// allows O(log n + k) tile rasterization (binary search + k visible commands)
+/// instead of O(n) per tile.
+pub(crate) struct DisplayList {
+    cmds: Vec<DrawCmd>,
+    /// Maximum command height seen — used as search margin for binary search.
+    max_h: i32,
+}
+
+impl DisplayList {
+    pub fn new() -> Self {
+        Self { cmds: Vec::new(), max_h: 0 }
+    }
+
+    /// Build the display list from a layout tree.  Walks the tree once,
+    /// emitting DrawCmds for every visible element, then sorts by Y.
+    pub fn build(root: &LayoutBox) -> Self {
+        let mut dl = DisplayList { cmds: Vec::new(), max_h: 0 };
+        dl.flatten(root, 0, 0);
+        dl.cmds.sort_unstable_by_key(|c| c.y);
+        dl
+    }
+
+    /// Clear the display list (called on relayout / navigation).
+    pub fn clear(&mut self) {
+        self.cmds.clear();
+        self.max_h = 0;
+    }
+
+    /// Find the first command index whose Y >= `y_min` using binary search.
+    fn search_start(&self, y_min: i32) -> usize {
+        self.cmds.partition_point(|c| c.y < y_min)
+    }
+
+    /// Rasterize all commands overlapping `[tile_y_start, tile_y_end)` into `buf`.
+    pub fn rasterize_tile(
+        &self,
+        images: &ImageCache,
+        buf: *mut u32,
+        stride: u32,
+        buf_h: u32,
+        tile_y_start: i32,
+        tile_y_end: i32,
+    ) {
+        // Search for the first command that could overlap the tile.
+        // A command at y with height h overlaps if y + h > tile_y_start,
+        // i.e. y > tile_y_start - h.  We use max_h as conservative upper bound.
+        let search_y = tile_y_start - self.max_h;
+        let start = self.search_start(search_y);
+
+        for i in start..self.cmds.len() {
+            let cmd = &self.cmds[i];
+            // Past the tile — all remaining commands are below (sorted by Y).
+            if cmd.y >= tile_y_end {
+                break;
+            }
+            // Check overlap: command bottom > tile top.
+            if cmd.y + cmd.h <= tile_y_start {
+                continue;
+            }
+
+            let draw_y = cmd.y - tile_y_start;
+
+            match &cmd.kind {
+                DrawKind::Rect { color } => {
+                    fill_rect_buf(buf, stride, buf_h, cmd.x, draw_y, cmd.w, cmd.h, *color);
+                }
+                DrawKind::Text { color, font_id, font_size, text } => {
+                    libfont_client::draw_string_buf(
+                        buf, stride, buf_h,
+                        cmd.x, draw_y,
+                        *color, *font_id, *font_size,
+                        text,
+                    );
+                }
+                DrawKind::Image { src } => {
+                    if let Some(entry) = images.get_ref(src) {
+                        blit_image_buf(
+                            buf, stride, buf_h,
+                            cmd.x, draw_y, cmd.w, cmd.h,
+                            &entry.pixels, entry.width, entry.height,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Recursively flatten the layout tree into draw commands.
+    fn flatten(&mut self, bx: &LayoutBox, offset_x: i32, offset_y: i32) {
+        if bx.visibility_hidden {
+            return;
+        }
+
+        let abs_x = if bx.is_fixed { bx.x } else { offset_x + bx.x };
+        let abs_y = if bx.is_fixed { bx.y } else { offset_y + bx.y };
+
+        // Background.
+        if bx.bg_color != 0 && bx.bg_color != 0x00000000 {
+            self.push(abs_x, abs_y, bx.width, bx.height, DrawKind::Rect { color: bx.bg_color });
+        }
+
+        // Border (4 edges).
+        if bx.border_width > 0 && bx.border_color != 0 && bx.border_color != 0x00000000 {
+            let bw = bx.border_width;
+            let w = bx.width;
+            let h = bx.height;
+            self.push(abs_x, abs_y, w, bw, DrawKind::Rect { color: bx.border_color });
+            self.push(abs_x, abs_y + h - bw, w, bw, DrawKind::Rect { color: bx.border_color });
+            let inner_h = (h - bw * 2).max(0);
+            self.push(abs_x, abs_y + bw, bw, inner_h, DrawKind::Rect { color: bx.border_color });
+            self.push(abs_x + w - bw, abs_y + bw, bw, inner_h, DrawKind::Rect { color: bx.border_color });
+        }
+
+        // Horizontal rule.
+        if bx.is_hr {
+            self.push(abs_x, abs_y, bx.width, 1, DrawKind::Rect { color: 0xFF999999 });
+        }
+
+        // List marker.
+        if let Some(ref marker) = bx.list_marker {
+            let font_size = bx.font_size.max(1) as u16;
+            let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
+            self.push(abs_x - 20, abs_y, 20, bx.height,
+                DrawKind::Text { color, font_id: 0, font_size, text: marker.clone() });
+        }
+
+        // Text fragment.
+        if let Some(ref text) = bx.text {
+            if !text.is_empty() && bx.form_field.is_none() {
+                let font_id = if bx.bold { 1u32 } else if bx.italic { 3u32 } else { 0u32 };
+                let font_size = bx.font_size.max(1) as u16;
+                let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
+
+                self.push(abs_x, abs_y, bx.width, bx.height,
+                    DrawKind::Text { color, font_id, font_size, text: text.clone() });
+
+                // Underline.
+                if bx.text_decoration == TextDeco::Underline || bx.link_url.is_some() {
+                    self.push(abs_x, abs_y + bx.height - 1, bx.width, 1,
+                        DrawKind::Rect { color });
+                }
+
+                // Line-through.
+                if bx.text_decoration == TextDeco::LineThrough {
+                    self.push(abs_x, abs_y + bx.height / 2, bx.width, 1,
+                        DrawKind::Rect { color });
+                }
+            }
+        }
+
+        // Image.
+        if let Some(ref src) = bx.image_src {
+            let dw = bx.image_width.unwrap_or(bx.width);
+            let dh = bx.image_height.unwrap_or(bx.height);
+            self.push(abs_x, abs_y, dw, dh, DrawKind::Image { src: src.clone() });
+        }
+
+        // Submit/button pixel drawing.
+        if let Some(kind) = bx.form_field {
+            if matches!(kind, FormFieldKind::Submit | FormFieldKind::ButtonEl) {
+                self.emit_submit(abs_x, abs_y, bx);
+            }
+        }
+
+        // Recurse into children.
+        for child in &bx.children {
+            let (cx, cy) = if bx.is_fixed { (bx.x, bx.y) } else { (abs_x, abs_y) };
+            self.flatten(child, cx, cy);
+        }
+    }
+
+    /// Emit draw commands for a submit/button element.
+    fn emit_submit(&mut self, x: i32, y: i32, bx: &LayoutBox) {
+        let label_text = if let Some(ref t) = bx.text { t.clone() } else { String::from("Submit") };
+
+        // Default web button bg + border if no CSS styling.
+        if bx.bg_color == 0 && bx.border_width == 0 {
+            self.push(x, y, bx.width, bx.height, DrawKind::Rect { color: 0xFFE0E0E0 });
+            self.push(x, y, bx.width, 1, DrawKind::Rect { color: 0xFF808080 });
+            self.push(x, y + bx.height - 1, bx.width, 1, DrawKind::Rect { color: 0xFF808080 });
+            self.push(x, y + 1, 1, (bx.height - 2).max(0), DrawKind::Rect { color: 0xFF808080 });
+            self.push(x + bx.width - 1, y + 1, 1, (bx.height - 2).max(0), DrawKind::Rect { color: 0xFF808080 });
+        }
+
+        // Center text in button.
+        let font_size = bx.font_size.max(1) as u16;
+        let text_color = if bx.color != 0 { bx.color } else { 0xFF000000 };
+        let (tw, _) = libfont_client::measure(0, font_size, &label_text);
+        let tx = x + (bx.width - tw as i32) / 2;
+        let ty = y + (bx.height - font_size as i32) / 2;
+        self.push(tx, ty, tw as i32, font_size as i32,
+            DrawKind::Text { color: text_color, font_id: 0, font_size, text: label_text });
+    }
+
+    #[inline]
+    fn push(&mut self, x: i32, y: i32, w: i32, h: i32, kind: DrawKind) {
+        if h > self.max_h { self.max_h = h; }
+        self.cmds.push(DrawCmd { x, y, w, h, kind });
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Tile cache (pixel data)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Tile height in pixels.  Each tile covers `[row * 256, (row+1) * 256)`.
 const TILE_HEIGHT: u32 = 256;
-
-/// Maximum number of cached tile pixel buffers.
 const MAX_CACHED_TILES: usize = 40;
-
-/// Buffer zone above/below the viewport for pre-rendering (pixels).
-const BUFFER_ZONE: i32 = 512;
-
-/// Maximum number of tile canvases to keep alive.
+const BUFFER_ZONE: i32 = 768;
 const MAX_TILE_CANVASES: usize = 30;
+const MAX_TILES_PER_TICK: usize = 8;
 
-/// Maximum number of tiles to rasterize per tick (avoids blocking the event loop).
-const MAX_TILES_PER_TICK: usize = 2;
-
-/// A cached rasterized tile strip: doc_width × TILE_HEIGHT pixels.
 struct CachedTile {
-    /// Tile row index (y_start = row * TILE_HEIGHT).
     row: u32,
-    /// Pixel data: doc_width × TILE_HEIGHT u32 values.
     pixels: Vec<u32>,
-    /// Insertion generation (for LRU eviction — higher = more recent).
     generation: u64,
 }
 
-/// LRU tile cache for rasterized tile strips.
 struct TileCache {
     tiles: Vec<CachedTile>,
     generation: u64,
+    /// Pool of reusable pixel buffers (avoids alloc per tile).
+    free_bufs: Vec<Vec<u32>>,
 }
 
 impl TileCache {
     fn new() -> Self {
-        Self { tiles: Vec::new(), generation: 0 }
+        Self { tiles: Vec::new(), generation: 0, free_bufs: Vec::new() }
     }
 
-    /// Look up a cached tile by row index.  Returns the pixel slice or None.
     fn get(&self, row: u32) -> Option<&[u32]> {
         self.tiles.iter()
             .find(|t| t.row == row)
             .map(|t| t.pixels.as_slice())
     }
 
-    /// Insert a rasterized tile into the cache.  Evicts the LRU tile if full.
     fn insert(&mut self, row: u32, pixels: Vec<u32>) {
         self.generation += 1;
         let gen = self.generation;
 
-        // Replace existing tile for this row.
         if let Some(tile) = self.tiles.iter_mut().find(|t| t.row == row) {
-            tile.pixels = pixels;
+            // Return old buffer to pool before replacing.
+            let old = core::mem::replace(&mut tile.pixels, pixels);
+            if self.free_bufs.len() < 8 {
+                self.free_bufs.push(old);
+            }
             tile.generation = gen;
             return;
         }
 
-        // Evict LRU if at capacity.
         if self.tiles.len() >= MAX_CACHED_TILES {
             let min_idx = self.tiles.iter().enumerate()
                 .min_by_key(|(_, t)| t.generation)
                 .map(|(i, _)| i)
                 .unwrap_or(0);
-            self.tiles.swap_remove(min_idx);
+            let evicted = self.tiles.swap_remove(min_idx);
+            if self.free_bufs.len() < 8 {
+                self.free_bufs.push(evicted.pixels);
+            }
         }
 
         self.tiles.push(CachedTile { row, pixels, generation: gen });
     }
 
-    /// Invalidate all cached tiles (called on relayout, resize, navigation).
     fn invalidate_all(&mut self) {
-        self.tiles.clear();
+        for tile in self.tiles.drain(..) {
+            if self.free_bufs.len() < 8 {
+                self.free_bufs.push(tile.pixels);
+            }
+        }
         self.generation = 0;
+    }
+
+    /// Take a buffer from the pool or allocate a new one.
+    fn take_buf(&mut self, pixel_count: usize, clear_color: u32) -> Vec<u32> {
+        if let Some(mut buf) = self.free_bufs.pop() {
+            buf.resize(pixel_count, clear_color);
+            for px in buf.iter_mut() { *px = clear_color; }
+            buf
+        } else {
+            let mut buf = Vec::with_capacity(pixel_count);
+            buf.resize(pixel_count, clear_color);
+            buf
+        }
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Per-tile canvas (for smooth compositor-driven scrolling)
+// Tile canvas
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// A Canvas control linked to a tile row.  Positioned at (0, row * TILE_HEIGHT)
-/// in the content_view.  The compositor's ScrollView scrolls the content_view
-/// natively, so tile canvases require zero per-frame work during scroll.
 struct TileCanvas {
-    /// Tile row index.
     row: u32,
-    /// The Canvas control.
     canvas: ui::Canvas,
 }
 
@@ -254,32 +465,19 @@ struct TileCanvas {
 // Renderer
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Per-tile canvas renderer with compositor-driven smooth scrolling.
-///
-/// Each tile strip (doc_width × 256px) gets its own Canvas control positioned
-/// inside the content_view.  The compositor's ScrollView clips and scrolls
-/// natively — zero work from the application during scroll.  Only tiles
-/// entering the pre-render zone are rasterized (~900 KB per tile).
 pub(crate) struct Renderer {
-    /// Per-tile canvases — each tile is a separate Canvas in the content_view.
     tile_canvases: Vec<TileCanvas>,
-    /// Tile pixel data cache (survives canvas eviction for fast recreation).
     tile_cache: TileCache,
-    /// Current document width (for tile sizing).
     doc_w: u32,
-    /// Current document height.
     doc_h: u32,
-    /// Clickable regions (links, submit buttons) — absolute document coordinates.
     pub hit_regions: Vec<HitRegion>,
-    /// Persistent form controls — only destroyed on full page navigation.
     pub form_controls: Vec<FormControl>,
-    /// Compatibility: control_id → link URL (for submit button Labels).
     pub link_map: Vec<(u32, String)>,
-    /// Link callback (set on each tile canvas for click handling).
     link_cb: Option<ui::Callback>,
     link_cb_ud: u64,
-    /// Last scroll Y that triggered tile management.
     last_scroll_y: i32,
+    /// The display list — built once after layout, used for all tile rasterization.
+    display_list: DisplayList,
 }
 
 impl Renderer {
@@ -295,11 +493,10 @@ impl Renderer {
             link_cb: None,
             link_cb_ud: 0,
             last_scroll_y: 0,
+            display_list: DisplayList::new(),
         }
     }
 
-    /// Check if a control ID belongs to any tile canvas, and if so return
-    /// the mouse position translated to absolute document coordinates.
     pub fn tile_hit_coords(&self, ctrl_id: u32) -> Option<(i32, i32)> {
         for tc in &self.tile_canvases {
             if tc.canvas.id() == ctrl_id {
@@ -311,29 +508,25 @@ impl Renderer {
         None
     }
 
-    /// Return the number of form controls currently tracked.
     pub fn control_count(&self) -> usize {
         self.form_controls.len()
     }
 
-    /// Soft clear: reset hit regions and link map, invalidate tile cache,
-    /// destroy tile canvases, and mark form controls for GC.
-    /// Called on each relayout.
+    /// Soft clear: reset hit regions, invalidate tile cache, destroy canvases.
     pub fn clear(&mut self) {
         self.hit_regions.clear();
         self.link_map.clear();
         self.tile_cache.invalidate_all();
-        // Destroy all tile canvases (content is stale after relayout).
         for tc in self.tile_canvases.drain(..) {
             ui::Control::from_id(tc.canvas.id()).remove();
         }
         for fc in &mut self.form_controls {
             fc.seen = false;
         }
+        self.display_list.clear();
     }
 
-    /// Hard clear: destroy everything including tile canvases, form controls,
-    /// and tile cache.  Called on full page navigation (new URL).
+    /// Hard clear: destroy everything.
     pub fn clear_all(&mut self) {
         for fc in &self.form_controls {
             if fc.control_id != 0 {
@@ -352,9 +545,9 @@ impl Renderer {
         self.link_cb = None;
         self.link_cb_ud = 0;
         self.last_scroll_y = 0;
+        self.display_list.clear();
     }
 
-    /// Hit-test at absolute document coordinates for a link URL.
     pub fn hit_test_link_at(&self, x: i32, doc_y: i32) -> Option<&str> {
         for region in &self.hit_regions {
             if x >= region.x && x < region.x + region.w
@@ -368,7 +561,6 @@ impl Renderer {
         None
     }
 
-    /// Hit-test at absolute document coordinates for a submit button.
     pub fn hit_test_submit_at(&self, x: i32, doc_y: i32) -> Option<usize> {
         for region in &self.hit_regions {
             if x >= region.x && x < region.x + region.w
@@ -386,11 +578,6 @@ impl Renderer {
     // Full render (relayout path)
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Render the layout tree using per-tile canvases.
-    ///
-    /// Called after relayout.  Invalidates the tile cache, walks the full
-    /// tree for form controls and hit regions, creates tile canvases for
-    /// visible rows, and GCs unseen form controls.
     pub fn render(
         &mut self,
         root: &LayoutBox,
@@ -421,10 +608,15 @@ impl Renderer {
         // 1. Invalidate tile cache (layout has changed).
         self.tile_cache.invalidate_all();
 
-        // 2. Walk full tree for form controls + hit regions (document coords).
+        // 2. Walk full tree for form controls + hit regions.
         self.walk_controls(root, 0, 0, parent, submit_cb, submit_cb_ud);
 
-        // 3. Compute visible tile rows.
+        // 3. Build display list (flat, Y-sorted draw commands).
+        self.display_list = DisplayList::build(root);
+        crate::debug_surf!("[render] display list: {} commands, max_h={}",
+            self.display_list.cmds.len(), self.display_list.max_h);
+
+        // 4. Compute visible tile rows.
         let render_y_start = (scroll_y - BUFFER_ZONE).max(0);
         let render_y_end = (scroll_y + viewport_h as i32 + BUFFER_ZONE).min(doc_h as i32);
         let first_row = render_y_start as u32 / TILE_HEIGHT;
@@ -434,14 +626,14 @@ impl Renderer {
             0
         };
 
-        // 4. Rasterize visible tile rows, cache them, and create canvases.
+        // 5. Rasterize visible tiles using the display list.
         for row in first_row..=last_row {
-            let tile_buf = rasterize_tile(root, images, w, row, doc_h, clear_color);
+            let tile_buf = self.rasterize_tile_dl(images, w, row, doc_h, clear_color);
             self.tile_cache.insert(row, tile_buf);
             self.create_tile_canvas(row, w, doc_h, parent);
         }
 
-        // 5. GC unseen form controls.
+        // 6. GC unseen form controls.
         self.form_controls.retain(|fc| {
             if !fc.seen && fc.control_id != 0 {
                 ui::Control::from_id(fc.control_id).remove();
@@ -456,22 +648,12 @@ impl Renderer {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // Scroll render (fast path — compositor-driven)
+    // Scroll render (fast path)
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Ensure tile canvases exist for the visible viewport range.
-    ///
-    /// The compositor's ScrollView handles smooth pixel-level scrolling.
-    /// This method only needs to create canvases for newly visible tile rows
-    /// and remove distant ones.  Tiles already in the cache are free to
-    /// create (just a ~900 KB `copy_pixels_from`).  Cache-miss tiles are
-    /// rasterized incrementally (max 2 per call to avoid blocking the
-    /// event loop).
-    ///
-    /// Returns `true` if there are still pending tiles that need creation.
     pub fn render_scroll(
         &mut self,
-        root: &LayoutBox,
+        _root: &LayoutBox,
         parent: &ui::View,
         images: &ImageCache,
         doc_w: u32,
@@ -489,7 +671,6 @@ impl Renderer {
         self.doc_h = doc_h;
         self.last_scroll_y = scroll_y;
 
-        // 1. Compute tile rows that should have canvases (viewport + buffer).
         let render_y_start = (scroll_y - BUFFER_ZONE).max(0);
         let render_y_end = (scroll_y + viewport_h as i32 + BUFFER_ZONE).min(doc_h as i32);
         let first_row = render_y_start as u32 / TILE_HEIGHT;
@@ -499,31 +680,27 @@ impl Renderer {
             0
         };
 
-        // 2. Create canvases for new tile rows (limit rasterization to avoid blocking).
         let mut rasterized = 0usize;
         let mut pending = false;
         for row in first_row..=last_row {
-            // Skip if canvas already exists.
             if self.tile_canvases.iter().any(|tc| tc.row == row) {
                 continue;
             }
 
-            // Rasterize if not in pixel cache.
             if self.tile_cache.get(row).is_none() {
                 if rasterized >= MAX_TILES_PER_TICK {
                     pending = true;
                     continue;
                 }
-                let tile_buf = rasterize_tile(root, images, w, row, doc_h, clear_color);
+                let tile_buf = self.rasterize_tile_dl(images, w, row, doc_h, clear_color);
                 self.tile_cache.insert(row, tile_buf);
                 rasterized += 1;
             }
 
-            // Create canvas from cached pixel data.
             self.create_tile_canvas(row, w, doc_h, parent);
         }
 
-        // 3. Evict tile canvases that are far from the viewport.
+        // Evict distant tile canvases.
         let keep_first = first_row.saturating_sub(4);
         let keep_last = (last_row + 4).min(if doc_h > 0 { (doc_h - 1) / TILE_HEIGHT } else { 0 });
         self.tile_canvases.retain(|tc| {
@@ -535,16 +712,12 @@ impl Renderer {
             }
         });
 
-        // Also enforce max tile canvases (LRU by distance from viewport center).
         while self.tile_canvases.len() > MAX_TILE_CANVASES {
             let vp_center_row = ((scroll_y + viewport_h as i32 / 2).max(0) as u32) / TILE_HEIGHT;
             let farthest_idx = self.tile_canvases.iter().enumerate()
                 .max_by_key(|(_, tc)| {
-                    if tc.row > vp_center_row {
-                        tc.row - vp_center_row
-                    } else {
-                        vp_center_row - tc.row
-                    }
+                    if tc.row > vp_center_row { tc.row - vp_center_row }
+                    else { vp_center_row - tc.row }
                 })
                 .map(|(i, _)| i)
                 .unwrap_or(0);
@@ -559,7 +732,30 @@ impl Renderer {
     // Internal helpers
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Create a Canvas control for a tile row from cached pixel data.
+    /// Rasterize a tile using the display list (binary search + linear scan).
+    fn rasterize_tile_dl(
+        &mut self,
+        images: &ImageCache,
+        doc_w: u32,
+        row: u32,
+        doc_h: u32,
+        clear_color: u32,
+    ) -> Vec<u32> {
+        let tile_y_start = (row * TILE_HEIGHT) as i32;
+        let tile_y_end = (tile_y_start + TILE_HEIGHT as i32).min(doc_h as i32);
+
+        let pixel_count = (doc_w as usize) * (TILE_HEIGHT as usize);
+        let mut buf = self.tile_cache.take_buf(pixel_count, clear_color);
+
+        self.display_list.rasterize_tile(
+            images,
+            buf.as_mut_ptr(), doc_w, TILE_HEIGHT,
+            tile_y_start, tile_y_end,
+        );
+
+        buf
+    }
+
     fn create_tile_canvas(&mut self, row: u32, doc_w: u32, doc_h: u32, parent: &ui::View) {
         let pixels = match self.tile_cache.get(row) {
             Some(px) => px,
@@ -582,14 +778,9 @@ impl Renderer {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // Walk: form controls + hit regions (full tree, no pixels)
+    // Walk: form controls + hit regions (unchanged)
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Walk the full layout tree for form controls and hit regions.
-    ///
-    /// Form controls are created/updated at absolute document coordinates.
-    /// Hit regions are registered in absolute document coordinates.
-    /// No pixel drawing — that happens in `rasterize_tile()`.
     fn walk_controls(
         &mut self,
         bx: &LayoutBox,
@@ -609,7 +800,6 @@ impl Renderer {
             (offset_x + bx.x, offset_y + bx.y)
         };
 
-        // Register link hit regions (absolute document coordinates).
         if let Some(ref text) = bx.text {
             if !text.is_empty() && bx.form_field.is_none() {
                 if let Some(ref url) = bx.link_url {
@@ -622,20 +812,15 @@ impl Renderer {
             }
         }
 
-        // Form controls.
         if let Some(kind) = bx.form_field {
             self.emit_form_control(kind, bx, abs_x, abs_y, parent, submit_cb, submit_cb_ud);
         }
 
-        // Recurse into children.
         for child in &bx.children {
             self.walk_controls(child, abs_x, abs_y, parent, submit_cb, submit_cb_ud);
         }
     }
 
-    /// Create or update a persistent form control, or register a submit hit region.
-    ///
-    /// - `x`, `y`: absolute document coordinates.
     fn emit_form_control(
         &mut self,
         kind: FormFieldKind,
@@ -686,7 +871,6 @@ impl Renderer {
             }
 
             FormFieldKind::Submit | FormFieldKind::ButtonEl => {
-                // Register submit hit region (absolute document coords).
                 self.hit_regions.push(HitRegion {
                     x, y, w: bx.width, h: bx.height,
                     kind: HitKind::Submit(node_id),
@@ -769,190 +953,6 @@ impl Renderer {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Free functions: tile rasterization, pixel helpers
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Rasterize a single tile row (pixel-only, no form controls or hit regions).
-///
-/// Allocates a `doc_w × TILE_HEIGHT` buffer, walks the layout tree with
-/// culling to the tile's Y range, and returns the pixel buffer for caching.
-fn rasterize_tile(
-    root: &LayoutBox,
-    images: &ImageCache,
-    doc_w: u32,
-    row: u32,
-    doc_h: u32,
-    clear_color: u32,
-) -> Vec<u32> {
-    let tile_y_start = (row * TILE_HEIGHT) as i32;
-    let tile_y_end = (tile_y_start + TILE_HEIGHT as i32).min(doc_h as i32);
-    let tile_h = ((tile_y_end - tile_y_start) as u32).max(1);
-
-    let pixel_count = (doc_w as usize) * (TILE_HEIGHT as usize);
-    let mut buf = Vec::with_capacity(pixel_count);
-    buf.resize(pixel_count, clear_color);
-
-    walk_pixels(
-        root, buf.as_mut_ptr(), doc_w, TILE_HEIGHT,
-        images, 0, 0, tile_y_start, tile_y_start + tile_h as i32,
-    );
-
-    buf
-}
-
-/// Pixel-only tree walk — draws backgrounds, borders, text, images, and
-/// submit button appearances into the tile buffer.
-///
-/// Skips form controls and hit regions (handled by `walk_controls()`).
-fn walk_pixels(
-    bx: &LayoutBox,
-    buf: *mut u32,
-    stride: u32,
-    buf_h: u32,
-    images: &ImageCache,
-    offset_x: i32,
-    offset_y: i32,
-    tile_y_start: i32,
-    tile_y_end: i32,
-) {
-    if bx.visibility_hidden {
-        return;
-    }
-
-    let abs_x = if bx.is_fixed { bx.x } else { offset_x + bx.x };
-    let abs_y = if bx.is_fixed { bx.y } else { offset_y + bx.y };
-
-    // Cull boxes entirely outside the tile.
-    let in_tile = abs_y + bx.height > tile_y_start && abs_y < tile_y_end;
-
-    // Translate Y to tile-local coordinates.
-    let draw_y = abs_y - tile_y_start;
-
-    if in_tile {
-        // Background.
-        if bx.bg_color != 0 && bx.bg_color != 0x00000000 {
-            fill_rect_buf(buf, stride, buf_h, abs_x, draw_y, bx.width, bx.height, bx.bg_color);
-        }
-
-        // Border (4 edges).
-        if bx.border_width > 0 && bx.border_color != 0 && bx.border_color != 0x00000000 {
-            let bw = bx.border_width;
-            let w = bx.width;
-            let h = bx.height;
-            fill_rect_buf(buf, stride, buf_h, abs_x, draw_y, w, bw, bx.border_color);
-            fill_rect_buf(buf, stride, buf_h, abs_x, draw_y + h - bw, w, bw, bx.border_color);
-            let inner_h = (h - bw * 2).max(0);
-            fill_rect_buf(buf, stride, buf_h, abs_x, draw_y + bw, bw, inner_h, bx.border_color);
-            fill_rect_buf(buf, stride, buf_h, abs_x + w - bw, draw_y + bw, bw, inner_h, bx.border_color);
-        }
-
-        // Horizontal rule.
-        if bx.is_hr {
-            fill_rect_buf(buf, stride, buf_h, abs_x, draw_y, bx.width, 1, 0xFF999999);
-        }
-
-        // List marker.
-        if let Some(ref marker) = bx.list_marker {
-            let font_id = 0u32;
-            let font_size = bx.font_size.max(1) as u16;
-            let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
-            libfont_client::draw_string_buf(
-                buf, stride, buf_h,
-                abs_x - 20, draw_y,
-                color, font_id, font_size,
-                marker,
-            );
-        }
-
-        // Text fragment.
-        if let Some(ref text) = bx.text {
-            if !text.is_empty() && bx.form_field.is_none() {
-                let font_id = if bx.bold && bx.italic {
-                    1u32
-                } else if bx.bold {
-                    1u32
-                } else if bx.italic {
-                    3u32
-                } else {
-                    0u32
-                };
-                let font_size = bx.font_size.max(1) as u16;
-                let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
-
-                libfont_client::draw_string_buf(
-                    buf, stride, buf_h,
-                    abs_x, draw_y,
-                    color, font_id, font_size,
-                    text,
-                );
-
-                // Underline for links or text-decoration.
-                if bx.text_decoration == TextDeco::Underline || bx.link_url.is_some() {
-                    fill_rect_buf(buf, stride, buf_h,
-                        abs_x, draw_y + bx.height - 1,
-                        bx.width, 1, color);
-                }
-
-                // Line-through.
-                if bx.text_decoration == TextDeco::LineThrough {
-                    fill_rect_buf(buf, stride, buf_h,
-                        abs_x, draw_y + bx.height / 2,
-                        bx.width, 1, color);
-                }
-            }
-        }
-
-        // Image.
-        if let Some(ref src) = bx.image_src {
-            if let Some(entry) = images.get_ref(src) {
-                let dw = bx.image_width.unwrap_or(bx.width);
-                let dh = bx.image_height.unwrap_or(bx.height);
-                blit_image_buf(
-                    buf, stride, buf_h,
-                    abs_x, draw_y, dw, dh,
-                    &entry.pixels, entry.width, entry.height,
-                );
-            }
-        }
-
-        // Submit/button pixel drawing (hit region is in walk_controls).
-        if let Some(kind) = bx.form_field {
-            if matches!(kind, FormFieldKind::Submit | FormFieldKind::ButtonEl) {
-                draw_submit_pixels(buf, stride, buf_h, abs_x, draw_y, bx);
-            }
-        }
-    }
-
-    // Recurse into children.
-    for child in &bx.children {
-        let (cx, cy) = if bx.is_fixed { (bx.x, bx.y) } else { (abs_x, abs_y) };
-        walk_pixels(child, buf, stride, buf_h, images, cx, cy, tile_y_start, tile_y_end);
-    }
-}
-
-/// Draw submit button appearance into the pixel buffer.
-fn draw_submit_pixels(buf: *mut u32, stride: u32, buf_h: u32, x: i32, y: i32, bx: &LayoutBox) {
-    let label_text = if let Some(ref t) = bx.text { t.as_str() } else { "Submit" };
-
-    // Default web button bg + border if no CSS styling.
-    if bx.bg_color == 0 && bx.border_width == 0 {
-        fill_rect_buf(buf, stride, buf_h, x, y, bx.width, bx.height, 0xFFE0E0E0);
-        fill_rect_buf(buf, stride, buf_h, x, y, bx.width, 1, 0xFF808080);
-        fill_rect_buf(buf, stride, buf_h, x, y + bx.height - 1, bx.width, 1, 0xFF808080);
-        fill_rect_buf(buf, stride, buf_h, x, y + 1, 1, (bx.height - 2).max(0), 0xFF808080);
-        fill_rect_buf(buf, stride, buf_h, x + bx.width - 1, y + 1, 1, (bx.height - 2).max(0), 0xFF808080);
-    }
-
-    // Center text in button.
-    let font_size = bx.font_size.max(1) as u16;
-    let text_color = if bx.color != 0 { bx.color } else { 0xFF000000 };
-    let (tw, _) = libfont_client::measure(0, font_size, label_text);
-    let tx = x + (bx.width - tw as i32) / 2;
-    let ty = y + (bx.height - font_size as i32) / 2;
-    libfont_client::draw_string_buf(buf, stride, buf_h, tx, ty, text_color, 0, font_size, label_text);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Buffer drawing helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -962,7 +962,6 @@ fn fill_rect_buf(buf: *mut u32, stride: u32, buf_h: u32, x: i32, y: i32, w: i32,
     let s = stride as i32;
     let bh = buf_h as i32;
 
-    // Clip to buffer bounds.
     let x0 = x.max(0);
     let y0 = y.max(0);
     let x1 = (x + w).min(s);
@@ -970,14 +969,25 @@ fn fill_rect_buf(buf: *mut u32, stride: u32, buf_h: u32, x: i32, y: i32, w: i32,
     if x0 >= x1 || y0 >= y1 { return; }
 
     let cw = (x1 - x0) as usize;
+    let alpha = (color >> 24) & 0xFF;
     unsafe {
         for row in y0..y1 {
             let offset = row as usize * stride as usize + x0 as usize;
             let ptr = buf.add(offset);
-            let alpha = (color >> 24) & 0xFF;
             if alpha >= 255 {
-                for i in 0..cw {
+                // Fast path: 4-pixel unrolled opaque fill.
+                let mut i = 0usize;
+                let cw4 = cw & !3;
+                while i < cw4 {
                     *ptr.add(i) = color;
+                    *ptr.add(i + 1) = color;
+                    *ptr.add(i + 2) = color;
+                    *ptr.add(i + 3) = color;
+                    i += 4;
+                }
+                while i < cw {
+                    *ptr.add(i) = color;
+                    i += 1;
                 }
             } else if alpha > 0 {
                 let inv_a = 255 - alpha;

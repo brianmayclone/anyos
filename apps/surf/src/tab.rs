@@ -37,6 +37,8 @@ pub(crate) struct TabState {
     /// Generation counter for the current navigation.
     /// Used to discard stale fetch results from the worker thread.
     pub(crate) nav_generation: u32,
+    /// Whether this tab is currently loading (navigation in progress).
+    pub(crate) is_loading: bool,
 }
 
 impl TabState {
@@ -51,6 +53,7 @@ impl TabState {
             history_pos: 0,
             status_text: String::from("Ready"),
             nav_generation: 0,
+            is_loading: false,
         }
     }
 
@@ -65,13 +68,21 @@ impl TabState {
     }
 
     /// Short text used as the tab-bar label for this tab.
-    pub(crate) fn tab_label(&self) -> &str {
-        if !self.page_title.is_empty() {
+    /// Shows a spinner prefix while loading.
+    pub(crate) fn tab_label(&self) -> String {
+        let base = if !self.page_title.is_empty() {
             &self.page_title
         } else if !self.url_text.is_empty() {
             &self.url_text
         } else {
             "New Tab"
+        };
+        if self.is_loading {
+            let mut s = String::from("\u{27F3} "); // ⟳
+            s.push_str(base);
+            s
+        } else {
+            String::from(base)
         }
     }
 }
@@ -113,10 +124,12 @@ pub(crate) fn navigate(url_str: &str) {
     st.tabs[st.active_tab].nav_generation = generation;
 
     // Update UI to show loading state.
+    st.tabs[st.active_tab].is_loading = true;
     let mut loading_msg = String::from("Loading: ");
     loading_msg.push_str(url_str);
     st.tabs[st.active_tab].status_text = loading_msg;
     crate::ui::update_status();
+    crate::ui::update_tab_labels();
 
     // Clone cookies for the worker thread.
     let cookies = st.cookies.clone();
@@ -151,8 +164,10 @@ pub(crate) fn navigate_post(url_str: &str, body: &str) {
     let generation = crate::net_worker::new_generation();
     st.tabs[st.active_tab].nav_generation = generation;
 
+    st.tabs[st.active_tab].is_loading = true;
     st.tabs[st.active_tab].status_text = String::from("Submitting...");
     crate::ui::update_status();
+    crate::ui::update_tab_labels();
 
     let cookies = st.cookies.clone();
 

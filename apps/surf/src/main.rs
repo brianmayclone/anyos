@@ -60,6 +60,8 @@ struct AppState {
     btn_forward: ui_lib::Button,
     btn_reload: ui_lib::Button,
     url_field: ui_lib::TextField,
+    /// Loading progress bar behind the URL field.
+    url_progress: ui_lib::ProgressBar,
     /// DevTools toggle button (right of URL field).
     btn_devtools: ui_lib::Button,
     /// Floating popup menu that appears below the DevTools button.
@@ -67,11 +69,11 @@ struct AppState {
     tab_bar_view: ui_lib::TabBar,
     content_view: ui_lib::View,
     status_label: ui_lib::Label,
-    /// DevTools console panel (DOCK_BOTTOM, hidden when closed).
-    devtools_panel: ui_lib::View,
-    /// Label inside the console panel showing JS console output.
+    /// DevTools console window (separate from main browser window).
+    devtools_win: ui_lib::Window,
+    /// Label inside the DevTools window showing JS console output.
     devtools_label: ui_lib::Label,
-    /// Whether the DevTools console is currently visible.
+    /// Whether the DevTools window is currently visible.
     devtools_open: bool,
     /// Whether the DevTools popup menu is currently visible.
     devtools_menu_visible: bool,
@@ -364,8 +366,10 @@ fn handle_nav_done(
     if response.status < 200 || response.status >= 400 {
         let mut msg = String::from("HTTP error ");
         ui::push_u32(&mut msg, response.status as u32);
+        st.tabs[tab_idx].is_loading = false;
         st.tabs[tab_idx].status_text = msg;
         ui::update_status();
+        ui::update_tab_labels();
         return;
     }
 
@@ -426,6 +430,7 @@ fn handle_nav_done(
     st.tabs[tab_idx].url_text = url_str;
     st.tabs[tab_idx].current_url = Some(base_url.clone());
     st.tabs[tab_idx].status_text = String::from("Done");
+    st.tabs[tab_idx].is_loading = false;
 
     // Update chrome UI.
     let url_for_field = st.tabs[tab_idx].url_text.clone();
@@ -455,8 +460,10 @@ fn handle_nav_error(error_msg: &'static str, generation: u32) {
     if st.tabs[tab_idx].nav_generation != generation {
         return;
     }
+    st.tabs[tab_idx].is_loading = false;
     st.tabs[tab_idx].status_text = String::from(error_msg);
     ui::update_status();
+    ui::update_tab_labels();
 }
 
 /// Handle a completed CSS stylesheet fetch: apply the stylesheet.
@@ -572,6 +579,14 @@ fn main() {
     btn_reload.set_size(32, 28);
     toolbar.add(&btn_reload);
 
+    // Loading progress bar — positioned behind the URL field.
+    let url_progress = ui_lib::ProgressBar::new(0);
+    url_progress.set_position(116, 32);
+    url_progress.set_size(666, 3);
+    url_progress.set_color(0xFF0A84FF);  // blue accent
+    url_progress.set_visible(false);
+    toolbar.add(&url_progress);
+
     // URL field — shortened by 84 px to make room for the DevTools button.
     let url_field = ui_lib::TextField::new();
     url_field.set_position(116, 6);
@@ -618,12 +633,9 @@ fn main() {
     tab_bar_view.set_size(0, 30);
     win.add(&tab_bar_view);
 
-    // ── DevTools console panel (DOCK_BOTTOM, initially height=0/hidden) ───────
-    let devtools_panel = ui_lib::View::new();
-    devtools_panel.set_dock(ui_lib::DOCK_BOTTOM);
-    devtools_panel.set_size(0, 0);
-    devtools_panel.set_color(0xFF1C1C1E);
-    win.add(&devtools_panel);
+    // ── DevTools window (separate window, initially hidden) ─────────────────
+    let devtools_win = ui_lib::Window::new(i18n::t("DevTools - Console"), -1, -1, 700, 400);
+    devtools_win.set_visible(false);
 
     let devtools_label = ui_lib::Label::new("");
     devtools_label.set_dock(ui_lib::DOCK_FILL);
@@ -631,7 +643,7 @@ fn main() {
     devtools_label.set_text_color(0xFF30D158);   // green console text
     devtools_label.set_font_size(12);
     devtools_label.set_padding(8, 8, 8, 8);
-    devtools_panel.add(&devtools_label);
+    devtools_win.add(&devtools_label);
 
     // ── Status bar (DOCK_BOTTOM, 24 px) ─────────────────────────────────────
     let status_label = ui_lib::Label::new(i18n::t("Ready"));
@@ -665,12 +677,13 @@ fn main() {
             btn_forward,
             btn_reload,
             url_field,
+            url_progress,
             btn_devtools,
             devtools_menu,
             tab_bar_view,
             content_view,
             status_label,
-            devtools_panel,
+            devtools_win,
             devtools_label,
             devtools_open: false,
             devtools_menu_visible: false,

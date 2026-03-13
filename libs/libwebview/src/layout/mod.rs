@@ -79,6 +79,10 @@ pub struct LayoutBox {
     /// If true, this box is `position:fixed` and its x/y are viewport-relative.
     /// The renderer will ignore accumulated parent offsets and use x/y directly.
     pub is_fixed: bool,
+    /// Maximum Y extent of this subtree (relative to parent origin, like `y`).
+    /// Computed by `compute_subtree_bottom()` after layout.  Used by the
+    /// tile rasterizer to cull entire subtrees that are outside the tile.
+    pub subtree_bottom: i32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -151,6 +155,7 @@ impl LayoutBox {
             visibility_hidden: false,
             opacity: 255,
             is_fixed: false,
+            subtree_bottom: 0,
         }
     }
 
@@ -365,10 +370,33 @@ pub fn layout(dom: &Dom, styles: &[ComputedStyle], viewport_width: i32, images: 
     let height = layout_children(dom, styles, &child_ids, content_width, &mut root, body_id, images, viewport_width);
 
     root.height = height + root.padding.top + root.padding.bottom;
+
+    // Post-pass: compute subtree_bottom for tile rasterizer culling.
+    compute_subtree_bottom(&mut root);
+
     crate::debug_surf!("[layout] layout done: root height={}", root.height);
     #[cfg(feature = "debug_surf")]
     crate::debug_surf!("[layout]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
     root
+}
+
+/// Compute `subtree_bottom` for every node in the tree.
+///
+/// `subtree_bottom` is the maximum Y extent (relative to parent, same space
+/// as `y`) of the node and all its descendants.  The tile rasterizer uses
+/// this to skip entire subtrees that are above or below the tile strip.
+fn compute_subtree_bottom(bx: &mut LayoutBox) {
+    // subtree_bottom = max extent from the node's OWN top (y=0 local).
+    // In walk_pixels: absolute subtree bottom = abs_y + subtree_bottom.
+    let mut max_b = bx.height;
+    for child in &mut bx.children {
+        compute_subtree_bottom(child);
+        let cb = child.y + child.subtree_bottom;
+        if cb > max_b {
+            max_b = cb;
+        }
+    }
+    bx.subtree_bottom = max_b;
 }
 
 // ---------------------------------------------------------------------------

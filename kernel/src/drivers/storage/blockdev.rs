@@ -28,7 +28,7 @@ impl BlockDevice {
     ///
     /// Returns `true` on success. Fails if the read would exceed bounds.
     pub fn read_sectors(&self, relative_lba: u32, count: u32, buf: &mut [u8]) -> bool {
-        if (relative_lba as u64 + count as u64) > self.size_sectors {
+        if self.size_sectors > 0 && (relative_lba as u64 + count as u64) > self.size_sectors {
             serial_verbose_println!(
                 "[blockdev] read out of bounds: dev={} rel_lba={} count={} size={}",
                 self.id, relative_lba, count, self.size_sectors
@@ -53,7 +53,7 @@ impl BlockDevice {
     ///
     /// Returns `true` on success. Fails if the write would exceed bounds.
     pub fn write_sectors(&self, relative_lba: u32, count: u32, buf: &[u8]) -> bool {
-        if (relative_lba as u64 + count as u64) > self.size_sectors {
+        if self.size_sectors > 0 && (relative_lba as u64 + count as u64) > self.size_sectors {
             serial_verbose_println!(
                 "[blockdev] write out of bounds: dev={} rel_lba={} count={} size={}",
                 self.id, relative_lba, count, self.size_sectors

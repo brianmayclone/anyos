@@ -332,17 +332,18 @@ impl WebView {
         // canvases for rows entering the pre-render zone (incrementally, max
         // 2 per tick to avoid blocking the event loop).
         //
-        // NOTE: We intentionally do NOT set `changed = true` when pending tiles
-        // remain.  Pending tiles are lazily created on future scroll events via
-        // ensure_anim_timer().  Setting changed=true here caused a feedback
-        // loop: pending → changed → IDLE_TICKS reset → timer never stops → 60Hz
-        // rendering that froze the browser on any scrollable page.
+        // When pending tiles remain, we signal changed=true so the anim timer
+        // keeps running until all visible tiles are rasterized.  The per-tick
+        // limit (MAX_TILES_PER_TICK) prevents blocking the event loop.
         if self.layout_root.is_some() {
             let scroll_y = self.scroll_view.get_state() as i32;
             let delta = (scroll_y - self.last_render_scroll_y).abs();
-            if delta > 32 {
-                let _pending = self.render_viewport(scroll_y);
+            if delta > 4 {
+                let pending = self.render_viewport(scroll_y);
                 self.last_render_scroll_y = scroll_y;
+                if pending {
+                    changed = true;
+                }
             }
         }
 
@@ -355,7 +356,9 @@ impl WebView {
     /// present.  Cache-miss tiles are rasterized incrementally (max 2 per
     /// call).  Returns `true` if there are still pending tiles.
     fn render_viewport(&mut self, scroll_y: i32) -> bool {
-        // Split borrows: layout_root (immut), renderer (mut), content_view (immut), images (immut).
+        // The display list is stored in the renderer — no layout_root needed
+        // for scroll rendering.  We still pass root for API compatibility but
+        // render_scroll ignores it (uses the display list instead).
         let root = match self.layout_root {
             Some(ref root) => root as *const LayoutBox,
             None => return false,
@@ -364,7 +367,6 @@ impl WebView {
         let doc_h = (self.total_height_val as u32).max(1);
 
         // SAFETY: root points into self.layout_root which is not modified during render_scroll().
-        // We use a raw pointer to break the borrow conflict between layout_root and renderer.
         unsafe {
             self.renderer.render_scroll(
                 &*root,
