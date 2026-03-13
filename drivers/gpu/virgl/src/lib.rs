@@ -322,25 +322,40 @@ pub extern "C" fn drv_surface_download(sid: u32, data: *mut u8, len: u32, width:
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn drv_create_shader(shader_type: u32, _version: u32, bytecode: *const u8, len: u32) -> u32 {
+pub extern "C" fn drv_create_shader(shader_type: u32, _version: u32, text: *const u8, len: u32) -> u32 {
     let s = state();
     let handle = alloc_handle();
 
     let pipe_type = if shader_type == 0 { PIPE_SHADER_VERTEX } else { PIPE_SHADER_FRAGMENT };
+    let text_bytes = unsafe { slice::from_raw_parts(text, len as usize) };
 
-    // Virgl shader creation: TGSI tokens as inline data
-    let num_tokens = (len as usize) / 4;
-    let tokens = unsafe { slice::from_raw_parts(bytecode as *const u32, num_tokens) };
+    // Virgl shader protocol (TGSI text):
+    //   [1] handle
+    //   [2] type (PIPE_SHADER_VERTEX/FRAGMENT)
+    //   [3] offlen = byte length of TGSI text (bit 31=0 for first/only packet)
+    //   [4] num_tokens = 0 (text mode, not binary tokens)
+    //   [5] num_so_outputs = 0
+    //   [6..] TGSI text packed into u32 words
+    let text_words = (len as usize + 3) / 4;
+    let payload_len = 5 + text_words as u32;
 
-    // CREATE_OBJECT(SHADER): handle, type, num_tokens, offlen, [tokens...]
-    let payload_len = 4 + num_tokens as u32;
     s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SHADER, payload_len);
     s.cmd.push(handle);
     s.cmd.push(pipe_type);
-    s.cmd.push(0);          // offlen (no text, inline TGSI)
-    s.cmd.push(num_tokens as u32);
-    for &t in tokens {
-        s.cmd.push(t);
+    s.cmd.push(len);        // offlen = text byte length (bit 31=0: not continuation)
+    s.cmd.push(0);          // num_tokens = 0 (TGSI text, not binary)
+    s.cmd.push(0);          // num_so_outputs = 0
+
+    // Pack text bytes into u32 words (little-endian)
+    for i in 0..text_words {
+        let base = i * 4;
+        let mut word = 0u32;
+        for j in 0..4 {
+            if base + j < text_bytes.len() {
+                word |= (text_bytes[base + j] as u32) << (j * 8);
+            }
+        }
+        s.cmd.push(word);
     }
     s.cmd.submit();
 
@@ -409,18 +424,32 @@ pub extern "C" fn drv_set_blend(enable: u32, src_factor: u32, dst_factor: u32) {
     s.cmd.push(s.blend_handle);
 
     let new_handle = alloc_handle();
-    s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_BLEND, 5);
+    // Blend: handle(1) + S0(1) + S1(1) + S2[0..7](8) = 11 words
+    s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_BLEND, 11);
     s.cmd.push(new_handle);
-    s.cmd.push(0); // S0
+    s.cmd.push(0); // S0: independent_blend=0
+    s.cmd.push(0); // S1: logicop_func=0
+    // S2[0]: RT0 — colormask at bits 27:30, blend state at lower bits
     if enable != 0 {
-        // rt[0]: blend_enable=1, rgb_src=src_factor, rgb_dst=dst_factor, etc.
-        let rt0 = 1 | (src_factor << 4) | (dst_factor << 9) | (src_factor << 14) | (dst_factor << 19);
+        // S2 per-RT: blend_enable[0] | rgb_func[3:1] | rgb_src[8:4] | rgb_dst[13:9]
+        //            | alpha_func[16:14] | alpha_src[21:17] | alpha_dst[26:22] | colormask[30:27]
+        // func = ADD(1 in Gallium PIPE_BLEND_ADD)
+        let rt0 = 1 // blend_enable
+            | (1 << 1) // rgb_func = PIPE_BLEND_ADD
+            | (src_factor << 4)
+            | (dst_factor << 9)
+            | (1 << 14) // alpha_func = PIPE_BLEND_ADD
+            | (src_factor << 17)
+            | (dst_factor << 22)
+            | (0x0F << 27); // colormask RGBA
         s.cmd.push(rt0);
     } else {
+        s.cmd.push(0x0F << 27); // just colormask RGBA, no blend
+    }
+    // S2[1..7]: disabled
+    for _ in 1..8 {
         s.cmd.push(0);
     }
-    s.cmd.push(0x0F); // colormask RGBA
-    s.cmd.push(0);
 
     s.cmd.push_cmd(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_BLEND, 1);
     s.cmd.push(new_handle);

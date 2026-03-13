@@ -12,6 +12,7 @@ pub mod lower;
 pub mod backend_sw;
 pub mod backend_dx9;
 pub mod backend_jit;
+pub mod backend_tgsi;
 
 use alloc::string::String;
 use crate::types::*;

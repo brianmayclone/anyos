@@ -789,7 +789,18 @@ pub extern "C" fn glLinkProgram(program: GLuint) {
 /// Use a program for rendering.
 #[no_mangle]
 pub extern "C" fn glUseProgram(program: GLuint) {
-    ctx().current_program = program;
+    let c = ctx();
+    c.current_program = program;
+
+    if unsafe { USE_HW_BACKEND } {
+        if let Some(prog) = c.shaders.get_program(program) {
+            if prog.hw_program_id != 0 {
+                if let Some(drv) = drv_loader::drv() {
+                    (drv.drv_use_program)(prog.hw_program_id);
+                }
+            }
+        }
+    }
 }
 
 /// Query program parameters.

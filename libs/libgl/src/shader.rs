@@ -77,6 +77,8 @@ pub struct GlProgram {
     pub vs_jit: Option<JitCode>,
     /// JIT-compiled fragment shader (cached, compiled on first draw).
     pub fs_jit: Option<JitCode>,
+    /// Hardware program ID (from drv_link_program), 0 if none.
+    pub hw_program_id: u32,
 }
 
 /// Storage for shader and program objects.
@@ -155,6 +157,7 @@ impl ShaderStore {
             attrib_bindings: Vec::new(),
             vs_jit: None,
             fs_jit: None,
+            hw_program_id: 0,
         });
         id
     }
@@ -302,6 +305,13 @@ impl ShaderStore {
             fs_jit.as_ref().map_or(0, |j| j.code_len()),
         );
 
+        // Hardware shader compilation (TGSI for virgl)
+        let hw_program_id = if unsafe { crate::USE_HW_BACKEND } {
+            Self::create_hw_shaders(&vs_ir, &fs_ir, &uniforms)
+        } else {
+            0
+        };
+
         prog.linked = true;
         prog.info_log.clear();
         prog.uniforms = uniforms;
@@ -312,5 +322,59 @@ impl ShaderStore {
         prog.fs_jit = fs_jit;
         prog.vs_ir = Some(vs_ir);
         prog.fs_ir = Some(fs_ir);
+        prog.hw_program_id = hw_program_id;
+    }
+
+    /// Compile IR shaders to TGSI and upload to the hardware driver.
+    /// Returns the linked program ID from drv_link_program, or 0 on failure.
+    fn create_hw_shaders(
+        vs_ir: &compiler::ir::Program,
+        fs_ir: &compiler::ir::Program,
+        uniforms: &[UniformInfo],
+    ) -> u32 {
+        let drv = match crate::drv_loader::drv() {
+            Some(d) => d,
+            None => return 0,
+        };
+
+        // Count sampler uniforms
+        let num_samplers = uniforms.iter()
+            .filter(|u| u.name.starts_with("u") || u.size == 1) // heuristic
+            .count();
+        // Actually, count TexSample instructions in FS to determine sampler count
+        let fs_samplers = fs_ir.instructions.iter().filter(|i| {
+            matches!(i, compiler::ir::Inst::TexSample(_, _, _))
+        }).count() as u32;
+        let num_samplers = fs_samplers.max(1).min(8);
+
+        // Compile to TGSI text
+        let vs_tgsi = compiler::backend_tgsi::compile(vs_ir, true, 0);
+        let fs_tgsi = compiler::backend_tgsi::compile(fs_ir, false, num_samplers);
+
+        crate::serial_println!("[libgl] TGSI VS ({} bytes):\n{}", vs_tgsi.len(), &vs_tgsi);
+        crate::serial_println!("[libgl] TGSI FS ({} bytes):\n{}", fs_tgsi.len(), &fs_tgsi);
+
+        // Upload to driver
+        let vs_handle = (drv.drv_create_shader)(
+            0, // vertex shader
+            0, // version
+            vs_tgsi.as_ptr(),
+            vs_tgsi.len() as u32,
+        );
+        let fs_handle = (drv.drv_create_shader)(
+            1, // fragment shader
+            0, // version
+            fs_tgsi.as_ptr(),
+            fs_tgsi.len() as u32,
+        );
+
+        if vs_handle == 0 || fs_handle == 0 {
+            crate::serial_println!("[libgl] HW shader creation failed: vs={} fs={}", vs_handle, fs_handle);
+            return 0;
+        }
+
+        let prog_id = (drv.drv_link_program)(vs_handle, fs_handle, 0);
+        crate::serial_println!("[libgl] HW program linked: id={:#x} (vs={} fs={})", prog_id, vs_handle, fs_handle);
+        prog_id
     }
 }
