@@ -43,7 +43,7 @@ add_custom_command(
     --output ${DISK_IMAGE}
     --image-size 256
     --sysroot ${SYSROOT_DIR}
-    --fs-start 8192
+    --fs-start 128
     --boot-cfg ${BOOT_CFG}
     --boot-logo ${BOOT_LOGO}
     --boot-font ${BOOT_FONT_BIN}

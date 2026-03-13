@@ -702,6 +702,20 @@ void exfat_init_fs(ExFat *fs)
 
 /*
  * Create a subdirectory.  Returns the new directory's cluster.
+ * Find a subdirectory by name within a parent directory cluster.
+ * Returns the FirstCluster of the matching directory, or 0 if not found.
+ */
+uint32_t exfat_find_dir(ExFat *fs, uint32_t parent, const char *name)
+{
+    ExFatNode *tree = exfat_read_dir_tree(fs, parent);
+    if (!tree) return 0;
+    ExFatNode *child = exfat_find_child(tree, name);
+    uint32_t result = (child && (child->attrs & EXFAT_ATTR_DIR)) ? child->first_cluster : 0;
+    exfat_free_tree(tree);
+    return result;
+}
+
+/*
  * Use parent==0 to add to the root directory.
  * Mirrors ExFatFormatter.create_directory().
  */

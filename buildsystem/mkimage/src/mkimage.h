@@ -210,6 +210,7 @@ void     exfat_init(ExFat *fs, uint8_t *image, uint32_t fs_start,
                     uint32_t fs_sectors, uint32_t spc);
 void     exfat_write_boot(ExFat *fs);
 void     exfat_init_fs(ExFat *fs);
+uint32_t exfat_find_dir(ExFat *fs, uint32_t parent, const char *name);
 uint32_t exfat_create_dir(ExFat *fs, uint32_t parent, const char *name,
                           uint16_t uid, uint16_t gid, uint16_t mode,
                           time_t mtime);

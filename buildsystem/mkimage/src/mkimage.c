@@ -8,7 +8,7 @@
  *
  * Usage:
  *   mkimage --stage1 s1.bin --stage2 s2.bin --kernel k.elf
- *           --output disk.img [--sysroot dir] [--image-size 64] [--fs-start 8192]
+ *           --output disk.img [--sysroot dir] [--image-size 64] [--fs-start 128]
  *   mkimage --uefi --bootloader boot.efi --kernel k.elf
  *           --output disk.img [--sysroot dir]
  *   mkimage --iso --stage1 s1.bin --stage2 s2.bin --kernel k.elf
@@ -205,31 +205,14 @@ void create_bios_image(const Args *args) {
     if (!kernel) fatal("kernel ELF conversion failed");
     free(kelf);
 
-    uint32_t kernel_sectors = (uint32_t)((flat_size + SECTOR_SIZE - 1) / SECTOR_SIZE);
-    uint32_t kernel_start = 160;
-
     printf("Stage 1: %zu bytes (1 sector)\n", s1_size);
     printf("Stage 2: %zu bytes (%zu sectors)\n", s2_size,
            (s2_size + SECTOR_SIZE - 1) / SECTOR_SIZE);
-    printf("Kernel:  %zu bytes (%u sectors, starting at sector %u)\n",
-           flat_size, kernel_sectors, kernel_start);
+    printf("Kernel:  %zu bytes (flat binary)\n", flat_size);
 
-    uint32_t kernel_end = kernel_start + kernel_sectors;
-    if (kernel_end > (uint32_t)args->fs_start)
-        fatal("kernel ends at sector %u, overlaps filesystem at sector %d",
-              kernel_end, args->fs_start);
-
-    /* Patch stage2 with kernel location and boot resource locations */
-    if (s2_size >= 20) {
-        write_le16(s2 + 2, (uint16_t)kernel_sectors);
-        write_le32(s2 + 4, kernel_start);
-        write_le16(s2 + 8,  64);   /* config_lba */
-        write_le16(s2 + 10, 16);   /* config_sectors */
-        write_le16(s2 + 12, 80);   /* logo_lba */
-        write_le16(s2 + 14, 72);   /* logo_sectors (80-151) */
-        write_le16(s2 + 16, 152);  /* font_lba */
-        write_le16(s2 + 18, 4);    /* font_sectors */
-    }
+    /* Stage2 patching is no longer needed for BIOS HDD mode —
+     * kernel and boot resources are loaded from exFAT files.
+     * (ISO mode has its own stage2 patching in iso9660.c.) */
 
     /* Create or load image */
     size_t image_size = (size_t)args->image_size * 1024 * 1024;
@@ -262,68 +245,9 @@ void create_bios_image(const Args *args) {
             printf("\nFull rebuild (--reset)\n");
     }
 
-    /* Always write boot sectors + kernel (even in incremental mode) */
+    /* Always write boot sectors (even in incremental mode) */
     memcpy(image, s1, s1_size);
     memcpy(image + SECTOR_SIZE, s2, s2_size);
-
-    /* Write boot.cfg to sectors 64-79 (8 KB, zero-padded) */
-    {
-        uint8_t *cfg_area = image + 64 * SECTOR_SIZE;
-        memset(cfg_area, 0, 16 * SECTOR_SIZE);
-        if (args->boot_cfg) {
-            size_t cfg_size;
-            uint8_t *cfg = read_file(args->boot_cfg, &cfg_size);
-            if (!cfg) fatal("cannot read boot.cfg '%s'", args->boot_cfg);
-            if (cfg_size > 16 * SECTOR_SIZE)
-                cfg_size = 16 * SECTOR_SIZE;
-            memcpy(cfg_area, cfg, cfg_size);
-            free(cfg);
-            printf("boot.cfg: %s (%zu bytes)\n", args->boot_cfg, cfg_size);
-        } else {
-            const char *default_cfg = "timeout=3\ndefault=0\n\n[anyOS]\nkernel=0\n";
-            memcpy(cfg_area, default_cfg, strlen(default_cfg));
-            printf("boot.cfg: default (built-in)\n");
-        }
-    }
-
-    /* Write boot_logo.bin to sectors 80-151 (36 KB) */
-    {
-        uint8_t *logo_area = image + 80 * SECTOR_SIZE;
-        memset(logo_area, 0, 72 * SECTOR_SIZE);
-        if (args->boot_logo) {
-            size_t logo_size;
-            uint8_t *logo = read_file(args->boot_logo, &logo_size);
-            if (!logo) fatal("cannot read boot logo '%s'", args->boot_logo);
-            size_t rgb_size;
-            uint8_t *rgb = convert_logo_for_bootloader(logo, logo_size, &rgb_size);
-            free(logo);
-            if (!rgb) fatal("boot logo conversion failed");
-            if (rgb_size > 72 * SECTOR_SIZE)
-                fatal("boot logo too large: %zu bytes (max %d)", rgb_size, 72 * SECTOR_SIZE);
-            memcpy(logo_area, rgb, rgb_size);
-            free(rgb);
-            printf("boot_logo: %s (converted to %zu bytes RGB)\n",
-                   args->boot_logo, rgb_size);
-        }
-    }
-
-    /* Write boot_font.bin to sectors 152-155 (2 KB) */
-    {
-        uint8_t *font_area = image + 152 * SECTOR_SIZE;
-        memset(font_area, 0, 4 * SECTOR_SIZE);
-        if (args->boot_font) {
-            size_t font_size;
-            uint8_t *font = read_file(args->boot_font, &font_size);
-            if (!font) fatal("cannot read boot font '%s'", args->boot_font);
-            if (font_size > 4 * SECTOR_SIZE)
-                font_size = 4 * SECTOR_SIZE;
-            memcpy(font_area, font, font_size);
-            free(font);
-            printf("boot_font: %s (%zu bytes)\n", args->boot_font, font_size);
-        }
-    }
-
-    memcpy(image + (size_t)kernel_start * SECTOR_SIZE, kernel, flat_size);
 
     /* Write MBR partition table (bytes 446-509 of sector 0).
      * Stage 1 bootloader code occupies bytes 0-~106, so this is safe.
@@ -350,7 +274,7 @@ void create_bios_image(const Args *args) {
                args->fs_start, part_sectors);
     }
 
-    free(s1); free(s2); free(kernel);
+    free(s1); free(s2);
 
     /* exFAT filesystem */
     uint32_t fs_sectors = (uint32_t)(image_size / SECTOR_SIZE) - (uint32_t)args->fs_start;
@@ -367,6 +291,80 @@ void create_bios_image(const Args *args) {
         if (args->sysroot) {
             exfat_sync_sysroot(&exfat, args->sysroot);
         }
+
+        /* Write kernel + boot files as exFAT files */
+        {
+            uint32_t system_dir = exfat_find_dir(&exfat, exfat.root_cluster, "System");
+            if (!system_dir)
+                system_dir = exfat_create_dir(&exfat, exfat.root_cluster, "System",
+                                              0, 0, 0755, time(NULL));
+            /* Delete existing kernel if present, then re-add */
+            ExFatNode *sys_tree = exfat_read_dir_tree(&exfat, system_dir);
+            if (sys_tree) {
+                ExFatNode *old_k = exfat_find_child(sys_tree, "krnl64");
+                if (old_k) {
+                    exfat_free_clusters(&exfat, old_k);
+                    exfat_delete_entry(&exfat, old_k);
+                }
+                exfat_free_tree(sys_tree);
+            }
+            exfat_add_file(&exfat, system_dir, "krnl64",
+                           kernel, flat_size, 0, 0, 0644, time(NULL));
+            printf("  /System/krnl64 (%zu bytes)\n", flat_size);
+
+            uint32_t boot_dir = exfat_find_dir(&exfat, exfat.root_cluster, "boot");
+            if (!boot_dir)
+                boot_dir = exfat_create_dir(&exfat, exfat.root_cluster, "boot",
+                                            0, 0, 0755, time(NULL));
+            ExFatNode *boot_tree = exfat_read_dir_tree(&exfat, boot_dir);
+
+            if (args->boot_cfg) {
+                size_t sz;
+                uint8_t *d = read_file(args->boot_cfg, &sz);
+                if (d) {
+                    if (boot_tree) {
+                        ExFatNode *old = exfat_find_child(boot_tree, "boot.cfg");
+                        if (old) { exfat_free_clusters(&exfat, old); exfat_delete_entry(&exfat, old); }
+                    }
+                    exfat_add_file(&exfat, boot_dir, "boot.cfg", d, sz, 0, 0, 0644, time(NULL));
+                    free(d);
+                    printf("  /boot/boot.cfg (%zu bytes)\n", sz);
+                }
+            }
+            if (args->boot_logo) {
+                size_t sz;
+                uint8_t *d = read_file(args->boot_logo, &sz);
+                if (d) {
+                    size_t rgb_sz;
+                    uint8_t *rgb = convert_logo_for_bootloader(d, sz, &rgb_sz);
+                    free(d);
+                    if (rgb) {
+                        if (boot_tree) {
+                            ExFatNode *old = exfat_find_child(boot_tree, "logo.bin");
+                            if (old) { exfat_free_clusters(&exfat, old); exfat_delete_entry(&exfat, old); }
+                        }
+                        exfat_add_file(&exfat, boot_dir, "logo.bin", rgb, rgb_sz, 0, 0, 0644, time(NULL));
+                        free(rgb);
+                        printf("  /boot/logo.bin (%zu bytes)\n", rgb_sz);
+                    }
+                }
+            }
+            if (args->boot_font) {
+                size_t sz;
+                uint8_t *d = read_file(args->boot_font, &sz);
+                if (d) {
+                    if (boot_tree) {
+                        ExFatNode *old = exfat_find_child(boot_tree, "font.bin");
+                        if (old) { exfat_free_clusters(&exfat, old); exfat_delete_entry(&exfat, old); }
+                    }
+                    exfat_add_file(&exfat, boot_dir, "font.bin", d, sz, 0, 0, 0644, time(NULL));
+                    free(d);
+                    printf("  /boot/font.bin (%zu bytes)\n", sz);
+                }
+            }
+            if (boot_tree) exfat_free_tree(boot_tree);
+        }
+
         exfat_flush(&exfat);
         exfat_free(&exfat);
     } else {
@@ -381,9 +379,60 @@ void create_bios_image(const Args *args) {
             exfat_populate_sysroot(&exfat, args->sysroot);
         }
 
+        /* Write kernel + boot files as exFAT files */
+        {
+            uint32_t system_dir = exfat_find_dir(&exfat, exfat.root_cluster, "System");
+            if (!system_dir)
+                system_dir = exfat_create_dir(&exfat, exfat.root_cluster, "System",
+                                              0, 0, 0755, time(NULL));
+            exfat_add_file(&exfat, system_dir, "krnl64",
+                           kernel, flat_size, 0, 0, 0644, time(NULL));
+            printf("  /System/krnl64 (%zu bytes)\n", flat_size);
+
+            uint32_t boot_dir = exfat_find_dir(&exfat, exfat.root_cluster, "boot");
+            if (!boot_dir)
+                boot_dir = exfat_create_dir(&exfat, exfat.root_cluster, "boot",
+                                            0, 0, 0755, time(NULL));
+
+            if (args->boot_cfg) {
+                size_t sz;
+                uint8_t *d = read_file(args->boot_cfg, &sz);
+                if (d) {
+                    exfat_add_file(&exfat, boot_dir, "boot.cfg", d, sz, 0, 0, 0644, time(NULL));
+                    free(d);
+                    printf("  /boot/boot.cfg (%zu bytes)\n", sz);
+                }
+            }
+            if (args->boot_logo) {
+                size_t sz;
+                uint8_t *d = read_file(args->boot_logo, &sz);
+                if (d) {
+                    size_t rgb_sz;
+                    uint8_t *rgb = convert_logo_for_bootloader(d, sz, &rgb_sz);
+                    free(d);
+                    if (rgb) {
+                        exfat_add_file(&exfat, boot_dir, "logo.bin", rgb, rgb_sz, 0, 0, 0644, time(NULL));
+                        free(rgb);
+                        printf("  /boot/logo.bin (%zu bytes)\n", rgb_sz);
+                    }
+                }
+            }
+            if (args->boot_font) {
+                size_t sz;
+                uint8_t *d = read_file(args->boot_font, &sz);
+                if (d) {
+                    exfat_add_file(&exfat, boot_dir, "font.bin", d, sz, 0, 0, 0644, time(NULL));
+                    free(d);
+                    printf("  /boot/font.bin (%zu bytes)\n", sz);
+                }
+            }
+        }
+
         exfat_flush(&exfat);
         exfat_free(&exfat);
     }
+
+    free(kernel);
 
     /* Write image */
     FILE *fp = fopen(args->output, "wb");
@@ -702,7 +751,7 @@ static void usage(void) {
 static int parse_args(int argc, char **argv, Args *args) {
     memset(args, 0, sizeof(*args));
     args->image_size = 64;
-    args->fs_start = 8192;
+    args->fs_start = 128;
 
     int i = 1;
     while (i < argc) {
