@@ -1,5 +1,44 @@
 # Release Notes
 
+## v0.4.38 — 2026-03-13
+
+### Bug Fixes
+
+#### Ventoy Black Screen Fix (VBE Framebuffer Offset)
+- **Root cause**: bochs-drm (Linux DRM driver) allocates framebuffers at arbitrary offsets within VRAM via GEM/VRAM helpers, then sets VBE registers `X_OFFSET` (reg 8) and `Y_OFFSET` (reg 9) to point the display start to that offset. CoreVM was always reading from VRAM base address `0xE0000000`, missing the actual framebuffer at e.g. offset `0x300000`.
+- **New FFI**: `corevm_vga_get_fb_offset()` — reads VBE offset registers and calculates the byte offset into VRAM where the active framebuffer starts
+- **vmmanager + vmctl**: Both updated to read from `0xE0000000 + vbe_offset` instead of `0xE0000000`
+- **Result**: Ventoy 1.1.10 GUI now renders correctly at 1024×768×32
+
+#### BAR2 MMIO Layout Fix (QEMU bochs-display Compatibility)
+- **SvgaDispiMmioProxy**: Corrected QEMU BAR2 MMIO layout — VBE DISPI registers live at offset `0x500` within BAR2 (not at offset 0), VGA I/O ports at offset `0x000`
+- Fixes VBE register reads/writes from Linux bochs-drm driver running inside guest
+
+### Features
+
+#### CoreVM Device Improvements
+- **CMOS/RTC**: Full date/time registers (seconds through year), status register A/B/C with periodic interrupt support, NMI masking, 13 standard CMOS RAM fields
+- **fw_cfg DMA**: Complete DMA read transport (`FW_CFG_DMA_CTL_READ`), `etc/e820` table generation from memory map, `etc/acpi/tables` and `etc/acpi/rsdp` ACPI table serving
+- **AHCI**: COMRESET/COMINIT handshake (SStatus transitions), PxIS register accumulation, proper PxCI bit clearing after command completion
+- **PS/2 Controller**: Output buffer status tracking, sequential scan code delivery, proper status register bit management
+- **SVGA**: Text mode detection from VBE register writes (BPP=0 or enable-bit cleared), improved mode change logging
+
+#### vmctl CLI Enhancements
+- Enhanced framebuffer diagnostics with VBE offset display
+- Improved screenshot capture using correct VRAM offset
+- Better graphics mode detection and status reporting
+
+#### KVM Backend
+- Duplicate memory region detection and removal before re-registration
+- SIGALRM-based timer for periodic KVM_RUN exit handling
+- Improved vCPU cancel/exit tracking
+
+### Statistics
+- **15 files changed**, ~880 lines added, ~264 lines removed
+- **5 commits** since v0.4.37
+
+---
+
 ## v0.4.0 — 2026-03-11
 
 ### Features
