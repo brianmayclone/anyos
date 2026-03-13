@@ -24,51 +24,17 @@ This document describes the internal architecture of anyOS, from boot to desktop
 
 ## Boot Process
 
-anyOS supports three boot methods: BIOS (MBR + exFAT), UEFI (GPT + exFAT), and ISO (El Torito).
+anyOS supports three boot methods: **BIOS** (two-stage MBR bootloader with graphical boot menu), **UEFI** (Rust EFI application), and **ISO** (El Torito CD-ROM).
 
-### BIOS Boot (MBR + exFAT)
+The BIOS bootloader features:
+- **Graphical splash screen** with boot logo and timeout countdown
+- **Interactive boot menu** with keyboard navigation (Up/Down/Enter)
+- **INI-style `boot.cfg`** supporting multiple boot entries, kernel parameters, and chainloading to other operating systems
+- **Custom boot parameters** — `params=custom` prompts for interactive input at boot time
 
-Custom two-stage bootloader written in NASM assembly.
+The bootloader passes a `BootInfo` struct at `0x9000` to the kernel containing framebuffer info, E820 memory map, disk geometry, boot mode, and boot parameters (64-byte string from `boot.cfg`).
 
-**Stage 1 (MBR):**
-- 512 bytes, loaded at `0x7C00` by BIOS
-- Reads Stage 2 from disk sectors 1-3
-- Jumps to Stage 2
-
-**Stage 2:**
-1. **A20 Line** -- Enables access to memory above 1 MB
-2. **E820 Memory Map** -- Queries BIOS for available physical memory regions
-3. **VESA VBE** -- Sets graphics mode to 1024x768x32bpp (or best available)
-4. **Protected Mode** -- Sets up GDT, switches CPU to 32-bit protected mode
-5. **Kernel Loading** -- Reads kernel flat binary from disk to physical address `0x100000`
-6. **Paging** -- Enables 4-level paging (PML4): identity-maps first 128 MiB, maps kernel to higher-half (`0xFFFFFFFF80000000`), maps framebuffer
-7. **Long Mode** -- Switches to 64-bit mode with full PML4 paging
-8. **Jump to Kernel** -- Transfers control to `0xFFFFFFFF80100000` (kernel entry point)
-
-### UEFI Boot (GPT + exFAT)
-
-The UEFI bootloader is a PE/COFF EFI application (`bootx64.efi`).
-
-1. **UEFI firmware** loads `\EFI\BOOT\bootx64.efi` from the EFI System Partition (FAT32)
-2. **EFI bootloader** uses UEFI protocols to:
-   - Query memory map via `GetMemoryMap()`
-   - Set graphics mode via GOP (Graphics Output Protocol)
-   - Read kernel from disk via UEFI file I/O
-   - Exit boot services
-3. **Paging** -- Sets up PML4 with same layout as BIOS path
-4. **Jump to Kernel** -- Same entry point as BIOS boot
-
-### ISO Boot (El Torito)
-
-ISO 9660 boot image with El Torito no-emulation boot catalog. Used for CD/DVD boot.
-
-### Boot Info
-
-The bootloader passes a `BootInfo` struct at a known address containing:
-- Framebuffer address, width, height, pitch
-- E820/UEFI memory map entries
-- Disk geometry
-- Boot mode indicator (BIOS/UEFI)
+See **[Bootloader Documentation](bootloader.md)** for the complete reference including boot.cfg format, memory layout, and source file inventory.
 
 ---
 

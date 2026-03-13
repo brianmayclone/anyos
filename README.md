@@ -214,8 +214,8 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 
 ### Boot Methods
 
-- **BIOS/MBR** — traditional PC boot (256 MiB disk, exFAT)
-- **UEFI** — modern firmware boot (64 MiB GPT disk, exFAT, Rust UEFI bootloader)
+- **BIOS/MBR** — two-stage bootloader with graphical splash screen, interactive boot menu, and INI-style `boot.cfg` configuration (timeout, multiple entries, kernel parameters, chainloading)
+- **UEFI** — modern firmware boot via Rust EFI application (64 MiB GPT disk, exFAT)
 - **ISO 9660** — CD-ROM/USB boot (El Torito, Rock Ridge extensions)
 
 ### User Programs
@@ -569,6 +569,7 @@ DLIB programs link against lightweight client stub crates (e.g. `libimage_client
 
 ## Documentation
 
+- **[Bootloader](docs/bootloader.md)** — BIOS two-stage bootloader, boot.cfg configuration, graphical boot menu, UEFI boot, chainloading
 - **[Architecture Overview](docs/architecture.md)** — Boot process, memory layout, scheduling, IPC, USB, user identity
 - **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 184 system calls
 - **[Standard Library API](docs/stdlib-api.md)** — `anyos_std` crate reference for Rust user programs
