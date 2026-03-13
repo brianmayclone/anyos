@@ -285,11 +285,41 @@ anyOS supports four GPU backends via the `GpuDriver` trait:
 | Driver | PCI ID | Features |
 |--------|--------|----------|
 | **Bochs VGA** | 1234:1111 | VESA VBE, DISPI registers, page flipping (double buffer) |
-| **VMware SVGA II** | 15AD:0405 | FIFO command queue, 2D acceleration (rect fill/copy), hardware cursor |
+| **VMware SVGA II** | 15AD:0405 | FIFO command queue, 2D acceleration (rect fill/copy), hardware cursor, **3D via SVGA3D** |
 | **VirtualBox VGA** | 80EE:BEEF | VirtualBox guest display adapter |
-| **VirtIO GPU** | 1AF4:1050 | VirtIO graphics device |
+| **VirtIO GPU** | 1AF4:1050 | VirtIO graphics device, **3D via virgl** (when `VIRTIO_GPU_F_VIRGL` negotiated) |
 
 GPU auto-detection happens during PCI enumeration. The compositor uses whichever driver is available, falling back to software-only rendering if no known GPU is found.
+
+### GPU Driver HAL (Userspace 3D Drivers)
+
+3D graphics acceleration uses loadable userspace `.drv` shared libraries, following the Windows ICD / Linux Mesa DRI model. This keeps complex shader compilation and state tracking in userspace — crashes don't take down the kernel.
+
+```
+App (glDrawArrays, glTexImage2D, ...)
+    │
+libgl.so  (GL API + Software Rasterizer + drv_loader)
+    │── gl_init() → SYS_GPU_QUERY_TYPE → "svga3d" / "virgl" / "none"
+    │── dl_open("/System/Drivers/gpu/{type}.drv")
+    │
+svga3d.drv  │  virgl.drv
+    │── Translate drv_* calls → device-specific command buffers
+    │── Call kernel 3D syscalls (SYS_GPU_3D_SUBMIT, etc.)
+    │
+Kernel: generic 3D syscalls → GpuDriver trait implementations
+```
+
+Each `.drv` exports 21 `extern "C"` functions (lifecycle, resources, shaders, render state, uniforms, drawing, sync). Drivers are located at `/System/Drivers/gpu/` and built from source under `drivers/gpu/`.
+
+**Kernel 3D syscalls:**
+
+| Syscall | Number | Purpose |
+|---------|--------|---------|
+| `SYS_GPU_QUERY_TYPE` | 517 | Returns GPU driver type ("svga3d", "virgl", "none") |
+| `SYS_GPU_3D_SUBMIT` | 512 | Submit command buffer (driver-specific validation) |
+| `SYS_GPU_3D_SYNC` | 514 | Wait for GPU completion |
+| `SYS_GPU_3D_SURFACE_DMA` | 515 | Upload data to GPU surface |
+| `SYS_GPU_3D_SURFACE_DMA_READ` | 516 | Download from GPU surface |
 
 ### Compositor
 

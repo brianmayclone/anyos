@@ -94,12 +94,19 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
                 if let Ok(s) = core::str::from_utf8(&params[..len]) {
                     serial_println!("Boot params: \"{}\"", s);
                     for token in s.split_ascii_whitespace() {
-                        match token {
-                            "verbose" => {
-                                crate::drivers::serial::set_verbose(true);
-                                serial_println!("Verbose logging enabled via boot params");
+                        if token == "verbose" {
+                            crate::drivers::serial::set_verbose(true);
+                            serial_println!("Verbose logging enabled via boot params");
+                        } else if let Some(res) = token.strip_prefix("res=") {
+                            // Parse "res=WxH"
+                            if let Some((w_str, h_str)) = res.split_once('x') {
+                                if let (Ok(w), Ok(h)) = (w_str.parse::<u32>(), h_str.parse::<u32>()) {
+                                    if w >= 640 && h >= 480 {
+                                        crate::drivers::gpu::set_preferred_resolution(w, h);
+                                        serial_println!("Preferred resolution: {}x{}", w, h);
+                                    }
+                                }
                             }
-                            _ => {}
                         }
                     }
                 }
@@ -391,6 +398,12 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
                 n
             }) {
                 serial_println!("[OK] GPU driver: {}", name);
+            }
+            // Apply preferred resolution from boot params if set
+            if let Some((w, h)) = drivers::gpu::preferred_resolution() {
+                if drivers::gpu::with_gpu(|g| g.set_mode(w, h, 32)).is_some() {
+                    serial_println!("[OK] Applied boot resolution: {}x{}", w, h);
+                }
             }
 
             let has_accel = drivers::gpu::with_gpu(|g| g.has_accel()).unwrap_or(false);

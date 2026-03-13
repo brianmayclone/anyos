@@ -118,7 +118,7 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 
 - **VESA VBE** framebuffer (1024x768x32, runtime resolution switching)
 - **Double-buffered compositor** with damage-based partial updates and blur effects
-- **GPU drivers**: Bochs VGA (page flipping), VMware SVGA II (2D acceleration, hardware cursor), VirtualBox VGA, VirtIO GPU
+- **GPU drivers**: Bochs VGA (page flipping), VMware SVGA II (2D acceleration, hardware cursor, 3D via SVGA3D), VirtualBox VGA, VirtIO GPU (2D + virgl 3D)
 - **macOS-inspired dark theme** with rounded windows, shadows, and alpha blending
 - **44 UI controls** via the anyui framework (buttons, text fields, code editor, tree view, data grid, toolbars, canvas, expander, flow/stack panels, autocomplete, etc.)
 - **14 shared libraries** — libimage, librender, libcompositor (DLIB format) + libanyui, libfont, libgl, libcorevm, libhttp, libdb, libzip, libsvg, libjs, libwebview, libm (.so format with ELF dynamic linking)
@@ -127,13 +127,16 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 ### 3D Graphics
 
 - **OpenGL ES 2.0** compatible 3D engine (`libgl.so`) with 105 API exports
+- **Hardware-accelerated 3D** via loadable userspace GPU drivers (`.drv` shared libraries):
+  - **VMware SVGA3D** (`svga3d.drv`) — DX9 Shader Model 2.0 bytecode, FIFO command submission
+  - **VirtIO GPU / virgl** (`virgl.drv`) — Gallium3D/TGSI command buffers via `VIRTIO_GPU_CMD_SUBMIT_3D`
+  - Automatic fallback to software rasterizer when no `.drv` is available
 - **Built-in GLSL ES 1.00 shader compiler** — lexer, recursive-descent parser, AST, SSA-style IR (~35 opcodes), register-based interpreter
 - **Software rasterizer** — edge-function triangle fill, Sutherland-Hodgman frustum clipping, perspective-correct varying interpolation, per-fragment depth test and blending
 - **No libm dependency** — all transcendental math (sin, cos, sqrt, pow, log2, exp2) via polynomial approximations
 - **Vertex + Fragment shaders** with swizzle, type constructors (vec2/3/4, mat3/4), 18 built-in functions (texture2D, normalize, dot, cross, clamp, mix, reflect, ...)
 - **Texture sampling** with nearest/bilinear filtering and repeat/clamp/mirror wrap modes
 - **Physics engine** — rigid body dynamics with sphere/plane/box colliders, gravity, restitution, forces, impulses, angular velocity (20 API exports)
-- **Phase 2 planned**: VMware SVGA3D hardware acceleration with DX9 SM 2.0 bytecode backend
 
 ### Networking
 
@@ -391,7 +394,8 @@ qemu-system-x86_64 -drive format=raw,file=anyos.img -m 1024M -smp cpus=4 \
 
 Key flags:
 - `-vga std` — Bochs VGA (VESA + page flipping)
-- `-vga vmware` — VMware SVGA II (2D acceleration + hardware cursor)
+- `-vga vmware` — VMware SVGA II (2D acceleration + hardware cursor + 3D via SVGA3D)
+- `-vga virtio -display gtk,gl=on` — VirtIO GPU with virgl 3D acceleration
 - `-serial stdio` — Kernel serial output to terminal
 - `-m 1024M` — 1 GiB RAM
 - `-smp cpus=4` — 4 CPU cores
@@ -435,6 +439,10 @@ anyos/
       syscall/             184 syscall handlers
       task/                Mach-style scheduler, context switch, ELF loader, DLL loader, KDRV loader
       crypto/              MD5 hash
+  drivers/               Userspace GPU drivers (.drv shared libraries)
+    gpu/
+      svga3d/                VMware SVGA3D 3D backend (DX9 SM 2.0 commands)
+      virgl/                 VirtIO GPU virgl/Gallium3D backend (TGSI commands)
   libs/                  Libraries
     stdlib/                anyos_std — Rust standard library for user programs
     libc/                  POSIX C library (35 headers, i686-elf-gcc)

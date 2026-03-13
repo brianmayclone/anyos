@@ -43,6 +43,23 @@ fn validate_gpu_vtable(driver: &dyn GpuDriver) -> bool {
     true
 }
 
+/// Preferred resolution set via boot params (res=WxH). 0 = not set.
+static PREFERRED_WIDTH: AtomicU32 = AtomicU32::new(0);
+static PREFERRED_HEIGHT: AtomicU32 = AtomicU32::new(0);
+
+/// Set the preferred resolution from boot params.
+pub fn set_preferred_resolution(width: u32, height: u32) {
+    PREFERRED_WIDTH.store(width, Ordering::Relaxed);
+    PREFERRED_HEIGHT.store(height, Ordering::Relaxed);
+}
+
+/// Get the preferred resolution, if set. Returns (width, height) or None.
+pub fn preferred_resolution() -> Option<(u32, u32)> {
+    let w = PREFERRED_WIDTH.load(Ordering::Relaxed);
+    let h = PREFERRED_HEIGHT.load(Ordering::Relaxed);
+    if w > 0 && h > 0 { Some((w, h)) } else { None }
+}
+
 /// Common display resolutions supported by QEMU VGA devices
 pub static COMMON_MODES: &[(u32, u32)] = &[
     (640, 480),

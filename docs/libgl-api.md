@@ -1,6 +1,6 @@
 # anyOS OpenGL Library (libgl) API Reference
 
-The **libgl** shared library provides an OpenGL ES 2.0 compatible 3D graphics engine with a built-in GLSL ES 1.00 shader compiler and software rasterizer. It renders 3D scenes entirely in software, producing an ARGB framebuffer that can be displayed on any anyOS surface (e.g. anyui Canvas).
+The **libgl** shared library provides an OpenGL ES 2.0 compatible 3D graphics engine with a built-in GLSL ES 1.00 shader compiler, software rasterizer, and hardware-accelerated GPU backends via loadable `.drv` drivers. When a compatible GPU is detected (VMware SVGA II or VirtIO GPU with virgl), libgl loads the appropriate userspace driver for hardware-accelerated 3D. Otherwise, it falls back to the built-in software rasterizer, producing an ARGB framebuffer that can be displayed on any anyOS surface (e.g. anyui Canvas).
 
 **Format:** ELF64 shared object (.so), loaded via `dl_open("/Libraries/libgl.so")`
 **Exports:** 86
@@ -45,7 +45,8 @@ The **libgl** shared library provides an OpenGL ES 2.0 compatible 3D graphics en
   - [Limitations (Phase 1)](#limitations-phase-1)
 - [Constants Reference](#constants-reference)
 - [Constraints](#constraints)
-- [Phase 2 Roadmap (SVGA3D)](#phase-2-roadmap-svga3d)
+- [Hardware-Accelerated 3D (GPU Driver HAL)](#hardware-accelerated-3d-gpu-driver-hal)
+- [Future Roadmap](#future-roadmap)
 
 ---
 
@@ -182,8 +183,9 @@ libs/libgl/src/
   draw.rs                Draw dispatch
   simd.rs                SSE-accelerated Vec4 (wraps __m128)
   fxaa.rs                FXAA post-processing
-  svga3d.rs              SVGA3D GPU command generation
-  syscall.rs             Minimal syscalls (sbrk, exit)
+  drv_loader.rs          GPU driver HAL — ELF loader + drv_* symbol resolution
+  svga3d.rs              SVGA3D GPU command generation (legacy, superseded by svga3d.drv)
+  syscall.rs             Minimal syscalls (sbrk, exit, dll_load, gpu_query_type)
   compiler/
     mod.rs               Compile pipeline orchestration
     lexer.rs             GLSL tokenizer (~40 token types)
@@ -773,43 +775,65 @@ The software rasterizer has been tuned for maximum throughput under QEMU TCG emu
 
 ---
 
-## Phase 2 Roadmap (SVGA3D)
+## Hardware-Accelerated 3D (GPU Driver HAL)
 
-Phase 2 will add hardware-accelerated rendering via the VMware SVGA3D command interface:
+libgl supports hardware-accelerated 3D rendering via loadable userspace GPU drivers (`.drv` shared libraries). The driver is selected automatically at init based on the detected GPU hardware.
 
 ```
 libgl.so
-  |-- Software Rasterizer (Phase 1, always available)
+  |-- Software Rasterizer (always available)
   |   |-- JIT Backend (x86_64 SSE native code)
   |   |-- SW Backend (IR interpreter fallback)
   |   |-- Fast-Path Rasterizer (textured + vertex-lit)
   |
-  |-- SVGA3D Backend (Phase 2, when SVGA_CAP_3D detected)
+  |-- GPU Driver HAL (drv_loader.rs)
+        |-- gl_init() → SYS_GPU_QUERY_TYPE → "svga3d" / "virgl" / "none"
+        |-- dl_open("/System/Drivers/gpu/{type}.drv")
+        |-- Resolves 21 drv_* symbols via ELF hash table
         |
-        v
-    IR -> DX9 Shader Model 2.0 Bytecode
+        |-- svga3d.drv (VMware SVGA II)
+        |     Translates drv_* → SVGA3D FIFO commands (cmd IDs 1040-1099)
+        |     Shader format: DX9 Shader Model 2.0 bytecode
         |
-        v
-    SVGA3D Commands (FIFO)
-        |
-        v
-    SYS_GPU_3D_SUBMIT (syscall 512+)
-        |
-        v
-    Kernel: vmware_svga.rs -> GPU FIFO
+        |-- virgl.drv (VirtIO GPU)
+              Translates drv_* → Gallium3D/virgl command buffers
+              Shader format: TGSI tokens
+              Submitted via VIRTIO_GPU_CMD_SUBMIT_3D
 ```
 
-**Phase 2 additions:**
-- SVGA3D command buffer generation (surface create, shader define, draw primitives)
-- IR -> DX9 SM 2.0 bytecode compiler backend (`backend_dx9.rs`)
-- GPU 3D syscalls starting at number 512 (`SYS_GPU_3D_SUBMIT`, `SYS_GPU_3D_SURFACE_CREATE`, etc.)
-- Automatic fallback to software rasterizer when 3D hardware is not available
-- Shared surface management between GPU and CPU
+### Driver API
 
-**Phase 3 additions:**
+Each `.drv` exports 21 `extern "C"` symbols covering lifecycle, resource management, shaders, render state, uniforms, drawing, and sync/present. See `docs/superpowers/specs/2026-03-13-gpu-driver-hal-design.md` for the full driver API reference.
+
+### Driver Location
+
+Drivers are installed to `sysroot/System/Drivers/gpu/`:
+- `svga3d.drv` — VMware SVGA II 3D backend (`drivers/gpu/svga3d/`)
+- `virgl.drv` — VirtIO GPU virgl backend (`drivers/gpu/virgl/`)
+
+### Kernel Syscalls
+
+| Syscall | Number | Purpose |
+|---------|--------|---------|
+| `SYS_GPU_QUERY_TYPE` | 517 | Returns GPU driver type name ("svga3d", "virgl", "none") |
+| `SYS_GPU_3D_SUBMIT` | 512 | Submit 3D command buffer (up to 64 KiB) |
+| `SYS_GPU_3D_SYNC` | 514 | Wait for GPU completion |
+| `SYS_GPU_3D_SURFACE_DMA` | 515 | Upload data to GPU surface |
+| `SYS_GPU_3D_SURFACE_DMA_READ` | 516 | Download data from GPU surface |
+| `SYS_DLL_LOAD` | 80 | Load/map .drv shared object into process |
+
+### QEMU Configuration
+
+- **VMware SVGA3D**: `-vga vmware` (default SVGA II, 3D supported)
+- **VirtIO GPU + virgl**: `-vga virtio -display gtk,gl=on`
+- **Software only**: `-vga std` (Bochs VGA, no .drv loaded)
+
+## Future Roadmap
+
 - GLSL `if/else`, `for`, `while` with proper control flow (currently parsed but flattened)
 - GLSL `discard` statement (currently parsed, no-op)
 - User-defined GLSL functions
 - `struct` types
 - Mipmap generation
 - Full FBO render-to-texture
+- 2D GPU operations extracted into .drv drivers (stdvga fallback)

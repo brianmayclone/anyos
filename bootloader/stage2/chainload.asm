@@ -21,6 +21,19 @@ execute_entry:
     ret                             ; Unknown type, just return
 
 .type_kernel:
+    ; Check if params == "custom" (interactive input)
+    a32 cmp dword [esi + 32], 'cust'
+    jne .copy_params
+    a32 cmp word [esi + 36], 'om'
+    jne .copy_params
+    a32 cmp byte [esi + 38], 0
+    jne .copy_params
+
+    ; Interactive: prompt user for custom boot params
+    call read_custom_params
+    ret
+
+.copy_params:
     ; Copy 64 bytes of params from entry+32 to BOOT_INFO_ADDR+44
     add esi, 32                     ; Source: entry + 32
     mov edi, BOOT_INFO_ADDR + 44   ; Destination
@@ -99,3 +112,157 @@ execute_entry:
     jmp .halt
 
 .msg_disk_error: db "Chainload: disk read error", 13, 10, 0
+
+; -----------------------------------------------------------------------------
+; read_custom_params - Draw input prompt on screen, read keyboard into buffer
+;   Writes result to BOOT_INFO_ADDR+44 (max 63 chars + null)
+; -----------------------------------------------------------------------------
+read_custom_params:
+    pusha
+
+    ; Clear screen and draw prompt
+    call clear_screen
+
+    ; Draw prompt text centered
+    mov esi, .prompt_str
+    mov ecx, 300                    ; Y position
+    mov edx, 0x00AACCFF            ; light blue
+    call draw_string_centered
+
+    ; Draw hint below
+    mov esi, .hint_str
+    mov ecx, 324                    ; Y = 300 + 24
+    mov edx, 0x00666666            ; gray
+    call draw_string_centered
+
+    ; Initialize input buffer and cursor
+    mov edi, BOOT_INFO_ADDR + 44
+    xor ecx, ecx                   ; cursor position (char count)
+
+    ; Draw initial cursor
+    call .draw_input_line
+
+.input_loop:
+    ; Wait for keypress (blocking)
+    mov ah, 0x00
+    int 0x16
+    ; AH = scan code, AL = ASCII
+
+    ; Enter = done
+    cmp ah, 0x1C
+    je .input_done
+
+    ; Backspace
+    cmp ah, 0x0E
+    je .backspace
+
+    ; Escape = cancel (empty params)
+    cmp ah, 0x01
+    je .input_cancel
+
+    ; Printable ASCII? (32-126)
+    cmp al, 32
+    jb .input_loop
+    cmp al, 126
+    ja .input_loop
+
+    ; Max 63 chars
+    cmp ecx, 63
+    jge .input_loop
+
+    ; Store character
+    a32 mov [edi + ecx], al
+    inc ecx
+
+    ; Redraw input line
+    call .draw_input_line
+    jmp .input_loop
+
+.backspace:
+    test ecx, ecx
+    jz .input_loop
+    dec ecx
+    a32 mov byte [edi + ecx], 0
+
+    ; Redraw input line
+    call .draw_input_line
+    jmp .input_loop
+
+.input_cancel:
+    ; Zero out params
+    xor ecx, ecx
+
+.input_done:
+    ; Null-terminate
+    a32 mov byte [edi + ecx], 0
+
+    popa
+    ret
+
+; -- Draw the input line at Y=360, centered --
+.draw_input_line:
+    push ecx
+    push esi
+    push edx
+
+    ; First clear the input area (draw black bar at Y=356, 20px tall)
+    push ecx
+    push edi
+    mov edi, [0x2000 + 0x28]       ; PhysBasePtr
+    movzx eax, word [0x2000 + 0x10]; pitch
+    mov ebx, eax                    ; save pitch
+    imul eax, 356                   ; Y * pitch
+    add edi, eax
+    mov ecx, 20                     ; 20 rows
+.clear_bar:
+    push ecx
+    push edi
+    movzx ecx, word [0x2000 + 0x12]; screen width
+    xor eax, eax                    ; black
+.clear_px:
+    a32 mov [edi], eax
+    add edi, 4
+    dec ecx
+    jnz .clear_px
+    pop edi
+    add edi, ebx                    ; next row
+    pop ecx
+    dec ecx
+    jnz .clear_bar
+    pop edi
+    pop ecx
+
+    ; Draw the current input text
+    ; Null-terminate at cursor position for drawing
+    push ecx
+    a32 mov byte [edi + ecx], 0     ; temporary null-terminate
+    mov esi, edi                    ; ESI = input buffer
+    mov ecx, 360                    ; Y position
+    mov edx, 0x00FFFFFF            ; white
+    call draw_string_centered
+    pop ecx
+
+    ; Draw cursor character '_' after the text
+    ; (We just drew centered text, so cursor is tricky.
+    ;  For simplicity, draw the full string + '_' as one unit)
+    a32 mov byte [edi + ecx], '_'   ; append cursor
+    push ecx
+    inc ecx
+    a32 mov byte [edi + ecx], 0     ; null-terminate after cursor
+    pop ecx
+    mov esi, edi
+    push ecx
+    mov ecx, 360
+    mov edx, 0x00FFFFFF
+    call draw_string_centered
+    pop ecx
+    ; Remove cursor from buffer
+    a32 mov byte [edi + ecx], 0
+
+    pop edx
+    pop esi
+    pop ecx
+    ret
+
+.prompt_str: db 'Enter boot parameters:', 0
+.hint_str:   db 'verbose  res=1920x1080  (Enter to confirm, Esc to cancel)', 0
