@@ -38,6 +38,12 @@ logo_sectors:       dw 0        ; offset 14-15: logo sector count
 font_lba:           dw 0        ; offset 16-17: font LBA
 font_sectors:       dw 0        ; offset 18-19: font sector count
 
+; exFAT runtime data (HDD boot path):
+FS_START_LBA        equ 128        ; exFAT volume starts at sector 128
+kernel_file_size:   dd 0           ; Kernel size in bytes (set by exfat_read_file)
+boot_is_cdrom:      db 0           ; 1 if booting from CD-ROM
+_boot_dir_cluster:  dd 0           ; Saved /boot/ directory cluster
+
 ; =============================================================================
 ; Constants
 ; =============================================================================
@@ -89,41 +95,129 @@ stage2_entry:
     ; Step 4: Set VESA VBE graphical mode (must be in real mode)
     call setup_vesa
 
-    SERIAL_OUT '5'           ; Step 5: load assets
+    SERIAL_OUT '5'           ; Step 5: load files
 
-    ; Step 5: If VESA ok, load logo and font
-    cmp byte [vesa_ok], 1
-    jne .skip_logo_font
+    ; Detect CD-ROM vs HDD via INT 13h AH=48h
+    mov word [drive_params_buf], 0x1E
+    mov ah, 0x48
+    mov dl, [boot_drive]
+    mov si, drive_params_buf
+    int 0x13
+    jc .hdd_boot                ; No EDD -> assume HDD
 
+    mov ax, [drive_params_buf + 0x18]
+    cmp ax, 1024
+    ja .cdrom_boot              ; > 1024 bytes/sector -> CD-ROM
+
+.hdd_boot:
+    mov byte [boot_is_cdrom], 0
+    jmp .exfat_load
+
+.cdrom_boot:
+    mov byte [boot_is_cdrom], 1
+    ; CD-ROM: use existing raw-sector loading (patched LBAs)
     mov ax, [logo_lba]
     mov cx, [logo_sectors]
     test cx, cx
-    jz .skip_logo
-    SERIAL_OUT 'L'           ; loading logo
+    jz .cd_skip_logo
+    SERIAL_OUT 'L'
     mov edi, LOGO_LOAD_ADDR
     call load_sectors
-.skip_logo:
-
+.cd_skip_logo:
     mov ax, [font_lba]
     mov cx, [font_sectors]
     test cx, cx
-    jz .skip_logo_font
-    SERIAL_OUT 'F'           ; loading font
+    jz .cd_skip_font
+    SERIAL_OUT 'F'
     mov edi, FONT_LOAD_ADDR
     call load_sectors
-.skip_logo_font:
-
-    SERIAL_OUT '6'           ; Step 6: config
-
-    ; Step 6: Load boot.cfg
+.cd_skip_font:
     mov ax, [config_lba]
     mov cx, [config_sectors]
     test cx, cx
-    jz .skip_config
-    SERIAL_OUT 'C'           ; loading config
+    jz .cd_skip_config
+    SERIAL_OUT 'C'
     mov edi, CONFIG_LOAD_ADDR
     call load_sectors
-.skip_config:
+.cd_skip_config:
+    jmp .files_loaded
+
+.exfat_load:
+    ; HDD: use exFAT filesystem
+    mov eax, FS_START_LBA
+    call exfat_init
+    jc .exfat_fatal
+
+    ; Load kernel: /System/krnl64 (FATAL)
+    mov ebx, str_system
+    call exfat_open_dir
+    jc .kernel_fatal
+
+    mov ebx, str_krnl64
+    mov edi, KERNEL_LOAD_PHYS
+    call exfat_read_file
+    jc .kernel_fatal
+    mov [kernel_file_size], eax
+    SERIAL_OUT 'K'
+
+    ; Load boot files from /boot/ (all optional)
+    call exfat_reset_to_root
+    mov ebx, str_boot_dir
+    call exfat_open_dir
+    jc .skip_boot_files
+
+    ; Save /boot/ cluster for reuse between file loads
+    mov eax, [exfat_cur_dir_cluster]
+    mov [_boot_dir_cluster], eax
+
+    ; boot.cfg
+    mov ebx, str_bootcfg
+    mov edi, CONFIG_LOAD_ADDR
+    call exfat_read_file
+    jc .exfat_skip_cfg
+    SERIAL_OUT 'C'
+.exfat_skip_cfg:
+
+    ; logo.bin (only if VESA available)
+    cmp byte [vesa_ok], 1
+    jne .exfat_skip_logo
+    mov eax, [_boot_dir_cluster]
+    mov [exfat_cur_dir_cluster], eax
+    mov ebx, str_logobin
+    mov edi, LOGO_LOAD_ADDR
+    call exfat_read_file
+    jc .exfat_skip_logo
+    SERIAL_OUT 'L'
+.exfat_skip_logo:
+
+    ; font.bin
+    mov eax, [_boot_dir_cluster]
+    mov [exfat_cur_dir_cluster], eax
+    mov ebx, str_fontbin
+    mov edi, FONT_LOAD_ADDR
+    call exfat_read_file
+    jc .exfat_skip_font
+    SERIAL_OUT 'F'
+.exfat_skip_font:
+    jmp .files_loaded
+
+.skip_boot_files:
+    jmp .files_loaded
+
+.exfat_fatal:
+    mov si, msg_exfat_err
+    call print_string_16
+    cli
+    hlt
+
+.kernel_fatal:
+    mov si, msg_kernel_err
+    call print_string_16
+    cli
+    hlt
+
+.files_loaded:
+    SERIAL_OUT '6'           ; Step 6: config
 
     SERIAL_OUT '7'           ; Step 7: parse
 
@@ -152,8 +246,11 @@ stage2_entry:
 
     SERIAL_OUT '9'           ; Step 9: load kernel
 
-    ; Step 9: Load kernel to high memory (0x100000)
+    ; Step 9: Load kernel (CD-ROM only -- HDD already loaded via exFAT)
+    cmp byte [boot_is_cdrom], 0
+    je .skip_raw_kernel_load
     call load_kernel
+.skip_raw_kernel_load:
 
     SERIAL_OUT 'B'           ; Step 10: boot info
 
@@ -177,6 +274,14 @@ stage2_entry:
 ; Data
 ; =============================================================================
 boot_drive:     db 0
+str_system:       db "System", 0
+str_krnl64:       db "krnl64", 0
+str_boot_dir:     db "boot", 0
+str_bootcfg:      db "boot.cfg", 0
+str_logobin:      db "logo.bin", 0
+str_fontbin:      db "font.bin", 0
+msg_exfat_err:    db "FATAL: Bad exFAT!", 13, 10, 0
+msg_kernel_err:   db "FATAL: No kernel!", 13, 10, 0
 msg_stage2:     db "Stage 2: Starting...", 13, 10, 0
 msg_a20:        db "  A20 line enabled", 13, 10, 0
 msg_memmap:     db "  Memory map obtained", 13, 10, 0
@@ -253,9 +358,15 @@ fill_boot_info:
     ; kernel_phys_start
     mov dword [di + 32], KERNEL_LOAD_PHYS
 
-    ; kernel_phys_end = kernel_phys_start + kernel_sectors * 512
+    ; kernel_phys_end: depends on boot path
+    cmp byte [boot_is_cdrom], 0
+    jne .kend_cdrom
+    mov eax, [kernel_file_size]
+    jmp .kend_done
+.kend_cdrom:
     movzx eax, word [kernel_sectors]
-    shl eax, 9                  ; * 512
+    shl eax, 9
+.kend_done:
     add eax, KERNEL_LOAD_PHYS
     mov [di + 36], eax
 
