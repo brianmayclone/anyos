@@ -175,6 +175,8 @@ const KVM_CREATE_PIT2: u64 = 0x4040_AE77;
 const KVM_GET_LAPIC: u64 = 0x8400_AE8E;
 const KVM_GET_IRQCHIP: u64 = 0xC208_AE62;
 const KVM_GET_SUPPORTED_CPUID: u64 = 0xC008_AE05;
+const KVM_SET_TSS_ADDR: u64 = 0xAE47;
+const KVM_SET_IDENTITY_MAP_ADDR: u64 = 0x4008_AE48;
 const KVM_GET_PIT2: u64 = 0x8070_AE9F;
 const KVM_SET_PIT2: u64 = 0x4070_AEA0;
 
@@ -659,6 +661,25 @@ impl KvmBackend {
                 return Err(VmError::BackendError(vm_fd));
             }
 
+            // Set TSS address (required by KVM on Intel before creating vCPUs).
+            // Place at 0xFFFBD000 (same as QEMU) — just below 4GB, outside normal RAM.
+            let ret = sys_ioctl(vm_fd, KVM_SET_TSS_ADDR, 0xFFFB_D000u64);
+            if ret < 0 {
+                sys_close(vm_fd);
+                sys_close(kvm_fd);
+                return Err(VmError::BackendError(ret as i32));
+            }
+
+            // Set identity map address (required by KVM for real-mode emulation).
+            // Place at 0xFFFBC000 (page below TSS).
+            let identity_addr: u64 = 0xFFFB_C000;
+            let ret = sys_ioctl(vm_fd, KVM_SET_IDENTITY_MAP_ADDR, &identity_addr as *const _ as u64);
+            if ret < 0 {
+                sys_close(vm_fd);
+                sys_close(kvm_fd);
+                return Err(VmError::BackendError(ret as i32));
+            }
+
             // Create in-kernel irqchip (PIC, IOAPIC, LAPIC).
             let ret = sys_ioctl(vm_fd, KVM_CREATE_IRQCHIP, 0);
             if ret < 0 {
@@ -1047,6 +1068,7 @@ impl VmBackend for KvmBackend {
             )
         };
         if ret < 0 {
+            eprintln!("[kvm] KVM_SET_USER_MEMORY_REGION failed: slot={} gpa=0x{:x} size=0x{:x} ret={}", slot, guest_phys, size, ret);
             return Err(VmError::MemoryMapFailed);
         }
         // Track for read_phys/write_phys
@@ -1081,6 +1103,7 @@ impl VmBackend for KvmBackend {
         unsafe {
             let vcpu_fd = sys_ioctl(self.vm_fd, KVM_CREATE_VCPU, id as u64) as i32;
             if vcpu_fd < 0 {
+                eprintln!("[kvm] KVM_CREATE_VCPU failed: fd={}", vcpu_fd);
                 return Err(VmError::BackendError(vcpu_fd));
             }
 
@@ -1093,6 +1116,7 @@ impl VmBackend for KvmBackend {
                 0,
             );
             if run_ptr < 0 || (run_ptr as u64) >= 0xFFFF_FFFF_FFFF_F000 {
+                eprintln!("[kvm] mmap kvm_run failed: ptr=0x{:x}", run_ptr as u64);
                 sys_close(vcpu_fd);
                 return Err(VmError::BackendError(-1));
             }
@@ -1108,6 +1132,7 @@ impl VmBackend for KvmBackend {
                 let buf = Self::build_cpuid_buf(entries);
                 let ret = sys_ioctl(vcpu_fd, KVM_SET_CPUID2, buf.as_ptr() as u64);
                 if ret < 0 {
+                    eprintln!("[kvm] KVM_SET_CPUID2 failed: ret={}", ret);
                     sys_close(vcpu_fd);
                     return Err(VmError::BackendError(ret as i32));
                 }

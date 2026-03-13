@@ -356,7 +356,7 @@ pub fn render_graphics_mode(fb: &[u8], width: u32, height: u32, bpp: u8, output:
             }
         }
         32 => {
-            // 32bpp: BGRA -> RGBA
+            // 32bpp: BGRX -> RGBA (VBE framebuffers use X=unused, not alpha)
             for i in 0..npixels {
                 let src = i * 4;
                 let o = i * 4;
@@ -364,7 +364,7 @@ pub fn render_graphics_mode(fb: &[u8], width: u32, height: u32, bpp: u8, output:
                     output[o] = fb[src + 2];     // R
                     output[o + 1] = fb[src + 1]; // G
                     output[o + 2] = fb[src];     // B
-                    output[o + 3] = fb[src + 3]; // A
+                    output[o + 3] = 255;         // Always opaque
                 }
             }
         }
@@ -432,8 +432,8 @@ impl DisplayWidget {
     }
 
     /// Render the display, filling available space while maintaining aspect ratio.
-    /// Returns true if the display area has focus (for keyboard capture).
-    pub fn show(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, fb: &FrameBufferData) -> bool {
+    /// Returns (focused, Option<display_rect>) for keyboard/mouse capture.
+    pub fn show(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, fb: &FrameBufferData) -> (bool, Option<egui::Rect>) {
         self.update_texture(ctx, fb);
 
         let display_id = egui::Id::new("vm_display_area");
@@ -476,13 +476,14 @@ impl DisplayWidget {
                     ui.memory_mut(|m| m.request_focus(display_id));
                 }
 
-                return ui.memory(|m| m.has_focus(display_id));
+                let focused = ui.memory(|m| m.has_focus(display_id));
+                return (focused, Some(rect));
             }
         } else {
             ui.centered_and_justified(|ui| {
                 ui.label("No display");
             });
         }
-        false
+        (false, None)
     }
 }

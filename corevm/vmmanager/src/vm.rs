@@ -15,7 +15,7 @@ use libcorevm::ffi::{
     corevm_run_vcpu, corevm_handle_io_exit, corevm_handle_mmio_exit, corevm_handle_string_io_exit,
     corevm_setup_standard_devices, corevm_setup_acpi_tables, corevm_setup_ahci,
     corevm_ahci_attach_disk, corevm_ahci_attach_cdrom,
-    corevm_load_binary,
+    corevm_load_binary, corevm_complete_string_io,
     corevm_get_vcpu_regs, corevm_set_vcpu_regs,
     corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_lfb_addr,
@@ -60,6 +60,11 @@ pub struct VmControl {
 /// Start a VM. Sets up libcorevm, spawns execution thread.
 pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     let config = &entry.config;
+
+    // Install SIGUSR1 handler so the cancel thread can interrupt KVM_RUN
+    // without terminating the process (SIGUSR1 default action = terminate).
+    #[cfg(target_os = "linux")]
+    libcorevm::backend::kvm::install_sigusr1_handler();
 
     // Reset diagnostics log
     entry.diag_log.clear();
@@ -371,8 +376,6 @@ fn vm_run_loop(
     let fb_interval = Duration::from_millis(16); // ~60fps
     let mut consecutive_errors: u32 = 0;
     let mut fb_debug_count: u32 = 0;
-    const PIT_FREQ: u64 = 1_193_182; // 8254 PIT clock rate in Hz
-
     // Timer thread: periodically cancel run_vcpu so the main loop can
     // advance PIT, inject IRQs, and handle other events.
     let cancel_control = control.clone();
@@ -426,11 +429,16 @@ fn vm_run_loop(
         match exit.reason {
             0 => {
                 // IoIn — dispatch to device, device fills data
-                let mut data = [0u8; 4];
-                corevm_handle_io_exit(handle, exit.port, 0, exit.size, data.as_mut_ptr());
-                if diag_enabled {
-                    let val = match exit.size { 1 => data[0] as u32, 2 => u16::from_le_bytes([data[0], data[1]]) as u32, _ => u32::from_le_bytes(data) };
-                    diag.log(DiagCategory::IoPort, format!("IN  port=0x{:04X} size={} -> 0x{:X}", exit.port, exit.size, val));
+                if exit.io_count > 1 {
+                    // String I/O (REP INSB): handle all iterations at once
+                    corevm_complete_string_io(handle, 0, exit.port, 0, exit.size, exit.io_count);
+                } else {
+                    let mut data = [0u8; 4];
+                    corevm_handle_io_exit(handle, exit.port, 0, exit.size, data.as_mut_ptr());
+                    if diag_enabled {
+                        let val = match exit.size { 1 => data[0] as u32, 2 => u16::from_le_bytes([data[0], data[1]]) as u32, _ => u32::from_le_bytes(data) };
+                        diag.log(DiagCategory::IoPort, format!("IN  port=0x{:04X} size={} -> 0x{:X}", exit.port, exit.size, val));
+                    }
                 }
             }
             1 => {
@@ -442,11 +450,16 @@ fn vm_run_loop(
                         eprint!("{}", ch as char);
                     }
                 }
-                if diag_enabled {
-                    diag.log(DiagCategory::IoPort, format!("OUT port=0x{:04X} size={} data=0x{:X}", exit.port, exit.size, exit.data_u32));
+                if exit.io_count > 1 {
+                    // String I/O (REP OUTSB): handle all iterations at once
+                    corevm_complete_string_io(handle, 0, exit.port, 1, exit.size, exit.io_count);
+                } else {
+                    if diag_enabled {
+                        diag.log(DiagCategory::IoPort, format!("OUT port=0x{:04X} size={} data=0x{:X}", exit.port, exit.size, exit.data_u32));
+                    }
+                    let mut data = exit.data_u32.to_le_bytes();
+                    corevm_handle_io_exit(handle, exit.port, 1, exit.size, data.as_mut_ptr());
                 }
-                let mut data = exit.data_u32.to_le_bytes();
-                corevm_handle_io_exit(handle, exit.port, 1, exit.size, data.as_mut_ptr());
             }
             2 => {
                 // MmioRead — dispatch to device
@@ -532,13 +545,14 @@ fn vm_run_loop(
         }
 
         // Advance PIT based on wall-clock elapsed time; IRQ0 injection handled internally
-        // Cap at ~1ms worth of ticks to avoid blocking on large time deltas
-        let pit_elapsed = last_pit_tick.elapsed();
-        if pit_elapsed.as_micros() > 0 {
-            let ticks = ((pit_elapsed.as_micros() as u64 * PIT_FREQ / 1_000_000) as u32).min(PIT_FREQ as u32 / 100);
-            if ticks > 0 {
-                last_pit_tick = Instant::now();
-                let fires = corevm_pit_advance(handle, ticks);
+        // Tick every >=100µs to keep channel 2 output responsive for port 0x61 delay loops
+        {
+            let now = Instant::now();
+            let elapsed_us = now.duration_since(last_pit_tick).as_micros() as u64;
+            if elapsed_us >= 100 {
+                let pit_ticks = ((elapsed_us * 1193) / 1000) as u32;
+                last_pit_tick = now;
+                let fires = corevm_pit_advance(handle, pit_ticks);
                 if fires > 0 {
                     let pic_st = corevm_pic_debug(handle);
                     let mut regs = VcpuRegs::default();
@@ -546,7 +560,7 @@ fn vm_run_loop(
                     let if_flag = regs.rflags & 0x200 != 0;
                     diag.log(DiagCategory::Interrupt, format!(
                         "PIT fired {} ticks={} PIC IRR={:#04x} IMR={:#04x} ISR={:#04x} icw={} IF={} exit={} RIP={:#x}",
-                        fires, ticks,
+                        fires, pit_ticks,
                         pic_st & 0xFF, (pic_st >> 8) & 0xFF, (pic_st >> 16) & 0xFF,
                         (pic_st >> 24) & 1, if_flag, exit.reason, regs.rip
                     ));
@@ -554,12 +568,16 @@ fn vm_run_loop(
             }
         }
 
-        // Advance CMOS RTC periodic timer based on wall-clock elapsed time.
+        // Advance CMOS RTC periodic timer based on fresh wall-clock time.
         // 32.768 kHz base clock → ticks = elapsed_us * 32768 / 1_000_000
         {
-            let rtc_ticks = (pit_elapsed.as_micros() as u64 * 32768) / 1_000_000;
-            if rtc_ticks > 0 {
-                corevm_cmos_advance(handle, rtc_ticks);
+            let now = Instant::now();
+            let elapsed_us = now.duration_since(last_pit_tick).as_micros() as u64;
+            if elapsed_us > 0 {
+                let rtc_ticks = (elapsed_us * 32768) / 1_000_000;
+                if rtc_ticks > 0 {
+                    corevm_cmos_advance(handle, rtc_ticks);
+                }
             }
         }
 
@@ -606,7 +624,7 @@ fn vm_run_loop(
                     EXIT_COUNTS[0], EXIT_COUNTS[1],  // IoIn, IoOut
                     EXIT_COUNTS[2], EXIT_COUNTS[3],  // MmioRead, MmioWrite
                     EXIT_COUNTS[7],                   // Halted
-                    EXIT_COUNTS[8],                   // InterruptWindow / Cancel
+                    EXIT_COUNTS[13],                  // Cancelled (SIGUSR1/immediate_exit)
                     EXIT_COUNTS[9],                   // Shutdown
                     EXIT_COUNTS[11],                  // Error
                 );

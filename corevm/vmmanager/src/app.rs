@@ -374,13 +374,20 @@ impl eframe::App for CoreVmApp {
                 let vm_info = self.find_vm(uuid).map(|vm| {
                     (vm.state, vm.framebuffer.clone())
                 });
+                // Get vm_handle for input injection
+                let vm_handle = self.find_vm(uuid).and_then(|vm| vm.vm_handle);
+
                 if let Some((state, fb)) = vm_info {
                     if state == VmState::Running || state == VmState::Paused {
-                        let display_focused = if let Ok(fb_data) = fb.lock() {
+                        let (display_focused, display_rect) = if let Ok(fb_data) = fb.lock() {
                             self.display.show(ui, ctx, &fb_data)
                         } else {
-                            false
+                            (false, None)
                         };
+                        // Handle mouse input on the display area
+                        if let (Some(rect), Some(handle)) = (display_rect, vm_handle) {
+                            self.mouse_capture.handle_mouse(ui, rect, handle);
+                        }
                         self.display_focused = display_focused;
                     } else {
                         self.display_focused = false;

@@ -20,6 +20,7 @@
 //! 3. Reading past the end of an item returns 0x00
 //! 4. DMA: write 64-bit big-endian descriptor address to 0x514/0x518
 
+use alloc::vec;
 use alloc::vec::Vec;
 use crate::error::Result;
 use crate::io::IoHandler;

@@ -323,15 +323,12 @@ pub extern "C" fn corevm_inject_interrupt(handle: u64, vcpu_id: u32, vector: u8)
 #[no_mangle]
 pub extern "C" fn corevm_cancel_vcpu(_handle: u64, vcpu_id: u32) -> i32 {
     #[cfg(feature = "windows")]
-    {
-        crate::backend::whp::cancel_vcpu_global(vcpu_id)
-    }
+    { return crate::backend::whp::cancel_vcpu_global(vcpu_id); }
     #[cfg(feature = "linux")]
-    {
-        let _ = _handle;
-        crate::backend::kvm::cancel_vcpu_kvm(vcpu_id)
-    }
+    { return crate::backend::kvm::cancel_vcpu_kvm(vcpu_id); }
     #[cfg(feature = "anyos")]
+    { return 0; }
+    #[allow(unreachable_code)]
     { let _ = (_handle, vcpu_id); 0 }
 }
 
@@ -725,20 +722,22 @@ pub extern "C" fn corevm_load_binary(handle: u64, guest_phys: u64, data: *const 
 pub extern "C" fn corevm_has_hw_support() -> i32 {
     #[cfg(feature = "linux")]
     {
-        match crate::backend::kvm::KvmBackend::new() {
+        return match crate::backend::kvm::KvmBackend::new() {
             Ok(mut b) => { b.destroy(); 1 }
             Err(_) => 0,
-        }
+        };
     }
     #[cfg(feature = "windows")]
     {
-        match crate::backend::whp::WhpBackend::new(0) {
+        return match crate::backend::whp::WhpBackend::new(0) {
             Ok(_) => 1,
             Err(_) => 0,
-        }
+        };
     }
     #[cfg(feature = "anyos")]
-    { 1 }
+    { return 1; }
+    #[allow(unreachable_code)]
+    0
 }
 
 // ── I/O and MMIO exit dispatch ──────────────────────────────────────────────

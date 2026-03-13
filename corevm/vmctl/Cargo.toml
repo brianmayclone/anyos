@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-libcorevm = { path = "../../libs/libcorevm", default-features = false }
+libcorevm = { path = "../../libs/libcorevm", default-features = false, features = ["linux"] }
 
 [workspace]
