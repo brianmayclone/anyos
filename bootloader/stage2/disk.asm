@@ -120,6 +120,66 @@ load_sectors:
 msg_loadsec_err: db "FATAL: Sector load failed!", 13, 10, 0
 
 ; =============================================================================
+; load_sectors_32 - Load sectors with 32-bit LBA, EDI advances after call
+; Input:  EAX = starting LBA (u32), ECX = sector count, EDI = destination
+; Output: EDI = advanced past loaded data, EAX = next LBA after loaded sectors
+; Preserves: EBX, ESI, EBP. Clobbers: EAX, ECX, EDI.
+; =============================================================================
+load_sectors_32:
+    push ebx
+    push esi
+    push ebp
+    test ecx, ecx
+    jz .ls32_done
+
+.ls32_loop:
+    mov ebx, 64
+    cmp ecx, ebx
+    jae .ls32_full
+    mov ebx, ecx
+.ls32_full:
+    mov word  [kernel_load_dap + 2], bx
+    mov dword [kernel_load_dap + 8], eax
+
+    push eax
+    push ecx
+    mov si, kernel_load_dap
+    mov dl, [boot_drive]
+    mov ah, 0x42
+    int 0x13
+    jc .ls32_error
+    pop ecx
+    pop eax
+
+    ; Copy from TEMP_BUFFER to destination via unreal mode
+    push ecx
+    push eax
+    movzx ecx, bx
+    shl ecx, 9                  ; × 512 = byte count
+    mov esi, TEMP_BUFFER
+    a32 rep movsb               ; EDI advances automatically
+    pop eax
+    pop ecx
+
+    add eax, ebx
+    sub ecx, ebx
+    jnz .ls32_loop
+
+.ls32_done:
+    pop ebp
+    pop esi
+    pop ebx
+    ret
+
+.ls32_error:
+    mov ax, 0x0003
+    int 0x10
+    mov si, msg_loadsec_err
+    call print_string_16
+    cli
+    hlt
+
+; =============================================================================
 ; load_kernel - Load kernel sectors from disk to KERNEL_LOAD_PHYS (0x100000)
 ; =============================================================================
 ; kernel_start_lba and kernel_sectors are in 512-byte sector units (patched by
