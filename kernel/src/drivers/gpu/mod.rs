@@ -62,6 +62,11 @@ pub trait GpuDriver: Send {
     /// Human-readable driver name
     fn name(&self) -> &str;
 
+    /// Driver type identifier for userspace .drv loading.
+    /// Returns "svga3d", "virgl", "none", etc.
+    /// libGL uses this to load `/Drivers/{type}.drv`.
+    fn driver_type_name(&self) -> &str { "none" }
+
     /// Set display resolution. Returns (width, height, pitch, fb_phys) on success.
     fn set_mode(&mut self, width: u32, height: u32, bpp: u32) -> Option<(u32, u32, u32, u32)>;
 

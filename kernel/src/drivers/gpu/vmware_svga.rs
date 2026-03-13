@@ -675,6 +675,10 @@ impl GpuDriver for VmwareSvgaGpu {
         "VMware SVGA II"
     }
 
+    fn driver_type_name(&self) -> &str {
+        if self.has_3d() { "svga3d" } else { "none" }
+    }
+
     fn set_mode(&mut self, width: u32, height: u32, bpp: u32) -> Option<(u32, u32, u32, u32)> {
         self.reg_write(SVGA_REG_WIDTH, width);
         self.reg_write(SVGA_REG_HEIGHT, height);

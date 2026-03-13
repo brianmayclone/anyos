@@ -156,7 +156,7 @@ parse_config:
 ; parse_key_value — parse a key=value line at [ESI]
 ; =============================================================================
 parse_key_value:
-    pusha
+    ; NOTE: no pusha — ESI must remain advanced for the caller's parse loop
 
     ; Check for global keys first: timeout= and default=
     ; Compare "timeout="
@@ -173,7 +173,6 @@ parse_key_value:
 .timeout_ok:
     mov [cfg_timeout], ax
     call advance_to_next_line
-    popa
     ret
 
 .not_timeout:
@@ -187,7 +186,6 @@ parse_key_value:
     call parse_decimal
     mov [cfg_default], al
     call advance_to_next_line
-    popa
     ret
 
 .not_default:
@@ -214,7 +212,6 @@ parse_key_value:
     ; type = 0 (kernel)
     a32 mov byte [ebx+96], 0
     call advance_to_next_line
-    popa
     ret
 
 .not_kernel:
@@ -230,7 +227,6 @@ parse_key_value:
     ; type = 1 (chainload)
     a32 mov byte [ebx+96], 1
     call advance_to_next_line
-    popa
     ret
 
 .not_chainload:
@@ -244,7 +240,6 @@ parse_key_value:
     call parse_decimal
     a32 mov [ebx+97], al
     call advance_to_next_line
-    popa
     ret
 
 .not_disk:
@@ -260,7 +255,6 @@ parse_key_value:
     call parse_decimal
     a32 mov [ebx+98], al
     call advance_to_next_line
-    popa
     ret
 
 .not_partition:
@@ -295,12 +289,10 @@ parse_key_value:
 .params_done:
     a32 mov byte [edi], 0
     call advance_to_next_line
-    popa
     ret
 
 .kv_skip:
     call advance_to_next_line
-    popa
     ret
 
 ; =============================================================================

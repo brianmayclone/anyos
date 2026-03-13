@@ -229,57 +229,7 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
         }
     }
 
-    // ── Parallel rasterization: collect triangles into pool ─────────────
-    // When pool is active, triangles are batched across draw calls and
-    // submitted all at once in gl_swap_buffers (frame-level batching).
-    let use_pool = crate::thread_pool::pool_active();
-
-    if use_pool {
-        let tri_start = crate::thread_pool::begin_sub_batch();
-        if let Some(start) = tri_start {
-            let mut overflow = false;
-            match mode {
-                GL_TRIANGLES => {
-                    let mut i = 0;
-                    while i + 2 < clip_verts.len() && !overflow {
-                        overflow = !collect_triangle(ctx, &clip_verts[i], &clip_verts[i+1], &clip_verts[i+2], fb_w, fb_h);
-                        i += 3;
-                    }
-                }
-                GL_TRIANGLE_STRIP => {
-                    for i in 0..clip_verts.len().saturating_sub(2) {
-                        if overflow { break; }
-                        let (a, b, c) = if i % 2 == 0 {
-                            (&clip_verts[i], &clip_verts[i+1], &clip_verts[i+2])
-                        } else {
-                            (&clip_verts[i+1], &clip_verts[i], &clip_verts[i+2])
-                        };
-                        overflow = !collect_triangle(ctx, a, b, c, fb_w, fb_h);
-                    }
-                }
-                GL_TRIANGLE_FAN => {
-                    for i in 1..clip_verts.len().saturating_sub(1) {
-                        if overflow { break; }
-                        overflow = !collect_triangle(ctx, &clip_verts[0], &clip_verts[i], &clip_verts[i+1], fb_w, fb_h);
-                    }
-                }
-                _ => {}
-            }
-
-            // Finalize sub-batch (no worker wake-up — that happens at swap_buffers)
-            let fast_arg = fast.as_ref().map(|fp| (&fp.tex, fp.mat_r, fp.mat_g, fp.mat_b));
-            crate::thread_pool::end_sub_batch(
-                start, ctx.depth_test, ctx.depth_func, ctx.depth_mask,
-                ctx.blend, ctx.blend_src_rgb, ctx.blend_dst_rgb,
-                fast_arg, fs_ir, uni_slice, num_varyings, fs_jit,
-            );
-        } else {
-            // Sub-batch overflow — fall through to single-threaded
-            single_threaded_draw(ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(), clip_verts, mode, num_varyings, fb_w, fb_h);
-        }
-    } else {
-        single_threaded_draw(ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(), clip_verts, mode, num_varyings, fb_w, fb_h);
-    }
+    single_threaded_draw(ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(), clip_verts, mode, num_varyings, fb_w, fb_h);
 }
 
 /// Single-threaded rasterization fallback.
@@ -494,48 +444,7 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
 
     let mut fs_exec = ShaderExec::new(fs_ir.num_regs, num_varyings);
 
-    // ── Parallel rasterization: collect into pool ─────────────────────
-    let use_pool = crate::thread_pool::pool_active();
-
-    if use_pool {
-        let tri_start = crate::thread_pool::begin_sub_batch();
-        if let Some(start) = tri_start {
-            let mut overflow = false;
-            if mode == GL_TRIANGLES {
-                let mut i = 0;
-                while i + 2 < clip_verts.len() && !overflow {
-                    overflow = !collect_triangle(ctx, &clip_verts[i], &clip_verts[i+1], &clip_verts[i+2], fb_w, fb_h);
-                    i += 3;
-                }
-            } else if mode == GL_TRIANGLE_STRIP {
-                for i in 0..clip_verts.len().saturating_sub(2) {
-                    if overflow { break; }
-                    let (a, b, c) = if i % 2 == 0 {
-                        (&clip_verts[i], &clip_verts[i+1], &clip_verts[i+2])
-                    } else {
-                        (&clip_verts[i+1], &clip_verts[i], &clip_verts[i+2])
-                    };
-                    overflow = !collect_triangle(ctx, a, b, c, fb_w, fb_h);
-                }
-            } else if mode == GL_TRIANGLE_FAN {
-                for i in 1..clip_verts.len().saturating_sub(1) {
-                    if overflow { break; }
-                    overflow = !collect_triangle(ctx, &clip_verts[0], &clip_verts[i], &clip_verts[i+1], fb_w, fb_h);
-                }
-            }
-
-            let fast_arg = fast.as_ref().map(|fp| (&fp.tex, fp.mat_r, fp.mat_g, fp.mat_b));
-            crate::thread_pool::end_sub_batch(
-                start, ctx.depth_test, ctx.depth_func, ctx.depth_mask,
-                ctx.blend, ctx.blend_src_rgb, ctx.blend_dst_rgb,
-                fast_arg, fs_ir, uni_slice, num_varyings, fs_jit,
-            );
-        } else {
-            single_threaded_draw(ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(), clip_verts, mode, num_varyings, fb_w, fb_h);
-        }
-    } else {
-        single_threaded_draw(ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(), clip_verts, mode, num_varyings, fb_w, fb_h);
-    }
+    single_threaded_draw(ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(), clip_verts, mode, num_varyings, fb_w, fb_h);
 }
 
 /// Read a single index from the element buffer without allocation.
@@ -643,56 +552,6 @@ fn process_triangle(
             raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, &t[0], &t[1], &t[2], &s0, &s1, &s2, t[0].num_varyings, fb_w, fb_h);
         }
     }
-}
-
-/// Collect a single triangle into the thread pool buffer (clip → cull → store).
-/// Returns true if the triangle was added (or culled), false if buffer is full.
-fn collect_triangle(
-    ctx: &GlContext,
-    v0: &ClipVertex,
-    v1: &ClipVertex,
-    v2: &ClipVertex,
-    fb_w: i32,
-    fb_h: i32,
-) -> bool {
-    use crate::thread_pool::{self, ScreenTri};
-
-    // Helper: cull and store a screen-space triangle
-    let mut store = |cv0: &ClipVertex, cv1: &ClipVertex, cv2: &ClipVertex,
-                     s0: [f32; 3], s1: [f32; 3], s2: [f32; 3]| -> bool {
-        if ctx.cull_face {
-            let area = edge_function(&s0, &s1, &s2);
-            let front = match ctx.front_face { GL_CCW => area < 0.0, _ => area > 0.0 };
-            let cull = match ctx.cull_face_mode {
-                GL_FRONT => front, GL_BACK => !front,
-                GL_FRONT_AND_BACK => true, _ => false,
-            };
-            if cull { return true; } // culled, not an error
-        }
-        let tri = ScreenTri { v0: *cv0, v1: *cv1, v2: *cv2, s0, s1, s2 };
-        thread_pool::append_tris(&[tri]) > 0
-    };
-
-    if trivially_inside(v0) && trivially_inside(v1) && trivially_inside(v2) {
-        let s0 = to_screen(&v0.position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        let s1 = to_screen(&v1.position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        let s2 = to_screen(&v2.position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        return store(v0, v1, v2, s0, s1, s2);
-    }
-
-    // Clip
-    let tri = [*v0, *v1, *v2];
-    let clipped = clipper::clip_triangle(&tri);
-    for t in clipped.chunks(3) {
-        if t.len() < 3 { continue; }
-        let s0 = to_screen(&t[0].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        let s1 = to_screen(&t[1].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        let s2 = to_screen(&t[2].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        if !store(&t[0], &t[1], &t[2], s0, s1, s2) {
-            return false;
-        }
-    }
-    true
 }
 
 /// Perspective divide + viewport transform in one step.

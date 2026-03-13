@@ -1,0 +1,20 @@
+[package]
+name = "virgl"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+libheap = { path = "../../../libs/libheap" }
+libsyscall = { path = "../../../libs/libsyscall" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"
+
+[workspace]

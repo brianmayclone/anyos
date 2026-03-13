@@ -30,9 +30,8 @@ pub mod rasterizer;
 pub mod simd;
 pub mod fxaa;
 pub mod svga3d;
+pub mod drv_loader;
 pub mod physics;
-pub mod thread_pool;
-
 mod syscall;
 
 use types::*;
@@ -53,10 +52,8 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 pub(crate) static mut CTX: Option<GlContext> = None;
 
-/// Whether the SVGA3D hardware backend is active.
+/// Whether a hardware 3D backend is active (loaded via drv_loader).
 pub(crate) static mut USE_HW_BACKEND: bool = false;
-/// SVGA3D GPU state (only valid when USE_HW_BACKEND is true).
-pub(crate) static mut SVGA3D: Option<svga3d::Svga3dState> = None;
 
 /// Fullscreen direct framebuffer state.
 static mut FULLSCREEN_FB_PTR: *mut u32 = core::ptr::null_mut();
@@ -118,32 +115,28 @@ fn check_cpu_features() {
 
 /// Initialize the GL context with the given framebuffer dimensions.
 ///
-/// Attempts to initialize SVGA3D hardware acceleration if available.
-/// Falls back to the software rasterizer if no 3D hardware is detected.
+/// Attempts to load a hardware 3D driver (.drv) based on the GPU type.
+/// Falls back to the software rasterizer if no driver is available.
 #[no_mangle]
 pub extern "C" fn gl_init(width: u32, height: u32) {
     check_cpu_features();
 
-    // SVGA3D hardware backend disabled — not yet functional.
-    // Keep the query for diagnostics only.
-    let has_hw = syscall::gpu_3d_has_hw();
-    let hw_ver = syscall::gpu_3d_hw_version();
-    serial_println!("[libgl] 3D query: has_hw={}, hw_version=0x{:08X} (HW backend disabled)", has_hw, hw_ver);
-
-    // Software rasterizer with parallel thread pool
     unsafe {
         CTX = Some(GlContext::new(width, height));
     }
-    thread_pool::ensure_pool(height);
 
-    serial_println!("[libgl] gl_init done ({}x{}, hw={})", width, height, unsafe { USE_HW_BACKEND });
+    // Try to load a hardware 3D driver based on the GPU type
+    let hw_loaded = drv_loader::init(width, height);
+    unsafe { USE_HW_BACKEND = hw_loaded; }
+
+    serial_println!("[libgl] gl_init done ({}x{}, hw={})", width, height, hw_loaded);
 }
 
-/// Shut down libgl — stops worker threads and frees resources.
-/// Should be called when the application exits.
+/// Shut down libgl — unloads hardware driver and frees resources.
 #[no_mangle]
 pub extern "C" fn gl_deinit() {
-    thread_pool::shutdown_pool();
+    drv_loader::deinit();
+    unsafe { USE_HW_BACKEND = false; }
     serial_println!("[libgl] gl_deinit done");
 }
 
@@ -156,51 +149,18 @@ pub extern "C" fn gl_resize(width: u32, height: u32) {
 
 /// Swap buffers — returns a pointer to the ARGB color buffer.
 ///
-/// When using the SVGA3D hardware backend, reads back the GPU render target
-/// into the software framebuffer so the compositor can display it.
+/// When using a hardware 3D driver, calls drv_flush + drv_present.
 /// When using the software rasterizer, runs FXAA and returns the buffer pointer.
 #[no_mangle]
 pub extern "C" fn gl_swap_buffers() -> *const u32 {
     if unsafe { USE_HW_BACKEND } {
-        if let Some(svga) = unsafe { SVGA3D.as_mut() } {
-            let w = svga.width;
-            let h = svga.height;
-            let sid = svga.color_sid;
-
-            // PRESENT to screen 0 so we can visually verify GPU rendering
-            svga.cmd.present(sid, &[(0, 0, w, h)]);
-            svga.cmd.submit();
-
-            // Readback: kernel does BLIT_SURFACE_TO_SCREEN → staging GMR
-            let c = ctx();
-            let fb_bytes = unsafe {
-                core::slice::from_raw_parts_mut(
-                    c.default_fb.color.as_mut_ptr() as *mut u8,
-                    (w * h * 4) as usize,
-                )
-            };
-            let rb_ret = syscall::gpu_3d_surface_dma_read(sid, fb_bytes, w, h);
-
-            // Force alpha=0xFF on all pixels (screen readback may have alpha=0)
-            for px in c.default_fb.color.iter_mut() {
-                *px |= 0xFF00_0000;
-            }
-
-            let frame = unsafe { DIAG_FRAME };
-            if frame < 3 {
-                let px0 = c.default_fb.color[0];
-                let px_mid = c.default_fb.color[(w * h / 2) as usize];
-                serial_println!("[libgl] SWAP f={}: rb_ret={} px[0]=0x{:08X} px[mid]=0x{:08X}",
-                    frame, rb_ret, px0, px_mid);
-            }
-            unsafe { DIAG_FRAME += 1; }
+        if let Some(drv) = drv_loader::drv() {
+            (drv.drv_flush)();
+            (drv.drv_present)(0); // present to scanout 0
         }
     }
 
-    // Flush all batched triangles from this frame to worker threads
     let c = ctx();
-    thread_pool::flush_frame(c);
-
     if c.fxaa_enabled {
         let w = c.default_fb.width;
         let h = c.default_fb.height;
@@ -287,9 +247,6 @@ pub extern "C" fn gl_swap_buffers_fullscreen() -> u32 {
 
     let c = ctx();
 
-    // Flush batched triangles from this frame
-    thread_pool::flush_frame(c);
-
     // Apply FXAA if enabled
     if c.fxaa_enabled {
         let w = c.default_fb.width;
@@ -340,7 +297,7 @@ pub extern "C" fn glGetString(name: GLenum) -> *const u8 {
         GL_VENDOR => b"anyOS\0".as_ptr(),
         GL_RENDERER => {
             if unsafe { USE_HW_BACKEND } {
-                b"anyOS SVGA3D GPU Accelerated\0".as_ptr()
+                b"anyOS GPU Accelerated\0".as_ptr()
             } else {
                 b"anyOS Software Rasterizer\0".as_ptr()
             }
@@ -433,15 +390,10 @@ pub extern "C" fn glViewport(x: GLint, y: GLint, width: GLsizei, height: GLsizei
     c.viewport_w = width;
     c.viewport_h = height;
 
-    // Update SVGA3D viewport if HW backend is active
+    // Update hardware viewport if HW backend is active
     if unsafe { USE_HW_BACKEND } {
-        if let Some(svga) = unsafe { SVGA3D.as_mut() } {
-            svga.cmd.set_viewport(
-                svga.context_id,
-                x as f32, y as f32, width as f32, height as f32,
-                0.0, 1.0,
-            );
-            svga.cmd.submit();
+        if let Some(drv) = drv_loader::drv() {
+            (drv.drv_set_viewport)(x as u32, y as u32, width as u32, height as u32);
         }
     }
 }
@@ -461,41 +413,10 @@ pub extern "C" fn glClearColor(red: GLclampf, green: GLclampf, blue: GLclampf, a
 pub extern "C" fn glClear(mask: GLbitfield) {
     let c = ctx();
 
-    // SVGA3D hardware clear
+    // Hardware clear via loaded driver
     if unsafe { USE_HW_BACKEND } {
-        if let Some(svga) = unsafe { SVGA3D.as_mut() } {
-            let mut clear_flags = 0u32;
-            let mut color = 0u32;
-
-            if mask & GL_COLOR_BUFFER_BIT != 0 {
-                clear_flags |= svga3d::SVGA3D_CLEAR_COLOR;
-                let r = (c.clear_r.clamp(0.0, 1.0) * 255.0) as u32;
-                let g = (c.clear_g.clamp(0.0, 1.0) * 255.0) as u32;
-                let b = (c.clear_b.clamp(0.0, 1.0) * 255.0) as u32;
-                let a = (c.clear_a.clamp(0.0, 1.0) * 255.0) as u32;
-                color = (a << 24) | (r << 16) | (g << 8) | b;
-            }
-            if mask & GL_DEPTH_BUFFER_BIT != 0 {
-                clear_flags |= svga3d::SVGA3D_CLEAR_DEPTH;
-            }
-
-            if clear_flags != 0 {
-                let w = svga.width;
-                let h = svga.height;
-                svga.cmd.clear(
-                    svga.context_id,
-                    clear_flags,
-                    color,
-                    c.clear_depth,
-                    0, // stencil
-                    &[(0, 0, w, h)],
-                );
-                let ret = svga.cmd.submit();
-                if unsafe { DIAG_FRAME } < 3 {
-                    serial_println!("[libgl] CLEAR submit: ret={} flags={} color=0x{:08X} size={}x{}",
-                        ret, clear_flags, color, w, h);
-                }
-            }
+        if let Some(drv) = drv_loader::drv() {
+            (drv.drv_clear)(mask, c.clear_r, c.clear_g, c.clear_b, c.clear_a, c.clear_depth);
         }
     }
 
@@ -1173,12 +1094,12 @@ pub extern "C" fn gl_set_fxaa(enabled: u32) {
 //  Backend Selection
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// Switch between hardware (SVGA3D) and software rasterizer at runtime.
-/// 0 = software, non-zero = hardware (only if SVGA3D was initialized).
+/// Switch between hardware and software rasterizer at runtime.
+/// 0 = software, non-zero = hardware (only if a .drv was loaded).
 #[no_mangle]
 pub extern "C" fn gl_set_hw_backend(enabled: u32) {
     let want_hw = enabled != 0;
-    let has_hw = unsafe { SVGA3D.as_ref().map_or(false, |s| s.initialized) };
+    let has_hw = drv_loader::is_loaded();
     unsafe { USE_HW_BACKEND = want_hw && has_hw; }
 }
 
@@ -1189,12 +1110,11 @@ pub extern "C" fn gl_get_hw_backend() -> u32 {
     if unsafe { USE_HW_BACKEND } { 1 } else { 0 }
 }
 
-/// Query whether SVGA3D hardware is available (regardless of current mode).
+/// Query whether a hardware 3D driver is available (regardless of current mode).
 /// Returns 1 if available, 0 if not.
 #[no_mangle]
 pub extern "C" fn gl_has_hw_backend() -> u32 {
-    let has_hw = unsafe { SVGA3D.as_ref().map_or(false, |s| s.initialized) };
-    if has_hw { 1 } else { 0 }
+    if drv_loader::is_loaded() { 1 } else { 0 }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

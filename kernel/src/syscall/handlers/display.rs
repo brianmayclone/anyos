@@ -960,22 +960,20 @@ pub fn sys_gpu_3d_query(_query_type: u32) -> u32 {
     0
 }
 
-/// SYS_GPU_3D_SUBMIT (512): Submit raw SVGA3D command words to the GPU FIFO.
+/// SYS_GPU_3D_SUBMIT (512): Submit raw 3D command words to the GPU.
 /// buf_ptr: pointer to u32 word array in user memory
 /// word_count: number of u32 words
 ///
-/// Validates that all command IDs are in the SVGA3D range (1040..1099)
-/// and that command sizes don't exceed the buffer.
+/// For SVGA3D: validates command IDs are in range 1040..1099.
+/// For virgl: passes raw Gallium command words through without validation.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_gpu_3d_submit(buf_ptr: u32, word_count: u32) -> u32 {
-    use crate::drivers::gpu::vmware_svga::{SVGA_3D_CMD_MIN, SVGA_3D_CMD_MAX};
-
     if buf_ptr == 0 || word_count == 0 {
         return u32::MAX;
     }
 
-    // Cap at 4096 words (16 KiB) per submission
-    let count = word_count.min(4096) as usize;
+    // Cap at 16384 words (64 KiB) per submission
+    let count = word_count.min(16384) as usize;
     let byte_size = (count * 4) as u64;
 
     // Validate pointer is in user space and properly mapped
@@ -987,32 +985,42 @@ pub fn sys_gpu_3d_submit(buf_ptr: u32, word_count: u32) -> u32 {
         core::slice::from_raw_parts(buf_ptr as *const u32, count)
     };
 
-    // Validate command buffer structure:
-    // Each SVGA3D command is [cmd_id, size_bytes, payload...]
-    // where size_bytes is the byte count of the payload only.
-    let mut offset = 0;
-    while offset < words.len() {
-        if offset + 2 > words.len() {
-            return u32::MAX; // Truncated header
-        }
-        let cmd_id = words[offset];
-        let size_bytes = words[offset + 1];
+    // Driver-specific validation: SVGA3D needs command ID checks,
+    // virgl passes raw Gallium commands without structure validation.
+    let driver_type = crate::drivers::gpu::with_gpu(|g| {
+        let mut s = alloc::string::String::new();
+        s.push_str(g.driver_type_name());
+        s
+    });
 
-        // Validate command ID is in SVGA3D range
-        if cmd_id < SVGA_3D_CMD_MIN || cmd_id > SVGA_3D_CMD_MAX {
-            return u32::MAX;
-        }
+    if let Some(ref dt) = driver_type {
+        if dt == "svga3d" {
+            use crate::drivers::gpu::vmware_svga::{SVGA_3D_CMD_MIN, SVGA_3D_CMD_MAX};
+            // Validate SVGA3D command buffer structure
+            let mut offset = 0;
+            while offset < words.len() {
+                if offset + 2 > words.len() {
+                    return u32::MAX;
+                }
+                let cmd_id = words[offset];
+                let size_bytes = words[offset + 1];
 
-        // Validate payload size doesn't exceed remaining buffer
-        let payload_words = ((size_bytes + 3) / 4) as usize;
-        if offset + 2 + payload_words > words.len() {
-            return u32::MAX;
-        }
+                if cmd_id < SVGA_3D_CMD_MIN || cmd_id > SVGA_3D_CMD_MAX {
+                    return u32::MAX;
+                }
 
-        offset += 2 + payload_words;
+                let payload_words = ((size_bytes + 3) / 4) as usize;
+                if offset + 2 + payload_words > words.len() {
+                    return u32::MAX;
+                }
+
+                offset += 2 + payload_words;
+            }
+        }
+        // virgl: no structural validation needed — host renderer validates
     }
 
-    // Submit validated buffer to GPU
+    // Submit to GPU
     crate::drivers::gpu::with_gpu(|g| {
         if g.submit_3d_commands(words) { 0u32 } else { u32::MAX }
     }).unwrap_or(u32::MAX)
@@ -1082,4 +1090,37 @@ pub fn sys_gpu_3d_surface_dma_read(sid: u32, buf_ptr: u32, buf_len: u32, width: 
 #[cfg(target_arch = "aarch64")]
 pub fn sys_gpu_3d_surface_dma_read(_sid: u32, _buf_ptr: u32, _buf_len: u32, _width: u32, _height: u32) -> u32 {
     u32::MAX
+}
+
+/// SYS_GPU_QUERY_TYPE (517): Query the GPU driver type name for userspace .drv loading.
+/// Writes driver type name (e.g. "svga3d", "virgl", "none") as null-terminated string to buf.
+/// Returns the string length (excluding null terminator).
+#[cfg(target_arch = "x86_64")]
+pub fn sys_gpu_query_type(buf_ptr: u32, buf_len: u32) -> u32 {
+    let type_name = crate::drivers::gpu::with_gpu(|g| {
+        let mut s = alloc::string::String::new();
+        s.push_str(g.driver_type_name());
+        s
+    });
+
+    let name = match type_name {
+        Some(n) => n,
+        None => alloc::string::String::from("none"),
+    };
+
+    if buf_ptr != 0 && buf_len > 0 {
+        let bytes = name.as_bytes();
+        let copy_len = bytes.len().min(buf_len as usize - 1);
+        unsafe {
+            let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, copy_len + 1);
+            buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+            buf[copy_len] = 0;
+        }
+    }
+    name.len() as u32
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_gpu_query_type(_buf_ptr: u32, _buf_len: u32) -> u32 {
+    0
 }

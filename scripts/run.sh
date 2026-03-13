@@ -8,11 +8,12 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU (or VMware Workstation)
-# Usage: ./run.sh [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--vmware-ws] [--arm64]
+# Usage: ./run.sh [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--vmware-ws] [--arm64]
 #   --vmware-ws Start VMware Workstation VM named 'anyos' and stream its COM1 serial output
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
-#   --virtio   VirtIO GPU (modern transport, ARGB cursor)
+#   --virtio   VirtIO GPU (modern transport, ARGB cursor, 2D only)
+#   --virgl    VirtIO GPU + virglrenderer (3D acceleration via host OpenGL)
 #   --res WxH  Set display size. VirtIO: sets GPU resolution. std/vmware: sets QEMU window size via GTK zoom. Example: --res 1280x1024
 #   --ide      Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
 #   --cdrom    Boot from ISO image (CD-ROM) instead of hard drive
@@ -162,8 +163,25 @@ for arg in "$@"; do
             ;;
         --virtio)
             VGA="virtio"
-            VGA_LABEL="Virtio GPU (paravirtualized)"
+            VGA_LABEL="Virtio GPU (paravirtualized, 2D)"
             # VirtIO GPU has no VMware backdoor — add USB tablet for absolute mouse positioning
+            if [ -z "$USB_FLAGS" ]; then
+                USB_FLAGS="-usb -device usb-tablet"
+            fi
+            ;;
+        --virgl)
+            VGA="virgl"
+            VGA_LABEL="Virtio GPU + virgl (3D accelerated)"
+            # virgl requires native Linux QEMU with OpenGL context — force WSL to use Linux QEMU
+            if [[ "$QEMU_BIN" == *.exe ]]; then
+                QEMU_BIN="qemu-system-x86_64"
+                QEMU_BIN_ESC=$(printf '%q' "$QEMU_BIN")
+                if ! command -v "$QEMU_BIN" &>/dev/null; then
+                    echo "Error: --virgl requires native Linux QEMU (not Windows .exe)"
+                    echo "Install with: sudo apt-get install qemu-system-x86"
+                    exit 1
+                fi
+            fi
             if [ -z "$USB_FLAGS" ]; then
                 USB_FLAGS="-usb -device usb-tablet"
             fi
@@ -235,7 +253,7 @@ for arg in "$@"; do
             ARM64_MODE=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--arm64]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--arm64]"
             exit 1
             ;;
     esac
@@ -460,8 +478,8 @@ if [ "$ARM64_MODE" = true ]; then
     exit 0
 fi
 
-# VirtIO GPU: default to 1024x768 if no --res specified
-if [ "$VGA" = "virtio" ] && [ -z "$RESOLUTION" ]; then
+# VirtIO/virgl GPU: default to 1024x768 if no --res specified
+if { [ "$VGA" = "virtio" ] || [ "$VGA" = "virgl" ]; } && [ -z "$RESOLUTION" ]; then
     RESOLUTION="${MIN_RES_W}x${MIN_RES_H}"
 fi
 
@@ -554,7 +572,14 @@ fi
 VGA_FLAGS="-vga $VGA"
 DISPLAY_FLAGS="-display gtk,grab-on-hover=on"
 RES_LABEL=""
-if [ "$VGA" = "virtio" ]; then
+if [ "$VGA" = "virgl" ]; then
+    RES_W="${RESOLUTION%%x*}"
+    RES_H="${RESOLUTION#*x}"
+    VGA_FLAGS="-vga none -device virtio-vga-gl,edid=on,xres=$RES_W,yres=$RES_H"
+    DISPLAY_FLAGS="-display gtk,gl=on,grab-on-hover=on"
+    VGA_LABEL="Virtio GPU + virgl (${RES_W}x${RES_H}, 3D)"
+    RES_LABEL=", res: ${RESOLUTION}"
+elif [ "$VGA" = "virtio" ]; then
     RES_W="${RESOLUTION%%x*}"
     RES_H="${RESOLUTION#*x}"
     VGA_FLAGS="-vga none -device virtio-vga,edid=on,xres=$RES_W,yres=$RES_H"
@@ -615,7 +640,7 @@ echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL
 
 # On Linux with --res and non-virtio: use xdotool to resize QEMU window after startup
 USE_XDOTOOL=false
-if [ -n "$RESOLUTION" ] && [ "$VGA" != "virtio" ] && [ "$(uname -s)" = "Linux" ] && [[ "$QEMU_BIN" != *.exe ]]; then
+if [ -n "$RESOLUTION" ] && [ "$VGA" != "virtio" ] && [ "$VGA" != "virgl" ] && [ "$(uname -s)" = "Linux" ] && [[ "$QEMU_BIN" != *.exe ]]; then
     if command -v xdotool &>/dev/null; then
         USE_XDOTOOL=true
     else
@@ -624,23 +649,24 @@ if [ -n "$RESOLUTION" ] && [ "$VGA" != "virtio" ] && [ "$(uname -s)" = "Linux" ]
     fi
 fi
 
+QEMU_CMD="$QEMU_BIN_ESC \
+    $CPU_FLAGS \
+    $KVM_FLAGS \
+    $BIOS_FLAGS \
+    $DRIVE_FLAGS \
+    -m 1024M \
+    -smp cpus=4 \
+    -serial stdio \
+    $VGA_FLAGS \
+    $DISPLAY_FLAGS \
+    $NET_FLAGS \
+    $AUDIO_FLAGS \
+    $USB_FLAGS \
+    -no-reboot \
+    -no-shutdown"
+
 if [ "$USE_XDOTOOL" = true ]; then
-    # Start QEMU in background, capture PID
-    eval "$QEMU_BIN_ESC" \
-        $CPU_FLAGS \
-        $KVM_FLAGS \
-        $BIOS_FLAGS \
-        $DRIVE_FLAGS \
-        -m 1024M \
-        -smp cpus=4 \
-        -serial stdio \
-        $VGA_FLAGS \
-        $DISPLAY_FLAGS \
-        $NET_FLAGS \
-        $AUDIO_FLAGS \
-        $USB_FLAGS \
-        -no-reboot \
-        -no-shutdown &
+    eval "$QEMU_CMD" &
     QEMU_PID=$!
 
     # Wait for QEMU window to appear (up to 10s), then resize it
@@ -657,23 +683,7 @@ if [ "$USE_XDOTOOL" = true ]; then
         echo "Warning: Could not find QEMU window to resize"
     fi
 
-    # Wait for QEMU to exit
     wait "$QEMU_PID"
 else
-    eval "$QEMU_BIN_ESC" \
-        $CPU_FLAGS \
-        $KVM_FLAGS \
-        $BIOS_FLAGS \
-        $DRIVE_FLAGS \
-        -m 1024M \
-        -smp cpus=4 \
-        -serial stdio \
-        $VGA_FLAGS \
-        $DISPLAY_FLAGS \
-        $NET_FLAGS \
-        $AUDIO_FLAGS \
-        $USB_FLAGS \
-        -no-reboot \
-        -no-shutdown
+    eval "$QEMU_CMD"
 fi
-    

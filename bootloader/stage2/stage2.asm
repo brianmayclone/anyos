@@ -13,6 +13,17 @@
 [BITS 16]
 [ORG 0x8000]
 
+; Debug macro: write a single char to serial port 0x3F8
+%macro SERIAL_OUT 1
+    push ax
+    push dx
+    mov dx, 0x3F8
+    mov al, %1
+    out dx, al
+    pop dx
+    pop ax
+%endmacro
+
 ; Jump over data area (jmp short = 2 bytes, lands at offset 20+)
     jmp short stage2_entry
 
@@ -44,17 +55,41 @@ stage2_entry:
     ; Save boot drive (passed in DL from stage 1)
     mov [boot_drive], dl
 
+    ; Debug: init serial port 0x3F8 (115200 baud, 8N1)
+    mov dx, 0x3FB
+    mov al, 0x80            ; DLAB on
+    out dx, al
+    mov dx, 0x3F8
+    mov al, 1               ; divisor low = 1 (115200)
+    out dx, al
+    mov dx, 0x3F9
+    xor al, al              ; divisor high = 0
+    out dx, al
+    mov dx, 0x3FB
+    mov al, 0x03            ; 8N1, DLAB off
+    out dx, al
+
+    SERIAL_OUT '1'           ; Step 1: A20
+
     ; Step 1: Enable A20 line
     call enable_a20
+
+    SERIAL_OUT '2'           ; Step 2: memmap
 
     ; Step 2: Get memory map
     call get_memory_map
 
+    SERIAL_OUT '3'           ; Step 3: unreal
+
     ; Step 3: Enter unreal mode for high memory access
     call enter_unreal_mode
 
+    SERIAL_OUT '4'           ; Step 4: VESA
+
     ; Step 4: Set VESA VBE graphical mode (must be in real mode)
     call setup_vesa
+
+    SERIAL_OUT '5'           ; Step 5: load assets
 
     ; Step 5: If VESA ok, load logo and font
     cmp byte [vesa_ok], 1
@@ -64,6 +99,7 @@ stage2_entry:
     mov cx, [logo_sectors]
     test cx, cx
     jz .skip_logo
+    SERIAL_OUT 'L'           ; loading logo
     mov edi, LOGO_LOAD_ADDR
     call load_sectors
 .skip_logo:
@@ -72,26 +108,36 @@ stage2_entry:
     mov cx, [font_sectors]
     test cx, cx
     jz .skip_logo_font
+    SERIAL_OUT 'F'           ; loading font
     mov edi, FONT_LOAD_ADDR
     call load_sectors
 .skip_logo_font:
+
+    SERIAL_OUT '6'           ; Step 6: config
 
     ; Step 6: Load boot.cfg
     mov ax, [config_lba]
     mov cx, [config_sectors]
     test cx, cx
     jz .skip_config
+    SERIAL_OUT 'C'           ; loading config
     mov edi, CONFIG_LOAD_ADDR
     call load_sectors
 .skip_config:
 
+    SERIAL_OUT '7'           ; Step 7: parse
+
     ; Step 7: Parse config
     call parse_config
+
+    SERIAL_OUT '8'           ; Step 8: splash
 
     ; Step 8: If VESA ok, show splash and wait for input
     cmp byte [vesa_ok], 1
     jne .no_splash
+    SERIAL_OUT 'S'           ; show_splash
     call show_splash
+    SERIAL_OUT 'W'           ; wait_for_input
     call wait_for_input         ; AL = 0 (timeout/enter) or 0x1B (escape)
     cmp al, 0x1B
     jne .boot_default
@@ -99,16 +145,24 @@ stage2_entry:
     jmp .execute
 .no_splash:
 .boot_default:
-    mov al, [cfg_default]
+    movzx ax, byte [cfg_default]
 .execute:
+    SERIAL_OUT 'E'           ; execute_entry
     ; AL = entry index to boot
+    movzx bx, al               ; execute_entry expects BX = entry index
     call execute_entry
+
+    SERIAL_OUT '9'           ; Step 9: load kernel
 
     ; Step 9: Load kernel to high memory (0x100000)
     call load_kernel
 
+    SERIAL_OUT 'B'           ; Step 10: boot info
+
     ; Step 10: Fill BootInfo structure
     call fill_boot_info
+
+    SERIAL_OUT 'P'           ; Step 11: protected mode
 
     ; Step 11: Switch to protected mode and jump to kernel
     call enter_protected_mode

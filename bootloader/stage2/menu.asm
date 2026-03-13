@@ -17,8 +17,8 @@ show_menu:
     mov [menu_selected], al
 
 .redraw:
-    ; 2a. Draw gradient background
-    call draw_gradient
+    ; 2a. Clear screen to black
+    call clear_screen
 
     ; 2b. If logo_sectors != 0, draw logo at 15% screen height
     cmp word [logo_sectors], 0
@@ -35,10 +35,10 @@ show_menu:
     call draw_logo
 
 .no_logo:
-    ; 2c. Calculate entry list Y = logo_y + logo_h*4 + 32
+    ; 2c. Calculate entry list Y = logo_y + logo_h*2 + 32
     mov eax, [logo_y]
     mov ebx, [logo_h]
-    shl ebx, 2                          ; logo_h * 4
+    shl ebx, 1                          ; logo_h * 2
     add eax, ebx
     add eax, 32
     mov [menu_entry_y], eax

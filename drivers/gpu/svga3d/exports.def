@@ -1,0 +1,23 @@
+LIBRARY drv_svga3d
+EXPORTS
+    drv_init
+    drv_deinit
+    drv_create_surface
+    drv_destroy_surface
+    drv_surface_upload
+    drv_surface_download
+    drv_create_shader
+    drv_destroy_shader
+    drv_link_program
+    drv_use_program
+    drv_set_viewport
+    drv_set_blend
+    drv_set_depth_test
+    drv_clear
+    drv_set_uniform_f32
+    drv_set_uniform_mat4
+    drv_draw_arrays
+    drv_draw_elements
+    drv_flush
+    drv_finish
+    drv_present

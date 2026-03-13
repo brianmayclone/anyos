@@ -61,6 +61,7 @@ pub const SYS_GPU_3D_SUBMIT: u32 = 512;
 pub const SYS_GPU_3D_SYNC: u32 = 514;
 pub const SYS_GPU_3D_SURFACE_DMA: u32 = 515;
 pub const SYS_GPU_3D_SURFACE_DMA_READ: u32 = 516;
+pub const SYS_GPU_QUERY_TYPE: u32 = 517;
 
 // Shared memory
 pub const SYS_SHM_CREATE: u32 = 140;
@@ -648,6 +649,13 @@ pub fn gpu_3d_surface_dma_read(sid: u32, buf: &mut [u8], width: u32, height: u32
         width as u64,
         height as u64,
     ) as u32
+}
+
+/// Query the GPU driver type name (e.g. "svga3d", "virgl", "none").
+/// Writes the name into `buf` and returns the length.
+pub fn gpu_query_type(buf: &mut [u8]) -> u32 {
+    if buf.is_empty() { return 0; }
+    syscall2(SYS_GPU_QUERY_TYPE, buf.as_mut_ptr() as u64, buf.len() as u64) as u32
 }
 
 // ── Serial print (for DLLs without anyos_std) ────────────────────────

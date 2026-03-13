@@ -84,6 +84,28 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         let kstart = unsafe { core::ptr::addr_of!((*boot_info).kernel_phys_start).read_unaligned() };
         let kend = unsafe { core::ptr::addr_of!((*boot_info).kernel_phys_end).read_unaligned() };
         serial_println!("Kernel loaded at {:#010x} - {:#010x}", kstart, kend);
+
+        // Parse boot_params for early options (e.g. "verbose")
+        {
+            let params = unsafe { core::ptr::addr_of!((*boot_info).boot_params).read_unaligned() };
+            // Find null terminator
+            let len = params.iter().position(|&b| b == 0).unwrap_or(params.len());
+            if len > 0 {
+                if let Ok(s) = core::str::from_utf8(&params[..len]) {
+                    serial_println!("Boot params: \"{}\"", s);
+                    for token in s.split_ascii_whitespace() {
+                        match token {
+                            "verbose" => {
+                                crate::drivers::serial::set_verbose(true);
+                                serial_println!("Verbose logging enabled via boot params");
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
         boot_info
     };
     #[cfg(target_arch = "aarch64")]

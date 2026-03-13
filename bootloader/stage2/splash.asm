@@ -3,22 +3,23 @@
 ; =============================================================================
 
 ; -----------------------------------------------------------------------------
-; show_splash - Draw gradient background + centered boot logo
+; show_splash - Clear screen to black + draw centered boot logo
 ; -----------------------------------------------------------------------------
 show_splash:
     pusha
 
-    call draw_gradient
+    ; Clear framebuffer to black (VESA init may leave garbage)
+    call clear_screen
 
     ; Check if logo was loaded
     cmp word [logo_sectors], 0
     je .no_logo
 
     ; Set logo_y to vertically centered position
-    ; center_y = (screen_h - logo_h * 4) / 2
+    ; center_y = (screen_h - logo_h * 2) / 2
     movzx eax, word [0x2000 + 0x14]    ; screen height
-    a32 mov ebx, [LOGO_LOAD_ADDR + 4]   ; logo height (from header)
-    shl ebx, 2                          ; * 4 (upscale)
+    a32 mov ebx, [LOGO_LOAD_ADDR + 4]  ; logo height (from header)
+    shl ebx, 1                          ; * 2 (upscale)
     sub eax, ebx
     shr eax, 1
     mov [logo_y], eax
@@ -30,123 +31,23 @@ show_splash:
     ret
 
 ; -----------------------------------------------------------------------------
-; draw_gradient - Fill framebuffer with vertical gradient
-;   Top: RGB(45, 50, 62)  Bottom: RGB(10, 12, 18)
-;   Uses 8.8 fixed-point per channel
+; clear_screen - Fill framebuffer with black (0x00000000)
+; Uses REP STOSD for speed
 ; -----------------------------------------------------------------------------
-draw_gradient:
+clear_screen:
     pusha
-
-    ; Get framebuffer info
     mov edi, [0x2000 + 0x28]           ; PhysBasePtr
-    movzx ecx, word [0x2000 + 0x10]   ; BytesPerScanLine (pitch)
-    movzx ebx, word [0x2000 + 0x12]   ; XResolution (width)
-    movzx edx, word [0x2000 + 0x14]   ; YResolution (height)
-
-    ; Store width and height locally
-    mov [.width], ebx
-    mov [.height], edx
-    mov [.pitch], ecx
-    mov [.fb], edi
-
-    ; Compute deltas (8.8 fixed point): delta = (top - bottom) * 256 / (height - 1)
-    ; We go from top to bottom, subtracting delta each row
-    ; R: 45 -> 10, range = 35
-    ; G: 50 -> 12, range = 38
-    ; B: 62 -> 18, range = 44
-
-    mov eax, edx
-    dec eax                             ; height - 1
-    mov [.h_minus_1], eax
-
-    ; delta_r = 35 * 256 / (height - 1)
-    push eax
-    mov eax, 35 * 256
-    xor edx, edx
-    div dword [.h_minus_1]
-    mov [.delta_r], eax
-    pop eax
-
-    ; delta_g = 38 * 256 / (height - 1)
-    push eax
-    mov eax, 38 * 256
-    xor edx, edx
-    div dword [.h_minus_1]
-    mov [.delta_g], eax
-    pop eax
-
-    ; delta_b = 44 * 256 / (height - 1)
-    mov eax, 44 * 256
-    xor edx, edx
-    div dword [.h_minus_1]
-    mov [.delta_b], eax
-
-    ; Start values (8.8): top_color * 256
-    mov dword [.cur_r], 45 * 256
-    mov dword [.cur_g], 50 * 256
-    mov dword [.cur_b], 62 * 256
-
-    mov edi, [.fb]
-    mov ecx, [.height]
-
-.row_loop:
-    push ecx
-
-    ; Build pixel: 0x00RRGGBB
-    mov eax, [.cur_r]
-    shr eax, 8
-    shl eax, 16                        ; R in bits 16-23
-    mov ebx, [.cur_g]
-    shr ebx, 8
-    shl ebx, 8                         ; G in bits 8-15
-    or eax, ebx
-    mov ebx, [.cur_b]
-    shr ebx, 8                         ; B in bits 0-7
-    or eax, ebx
-
-    ; Fill this row: write width pixels (4 bytes each)
-    mov ecx, [.width]
-    push edi
-.pixel_loop:
-    mov [edi], eax
-    add edi, 4
-    dec ecx
-    jnz .pixel_loop
-    pop edi
-
-    ; Advance to next row
-    add edi, [.pitch]
-
-    ; Subtract deltas
-    mov eax, [.delta_r]
-    sub [.cur_r], eax
-    mov eax, [.delta_g]
-    sub [.cur_g], eax
-    mov eax, [.delta_b]
-    sub [.cur_b], eax
-
-    pop ecx
-    dec ecx
-    jnz .row_loop
-
+    movzx eax, word [0x2000 + 0x10]    ; pitch
+    movzx ecx, word [0x2000 + 0x14]    ; height
+    imul ecx, eax                       ; total bytes = height * pitch
+    shr ecx, 2                          ; dwords = bytes / 4
+    xor eax, eax                        ; black
+    a32 rep stosd
     popa
     ret
 
-; Local data for draw_gradient
-.width:     dd 0
-.height:    dd 0
-.pitch:     dd 0
-.fb:        dd 0
-.h_minus_1: dd 0
-.delta_r:   dd 0
-.delta_g:   dd 0
-.delta_b:   dd 0
-.cur_r:     dd 0
-.cur_g:     dd 0
-.cur_b:     dd 0
-
 ; -----------------------------------------------------------------------------
-; draw_logo - Draw logo with 4x nearest-neighbor upscale
+; draw_logo - Draw logo with 2x nearest-neighbor upscale
 ;   Logo at LOGO_LOAD_ADDR: [width:u32][height:u32][RGB pixels 3 bytes each]
 ;   Black pixels (0,0,0) are transparent
 ; -----------------------------------------------------------------------------
@@ -159,10 +60,10 @@ draw_logo:
     a32 mov ebx, [LOGO_LOAD_ADDR + 4]  ; logo height
     mov [logo_h], ebx
 
-    ; Compute horizontal center: logo_x = (screen_w - logo_w * 4) / 2
+    ; Compute horizontal center: logo_x = (screen_w - logo_w * 2) / 2
     movzx ecx, word [0x2000 + 0x12]   ; screen width
     mov edx, eax
-    shl edx, 2                          ; logo_w * 4
+    shl edx, 1                          ; logo_w * 2
     sub ecx, edx
     shr ecx, 1
     mov [logo_x], ecx
@@ -194,8 +95,8 @@ draw_logo:
     cmp dword [.src_rows_left], 0
     je .done
 
-    ; Repeat this source row 4 times vertically
-    mov byte [.repeat_count], 4
+    ; Repeat this source row 2 times vertically
+    mov byte [.repeat_count], 2
     mov [.row_src_start], esi           ; save source pointer for this row
 
 .vert_repeat:
@@ -224,17 +125,15 @@ draw_logo:
     movzx ebx, byte [esi - 1]          ; B
     or eax, ebx
 
-    ; Write 4 horizontal pixels
+    ; Write 2 horizontal pixels
     mov [edi], eax
     mov [edi + 4], eax
-    mov [edi + 8], eax
-    mov [edi + 12], eax
     jmp .next_pixel
 
 .skip_pixel:
-    ; Transparent, skip 4 pixels
+    ; Transparent, skip 2 pixels
 .next_pixel:
-    add edi, 16                         ; advance 4 pixels * 4 bytes
+    add edi, 8                          ; advance 2 pixels * 4 bytes
     dec ecx
     jnz .src_pixel_loop
 

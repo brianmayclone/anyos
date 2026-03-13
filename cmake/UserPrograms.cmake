@@ -351,6 +351,53 @@ function(add_shared_lib NAME SRC_DIR)
   set(DLL_BINS ${DLL_BINS} ${SYSROOT_DIR}/Libraries/${NAME}.so PARENT_SCOPE)
 endfunction()
 
+# GPU drivers (.drv) — built like shared libs but installed to System/Drivers/gpu/
+set(DRV_TARGET_DIR "${CMAKE_BINARY_DIR}/drv-target")
+function(add_gpu_driver NAME SRC_DIR)
+  set(LIB_A "${DRV_TARGET_DIR}/${USER_TARGET_TRIPLE}/release/lib${NAME}.a")
+  set(DRV_FILE "${CMAKE_BINARY_DIR}/drivers/${NAME}.drv")
+  file(GLOB_RECURSE _DRV_RS CONFIGURE_DEPENDS "${SRC_DIR}/src/*.rs")
+  # Step 1: Cargo -> static archive (.a)
+  add_custom_command(
+    OUTPUT ${LIB_A}
+    COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+      ${CARGO_EXECUTABLE} build --release --quiet
+      --manifest-path ${SRC_DIR}/Cargo.toml
+      --target ${USER_TARGET_JSON}
+      --target-dir ${DRV_TARGET_DIR}
+      -Z build-std=core,alloc
+    DEPENDS
+      ${SRC_DIR}/Cargo.toml
+      ${_DRV_RS}
+      ${USER_TARGET_JSON}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Building GPU driver: ${NAME} (Cargo)"
+  )
+  # Step 2: anyld -> .drv (ET_DYN shared object)
+  add_custom_command(
+    OUTPUT ${DRV_FILE}
+    COMMAND ${ANYLD_EXECUTABLE} -q
+      -o ${DRV_FILE}
+      -e ${SRC_DIR}/exports.def
+      ${LIB_A}
+    DEPENDS ${LIB_A} ${SRC_DIR}/exports.def ${ANYLD_EXECUTABLE}
+    COMMENT "Linking ${NAME}.drv (anyld)"
+  )
+  # Step 3: Copy to sysroot
+  add_custom_command(
+    OUTPUT ${SYSROOT_DIR}/System/Drivers/gpu/${NAME}.drv
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/Drivers/gpu
+    COMMAND ${CMAKE_COMMAND} -E copy ${DRV_FILE} ${SYSROOT_DIR}/System/Drivers/gpu/${NAME}.drv
+    DEPENDS ${DRV_FILE}
+    COMMENT "Installing ${NAME}.drv to sysroot"
+  )
+  set(DLL_BINS ${DLL_BINS} ${SYSROOT_DIR}/System/Drivers/gpu/${NAME}.drv PARENT_SCOPE)
+endfunction()
+
+# GPU drivers
+add_gpu_driver(svga3d ${CMAKE_SOURCE_DIR}/drivers/gpu/svga3d)
+add_gpu_driver(virgl ${CMAKE_SOURCE_DIR}/drivers/gpu/virgl)
+
 add_shared_lib(libanyui ${CMAKE_SOURCE_DIR}/libs/libanyui)
 add_shared_lib(libfont ${CMAKE_SOURCE_DIR}/libs/libfont)
 add_shared_lib(libdb ${CMAKE_SOURCE_DIR}/libs/libdb)
