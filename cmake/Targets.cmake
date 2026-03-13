@@ -31,7 +31,7 @@ add_custom_command(
 )
 
 # Boot assets
-set(BOOT_CFG ${CMAKE_SOURCE_DIR}/sysroot/System/boot.cfg)
+set(BOOT_CFG ${CMAKE_SOURCE_DIR}/sysroot/boot/boot.cfg)
 set(BOOT_LOGO ${CMAKE_SOURCE_DIR}/kernel/src/graphics/boot_logo.bin)
 
 add_custom_command(
