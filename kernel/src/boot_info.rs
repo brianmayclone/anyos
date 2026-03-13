@@ -26,6 +26,8 @@ pub struct BootInfo {
     pub kernel_phys_end: u32,
     /// Physical address of the ACPI RSDP (set by UEFI bootloader, 0 for BIOS).
     pub rsdp_addr: u32,
+    /// Boot parameters string from boot.cfg (null-terminated, 64 bytes).
+    pub boot_params: [u8; 64],
 }
 
 /// Magic value (`"ANYO"` in ASCII) used to validate the boot info struct.

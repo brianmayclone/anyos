@@ -203,6 +203,18 @@ fill_boot_info:
     ; rsdp_addr = 0 (BIOS path discovers RSDP by scanning memory)
     mov dword [di + 40], 0
 
+    ; Zero boot_params (64 bytes at offset 44)
+    push edi
+    push ecx
+    push eax
+    lea edi, [BOOT_INFO_ADDR + 44]
+    mov ecx, 16                     ; 16 dwords = 64 bytes
+    xor eax, eax
+    a32 rep stosd
+    pop eax
+    pop ecx
+    pop edi
+
     popa
     ret
 
