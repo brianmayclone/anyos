@@ -191,14 +191,29 @@ pub extern "C" fn drv_init(width: u32, height: u32) -> u32 {
     // For virgl, surfaces are views on resources. The host creates the actual
     // GL framebuffer. We just need to set framebuffer state.
 
+    // Create and activate sub-context (required before any object creation)
+    // Must be submitted separately — virglrenderer needs sub-ctx active
+    // before processing any CREATE_OBJECT commands in the same batch.
+    cmd.push_cmd(VIRGL_CCMD_CREATE_SUB_CTX, 0, 1);
+    cmd.push(1); // sub-context ID
+    cmd.push_cmd(VIRGL_CCMD_SET_SUB_CTX, 0, 1);
+    cmd.push(1);
+    cmd.submit();
+
     // Create default blend state (no blending)
-    // CREATE_OBJECT(BLEND): handle, S0 (independent=0), RT0 dwords
-    cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_BLEND, 5);
+    // Virgl blend layout: handle(1) + S0(1) + S1(1) + S2[0..7](8) = 11 words
+    // S2 per-RT: blend_enable[0] | rgb_func[3:1] | rgb_src[8:4] | rgb_dst[13:9]
+    //            | alpha_func[16:14] | alpha_src[21:17] | alpha_dst[26:22] | colormask[30:27]
+    cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_BLEND, 11);
     cmd.push(blend_handle);
-    cmd.push(0); // S0: independent_blend_enable=0
-    cmd.push(0); // rt[0].blend_enable=0, rest=0
-    cmd.push(0x0F); // rt[0].colormask = PIPE_MASK_RGBA
-    cmd.push(0); // padding
+    cmd.push(0); // S0: independent_blend_enable=0, logicop=0, dither=0
+    cmd.push(0); // S1: logicop_func=0
+    // S2[0]: RT0 — colormask=0xF (RGBA) at bits 27:30
+    cmd.push(0x0F << 27);
+    // S2[1..7]: RT1–RT7 disabled
+    for _ in 1..8 {
+        cmd.push(0);
+    }
 
     // Create default DSA state (depth test disabled)
     // CREATE_OBJECT(DSA): handle, S0 (depth), S1 (stencil)
@@ -210,16 +225,18 @@ pub extern "C" fn drv_init(width: u32, height: u32) -> u32 {
     cmd.push(0); // alpha ref
 
     // Create default rasterizer state
+    // Layout: handle, S0, point_size, sprite_coord_enable, S3, line_width,
+    //         offset_units, offset_scale, offset_clamp
     cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_RASTERIZER, 9);
     cmd.push(rast_handle);
-    cmd.push(0x00000002); // S0: flatshade=0, depth_clip_near=1 (bit 1)
+    cmd.push(0x00000002); // S0: flatshade=0, depth_clip=1 (bit 1)
     cmd.push(0);          // point_size (float)
-    cmd.push(0);          // sprite_coord_mode
+    cmd.push(0);          // sprite_coord_enable
+    cmd.push(0);          // S3: line_stipple_pattern/factor/clip_plane_enable
     cmd.push(0x3F800000); // line_width = 1.0f
     cmd.push(0);          // offset_units (float)
     cmd.push(0);          // offset_scale (float)
     cmd.push(0);          // offset_clamp (float)
-    cmd.push(0);          // padding
 
     // Bind blend, DSA, rasterizer
     cmd.push_cmd(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_BLEND, 1);

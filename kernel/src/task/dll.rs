@@ -923,11 +923,11 @@ pub fn handle_dll_demand_page(vaddr: u64) -> bool {
 }
 
 /// Load a shared library dynamically at runtime from the filesystem.
-/// Supports both DLIB v3 (.dlib) and ELF64 ET_DYN (.so) formats.
+/// Supports DLIB v3 (.dlib), ELF64 ET_DYN (.so), and driver (.drv) formats.
 /// Returns the base virtual address on success.
 pub fn load_dll_dynamic(path: &str) -> Option<u64> {
     // Validate extension
-    if !path.ends_with(".dlib") && !path.ends_with(".so") {
+    if !path.ends_with(".dlib") && !path.ends_with(".so") && !path.ends_with(".drv") {
         crate::serial_verbose_println!("  dload: unsupported extension: '{}'", path);
         return None;
     }
