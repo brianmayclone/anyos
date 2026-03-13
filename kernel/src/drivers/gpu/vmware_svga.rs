@@ -937,10 +937,29 @@ impl GpuDriver for VmwareSvgaGpu {
             _ => return false, // no staging buffer or data too large
         };
 
-        // Copy data to the pre-allocated identity-mapped staging buffer
-        let virt = self.dma_staging_phys as *mut u8;
+        // Copy data to the pre-allocated identity-mapped staging buffer.
+        // Verify each page is present before reading — the user buffer may
+        // contain unmapped pages and a #PF in kernel mode would be fatal.
+        let dst = self.dma_staging_phys as *mut u8;
+        let src = data.as_ptr() as usize;
+        let total = data.len();
         unsafe {
-            core::ptr::copy_nonoverlapping(data.as_ptr(), virt, data.len());
+            let mut off = 0usize;
+            while off < total {
+                let va = crate::memory::address::VirtAddr::new((src + off) as u64);
+                let pte = crate::memory::virtual_mem::read_pte(va);
+                if pte & 1 == 0 {
+                    crate::serial_println!(
+                        "[svga] dma_upload: page {:#x} not present, aborting",
+                        src + off
+                    );
+                    return false;
+                }
+                let page_end = ((src + off) | 0xFFF) + 1;
+                let chunk = (page_end - (src + off)).min(total - off);
+                core::ptr::copy_nonoverlapping((src + off) as *const u8, dst.add(off), chunk);
+                off += chunk;
+            }
         }
 
         // Issue SURFACE_DMA: GMR → surface (WRITE_HOST_VRAM)
@@ -1038,9 +1057,30 @@ impl GpuDriver for VmwareSvgaGpu {
         ]);
         self.sync_fifo();
 
-        // Step 4: Copy from staging buffer to user buffer
+        // Step 4: Copy from staging buffer to user buffer (page-checked)
+        let dst_base = buf.as_mut_ptr() as usize;
+        let total = buf.len();
         unsafe {
-            core::ptr::copy_nonoverlapping(virt as *const u8, buf.as_mut_ptr(), buf.len());
+            let mut off = 0usize;
+            while off < total {
+                let va = crate::memory::address::VirtAddr::new((dst_base + off) as u64);
+                let pte = crate::memory::virtual_mem::read_pte(va);
+                if pte & 1 == 0 || pte & 2 == 0 {
+                    crate::serial_println!(
+                        "[svga] dma_download: page {:#x} not present/writable (pte={:#x}), aborting",
+                        dst_base + off, pte
+                    );
+                    return false;
+                }
+                let page_end = ((dst_base + off) | 0xFFF) + 1;
+                let chunk = (page_end - (dst_base + off)).min(total - off);
+                core::ptr::copy_nonoverlapping(
+                    (virt as *const u8).add(off),
+                    (dst_base + off) as *mut u8,
+                    chunk,
+                );
+                off += chunk;
+            }
         }
 
         true
