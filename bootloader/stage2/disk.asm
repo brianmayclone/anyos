@@ -59,6 +59,67 @@ unreal_gdt_desc:
     dd unreal_gdt
 
 ; =============================================================================
+; load_sectors - Load N sectors from LBA to destination via INT 13h AH=42h
+; Input:  AX = starting LBA (u16), CX = sector count, EDI = destination address
+; Uses:   kernel_load_dap, TEMP_BUFFER, unreal mode for 32-bit copy
+; =============================================================================
+load_sectors:
+    pusha
+    movzx eax, ax               ; Starting LBA
+    movzx ecx, cx               ; Sector count
+    test ecx, ecx
+    jz .ls_done
+
+.ls_loop:
+    ; Determine chunk size: min(remaining, 64)
+    mov ebx, 64
+    cmp ecx, ebx
+    jae .ls_full
+    mov ebx, ecx
+.ls_full:
+    mov word  [kernel_load_dap + 2], bx
+    mov dword [kernel_load_dap + 8], eax
+
+    push eax
+    push ecx
+    mov si, kernel_load_dap
+    mov dl, [boot_drive]
+    mov ah, 0x42
+    int 0x13
+    jc .ls_error
+    pop ecx
+    pop eax
+
+    ; Copy from TEMP_BUFFER to destination via unreal mode
+    push ecx
+    push eax
+    movzx ecx, bx
+    shl ecx, 9                  ; * 512 = byte count
+    mov esi, TEMP_BUFFER
+    a32 rep movsb               ; EDI advances automatically
+    pop eax
+    pop ecx
+
+    add eax, ebx
+    sub ecx, ebx
+    jnz .ls_loop
+
+.ls_done:
+    popa
+    ret
+
+.ls_error:
+    ; Reset to text mode and show error
+    mov ax, 0x0003
+    int 0x10
+    mov si, msg_loadsec_err
+    call print_string_16
+    cli
+    hlt
+
+msg_loadsec_err: db "FATAL: Sector load failed!", 13, 10, 0
+
+; =============================================================================
 ; load_kernel - Load kernel sectors from disk to KERNEL_LOAD_PHYS (0x100000)
 ; =============================================================================
 ; kernel_start_lba and kernel_sectors are in 512-byte sector units (patched by

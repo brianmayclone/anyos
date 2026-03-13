@@ -13,15 +13,19 @@
 [BITS 16]
 [ORG 0x8000]
 
-; Jump over data area (jmp short = 2 bytes, lands at offset 8)
+; Jump over data area (jmp short = 2 bytes, lands at offset 20+)
     jmp short stage2_entry
 
-; Data area patched by mkimage.py at offsets 2-7:
-;   offset 2-3: kernel_sectors (u16)
-;   offset 4-7: kernel_start_lba (u32)
+; Data area patched by mkimage.py at offsets 2-19:
 ; MUST start at byte offset 2 (immediately after jmp short)
-kernel_sectors:     dw 0        ; Patched: number of kernel sectors
-kernel_start_lba:   dd 0        ; Patched: starting LBA of kernel
+kernel_sectors:     dw 0        ; offset 2-3:  number of kernel sectors
+kernel_start_lba:   dd 0        ; offset 4-7:  starting LBA of kernel
+config_lba:         dw 0        ; offset 8-9:  boot.cfg LBA
+config_sectors:     dw 0        ; offset 10-11: boot.cfg sector count
+logo_lba:           dw 0        ; offset 12-13: logo LBA
+logo_sectors:       dw 0        ; offset 14-15: logo sector count
+font_lba:           dw 0        ; offset 16-17: font LBA
+font_sectors:       dw 0        ; offset 18-19: font sector count
 
 ; =============================================================================
 ; Constants
@@ -32,12 +36,13 @@ MEMORY_MAP_COUNT    equ 0x0FF0  ; u32 count stored here
 KERNEL_LOAD_PHYS    equ 0x100000 ; 1 MiB mark
 TEMP_BUFFER         equ 0x10000  ; Temporary load buffer (64 KiB)
 TEMP_BUFFER_SEG     equ 0x1000   ; Segment for temp buffer
+LOGO_LOAD_ADDR      equ 0x20000
+FONT_LOAD_ADDR      equ 0x28000
+CONFIG_LOAD_ADDR    equ 0x30000
 
 stage2_entry:
     ; Save boot drive (passed in DL from stage 1)
     mov [boot_drive], dl
-
-    ; Silent boot — no text output for end-user experience
 
     ; Step 1: Enable A20 line
     call enable_a20
@@ -48,16 +53,64 @@ stage2_entry:
     ; Step 3: Enter unreal mode for high memory access
     call enter_unreal_mode
 
-    ; Step 4: Load kernel to high memory (0x100000)
-    call load_kernel
-
-    ; Step 5: Set VESA VBE graphical mode (must be before protected mode!)
+    ; Step 4: Set VESA VBE graphical mode (must be in real mode)
     call setup_vesa
 
-    ; Step 6: Fill BootInfo structure
+    ; Step 5: If VESA ok, load logo and font
+    cmp byte [vesa_ok], 1
+    jne .skip_logo_font
+
+    mov ax, [logo_lba]
+    mov cx, [logo_sectors]
+    test cx, cx
+    jz .skip_logo
+    mov edi, LOGO_LOAD_ADDR
+    call load_sectors
+.skip_logo:
+
+    mov ax, [font_lba]
+    mov cx, [font_sectors]
+    test cx, cx
+    jz .skip_logo_font
+    mov edi, FONT_LOAD_ADDR
+    call load_sectors
+.skip_logo_font:
+
+    ; Step 6: Load boot.cfg
+    mov ax, [config_lba]
+    mov cx, [config_sectors]
+    test cx, cx
+    jz .skip_config
+    mov edi, CONFIG_LOAD_ADDR
+    call load_sectors
+.skip_config:
+
+    ; Step 7: Parse config
+    call parse_config
+
+    ; Step 8: If VESA ok, show splash and wait for input
+    cmp byte [vesa_ok], 1
+    jne .no_splash
+    call show_splash
+    call wait_for_input         ; AL = 0 (timeout/enter) or 0x1B (escape)
+    cmp al, 0x1B
+    jne .boot_default
+    call show_menu              ; AL = selected entry index
+    jmp .execute
+.no_splash:
+.boot_default:
+    mov al, [cfg_default]
+.execute:
+    ; AL = entry index to boot
+    call execute_entry
+
+    ; Step 9: Load kernel to high memory (0x100000)
+    call load_kernel
+
+    ; Step 10: Fill BootInfo structure
     call fill_boot_info
 
-    ; Step 7: Switch to protected mode and jump to kernel
+    ; Step 11: Switch to protected mode and jump to kernel
     call enter_protected_mode
     ; Does not return
 
@@ -160,4 +213,9 @@ fill_boot_info:
 %include "memory_map.asm"
 %include "disk.asm"
 %include "vesa.asm"
+%include "config.asm"
+%include "font.asm"
+%include "splash.asm"
+%include "menu.asm"
+%include "chainload.asm"
 %include "protected_mode.asm"
