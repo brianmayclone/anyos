@@ -138,7 +138,7 @@ fn main() {
         println!("compositor: SW cursor (pos={},{})", splash_x, splash_y);
     }
 
-    // Initial full-screen compose
+    // Initial full-screen compose (management thread, before render thread exists)
     desktop.compositor.damage_all();
     desktop.compose();
 
@@ -152,7 +152,13 @@ fn main() {
     // Step 5b: Subscribe to system events (process exit notifications)
     let sys_sub = ipc::evt_sys_subscribe(0);
 
-    desktop.compose();
+    // Mark full screen as damaged so the render thread (spawned below) always
+    // performs at least one complete compose on its first run. This guarantees
+    // display reliability: if the management-thread compose above succeeded,
+    // the render thread's compose is a cheap no-op (layers unchanged). If the
+    // GPU command failed or the display was not updated, the render thread
+    // gets a guaranteed retry with fresh damage before the login window appears.
+    desktop.compositor.damage_all();
 
     // Step 6: Signal boot ready so the kernel knows desktop is up
     anyos_std::sys::boot_ready();
@@ -163,6 +169,8 @@ fn main() {
         render::set_compositor_channel(compositor_channel);
     }
     spawn_render_thread();
+    // The render thread starts with RENDER_NEEDED=true and will immediately
+    // pick up the damage_all() set above, ensuring a reliable initial render.
 
     // Step 8: Launch login-time services (e.g. inputmon for keyboard layout)
     config::launch_login_services();
@@ -252,6 +260,16 @@ fn management_loop(
     let mut login_failed = false;
     const MAX_LOGIN_RETRIES: u32 = 10;
 
+    // ── Boot display watchdog ──
+    // After init, the render thread gets damage_all() and should update the display.
+    // But GPU commands (VirtIO TRANSFER_TO_HOST_2D, VMware SVGA FIFO writes) can
+    // fail silently if the device is busy during early boot. To guarantee the
+    // desktop is reliably visible, force full redraws for the first few seconds.
+    let boot_start_ms: u32 = sys::uptime_ms();
+    // Timestamps at which we force a full redraw: 200ms, 500ms, 1000ms, 2000ms after boot.
+    let boot_redraw_schedule: [u32; 4] = [200, 500, 1000, 2000];
+    let mut boot_redraw_idx: usize = 0;
+
     // ── Debug stats (reset every 5 seconds) ──
     let mut mgmt_loops: u32 = 0;
     let mut mgmt_input: u32 = 0;
@@ -276,6 +294,23 @@ fn management_loop(
             mgmt_last_report = now_ms;
         }
         mgmt_loops += 1;
+
+        // ── Boot display watchdog ──
+        // Force a full redraw at scheduled intervals after boot to recover from
+        // any GPU command failure during initialization. Once all scheduled
+        // redraws are done, this block becomes a no-op with zero overhead.
+        if boot_redraw_idx < boot_redraw_schedule.len() {
+            let elapsed = now_ms.wrapping_sub(boot_start_ms);
+            if elapsed >= boot_redraw_schedule[boot_redraw_idx] {
+                acquire_lock();
+                let desktop = unsafe { desktop_ref() };
+                desktop.compositor.damage_all();
+                release_lock();
+                signal_render();
+                println!("compositor: boot watchdog redraw #{} ({}ms)", boot_redraw_idx + 1, elapsed);
+                boot_redraw_idx += 1;
+            }
+        }
 
         // Block until: IPC event arrives, input IRQ fires, or timeout.
         // Input IRQs (keyboard/mouse) call wake_compositor_if_blocked() in the

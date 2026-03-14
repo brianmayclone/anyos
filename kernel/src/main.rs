@@ -47,22 +47,24 @@ pub fn boot_mode() -> u8 {
 /// On AArch64: receives the DTB physical address from the bootloader.
 #[no_mangle]
 pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
+    /// Initialize serial port early so we can print debug info during boot.
+    drivers::serial::init();
+
     // =========================================================================
     // Phase 1: Early output
     // =========================================================================
+    let arch = if cfg!(target_arch = "x86_64") { "x86_64" } else 
+               if cfg!(target_arch = "aarch64") { "aarch64" } else 
+               { "unknown" };
+    
+    serial_println!("");
+    serial_println!("  .anyOS Kernel ({}) v{}", arch, env!("ANYOS_VERSION"));
+
     #[cfg(target_arch = "x86_64")]
     {
-        drivers::serial::init();
-        serial_println!("");
-        serial_println!("  .anyOS Kernel (x86_64) v{}", env!("ANYOS_VERSION"));
         drivers::vga_text::init();
     }
-    #[cfg(target_arch = "aarch64")]
-    {
-        drivers::serial::init();
-        serial_println!("");
-        serial_println!("  .anyOS Kernel (AArch64)");
-    }
+
 
     // =========================================================================
     // Phase 1b: Validate boot info (x86) / save DTB (ARM64)
@@ -440,8 +442,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             arch::hal::disable_interrupts();
             task::scheduler::spawn(task::cpu_monitor::start, 10, "cpu_monitor");
             task::scheduler::spawn(drivers::usb::poll_thread, 50, "usb_poll");
-            #[cfg(feature = "debug_verbose")]
-            task::scheduler::spawn(task::stress_test::stress_master, 30, "stress");
+       
             drivers::boot_console::stop_spinner();
 
             match task::loader::load_and_run("/System/compositor/compositor", "compositor") {

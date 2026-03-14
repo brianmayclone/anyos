@@ -1216,8 +1216,21 @@ impl GpuDriver for VirtioGpu {
         if w == 0 || h == 0 {
             return;
         }
-        // Only transfer — no flush
-        self.cmd_transfer_to_host_2d(self.scanout_resource_id, x, y, w, h);
+        // Only transfer — no flush.
+        // Retry once on failure: VirtIO GPU commands can time out during early boot
+        // when the device is handling other requests (e.g. storage I/O on the same
+        // PCI bus). A single retry with a brief busy-wait catches transient overload
+        // without leaving the virtqueue in a corrupted state.
+        if !self.cmd_transfer_to_host_2d(self.scanout_resource_id, x, y, w, h) {
+            // Brief busy-wait then retry
+            for _ in 0..1000 { core::hint::spin_loop(); }
+            if !self.cmd_transfer_to_host_2d(self.scanout_resource_id, x, y, w, h) {
+                crate::serial_println!(
+                    "[gpu] VirtIO TRANSFER_TO_HOST_2D failed: ({},{} {}x{}) res={}",
+                    x, y, w, h, self.scanout_resource_id
+                );
+            }
+        }
     }
 
     fn flush_display(&mut self, x: u32, y: u32, w: u32, h: u32) {
@@ -1231,8 +1244,17 @@ impl GpuDriver for VirtioGpu {
         if w == 0 || h == 0 {
             return;
         }
-        // Only flush — all transfers already done
-        self.cmd_resource_flush(self.scanout_resource_id, x, y, w, h);
+        // Only flush — all transfers already done.
+        // Retry once on failure (same rationale as transfer_rect).
+        if !self.cmd_resource_flush(self.scanout_resource_id, x, y, w, h) {
+            for _ in 0..1000 { core::hint::spin_loop(); }
+            if !self.cmd_resource_flush(self.scanout_resource_id, x, y, w, h) {
+                crate::serial_println!(
+                    "[gpu] VirtIO RESOURCE_FLUSH failed: ({},{} {}x{}) res={}",
+                    x, y, w, h, self.scanout_resource_id
+                );
+            }
+        }
     }
 
     fn has_hw_cursor(&self) -> bool {
