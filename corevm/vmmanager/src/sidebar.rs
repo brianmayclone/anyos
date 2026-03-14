@@ -195,6 +195,7 @@ fn render_vm_entry(
     uuid: &str,
     vm_names: &HashMap<String, String>,
     vm_states: &HashMap<String, VmState>,
+    vm_icons: &HashMap<String, &'static str>,
     selected: &mut Option<String>,
     drag_vm: &mut Option<String>,
     actions: &mut Vec<SidebarAction>,
@@ -214,7 +215,8 @@ fn render_vm_entry(
         let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
         let center = dot_rect.center() + egui::vec2(0.0, 2.0);
         ui.painter().circle_filled(center, 4.0, color);
-        ui.selectable_value(selected, Some(uuid.to_string()), format!("\u{1F5A5} {}", name))
+        let icon = vm_icons.get(uuid).copied().unwrap_or("\u{1F5A5}");
+        ui.selectable_value(selected, Some(uuid.to_string()), format!("{} {}", icon, name))
     }).inner;
 
     if inner_resp.clicked() {
@@ -283,6 +285,7 @@ pub fn render_sidebar(
     layout: &mut SidebarLayout,
     vm_names: &HashMap<String, String>,
     vm_states: &HashMap<String, VmState>,
+    vm_icons: &HashMap<String, &'static str>,
     selected: &mut Option<String>,
     sidebar_state: &mut SidebarState,
 ) -> Vec<SidebarAction> {
@@ -394,7 +397,7 @@ pub fn render_sidebar(
                         let vm_uuids: Vec<String> = layout.folders[fi].vm_uuids.clone();
                         for uuid in &vm_uuids {
                             render_vm_entry(
-                                ui, uuid, vm_names, vm_states, selected,
+                                ui, uuid, vm_names, vm_states, vm_icons, selected,
                                 &mut drag_vm, &mut actions, &folder_names, Some(fi),
                             );
                         }
@@ -449,7 +452,7 @@ pub fn render_sidebar(
                 let root_uuids = layout.root_vms.clone();
                 for uuid in &root_uuids {
                     render_vm_entry(
-                        ui, uuid, vm_names, vm_states, selected,
+                        ui, uuid, vm_names, vm_states, vm_icons, selected,
                         &mut drag_vm, &mut actions, &folder_names, None,
                     );
                 }

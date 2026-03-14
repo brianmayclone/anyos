@@ -56,6 +56,7 @@ enum Category {
     Sound,
     Usb,
     Diagnostics,
+    Expert,
 }
 
 impl Category {
@@ -69,6 +70,7 @@ impl Category {
         Category::Sound,
         Category::Usb,
         Category::Diagnostics,
+        Category::Expert,
     ];
 
     fn label(&self) -> &'static str {
@@ -82,6 +84,7 @@ impl Category {
             Category::Sound       => "Sound",
             Category::Usb         => "USB",
             Category::Diagnostics => "Diagnostics",
+            Category::Expert      => "Expert",
         }
     }
 
@@ -96,6 +99,7 @@ impl Category {
             Category::Sound       => "\u{1F50A}", // 🔊
             Category::Usb         => "\u{1F50C}", // 🔌
             Category::Diagnostics => "\u{1F41B}", // 🐛
+            Category::Expert      => "\u{1F527}", // 🔧
         }
     }
 }
@@ -187,6 +191,7 @@ impl SettingsDialog {
                                     Category::Sound       => Self::page_placeholder(ui, "Sound", "Sound card emulation is not yet implemented."),
                                     Category::Usb         => Self::page_placeholder(ui, "USB", "USB controller emulation is not yet implemented."),
                                     Category::Diagnostics => self.page_diagnostics(ui),
+                                    Category::Expert      => self.page_expert(ui),
                                 }
                                 ui.add_space(8.0);
                             });
@@ -336,12 +341,7 @@ impl SettingsDialog {
             ui.radio_value(&mut self.config.guest_arch, GuestArch::X86, "32-bit (x86)");
         });
 
-        section_heading(ui, "Firmware & Boot");
-
-        labeled_row(ui, "BIOS:", |ui| {
-            ui.radio_value(&mut self.config.bios_type, BiosType::SeaBios, "SeaBIOS");
-            ui.radio_value(&mut self.config.bios_type, BiosType::CoreVm, "CoreVM");
-        });
+        section_heading(ui, "Boot");
 
         labeled_row(ui, "Boot Order:", |ui| {
             ui.radio_value(&mut self.config.boot_order, BootOrder::DiskFirst, "Disk");
@@ -644,6 +644,52 @@ impl SettingsDialog {
             egui::Color32::from_rgb(120, 120, 125),
             "When enabled, a diagnostics window will open alongside the VM\nshowing I/O ports, MMIO, interrupts, and CPU state.",
         );
+    }
+
+    fn page_expert(&mut self, ui: &mut egui::Ui) {
+        // Warning banner
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(60, 40, 20))
+            .stroke(egui::Stroke::new(1.0, theme::WARNING_ORANGE))
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(theme::WARNING_ORANGE, egui::RichText::new("\u{26A0}").size(18.0));
+                    ui.add_space(4.0);
+                    ui.vertical(|ui| {
+                        ui.colored_label(
+                            theme::WARNING_ORANGE,
+                            egui::RichText::new("Expert Settings").strong(),
+                        );
+                        ui.colored_label(
+                            egui::Color32::from_rgb(210, 180, 130),
+                            "Changing these settings can cause VM instability.\n\
+                             For production use, keep the recommended defaults (SeaBIOS).",
+                        );
+                    });
+                });
+            });
+
+        ui.add_space(8.0);
+        section_heading(ui, "Firmware");
+
+        labeled_row(ui, "BIOS:", |ui| {
+            ui.radio_value(&mut self.config.bios_type, BiosType::SeaBios, "SeaBIOS");
+            ui.radio_value(&mut self.config.bios_type, BiosType::CoreVm, "CoreVM");
+        });
+
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + 8.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(100, 100, 105),
+                match self.config.bios_type {
+                    BiosType::SeaBios => "Industry-standard BIOS. Recommended for most guests.",
+                    BiosType::CoreVm  => "Experimental CoreVM BIOS. For development use only.",
+                },
+            );
+        });
     }
 
     fn page_placeholder(ui: &mut egui::Ui, title: &str, message: &str) {

@@ -157,6 +157,19 @@ impl CoreVmApp {
         self.vms.iter().map(|v| (v.config.uuid.clone(), v.state)).collect()
     }
 
+    fn vm_icons(&self) -> HashMap<String, &'static str> {
+        self.vms.iter().map(|v| {
+            let icon = if v.config.guest_os.is_windows() {
+                "\u{1FA9F}" // 🪟
+            } else if v.config.guest_os.is_linux() {
+                "\u{1F427}" // 🐧
+            } else {
+                "\u{1F5A5}" // 🖥
+            };
+            (v.config.uuid.clone(), icon)
+        }).collect()
+    }
+
     pub fn find_vm(&self, uuid: &str) -> Option<&VmEntry> {
         self.vms.iter().find(|v| v.config.uuid == uuid)
     }
@@ -380,8 +393,9 @@ impl eframe::App for CoreVmApp {
         // Sidebar
         let names = self.vm_names();
         let states = self.vm_states();
+        let icons = self.vm_icons();
         let sidebar_actions = sidebar::render_sidebar(
-            ctx, &mut self.layout, &names, &states,
+            ctx, &mut self.layout, &names, &states, &icons,
             &mut self.selected_vm, &mut self.sidebar_state,
         );
 
@@ -823,10 +837,19 @@ fn render_summary(ui: &mut egui::Ui, vm: &VmEntry, deferred_action: &mut Option<
         let value_color = egui::Color32::from_rgb(220, 220, 225);
 
         // Collect info items
+        let ram_str = if vm.config.ram_mb >= 1024 {
+            format!("{:.1} GB", vm.config.ram_mb as f64 / 1024.0)
+        } else {
+            format!("{} MB", vm.config.ram_mb)
+        };
         let mut items: Vec<(&str, String)> = vec![
-            ("Memory", format!("{} MB", vm.config.ram_mb)),
-            ("CPUs", format!("{}", vm.config.cpu_cores)),
-            ("BIOS", format!("{:?}", vm.config.bios_type)),
+            ("OS", format!("{} ({})", vm.config.guest_os.label(),
+                match vm.config.guest_arch {
+                    crate::config::GuestArch::X64 => "64-bit",
+                    crate::config::GuestArch::X86 => "32-bit",
+                })),
+            ("Memory", ram_str),
+            ("CPUs", format!("{} {}", vm.config.cpu_cores, if vm.config.cpu_cores == 1 { "core" } else { "cores" })),
         ];
         for (i, disk) in vm.config.disk_images.iter().enumerate() {
             if !disk.is_empty() {
@@ -834,8 +857,7 @@ fn render_summary(ui: &mut egui::Ui, vm: &VmEntry, deferred_action: &mut Option<
                     .file_name()
                     .map(|f| f.to_string_lossy().to_string())
                     .unwrap_or_else(|| disk.clone());
-                let label = if i == 0 { "Disk" } else { "Disk" };
-                items.push((label, format!("{}: {}", i, disk_name)));
+                items.push(("Disk", disk_name));
             }
         }
         if !vm.config.iso_image.is_empty() {
@@ -843,7 +865,7 @@ fn render_summary(ui: &mut egui::Ui, vm: &VmEntry, deferred_action: &mut Option<
                 .file_name()
                 .map(|f| f.to_string_lossy().to_string())
                 .unwrap_or_else(|| vm.config.iso_image.clone());
-            items.push(("ISO", iso_name));
+            items.push(("CD/DVD", iso_name));
         }
 
         // Render as a grouped card
