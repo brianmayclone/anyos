@@ -71,7 +71,26 @@ pub fn find_bios(name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Ensure the config directory exists.
+/// Returns the directory where disk images are pooled.
+pub fn disk_pool_dir() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        PathBuf::from(home).join(".config/corevm/disks")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA").unwrap_or_else(|_| "C:\\CoreVM".into());
+        PathBuf::from(appdata).join("CoreVM\\disks")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        PathBuf::from("./disks")
+    }
+}
+
+/// Ensure the config and disk pool directories exist.
 pub fn ensure_dirs() {
     let _ = std::fs::create_dir_all(config_dir());
+    let _ = std::fs::create_dir_all(disk_pool_dir());
 }

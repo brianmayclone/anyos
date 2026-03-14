@@ -114,9 +114,14 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         setup::attach_image_to_ahci(handle, &config.iso_image, 1, true)?;
     }
 
-    // Attach disk if configured (as AHCI disk on port 0)
-    if !config.disk_image.is_empty() {
-        setup::attach_image_to_ahci(handle, &config.disk_image, 0, false)?;
+    // Attach disk images (port 0, 2, 3, 4, 5 — port 1 is reserved for CDROM)
+    let disk_ports = [0u32, 2, 3, 4, 5];
+    for (i, disk_path) in config.disk_images.iter().enumerate() {
+        if !disk_path.is_empty() {
+            if let Some(&port) = disk_ports.get(i) {
+                setup::attach_image_to_ahci(handle, disk_path, port, false)?;
+            }
+        }
     }
 
     // Set initial CPU state: CS:IP = F000:FFF0 (real-mode reset vector)

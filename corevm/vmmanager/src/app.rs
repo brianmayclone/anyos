@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 use eframe::egui;
 
 use crate::config::VmConfig;
-use crate::dialogs::{AboutDialog, CreateDiskDialog, CreateVmDialog, SnapshotsDialog};
+use crate::dialogs::{AboutDialog, AddDiskDialog, AddDiskMode, CreateDiskDialog, CreateVmDialog, DiskPoolDialog, SnapshotsDialog};
 use crate::display::DisplayWidget;
 use crate::filebrowser::FileBrowserDialog;
 use crate::input;
@@ -72,9 +72,12 @@ impl VmEntry {
 /// Identifies which field a file dialog is picking for
 #[derive(Clone, Debug)]
 pub enum FilePickTarget {
-    SettingsDisk,
     SettingsIso,
     CreateDiskPath,
+    AddDisk,
+    AddDiskBrowseExisting,
+    AddDiskBrowseVmdk,
+    AddDiskBrowseCreate,
 }
 
 pub struct CoreVmApp {
@@ -85,6 +88,8 @@ pub struct CoreVmApp {
     pub settings_dialog: Option<SettingsDialog>,
     pub create_vm_dialog: Option<CreateVmDialog>,
     pub create_disk_dialog: Option<CreateDiskDialog>,
+    pub add_disk_dialog: Option<AddDiskDialog>,
+    pub disk_pool_dialog: Option<DiskPoolDialog>,
     pub about_dialog: Option<AboutDialog>,
     pub snapshots_dialog: Option<SnapshotsDialog>,
     pub diagnostics_window: Option<DiagnosticsWindow>,
@@ -127,6 +132,8 @@ impl CoreVmApp {
             settings_dialog: None,
             create_vm_dialog: None,
             create_disk_dialog: None,
+            add_disk_dialog: None,
+            disk_pool_dialog: None,
             about_dialog: None,
             snapshots_dialog: None,
             diagnostics_window: None,
@@ -300,6 +307,11 @@ impl eframe::App for CoreVmApp {
                                 self.create_disk_dialog = Some(CreateDiskDialog::new());
                                 ui.close_menu();
                             }
+                            if ui.button("Disk Pool...").clicked() {
+                                let configs: Vec<_> = self.vms.iter().map(|v| v.config.clone()).collect();
+                                self.disk_pool_dialog = Some(DiskPoolDialog::new(&configs));
+                                ui.close_menu();
+                            }
                             ui.separator();
                             if ui.button("Open Config Directory").clicked() {
                                 let dir = platform::config_dir();
@@ -455,11 +467,6 @@ impl eframe::App for CoreVmApp {
         }
         if let Some(path) = file_picked {
             match &self.file_pick_target {
-                Some(FilePickTarget::SettingsDisk) => {
-                    if let Some(ref mut dlg) = self.settings_dialog {
-                        dlg.set_disk_image(path);
-                    }
-                }
                 Some(FilePickTarget::SettingsIso) => {
                     if let Some(ref mut dlg) = self.settings_dialog {
                         dlg.set_iso_image(path);
@@ -470,7 +477,14 @@ impl eframe::App for CoreVmApp {
                         dlg.set_path(path);
                     }
                 }
-                None => {}
+                Some(FilePickTarget::AddDiskBrowseExisting)
+                | Some(FilePickTarget::AddDiskBrowseVmdk)
+                | Some(FilePickTarget::AddDiskBrowseCreate) => {
+                    if let Some(ref mut dlg) = self.add_disk_dialog {
+                        dlg.set_path(path);
+                    }
+                }
+                Some(FilePickTarget::AddDisk) | None => {}
             }
             self.file_pick_target = None;
             self.file_browser = None;
@@ -505,11 +519,13 @@ impl eframe::App for CoreVmApp {
         if let Some(target) = browse_target {
             self.file_pick_target = Some(target.clone());
             match &target {
-                FilePickTarget::SettingsDisk => {
-                    self.file_browser = Some(FileBrowserDialog::new_open("Select Disk Image", &["img", "raw", "qcow2"]));
-                }
                 FilePickTarget::SettingsIso => {
                     self.file_browser = Some(FileBrowserDialog::new_open("Select ISO Image", &["iso"]));
+                }
+                FilePickTarget::AddDisk => {
+                    // Open AddDiskDialog instead of file browser
+                    self.add_disk_dialog = Some(AddDiskDialog::new());
+                    self.file_pick_target = None;
                 }
                 _ => {}
             }
@@ -543,6 +559,46 @@ impl eframe::App for CoreVmApp {
         if disk_browse {
             self.file_pick_target = Some(FilePickTarget::CreateDiskPath);
             self.file_browser = Some(FileBrowserDialog::new_save("Save Disk Image", &["img", "raw"]));
+        }
+
+        // Add Disk dialog
+        let mut add_disk_browse: Option<AddDiskMode> = None;
+        if let Some(ref mut dialog) = self.add_disk_dialog {
+            if let Some(mode) = dialog.show_with_browse(ctx) {
+                add_disk_browse = Some(mode);
+            }
+            if !dialog.is_open() {
+                if let Some(path) = dialog.result_path.take() {
+                    // Add the disk to the settings dialog if open
+                    if let Some(ref mut settings) = self.settings_dialog {
+                        settings.add_disk_image(path);
+                    }
+                }
+                self.add_disk_dialog = None;
+            }
+        }
+        if let Some(mode) = add_disk_browse {
+            match mode {
+                AddDiskMode::LoadExisting => {
+                    self.file_pick_target = Some(FilePickTarget::AddDiskBrowseExisting);
+                    self.file_browser = Some(FileBrowserDialog::new_open("Select Disk Image", &["img", "raw", "qcow2"]));
+                }
+                AddDiskMode::ImportVmdk => {
+                    self.file_pick_target = Some(FilePickTarget::AddDiskBrowseVmdk);
+                    self.file_browser = Some(FileBrowserDialog::new_open("Select VMDK File", &["vmdk"]));
+                }
+                AddDiskMode::CreateNew => {
+                    self.file_pick_target = Some(FilePickTarget::AddDiskBrowseCreate);
+                    self.file_browser = Some(FileBrowserDialog::new_save("Save Disk Image", &["img", "raw"]));
+                }
+            }
+        }
+
+        // Disk Pool dialog
+        if let Some(ref mut dialog) = self.disk_pool_dialog {
+            if !dialog.show(ctx) {
+                self.disk_pool_dialog = None;
+            }
         }
 
         // About dialog
@@ -714,12 +770,15 @@ fn render_summary(ui: &mut egui::Ui, vm: &VmEntry, deferred_action: &mut Option<
             ("CPUs", format!("{}", vm.config.cpu_cores)),
             ("BIOS", format!("{:?}", vm.config.bios_type)),
         ];
-        if !vm.config.disk_image.is_empty() {
-            let disk_name = std::path::Path::new(&vm.config.disk_image)
-                .file_name()
-                .map(|f| f.to_string_lossy().to_string())
-                .unwrap_or_else(|| vm.config.disk_image.clone());
-            items.push(("Disk", disk_name));
+        for (i, disk) in vm.config.disk_images.iter().enumerate() {
+            if !disk.is_empty() {
+                let disk_name = std::path::Path::new(disk)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| disk.clone());
+                let label = if i == 0 { "Disk" } else { "Disk" };
+                items.push((label, format!("{}: {}", i, disk_name)));
+            }
         }
         if !vm.config.iso_image.is_empty() {
             let iso_name = std::path::Path::new(&vm.config.iso_image)

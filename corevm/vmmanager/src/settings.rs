@@ -53,8 +53,8 @@ impl SettingsDialog {
         self.open
     }
 
-    pub fn set_disk_image(&mut self, path: String) {
-        self.config.disk_image = path;
+    pub fn add_disk_image(&mut self, path: String) {
+        self.config.disk_images.push(path);
     }
 
     pub fn set_iso_image(&mut self, path: String) {
@@ -218,14 +218,58 @@ impl SettingsDialog {
             ui.radio_value(&mut config.boot_order, BootOrder::FloppyFirst, "Floppy First");
         });
 
-        section_heading(ui, "Storage");
+        section_heading(ui, "Hard Disks");
 
-        labeled_row(ui, "Disk Image:", |ui| {
-            ui.add(egui::TextEdit::singleline(&mut config.disk_image).desired_width(FIELD_MIN_WIDTH));
-            if ui.button("Browse...").clicked() {
-                *browse_target = Some(FilePickTarget::SettingsDisk);
+        let max_disks = 5; // AHCI ports 0, 2, 3, 4, 5 (port 1 = CDROM)
+        let mut remove_idx: Option<usize> = None;
+
+        if config.disk_images.is_empty() {
+            ui.colored_label(
+                egui::Color32::from_rgb(120, 120, 125),
+                "  No disks attached.",
+            );
+        } else {
+            for (i, disk) in config.disk_images.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(LABEL_WIDTH, 20.0),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            ui.label(format!("Disk {}:", i));
+                        },
+                    );
+                    let filename = std::path::Path::new(disk)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_else(|| disk.clone());
+                    ui.label(egui::RichText::new(&filename).color(egui::Color32::from_rgb(200, 200, 205)));
+                    if ui.small_button("X").on_hover_text("Remove disk").clicked() {
+                        remove_idx = Some(i);
+                    }
+                });
+            }
+        }
+
+        if let Some(idx) = remove_idx {
+            config.disk_images.remove(idx);
+        }
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + 8.0);
+            let can_add = config.disk_images.len() < max_disks;
+            if ui.add_enabled(can_add, egui::Button::new("Add Disk...")).clicked() {
+                *browse_target = Some(FilePickTarget::AddDisk);
+            }
+            if !can_add {
+                ui.colored_label(
+                    egui::Color32::from_rgb(120, 120, 125),
+                    format!("(max {} disks)", max_disks),
+                );
             }
         });
+
+        section_heading(ui, "CD/DVD");
 
         labeled_row(ui, "ISO Image:", |ui| {
             ui.add(egui::TextEdit::singleline(&mut config.iso_image).desired_width(FIELD_MIN_WIDTH));

@@ -22,7 +22,7 @@ pub struct VmConfig {
     pub name: String,
     pub ram_mb: u32,
     pub cpu_cores: u32,
-    pub disk_image: String,
+    pub disk_images: Vec<String>,
     pub iso_image: String,
     pub boot_order: BootOrder,
     pub bios_type: BiosType,
@@ -36,6 +36,13 @@ pub struct VmConfig {
     pub diagnostics: bool,
 }
 
+impl VmConfig {
+    /// First disk image path (for backwards compat / primary disk).
+    pub fn primary_disk(&self) -> &str {
+        self.disk_images.first().map(|s| s.as_str()).unwrap_or("")
+    }
+}
+
 impl Default for VmConfig {
     fn default() -> Self {
         Self {
@@ -43,7 +50,7 @@ impl Default for VmConfig {
             name: "New VM".into(),
             ram_mb: 256,
             cpu_cores: 1,
-            disk_image: String::new(),
+            disk_images: Vec::new(),
             iso_image: String::new(),
             boot_order: BootOrder::CdFirst,
             bios_type: BiosType::SeaBios,
@@ -83,11 +90,23 @@ impl VmConfig {
             MacMode::Dynamic => "dynamic",
             MacMode::Static => "static",
         };
+        // Serialize disk_images: first as "disk=" for compat, additional as "disk2=", "disk3=" etc.
+        let mut disk_lines = String::new();
+        for (i, d) in self.disk_images.iter().enumerate() {
+            if i == 0 {
+                disk_lines.push_str(&format!("disk={}\n", d));
+            } else {
+                disk_lines.push_str(&format!("disk{}={}\n", i + 1, d));
+            }
+        }
+        if self.disk_images.is_empty() {
+            disk_lines.push_str("disk=\n");
+        }
         let content = format!(
-            "name={}\nram={}\ncpu_cores={}\ndisk={}\niso={}\nboot={}\nbios={}\n\
+            "name={}\nram={}\ncpu_cores={}\n{}iso={}\nboot={}\nbios={}\n\
              ram_alloc={}\ngpu={}\nnet_enabled={}\nnet_mode={}\nnet_host_nic={}\n\
              mac_mode={}\nmac_address={}\ndiagnostics={}\n",
-            self.name, self.ram_mb, self.cpu_cores, self.disk_image, self.iso_image,
+            self.name, self.ram_mb, self.cpu_cores, disk_lines, self.iso_image,
             boot, bios,
             alloc, self.gpu_type,
             if self.net_enabled { "1" } else { "0" },
@@ -111,7 +130,28 @@ impl VmConfig {
                 "name" => cfg.name = val.to_string(),
                 "ram" => cfg.ram_mb = val.parse().unwrap_or(256),
                 "cpu_cores" => cfg.cpu_cores = val.parse().unwrap_or(1),
-                "disk" => cfg.disk_image = val.to_string(),
+                "disk" => {
+                    // Primary disk — backwards compatible
+                    if !val.is_empty() {
+                        if cfg.disk_images.is_empty() {
+                            cfg.disk_images.push(val.to_string());
+                        } else {
+                            cfg.disk_images[0] = val.to_string();
+                        }
+                    }
+                }
+                k if k.starts_with("disk") && k.len() > 4 => {
+                    // disk2, disk3, ... — additional disks
+                    if let Ok(idx) = k[4..].parse::<usize>() {
+                        let pos = idx - 1; // disk2 -> index 1
+                        if !val.is_empty() {
+                            while cfg.disk_images.len() <= pos {
+                                cfg.disk_images.push(String::new());
+                            }
+                            cfg.disk_images[pos] = val.to_string();
+                        }
+                    }
+                }
                 "iso" => cfg.iso_image = val.to_string(),
                 "boot" => cfg.boot_order = match val {
                     "disk" => BootOrder::DiskFirst,
@@ -142,6 +182,10 @@ impl VmConfig {
                 "diagnostics" => cfg.diagnostics = val == "1",
                 _ => {}
             }
+        }
+        // Remove trailing empty entries
+        while cfg.disk_images.last().map_or(false, |s| s.is_empty()) {
+            cfg.disk_images.pop();
         }
         Ok(cfg)
     }
