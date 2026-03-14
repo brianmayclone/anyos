@@ -19,6 +19,8 @@ pub struct DirEntry {
     pub kind: EntryKind,
     /// File size in bytes (0 for directories).
     pub size: u64,
+    /// True if the file has any execute bit set (mode & 0o111 != 0).
+    pub is_exec: bool,
 }
 
 impl DirEntry {
@@ -27,6 +29,7 @@ impl DirEntry {
         name_len: 0,
         kind: EntryKind::Unknown,
         size: 0,
+        is_exec: false,
     };
 
     pub fn name_str(&self) -> &str {
@@ -151,6 +154,18 @@ pub fn read_dir(path: &str, out: &mut [DirEntry; MAX_ENTRIES]) -> usize {
         entry.name_len = name_len;
         entry.kind = kind;
         entry.size = size;
+
+        // Detect executable bit for regular files via stat.
+        if matches!(kind, EntryKind::File) {
+            let (jp, jl) = path_join(path, entry.name_str());
+            let jpath = buf_to_str(&jp, jl);
+            let mut sbuf = [0u32; 7];
+            if anyos_std::fs::stat(jpath, &mut sbuf) == 0 {
+                let mode = sbuf[5];
+                entry.is_exec = mode & 0o111 != 0;
+            }
+        }
+
         out[start + i] = entry;
     }
     start + count

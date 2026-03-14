@@ -418,6 +418,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "file"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "find"
 version = "0.1.0"
 dependencies = [

@@ -222,6 +222,7 @@ pub fn irq_handler(_irq: u8) {
     tick();
     crate::drivers::boot_console::tick_spinner();
     crate::drivers::input::keyboard::tick();
+    crate::drivers::textcon::tick_blink();
 }
 
 /// PIT IRQ 0 handler (legacy PIC mode): timekeeping, spinner, AND scheduling.
@@ -230,6 +231,7 @@ pub fn irq_handler_with_schedule(_irq: u8) {
     tick();
     crate::drivers::boot_console::tick_spinner();
     crate::drivers::input::keyboard::tick();
+    crate::drivers::textcon::tick_blink();
     crate::task::scheduler::schedule_tick();
 }
 

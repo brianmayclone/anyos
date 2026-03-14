@@ -288,7 +288,7 @@ fn entry_fg(e: &DirEntry) -> u8 {
     match e.kind {
         EntryKind::Dir     => PANEL_DIR_FG,
         EntryKind::Symlink => PANEL_LINK_FG,
-        EntryKind::File    => PANEL_FILE_FG,
+        EntryKind::File    => if e.is_exec { PANEL_EXEC_FG } else { PANEL_FILE_FG },
         EntryKind::Unknown => color::WHITE,
     }
 }

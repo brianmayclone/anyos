@@ -77,6 +77,12 @@ static CUR_Y: AtomicU32 = AtomicU32::new(0);
 
 /// Whether the cursor block is currently drawn.
 static CURSOR_VISIBLE: AtomicBool = AtomicBool::new(false);
+/// Blink phase: true = cursor shown, false = cursor hidden. Toggled every BLINK_HALF_PERIOD ticks.
+static CURSOR_BLINK_ON: AtomicBool = AtomicBool::new(true);
+/// Counts PIT ticks for cursor blink timing.
+static BLINK_COUNTER: AtomicU32 = AtomicU32::new(0);
+/// Half-period in PIT ticks (1000 Hz → 500 ms on, 500 ms off).
+const BLINK_HALF_PERIOD: u32 = 500;
 
 // ─── ANSI escape sequence parser state ───────────────────────────────────────
 
@@ -943,12 +949,15 @@ pub fn write_str(s: &str) {
     if cx + cw > dirty_x1 { dirty_x1 = cx + cw; }
     if cy + ch > dirty_y1 { dirty_y1 = cy + ch; }
 
-    // Redraw cursor in memory only if not hidden by mode flags
+    // Redraw cursor in memory only if not hidden by mode flags.
+    // Also reset blink phase so cursor stays solid for a full period after each write.
     if CON_MODE_FLAGS.load(Ordering::Relaxed) & 0x01 == 0 {
         let y = cy + ch - 2;
         for col in 0..cw { put_pixel(cx + col, y, COLOR_CURSOR); }
         for col in 0..cw { put_pixel(cx + col, y + 1, COLOR_CURSOR); }
         CURSOR_VISIBLE.store(true, Ordering::Relaxed);
+        CURSOR_BLINK_ON.store(true, Ordering::Relaxed);
+        BLINK_COUNTER.store(0, Ordering::Relaxed);
     }
 
     // Single GPU flush for the entire dirty region
@@ -1037,6 +1046,57 @@ pub fn set_mode(flags: u32) -> u32 {
 /// Return current console mode flags.
 pub fn get_mode() -> u32 {
     CON_MODE_FLAGS.load(Ordering::Relaxed)
+}
+
+/// Called from the PIT IRQ handler every tick (1000 Hz).
+/// Toggles the cursor block every BLINK_HALF_PERIOD ticks (500 ms).
+/// No-op if the console is not ready, cursor is mode-hidden, or viewport is scrolled back.
+pub fn tick_blink() {
+    if !is_ready() { return; }
+    // Don't blink when cursor is mode-hidden (bit 0) or when scrolled back.
+    if CON_MODE_FLAGS.load(Ordering::Relaxed) & 0x01 != 0 { return; }
+    if SCROLL_OFFSET.load(Ordering::Relaxed) > 0 { return; }
+
+    let counter = BLINK_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+    if counter < BLINK_HALF_PERIOD { return; }
+    BLINK_COUNTER.store(0, Ordering::Relaxed);
+
+    let blink_on = !CURSOR_BLINK_ON.load(Ordering::Relaxed);
+    CURSOR_BLINK_ON.store(blink_on, Ordering::Relaxed);
+
+    let cx = CUR_X.load(Ordering::Relaxed);
+    let cy = CUR_Y.load(Ordering::Relaxed);
+    let cw = cell_w();
+    let ch = cell_h();
+    let fb_w = FB_WIDTH.load(Ordering::Relaxed);
+    let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
+    if cw == 0 || ch == 0 || cx >= fb_w || cy + ch > fb_h { return; }
+
+    // Draw or erase the cursor underline (bottom 2 pixel rows of the cell).
+    let y = cy + ch - 2;
+    if blink_on {
+        for col in 0..cw { put_pixel(cx + col, y, COLOR_CURSOR); }
+        for col in 0..cw { put_pixel(cx + col, y + 1, COLOR_CURSOR); }
+        CURSOR_VISIBLE.store(true, Ordering::Relaxed);
+    } else {
+        // Restore cell background — read from shadow buffer.
+        let col_idx = (cx / cw) as usize;
+        let row_idx = (cy / ch) as usize;
+        let bg = if row_idx < MAX_VISIBLE_ROWS && col_idx < MAX_COLS {
+            let raw = unsafe { SHADOW_BG[row_idx][col_idx] };
+            if raw != 0 { raw } else { COLOR_BG }
+        } else { COLOR_BG };
+        for col in 0..cw { put_pixel(cx + col, y, bg); }
+        for col in 0..cw { put_pixel(cx + col, y + 1, bg); }
+        CURSOR_VISIBLE.store(false, Ordering::Relaxed);
+    }
+
+    // Flush just the cursor cell.
+    let flush_w = cw.min(fb_w.saturating_sub(cx));
+    let flush_h = ch.min(fb_h.saturating_sub(cy));
+    if flush_w > 0 && flush_h > 0 {
+        flush_rect(cx, cy, flush_w, flush_h);
+    }
 }
 
 /// Write a single character with a single GPU flush.
