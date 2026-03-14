@@ -9,6 +9,7 @@ egui = "0.31"
 egui_extras = { version = "0.31", features = ["image"] }
 libcorevm = { path = "../../libs/libcorevm", default-features = false, features = ["linux"] }
 uuid = { version = "1", features = ["v4"] }
+arboard = "3"
 
 [build-dependencies]
 winres = "0.1"

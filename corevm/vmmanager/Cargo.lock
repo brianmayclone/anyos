@@ -710,6 +710,7 @@ dependencies = [
 name = "corevm-vmmanager"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "eframe",
  "egui",
  "egui_extras",

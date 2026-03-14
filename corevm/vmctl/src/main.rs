@@ -24,6 +24,7 @@ struct Args {
     kernel: String,
     initrd: String,
     append: String,
+    hpet: bool,
     send_keys: Vec<(u32, Vec<u8>)>,  // (delay_ms, scancodes)
     send_mouse: Vec<(u32, i16, i16, u8)>, // (delay_ms, dx, dy, buttons)
 }
@@ -38,6 +39,7 @@ fn parse_args() -> Args {
         timeout: 30,
         show_screen: false,
         show_regs: false,
+        hpet: false,
         kernel: String::new(),
         initrd: String::new(),
         append: String::new(),
@@ -57,6 +59,7 @@ fn parse_args() -> Args {
             "-b" => { i += 1; if i < argv.len() { args.bios = argv[i].clone(); } }
             "-t" => { i += 1; if i < argv.len() { args.timeout = argv[i].parse().unwrap_or(30); } }
             "-s" => { args.show_screen = true; }
+            "--hpet" => { args.hpet = true; }
             "-g" => { args.show_regs = true; }
             "-k" => { i += 1; if i < argv.len() { args.kernel = argv[i].clone(); } }
             "--initrd" => { i += 1; if i < argv.len() { args.initrd = argv[i].clone(); } }
@@ -152,6 +155,10 @@ fn main() {
     }
 
     corevm_setup_standard_devices(handle);
+    if args.hpet {
+        corevm_setup_hpet(handle);
+        eprintln!("[vmctl] HPET enabled");
+    }
     corevm_setup_acpi_tables(handle);
     corevm_setup_ahci(handle, 6);
 

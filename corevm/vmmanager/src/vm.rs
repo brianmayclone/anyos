@@ -13,7 +13,7 @@ use libcorevm::ffi::{
     CExitReason,
     corevm_create, corevm_create_vcpu, corevm_destroy,
     corevm_run_vcpu, corevm_handle_io_exit, corevm_handle_mmio_exit, corevm_handle_string_io_exit,
-    corevm_setup_standard_devices, corevm_setup_acpi_tables, corevm_setup_ahci, corevm_setup_e1000,
+    corevm_setup_standard_devices, corevm_setup_acpi_tables, corevm_setup_ahci, corevm_setup_e1000, corevm_setup_hpet,
     corevm_complete_string_io,
     corevm_get_vcpu_regs,
     corevm_get_vcpu_sregs,
@@ -78,6 +78,13 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
 
     // Setup devices (includes PCI bus)
     corevm_setup_standard_devices(handle);
+
+    // HPET — required for Windows guests
+    if config.guest_os.is_windows() {
+        corevm_setup_hpet(handle);
+        entry.diag_log.log(DiagCategory::Info, "HPET enabled (Windows guest)".into());
+    }
+
     let acpi_rc = corevm_setup_acpi_tables(handle);
     entry.diag_log.log(DiagCategory::Info, format!("ACPI tables setup: rc={}", acpi_rc));
 

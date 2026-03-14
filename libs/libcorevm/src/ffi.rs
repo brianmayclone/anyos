@@ -1030,6 +1030,17 @@ pub extern "C" fn corevm_setup_standard_devices(handle: u64) -> i32 {
     }
 }
 
+/// Enable the HPET (High Precision Event Timer) device.
+/// Must be called after corevm_setup_standard_devices.
+/// Required for Windows guests; optional for Linux.
+#[no_mangle]
+pub extern "C" fn corevm_setup_hpet(handle: u64) -> i32 {
+    match get_vm(handle) {
+        Some(vm) => { vm.setup_hpet(); 0 }
+        None => -1,
+    }
+}
+
 /// Generate and register ACPI tables via fw_cfg.
 /// Must be called after corevm_setup_standard_devices (needs fw_cfg device).
 #[no_mangle]

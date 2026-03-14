@@ -209,6 +209,30 @@ impl CoreVmApp {
             ToolbarAction::Snapshot => {
                 self.snapshots_dialog = Some(SnapshotsDialog::new());
             }
+            ToolbarAction::Screenshot => {
+                let result = self.selected_vm.as_ref()
+                    .and_then(|uuid| self.find_vm(uuid))
+                    .map(|entry| entry.framebuffer.clone());
+                if let Some(fb_arc) = result {
+                    if let Ok(fb) = fb_arc.lock() {
+                        if fb.width > 0 && fb.height > 0 && !fb.pixels.is_empty() {
+                            match copy_framebuffer_to_clipboard(&fb) {
+                                Ok(()) => {
+                                    self.error_message = Some(format!(
+                                        "Screenshot copied to clipboard ({}x{})",
+                                        fb.width, fb.height
+                                    ));
+                                }
+                                Err(e) => {
+                                    self.error_message = Some(format!("Screenshot failed: {}", e));
+                                }
+                            }
+                        } else {
+                            self.error_message = Some("No framebuffer data available.".into());
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -829,4 +853,28 @@ fn render_summary(ui: &mut egui::Ui, vm: &VmEntry, deferred_action: &mut Option<
             }
         }
     });
+}
+
+/// Copy the current framebuffer contents to the OS clipboard as an image.
+fn copy_framebuffer_to_clipboard(fb: &FrameBufferData) -> Result<(), String> {
+    let w = fb.width as usize;
+    let h = fb.height as usize;
+
+    if fb.pixels.len() < w * h * 4 {
+        return Err("Framebuffer data incomplete".into());
+    }
+
+    // arboard expects RGBA pixels
+    let img = arboard::ImageData {
+        width: w,
+        height: h,
+        bytes: std::borrow::Cow::Borrowed(&fb.pixels[..w * h * 4]),
+    };
+
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|e| format!("Failed to open clipboard: {}", e))?;
+    clipboard.set_image(img)
+        .map_err(|e| format!("Failed to set clipboard image: {}", e))?;
+
+    Ok(())
 }

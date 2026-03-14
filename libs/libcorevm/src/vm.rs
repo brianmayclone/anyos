@@ -261,13 +261,8 @@ impl Vm {
         // IDE (0x1F0-0x1F7, 0x3F6, 0x170-0x177, 0x376)
         self.io.register(0x1F0, 8, Box::new(Ide::new()));
 
-        // HPET at 0xFED00000 (1KB)
-        {
-            use crate::devices::hpet::{HPET_BASE, HPET_SIZE};
-            let hpet = Box::new(Hpet::new());
-            self.hpet_ptr = &*hpet as *const Hpet as *mut Hpet;
-            self.memory.add_mmio(HPET_BASE, HPET_SIZE, hpet);
-        }
+        // Note: HPET is optional — call setup_hpet() separately if needed
+        // (required for Windows guests).
 
         // I/O APIC and Local APIC MMIO.
         // On Linux/KVM with KVM_CREATE_IRQCHIP, these are handled in-kernel.
@@ -606,6 +601,18 @@ impl Vm {
         } else {
             Some(unsafe { &mut *self.cmos_ptr })
         }
+    }
+
+    /// Enable the HPET (High Precision Event Timer) device.
+    /// Required for Windows guests. Call after setup_standard_devices().
+    pub fn setup_hpet(&mut self) {
+        if !self.hpet_ptr.is_null() {
+            return; // already set up
+        }
+        use crate::devices::hpet::{HPET_BASE, HPET_SIZE};
+        let hpet = Box::new(Hpet::new());
+        self.hpet_ptr = &*hpet as *const Hpet as *mut Hpet;
+        self.memory.add_mmio(HPET_BASE, HPET_SIZE, hpet);
     }
 
     pub fn hpet_mut(&mut self) -> Option<&mut Hpet> {

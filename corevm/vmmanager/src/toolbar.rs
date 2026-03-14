@@ -9,6 +9,7 @@ pub enum ToolbarAction {
     Stop,
     Settings,
     Snapshot,
+    Screenshot,
 }
 
 fn icon_button(ui: &mut egui::Ui, icon: &str, tooltip: &str, enabled: bool, accent: bool) -> bool {
@@ -85,6 +86,12 @@ pub fn render_toolbar(
     // Snapshot
     if icon_button(ui, "\u{1F4F7}", "Snapshots", vm_selected, false) {
         action = Some(ToolbarAction::Snapshot);
+    }
+
+    // Screenshot — only enabled when VM is running
+    let screenshot_enabled = vm_selected && vm_running;
+    if icon_button(ui, "\u{1F5BC}", "Screenshot to Clipboard", screenshot_enabled, false) {
+        action = Some(ToolbarAction::Screenshot);
     }
 
     action
