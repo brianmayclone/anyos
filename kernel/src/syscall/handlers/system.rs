@@ -771,6 +771,25 @@ pub fn sys_con_poll_key() -> u32 {
                     Key::Left      => 0x10_0044,
                     Key::Right     => 0x10_0043,
                     Key::Space     => b' ' as u32,
+                    // Navigation keys (encoded as 0x20_00XX)
+                    Key::Home      => 0x20_0048,
+                    Key::End       => 0x20_004B,
+                    Key::PageUp    => 0x20_0049,
+                    Key::PageDown  => 0x20_0051,
+                    Key::Delete    => 0x20_0053,
+                    // Function keys (encoded as 0x30_000N where N=1..12)
+                    Key::F1        => 0x30_0001,
+                    Key::F2        => 0x30_0002,
+                    Key::F3        => 0x30_0003,
+                    Key::F4        => 0x30_0004,
+                    Key::F5        => 0x30_0005,
+                    Key::F6        => 0x30_0006,
+                    Key::F7        => 0x30_0007,
+                    Key::F8        => 0x30_0008,
+                    Key::F9        => 0x30_0009,
+                    Key::F10       => 0x30_000A,
+                    Key::F11       => 0x30_000B,
+                    Key::F12       => 0x30_000C,
                     // Modifier-only keys: skip and poll again
                     Key::LeftShift | Key::RightShift |
                     Key::LeftCtrl  | Key::RightCtrl  |
@@ -800,3 +819,16 @@ pub fn sys_con_get_size() -> u32 {
 
 #[cfg(not(target_arch = "x86_64"))]
 pub fn sys_con_get_size() -> u32 { 0 }
+
+/// SYS_CON_SET_MODE (294): Set console mode flags.
+/// arg1 = new flags bitmask:
+///   bit 0 (0x01): 1 = hide cursor, 0 = show cursor
+///   bit 1 (0x02): 1 = disable auto-scroll, 0 = enable auto-scroll
+/// Returns previous flags value.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_con_set_mode(flags: u32) -> u32 {
+    crate::drivers::textcon::set_mode(flags)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn sys_con_set_mode(_flags: u32) -> u32 { 0 }

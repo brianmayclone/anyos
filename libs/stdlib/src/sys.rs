@@ -230,3 +230,57 @@ pub fn con_get_size() -> (u32, u32) {
     let packed = syscall0(SYS_CON_GET_SIZE);
     (packed >> 16, packed & 0xFFFF)
 }
+
+/// Set console mode flags. Returns the previous flags value.
+///
+/// Flags bitmask:
+/// - `CON_MODE_HIDE_CURSOR`   (0x01): hide the blinking cursor block
+/// - `CON_MODE_NO_AUTOSCROLL` (0x02): disable automatic scrolling on newline at bottom
+///
+/// Example — enter fullscreen TUI mode:
+/// ```no_run
+/// con_set_mode(CON_MODE_HIDE_CURSOR | CON_MODE_NO_AUTOSCROLL);
+/// ```
+/// Example — restore on exit:
+/// ```no_run
+/// con_set_mode(0);
+/// ```
+pub fn con_set_mode(flags: u32) -> u32 {
+    syscall1(SYS_CON_SET_MODE, flags as u64)
+}
+
+/// Cursor-hide flag for [`con_set_mode`].
+pub const CON_MODE_HIDE_CURSOR: u32   = 0x01;
+/// Disable-auto-scroll flag for [`con_set_mode`].
+pub const CON_MODE_NO_AUTOSCROLL: u32 = 0x02;
+
+/// Key code prefix returned by [`con_poll_key`] for arrow keys.
+/// The low byte encodes: A=Up, B=Down, C=Right, D=Left (VT100 CSI convention).
+pub const KEY_ARROW_PREFIX: u32  = 0x10_0000;
+/// Key code prefix for navigation keys (Home/End/PageUp/PageDown/Delete).
+pub const KEY_NAV_PREFIX: u32    = 0x20_0000;
+/// Key code prefix for function keys F1–F12.
+/// Low byte: 1=F1 … 12=F12.
+pub const KEY_FN_PREFIX: u32     = 0x30_0000;
+
+pub const KEY_UP: u32     = KEY_ARROW_PREFIX | 0x41;
+pub const KEY_DOWN: u32   = KEY_ARROW_PREFIX | 0x42;
+pub const KEY_RIGHT: u32  = KEY_ARROW_PREFIX | 0x43;
+pub const KEY_LEFT: u32   = KEY_ARROW_PREFIX | 0x44;
+
+pub const KEY_HOME: u32     = KEY_NAV_PREFIX | 0x48;
+pub const KEY_END: u32      = KEY_NAV_PREFIX | 0x4B;
+pub const KEY_PGUP: u32     = KEY_NAV_PREFIX | 0x49;
+pub const KEY_PGDOWN: u32   = KEY_NAV_PREFIX | 0x51;
+pub const KEY_DELETE: u32   = KEY_NAV_PREFIX | 0x53;
+
+pub const KEY_F1: u32  = KEY_FN_PREFIX | 0x01;
+pub const KEY_F2: u32  = KEY_FN_PREFIX | 0x02;
+pub const KEY_F3: u32  = KEY_FN_PREFIX | 0x03;
+pub const KEY_F4: u32  = KEY_FN_PREFIX | 0x04;
+pub const KEY_F5: u32  = KEY_FN_PREFIX | 0x05;
+pub const KEY_F6: u32  = KEY_FN_PREFIX | 0x06;
+pub const KEY_F7: u32  = KEY_FN_PREFIX | 0x07;
+pub const KEY_F8: u32  = KEY_FN_PREFIX | 0x08;
+pub const KEY_F9: u32  = KEY_FN_PREFIX | 0x09;
+pub const KEY_F10: u32 = KEY_FN_PREFIX | 0x0A;

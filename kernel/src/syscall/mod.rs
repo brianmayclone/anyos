@@ -290,6 +290,11 @@ pub const SYS_CON_READ: u32      = 291;
 pub const SYS_CON_POLL_KEY: u32  = 292;
 /// Returns console dimensions: high 16 bits = columns, low 16 bits = rows.
 pub const SYS_CON_GET_SIZE: u32  = 293;
+/// Set console mode flags. arg1 = flags bitmask:
+///   bit 0 (0x01): hide cursor (1) / show cursor (0)
+///   bit 1 (0x02): disable auto-scroll (1) / enable auto-scroll (0)
+/// Returns previous flags.
+pub const SYS_CON_SET_MODE: u32  = 294;
 
 // Hardware virtualization (VT-x / AMD-V)
 pub const SYS_VM_CREATE: u32 = 600;
@@ -634,6 +639,7 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         SYS_CON_READ      => handlers::sys_con_read(arg1, arg2),
         SYS_CON_POLL_KEY  => handlers::sys_con_poll_key(),
         SYS_CON_GET_SIZE  => handlers::sys_con_get_size(),
+        SYS_CON_SET_MODE  => handlers::sys_con_set_mode(arg1),
 
         // Debug / trace (anyTrace)
         SYS_DEBUG_ATTACH => handlers::sys_debug_attach(arg1),

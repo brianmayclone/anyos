@@ -14,6 +14,19 @@ use crate::sync::spinlock::Spinlock;
 // ─── Static state ────────────────────────────────────────────────────────────
 
 static READY: AtomicBool  = AtomicBool::new(false);
+
+/// Integer scale factor applied to each font pixel (nearest-neighbour upscale).
+/// Computed at init time so the console fits approximately 80×25 cells on screen.
+static CELL_SCALE: AtomicU32 = AtomicU32::new(1);
+
+#[inline(always)]
+fn cell_w() -> u32 { FONT_WIDTH  * CELL_SCALE.load(Ordering::Relaxed) }
+#[inline(always)]
+fn cell_h() -> u32 { FONT_HEIGHT * CELL_SCALE.load(Ordering::Relaxed) }
+
+// ─── Console mode flags ───────────────────────────────────────────────────────
+/// Bit 0: cursor hidden  Bit 1: auto-scroll disabled
+static CON_MODE_FLAGS: AtomicU32 = AtomicU32::new(0);
 static FB_ADDR:  AtomicU64 = AtomicU64::new(0);
 static FB_PITCH: AtomicU32 = AtomicU32::new(0);
 static FB_WIDTH: AtomicU32 = AtomicU32::new(0);
@@ -29,28 +42,82 @@ static CURSOR_VISIBLE: AtomicBool = AtomicBool::new(false);
 
 // ─── ANSI escape sequence parser state ───────────────────────────────────────
 
+/// ANSI 8-color palette (normal intensity) — matches Terminal.app default theme.
+const ANSI_COLORS: [u32; 8] = [
+    0xFF505050, // 0 black
+    0xFFFF5555, // 1 red
+    0xFF50FA7B, // 2 green
+    0xFFF1FA8C, // 3 yellow
+    0xFF6272A4, // 4 blue
+    0xFFFF79C6, // 5 magenta
+    0xFF8BE9FD, // 6 cyan
+    0xFFCCCCCC, // 7 white
+];
+/// ANSI 8-color palette (bright/bold intensity).
+const ANSI_BRIGHT: [u32; 8] = [
+    0xFF6A6A6A, // 0 bright black
+    0xFFFF6E6E, // 1 bright red
+    0xFF69FF94, // 2 bright green
+    0xFFFFFFA5, // 3 bright yellow
+    0xFF7B8ABD, // 4 bright blue
+    0xFFFF92DF, // 5 bright magenta
+    0xFFA4F0FF, // 6 bright cyan
+    0xFFFFFFFF, // 7 bright white
+];
+
+/// Convert a 256-color index to ARGB (compatible with color_256 in Terminal.app).
+fn color_256(idx: u32) -> u32 {
+    if idx < 8 { return ANSI_COLORS[idx as usize]; }
+    if idx < 16 { return ANSI_BRIGHT[(idx - 8) as usize]; }
+    if idx < 232 {
+        // 6×6×6 color cube
+        let i = idx - 16;
+        let b = i % 6;
+        let g = (i / 6) % 6;
+        let r = i / 36;
+        fn c(v: u32) -> u32 { if v == 0 { 0 } else { v * 40 + 55 } }
+        return 0xFF000000 | (c(r) << 16) | (c(g) << 8) | c(b);
+    }
+    // 24 grayscale ramp
+    let v = 8 + (idx - 232) * 10;
+    0xFF000000 | (v << 16) | (v << 8) | v
+}
+
+/// SGR attribute flags (bold, underline).
+const ATTR_BOLD: u8 = 1;
+const ATTR_UNDERLINE: u8 = 4;
+const ATTR_REVERSE: u8 = 8;
+
 /// Parser state machine for VT100/ANSI escape sequences.
 struct EscState {
-    /// 0 = normal, 1 = seen ESC, 2 = seen ESC '[' (CSI), 3 = seen ESC ']' (OSC)
+    /// 0 = normal, 1 = seen ESC, 2 = seen CSI, 3 = OSC, 4 = DEC private (CSI ?)
     mode: u8,
     /// Accumulated parameter bytes for CSI sequences (e.g. "1;23")
-    params: [u8; 32],
+    params: [u8; 64],
     params_len: usize,
+    /// Current SGR foreground color (ARGB).  0 = use COLOR_FG default.
+    cur_fg: u32,
+    /// Current SGR background color (ARGB).  0 = use COLOR_BG default.
+    cur_bg: u32,
+    /// SGR attribute bitfield.
+    attr: u8,
 }
 
 impl EscState {
     const fn new() -> Self {
-        Self { mode: 0, params: [0u8; 32], params_len: 0 }
+        Self { mode: 0, params: [0u8; 64], params_len: 0, cur_fg: 0, cur_bg: 0, attr: 0 }
     }
     fn reset(&mut self) {
         self.mode = 0;
         self.params_len = 0;
     }
+    fn fg(&self) -> u32 { if self.cur_fg != 0 { self.cur_fg } else { COLOR_FG } }
+    fn bg(&self) -> u32 { if self.cur_bg != 0 { self.cur_bg } else { COLOR_BG } }
 }
 
 static ESC: Spinlock<EscState> = Spinlock::new(EscState::new());
 
-// Foreground / background colors used for all text output.
+// Default foreground / background colors.
 const COLOR_FG: u32 = 0xFFCCCCCC; // light gray
 const COLOR_BG: u32 = 0xFF0D0D14; // very dark blue-gray
 const COLOR_CURSOR: u32 = 0xFFCCCCCC;
@@ -68,11 +135,25 @@ pub fn init() {
         FB_PITCH.store(fb.pitch, Ordering::Relaxed);
         FB_WIDTH.store(fb.width, Ordering::Relaxed);
         FB_HEIGHT.store(fb.height, Ordering::Relaxed);
+
+        // Choose the largest integer scale that still fits ≥80 columns and ≥25 rows.
+        // scale = floor(min(fb_w / (80*8), fb_h / (25*16))), clamped to [1, 8].
+        let scale_x = fb.width  / (80 * FONT_WIDTH);   // how many times font fits in 80-col target
+        let scale_y = fb.height / (25 * FONT_HEIGHT);  // how many times font fits in 25-row target
+        let scale = scale_x.min(scale_y).max(1).min(8);
+        CELL_SCALE.store(scale, Ordering::Relaxed);
+
+        let cols = fb.width  / (FONT_WIDTH  * scale);
+        let rows = fb.height / (FONT_HEIGHT * scale);
+        crate::serial_println!(
+            "[OK] textcon: {}x{} fb, scale={}, console {}x{}",
+            fb.width, fb.height, scale, cols, rows
+        );
+
         CUR_X.store(0, Ordering::Relaxed);
         CUR_Y.store(0, Ordering::Relaxed);
         clear_screen_bg();
         READY.store(true, Ordering::Relaxed);
-        crate::serial_println!("[OK] textcon: {}x{} framebuffer console ready", fb.width, fb.height);
     } else {
         crate::serial_println!("[WARN] textcon: no framebuffer, falling back to VGA text mode");
     }
@@ -109,7 +190,7 @@ fn scroll_up(rows: u32) {
     let pitch = FB_PITCH.load(Ordering::Relaxed) as usize / 4;
     let w     = FB_WIDTH.load(Ordering::Relaxed) as usize;
     let h     = FB_HEIGHT.load(Ordering::Relaxed) as usize;
-    let dy    = (rows * FONT_HEIGHT) as usize;
+    let dy    = (rows * cell_h()) as usize;
     if dy >= h { return; }
     let copy_rows = h - dy;
     // memmove rows upward
@@ -161,22 +242,33 @@ fn draw_glyph(cx: u32, cy: u32, ch: u8, fg: u32, bg: u32) {
     let c = ch as u32;
     let idx = if c >= 32 && c <= 126 { (c - 32) as usize } else { 0 };
     let glyph_offset = idx * FONT_HEIGHT as usize;
+    let scale = CELL_SCALE.load(Ordering::Relaxed);
     for row in 0..FONT_HEIGHT as usize {
         let bits = if glyph_offset + row < FONT_DATA.len() {
             FONT_DATA[glyph_offset + row]
         } else { 0 };
         for col in 0..FONT_WIDTH as usize {
             let color = if bits & (0x80 >> col) != 0 { fg } else { bg };
-            put_pixel(cx + col as u32, cy + row as u32, color);
+            // Nearest-neighbour upscale: paint scale×scale pixel block
+            for sy in 0..scale {
+                for sx in 0..scale {
+                    put_pixel(
+                        cx + col as u32 * scale + sx,
+                        cy + row as u32 * scale + sy,
+                        color,
+                    );
+                }
+            }
         }
     }
 }
 
 fn advance_cursor() {
     let w = FB_WIDTH.load(Ordering::Relaxed);
-    let mut cx = CUR_X.load(Ordering::Relaxed) + FONT_WIDTH;
+    let cw = cell_w();
+    let mut cx = CUR_X.load(Ordering::Relaxed) + cw;
     let mut cy = CUR_Y.load(Ordering::Relaxed);
-    if cx + FONT_WIDTH > w {
+    if cx + cw > w {
         cx = 0;
         newline_cursor(&mut cx, &mut cy);
     }
@@ -187,12 +279,20 @@ fn advance_cursor() {
 /// Returns true if a scroll happened (caller must flush full screen).
 fn newline_cursor(cx: &mut u32, cy: &mut u32) -> bool {
     let h = FB_HEIGHT.load(Ordering::Relaxed);
+    let ch = cell_h();
     *cx = 0;
-    *cy += FONT_HEIGHT;
-    if *cy + FONT_HEIGHT > h {
-        scroll_up(1);
-        *cy = h - FONT_HEIGHT;
-        return true;
+    *cy += ch;
+    if *cy + ch > h {
+        // Only scroll if auto-scroll is enabled (bit 1 clear)
+        let mode = CON_MODE_FLAGS.load(Ordering::Relaxed);
+        if mode & 0x02 == 0 {
+            scroll_up(1);
+            *cy = h - ch;
+            return true;
+        } else {
+            *cy = h - ch;
+            return false;
+        }
     }
     false
 }
@@ -217,8 +317,10 @@ fn parse_csi_single(params: &[u8], default: u32) -> u32 {
 fn execute_csi(params: &[u8], final_byte: u8) -> bool {
     let fb_w = FB_WIDTH.load(Ordering::Relaxed);
     let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
-    let cols = fb_w / FONT_WIDTH;
-    let rows = fb_h / FONT_HEIGHT;
+    let cw = cell_w();
+    let ch = cell_h();
+    let cols = fb_w / cw;
+    let rows = fb_h / ch;
 
     match final_byte {
         // CUP — cursor position: ESC [ row ; col H  (1-based)
@@ -226,61 +328,62 @@ fn execute_csi(params: &[u8], final_byte: u8) -> bool {
             let (row, col) = parse_csi_params(params, 1, 1);
             let col = col.saturating_sub(1).min(cols.saturating_sub(1));
             let row = row.saturating_sub(1).min(rows.saturating_sub(1));
-            CUR_X.store(col * FONT_WIDTH, Ordering::Relaxed);
-            CUR_Y.store(row * FONT_HEIGHT, Ordering::Relaxed);
+            CUR_X.store(col * cw, Ordering::Relaxed);
+            CUR_Y.store(row * ch, Ordering::Relaxed);
             false
         }
         // CUU — cursor up N
         b'A' => {
             let n = parse_csi_single(params, 1);
             let cy = CUR_Y.load(Ordering::Relaxed);
-            CUR_Y.store(cy.saturating_sub(n * FONT_HEIGHT), Ordering::Relaxed);
+            CUR_Y.store(cy.saturating_sub(n * ch), Ordering::Relaxed);
             false
         }
         // CUD — cursor down N
         b'B' => {
             let n = parse_csi_single(params, 1);
             let cy = CUR_Y.load(Ordering::Relaxed);
-            CUR_Y.store((cy + n * FONT_HEIGHT).min(fb_h.saturating_sub(FONT_HEIGHT)), Ordering::Relaxed);
+            CUR_Y.store((cy + n * ch).min(fb_h.saturating_sub(ch)), Ordering::Relaxed);
             false
         }
         // CUF — cursor forward (right) N
         b'C' => {
             let n = parse_csi_single(params, 1);
             let cx = CUR_X.load(Ordering::Relaxed);
-            CUR_X.store((cx + n * FONT_WIDTH).min(fb_w.saturating_sub(FONT_WIDTH)), Ordering::Relaxed);
+            CUR_X.store((cx + n * cw).min(fb_w.saturating_sub(cw)), Ordering::Relaxed);
             false
         }
         // CUB — cursor back (left) N
         b'D' => {
             let n = parse_csi_single(params, 1);
             let cx = CUR_X.load(Ordering::Relaxed);
-            CUR_X.store(cx.saturating_sub(n * FONT_WIDTH), Ordering::Relaxed);
+            CUR_X.store(cx.saturating_sub(n * cw), Ordering::Relaxed);
             false
         }
         // ED — erase display
         b'J' => {
             let n = parse_csi_single(params, 0);
+            let erase_bg = ESC.lock().bg();
             match n {
                 0 => {
                     // Erase from cursor to end of screen
                     let cx = CUR_X.load(Ordering::Relaxed);
                     let cy = CUR_Y.load(Ordering::Relaxed);
-                    fill_rect(cx, cy, fb_w - cx, FONT_HEIGHT, COLOR_BG);
-                    if cy + FONT_HEIGHT < fb_h {
-                        fill_rect(0, cy + FONT_HEIGHT, fb_w, fb_h - cy - FONT_HEIGHT, COLOR_BG);
+                    fill_rect(cx, cy, fb_w - cx, ch, erase_bg);
+                    if cy + ch < fb_h {
+                        fill_rect(0, cy + ch, fb_w, fb_h - cy - ch, erase_bg);
                     }
                 }
                 1 => {
                     // Erase from start to cursor
                     let cx = CUR_X.load(Ordering::Relaxed);
                     let cy = CUR_Y.load(Ordering::Relaxed);
-                    if cy > 0 { fill_rect(0, 0, fb_w, cy, COLOR_BG); }
-                    fill_rect(0, cy, cx + FONT_WIDTH, FONT_HEIGHT, COLOR_BG);
+                    if cy > 0 { fill_rect(0, 0, fb_w, cy, erase_bg); }
+                    fill_rect(0, cy, cx + cw, ch, erase_bg);
                 }
                 _ => {
                     // Erase entire display (ESC[2J)
-                    fill_rect(0, 0, fb_w, fb_h, COLOR_BG);
+                    fill_rect(0, 0, fb_w, fb_h, erase_bg);
                     // Note: cursor stays (apps send ESC[H separately to home)
                 }
             }
@@ -291,15 +394,94 @@ fn execute_csi(params: &[u8], final_byte: u8) -> bool {
             let n = parse_csi_single(params, 0);
             let cx = CUR_X.load(Ordering::Relaxed);
             let cy = CUR_Y.load(Ordering::Relaxed);
+            let erase_bg = ESC.lock().bg();
             match n {
-                0 => fill_rect(cx, cy, fb_w - cx, FONT_HEIGHT, COLOR_BG),
-                1 => fill_rect(0, cy, cx + FONT_WIDTH, FONT_HEIGHT, COLOR_BG),
-                _ => fill_rect(0, cy, fb_w, FONT_HEIGHT, COLOR_BG),
+                0 => fill_rect(cx, cy, fb_w - cx, ch, erase_bg),
+                1 => fill_rect(0, cy, cx + cw, ch, erase_bg),
+                _ => fill_rect(0, cy, fb_w, ch, erase_bg),
             }
             false
         }
-        // SGR — select graphic rendition (colors/attributes): we accept but ignore for now
-        b'm' => false,
+        // SGR — select graphic rendition: full color + bold support
+        b'm' => {
+            let s = core::str::from_utf8(params).unwrap_or("");
+            // Parse semicolon-separated numbers
+            let mut nums = [0u32; 16];
+            let mut num_count = 0usize;
+            if s.is_empty() {
+                nums[0] = 0;
+                num_count = 1;
+            } else {
+                for part in s.split(';') {
+                    if num_count >= 16 { break; }
+                    nums[num_count] = part.parse::<u32>().unwrap_or(0);
+                    num_count += 1;
+                }
+            }
+
+            let mut esc = ESC.lock();
+            let mut idx = 0usize;
+            while idx < num_count {
+                match nums[idx] {
+                    0 => { esc.cur_fg = 0; esc.cur_bg = 0; esc.attr = 0; }
+                    1 => { esc.attr |= ATTR_BOLD; }
+                    4 => { esc.attr |= ATTR_UNDERLINE; }
+                    7 => { esc.attr |= ATTR_REVERSE; }
+                    22 => { esc.attr &= !ATTR_BOLD; }
+                    24 => { esc.attr &= !ATTR_UNDERLINE; }
+                    27 => { esc.attr &= !ATTR_REVERSE; }
+                    30..=37 => {
+                        let c = (nums[idx] - 30) as usize;
+                        esc.cur_fg = if esc.attr & ATTR_BOLD != 0 { ANSI_BRIGHT[c] } else { ANSI_COLORS[c] };
+                    }
+                    38 => {
+                        if idx + 1 < num_count {
+                            if nums[idx + 1] == 5 && idx + 2 < num_count {
+                                esc.cur_fg = color_256(nums[idx + 2]);
+                                idx += 2;
+                            } else if nums[idx + 1] == 2 && idx + 4 < num_count {
+                                let r = nums[idx + 2].min(255) as u8;
+                                let g = nums[idx + 3].min(255) as u8;
+                                let b = nums[idx + 4].min(255) as u8;
+                                esc.cur_fg = 0xFF000000 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
+                                idx += 4;
+                            }
+                        }
+                    }
+                    39 => { esc.cur_fg = 0; }
+                    40..=47 => {
+                        let c = (nums[idx] - 40) as usize;
+                        esc.cur_bg = ANSI_COLORS[c];
+                    }
+                    48 => {
+                        if idx + 1 < num_count {
+                            if nums[idx + 1] == 5 && idx + 2 < num_count {
+                                esc.cur_bg = color_256(nums[idx + 2]);
+                                idx += 2;
+                            } else if nums[idx + 1] == 2 && idx + 4 < num_count {
+                                let r = nums[idx + 2].min(255) as u8;
+                                let g = nums[idx + 3].min(255) as u8;
+                                let b = nums[idx + 4].min(255) as u8;
+                                esc.cur_bg = 0xFF000000 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
+                                idx += 4;
+                            }
+                        }
+                    }
+                    49 => { esc.cur_bg = 0; }
+                    90..=97 => {
+                        let c = (nums[idx] - 90) as usize;
+                        esc.cur_fg = ANSI_BRIGHT[c];
+                    }
+                    100..=107 => {
+                        let c = (nums[idx] - 100) as usize;
+                        esc.cur_bg = ANSI_BRIGHT[c];
+                    }
+                    _ => {}
+                }
+                idx += 1;
+            }
+            false
+        }
         // Show/hide cursor: ESC[?25h / ESC[?25l — accept silently
         b'h' | b'l' => false,
         // SU — scroll up N lines
@@ -318,11 +500,13 @@ fn execute_csi(params: &[u8], final_byte: u8) -> bool {
 fn write_char_raw(ch: u8) -> bool {
     // Fast path: normal printable ASCII when not in escape mode
     {
-        let mode = ESC.lock().mode;
-        if mode == 0 && ch >= 32 && ch != 127 {
+        let esc = ESC.lock();
+        if esc.mode == 0 && ch >= 32 && ch != 127 {
             let cx = CUR_X.load(Ordering::Relaxed);
             let cy = CUR_Y.load(Ordering::Relaxed);
-            draw_glyph(cx, cy, ch, COLOR_FG, COLOR_BG);
+            let (fg, bg) = if esc.attr & ATTR_REVERSE != 0 { (esc.bg(), esc.fg()) } else { (esc.fg(), esc.bg()) };
+            drop(esc);
+            draw_glyph(cx, cy, ch, fg, bg);
             advance_cursor();
             return false;
         }
@@ -348,22 +532,24 @@ fn write_char_raw(ch: u8) -> bool {
             }
             b'\r' => { CUR_X.store(0, Ordering::Relaxed); false }
             b'\x08' => {
+                let cw = cell_w();
                 let cx = CUR_X.load(Ordering::Relaxed);
-                if cx >= FONT_WIDTH {
-                    let new_cx = cx - FONT_WIDTH;
+                if cx >= cw {
+                    let new_cx = cx - cw;
                     CUR_X.store(new_cx, Ordering::Relaxed);
                     let cy = CUR_Y.load(Ordering::Relaxed);
-                    fill_rect(new_cx, cy, FONT_WIDTH, FONT_HEIGHT, COLOR_BG);
+                    fill_rect(new_cx, cy, cw, cell_h(), COLOR_BG);
                 }
                 false
             }
             b'\t' => {
                 // Tab: advance to next 8-column boundary
+                let cw = cell_w();
                 let cx = CUR_X.load(Ordering::Relaxed);
-                let col = cx / FONT_WIDTH;
+                let col = cx / cw;
                 let next_col = ((col + 8) / 8) * 8;
                 let fb_w = FB_WIDTH.load(Ordering::Relaxed);
-                CUR_X.store((next_col * FONT_WIDTH).min(fb_w - FONT_WIDTH), Ordering::Relaxed);
+                CUR_X.store((next_col * cw).min(fb_w - cw), Ordering::Relaxed);
                 false
             }
             _ => false, // other control chars: ignore
@@ -443,8 +629,10 @@ pub fn write_str(s: &str) {
     // If a scroll happens, we must flush the entire screen.
     let mut dirty_x0 = CUR_X.load(Ordering::Relaxed);
     let mut dirty_y0 = CUR_Y.load(Ordering::Relaxed);
+    let cw = cell_w();
+    let ch = cell_h();
     let mut dirty_x1 = dirty_x0;
-    let mut dirty_y1 = dirty_y0 + FONT_HEIGHT;
+    let mut dirty_y1 = dirty_y0 + ch;
     let mut full_flush = false;
 
     // Hide cursor without flushing (we'll flush once at the end)
@@ -453,9 +641,9 @@ pub fn write_str(s: &str) {
         // Erase cursor block in memory only (no flush yet)
         let cx = CUR_X.load(Ordering::Relaxed);
         let cy = CUR_Y.load(Ordering::Relaxed);
-        let y = cy + FONT_HEIGHT - 2;
-        for col in 0..FONT_WIDTH { put_pixel(cx + col, y, COLOR_BG); }
-        for col in 0..FONT_WIDTH { put_pixel(cx + col, y + 1, COLOR_BG); }
+        let y = cy + ch - 2;
+        for col in 0..cw { put_pixel(cx + col, y, COLOR_BG); }
+        for col in 0..cw { put_pixel(cx + col, y + 1, COLOR_BG); }
         CURSOR_VISIBLE.store(false, Ordering::Relaxed);
     }
 
@@ -465,8 +653,8 @@ pub fn write_str(s: &str) {
         let cy = CUR_Y.load(Ordering::Relaxed);
         if cx < dirty_x0 { dirty_x0 = cx; }
         if cy < dirty_y0 { dirty_y0 = cy; }
-        if cx + FONT_WIDTH  > dirty_x1 { dirty_x1 = cx + FONT_WIDTH; }
-        if cy + FONT_HEIGHT > dirty_y1 { dirty_y1 = cy + FONT_HEIGHT; }
+        if cx + cw > dirty_x1 { dirty_x1 = cx + cw; }
+        if cy + ch > dirty_y1 { dirty_y1 = cy + ch; }
 
         if write_char_raw(b) {
             full_flush = true;
@@ -476,14 +664,16 @@ pub fn write_str(s: &str) {
     // Expand dirty rect to also include new cursor position
     let cx = CUR_X.load(Ordering::Relaxed);
     let cy = CUR_Y.load(Ordering::Relaxed);
-    if cx + FONT_WIDTH  > dirty_x1 { dirty_x1 = cx + FONT_WIDTH; }
-    if cy + FONT_HEIGHT > dirty_y1 { dirty_y1 = cy + FONT_HEIGHT; }
+    if cx + cw > dirty_x1 { dirty_x1 = cx + cw; }
+    if cy + ch > dirty_y1 { dirty_y1 = cy + ch; }
 
-    // Redraw cursor in memory
-    let y = cy + FONT_HEIGHT - 2;
-    for col in 0..FONT_WIDTH { put_pixel(cx + col, y, COLOR_CURSOR); }
-    for col in 0..FONT_WIDTH { put_pixel(cx + col, y + 1, COLOR_CURSOR); }
-    CURSOR_VISIBLE.store(true, Ordering::Relaxed);
+    // Redraw cursor in memory only if not hidden by mode flags
+    if CON_MODE_FLAGS.load(Ordering::Relaxed) & 0x01 == 0 {
+        let y = cy + ch - 2;
+        for col in 0..cw { put_pixel(cx + col, y, COLOR_CURSOR); }
+        for col in 0..cw { put_pixel(cx + col, y + 1, COLOR_CURSOR); }
+        CURSOR_VISIBLE.store(true, Ordering::Relaxed);
+    }
 
     // Single GPU flush for the entire dirty region
     if full_flush {
@@ -501,9 +691,42 @@ pub fn write_str(s: &str) {
 /// Returns 0 if not yet initialised.
 pub fn get_size_packed() -> u32 {
     if !is_ready() { return 0; }
-    let cols = FB_WIDTH.load(Ordering::Relaxed) / FONT_WIDTH;
-    let rows = FB_HEIGHT.load(Ordering::Relaxed) / FONT_HEIGHT;
+    let cols = FB_WIDTH.load(Ordering::Relaxed) / cell_w();
+    let rows = FB_HEIGHT.load(Ordering::Relaxed) / cell_h();
     (cols << 16) | rows
+}
+
+/// Set console mode flags. Returns previous flags.
+/// Bit 0 (0x01): 1 = hide cursor, 0 = show cursor.
+/// Bit 1 (0x02): 1 = disable auto-scroll, 0 = enable auto-scroll.
+pub fn set_mode(flags: u32) -> u32 {
+    let prev = CON_MODE_FLAGS.swap(flags, Ordering::Relaxed);
+    // If cursor is now shown but was hidden, or vice-versa: update display
+    if !is_ready() { return prev; }
+    let cursor_now_hidden = flags & 0x01 != 0;
+    let cursor_was_hidden = prev & 0x01 != 0;
+    if cursor_now_hidden && !cursor_was_hidden {
+        // Hide cursor immediately
+        let cx = CUR_X.load(Ordering::Relaxed);
+        let cy = CUR_Y.load(Ordering::Relaxed);
+        if CURSOR_VISIBLE.load(Ordering::Relaxed) {
+            let cw = cell_w();
+            let ch = cell_h();
+            let y = cy + ch - 2;
+            for col in 0..cw { put_pixel(cx + col, y, COLOR_BG); }
+            for col in 0..cw { put_pixel(cx + col, y + 1, COLOR_BG); }
+            CURSOR_VISIBLE.store(false, Ordering::Relaxed);
+            let fb_w = FB_WIDTH.load(Ordering::Relaxed);
+            let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
+            flush_rect(cx, cy, cw.min(fb_w - cx), ch.min(fb_h - cy));
+        }
+    }
+    prev
+}
+
+/// Return current console mode flags.
+pub fn get_mode() -> u32 {
+    CON_MODE_FLAGS.load(Ordering::Relaxed)
 }
 
 /// Write a single character with a single GPU flush.

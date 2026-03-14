@@ -239,6 +239,8 @@ pub(crate) const SYS_CON_WRITE: u32    = 290;
 pub(crate) const SYS_CON_READ: u32     = 291;
 pub(crate) const SYS_CON_POLL_KEY: u32 = 292;
 pub(crate) const SYS_CON_GET_SIZE: u32 = 293;
+/// Set console mode flags (bit 0 = hide cursor, bit 1 = disable auto-scroll).
+pub(crate) const SYS_CON_SET_MODE: u32 = 294;
 
 // Debug / trace (anyTrace)
 pub(crate) const SYS_DEBUG_ATTACH: u32         = 300;

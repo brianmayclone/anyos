@@ -355,601 +355,34 @@ fn extract_selected_text(buf: &TerminalBuffer, sel: &Selection) -> String {
     result
 }
 
-// ─── Output Redirect ─────────────────────────────────────────────────────────
+// ─── Output Redirect — delegated to anyos_std::shell ─────────────────────────
 
-#[derive(Clone)]
-struct Redirect {
-    target: String,    // filename or "/dev/null"
-    append: bool,      // true = >>, false = >
-}
+use anyos_std::shell::Redirect;
+use anyos_std::shell::InputRedirect;
 
-#[derive(Clone)]
-struct InputRedirect {
-    source: String,    // filename
-}
-
-/// Parse input redirect `< file` from a command line.
-/// Returns (clean_command, Option<InputRedirect>).
+/// Parse input redirect — delegates to anyos_std::shell.
 fn parse_input_redirect(line: &str, cwd: &str) -> (String, Option<InputRedirect>) {
-    // Find `<` that is NOT part of `<<` (here-doc, not supported yet)
-    let bytes = line.as_bytes();
-    for i in 0..bytes.len() {
-        if bytes[i] == b'<' {
-            // Skip `<<` (here-doc) and `<(` (process substitution)
-            if i + 1 < bytes.len() && (bytes[i + 1] == b'<' || bytes[i + 1] == b'(') {
-                continue;
-            }
-            // Make sure it's not `2<` or part of another redirect
-            if i > 0 && bytes[i - 1] >= b'0' && bytes[i - 1] <= b'9' {
-                continue;
-            }
-            let cmd_part = line[..i].trim();
-            let target_part = line[i + 1..].trim();
-            let target = target_part.split_whitespace().next().unwrap_or("");
-            if target.is_empty() { continue; }
-            let abs_target = if target.starts_with('/') {
-                String::from(target)
-            } else if cwd == "/" {
-                format!("/{}", target)
-            } else {
-                format!("{}/{}", cwd, target)
-            };
-            // Remove the `< file` from the rest
-            let rest = target_part[target.len()..].trim();
-            let clean = if rest.is_empty() {
-                String::from(cmd_part)
-            } else {
-                format!("{} {}", cmd_part, rest)
-            };
-            return (clean, Some(InputRedirect { source: abs_target }));
-        }
-    }
-    (String::from(line), None)
+    anyos_std::shell::parse_input_redirect(line, cwd)
 }
 
-/// Parse redirect operators from a command line.
-/// Returns (clean_command, Option<Redirect>).
-/// Handles: `>`, `>>`, `2>`, `2>>`, and `/dev/null` as target.
-/// Relative paths are resolved against `cwd`.
+/// Parse output redirect operators — delegates to anyos_std::shell.
 fn parse_redirects(line: &str, cwd: &str) -> (String, Option<Redirect>) {
-    // Scan for redirect operators (check longer patterns first)
-    // Order matters: check 2>> before 2>, >> before >
-    let patterns: &[(&str, bool)] = &[
-        ("2>>", true),   // stderr append
-        ("2>", false),   // stderr redirect
-        (">>", true),    // stdout append
-        (">", false),    // stdout redirect
-    ];
-
-    for &(pattern, is_append) in patterns {
-        if let Some(pos) = line.find(pattern) {
-            let cmd_part = line[..pos].trim();
-            let target_part = line[pos + pattern.len()..].trim();
-
-            // Target is everything after the operator (until next pipe or end)
-            let target = if target_part.is_empty() {
-                continue; // malformed, skip
-            } else {
-                // Take first word as target
-                target_part.split_whitespace().next().unwrap_or("")
-            };
-
-            if target.is_empty() {
-                continue;
-            }
-
-            // Resolve relative paths against cwd
-            let abs_target = if target.starts_with('/') {
-                String::from(target)
-            } else if cwd == "/" {
-                format!("/{}", target)
-            } else {
-                format!("{}/{}", cwd, target)
-            };
-
-            return (
-                String::from(cmd_part),
-                Some(Redirect {
-                    target: abs_target,
-                    append: is_append,
-                }),
-            );
-        }
-    }
-
-    (String::from(line), None)
+    anyos_std::shell::parse_redirects(line, cwd)
 }
 
-/// Write data to a redirect target file.
-/// On first call with `>` mode, the file is truncated; subsequent calls append.
+/// Write captured output to redirect target — delegates to anyos_std::shell.
 fn write_redirect(redirect: &mut Redirect, data: &str) {
-    if redirect.target == "/dev/null" {
-        return; // discard
-    }
-
-    if redirect.append {
-        // Append: read existing content, concat, write back
-        let existing = fs::read_to_string(&redirect.target).unwrap_or_default();
-        let combined = format!("{}{}", existing, data);
-        let _ = fs::write_bytes(&redirect.target, combined.as_bytes());
-    } else {
-        // Truncate: write new content (first chunk only)
-        let _ = fs::write_bytes(&redirect.target, data.as_bytes());
-        // Switch to append for subsequent chunks
-        redirect.append = true;
-    }
+    anyos_std::shell::write_redirect(redirect, data)
 }
 
-// ─── POSIX Shell Tokenizer ──────────────────────────────────────────────────
-
-/// Tokenize a string following POSIX shell quoting rules.
-///
-/// - Single quotes `'...'`: literal content, no escaping inside.
-/// - Double quotes `"..."`: supports `\"` and `\\` escapes inside.
-/// - Backslash outside quotes: escapes the next character (e.g., `\ ` = literal space).
-/// - Whitespace (space/tab) separates tokens.
-///
-/// Returns a `Vec<String>` of unquoted/unescaped tokens.
-fn tokenize_shell(input: &str) -> Vec<String> {
-    let mut tokens: Vec<String> = Vec::new();
-    let bytes = input.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-
-    while i < len {
-        // Skip whitespace between tokens
-        if bytes[i] == b' ' || bytes[i] == b'\t' {
-            i += 1;
-            continue;
-        }
-
-        // Build a single token (may span multiple quoted/unquoted segments)
-        let mut token = String::new();
-        while i < len && bytes[i] != b' ' && bytes[i] != b'\t' {
-            if bytes[i] == b'\'' {
-                // Single-quoted segment: literal until closing quote
-                i += 1;
-                while i < len && bytes[i] != b'\'' {
-                    token.push(bytes[i] as char);
-                    i += 1;
-                }
-                if i < len { i += 1; } // skip closing quote
-            } else if bytes[i] == b'"' {
-                // Double-quoted segment: supports \" and \\ escapes
-                i += 1;
-                while i < len && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' && i + 1 < len {
-                        let next = bytes[i + 1];
-                        if next == b'"' || next == b'\\' {
-                            token.push(next as char);
-                            i += 2;
-                            continue;
-                        }
-                    }
-                    token.push(bytes[i] as char);
-                    i += 1;
-                }
-                if i < len { i += 1; } // skip closing quote
-            } else if bytes[i] == b'\\' && i + 1 < len {
-                // Backslash escape outside quotes
-                i += 1;
-                token.push(bytes[i] as char);
-                i += 1;
-            } else {
-                token.push(bytes[i] as char);
-                i += 1;
-            }
-        }
-
-        if !token.is_empty() {
-            tokens.push(token);
-        }
-    }
-
-    tokens
-}
-
-/// Re-join tokens into a shell-compatible string with proper quoting.
-///
-/// Tokens containing whitespace, double quotes, or single quotes are wrapped
-/// in double quotes with internal `"` and `\` escaped.
-fn shell_join(tokens: &[String]) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for token in tokens {
-        if token.contains(' ') || token.contains('\t')
-            || token.contains('"') || token.contains('\'')
-        {
-            // Wrap in double quotes, escaping \ and "
-            let mut quoted = String::with_capacity(token.len() + 2);
-            quoted.push('"');
-            for ch in token.chars() {
-                if ch == '"' || ch == '\\' {
-                    quoted.push('\\');
-                }
-                quoted.push(ch);
-            }
-            quoted.push('"');
-            parts.push(quoted);
-        } else {
-            parts.push(token.clone());
-        }
-    }
-    parts.join(" ")
-}
-
-// ─── Glob Expansion (POSIX-style) ───────────────────────────────────────────
-
-/// Check if a string contains unquoted glob metacharacters.
-fn has_glob_chars(s: &str) -> bool {
-    let b = s.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'\\' && i + 1 < b.len() {
-            i += 2; // skip escaped char
-        } else if b[i] == b'*' || b[i] == b'?' || b[i] == b'[' {
-            return true;
-        } else {
-            i += 1;
-        }
-    }
-    false
-}
-
-/// Match a filename against a glob pattern (*, ?, [...]).
-fn glob_match(name: &str, pattern: &str) -> bool {
-    let pat = pattern.as_bytes();
-    let nam = name.as_bytes();
-    let mut pi = 0;
-    let mut ni = 0;
-    let mut star_pi = usize::MAX;
-    let mut star_ni: usize = 0;
-
-    while ni < nam.len() {
-        if pi < pat.len() && pat[pi] == b'*' {
-            star_pi = pi;
-            star_ni = ni;
-            pi += 1;
-        } else if pi < pat.len() && pat[pi] == b'?' {
-            pi += 1;
-            ni += 1;
-        } else if pi < pat.len() && pat[pi] == b'[' {
-            // Character class: [abc], [a-z], [!abc]
-            pi += 1;
-            let negate = pi < pat.len() && (pat[pi] == b'!' || pat[pi] == b'^');
-            if negate { pi += 1; }
-            let mut matched = false;
-            let ch = nam[ni];
-            while pi < pat.len() && pat[pi] != b']' {
-                if pi + 2 < pat.len() && pat[pi + 1] == b'-' {
-                    // Range
-                    if ch >= pat[pi] && ch <= pat[pi + 2] {
-                        matched = true;
-                    }
-                    pi += 3;
-                } else {
-                    if ch == pat[pi] {
-                        matched = true;
-                    }
-                    pi += 1;
-                }
-            }
-            if pi < pat.len() { pi += 1; } // skip ']'
-            if matched == negate {
-                // negate XOR matched: no match
-                if star_pi != usize::MAX {
-                    pi = star_pi + 1;
-                    star_ni += 1;
-                    ni = star_ni;
-                } else {
-                    return false;
-                }
-            } else {
-                ni += 1;
-            }
-        } else if pi < pat.len() && pat[pi] == nam[ni] {
-            pi += 1;
-            ni += 1;
-        } else if star_pi != usize::MAX {
-            pi = star_pi + 1;
-            star_ni += 1;
-            ni = star_ni;
-        } else {
-            return false;
-        }
-    }
-    while pi < pat.len() && pat[pi] == b'*' {
-        pi += 1;
-    }
-    pi == pat.len()
-}
-
-/// Expand a single glob token against the filesystem.
-/// Returns matching filenames sorted alphabetically, or empty if no matches.
-fn expand_glob_token(token: &str, cwd: &str) -> Vec<String> {
-    // Split into directory prefix and filename pattern at the last '/'
-    let (dir_to_read, pattern, user_prefix) = if let Some(pos) = token.rfind('/') {
-        let dir_part = &token[..=pos];   // e.g. "/etc/" or "subdir/"
-        let pat_part = &token[pos + 1..]; // e.g. "*.conf"
-        let full_dir = if dir_part.starts_with('/') {
-            String::from(dir_part)
-        } else if cwd == "/" {
-            format!("/{}", dir_part)
-        } else {
-            format!("{}/{}", cwd, dir_part)
-        };
-        (full_dir, pat_part, dir_part)
-    } else {
-        (String::from(cwd), token, "")
-    };
-
-    if pattern.is_empty() {
-        return Vec::new();
-    }
-
-    // Read directory
-    let mut dir_buf = [0u8; 64 * 128];
-    let count = fs::readdir(&dir_to_read, &mut dir_buf);
-    if count == u32::MAX {
-        return Vec::new();
-    }
-
-    let mut matches: Vec<String> = Vec::new();
-    for i in 0..count as usize {
-        let off = i * 64;
-        if off + 64 > dir_buf.len() { break; }
-        let name_len = dir_buf[off + 1] as usize;
-        let name_bytes = &dir_buf[off + 8..off + 8 + name_len.min(56)];
-        let name = match core::str::from_utf8(name_bytes) {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        if name.is_empty() || name == "." || name == ".." {
-            continue;
-        }
-        // Skip dotfiles unless pattern explicitly starts with '.'
-        if !pattern.starts_with('.') && name.starts_with('.') {
-            continue;
-        }
-        if glob_match(name, pattern) {
-            if user_prefix.is_empty() {
-                matches.push(String::from(name));
-            } else {
-                matches.push(format!("{}{}", user_prefix, name));
-            }
-        }
-    }
-
-    // Sort alphabetically
-    matches.sort_unstable();
-    matches
-}
-
-/// Expand glob patterns in pre-tokenized arguments.
-///
-/// Tokens containing glob metacharacters (`*`, `?`, `[`) are expanded against
-/// the filesystem. Tokens without globs are passed through unchanged.
-fn expand_globs_vec(tokens: Vec<String>, cwd: &str) -> Vec<String> {
-    let mut result: Vec<String> = Vec::new();
-    for tok in tokens {
-        if has_glob_chars(&tok) {
-            let expanded = expand_glob_token(&tok, cwd);
-            if expanded.is_empty() {
-                result.push(tok); // no match: keep literal
-            } else {
-                result.extend(expanded);
-            }
-        } else {
-            result.push(tok);
-        }
-    }
-    result
-}
-
-/// Execute a command and capture its stdout output as a string.
-/// Used for command substitution `$(cmd)`.
-fn capture_command_output(cmd: &str) -> String {
-    let cmd = cmd.trim();
-    if cmd.is_empty() { return String::new(); }
-
-    // Parse command and args
-    let mut parts = cmd.splitn(2, ' ');
-    let prog = parts.next().unwrap_or("");
-    let args_str = parts.next().unwrap_or("");
-
-    // Resolve command path
-    let path = if prog.starts_with('/') {
-        String::from(prog)
-    } else {
-        match resolve_from_path(prog) {
-            Some(p) => p,
-            None => format!("/System/bin/{}", prog),
-        }
-    };
-
-    let full_args = if args_str.is_empty() {
-        String::from(prog)
-    } else {
-        format!("{} {}", prog, args_str)
-    };
-
-    // Create pipe and spawn
-    let pipe_name = format!("subst:{}:{}", prog, anyos_std::process::getpid());
-    let pipe_id = ipc::pipe_create(&pipe_name);
-    let tid = process::spawn_piped(&path, &full_args, pipe_id);
-    if tid == u32::MAX {
-        ipc::pipe_close(pipe_id);
-        return String::new();
-    }
-
-    // Read output
-    let mut output = String::new();
-    let mut buf = [0u8; 1024];
-    loop {
-        let n = ipc::pipe_read(pipe_id, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
-        if let Ok(s) = core::str::from_utf8(&buf[..n as usize]) {
-            output.push_str(s);
-        }
-    }
-    ipc::pipe_close(pipe_id);
-
-    // Trim trailing newline (shell convention)
-    while output.ends_with('\n') { output.pop(); }
-    while output.ends_with('\r') { output.pop(); }
-    output
-}
-
-/// Expand $VAR, ${VAR}, and $(cmd) references in a single token.
-fn expand_vars(token: &str) -> String {
-    let bytes = token.as_bytes();
-    let len = bytes.len();
-    let mut result = String::new();
-    let mut i = 0;
-    while i < len {
-        if bytes[i] == b'$' && i + 1 < len {
-            if bytes[i + 1] == b'(' {
-                // $(cmd) — command substitution
-                let start = i + 2;
-                let mut depth = 1;
-                let mut end = start;
-                while end < len && depth > 0 {
-                    if bytes[end] == b'(' { depth += 1; }
-                    if bytes[end] == b')' { depth -= 1; }
-                    if depth > 0 { end += 1; }
-                }
-                if depth == 0 {
-                    let cmd = &token[start..end];
-                    result.push_str(&capture_command_output(cmd));
-                    i = end + 1;
-                } else {
-                    result.push('$');
-                    result.push('(');
-                    i = start;
-                }
-            } else if bytes[i + 1] == b'{' {
-                // ${VAR} form
-                let start = i + 2;
-                let mut end = start;
-                while end < len && bytes[end] != b'}' { end += 1; }
-                if end < len {
-                    let var_name = &token[start..end];
-                    let mut val_buf = [0u8; 512];
-                    let vlen = anyos_std::env::get(var_name, &mut val_buf);
-                    if vlen != u32::MAX {
-                        if let Ok(v) = core::str::from_utf8(&val_buf[..vlen as usize]) {
-                            result.push_str(v);
-                        }
-                    }
-                    i = end + 1;
-                } else {
-                    result.push('$');
-                    result.push('{');
-                    i = start;
-                }
-            } else if bytes[i + 1] == b'?' {
-                // $? — last exit code (simplified: always 0)
-                result.push('0');
-                i += 2;
-            } else if bytes[i + 1] == b'$' {
-                // $$ — PID
-                result.push_str(&format!("{}", anyos_std::process::getpid()));
-                i += 2;
-            } else {
-                // $VAR form
-                let start = i + 1;
-                let mut end = start;
-                while end < len && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') { end += 1; }
-                if end > start {
-                    let var_name = &token[start..end];
-                    let mut val_buf = [0u8; 512];
-                    let vlen = anyos_std::env::get(var_name, &mut val_buf);
-                    if vlen != u32::MAX {
-                        if let Ok(v) = core::str::from_utf8(&val_buf[..vlen as usize]) {
-                            result.push_str(v);
-                        }
-                    }
-                    i = end;
-                } else {
-                    result.push('$');
-                    i += 1;
-                }
-            }
-        } else if bytes[i] == b'`' {
-            // `cmd` — backtick command substitution
-            let start = i + 1;
-            let mut end = start;
-            while end < len && bytes[end] != b'`' { end += 1; }
-            if end < len {
-                let cmd = &token[start..end];
-                result.push_str(&capture_command_output(cmd));
-                i = end + 1;
-            } else {
-                result.push('`');
-                i += 1;
-            }
-        } else {
-            result.push(bytes[i] as char);
-            i += 1;
-        }
-    }
-    result
-}
-
-/// Expand variables in a vector of tokens.
-fn expand_vars_vec(tokens: Vec<String>) -> Vec<String> {
-    tokens.into_iter().map(|t| expand_vars(&t)).collect()
-}
-
-/// Tokenize, expand tildes/globs/variables, and return individual argument tokens.
-///
-/// This is the main POSIX-style argument expansion pipeline:
-/// 1. `tokenize_shell()` — split respecting quotes
-/// 2. `expand_vars_vec()` — expand `$VAR`, `${VAR}`
-/// 3. `expand_tildes_vec()` — expand `~` per token
-/// 4. `expand_globs_vec()` — expand `*`, `?`, `[` per token
+/// Tokenize + expand (vars, tildes, globs) — delegates to anyos_std::shell.
 fn expand_args(raw: &str, cwd: &str) -> Vec<String> {
-    if raw.is_empty() {
-        return Vec::new();
-    }
-    let tokens = tokenize_shell(raw);
-    let tokens = expand_vars_vec(tokens);
-    let tokens = expand_tildes_vec(tokens);
-    expand_globs_vec(tokens, cwd)
+    anyos_std::shell::expand_args(raw, cwd)
 }
 
-// ─── Tilde Expansion ────────────────────────────────────────────────────────
-
-/// Expand leading ~ to the user's home directory.
-fn expand_tilde(token: &str) -> String {
-    if !token.starts_with('~') {
-        return String::from(token);
-    }
-    let mut home_buf = [0u8; 128];
-    let hlen = anyos_std::env::get("HOME", &mut home_buf);
-    if hlen == u32::MAX || hlen == 0 {
-        return String::from(token);
-    }
-    let home = core::str::from_utf8(&home_buf[..hlen as usize]).unwrap_or("");
-    if token.len() == 1 {
-        // Just "~"
-        String::from(home)
-    } else if token.as_bytes()[1] == b'/' {
-        // "~/..."
-        format!("{}{}", home, &token[1..])
-    } else {
-        String::from(token) // ~user not supported
-    }
-}
-
-/// Apply tilde expansion to pre-tokenized arguments.
-///
-/// Expands leading `~` or `~/` to the user's home directory on each token.
-fn expand_tildes_vec(tokens: Vec<String>) -> Vec<String> {
-    let mut result: Vec<String> = Vec::with_capacity(tokens.len());
-    for t in tokens {
-        result.push(expand_tilde(&t));
-    }
-    result
+/// Re-join tokens with shell quoting — delegates to anyos_std::shell.
+fn shell_join(tokens: &[String]) -> String {
+    anyos_std::shell::join(tokens)
 }
 
 // ─── Terminal Buffer ─────────────────────────────────────────────────────────
@@ -3332,30 +2765,9 @@ fn load_dotenv() -> Vec<(String, String)> {
     aliases
 }
 
-/// Resolve a bare command name via PATH env var.
-/// Returns the full path if found, None otherwise.
+/// Resolve a bare command name via PATH — delegates to anyos_std::shell.
 fn resolve_from_path(cmd: &str) -> Option<String> {
-    let mut path_buf = [0u8; 256];
-    let len = anyos_std::env::get("PATH", &mut path_buf);
-    if len == u32::MAX {
-        return None;
-    }
-    let path_str = match core::str::from_utf8(&path_buf[..len as usize]) {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
-    let mut stat_buf = [0u32; 7];
-    for dir in path_str.split(':') {
-        let dir = dir.trim();
-        if dir.is_empty() {
-            continue;
-        }
-        let candidate = format!("{}/{}", dir, cmd);
-        if fs::stat(&candidate, &mut stat_buf) == 0 && stat_buf[0] == 0 {
-            return Some(candidate);
-        }
-    }
-    None
+    anyos_std::shell::resolve_from_path(cmd)
 }
 
 // ─── Shell ───────────────────────────────────────────────────────────────────
@@ -3458,6 +2870,8 @@ struct Shell {
     aliases: Vec<(String, String)>,
     bg_jobs: Vec<BackgroundJob>,
     next_job_id: u32,
+    /// Monotone counter for unique pipe names (shared with anyos_std::shell::run_pipeline).
+    pipe_counter: u32,
 }
 
 impl Shell {
@@ -3471,6 +2885,7 @@ impl Shell {
             aliases: Vec::new(),
             bg_jobs: Vec::new(),
             next_job_id: 1,
+            pipe_counter: 0,
         }
     }
 
@@ -3930,105 +3345,21 @@ impl Shell {
     /// Execute a pipeline (cmd1 | cmd2 | cmd3).
     /// Returns a ForegroundProcess tracking the last command + display pipe.
     fn execute_pipeline(&mut self, line: &str, redirect: Option<Redirect>, buf: &mut TerminalBuffer) -> Option<ForegroundProcess> {
-        let segments: Vec<&str> = line.split('|').map(|s| s.trim()).collect();
-        if segments.len() < 2 {
-            return None;
-        }
-
-        let n = segments.len();
-        let mut pipes = Vec::new();
-
-        // Create N pipes: pipes[0..n-2] are intermediate, pipes[n-1] is the display pipe
-        for i in 0..n {
-            let name = format!("term:pipe:{}", i);
-            let pipe_id = ipc::pipe_create(&name);
-            pipes.push(pipe_id);
-        }
-
-        let display_pipe = pipes[n - 1];
-        let mut last_tid = 0u32;
-
-        for (i, segment) in segments.iter().enumerate() {
-            let mut parts = segment.splitn(2, ' ');
-            let cmd = parts.next().unwrap_or("").trim();
-            let raw_args = parts.next().unwrap_or("").trim();
-
-            if cmd.is_empty() {
-                continue;
-            }
-
-            // POSIX-style expansions: tilde and glob
-            let mut pipe_tokens = expand_args(raw_args, &self.cwd);
-
-            // Default args for specific commands
-            if pipe_tokens.is_empty() {
-                if cmd == "ls" {
-                    pipe_tokens.push(String::from("--color"));
-                    pipe_tokens.push(String::from(self.cwd.as_str()));
-                }
-            } else if cmd == "ls" && pipe_tokens.iter().all(|t| t.starts_with('-')) {
-                // ls with only flags, no path — append cwd
-                pipe_tokens.insert(0, String::from("--color"));
-                pipe_tokens.push(String::from(self.cwd.as_str()));
-            } else if cmd == "ls" {
-                pipe_tokens.insert(0, String::from("--color"));
-            }
-
-            // Resolve command path
-            let path = if cmd.starts_with('/') {
-                String::from(cmd)
-            } else if cmd.starts_with("./") || cmd.starts_with("../") {
-                let rel = cmd.strip_prefix("./").unwrap_or(cmd);
-                if self.cwd == "/" {
-                    format!("/{}", rel)
-                } else {
-                    format!("{}/{}", self.cwd, rel)
-                }
-            } else {
-                match resolve_from_path(cmd) {
-                    Some(p) => p,
-                    None => format!("/System/bin/{}", cmd),
-                }
-            };
-
-            // Build full args with program name as argv[0],
-            // quoting tokens that contain spaces (POSIX-compliant).
-            let pipe_args_quoted = shell_join(&pipe_tokens);
-            let full_args = if pipe_args_quoted.is_empty() {
-                String::from(cmd)
-            } else {
-                format!("{} {}", cmd, pipe_args_quoted)
-            };
-
-            let stdin_pipe = if i > 0 { pipes[i - 1] } else { 0 };
-            let stdout_pipe = pipes[i];
-
-            let tid = process::spawn_piped_full(&path, &full_args, stdout_pipe, stdin_pipe);
-            if tid == u32::MAX {
+        match anyos_std::shell::run_pipeline(line, &self.cwd, &mut self.pipe_counter) {
+            Some(r) => Some(ForegroundProcess {
+                tid: r.last_tid,
+                pipe_id: r.display_pipe,
+                stdin_pipe: 0,
+                extra_pipes: r.extra_pipes,
+                redirect,
+                command: String::from(line),
+            }),
+            None => {
                 buf.current_fg = COLOR_FG;
-                buf.write_str("pipe: unknown command: ");
-                buf.write_str(cmd);
-                buf.write_char('\n');
-                // Clean up all pipes
-                for &p in &pipes {
-                    ipc::pipe_close(p);
-                }
-                return None;
+                buf.write_str("pipe: command not found\n");
+                None
             }
-            last_tid = tid;
         }
-
-        // Intermediate pipes (not the display pipe) — cleaned up on exit
-        let extra_pipes: Vec<u32> = pipes[..n - 1].to_vec();
-
-        Some(ForegroundProcess {
-            tid: last_tid,
-            pipe_id: display_pipe,
-            stdin_pipe: 0, // pipelines don't get stdin forwarding
-            extra_pipes,
-            redirect,
-            command: String::from(line),
-        })
     }
 
     fn cmd_jobs(&mut self, buf: &mut TerminalBuffer) {

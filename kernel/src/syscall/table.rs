@@ -124,6 +124,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_CON_READ, "con_read"),
     (SYS_CON_POLL_KEY, "con_poll_key"),
     (SYS_CON_GET_SIZE, "con_get_size"),
+    (SYS_CON_SET_MODE, "con_set_mode"),
     // Debug / trace (anyTrace)
     (SYS_DEBUG_ATTACH, "debug_attach"),
     (SYS_DEBUG_DETACH, "debug_detach"),

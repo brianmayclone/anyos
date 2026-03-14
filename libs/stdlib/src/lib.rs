@@ -7,6 +7,7 @@ mod raw;
 
 pub mod args;
 pub mod anim;
+pub mod shell;
 pub mod collections;
 pub mod debug;
 pub mod hashmap;
