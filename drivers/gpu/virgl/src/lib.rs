@@ -595,7 +595,6 @@ fn ensure_vbo(s: &mut VirglState, size: u32) {
     let res = libsyscall::gpu_3d_resource_create(
         PIPE_BUFFER, PIPE_FORMAT_R8_UNORM, VIRGL_BIND_VERTEX_BUFFER, size, 1,
     );
-    libsyscall::serial_println!("[virgl] ensure_vbo: size={} -> res_id={}", size, res);
     s.vbo_res_id = res;
     s.vbo_size = size;
 }
@@ -824,19 +823,10 @@ pub extern "C" fn drv_present(_sid: u32) {
 pub extern "C" fn drv_readback(buf: *mut u8, buf_len: u32) -> u32 {
     let s = state();
     if s.color_res_id == 0 || buf.is_null() || buf_len == 0 {
-        libsyscall::serial_println!("[virgl] readback: SKIP (res={} buf_null={} len={})", s.color_res_id, buf.is_null(), buf_len);
         return u32::MAX;
     }
     let out = unsafe { slice::from_raw_parts_mut(buf, buf_len as usize) };
-    let r = libsyscall::gpu_3d_surface_dma_read(s.color_res_id, out, s.width, s.height);
-    // Check first few pixels
-    let mut nonzero = 0u32;
-    for i in 0..core::cmp::min(out.len(), (s.width * s.height * 4) as usize) {
-        if out[i] != 0 { nonzero += 1; }
-    }
-    let p0 = if out.len() >= 4 { u32::from_le_bytes([out[0], out[1], out[2], out[3]]) } else { 0 };
-    libsyscall::serial_println!("[virgl] readback: res={} {}x{} len={} -> {} nonzero={} px0=0x{:08x}", s.color_res_id, s.width, s.height, buf_len, r, nonzero, p0);
-    r
+    libsyscall::gpu_3d_surface_dma_read(s.color_res_id, out, s.width, s.height)
 }
 
 // ── Panic handler ────────────────────────────────────────────────────────

@@ -38,6 +38,10 @@ pub static GPU_ACCEL: AtomicBool = AtomicBool::new(false);
 /// GPU hardware cursor available (queried by SYS_GPU_HAS_HW_CURSOR).
 pub static GPU_HW_CURSOR: AtomicBool = AtomicBool::new(false);
 
+/// Set when the kernel is booted with "nogui" parameter.
+/// Skips compositor and init; starts textmode_console instead.
+pub static NOGUI: AtomicBool = AtomicBool::new(false);
+
 /// Get the boot mode (0 = BIOS, 1 = UEFI).
 pub fn boot_mode() -> u8 {
     BOOT_MODE.load(AtomicOrdering::Relaxed)
@@ -96,6 +100,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
                         if token == "verbose" {
                             crate::drivers::serial::set_verbose(true);
                             serial_println!("Verbose logging enabled via boot params");
+                        } else if token == "nogui" {
+                            NOGUI.store(true, AtomicOrdering::Relaxed);
+                            serial_println!("No-GUI mode enabled via boot params (textmode_console)");
                         } else if let Some(res) = token.strip_prefix("res=") {
                             // Parse "res=WxH"
                             if let Some((w_str, h_str)) = res.split_once('x') {
@@ -364,18 +371,22 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             }
         }
 
-        // Phase 8c: Load shared DLIBs
-        const DLLS: [(&str, u64); 4] = [
-            ("/Libraries/uisys.dlib", 0x0400_0000u64),
-            ("/Libraries/libimage.dlib", 0x0410_0000u64),
-            ("/Libraries/librender.dlib", 0x0430_0000u64),
-            ("/Libraries/libcompositor.dlib", 0x0438_0000u64),
-        ];
-        for (path, base) in DLLS {
-            let name = path.rsplit('/').next().unwrap_or(path);
-            match task::dll::load_dll(path, base) {
-                Ok(pages) => serial_println!("[OK] {}: {} pages", name, pages),
-                Err(e) => serial_println!("[WARN] {} not loaded: {}", name, e),
+        let nogui = NOGUI.load(AtomicOrdering::Relaxed);
+
+        // Phase 8c: Load shared DLIBs (only needed for GUI mode)
+        if !nogui {
+            const DLLS: [(&str, u64); 4] = [
+                ("/Libraries/uisys.dlib", 0x0400_0000u64),
+                ("/Libraries/libimage.dlib", 0x0410_0000u64),
+                ("/Libraries/librender.dlib", 0x0430_0000u64),
+                ("/Libraries/libcompositor.dlib", 0x0438_0000u64),
+            ];
+            for (path, base) in DLLS {
+                let name = path.rsplit('/').next().unwrap_or(path);
+                match task::dll::load_dll(path, base) {
+                    Ok(pages) => serial_println!("[OK] {}: {} pages", name, pages),
+                    Err(e) => serial_println!("[WARN] {} not loaded: {}", name, e),
+                }
             }
         }
 
@@ -402,51 +413,73 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             if has_accel {
                 GPU_ACCEL.store(true, AtomicOrdering::Relaxed);
             }
-            let has_hw_cursor = drivers::gpu::with_gpu(|g| g.has_hw_cursor()).unwrap_or(false);
-            if has_hw_cursor {
-                GPU_HW_CURSOR.store(true, AtomicOrdering::Relaxed);
-                drivers::gpu::enable_splash_cursor(fb.width, fb.height);
-            }
 
             arch::hal::disable_interrupts();
             task::scheduler::spawn(task::cpu_monitor::start, 10, "cpu_monitor");
             task::scheduler::spawn(drivers::usb::poll_thread, 50, "usb_poll");
-       
+
             drivers::boot_console::stop_spinner();
 
-            // Flush the current framebuffer content (boot splash with spinner cleared)
-            // to the display before the compositor starts.  This has two benefits:
-            //  1. The display always shows *something* during the brief gap between
-            //     stop_spinner() and the compositor's first compose+flush.
-            //  2. It warm-starts the VirtIO GPU command path: QEMU processes a
-            //     transfer+flush here so its virtio-gpu iothread is awake and ready
-            //     by the time the compositor fires its own commands.  Without this,
-            //     the compositor's very first GPU kick can arrive while QEMU is still
-            //     busy with block/net I/O from earlier boot phases, causing a timeout
-            //     and virtqueue de-synchronisation that results in a black screen.
-            #[cfg(target_arch = "x86_64")]
-            if let Some((w, h, _, _)) = drivers::gpu::with_gpu(|g| g.get_mode()) {
-                drivers::gpu::with_gpu(|g| {
-                    g.transfer_rect(0, 0, w, h);
-                    g.flush_display(0, 0, w, h);
-                });
-                serial_println!("[OK] Pre-compositor GPU flush ({}x{})", w, h);
+            if nogui {
+                // --- No-GUI / Textmode path ---
+                // Initialise the framebuffer text console.
+                drivers::textcon::init();
+
+                // Clear the framebuffer (remove boot splash) and flush.
+                #[cfg(target_arch = "x86_64")]
+                if let Some((w, h, _, _)) = drivers::gpu::with_gpu(|g| g.get_mode()) {
+                    drivers::gpu::with_gpu(|g| {
+                        g.transfer_rect(0, 0, w, h);
+                        g.flush_display(0, 0, w, h);
+                    });
+                }
+                serial_println!("[OK] NOGUI mode: skipping compositor/init");
+                match task::loader::load_and_run("/System/bin/textmode_console", "textmode_console") {
+                    Ok(tid) => serial_println!("[OK] textmode_console spawned (TID={})", tid),
+                    Err(e) => serial_println!("  WARN: Failed to load textmode_console: {}", e),
+                }
+            } else {
+                // --- Normal GUI path ---
+                let has_hw_cursor = drivers::gpu::with_gpu(|g| g.has_hw_cursor()).unwrap_or(false);
+                if has_hw_cursor {
+                    GPU_HW_CURSOR.store(true, AtomicOrdering::Relaxed);
+                    drivers::gpu::enable_splash_cursor(fb.width, fb.height);
+                }
+
+                // Flush the current framebuffer content (boot splash with spinner cleared)
+                // to the display before the compositor starts.  This has two benefits:
+                //  1. The display always shows *something* during the brief gap between
+                //     stop_spinner() and the compositor's first compose+flush.
+                //  2. It warm-starts the VirtIO GPU command path: QEMU processes a
+                //     transfer+flush here so its virtio-gpu iothread is awake and ready
+                //     by the time the compositor fires its own commands.  Without this,
+                //     the compositor's very first GPU kick can arrive while QEMU is still
+                //     busy with block/net I/O from earlier boot phases, causing a timeout
+                //     and virtqueue de-synchronisation that results in a black screen.
+                #[cfg(target_arch = "x86_64")]
+                if let Some((w, h, _, _)) = drivers::gpu::with_gpu(|g| g.get_mode()) {
+                    drivers::gpu::with_gpu(|g| {
+                        g.transfer_rect(0, 0, w, h);
+                        g.flush_display(0, 0, w, h);
+                    });
+                    serial_println!("[OK] Pre-compositor GPU flush ({}x{})", w, h);
+                }
+
+                match task::loader::load_and_run("/System/compositor/compositor", "compositor") {
+                    Ok(tid) => serial_println!("[OK] Userspace compositor spawned (TID={})", tid),
+                    Err(e) => serial_println!("  WARN: Failed to load compositor: {}", e),
+                }
+                match task::loader::load_and_run("/System/init", "init") {
+                    Ok(tid) => serial_println!("[OK] Init spawned (TID={})", tid),
+                    Err(e) => serial_println!("  WARN: Failed to load /System/init: {}", e),
+                }
+                serial_println!("Userspace compositor and init spawned, entering scheduler...");
             }
 
-            match task::loader::load_and_run("/System/compositor/compositor", "compositor") {
-                Ok(tid) => serial_println!("[OK] Userspace compositor spawned (TID={})", tid),
-                Err(e) => serial_println!("  WARN: Failed to load compositor: {}", e),
-            }
-            match task::loader::load_and_run("/System/init", "init") {
-                Ok(tid) => serial_println!("[OK] Init spawned (TID={})", tid),
-                Err(e) => serial_println!("  WARN: Failed to load /System/init: {}", e),
-            }
-
-            serial_println!("Userspace compositor and init spawned, entering scheduler...");
             task::scheduler::run();
         }
 
-        serial_println!("FATAL: No framebuffer available, cannot start compositor.");
+        serial_println!("FATAL: No framebuffer available, cannot start userspace.");
     }
 
     // Fallback idle loop

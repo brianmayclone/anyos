@@ -11,7 +11,6 @@ pub mod vmware_svga;
 
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
-use crate::sync::spinlock::Spinlock;
 use crate::sync::mutex::Mutex;
 
 /// Validate a `&dyn GpuDriver` trait object's vtable pointer.
@@ -252,6 +251,15 @@ pub fn is_available() -> bool {
 /// Check if the GPU mutex is currently held (by any thread).
 pub fn is_gpu_locked() -> bool {
     GPU.is_locked()
+}
+
+/// Force-release the GPU mutex from a crash/fault handler.
+///
+/// # Safety
+/// Only call when the current thread is known to hold the GPU mutex and is
+/// about to be terminated. The GPU driver state may be partially modified.
+pub unsafe fn force_unlock_gpu() {
+    GPU.force_unlock();
 }
 
 /// Non-blocking GPU access (for use during panic/RSOD where yielding is not safe).

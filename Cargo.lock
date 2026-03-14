@@ -1129,6 +1129,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "textmode_console"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "top"
 version = "0.1.0"
 dependencies = [

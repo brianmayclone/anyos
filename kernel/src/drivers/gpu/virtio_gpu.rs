@@ -1000,7 +1000,6 @@ impl GpuDriver for VirtioGpu {
         // Without this check a freed surface keeps the loop running forever,
         // consuming CPU while returning all-zero data ("zombie surface").
         if !self.live_3d_resources.contains(&sid) {
-            crate::serial_println!("[gpu] dma_download: sid={} is not a live resource — rejected", sid);
             return false;
         }
 
@@ -1034,19 +1033,6 @@ impl GpuDriver for VirtioGpu {
             );
 
             if ok {
-                // Debug: check if backing has any non-zero data
-                let staging = unsafe { core::slice::from_raw_parts(self.cmd_3d_buf as *const u8, chunk_bytes) };
-                let mut nz = 0u32;
-                for &b in staging.iter().take(chunk_bytes) {
-                    if b != 0 { nz += 1; }
-                }
-                if y == 0 {
-                    let p0 = if chunk_bytes >= 4 {
-                        u32::from_le_bytes([staging[0], staging[1], staging[2], staging[3]])
-                    } else { 0 };
-                    crate::serial_println!("[gpu] dma_download: sid={} y={} chunk_h={} ok={} nz={} px0=0x{:08x}",
-                        sid, y, chunk_h, ok, nz, p0);
-                }
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         self.cmd_3d_buf as *const u8,

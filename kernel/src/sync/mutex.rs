@@ -81,6 +81,21 @@ impl<T> Mutex<T> {
     pub fn is_locked(&self) -> bool {
         *self.inner.lock()
     }
+
+    /// Force-release the mutex unconditionally.
+    ///
+    /// # Safety
+    /// Only call from a fault/panic handler when the current thread is known
+    /// to hold the mutex and is about to be killed. The protected data may be
+    /// in a partially-modified state — no further access should occur.
+    pub unsafe fn force_unlock(&self) {
+        // Try to acquire the inner spinlock. If we can't (extremely unlikely —
+        // the inner spinlock is held for microseconds), skip: the lock will be
+        // released by its holder momentarily anyway.
+        if let Some(mut locked) = self.inner.try_lock() {
+            *locked = false;
+        }
+    }
 }
 
 impl<'a, T> Deref for MutexGuard<'a, T> {

@@ -691,3 +691,112 @@ pub fn sys_set_serial_verbose(enable: u32) -> u32 {
     crate::serial_println!("kernel: serial verbose mode {}", if enabled { "enabled" } else { "disabled" });
     0
 }
+
+// =========================================================================
+// Text-mode console I/O (SYS_CON_WRITE, SYS_CON_READ)
+// Used exclusively by textmode_console in nogui boot mode.
+// =========================================================================
+
+/// SYS_CON_WRITE (290): Write a UTF-8 string to the kernel framebuffer console.
+/// arg1 = buf_ptr (user pointer), arg2 = len (bytes).
+/// Returns number of bytes written, or u32::MAX on error.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_con_write(buf_ptr: u32, len: u32) -> u32 {
+    if buf_ptr == 0 || len == 0 { return 0; }
+    if len > 65536 || !is_valid_user_ptr(buf_ptr as u64, len as u64) { return u32::MAX; }
+    let slice = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
+    if let Ok(s) = core::str::from_utf8(slice) {
+        crate::drivers::textcon::write_str(s);
+        len
+    } else {
+        // Write byte-by-byte, skipping non-ASCII
+        for &b in slice {
+            if b < 128 { crate::drivers::textcon::write_char(b); }
+        }
+        len
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn sys_con_write(_buf_ptr: u32, _len: u32) -> u32 { u32::MAX }
+
+/// SYS_CON_READ (291): Read a line from the keyboard with echo to the console.
+/// arg1 = buf_ptr (user buffer), arg2 = buf_len.
+/// arg2 high bit (0x80000000): if set, suppress echo (password mode).
+/// Blocks until Enter is pressed.
+/// Returns number of bytes read (not including null terminator), or u32::MAX on error.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_con_read(buf_ptr: u32, buf_len: u32) -> u32 {
+    let echo = (buf_len & 0x8000_0000) == 0;
+    let max_len = (buf_len & 0x7FFF_FFFF) as usize;
+    if buf_ptr == 0 || max_len == 0 { return 0; }
+    if max_len > 4096 || !is_valid_user_ptr(buf_ptr as u64, max_len as u64) { return u32::MAX; }
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, max_len) };
+    crate::drivers::textcon::read_line(buf, echo) as u32
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn sys_con_read(_buf_ptr: u32, _buf_len: u32) -> u32 { u32::MAX }
+
+/// SYS_CON_POLL_KEY (292): Non-blocking keyboard poll for the text console.
+/// Returns the Unicode codepoint of the next pressed key, or 0 if no key pending.
+/// Ctrl modifier: bit 29 set. Special values: 0x03=Ctrl+C, 0x04=Ctrl+D.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_con_poll_key() -> u32 {
+    use crate::drivers::input::keyboard::Key;
+    loop {
+        match crate::drivers::input::keyboard::read_event() {
+            None => return 0,
+            Some(evt) if !evt.pressed => continue, // skip key-up events
+            Some(evt) => {
+                let ctrl = evt.modifiers.ctrl;
+                let code: u32 = match evt.key {
+                    Key::Char(c) => {
+                        let cp = c as u32;
+                        if ctrl && cp >= 64 && cp < 96 {
+                            // Ctrl+letter: subtract 64 → control codes
+                            cp - 64
+                        } else if ctrl && cp >= 96 && cp < 128 {
+                            cp - 96
+                        } else {
+                            cp
+                        }
+                    }
+                    Key::Enter     => b'\n' as u32,
+                    Key::Backspace => b'\x08' as u32,
+                    Key::Tab       => b'\t' as u32,
+                    Key::Escape    => 0x1B,
+                    Key::Up        => 0x10_0041, // CSI A
+                    Key::Down      => 0x10_0042,
+                    Key::Left      => 0x10_0044,
+                    Key::Right     => 0x10_0043,
+                    Key::Space     => b' ' as u32,
+                    // Modifier-only keys: skip and poll again
+                    Key::LeftShift | Key::RightShift |
+                    Key::LeftCtrl  | Key::RightCtrl  |
+                    Key::LeftAlt   | Key::RightAlt   |
+                    Key::CapsLock  => continue,
+                    _ => 0,
+                };
+                if ctrl && code < 32 {
+                    return code; // raw control code (0x03 = Ctrl+C etc.)
+                }
+                let result = if ctrl { code | 0x2000_0000 } else { code };
+                return result;
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn sys_con_poll_key() -> u32 { 0 }
+
+/// SYS_CON_GET_SIZE (293): Return console dimensions as cols<<16 | rows.
+/// Both values are derived from the current framebuffer resolution and font size.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_con_get_size() -> u32 {
+    crate::drivers::textcon::get_size_packed()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn sys_con_get_size() -> u32 { 0 }

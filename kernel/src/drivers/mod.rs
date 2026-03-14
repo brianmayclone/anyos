@@ -31,6 +31,8 @@ pub mod storage;
 #[cfg(target_arch = "x86_64")]
 pub mod usb;
 #[cfg(target_arch = "x86_64")]
+pub mod textcon;
+#[cfg(target_arch = "x86_64")]
 pub mod vga_text;
 #[cfg(target_arch = "x86_64")]
 pub mod vmmdev;

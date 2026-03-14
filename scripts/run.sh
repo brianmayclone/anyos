@@ -576,7 +576,7 @@ if [ "$VGA" = "virgl" ]; then
     RES_W="${RESOLUTION%%x*}"
     RES_H="${RESOLUTION#*x}"
     VGA_FLAGS="-vga none -device virtio-vga-gl,edid=on,xres=$RES_W,yres=$RES_H"
-    DISPLAY_FLAGS="-display sdl,gl=on"
+    DISPLAY_FLAGS="-display gtk,gl=on,grab-on-hover=on"
     VGA_LABEL="Virtio GPU + virgl (${RES_W}x${RES_H}, 3D)"
     RES_LABEL=", res: ${RESOLUTION}"
 elif [ "$VGA" = "virtio" ]; then
@@ -590,6 +590,12 @@ elif [ -n "$RESOLUTION" ]; then
     RES_H="${RESOLUTION#*x}"
     DISPLAY_FLAGS="-display gtk,grab-on-hover=on,window-size=${RES_W}x${RES_H}"
     RES_LABEL=", res: ${RESOLUTION}"
+fi
+
+# Ensure usb-tablet is always present for correct absolute mouse positioning
+# (prevents cursor offset when window is resized or on HiDPI displays)
+if [ -z "$USB_FLAGS" ]; then
+    USB_FLAGS="-usb -device usb-tablet"
 fi
 
 # Network: bridge or NAT (user)
@@ -635,6 +641,17 @@ if [[ "$QEMU_BIN" == *.exe ]]; then
     KVM_LABEL="${KVM_LABEL//, KVM enabled/, WHPX enabled}"
     # PulseAudio is Linux-only; use DirectSound on Windows
     AUDIO_FLAGS="${AUDIO_FLAGS//-audiodev pa,/-audiodev dsound,}"
+fi
+
+# Unset Snap-injected GTK/GDK environment variables to prevent GLIBC conflicts.
+# VSCode (snap) sets GTK_PATH, GTK_EXE_PREFIX etc. to its snap dirs; QEMU then
+# loads GTK modules built against the snap's GLIBC, causing symbol lookup errors.
+unset GTK_PATH GTK_EXE_PREFIX GTK_IM_MODULE_FILE
+unset GDK_PIXBUF_MODULE_FILE GDK_PIXBUF_MODULEDIR
+unset GIO_MODULE_DIR
+if [ -n "$LD_LIBRARY_PATH" ]; then
+    CLEAN_LD=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v '/snap/' | tr '\n' ':' | sed 's/:$//')
+    export LD_LIBRARY_PATH="$CLEAN_LD"
 fi
 
 echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL"

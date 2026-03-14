@@ -120,6 +120,10 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_SET_HOSTNAME, "set_hostname"),
     (SYS_SHUTDOWN, "shutdown"),
     (SYS_SET_SERIAL_VERBOSE, "set_serial_verbose"),
+    (SYS_CON_WRITE, "con_write"),
+    (SYS_CON_READ, "con_read"),
+    (SYS_CON_POLL_KEY, "con_poll_key"),
+    (SYS_CON_GET_SIZE, "con_get_size"),
     // Debug / trace (anyTrace)
     (SYS_DEBUG_ATTACH, "debug_attach"),
     (SYS_DEBUG_DETACH, "debug_detach"),

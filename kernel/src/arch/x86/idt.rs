@@ -474,12 +474,23 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
             unsafe { crate::task::dll::force_unlock_dlls(); }
             crate::serial_println!("  RECOVERED: force-released LOADED_DLLS lock");
         }
+        // GPU Mutex: a fault inside a GPU syscall (e.g. SYS_GPU_COMMAND, DMA)
+        // leaves the GPU Mutex held. Without release, every subsequent GPU call
+        // from any thread blocks forever (yielding Mutex → schedule loop).
+        if crate::drivers::gpu::is_gpu_locked() {
+            unsafe { crate::drivers::gpu::force_unlock_gpu(); }
+            crate::serial_println!("  RECOVERED: force-released GPU mutex");
+        }
 
-        // Try the clean path: try_exit_current acquires the lock, marks the
-        // thread terminated, and calls schedule() → context_switch to next thread.
-        // Limited retries: if the lock is permanently contended, fall back to
-        // manual recovery instead of spinning forever (which caused deadlocks).
-        for _ in 0..1_000 {
+        // Try the clean path: try_exit_current acquires the scheduler lock,
+        // marks the thread terminated, and calls schedule() → context switch.
+        //
+        // If try_lock fails (another CPU holds the lock), we must NOT spin
+        // in a tight loop — that causes SPIN TIMEOUT on the contended CPU.
+        // Instead, spin briefly (64 PAUSEs) then yield via schedule() so the
+        // lock holder gets CPU time and can release it.  Cap at 100 attempts
+        // (each attempt may sleep a full scheduler tick ≈ 1 ms → 100 ms max).
+        for _ in 0..100 {
             if crate::task::scheduler::try_exit_current(signal) {
                 // Clear re-entrancy guard (never reached — try_exit_current
                 // calls schedule() and never returns, but clear for safety)
@@ -488,7 +499,11 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
                 }
                 unreachable!();
             }
-            core::hint::spin_loop();
+            // Brief spin (gives lock holder a chance to finish without a full
+            // context switch for the common case where the lock is released quickly).
+            for _ in 0..64 { core::hint::spin_loop(); }
+            // Then yield so the lock holder can run if it's on this CPU's queue.
+            crate::task::scheduler::schedule();
         }
         // Clean path failed — use manual fallback: kill thread, repair state,
         // enter idle loop. Does NOT call schedule()/context_switch, avoiding

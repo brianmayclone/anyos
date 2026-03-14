@@ -282,6 +282,15 @@ pub const SYS_SHUTDOWN: u32 = 282;
 // Kernel debug settings
 pub const SYS_SET_SERIAL_VERBOSE: u32 = 283;
 
+// Text-mode console I/O (nogui / textmode_console only)
+pub const SYS_CON_WRITE: u32     = 290;
+pub const SYS_CON_READ: u32      = 291;
+/// Non-blocking: returns next key codepoint (u32) or 0 if no key pending.
+/// High bit set = Ctrl modifier. Special: 0x03 = Ctrl+C, 0x04 = Ctrl+D.
+pub const SYS_CON_POLL_KEY: u32  = 292;
+/// Returns console dimensions: high 16 bits = columns, low 16 bits = rows.
+pub const SYS_CON_GET_SIZE: u32  = 293;
+
 // Hardware virtualization (VT-x / AMD-V)
 pub const SYS_VM_CREATE: u32 = 600;
 pub const SYS_VM_DESTROY: u32 = 601;
@@ -619,6 +628,12 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
 
         // Kernel debug settings
         SYS_SET_SERIAL_VERBOSE => handlers::sys_set_serial_verbose(arg1),
+
+        // Text-mode console I/O
+        SYS_CON_WRITE     => handlers::sys_con_write(arg1, arg2),
+        SYS_CON_READ      => handlers::sys_con_read(arg1, arg2),
+        SYS_CON_POLL_KEY  => handlers::sys_con_poll_key(),
+        SYS_CON_GET_SIZE  => handlers::sys_con_get_size(),
 
         // Debug / trace (anyTrace)
         SYS_DEBUG_ATTACH => handlers::sys_debug_attach(arg1),

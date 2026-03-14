@@ -234,6 +234,12 @@ pub(crate) const SYS_SHUTDOWN: u32 = 282;
 // Kernel debug settings
 pub(crate) const SYS_SET_SERIAL_VERBOSE: u32 = 283;
 
+// Text-mode console I/O (nogui mode)
+pub(crate) const SYS_CON_WRITE: u32    = 290;
+pub(crate) const SYS_CON_READ: u32     = 291;
+pub(crate) const SYS_CON_POLL_KEY: u32 = 292;
+pub(crate) const SYS_CON_GET_SIZE: u32 = 293;
+
 // Debug / trace (anyTrace)
 pub(crate) const SYS_DEBUG_ATTACH: u32         = 300;
 pub(crate) const SYS_DEBUG_DETACH: u32         = 301;

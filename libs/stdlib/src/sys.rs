@@ -187,3 +187,46 @@ pub fn set_hostname(name: &str) -> u32 {
 pub fn pipe_list(buf: &mut [u8]) -> u32 {
     syscall2(SYS_PIPE_LIST, buf.as_mut_ptr() as u64, buf.len() as u64)
 }
+
+// =========================================================================
+// Text-mode console I/O (nogui mode only)
+// =========================================================================
+
+/// Write a string to the kernel framebuffer text console.
+/// Only functional when the kernel was booted with `nogui`.
+/// Returns number of bytes written.
+pub fn con_write(s: &str) -> u32 {
+    syscall2(SYS_CON_WRITE, s.as_ptr() as u64, s.len() as u64)
+}
+
+/// Read a line from the keyboard (with echo) into `buf`.
+/// Blocks until Enter is pressed.
+/// Returns number of bytes read (not including null terminator).
+pub fn con_read_line(buf: &mut [u8]) -> usize {
+    let len = buf.len().min(4095) as u32;
+    syscall2(SYS_CON_READ, buf.as_mut_ptr() as u64, len as u64) as usize
+}
+
+/// Read a password line (no echo, shows `*` instead) into `buf`.
+/// Blocks until Enter is pressed.
+/// Returns number of bytes read.
+pub fn con_read_password(buf: &mut [u8]) -> usize {
+    let len = (buf.len().min(4095) as u32) | 0x8000_0000;
+    syscall2(SYS_CON_READ, buf.as_mut_ptr() as u64, len as u64) as usize
+}
+
+/// Non-blocking keyboard poll for text console use.
+/// Returns the Unicode codepoint of the next key press, or 0 if none pending.
+/// Special values: 0x03 = Ctrl+C, 0x04 = Ctrl+D.
+/// Bit 29 set = Ctrl modifier held.
+pub fn con_poll_key() -> u32 {
+    syscall0(SYS_CON_POLL_KEY)
+}
+
+/// Return the current text console size as `(columns, rows)`.
+/// Values are derived from the framebuffer resolution and the kernel font size (8×16).
+/// Returns (0, 0) if not in nogui mode or console not yet initialised.
+pub fn con_get_size() -> (u32, u32) {
+    let packed = syscall0(SYS_CON_GET_SIZE);
+    (packed >> 16, packed & 0xFFFF)
+}
