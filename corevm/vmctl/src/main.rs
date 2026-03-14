@@ -8,37 +8,8 @@ use std::time::{Duration, Instant};
 use std::{env, thread};
 
 use libcorevm::ffi::*;
-use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
-
-// ── BIOS search paths ──
-
-fn find_bios(name: &str) -> Option<String> {
-    let exe_dir = env::current_exe().ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-
-    let mut paths = Vec::new();
-    if let Some(d) = &exe_dir {
-        paths.push(d.join("bios"));
-        paths.push(d.to_path_buf());
-    }
-    paths.push(manifest_dir.join("../vmmanager/assets/bios"));
-    if let Some(root) = manifest_dir.parent().and_then(|p| p.parent()) {
-        paths.push(root.join("libs/libcorevm/bios"));
-        paths.push(root.join("build"));
-    }
-    paths.push(std::path::PathBuf::from("/usr/share/seabios"));
-    paths.push(std::path::PathBuf::from("/usr/share/qemu"));
-
-    for dir in &paths {
-        let p = dir.join(name);
-        if p.exists() {
-            return Some(p.to_string_lossy().into_owned());
-        }
-    }
-    None
-}
+use libcorevm::setup;
+use libcorevm::backend::{VcpuRegs, VcpuSregs};
 
 // ── Argument parsing ──
 
@@ -156,75 +127,6 @@ fn parse_args() -> Args {
     args
 }
 
-// ── BIOS loading (matches vmmanager logic) ──
-
-fn load_seabios(handle: u64) -> Result<(), String> {
-    let bios_path = find_bios("bios.bin")
-        .ok_or("SeaBIOS bios.bin not found")?;
-    let vgabios_path = find_bios("vgabios.bin")
-        .ok_or("VGA BIOS vgabios.bin not found")?;
-
-    let bios = std::fs::read(&bios_path)
-        .map_err(|e| format!("Failed to read BIOS {}: {}", bios_path, e))?;
-    let vgabios = std::fs::read(&vgabios_path)
-        .map_err(|e| format!("Failed to read VGA BIOS {}: {}", vgabios_path, e))?;
-
-    eprintln!("[vmctl] SeaBIOS: {} ({} bytes)", bios_path, bios.len());
-    eprintln!("[vmctl] VGA BIOS: {} ({} bytes)", vgabios_path, vgabios.len());
-
-    // Load at 0xC0000 (256KB SeaBIOS covers 0xC0000-0xFFFFF)
-    corevm_load_binary(handle, 0xC0000, bios.as_ptr(), bios.len() as u32);
-
-    // ROM overlay at top of 4GB address space
-    let rom_base = 0x1_0000_0000u64 - bios.len() as u64;
-    let rom_alloc = (bios.len() + 0xFFF) & !0xFFF;
-    let layout = std::alloc::Layout::from_size_align(rom_alloc, 4096)
-        .map_err(|e| format!("ROM layout error: {}", e))?;
-    let rom_ptr = unsafe { std::alloc::alloc_zeroed(layout) };
-    if rom_ptr.is_null() { return Err("Failed to alloc ROM".into()); }
-    unsafe { std::ptr::copy_nonoverlapping(bios.as_ptr(), rom_ptr, bios.len()); }
-    let ret = corevm_set_memory_region(handle, 1, rom_base, rom_alloc as u64, rom_ptr);
-    if ret != 0 { return Err(format!("Failed to map ROM at {:#x}", rom_base)); }
-
-    // VGA BIOS via fw_cfg
-    let name = b"vgaroms/vgabios.bin";
-    corevm_fw_cfg_add_file(handle, name.as_ptr(), name.len() as u32,
-        vgabios.as_ptr(), vgabios.len() as u32);
-
-    Ok(())
-}
-
-fn set_initial_cpu_state(handle: u64) {
-    let data_seg = SegmentReg {
-        base: 0, limit: 0xFFFF, selector: 0,
-        type_: 0x03, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0,
-    };
-    let sregs = VcpuSregs {
-        cs: SegmentReg {
-            base: 0xF0000, limit: 0xFFFF, selector: 0xF000,
-            type_: 0x0B, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0,
-        },
-        ds: data_seg, es: data_seg, fs: data_seg, gs: data_seg, ss: data_seg,
-        tr: SegmentReg {
-            base: 0, limit: 0xFFFF, selector: 0,
-            type_: 0x0B, present: 1, dpl: 0, db: 0, s: 0, l: 0, g: 0, avl: 0,
-        },
-        ldt: SegmentReg {
-            base: 0, limit: 0xFFFF, selector: 0,
-            type_: 0x02, present: 1, dpl: 0, db: 0, s: 0, l: 0, g: 0, avl: 0,
-        },
-        gdt: DescriptorTable { base: 0, limit: 0xFFFF },
-        idt: DescriptorTable { base: 0, limit: 0xFFFF },
-        cr0: 0x10, cr2: 0, cr3: 0, cr4: 0, efer: 0,
-    };
-    corevm_set_vcpu_sregs(handle, 0, &sregs);
-
-    let mut regs = VcpuRegs::default();
-    regs.rip = 0xFFF0;
-    regs.rflags = 0x02;
-    corevm_set_vcpu_regs(handle, 0, &regs);
-}
-
 // ── Main ──
 
 fn main() {
@@ -265,34 +167,26 @@ fn main() {
 
     // Attach ISO
     if !args.iso.is_empty() {
-        let path = std::ffi::CString::new(args.iso.as_str()).unwrap();
-        let fd = unsafe { libc_open(path.as_ptr(), 0) }; // O_RDONLY
-        if fd < 0 {
-            eprintln!("[vmctl] ERROR: Cannot open ISO: {}", args.iso);
+        if let Err(e) = setup::attach_image_to_ahci(handle, &args.iso, 1, true) {
+            eprintln!("[vmctl] ERROR: {}", e);
             std::process::exit(1);
         }
-        let size = unsafe { libc_lseek(fd, 0, 2) } as u64;
-        unsafe { libc_lseek(fd, 0, 0); }
-        corevm_ahci_attach_cdrom(handle, 1, fd, size);
-        eprintln!("[vmctl] ISO: {} ({} bytes)", args.iso, size);
+        eprintln!("[vmctl] ISO: {}", args.iso);
     }
 
     // Attach disk
     if !args.disk.is_empty() {
-        let path = std::ffi::CString::new(args.disk.as_str()).unwrap();
-        let fd = unsafe { libc_open(path.as_ptr(), 2) }; // O_RDWR
-        if fd < 0 {
-            eprintln!("[vmctl] ERROR: Cannot open disk: {}", args.disk);
+        if let Err(e) = setup::attach_image_to_ahci(handle, &args.disk, 0, false) {
+            eprintln!("[vmctl] ERROR: {}", e);
             std::process::exit(1);
         }
-        let size = unsafe { libc_lseek(fd, 0, 2) } as u64;
-        unsafe { libc_lseek(fd, 0, 0); }
-        corevm_ahci_attach_disk(handle, 0, fd, size);
-        eprintln!("[vmctl] Disk: {} ({} bytes)", args.disk, size);
+        eprintln!("[vmctl] Disk: {}", args.disk);
     }
 
-    // Load BIOS
-    if let Err(e) = load_seabios(handle) {
+    // Load BIOS — use vmmanager asset paths as extra search dirs
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let extra_paths = vec![manifest_dir.join("../vmmanager/assets/bios")];
+    if let Err(e) = setup::load_seabios(handle, &extra_paths) {
         eprintln!("[vmctl] ERROR: {}", e);
         std::process::exit(1);
     }
@@ -368,14 +262,13 @@ fn main() {
         }
     }
 
-    set_initial_cpu_state(handle);
+    if let Err(e) = setup::set_initial_cpu_state(handle) {
+        eprintln!("[vmctl] ERROR: {}", e);
+        std::process::exit(1);
+    }
 
     // Write COM1 base address into BDA so SeaBIOS finds the serial port.
-    // BDA segment 0x0040, offset 0x00 = COM1 base address (physical 0x400).
-    {
-        let com1_base: u16 = 0x03F8;
-        corevm_write_phys(handle, 0x400, com1_base.to_le_bytes().as_ptr(), 2);
-    }
+    setup::setup_bda_com1(handle);
 
     // Install SIGUSR1 handler so cancel_vcpu can interrupt KVM_RUN mid-execution
     libcorevm::backend::kvm::install_sigusr1_handler();
@@ -1058,16 +951,3 @@ fn main() {
     corevm_destroy(handle);
 }
 
-// Minimal libc bindings for file operations
-extern "C" {
-    fn open(path: *const i8, flags: i32) -> i32;
-    fn lseek(fd: i32, offset: i64, whence: i32) -> i64;
-}
-
-unsafe fn libc_open(path: *const i8, flags: i32) -> i32 {
-    unsafe { open(path, flags) }
-}
-
-unsafe fn libc_lseek(fd: i32, offset: i64, whence: i32) -> i64 {
-    unsafe { lseek(fd, offset, whence) }
-}

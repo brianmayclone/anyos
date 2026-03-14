@@ -14,17 +14,15 @@ use libcorevm::ffi::{
     corevm_create, corevm_create_vcpu, corevm_destroy,
     corevm_run_vcpu, corevm_handle_io_exit, corevm_handle_mmio_exit, corevm_handle_string_io_exit,
     corevm_setup_standard_devices, corevm_setup_acpi_tables, corevm_setup_ahci, corevm_setup_e1000,
-    corevm_ahci_attach_disk, corevm_ahci_attach_cdrom,
-    corevm_load_binary, corevm_complete_string_io,
-    corevm_get_vcpu_regs, corevm_set_vcpu_regs,
-    corevm_get_vcpu_sregs, corevm_set_vcpu_sregs,
-    corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_lfb_addr, corevm_vga_get_fb_offset,
-    corevm_last_error, corevm_last_error_len,
+    corevm_complete_string_io,
+    corevm_get_vcpu_regs,
+    corevm_get_vcpu_sregs,
+    corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_fb_offset,
     corevm_pit_advance, corevm_pit_debug, corevm_cmos_advance, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu, corevm_lapic_timer_advance, corevm_lapic_debug,
     corevm_read_phys, corevm_write_phys, corevm_debug_port_take_output,
-    corevm_fw_cfg_add_file, corevm_set_memory_region,
 };
-use libcorevm::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
+use libcorevm::setup;
+use libcorevm::backend::{VcpuRegs, VcpuSregs};
 
 /// Callback for WHP debug output — routes messages to DiagLog's WHP tab.
 #[cfg(target_os = "windows")]
@@ -37,16 +35,7 @@ extern "C" fn whp_debug_callback(ctx: *mut std::ffi::c_void, msg: *const u8, len
 
 /// Retrieve the last error message from libcorevm.
 pub fn get_last_error_public() -> Option<String> {
-    let len = corevm_last_error_len() as usize;
-    if len == 0 { return None; }
-    let ptr = corevm_last_error();
-    if ptr.is_null() { return None; }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    Some(String::from_utf8_lossy(bytes).into_owned())
-}
-
-fn get_last_error() -> Option<String> {
-    get_last_error_public()
+    setup::get_last_error()
 }
 
 /// Shared control flags for the VM thread
@@ -75,14 +64,14 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     // Create VM
     let handle = corevm_create(config.ram_mb);
     if handle == 0 {
-        let msg = get_last_error().unwrap_or_else(|| "Unknown error".into());
+        let msg = setup::get_last_error().unwrap_or_else(|| "Unknown error".into());
         return Err(format!("Failed to create VM: {}", msg));
     }
 
     // Create vCPU
     let vcpu_rc = corevm_create_vcpu(handle, 0);
     if vcpu_rc != 0 {
-        let e = get_last_error().unwrap_or_else(|| "unknown".into());
+        let e = setup::get_last_error().unwrap_or_else(|| "unknown".into());
         corevm_destroy(handle);
         return Err(format!("Failed to create vCPU: {}", e));
     }
@@ -101,7 +90,11 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
 
     // E1000 NIC — only if enabled in config
     if config.net_enabled {
-        let mac = resolve_mac(&config);
+        let mac = setup::resolve_mac(
+            &config.uuid,
+            config.mac_mode == MacMode::Static,
+            &config.mac_address,
+        );
         corevm_setup_e1000(handle, mac.as_ptr());
         entry.diag_log.log(DiagCategory::Info, format!(
             "E1000 NIC enabled (mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
@@ -110,20 +103,24 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     }
 
     // Load BIOS
-    load_bios(handle, &config.bios_type)?;
+    let extra_bios_paths = platform::bios_search_paths();
+    match config.bios_type {
+        BiosType::SeaBios => setup::load_seabios(handle, &extra_bios_paths)?,
+        BiosType::CoreVm => setup::load_corevm_bios(handle, &extra_bios_paths)?,
+    }
 
     // Attach ISO if configured (as AHCI CDROM on port 1)
     if !config.iso_image.is_empty() {
-        attach_image_to_ahci(handle, &config.iso_image, 1, true)?;
+        setup::attach_image_to_ahci(handle, &config.iso_image, 1, true)?;
     }
 
     // Attach disk if configured (as AHCI disk on port 0)
     if !config.disk_image.is_empty() {
-        attach_image_to_ahci(handle, &config.disk_image, 0, false)?;
+        setup::attach_image_to_ahci(handle, &config.disk_image, 0, false)?;
     }
 
     // Set initial CPU state: CS:IP = F000:FFF0 (real-mode reset vector)
-    let sregs_rc = set_initial_cpu_state(handle);
+    let sregs_rc = setup::set_initial_cpu_state(handle);
     if entry.config.diagnostics {
         if let Err(ref e) = sregs_rc {
             entry.diag_log.log(DiagCategory::Error, format!("set_initial_cpu_state failed: {}", e));
@@ -155,11 +152,7 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     }
 
     // Write COM1 base address into BDA so SeaBIOS finds the serial port.
-    // BDA segment 0x0040, offset 0x00 = COM1 base address (physical 0x400).
-    {
-        let com1_base: u16 = 0x03F8;
-        corevm_write_phys(handle, 0x400, com1_base.to_le_bytes().as_ptr(), 2);
-    }
+    setup::setup_bda_com1(handle);
 
     // Setup shared state
     let control = Arc::new(VmControl {
@@ -197,147 +190,6 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     entry.vm_thread = Some(thread);
     entry.state = VmState::Running;
 
-    Ok(())
-}
-
-/// Attach a disk or ISO image to an AHCI port via file descriptor.
-#[cfg(unix)]
-fn attach_image_to_ahci(handle: u64, path: &str, port: u32, is_cdrom: bool) -> Result<(), String> {
-    use std::os::unix::io::{IntoRawFd, FromRawFd};
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(!is_cdrom)
-        .open(path)
-        .map_err(|e| format!("Failed to open {}: {}", path, e))?;
-    let size = file.metadata()
-        .map_err(|e| format!("Failed to stat {}: {}", path, e))?.len();
-    let fd = file.into_raw_fd();
-
-    let ret = if is_cdrom {
-        corevm_ahci_attach_cdrom(handle, port, fd, size)
-    } else {
-        corevm_ahci_attach_disk(handle, port, fd, size)
-    };
-
-    if ret != 0 {
-        // Close fd on failure by reclaiming ownership
-        unsafe { drop(std::fs::File::from_raw_fd(fd)); }
-        return Err(format!("Failed to attach {} to AHCI port {}", path, port));
-    }
-    // fd ownership transferred to AHCI, do NOT close it
-    Ok(())
-}
-
-#[cfg(windows)]
-fn attach_image_to_ahci(handle: u64, path: &str, port: u32, is_cdrom: bool) -> Result<(), String> {
-    use std::os::windows::io::IntoRawHandle;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(!is_cdrom)
-        .open(path)
-        .map_err(|e| format!("Failed to open {}: {}", path, e))?;
-    let size = file.metadata()
-        .map_err(|e| format!("Failed to stat {}: {}", path, e))?.len();
-    // On Windows, pass the raw handle as an i32 (narrowing cast)
-    let handle_raw = file.into_raw_handle();
-    let fd = handle_raw as isize as i32;
-
-    let ret = if is_cdrom {
-        corevm_ahci_attach_cdrom(handle, port, fd, size)
-    } else {
-        corevm_ahci_attach_disk(handle, port, fd, size)
-    };
-
-    if ret != 0 {
-        return Err(format!("Failed to attach {} to AHCI port {}", path, port));
-    }
-    Ok(())
-}
-
-/// Set initial CPU state to real-mode reset vector (F000:FFF0).
-fn set_initial_cpu_state(handle: u64) -> Result<(), String> {
-    let data_seg = SegmentReg {
-        base: 0,
-        limit: 0xFFFF,
-        selector: 0,
-        type_: 0x03, // read/write, accessed
-        present: 1,
-        dpl: 0,
-        db: 0,
-        s: 1,
-        l: 0,
-        g: 0,
-        avl: 0,
-    };
-
-    let sregs = VcpuSregs {
-        cs: SegmentReg {
-            base: 0xF0000,
-            limit: 0xFFFF,
-            selector: 0xF000,
-            type_: 0x0B, // execute/read, accessed
-            present: 1,
-            dpl: 0,
-            db: 0,
-            s: 1,
-            l: 0,
-            g: 0,
-            avl: 0,
-        },
-        ds: data_seg,
-        es: data_seg,
-        fs: data_seg,
-        gs: data_seg,
-        ss: data_seg,
-        tr: SegmentReg {
-            base: 0,
-            limit: 0xFFFF,
-            selector: 0,
-            type_: 0x0B, // 16-bit busy TSS
-            present: 1,
-            dpl: 0,
-            db: 0,
-            s: 0, // system segment
-            l: 0,
-            g: 0,
-            avl: 0,
-        },
-        ldt: SegmentReg {
-            base: 0,
-            limit: 0xFFFF,
-            selector: 0,
-            type_: 0x02, // LDT
-            present: 1,
-            dpl: 0,
-            db: 0,
-            s: 0, // system segment
-            l: 0,
-            g: 0,
-            avl: 0,
-        },
-        gdt: DescriptorTable { base: 0, limit: 0xFFFF },
-        idt: DescriptorTable { base: 0, limit: 0xFFFF },
-        cr0: 0x10, // ET bit set (FPU extension type), PE=0 (real mode)
-        cr2: 0,
-        cr3: 0,
-        cr4: 0,
-        efer: 0,
-    };
-
-    let rc1 = corevm_set_vcpu_sregs(handle, 0, &sregs);
-    if rc1 != 0 {
-        let e = get_last_error().unwrap_or_else(|| "unknown".into());
-        return Err(format!("set_vcpu_sregs failed (rc={}): {}", rc1, e));
-    }
-
-    let mut regs = VcpuRegs::default();
-    regs.rip = 0xFFF0;
-    regs.rflags = 0x02; // reserved bit
-    let rc2 = corevm_set_vcpu_regs(handle, 0, &regs);
-    if rc2 != 0 {
-        let e = get_last_error().unwrap_or_else(|| "unknown".into());
-        return Err(format!("set_vcpu_regs failed (rc={}): {}", rc2, e));
-    }
     Ok(())
 }
 
@@ -424,7 +276,7 @@ fn vm_run_loop(
         }
         if rc != 0 {
             consecutive_errors += 1;
-            let err_msg = get_last_error().unwrap_or_else(|| "unknown".into());
+            let err_msg = setup::get_last_error().unwrap_or_else(|| "unknown".into());
             if diag_enabled {
                 diag.log(DiagCategory::Error, format!("run_vcpu error: {}", err_msg));
             }
@@ -846,126 +698,3 @@ fn guess_resolution(len: usize) -> (u32, u32, u8) {
     (0, 0, 0)
 }
 
-/// Load BIOS files into the VM
-fn load_bios(handle: u64, bios_type: &BiosType) -> Result<(), String> {
-    match bios_type {
-        BiosType::SeaBios => {
-            let bios_path = platform::find_bios("bios.bin")
-                .ok_or("SeaBIOS bios.bin not found")?;
-            let vgabios_path = platform::find_bios("vgabios.bin")
-                .ok_or("VGA BIOS vgabios.bin not found")?;
-
-            let bios = std::fs::read(&bios_path)
-                .map_err(|e| format!("Failed to read BIOS: {}", e))?;
-            let vgabios = std::fs::read(&vgabios_path)
-                .map_err(|e| format!("Failed to read VGA BIOS: {}", e))?;
-
-            // Load full BIOS at 0xC0000 (256KB SeaBIOS covers 0xC0000-0xFFFFF).
-            // SeaBIOS needs the reset vector at 0xFFFF0 and its code/data here.
-            // During POST, SeaBIOS relocates its init code to high RAM and then
-            // loads VGA option ROM from fw_cfg into 0xC0000 (overwriting the
-            // no-longer-needed lower portion of the BIOS image).
-            corevm_load_binary(handle, 0xC0000, bios.as_ptr(), bios.len() as u32);
-
-            // ROM overlay at top of 4GB address space.
-            // This is OUTSIDE the RAM region, so we must create a separate memory
-            // mapping. Allocate a page-aligned buffer, copy BIOS into it, and register
-            // it as memory slot 1 at the high address.
-            let rom_base = 0x1_0000_0000u64 - bios.len() as u64;
-            let rom_size = bios.len();
-            // Round up to page boundary (4KB)
-            let rom_alloc = (rom_size + 0xFFF) & !0xFFF;
-            let layout = std::alloc::Layout::from_size_align(rom_alloc, 4096)
-                .map_err(|e| format!("ROM layout error: {}", e))?;
-            let rom_ptr = unsafe { std::alloc::alloc_zeroed(layout) };
-            if rom_ptr.is_null() {
-                return Err("Failed to allocate ROM memory".into());
-            }
-            // Copy BIOS data into the ROM buffer
-            unsafe {
-                std::ptr::copy_nonoverlapping(bios.as_ptr(), rom_ptr, rom_size);
-            }
-            // Register as memory slot 1 with WHP
-            let ret = corevm_set_memory_region(handle, 1, rom_base, rom_alloc as u64, rom_ptr);
-            if ret != 0 {
-                return Err(format!("Failed to map ROM at 0x{:X}", rom_base));
-            }
-            // Note: rom_ptr is intentionally leaked — it must remain valid for VM lifetime
-
-            // VGA BIOS: inject via fw_cfg so SeaBIOS loads it as option ROM.
-            // SeaBIOS reads fw_cfg file directory during POST, finds the
-            // "vgaroms/vgabios.bin" entry, and loads it at 0xC0000 as option ROM.
-            {
-                let name = b"vgaroms/vgabios.bin";
-                let fw_rc = corevm_fw_cfg_add_file(
-                    handle,
-                    name.as_ptr(), name.len() as u32,
-                    vgabios.as_ptr(), vgabios.len() as u32,
-                );
-                if fw_rc != 0 {
-                    return Err(format!(
-                        "Failed to add VGA BIOS to fw_cfg (rc={}, vgabios_size={})",
-                        fw_rc, vgabios.len()
-                    ));
-                }
-            }
-
-            Ok(())
-        }
-        BiosType::CoreVm => {
-            let bios_path = platform::find_bios("corevm-bios.bin")
-                .ok_or("CoreVM BIOS not found")?;
-            let bios = std::fs::read(&bios_path)
-                .map_err(|e| format!("Failed to read BIOS: {}", e))?;
-
-            corevm_load_binary(handle, 0xF0000, bios.as_ptr(), bios.len() as u32);
-
-            Ok(())
-        }
-    }
-}
-
-/// Resolve the MAC address from config: parse static or generate dynamic.
-fn resolve_mac(config: &crate::config::VmConfig) -> [u8; 6] {
-    if config.mac_mode == MacMode::Static && !config.mac_address.is_empty() {
-        if let Some(mac) = parse_mac(&config.mac_address) {
-            return mac;
-        }
-    }
-    generate_mac(&config.uuid)
-}
-
-/// Generate a deterministic locally-administered MAC from the VM UUID.
-/// Uses prefix 52:54:00 (QEMU-style) + 3 bytes derived from UUID hash.
-fn generate_mac(uuid: &str) -> [u8; 6] {
-    // Simple hash of UUID string to get 3 unique bytes
-    let mut h: u32 = 5381;
-    for b in uuid.bytes() {
-        h = h.wrapping_mul(33).wrapping_add(b as u32);
-    }
-    [
-        0x52,                          // locally administered, unicast
-        0x54,
-        0x00,
-        ((h >> 16) & 0xFF) as u8,
-        ((h >> 8) & 0xFF) as u8,
-        (h & 0xFF) as u8,
-    ]
-}
-
-/// Parse a MAC address string like "52:54:00:AB:CD:EF" or "52-54-00-AB-CD-EF".
-fn parse_mac(s: &str) -> Option<[u8; 6]> {
-    let parts: Vec<&str> = if s.contains(':') {
-        s.split(':').collect()
-    } else if s.contains('-') {
-        s.split('-').collect()
-    } else {
-        return None;
-    };
-    if parts.len() != 6 { return None; }
-    let mut mac = [0u8; 6];
-    for (i, part) in parts.iter().enumerate() {
-        mac[i] = u8::from_str_radix(part, 16).ok()?;
-    }
-    Some(mac)
-}

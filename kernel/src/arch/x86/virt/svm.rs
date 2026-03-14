@@ -436,6 +436,12 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
         let exit_info1 = vmcb.control.exit_info1;
         let exit_info2 = vmcb.control.exit_info2;
 
+        crate::serial_println!(
+            "[svm] vmexit: code={:#x} info1={:#x} info2={:#x} rip={:#x} cs.base={:#x}",
+            exit_code, exit_info1, exit_info2,
+            vmcb.state.rip, vmcb.state.cs.base
+        );
+
         // Handle CPUID internally
         if exit_code == VMEXIT_CPUID {
             handle_cpuid_exit(&vm.cpuid_table[..vm.cpuid_count], vcpu, vmcb_phys);
@@ -555,7 +561,6 @@ unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
 
         in("rax") vmcb_phys,
         in("rsi") gprs,
-        options(nostack),
     );
 }
 
