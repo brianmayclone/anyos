@@ -231,8 +231,6 @@ impl MmioHandler for Hpet {
     }
 
     fn write(&mut self, offset: u64, size: u8, val: u64) -> Result<()> {
-        #[cfg(feature = "std")]
-        eprintln!("[hpet] write offset={:#05x} size={} val={:#x}", offset, size, val);
         // Build the full 64-bit value considering sub-register writes
         let shift = ((offset & 7) * 8) as u64;
         let aligned = offset & !7;

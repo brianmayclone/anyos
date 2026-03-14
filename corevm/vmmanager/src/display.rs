@@ -546,18 +546,19 @@ impl DisplayWidget {
         (false, None)
     }
 
-    /// Capture the mouse: hide cursor, confine to window.
+    /// Capture the mouse: lock cursor for raw relative input.
     fn capture_mouse(&mut self, ctx: &egui::Context) {
         self.mouse_captured = true;
-        self.last_mouse_pos = None; // Will be set to center on first frame
+        self.last_mouse_pos = None;
         self.mouse_accum_x = 0.0;
         self.mouse_accum_y = 0.0;
-        // Use Confined: keeps cursor inside window. We use center-warp technique
-        // (warp cursor to display center each frame) to get unlimited relative motion.
-        // Locked is not reliably supported on X11.
-        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Confined));
+        self.warp_skip_frames = 0;
+        // Use Locked: provides raw relative deltas without cursor position warping.
+        // This avoids X11 rendering issues caused by CursorPosition viewport commands.
+        // Falls back to Confined if Locked is not supported on the platform.
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
-        eprintln!("[mouse] Captured — Ctrl+Alt+G to release");
+        eprintln!("[mouse] Captured (Locked) — Ctrl+Alt+G to release");
     }
 
     /// Release the mouse: show cursor and ungrab.
@@ -605,47 +606,13 @@ impl DisplayWidget {
             return;
         }
 
-        // Use egui's pointer.delta() for raw OS-reported movement.
-        // CursorPosition warp is asynchronous on X11, so computing
-        // delta from (pos - center) causes doubled deltas and drift.
-        // We still warp to center periodically to prevent edge-sticking,
-        // but skip frames right after a warp (the warp generates a phantom delta).
-        let center = display_rect.center();
-
-        // Skip frames after a warp — the phantom delta from warping must be ignored.
-        if self.warp_skip_frames > 0 {
-            self.warp_skip_frames -= 1;
-            // Still consume the delta so it doesn't accumulate
-            let _ = ui.input(|i| i.pointer.delta());
-            // Check if we need another warp (cursor might still be far from center)
-            let pos = ui.input(|i| i.pointer.latest_pos());
-            if let Some(pos) = pos {
-                let dist = ((pos.x - center.x).powi(2) + (pos.y - center.y).powi(2)).sqrt();
-                if dist > 150.0 {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(center));
-                    self.warp_skip_frames = 2;
-                }
-            }
-            self.last_mouse_buttons = buttons;
-            ctx.request_repaint();
-            return;
-        }
-
+        // With CursorGrab::Locked, pointer.delta() provides raw relative motion
+        // without needing cursor position warps. No warp = no phantom deltas,
+        // no rendering interference on X11.
         let (raw_dx, raw_dy) = ui.input(|i| {
             let d = i.pointer.delta();
             (d.x, d.y)
         });
-
-        // Warp cursor back to center when it strays too far from center.
-        // This prevents the cursor from hitting the window edge (Confined mode).
-        let pos = ui.input(|i| i.pointer.latest_pos());
-        if let Some(pos) = pos {
-            let dist_from_center = ((pos.x - center.x).powi(2) + (pos.y - center.y).powi(2)).sqrt();
-            if dist_from_center > 150.0 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(center));
-                self.warp_skip_frames = 2; // skip 2 frames for warp to take effect
-            }
-        }
 
         // Accumulate fractional movement
         self.mouse_accum_x += raw_dx;
