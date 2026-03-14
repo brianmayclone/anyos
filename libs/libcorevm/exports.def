@@ -28,6 +28,7 @@ EXPORTS
     corevm_handle_string_io_exit
     corevm_setup_standard_devices
     corevm_setup_acpi_tables
+    corevm_setup_acpi_tables_with_hpet
     corevm_setup_e1000
     corevm_setup_ahci
     corevm_ahci_attach_disk

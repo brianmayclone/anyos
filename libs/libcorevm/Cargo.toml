@@ -10,12 +10,13 @@ crate-type = ["staticlib", "rlib"]
 default = ["anyos"]
 anyos = ["libheap", "libsyscall"]
 host_test = []
-linux = ["std"]
+linux = ["std", "libc"]
 windows = ["std"]
 std = []
 
 [dependencies]
 libheap = { path = "../libheap", optional = true }
 libsyscall = { path = "../libsyscall", optional = true }
+libc = { version = "0.2", optional = true }
 
 [workspace]

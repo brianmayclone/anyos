@@ -10,6 +10,8 @@ pub enum ToolbarAction {
     Settings,
     Snapshot,
     Screenshot,
+    ClipboardToGuest,
+    ClipboardFromGuest,
 }
 
 fn icon_button(ui: &mut egui::Ui, icon: &str, tooltip: &str, enabled: bool, accent: bool) -> bool {
@@ -92,6 +94,21 @@ pub fn render_toolbar(
     let screenshot_enabled = vm_selected && vm_running;
     if icon_button(ui, "\u{1F5BC}", "Screenshot to Clipboard", screenshot_enabled, false) {
         action = Some(ToolbarAction::Screenshot);
+    }
+
+    ui.add_space(2.0);
+    ui.colored_label(egui::Color32::from_rgb(50, 50, 52), "|");
+    ui.add_space(2.0);
+
+    // Clipboard Host → Guest (paste host clipboard as keystrokes)
+    let clip_enabled = vm_selected && vm_running;
+    if icon_button(ui, "\u{2398}", "Paste Host Clipboard to Guest", clip_enabled, false) {
+        action = Some(ToolbarAction::ClipboardToGuest);
+    }
+
+    // Clipboard Guest → Host (copy VGA text to host clipboard)
+    if icon_button(ui, "\u{2397}", "Copy Guest Text to Host Clipboard", clip_enabled, false) {
+        action = Some(ToolbarAction::ClipboardFromGuest);
     }
 
     action

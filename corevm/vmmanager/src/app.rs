@@ -248,6 +248,87 @@ impl CoreVmApp {
                     }
                 }
             }
+            ToolbarAction::ClipboardToGuest => {
+                // Read host clipboard text and inject as PS/2 keystrokes
+                if let Some(uuid) = &self.selected_vm.clone() {
+                    if let Some(vm) = self.find_vm(uuid) {
+                        if let Some(handle) = vm.vm_handle {
+                            match arboard::Clipboard::new() {
+                                Ok(mut clipboard) => {
+                                    match clipboard.get_text() {
+                                        Ok(text) => {
+                                            if text.is_empty() {
+                                                self.error_message = Some("Host clipboard is empty.".into());
+                                            } else {
+                                                let typed = input::type_string_to_vm(handle, &text);
+                                                self.error_message = Some(format!(
+                                                    "Pasted {} characters to guest.", typed
+                                                ));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            self.error_message = Some(format!(
+                                                "Failed to read clipboard: {}", e
+                                            ));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    self.error_message = Some(format!(
+                                        "Failed to open clipboard: {}", e
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            ToolbarAction::ClipboardFromGuest => {
+                // Copy VGA text buffer content to host clipboard
+                let result = self.selected_vm.as_ref()
+                    .and_then(|uuid| self.find_vm(uuid))
+                    .map(|entry| entry.framebuffer.clone());
+                if let Some(fb_arc) = result {
+                    if let Ok(fb) = fb_arc.lock() {
+                        if fb.text_mode && !fb.text_buffer.is_empty() {
+                            // VGA text mode: 80 columns, rows = buffer_len / 80
+                            let cols = 80u32;
+                            let rows = (fb.text_buffer.len() as u32) / cols;
+                            let text = extract_vga_text(&fb.text_buffer, cols, rows);
+                            if text.trim().is_empty() {
+                                self.error_message = Some("Guest text buffer is empty.".into());
+                            } else {
+                                match arboard::Clipboard::new() {
+                                    Ok(mut clipboard) => {
+                                        match clipboard.set_text(&text) {
+                                            Ok(()) => {
+                                                let lines = text.lines().count();
+                                                self.error_message = Some(format!(
+                                                    "Copied {} lines of guest text to clipboard.", lines
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                self.error_message = Some(format!(
+                                                    "Failed to set clipboard: {}", e
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        self.error_message = Some(format!(
+                                            "Failed to open clipboard: {}", e
+                                        ));
+                                    }
+                                }
+                            }
+                        } else {
+                            self.error_message = Some(
+                                "Guest is not in text mode — use Screenshot instead.".into()
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -279,6 +360,7 @@ impl eframe::App for CoreVmApp {
         // handle_keyboard_events removes all Key events, so Ctrl+Alt+G would never
         // reach display.show() otherwise.
         if self.display.mouse_captured {
+            // Check via events (before handle_keyboard_events consumes them)
             let release = ctx.input(|i| {
                 i.events.iter().any(|e| matches!(e,
                     egui::Event::Key { key: egui::Key::G, pressed: true, modifiers, .. }
@@ -288,7 +370,12 @@ impl eframe::App for CoreVmApp {
                         if modifiers.ctrl && modifiers.alt
                 ))
             });
-            if release {
+            // Also check via modifier state (works even if events are broken)
+            let mod_release = ctx.input(|i| {
+                i.modifiers.ctrl && i.modifiers.alt
+                    && (i.key_pressed(egui::Key::G) || i.key_pressed(egui::Key::Escape))
+            });
+            if release || mod_release {
                 self.display.release_mouse(ctx);
             }
         }
@@ -909,6 +996,44 @@ fn render_summary(ui: &mut egui::Ui, vm: &VmEntry, deferred_action: &mut Option<
             }
         }
     });
+}
+
+/// Extract text from a VGA text-mode buffer (array of u16: low byte = char, high byte = attr).
+/// Returns the text with trailing spaces trimmed per line.
+fn extract_vga_text(text_buffer: &[u16], cols: u32, rows: u32) -> String {
+    let cols = cols.max(1) as usize;
+    let rows = rows.max(1) as usize;
+    let mut result = String::with_capacity(cols * rows);
+
+    for row in 0..rows {
+        let start = row * cols;
+        let end = (start + cols).min(text_buffer.len());
+        if start >= text_buffer.len() {
+            break;
+        }
+
+        let mut line = String::with_capacity(cols);
+        for i in start..end {
+            let ch = (text_buffer[i] & 0xFF) as u8;
+            // Map VGA characters: printable ASCII or space
+            if ch >= 0x20 && ch < 0x7F {
+                line.push(ch as char);
+            } else {
+                line.push(' ');
+            }
+        }
+        // Trim trailing spaces
+        let trimmed = line.trim_end();
+        result.push_str(trimmed);
+        result.push('\n');
+    }
+
+    // Remove trailing empty lines
+    while result.ends_with("\n\n") {
+        result.pop();
+    }
+
+    result
 }
 
 /// Copy the current framebuffer contents to the OS clipboard as an image.

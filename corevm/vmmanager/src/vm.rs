@@ -13,7 +13,7 @@ use libcorevm::ffi::{
     CExitReason,
     corevm_create, corevm_create_vcpu, corevm_destroy,
     corevm_run_vcpu, corevm_handle_io_exit, corevm_handle_mmio_exit, corevm_handle_string_io_exit,
-    corevm_setup_standard_devices, corevm_setup_acpi_tables, corevm_setup_ahci, corevm_setup_e1000, corevm_setup_hpet,
+    corevm_setup_standard_devices, corevm_setup_acpi_tables, corevm_setup_acpi_tables_with_hpet, corevm_setup_ahci, corevm_setup_e1000, corevm_setup_hpet, corevm_setup_ac97, corevm_ac97_process,
     corevm_complete_string_io,
     corevm_get_vcpu_regs,
     corevm_get_vcpu_sregs,
@@ -85,8 +85,13 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         entry.diag_log.log(DiagCategory::Info, "HPET enabled (Windows guest)".into());
     }
 
-    let acpi_rc = corevm_setup_acpi_tables(handle);
-    entry.diag_log.log(DiagCategory::Info, format!("ACPI tables setup: rc={}", acpi_rc));
+    // ACPI tables — include HPET table only for Windows guests
+    let acpi_rc = if config.guest_os.is_windows() {
+        corevm_setup_acpi_tables_with_hpet(handle)
+    } else {
+        corevm_setup_acpi_tables(handle)
+    };
+    entry.diag_log.log(DiagCategory::Info, format!("ACPI tables setup: rc={} (hpet={})", acpi_rc, config.guest_os.is_windows()));
 
     // VGA LFB is already mapped by setup_standard_devices → setup_vga_lfb_mapping
     // at slot 2 (0xE0000000, 8MB) pointing to the SVGA device's internal framebuffer.
@@ -107,6 +112,12 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
             "E1000 NIC enabled (mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
         ));
+    }
+
+    // AC97 Audio Controller — only if enabled in config
+    if config.audio_enabled {
+        corevm_setup_ac97(handle);
+        entry.diag_log.log(DiagCategory::Info, "AC97 audio controller enabled".to_string());
     }
 
     // Load BIOS
@@ -196,10 +207,11 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     let control_clone = control.clone();
     let diag = entry.diag_log.clone();
     let diag_enabled = entry.config.diagnostics;
+    let audio_enabled = entry.config.audio_enabled;
 
     // Spawn VM execution thread
     let thread = thread::spawn(move || {
-        vm_run_loop(handle, fb, control_clone, diag, diag_enabled);
+        vm_run_loop(handle, fb, control_clone, diag, diag_enabled, audio_enabled);
         corevm_destroy(handle);
     });
 
@@ -247,6 +259,7 @@ fn vm_run_loop(
     control: Arc<VmControl>,
     diag: DiagLog,
     diag_enabled: bool,
+    audio_enabled: bool,
 ) {
     let mut last_fb_update = Instant::now();
     let mut last_pit_tick = Instant::now();
@@ -258,6 +271,7 @@ fn vm_run_loop(
     // overridden by eframe/winit signal handlers in the main thread.
     #[cfg(target_os = "linux")]
     libcorevm::backend::kvm::install_sigusr1_handler();
+
 
     // Timer thread: periodically cancel run_vcpu so the main loop can
     // advance PIT, inject IRQs, and handle other events.
@@ -558,6 +572,11 @@ fn vm_run_loop(
             diag.log(DiagCategory::Interrupt, format!("poll_irqs ret={:#010x}", poll_inj));
         }
 
+        // Process AC97 audio DMA (reads audio data from guest buffers)
+        if audio_enabled {
+            corevm_ac97_process(handle);
+        }
+
         // Drain debug port output on every iteration
         {
             let mut dbg_buf = [0u8; 1024];
@@ -626,8 +645,20 @@ fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>, diag: &Diag
         let read_addr = 0xE000_0000u64 + vram_offset;
         let phys_ret = corevm_read_phys(handle, read_addr, raw_pixels.as_mut_ptr(), fb_size as u32);
         let have_pixels = if phys_ret == 0 {
-            // Check if LFB has actual data (guest may have switched to text mode)
-            raw_pixels.iter().take(64).any(|&b| b != 0)
+            // Check if LFB has actual data (guest may have switched to text mode).
+            // Sample from multiple locations across the framebuffer — checking
+            // only the first 64 bytes fails when the top-left corner is black
+            // (e.g. a terminal with black background).
+            let stride = vga_w as usize * bytes_per_pixel;
+            let sample_rows = [0, vga_h as usize / 4, vga_h as usize / 2, vga_h as usize * 3 / 4];
+            sample_rows.iter().any(|&row| {
+                let off = row * stride;
+                if off + 64 <= raw_pixels.len() {
+                    raw_pixels[off..off + 64].iter().any(|&b| b != 0)
+                } else {
+                    false
+                }
+            })
         } else {
             // Fallback: read internal SVGA framebuffer directly
             let mut fb_ptr: *const u8 = std::ptr::null();
@@ -640,7 +671,17 @@ fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>, diag: &Diag
                 if len > 0 {
                     let raw = unsafe { std::slice::from_raw_parts(fb_ptr.add(off), len) };
                     raw_pixels[..len].copy_from_slice(raw);
-                    raw.iter().take(64).any(|&b| b != 0)
+                    // Sample from multiple rows, not just the first 64 bytes
+                    let stride = vga_w as usize * bytes_per_pixel;
+                    let sample_rows = [0, vga_h as usize / 4, vga_h as usize / 2, vga_h as usize * 3 / 4];
+                    sample_rows.iter().any(|&row| {
+                        let roff = row * stride;
+                        if roff + 64 <= len {
+                            raw_pixels[roff..roff + 64].iter().any(|&b| b != 0)
+                        } else {
+                            false
+                        }
+                    })
                 } else {
                     false
                 }

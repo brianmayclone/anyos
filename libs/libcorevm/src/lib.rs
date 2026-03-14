@@ -37,6 +37,8 @@ pub mod vm;
 pub mod ffi;
 #[cfg(feature = "std")]
 pub mod setup;
+#[cfg(feature = "std")]
+pub mod net;
 
 /// Syscall wrappers for the allocator, panic handler, debug output, and
 /// file I/O (used by the IDE controller for on-demand disk access).

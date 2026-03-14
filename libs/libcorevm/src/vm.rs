@@ -10,6 +10,8 @@ use crate::devices::serial::Serial;
 use crate::devices::ps2::Ps2Controller;
 use crate::devices::svga::Svga;
 use crate::devices::ahci::Ahci;
+use crate::devices::e1000::E1000;
+use crate::devices::ac97::Ac97;
 use crate::devices::hpet::Hpet;
 
 /// The virtual machine instance.
@@ -45,6 +47,12 @@ pub struct Vm {
     pub cmos_ptr: *mut crate::devices::cmos::Cmos,
     pub hpet_ptr: *mut Hpet,
     pub ide_ptr: *mut crate::devices::ide::Ide,
+    pub e1000_ptr: *mut E1000,
+    pub ac97_ptr: *mut Ac97,
+
+    /// Pointer to the PCI MMIO router (lives inside the MMIO dispatch regions).
+    /// Used by `corevm_setup_e1000()` to add E1000 to the router after AHCI setup.
+    pub pci_mmio_router_ptr: *mut crate::ffi::PciMmioRouter,
 
     /// Tracks whether AHCI IRQ 11 is currently asserted on the in-kernel irqchip.
     /// Used for level-triggered interrupt semantics: only call set_irq_line when
@@ -113,6 +121,9 @@ impl Vm {
             cmos_ptr: core::ptr::null_mut(),
             hpet_ptr: core::ptr::null_mut(),
             ide_ptr: core::ptr::null_mut(),
+            e1000_ptr: core::ptr::null_mut(),
+            ac97_ptr: core::ptr::null_mut(),
+            pci_mmio_router_ptr: core::ptr::null_mut(),
             ahci_irq_asserted: false,
             #[cfg(feature = "std")]
             pending_mouse: std::sync::Mutex::new(alloc::vec::Vec::new()),
@@ -624,6 +635,24 @@ impl Vm {
             None
         } else {
             Some(unsafe { &mut *self.hpet_ptr })
+        }
+    }
+
+    /// Get a mutable reference to the E1000 NIC, if set up.
+    pub fn e1000(&mut self) -> Option<&mut E1000> {
+        if self.e1000_ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *self.e1000_ptr })
+        }
+    }
+
+    /// Get a mutable reference to the AC97 audio controller, if set up.
+    pub fn ac97(&mut self) -> Option<&mut Ac97> {
+        if self.ac97_ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *self.ac97_ptr })
         }
     }
 }

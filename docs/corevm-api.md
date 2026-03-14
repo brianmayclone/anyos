@@ -5,7 +5,7 @@
 CoreVM can boot real operating systems: load a BIOS ROM, attach a disk image, and watch the guest transition from 16-bit real mode through 32-bit protected mode to 64-bit long mode — exactly as a physical PC does.
 
 **Format:** ELF64 shared object (.so), loaded via `dl_open("/Libraries/libcorevm.so")`
-**Exports:** 58
+**Exports:** 65
 **Client crate:** `libcorevm_client` (uses `dynlink::dl_open` / `dl_sym`)
 **ISA:** Intel x86 / IA-32 / x86-64 (AMD64)
 **BIOS:** Built-in CoreVM BIOS (64 KB, NASM) or SeaBIOS (256 KB)
@@ -429,6 +429,7 @@ Calling `vm.setup_standard_devices()` registers the full complement of PC-compat
 | **CMOS RTC** | 0x70-0x71 | 8 | Real-time clock + 128 bytes NVRAM |
 | **16550 UART** | 0x3F8-0x3FF | 4 | Serial port (COM1) with TX/RX ring buffers |
 | **VGA/SVGA** | 0x3C0-0x3DA, MMIO 0xA0000 | — | Text mode (80x25), Mode 13h (320x200x256), linear framebuffer |
+| **AC97 Audio** | NAM: 0x1C00-0x1CFF, NABM: 0x1D00-0x1D3F | 5 | Intel 82801AA audio controller (PCM out, mixer) |
 | **Debug Port** | 0x402 | — | QEMU-style debug console output |
 
 ### IDE/ATA Disk Controller
@@ -460,6 +461,75 @@ vm.setup_e1000(0xD000_0000, &mac_address);   // MMIO base + 6-byte MAC
 | **PCI** | Appears on the PCI configuration bus |
 | **RX** | `vm.e1000_receive_packet(&ethernet_frame)` — inject a packet into the guest |
 | **TX** | `vm.e1000_take_tx_packets(&mut buf)` — drain transmitted packets |
+
+#### TAP Network Backend (Linux/KVM)
+
+On Linux, the E1000 NIC can be connected to a host TAP interface for real network connectivity:
+
+```rust
+use libcorevm::net::tap::TapDevice;
+
+// Create a TAP device
+let tap = TapDevice::new("tap0").unwrap();
+tap.bring_up().ok();                       // ip link set tap0 up
+tap.add_to_bridge("br0").ok();             // ip link set tap0 master br0
+
+// Poll network in run loop (~every 1ms)
+let packets = libcorevm::net::tap::poll_network(&tap, vm_handle);
+```
+
+`poll_network()` performs bidirectional packet exchange:
+- **Guest → Host**: calls `corevm_e1000_take_tx()` and writes frames to TAP fd
+- **Host → Guest**: reads frames from TAP fd and calls `corevm_e1000_receive()`
+
+**vmctl CLI:**
+```bash
+corevm-vmctl run -r 512 -i image.iso -b seabios --tap tap0 --bridge br0
+```
+
+| Option | Description |
+|--------|-------------|
+| `--tap <name>` | Create and attach TAP interface (e.g. `tap0`) |
+| `--bridge <name>` | Add TAP to host bridge (e.g. `br0`) |
+
+**Prerequisites:** `/dev/net/tun` accessible, `ip` command available for link setup.
+
+### AC97 Audio Controller
+
+```rust
+vm.setup_pci_bus();                          // PCI bus required first
+vm.setup_ac97();                             // Registers AC97 on PCI bus
+```
+
+| Feature | Details |
+|---------|---------|
+| **Type** | Intel 82801AA (ICH) AC'97 Audio Controller |
+| **PCI** | Bus 0, Device 5, Function 0 (Vendor 8086, Device 2415) |
+| **NAM (Mixer)** | I/O ports 0x1C00-0x1CFF (256 bytes) — Audio Codec mixer registers |
+| **NABM (Bus Master)** | I/O ports 0x1D00-0x1D3F (64 bytes) — DMA engine control |
+| **IRQ** | 5 |
+| **Channels** | PCM In (PI), PCM Out (PO), Mic In (MC) |
+| **Sample Format** | 16-bit signed PCM, interleaved stereo |
+| **Sample Rates** | 8-48 kHz (Variable Rate Audio supported), default 48 kHz |
+| **Codec ID** | Analog Devices AD1881A (0x41445370) |
+
+#### Audio DMA
+
+The AC97 uses Buffer Descriptor Lists (BDL) for DMA:
+
+```rust
+// Process pending DMA transfers (call in run loop)
+vm.ac97_process();
+
+// Extract rendered audio samples for host playback
+let mut samples = [0i16; 4096];
+let count = vm.ac97_take_audio(&mut samples);  // Returns number of i16 samples
+let rate = vm.ac97_sample_rate();               // Current sample rate in Hz
+```
+
+Each BDL contains up to 32 buffer descriptors. Each descriptor points to a guest-physical buffer of 16-bit PCM samples with optional IOC (Interrupt on Completion) and BUP (Buffer Underrun Policy) flags.
+
+**vmctl:** In headless mode, AC97 is initialized but audio samples are discarded. A future update will add ALSA/PulseAudio output.
 
 ### VGA/SVGA Display
 
@@ -501,7 +571,7 @@ vm.ps2_mouse_move(10, -5, 0x01); // move right+up, left button down
 vm.setup_pci_bus();  // PCI configuration space at ports 0xCF8/0xCFC
 ```
 
-The PCI bus provides standard configuration space access for attached PCI devices (currently the E1000 NIC).
+The PCI bus provides standard configuration space access for attached PCI devices (E1000 NIC, AC97 Audio).
 
 ### fw_cfg Device
 
@@ -718,6 +788,22 @@ vm.e1000_receive_packet(data: &[u8]);
 let n: usize = vm.e1000_take_tx_packets(buf: &mut [u8]);
 ```
 
+For host network connectivity on Linux, use the TAP backend (see [E1000 Network Interface → TAP Network Backend](#tap-network-backend-linuxkvm)).
+
+### Audio I/O
+
+```rust
+// Process AC97 DMA transfers (call periodically in run loop)
+vm.ac97_process();
+
+// Take rendered PCM samples for host playback
+let mut samples = [0i16; 4096];
+let count: u32 = vm.ac97_take_audio(&mut samples);
+
+// Query current sample rate
+let rate: u32 = vm.ac97_sample_rate();  // e.g. 48000
+```
+
 ### Timer and Interrupt Control
 
 ```rust
@@ -797,7 +883,7 @@ let rdi = vm.gpr(GPR_RDI);  // 7
 
 ## C ABI Exports
 
-All 58 functions exported by `libcorevm.so` (listed in `libs/libcorevm/exports.def`):
+All 65 functions exported by `libcorevm.so` (listed in `libs/libcorevm/exports.def`):
 
 ### VM Lifecycle (5)
 
@@ -845,13 +931,14 @@ All 58 functions exported by `libcorevm.so` (listed in `libs/libcorevm/exports.d
 | `corevm_write_phys_u16` | `(h: u64, addr: u64, val: u16)` | Write u16 to physical memory |
 | `corevm_write_phys_u32` | `(h: u64, addr: u64, val: u32)` | Write u32 to physical memory |
 
-### Device Setup (4)
+### Device Setup (5)
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
 | `corevm_setup_standard_devices` | `(h: u64)` | Register PIC, PIT, PS/2, CMOS, UART, VGA |
 | `corevm_setup_pci_bus` | `(h: u64)` | Register PCI configuration bus |
 | `corevm_setup_e1000` | `(h: u64, mmio: u64, mac: *const u8)` | Register E1000 NIC |
+| `corevm_setup_ac97` | `(h: u64) -> i32` | Register AC97 audio controller (PCI 00:05.0) |
 | `corevm_setup_ide` | `(h: u64)` | Register IDE controller |
 
 ### PS/2 Input (3)
@@ -877,12 +964,23 @@ All 58 functions exported by `libcorevm.so` (listed in `libs/libcorevm/exports.d
 | `corevm_serial_send_input` | `(h: u64, ptr: *const u8, len: u32)` | Send data to guest COM1 |
 | `corevm_serial_take_output` | `(h: u64, buf: *mut u8, len: u32) -> u32` | Read guest COM1 output |
 
-### E1000 Network (2)
+### E1000 Network (5)
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
 | `corevm_e1000_receive_packet` | `(h: u64, ptr: *const u8, len: u32)` | Deliver packet to guest NIC |
 | `corevm_e1000_take_tx_packets` | `(h: u64, buf: *mut u8, len: u32) -> u32` | Drain TX packets |
+| `corevm_e1000_take_tx` | `(h: u64, buf: *mut u8, len: u32) -> i32` | Take single TX packet (-1 = none) |
+| `corevm_e1000_receive` | `(h: u64, data: *const u8, len: u32) -> i32` | Inject RX packet (0 = ok) |
+| `corevm_e1000_has_rx_irq` | `(h: u64) -> u32` | Check pending RX interrupt |
+
+### AC97 Audio (3)
+
+| Export | Signature | Description |
+|--------|-----------|-------------|
+| `corevm_ac97_process` | `(h: u64) -> i32` | Process pending DMA transfers |
+| `corevm_ac97_take_audio` | `(h: u64, buf: *mut i16, max: u32) -> u32` | Take rendered PCM samples |
+| `corevm_ac97_sample_rate` | `(h: u64) -> u32` | Get current sample rate (Hz) |
 
 ### Timer / Interrupt (3)
 

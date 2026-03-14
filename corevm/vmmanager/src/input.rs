@@ -141,3 +141,100 @@ fn scancode_for_char(ch: char) -> Option<u8> {
     }
 }
 
+const SC_LSHIFT: u8 = 0x2A;
+
+/// Map a character to its PS/2 scancode and whether Shift is required.
+/// Returns (scancode, needs_shift).
+fn char_to_scancode(ch: char) -> Option<(u8, bool)> {
+    match ch {
+        'a'..='z' => {
+            let idx = (ch as u8) - b'a';
+            let scancodes: [u8; 26] = [
+                0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24,
+                0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14,
+                0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
+            ];
+            Some((scancodes[idx as usize], false))
+        }
+        'A'..='Z' => {
+            let idx = (ch as u8) - b'A';
+            let scancodes: [u8; 26] = [
+                0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24,
+                0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14,
+                0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
+            ];
+            Some((scancodes[idx as usize], true))
+        }
+        '0' => Some((0x0B, false)),
+        '1' => Some((0x02, false)),
+        '2' => Some((0x03, false)),
+        '3' => Some((0x04, false)),
+        '4' => Some((0x05, false)),
+        '5' => Some((0x06, false)),
+        '6' => Some((0x07, false)),
+        '7' => Some((0x08, false)),
+        '8' => Some((0x09, false)),
+        '9' => Some((0x0A, false)),
+        ' ' => Some((0x39, false)),
+        '\n' => Some((0x1C, false)),
+        '\t' => Some((0x0F, false)),
+        // Unshifted symbols
+        '-' => Some((0x0C, false)),
+        '=' => Some((0x0D, false)),
+        '[' => Some((0x1A, false)),
+        ']' => Some((0x1B, false)),
+        '\\' => Some((0x2B, false)),
+        ';' => Some((0x27, false)),
+        '\'' => Some((0x28, false)),
+        '`' => Some((0x29, false)),
+        ',' => Some((0x33, false)),
+        '.' => Some((0x34, false)),
+        '/' => Some((0x35, false)),
+        // Shifted symbols
+        '!' => Some((0x02, true)),  // Shift+1
+        '@' => Some((0x03, true)),  // Shift+2
+        '#' => Some((0x04, true)),  // Shift+3
+        '$' => Some((0x05, true)),  // Shift+4
+        '%' => Some((0x06, true)),  // Shift+5
+        '^' => Some((0x07, true)),  // Shift+6
+        '&' => Some((0x08, true)),  // Shift+7
+        '*' => Some((0x09, true)),  // Shift+8
+        '(' => Some((0x0A, true)),  // Shift+9
+        ')' => Some((0x0B, true)),  // Shift+0
+        '_' => Some((0x0C, true)),  // Shift+-
+        '+' => Some((0x0D, true)),  // Shift+=
+        '{' => Some((0x1A, true)),  // Shift+[
+        '}' => Some((0x1B, true)),  // Shift+]
+        '|' => Some((0x2B, true)),  // Shift+\
+        ':' => Some((0x27, true)),  // Shift+;
+        '"' => Some((0x28, true)),  // Shift+'
+        '~' => Some((0x29, true)),  // Shift+`
+        '<' => Some((0x33, true)),  // Shift+,
+        '>' => Some((0x34, true)),  // Shift+.
+        '?' => Some((0x35, true)),  // Shift+/
+        _ => None,
+    }
+}
+
+/// Inject a string as PS/2 keystrokes into the VM.
+/// Each character is mapped to its scancode, with Shift pressed as needed.
+/// Returns the number of characters successfully typed.
+pub fn type_string_to_vm(vm_handle: u64, text: &str) -> usize {
+    let mut count = 0;
+    for ch in text.chars() {
+        if let Some((scancode, needs_shift)) = char_to_scancode(ch) {
+            if needs_shift {
+                libcorevm::ffi::corevm_ps2_key_press(vm_handle, SC_LSHIFT);
+            }
+            libcorevm::ffi::corevm_ps2_key_press(vm_handle, scancode);
+            libcorevm::ffi::corevm_ps2_key_release(vm_handle, scancode);
+            if needs_shift {
+                libcorevm::ffi::corevm_ps2_key_release(vm_handle, SC_LSHIFT);
+            }
+            count += 1;
+        }
+        // Skip characters we can't map (e.g. Unicode beyond ASCII)
+    }
+    count
+}
+

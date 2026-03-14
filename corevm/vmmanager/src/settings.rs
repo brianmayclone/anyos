@@ -188,7 +188,7 @@ impl SettingsDialog {
                                     Category::HardDisks   => Self::page_hard_disks(&mut self.config, ui, &mut browse_target),
                                     Category::CdDvd       => Self::page_cd_dvd(&mut self.config, ui, &mut browse_target),
                                     Category::Network     => self.page_network(ui),
-                                    Category::Sound       => Self::page_placeholder(ui, "Sound", "Sound card emulation is not yet implemented."),
+                                    Category::Sound       => self.page_sound(ui),
                                     Category::Usb         => Self::page_placeholder(ui, "USB", "USB controller emulation is not yet implemented."),
                                     Category::Diagnostics => self.page_diagnostics(ui),
                                     Category::Expert      => self.page_expert(ui),
@@ -632,6 +632,25 @@ impl SettingsDialog {
                 });
             }
         }
+    }
+
+    fn page_sound(&mut self, ui: &mut egui::Ui) {
+        section_heading(ui, "Audio");
+
+        ui.checkbox(&mut self.config.audio_enabled, "Enable Audio Controller");
+
+        if self.config.audio_enabled {
+            ui.add_space(4.0);
+            labeled_row(ui, "Controller:", |ui| {
+                ui.label(egui::RichText::new("Intel AC'97 (ICH)").color(egui::Color32::from_rgb(160, 160, 160)));
+            });
+        }
+
+        ui.add_space(4.0);
+        ui.colored_label(
+            egui::Color32::from_rgb(120, 120, 125),
+            "Emulates an Intel 82801AA AC'97 audio controller.\nDisable for server guests or if audio causes issues.",
+        );
     }
 
     fn page_diagnostics(&mut self, ui: &mut egui::Ui) {

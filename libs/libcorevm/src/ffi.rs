@@ -319,17 +319,24 @@ pub extern "C" fn corevm_inject_interrupt(handle: u64, vcpu_id: u32, vector: u8)
 }
 
 /// Cancel a running vCPU, causing run_vcpu to return with Cancelled.
-/// Safe to call from any thread — uses atomic globals, no VM registry access.
+/// Safe to call from any thread — uses per-VM atomic slots, no VM registry access needed.
 #[no_mangle]
-pub extern "C" fn corevm_cancel_vcpu(_handle: u64, vcpu_id: u32) -> i32 {
+pub extern "C" fn corevm_cancel_vcpu(handle: u64, vcpu_id: u32) -> i32 {
     #[cfg(feature = "windows")]
     { return crate::backend::whp::cancel_vcpu_global(vcpu_id); }
     #[cfg(feature = "linux")]
-    { return crate::backend::kvm::cancel_vcpu_kvm(vcpu_id); }
+    {
+        // Look up the VM's slot index from its backend
+        let vm_slot = match get_vm(handle) {
+            Some(vm) => vm.backend.vm_slot,
+            None => return -1,
+        };
+        return crate::backend::kvm::cancel_vcpu_kvm(vm_slot, vcpu_id);
+    }
     #[cfg(feature = "anyos")]
     { return 0; }
     #[allow(unreachable_code)]
-    { let _ = (_handle, vcpu_id); 0 }
+    { let _ = (handle, vcpu_id); 0 }
 }
 
 /// Advance the PIT timer by `ticks` clock cycles.
@@ -1088,7 +1095,7 @@ pub extern "C" fn corevm_setup_acpi_tables(handle: u64) -> i32 {
     let fw_cfg = unsafe { &mut *vm.fw_cfg_ptr };
 
     let (rsdp, tables, loader) = crate::devices::acpi_tables::generate_acpi_tables();
-    dbg(&alloc::format!("Generated: rsdp={} tables={} loader={} bytes", rsdp.len(), tables.len(), loader.len()));
+    dbg(&alloc::format!("Generated: rsdp={} tables={} loader={} bytes (no HPET)", rsdp.len(), tables.len(), loader.len()));
 
     fw_cfg.add_file("etc/acpi/rsdp", rsdp);
     fw_cfg.add_file("etc/acpi/tables", tables);
@@ -1097,16 +1104,37 @@ pub extern "C" fn corevm_setup_acpi_tables(handle: u64) -> i32 {
     0
 }
 
+/// Set up ACPI tables WITH HPET table included.
+/// Required for Windows 7/8/10 guests that need HPET for timer source.
+/// Linux guests should use corevm_setup_acpi_tables() without HPET
+/// (HPET Legacy Replacement mode conflicts with PIT-based timer test).
+#[no_mangle]
+pub extern "C" fn corevm_setup_acpi_tables_with_hpet(handle: u64) -> i32 {
+    let vm = match get_vm(handle) {
+        Some(v) => v,
+        None => return -1,
+    };
+    if vm.fw_cfg_ptr.is_null() {
+        return -1;
+    }
+    let fw_cfg = unsafe { &mut *vm.fw_cfg_ptr };
+    let (rsdp, tables, loader) = crate::devices::acpi_tables::generate_acpi_tables_with_hpet();
+    fw_cfg.add_file("etc/acpi/rsdp", rsdp);
+    fw_cfg.add_file("etc/acpi/tables", tables);
+    fw_cfg.add_file("etc/table-loader", loader);
+    0
+}
+
 // ── Device-specific FFI ─────────────────────────────────────────────────────
 
 /// Set up the E1000 NIC with the given MAC address (6 bytes).
 ///
 /// Registers the E1000 as:
-/// - MMIO region at 0xF0000000 (128 KB) for register access
+/// - Routed via the PCI MMIO router (created by `corevm_setup_ahci`) which
+///   dynamically reads BAR0 from PCI config to forward MMIO accesses
 /// - PCI device 00:04.0 (Intel 82540EM, 8086:100E) so the guest can discover it
 ///
-/// The MMIO base must NOT overlap with AHCI catch-all (0xFE000000-0xFEBFFFFF),
-/// VGA LFB (0xE0000000-0xE7FFFFFF), IOAPIC (0xFEC00000), or LAPIC (0xFEE00000).
+/// **Must be called after `corevm_setup_ahci()`** so the PCI MMIO router exists.
 #[no_mangle]
 pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
     const E1000_MMIO_BASE: u64 = 0xF000_0000;
@@ -1115,8 +1143,19 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
     let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
     if mac.is_null() { return -1; }
     let m: [u8; 6] = unsafe { [*mac, *mac.add(1), *mac.add(2), *mac.add(3), *mac.add(4), *mac.add(5)] };
-    let e1000 = crate::devices::e1000::E1000::new(m);
-    vm.memory.add_mmio(E1000_MMIO_BASE, E1000_MMIO_SIZE, Box::new(e1000));
+    let e1000 = Box::new(crate::devices::e1000::E1000::new(m));
+    let e1000_ptr = &*e1000 as *const crate::devices::e1000::E1000 as *mut crate::devices::e1000::E1000;
+    vm.e1000_ptr = e1000_ptr;
+
+    // Add E1000 to the PCI MMIO router so accesses are routed dynamically
+    // based on the current BAR0 address (which SeaBIOS may remap).
+    if !vm.pci_mmio_router_ptr.is_null() {
+        let router = unsafe { &mut *vm.pci_mmio_router_ptr };
+        router.e1000 = e1000_ptr;
+    }
+
+    // Keep the E1000 Box alive (router uses raw pointer)
+    core::mem::forget(e1000);
 
     // Register E1000 as a PCI device so the guest can discover it via PCI scan.
     if !vm.pci_bus_ptr.is_null() {
@@ -1135,51 +1174,81 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
     0
 }
 
-/// Base address for the AHCI MMIO catch-all region.
-/// Covers 0xFE000000-0xFEBFFFFF (12MB) to catch BAR5 wherever SeaBIOS puts it.
-const AHCI_MMIO_BASE: u64 = 0xFE00_0000;
-const AHCI_MMIO_SIZE: u64 = 0xC0_0000;
+/// Base address for the PCI MMIO catch-all region.
+/// Covers 0xF0000000-0xFEBFFFFF (~236MB) to catch PCI BARs wherever SeaBIOS
+/// remaps them.  SeaBIOS allocates BARs downward from just below the IOAPIC
+/// (0xFEC00000), so both AHCI BAR5 and E1000 BAR0 typically land here.
+const PCI_MMIO_CATCHALL_BASE: u64 = 0xF000_0000;
+const PCI_MMIO_CATCHALL_SIZE: u64 = 0xEC0_0000; // up to 0xFEBFFFFF
 
-/// MMIO wrapper that forwards accesses to AHCI based on current PCI BAR5 address.
-/// Registered over a wide range; only responds when the access falls within BAR5.
-struct AhciPciMmioWrapper {
-    ahci: *mut crate::devices::ahci::Ahci,
+/// MMIO router that forwards accesses to AHCI or E1000 based on their current
+/// PCI BAR addresses.  Registered over a wide catch-all range; dynamically
+/// reads BAR values from PCI config space to route each access.
+pub struct PciMmioRouter {
+    pub ahci: *mut crate::devices::ahci::Ahci,
+    pub e1000: *mut crate::devices::e1000::E1000,
     pci_bus: *mut crate::devices::bus::PciBus,
 }
 
-unsafe impl Send for AhciPciMmioWrapper {}
+unsafe impl Send for PciMmioRouter {}
 
-impl AhciPciMmioWrapper {
-    fn bar5_base(&self) -> u64 {
-        if self.pci_bus.is_null() { return 0; }
+impl PciMmioRouter {
+    /// Read AHCI BAR5 (device 00:03.0, offset 0x24) from PCI config space.
+    fn ahci_bar5(&self) -> u64 {
+        if self.pci_bus.is_null() || self.ahci.is_null() { return 0; }
         let bus = unsafe { &mut *self.pci_bus };
-        // Read BAR5 (offset 0x24) from device 00:03.0
         let val = bus.mmcfg_read(0, 3, 0, 0x24, 4);
-        val & 0xFFFFFFF0 // mask type bits
+        val & 0xFFFFFFF0
+    }
+
+    /// Read E1000 BAR0 (device 00:04.0, offset 0x10) from PCI config space.
+    fn e1000_bar0(&self) -> u64 {
+        if self.pci_bus.is_null() || self.e1000.is_null() { return 0; }
+        let bus = unsafe { &mut *self.pci_bus };
+        let val = bus.mmcfg_read(0, 4, 0, 0x10, 4);
+        val & 0xFFFFFFF0
     }
 }
 
-impl crate::memory::mmio::MmioHandler for AhciPciMmioWrapper {
+impl crate::memory::mmio::MmioHandler for PciMmioRouter {
     fn read(&mut self, offset: u64, size: u8) -> crate::error::Result<u64> {
-        let bar_base = self.bar5_base();
-        let abs_addr = AHCI_MMIO_BASE + offset;
-        if abs_addr < bar_base || abs_addr >= bar_base + 0x1000 {
-            return Ok(0xFFFFFFFF);
+        let abs_addr = PCI_MMIO_CATCHALL_BASE + offset;
+
+        // Check E1000 BAR0 (128KB region)
+        let e1000_base = self.e1000_bar0();
+        if e1000_base != 0 && abs_addr >= e1000_base && abs_addr < e1000_base + 0x2_0000 {
+            let e1000 = unsafe { &mut *self.e1000 };
+            return e1000.read(abs_addr - e1000_base, size);
         }
-        let ahci_offset = abs_addr - bar_base;
-        let ahci = unsafe { &mut *self.ahci };
-        ahci.read(ahci_offset, size)
+
+        // Check AHCI BAR5 (4KB region)
+        let ahci_base = self.ahci_bar5();
+        if ahci_base != 0 && abs_addr >= ahci_base && abs_addr < ahci_base + 0x1000 {
+            let ahci = unsafe { &mut *self.ahci };
+            return ahci.read(abs_addr - ahci_base, size);
+        }
+
+        Ok(0xFFFFFFFF)
     }
 
     fn write(&mut self, offset: u64, size: u8, val: u64) -> crate::error::Result<()> {
-        let bar_base = self.bar5_base();
-        let abs_addr = AHCI_MMIO_BASE + offset;
-        if abs_addr < bar_base || abs_addr >= bar_base + 0x1000 {
-            return Ok(());
+        let abs_addr = PCI_MMIO_CATCHALL_BASE + offset;
+
+        // Check E1000 BAR0 (128KB region)
+        let e1000_base = self.e1000_bar0();
+        if e1000_base != 0 && abs_addr >= e1000_base && abs_addr < e1000_base + 0x2_0000 {
+            let e1000 = unsafe { &mut *self.e1000 };
+            return e1000.write(abs_addr - e1000_base, size, val);
         }
-        let ahci_offset = abs_addr - bar_base;
-        let ahci = unsafe { &mut *self.ahci };
-        ahci.write(ahci_offset, size, val)
+
+        // Check AHCI BAR5 (4KB region)
+        let ahci_base = self.ahci_bar5();
+        if ahci_base != 0 && abs_addr >= ahci_base && abs_addr < ahci_base + 0x1000 {
+            let ahci = unsafe { &mut *self.ahci };
+            return ahci.write(abs_addr - ahci_base, size, val);
+        }
+
+        Ok(())
     }
 }
 
@@ -1190,13 +1259,17 @@ pub extern "C" fn corevm_setup_ahci(handle: u64, num_ports: u8) -> i32 {
     let ahci = Box::new(crate::devices::ahci::Ahci::new(num_ports));
     vm.ahci_ptr = &*ahci as *const crate::devices::ahci::Ahci as *mut crate::devices::ahci::Ahci;
 
-    // Register wide MMIO range covering PCI allocation area.
-    // The wrapper reads current BAR5 from PCI config to route accesses.
-    let wrapper = Box::new(AhciPciMmioWrapper {
+    // Create the PCI MMIO router covering the full PCI BAR allocation area.
+    // The router dynamically reads BAR values from PCI config to route accesses
+    // to the correct device (AHCI, E1000, etc.).
+    let router = Box::new(PciMmioRouter {
         ahci: vm.ahci_ptr,
+        e1000: core::ptr::null_mut(), // added later by corevm_setup_e1000()
         pci_bus: vm.pci_bus_ptr,
     });
-    vm.memory.add_mmio(AHCI_MMIO_BASE, AHCI_MMIO_SIZE, wrapper);
+    let router_ptr = &*router as *const PciMmioRouter as *mut PciMmioRouter;
+    vm.pci_mmio_router_ptr = router_ptr;
+    vm.memory.add_mmio(PCI_MMIO_CATCHALL_BASE, PCI_MMIO_CATCHALL_SIZE, router);
 
     // Give AHCI access to guest RAM for DMA transfers.
     let (ram_ptr, ram_len) = vm.memory.ram_mut_ptr();
@@ -1208,7 +1281,7 @@ pub extern "C" fn corevm_setup_ahci(handle: u64, num_ports: u8) -> i32 {
     // Register AHCI as a PCI device so SeaBIOS can discover it
     if !vm.pci_bus_ptr.is_null() {
         let pci_bus = unsafe { &mut *vm.pci_bus_ptr };
-        let mut pci_dev = crate::devices::ahci::create_ahci_pci_device(AHCI_MMIO_BASE as u32);
+        let mut pci_dev = crate::devices::ahci::create_ahci_pci_device(PCI_MMIO_CATCHALL_BASE as u32);
         pci_dev.device = 3; // PCI device 00:03.0 (00:01.0 is ISA bridge)
         pci_bus.add_device(pci_dev);
     }
@@ -1532,6 +1605,136 @@ pub extern "C" fn corevm_vga_get_text_buffer(
         }
         None => -1,
     }
+}
+
+// ── E1000 Network Packet Exchange ──
+
+/// Take all packets transmitted by the guest.
+/// Returns the number of packets written to the output buffer.
+/// Each packet is prefixed by a 2-byte little-endian length.
+/// Format: [len_lo, len_hi, data...] repeated.
+#[no_mangle]
+pub extern "C" fn corevm_e1000_take_tx(handle: u64, buf: *mut u8, buf_len: u32) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+    let e1000 = match vm.e1000() { Some(e) => e, None => return 0 };
+    let packets = e1000.take_tx_packets();
+    if packets.is_empty() { return 0; }
+    let out = unsafe { core::slice::from_raw_parts_mut(buf, buf_len as usize) };
+    let mut offset = 0;
+    let mut count = 0;
+    for pkt in &packets {
+        let needed = 2 + pkt.len();
+        if offset + needed > out.len() { break; }
+        let len = pkt.len() as u16;
+        out[offset] = len as u8;
+        out[offset + 1] = (len >> 8) as u8;
+        out[offset + 2..offset + 2 + pkt.len()].copy_from_slice(pkt);
+        offset += needed;
+        count += 1;
+    }
+    count
+}
+
+/// Deliver a received packet to the E1000 NIC for guest consumption.
+/// The packet should be a raw Ethernet frame (no length prefix).
+#[no_mangle]
+pub extern "C" fn corevm_e1000_receive(handle: u64, data: *const u8, len: u32) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+    if data.is_null() || len == 0 { return -1; }
+    let pkt = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    let e1000 = match vm.e1000() { Some(e) => e, None => return -1 };
+    e1000.receive_packet(pkt);
+    0
+}
+
+/// Check if E1000 has pending RX interrupt and return ICR value.
+/// Returns 0 if no pending interrupt, or the ICR bits if interrupt pending.
+#[no_mangle]
+pub extern "C" fn corevm_e1000_has_rx_irq(handle: u64) -> u32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return 0 };
+    let e1000 = match vm.e1000() { Some(e) => e, None => return 0 };
+    let icr = e1000.regs[0x00C0 / 4];
+    let ims = e1000.regs[0x00C8 / 4];
+    icr & ims // Only report masked-in interrupts
+}
+
+// ── AC97 Audio ──
+
+/// Set up the AC97 audio controller on the VM.
+/// Registers as PCI device 00:05.0 (Intel 82801AA, 8086:2415).
+/// NAM I/O ports at 0x1C00 (256 bytes), NABM at 0x1D00 (64 bytes).
+#[no_mangle]
+pub extern "C" fn corevm_setup_ac97(handle: u64) -> i32 {
+    const AC97_NAM_BASE: u16 = 0x1C00;
+    const AC97_NABM_BASE: u16 = 0x1D00;
+
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+
+    let mut ac97 = Box::new(crate::devices::ac97::Ac97::new());
+    // Give AC97 access to guest RAM for DMA reads
+    let (ram_ptr, ram_size) = vm.memory.ram_mut_ptr();
+    ac97.set_ram(ram_ptr as *const u8, ram_size);
+
+    let ac97_ptr = &*ac97 as *const crate::devices::ac97::Ac97 as *mut crate::devices::ac97::Ac97;
+    vm.ac97_ptr = ac97_ptr;
+
+    // Register NAM (mixer) I/O ports
+    vm.io.register(AC97_NAM_BASE, 256, Box::new(crate::devices::ac97::Ac97Nam(ac97_ptr)));
+    // Register NABM (bus master) I/O ports
+    vm.io.register(AC97_NABM_BASE, 64, Box::new(crate::devices::ac97::Ac97Nabm(ac97_ptr)));
+
+    // Leak the Ac97 box — it lives as long as the VM
+    core::mem::forget(ac97);
+
+    // Register as PCI device
+    if !vm.pci_bus_ptr.is_null() {
+        let pci_bus = unsafe { &mut *vm.pci_bus_ptr };
+        // Intel 82801AA AC97 Audio: vendor 8086, device 2415, class 04 (Multimedia), subclass 01 (Audio)
+        let mut pci_dev = crate::devices::bus::PciDevice::new(0x8086, 0x2415, 0x04, 0x01, 0x00);
+        pci_dev.device = 5; // PCI slot 00:05.0
+        // BAR0: NAM I/O at 0x1C00, 256 bytes
+        pci_dev.set_bar(0, AC97_NAM_BASE as u32, 256, false); // false = I/O space
+        // BAR1: NABM I/O at 0x1D00, 64 bytes
+        pci_dev.set_bar(1, AC97_NABM_BASE as u32, 64, false);
+        // Interrupt: IRQ 5, pin INTA
+        pci_dev.set_interrupt(5, 1);
+        pci_dev.set_subsystem(0x8086, 0x0000);
+        pci_bus.add_device(pci_dev);
+    }
+    0
+}
+
+/// Process AC97 DMA: read audio data from guest buffers.
+/// Call periodically (every 10-20ms). Returns 1 if interrupt pending, 0 otherwise.
+#[no_mangle]
+pub extern "C" fn corevm_ac97_process(handle: u64) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return 0 };
+    let ac97 = match vm.ac97() { Some(a) => a, None => return 0 };
+    if ac97.process_po() { 1 } else { 0 }
+}
+
+/// Take buffered audio samples for host playback.
+/// Writes interleaved 16-bit stereo PCM to the output buffer.
+/// Returns number of samples written (not bytes — multiply by 2 for byte count).
+#[no_mangle]
+pub extern "C" fn corevm_ac97_take_audio(handle: u64, buf: *mut i16, max_samples: u32) -> u32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return 0 };
+    let ac97 = match vm.ac97() { Some(a) => a, None => return 0 };
+    let samples = ac97.take_audio();
+    if samples.is_empty() || buf.is_null() { return 0; }
+    let count = samples.len().min(max_samples as usize);
+    unsafe {
+        core::ptr::copy_nonoverlapping(samples.as_ptr(), buf, count);
+    }
+    count as u32
+}
+
+/// Get the AC97 configured sample rate.
+#[no_mangle]
+pub extern "C" fn corevm_ac97_sample_rate(handle: u64) -> u32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return 48000 };
+    let ac97 = match vm.ac97() { Some(a) => a, None => return 48000 };
+    ac97.sample_rate()
 }
 
 // Re-export WHP debug callback setter for use by vmmanager.

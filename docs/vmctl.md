@@ -38,6 +38,9 @@ Erstellt eine VM in-process, startet sie, streamt die serielle Ausgabe live nach
 | `-n` | Netzwerk aktivieren (E1000 NIC) | aus |
 | `-k <text>` | Text nach Boot via PS/2-Tastatur tippen | — |
 | `-w <ms>` | Wartezeit vor `-k` Eingabe in ms | 3000 |
+| `--hpet` | HPET-Timer in ACPI-Tabellen aktivieren (fuer Windows) | aus |
+| `--key <ms>:<key>` | PS/2-Taste nach Verzoegerung senden | — |
+| `--mouse <ms>:<dx>,<dy>[,<btn>]` | Mausbewegung nach Verzoegerung senden | — |
 
 **Beispiele:**
 
@@ -53,7 +56,16 @@ vmctl run -r 64 -i /data/boot.iso -b seabios -t 10 -s
 
 # VM starten, nach 5s "ls\n" tippen, Screen anzeigen
 vmctl run -r 64 -d /data/disk.img -k "ls\n" -w 5000 -t 15 -s
+
+# Windows 7 ISO booten (braucht --hpet fuer Timer-Support)
+vmctl run -r 2048 -i /data/Win7.iso -b seabios -t 120 -s --hpet --key 6000:enter
 ```
+
+**Hinweis zu `--hpet`**: Aktiviert die HPET ACPI-Tabelle und setzt den Cancel-Timer
+auf 10ms (statt 100ms). Erforderlich fuer Windows 7/8/10, da Windows den HPET als
+primaere Timer-Quelle benoetigt. Darf NICHT fuer Linux-Gaeste verwendet werden —
+Linux aktiviert HPET Legacy Replacement Mode, deaktiviert den PIT, und der HPET-Timer
+kommt per Polling zu spaet, was zu Kernel Panic fuehrt.
 
 ### `vmctl serial`
 

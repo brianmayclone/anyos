@@ -216,6 +216,7 @@ struct CoreVmLib {
     setup_e1000: extern "C" fn(u64, *const u8) -> i32,
     setup_ahci: extern "C" fn(u64, u8) -> i32,
     setup_acpi_tables: extern "C" fn(u64) -> i32,
+    setup_acpi_tables_with_hpet: extern "C" fn(u64) -> i32,
     fw_cfg_add_file: extern "C" fn(u64, *const u8, u32, *const u8, u32) -> i32,
     ahci_attach_disk: extern "C" fn(u64, u32, i32, u64) -> i32,
     ahci_attach_cdrom: extern "C" fn(u64, u32, i32, u64) -> i32,
@@ -316,6 +317,7 @@ pub fn init() -> bool {
             setup_e1000: resolve(&handle, "corevm_setup_e1000"),
             setup_ahci: resolve(&handle, "corevm_setup_ahci"),
             setup_acpi_tables: resolve(&handle, "corevm_setup_acpi_tables"),
+            setup_acpi_tables_with_hpet: resolve(&handle, "corevm_setup_acpi_tables_with_hpet"),
             fw_cfg_add_file: resolve(&handle, "corevm_fw_cfg_add_file"),
             ahci_attach_disk: resolve(&handle, "corevm_ahci_attach_disk"),
             ahci_attach_cdrom: resolve(&handle, "corevm_ahci_attach_cdrom"),
@@ -549,6 +551,11 @@ impl VmHandle {
     /// Set up ACPI tables (RSDP, RSDT, FADT, MADT, DSDT) and register them via fw_cfg.
     pub fn setup_acpi_tables(&self) -> i32 {
         (lib().setup_acpi_tables)(self.handle)
+    }
+
+    /// Set up ACPI tables with HPET table included (for Windows guests).
+    pub fn setup_acpi_tables_with_hpet(&self) -> i32 {
+        (lib().setup_acpi_tables_with_hpet)(self.handle)
     }
 
     /// Add a file to the fw_cfg device (used by SeaBIOS to find ROMs and tables).

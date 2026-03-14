@@ -400,6 +400,10 @@ pub struct DisplayWidget {
     pub needs_cursor_restore: bool,
     /// Frames to skip after a cursor warp (warp generates a phantom delta).
     warp_skip_frames: u8,
+    /// Timestamp when right mouse button was first pressed (for hold-to-release).
+    right_click_start: Option<std::time::Instant>,
+    /// Consecutive Escape press times for triple-press detection.
+    escape_presses: Vec<std::time::Instant>,
 }
 
 impl DisplayWidget {
@@ -416,6 +420,8 @@ impl DisplayWidget {
             mouse_captured: false,
             needs_cursor_restore: false,
             warp_skip_frames: 0,
+            right_click_start: None,
+            escape_presses: Vec::new(),
         }
     }
 
@@ -460,17 +466,10 @@ impl DisplayWidget {
 
         let display_id = egui::Id::new("vm_display_area");
 
-        // Check for release shortcuts: Ctrl+Alt+G or Ctrl+Alt+Escape
+        // Multiple redundant release mechanisms — at least one must work
+        // even when CursorGrab::Locked interferes with event delivery.
         if self.mouse_captured {
-            let release = ui.input(|i| {
-                i.events.iter().any(|e| match e {
-                    egui::Event::Key { key: egui::Key::G, pressed: true, modifiers, .. }
-                        if modifiers.ctrl && modifiers.alt => true,
-                    egui::Event::Key { key: egui::Key::Escape, pressed: true, modifiers, .. }
-                        if modifiers.ctrl && modifiers.alt => true,
-                    _ => false,
-                })
-            });
+            let release = self.check_mouse_release(ui, ctx);
             if release {
                 self.release_mouse(ctx);
             }
@@ -561,10 +560,70 @@ impl DisplayWidget {
         eprintln!("[mouse] Captured (Locked) — Ctrl+Alt+G to release");
     }
 
+    /// Check all release mechanisms. Returns true if the mouse should be released.
+    fn check_mouse_release(&mut self, ui: &egui::Ui, ctx: &egui::Context) -> bool {
+        // 1. Ctrl+Alt+G or Ctrl+Alt+Escape (via events — standard mechanism)
+        let key_release = ui.input(|i| {
+            i.events.iter().any(|e| match e {
+                egui::Event::Key { key: egui::Key::G, pressed: true, modifiers, .. }
+                    if modifiers.ctrl && modifiers.alt => true,
+                egui::Event::Key { key: egui::Key::Escape, pressed: true, modifiers, .. }
+                    if modifiers.ctrl && modifiers.alt => true,
+                _ => false,
+            })
+        });
+        if key_release {
+            eprintln!("[mouse] Release via Ctrl+Alt+G/Esc (event)");
+            return true;
+        }
+
+        // 2. Ctrl+Alt held + G pressed (via modifier state — works even if events are broken)
+        let mod_release = ctx.input(|i| {
+            i.modifiers.ctrl && i.modifiers.alt
+                && (i.key_pressed(egui::Key::G) || i.key_pressed(egui::Key::Escape))
+        });
+        if mod_release {
+            eprintln!("[mouse] Release via Ctrl+Alt+G/Esc (modifier state)");
+            return true;
+        }
+
+        // // 3. Right mouse button held for 1 second — emergency release
+        // let right_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
+        // if right_down {
+        //     if self.right_click_start.is_none() {
+        //         self.right_click_start = Some(std::time::Instant::now());
+        //     } else if self.right_click_start.unwrap().elapsed() >= std::time::Duration::from_secs(1) {
+        //         eprintln!("[mouse] Release via right-click hold (1s)");
+        //         self.right_click_start = None;
+        //         return true;
+        //     }
+        // } else {
+        //     self.right_click_start = None;
+        // }
+
+        // // 4. Middle mouse button click — instant release
+        // let middle_clicked = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Middle));
+        // if middle_clicked {
+        //     eprintln!("[mouse] Release via middle click");
+        //     return true;
+        // }
+
+        // // 5. Window focus lost — auto release
+        // let has_focus = ctx.input(|i| i.focused);
+        // if !has_focus {
+        //     eprintln!("[mouse] Release via focus loss");
+        //     return true;
+        // }
+
+        false
+    }
+
     /// Release the mouse: show cursor and ungrab.
     pub fn release_mouse(&mut self, ctx: &egui::Context) {
         self.mouse_captured = false;
         self.last_mouse_pos = None;
+        self.right_click_start = None;
+        self.escape_presses.clear();
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
         eprintln!("[mouse] Released");

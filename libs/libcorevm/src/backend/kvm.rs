@@ -2,31 +2,77 @@
 
 use super::{CpuidEntry, DescriptorTable, SegmentReg, VcpuRegs, VcpuSregs, VmBackend, VmError, VmExitReason};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU64, AtomicU32, Ordering};
 
-// --- Thread-safe cancel support ---
-// Stores the raw pointer to kvm_run for vCPU 0 so cancel_vcpu can set immediate_exit
-// from any thread without holding &mut KvmBackend.
-// Supports up to 4 vCPUs. Each entry stores the *mut KvmRun as u64.
-static CANCEL_KVM_RUN: [AtomicU64; 4] = [
-    AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0),
+// --- Per-VM thread-safe cancel support ---
+// Supports up to MAX_VMS concurrent VMs, each with up to 4 vCPUs.
+// Indexed as [vm_slot][vcpu_id].
+const MAX_VMS: usize = 8;
+const MAX_VCPUS: usize = 4;
+
+/// Per-VM slot data for cancel and PIT support.
+struct VmSlotData {
+    cancel_kvm_run: [AtomicU64; MAX_VCPUS],
+    vcpu_tid: [AtomicI32; MAX_VCPUS],
+    vm_fd: AtomicI32,
+}
+
+impl VmSlotData {
+    const fn new() -> Self {
+        Self {
+            cancel_kvm_run: [
+                AtomicU64::new(0), AtomicU64::new(0),
+                AtomicU64::new(0), AtomicU64::new(0),
+            ],
+            vcpu_tid: [
+                AtomicI32::new(0), AtomicI32::new(0),
+                AtomicI32::new(0), AtomicI32::new(0),
+            ],
+            vm_fd: AtomicI32::new(0),
+        }
+    }
+
+    fn clear(&self) {
+        self.vm_fd.store(0, Ordering::Relaxed);
+        for t in &self.vcpu_tid { t.store(0, Ordering::Relaxed); }
+        for c in &self.cancel_kvm_run { c.store(0, Ordering::Relaxed); }
+    }
+}
+
+static VM_SLOTS: [VmSlotData; MAX_VMS] = [
+    VmSlotData::new(), VmSlotData::new(), VmSlotData::new(), VmSlotData::new(),
+    VmSlotData::new(), VmSlotData::new(), VmSlotData::new(), VmSlotData::new(),
 ];
 
-// Stores the thread ID (tid) of each vCPU thread for signal-based cancel.
-// Set by run_vcpu on first call. SIGUSR1 is sent to interrupt KVM_RUN.
-static VCPU_TID: [AtomicI32; 4] = [
-    AtomicI32::new(0), AtomicI32::new(0),
-    AtomicI32::new(0), AtomicI32::new(0),
-];
+/// Allocates a VM slot index. Each KvmBackend gets a unique slot so
+/// multiple VMs don't interfere with each other's cancel/PIT state.
+static NEXT_VM_SLOT: AtomicU32 = AtomicU32::new(0);
 
-// Stores the VM fd for PIT channel 2 gate sync from Port 0x61.
-static KVM_VM_FD: AtomicU64 = AtomicU64::new(0);
+fn alloc_vm_slot() -> usize {
+    loop {
+        let cur = NEXT_VM_SLOT.load(Ordering::Relaxed);
+        let slot = cur as usize % MAX_VMS;
+        if NEXT_VM_SLOT.compare_exchange(cur, cur + 1, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+            return slot;
+        }
+    }
+}
+
+fn get_vm_slot(slot: usize) -> &'static VmSlotData {
+    &VM_SLOTS[slot % MAX_VMS]
+}
+
+// Thread-local storage for the current VM slot, used by PIT channel 2
+// callbacks which don't receive a handle parameter.
+// Set by run_vcpu() before entering KVM_RUN.
+static CURRENT_VM_SLOT: AtomicU32 = AtomicU32::new(0);
 
 /// Sync PIT channel 2 gate to in-kernel PIT.
 /// Called from Port61 write handler via gate_sync callback.
+/// Uses the current VM slot (set by run_vcpu) to find the correct VM fd.
 pub fn kvm_sync_pit_ch2_gate(gate: bool) {
-    let vm_fd = KVM_VM_FD.load(Ordering::Relaxed) as i32;
+    let slot = CURRENT_VM_SLOT.load(Ordering::Relaxed) as usize;
+    let vm_fd = get_vm_slot(slot).vm_fd.load(Ordering::Relaxed);
     if vm_fd <= 0 { return; }
     unsafe {
         let mut state = KvmPitState2::default();
@@ -43,7 +89,8 @@ pub fn kvm_sync_pit_ch2_gate(gate: bool) {
 /// KVM_GET_PIT2 doesn't expose the live output state directly.
 /// We must compute it from the channel state (mode, count, gate, count_load_time).
 pub fn kvm_pit_ch2_output() -> bool {
-    let vm_fd = KVM_VM_FD.load(Ordering::Relaxed) as i32;
+    let slot = CURRENT_VM_SLOT.load(Ordering::Relaxed) as usize;
+    let vm_fd = get_vm_slot(slot).vm_fd.load(Ordering::Relaxed);
     if vm_fd <= 0 { return false; }
     unsafe {
         let mut state = KvmPitState2::default();
@@ -136,9 +183,12 @@ unsafe fn clock_gettime_mono_ns() -> i64 {
 /// Sets immediate_exit = 1 AND sends SIGUSR1 to the vCPU thread.
 /// immediate_exit alone only works at KVM_RUN entry; the signal is needed
 /// to kick the vCPU out of an already-running KVM_RUN.
-pub fn cancel_vcpu_kvm(vcpu_id: u32) -> i32 {
-    if vcpu_id as usize >= CANCEL_KVM_RUN.len() { return -1; }
-    let ptr = CANCEL_KVM_RUN[vcpu_id as usize].load(Ordering::Relaxed);
+///
+/// `vm_slot` identifies which VM instance to cancel (from KvmBackend::vm_slot).
+pub fn cancel_vcpu_kvm(vm_slot: usize, vcpu_id: u32) -> i32 {
+    let slot = get_vm_slot(vm_slot);
+    if vcpu_id as usize >= MAX_VCPUS { return -1; }
+    let ptr = slot.cancel_kvm_run[vcpu_id as usize].load(Ordering::Relaxed);
     if ptr == 0 { return -1; }
     unsafe {
         let kvm_run = ptr as *mut KvmRun;
@@ -146,7 +196,7 @@ pub fn cancel_vcpu_kvm(vcpu_id: u32) -> i32 {
     }
     // Send SIGUSR1 to interrupt a blocked KVM_RUN ioctl.
     // The signal handler is a no-op; the ioctl returns -EINTR.
-    let tid = VCPU_TID[vcpu_id as usize].load(Ordering::Relaxed);
+    let tid = slot.vcpu_tid[vcpu_id as usize].load(Ordering::Relaxed);
     if tid > 0 {
         unsafe { sys_tgkill(sys_getpid(), tid, 10); } // 10 = SIGUSR1
     }
@@ -633,6 +683,8 @@ pub struct KvmBackend {
     mmap_size: usize,
     memory_slots: Vec<MemorySlot>,
     stored_cpuid: Option<Vec<CpuidEntry>>,
+    /// Slot index into VM_SLOTS for per-VM cancel/PIT state.
+    pub vm_slot: usize,
 }
 
 impl KvmBackend {
@@ -704,6 +756,7 @@ impl KvmBackend {
                 return Err(VmError::BackendError(ret as i32));
             }
 
+            let slot = alloc_vm_slot();
             let mut backend = Self {
                 kvm_fd,
                 vm_fd,
@@ -711,10 +764,13 @@ impl KvmBackend {
                 mmap_size: mmap_size as usize,
                 memory_slots: Vec::new(),
                 stored_cpuid: None,
+                vm_slot: slot,
             };
 
-            // Store VM fd globally for PIT channel 2 gate sync
-            KVM_VM_FD.store(vm_fd as u64, Ordering::Relaxed);
+            // Store VM fd in per-VM slot for PIT channel 2 gate sync
+            let slot_data = get_vm_slot(slot);
+            slot_data.clear(); // Ensure clean state from any previous VM in this slot
+            slot_data.vm_fd.store(vm_fd, Ordering::Relaxed);
 
             // Auto-load host CPUID so vCPUs get proper feature flags (APIC, etc.)
             let _ = backend.load_host_cpuid();
@@ -1041,6 +1097,8 @@ fn dt_to_kvm(d: &DescriptorTable) -> KvmDtable {
 impl VmBackend for KvmBackend {
     fn destroy(&mut self) {
         self.vcpus.clear();
+        // Clear this VM's slot so no stale state remains
+        get_vm_slot(self.vm_slot).clear();
         if self.vm_fd >= 0 {
             unsafe { sys_close(self.vm_fd); }
             self.vm_fd = -1;
@@ -1148,9 +1206,10 @@ impl VmBackend for KvmBackend {
                 }
             }
 
-            // Register kvm_run pointer for thread-safe cancel
-            if (id as usize) < CANCEL_KVM_RUN.len() {
-                CANCEL_KVM_RUN[id as usize].store(vcpu.kvm_run as u64, Ordering::Relaxed);
+            // Register kvm_run pointer for thread-safe cancel (per-VM slot)
+            let slot = get_vm_slot(self.vm_slot);
+            if (id as usize) < MAX_VCPUS {
+                slot.cancel_kvm_run[id as usize].store(vcpu.kvm_run as u64, Ordering::Relaxed);
             }
 
             let idx = id as usize;
@@ -1165,9 +1224,11 @@ impl VmBackend for KvmBackend {
     fn destroy_vcpu(&mut self, id: u32) -> Result<(), VmError> {
         let idx = id as usize;
         if idx < self.vcpus.len() {
-            // Clear cancel pointer
-            if idx < CANCEL_KVM_RUN.len() {
-                CANCEL_KVM_RUN[idx].store(0, Ordering::Relaxed);
+            // Clear cancel pointer and thread ID in per-VM slot
+            let slot = get_vm_slot(self.vm_slot);
+            if idx < MAX_VCPUS {
+                slot.cancel_kvm_run[idx].store(0, Ordering::Relaxed);
+                slot.vcpu_tid[idx].store(0, Ordering::Relaxed);
             }
             self.vcpus[idx] = None; // Drop handles cleanup
             Ok(())
@@ -1181,11 +1242,15 @@ impl VmBackend for KvmBackend {
         let fd = vcpu.fd;
         let run = vcpu.kvm_run;
 
+        // Set current VM slot for PIT channel 2 callbacks
+        CURRENT_VM_SLOT.store(self.vm_slot as u32, Ordering::Relaxed);
+
         // Store this thread's TID on first call so cancel can send SIGUSR1
-        if (id as usize) < VCPU_TID.len() {
-            let tid = VCPU_TID[id as usize].load(Ordering::Relaxed);
+        let slot = get_vm_slot(self.vm_slot);
+        if (id as usize) < MAX_VCPUS {
+            let tid = slot.vcpu_tid[id as usize].load(Ordering::Relaxed);
             if tid == 0 {
-                VCPU_TID[id as usize].store(unsafe { sys_gettid() }, Ordering::Relaxed);
+                slot.vcpu_tid[id as usize].store(unsafe { sys_gettid() }, Ordering::Relaxed);
             }
         }
 

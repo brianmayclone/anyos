@@ -419,9 +419,15 @@ impl IoHandler for Svga {
                     }
                     // Detect text/graphics mode from Attribute Mode Control (index 0x10)
                     // Bit 0: 0 = text mode, 1 = graphics mode
+                    // IMPORTANT: Do NOT override VBE mode. When VBE is enabled
+                    // (vbe_regs[4] bit 0), the VBE mode takes priority over
+                    // standard VGA attribute controller settings. Drivers like
+                    // bochs-drm poke at VGA registers during init, which would
+                    // incorrectly switch us back to text mode.
                     if idx == 0x10 {
-                        if byte & 0x01 == 0 {
-                            // Text mode
+                        let vbe_enabled = self.vbe_regs[4] & 0x01 != 0;
+                        if byte & 0x01 == 0 && !vbe_enabled {
+                            // Text mode (only if VBE is not active)
                             if let VgaMode::LinearFramebuffer { .. } | VgaMode::Graphics320x200x256 | VgaMode::Graphics640x480x16 = self.mode {
                                 self.mode = VgaMode::Text80x25;
                             }

@@ -58,19 +58,19 @@ fn build_rsdp() -> Vec<u8> {
     r
 }
 
-/// Build RSDT with 32-bit pointers to FADT, MADT, HPET (36 + 3*4 = 48 bytes).
-fn build_rsdt() -> Vec<u8> {
-    let mut t = vec![0u8; 48];
-    write_acpi_header(&mut t, 0, b"RSDT", 48, 1);
-    // [36..40] FADT, [40..44] MADT, [44..48] HPET — patched by loader
+/// Build RSDT with 32-bit pointers (36 + N*4 bytes).
+fn build_rsdt(num_tables: u32) -> Vec<u8> {
+    let len = 36 + num_tables * 4;
+    let mut t = vec![0u8; len as usize];
+    write_acpi_header(&mut t, 0, b"RSDT", len, 1);
     t
 }
 
-/// Build XSDT with 64-bit pointers to FADT, MADT, HPET (36 + 3*8 = 60 bytes).
-fn build_xsdt() -> Vec<u8> {
-    let mut t = vec![0u8; 60];
-    write_acpi_header(&mut t, 0, b"XSDT", 60, 1);
-    // [36..44] FADT, [44..52] MADT, [52..60] HPET — patched by loader
+/// Build XSDT with 64-bit pointers (36 + N*8 bytes).
+fn build_xsdt(num_tables: u32) -> Vec<u8> {
+    let len = 36 + num_tables * 8;
+    let mut t = vec![0u8; len as usize];
+    write_acpi_header(&mut t, 0, b"XSDT", len, 1);
     t
 }
 
@@ -542,6 +542,10 @@ fn build_hpet_table() -> Vec<u8> {
     //   Bit 5 = COUNT_SIZE_CAP (bit 13 of dword) = 1 (64-bit)
     //   Bit 6 = reserved (bit 14)
     //   Bit 7 = LEG_RT_CAP (bit 15 of dword) = 1
+    //   NOTE: This table is only included when --hpet is passed (Windows guests).
+    //   Linux guests must NOT have HPET in ACPI tables because HPET Legacy
+    //   Replacement mode disables PIT before our polled HPET timer can deliver
+    //   interrupts, causing "IO-APIC + timer doesn't work!" kernel panic.
     t[37] = 2 | (1 << 5) | (1 << 7);
     // PCI vendor ID = 0x8086 (Intel)
     write_u16(&mut t, 38, 0x8086);
@@ -652,57 +656,73 @@ fn loader_add_checksum(file: &[u8; FILESZ], offset: u32, start: u32, length: u32
 /// Generate ACPI 2.0 tables for SeaBIOS fw_cfg.
 /// Returns (rsdp_data, tables_data, loader_data).
 pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    generate_acpi_tables_with_options(false)
+}
+
+pub fn generate_acpi_tables_with_hpet() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    generate_acpi_tables_with_options(true)
+}
+
+fn generate_acpi_tables_with_options(enable_hpet: bool) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let tables_file = make_name(TABLES_NAME);
     let rsdp_file = make_name(RSDP_NAME);
 
     let mut rsdp = build_rsdp();
 
-    let rsdt = build_rsdt();
-    let xsdt = build_xsdt();
+    let num_tables: u32 = if enable_hpet { 3 } else { 2 }; // FADT, MADT [, HPET]
+    let rsdt = build_rsdt(num_tables);
+    let xsdt = build_xsdt(num_tables);
     let fadt = build_fadt();
     let facs = build_facs();
     let dsdt = build_dsdt();
     let madt = build_madt();
-    let hpet = build_hpet_table();
 
-    // Layout: RSDT | XSDT | FADT | FACS | DSDT | MADT | HPET
+    // Layout: RSDT | XSDT | FADT | FACS | DSDT | MADT [| HPET]
     let rsdt_off: u32 = 0;
-    let xsdt_off = rsdt.len() as u32;
+    let rsdt_len = rsdt.len() as u32;
+    let xsdt_off = rsdt_len;
+    let xsdt_len = xsdt.len() as u32;
 
     // Pre-fill RSDP pointer fields with intra-buffer offsets.
-    // The loader ADD_POINTER will add the tables base address to these.
-    // RSDP[16..20] = RSDT offset within tables buffer
     rsdp[16..20].copy_from_slice(&rsdt_off.to_le_bytes());
-    // RSDP[24..32] = XSDT offset within tables buffer
     rsdp[24..32].copy_from_slice(&(xsdt_off as u64).to_le_bytes());
-    let fadt_off = xsdt_off + xsdt.len() as u32;
+    let fadt_off = xsdt_off + xsdt_len;
     let facs_off = fadt_off + fadt.len() as u32;
     let dsdt_off = facs_off + facs.len() as u32;
     let madt_off = dsdt_off + dsdt.len() as u32;
-    let hpet_off = madt_off + madt.len() as u32;
     let madt_len = madt.len() as u32;
-    let hpet_len = hpet.len() as u32;
 
-    let mut tables = Vec::with_capacity((hpet_off + hpet_len) as usize);
+    let mut tables = Vec::new();
     tables.extend_from_slice(&rsdt);
     tables.extend_from_slice(&xsdt);
     tables.extend_from_slice(&fadt);
     tables.extend_from_slice(&facs);
     tables.extend_from_slice(&dsdt);
     tables.extend_from_slice(&madt);
-    tables.extend_from_slice(&hpet);
 
-    // Pre-fill pointer fields with intra-buffer offsets.
-    // ADD_POINTER adds the allocated base address of src to the value at dest[offset].
-
-    // RSDT -> FADT (u32 at offset 36), MADT (40), HPET (44)
+    // RSDT -> FADT (u32 at offset 36), MADT (40)
     write_u32(&mut tables, (rsdt_off + 36) as usize, fadt_off);
     write_u32(&mut tables, (rsdt_off + 40) as usize, madt_off);
-    write_u32(&mut tables, (rsdt_off + 44) as usize, hpet_off);
-    // XSDT -> FADT (u64 at offset 36), MADT (44), HPET (52)
+    // XSDT -> FADT (u64 at offset 36), MADT (44)
     write_u64(&mut tables, (xsdt_off + 36) as usize, fadt_off as u64);
     write_u64(&mut tables, (xsdt_off + 44) as usize, madt_off as u64);
-    write_u64(&mut tables, (xsdt_off + 52) as usize, hpet_off as u64);
+
+    let hpet_off;
+    let hpet_len;
+    if enable_hpet {
+        let hpet = build_hpet_table();
+        hpet_off = madt_off + madt_len;
+        hpet_len = hpet.len() as u32;
+        tables.extend_from_slice(&hpet);
+        // RSDT -> HPET (u32 at offset 44)
+        write_u32(&mut tables, (rsdt_off + 44) as usize, hpet_off);
+        // XSDT -> HPET (u64 at offset 52)
+        write_u64(&mut tables, (xsdt_off + 52) as usize, hpet_off as u64);
+    } else {
+        hpet_off = 0;
+        hpet_len = 0;
+    }
+
     // FADT -> FACS (u32 at offset 36)
     write_u32(&mut tables, (fadt_off + 36) as usize, facs_off);
     // FADT -> DSDT (u32 at offset 40)
@@ -715,42 +735,46 @@ pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut loader = Vec::new();
     let mut emit = |cmd: [u8; 128]| loader.extend_from_slice(&cmd);
 
-    // 1. Allocate tables (HIGH = zone 1) and rsdp (FSEG = zone 2, scannable by OS)
+    // 1. Allocate tables and RSDP
     emit(loader_allocate(&tables_file, 64, 1));
     emit(loader_allocate(&rsdp_file, 16, 2));
 
-    // 2. RSDP -> RSDT pointer (u32 at offset 16) and XSDT pointer (u64 at offset 24)
+    // 2. RSDP pointers + checksums
     emit(loader_add_pointer(&rsdp_file, &tables_file, 16, 4));
     emit(loader_add_pointer(&rsdp_file, &tables_file, 24, 8));
-    // RSDP v1 checksum (bytes 0..20) — covers RSDT pointer
     emit(loader_add_checksum(&rsdp_file, 8, 0, 20));
-    // RSDP v2 extended checksum (bytes 0..36) — covers XSDT pointer
     emit(loader_add_checksum(&rsdp_file, 32, 0, 36));
 
-    // 3. FADT -> FACS (u32), FADT -> DSDT (u32), FADT -> X_FIRMWARE_CTRL (u64), FADT -> X_DSDT (u64)
+    // 3. FADT pointers + checksum
     emit(loader_add_pointer(&tables_file, &tables_file, fadt_off + 36, 4));
     emit(loader_add_pointer(&tables_file, &tables_file, fadt_off + 40, 4));
     emit(loader_add_pointer(&tables_file, &tables_file, fadt_off + 132, 8));
     emit(loader_add_pointer(&tables_file, &tables_file, fadt_off + 140, 8));
     emit(loader_add_checksum(&tables_file, fadt_off + 9, fadt_off, 244));
 
-    // 4. RSDT -> FADT, RSDT -> MADT, RSDT -> HPET (u32 pointers)
+    // 4. RSDT pointers + checksum
     emit(loader_add_pointer(&tables_file, &tables_file, rsdt_off + 36, 4));
     emit(loader_add_pointer(&tables_file, &tables_file, rsdt_off + 40, 4));
-    emit(loader_add_pointer(&tables_file, &tables_file, rsdt_off + 44, 4));
-    emit(loader_add_checksum(&tables_file, rsdt_off + 9, rsdt_off, 48));
+    if enable_hpet {
+        emit(loader_add_pointer(&tables_file, &tables_file, rsdt_off + 44, 4));
+    }
+    emit(loader_add_checksum(&tables_file, rsdt_off + 9, rsdt_off, rsdt_len));
 
-    // 5. XSDT -> FADT, XSDT -> MADT, XSDT -> HPET (u64 pointers)
+    // 5. XSDT pointers + checksum
     emit(loader_add_pointer(&tables_file, &tables_file, xsdt_off + 36, 8));
     emit(loader_add_pointer(&tables_file, &tables_file, xsdt_off + 44, 8));
-    emit(loader_add_pointer(&tables_file, &tables_file, xsdt_off + 52, 8));
-    emit(loader_add_checksum(&tables_file, xsdt_off + 9, xsdt_off, 60));
+    if enable_hpet {
+        emit(loader_add_pointer(&tables_file, &tables_file, xsdt_off + 52, 8));
+    }
+    emit(loader_add_checksum(&tables_file, xsdt_off + 9, xsdt_off, xsdt_len));
 
-    // 6. DSDT, MADT, HPET checksums
+    // 6. Table checksums
     let dsdt_len = dsdt.len() as u32;
     emit(loader_add_checksum(&tables_file, dsdt_off + 9, dsdt_off, dsdt_len));
     emit(loader_add_checksum(&tables_file, madt_off + 9, madt_off, madt_len));
-    emit(loader_add_checksum(&tables_file, hpet_off + 9, hpet_off, hpet_len));
+    if enable_hpet {
+        emit(loader_add_checksum(&tables_file, hpet_off + 9, hpet_off, hpet_len));
+    }
 
     (rsdp, tables, loader)
 }

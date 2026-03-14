@@ -28,6 +28,9 @@ struct Args {
     ide_cdrom: bool,
     send_keys: Vec<(u32, Vec<u8>)>,  // (delay_ms, scancodes)
     send_mouse: Vec<(u32, i16, i16, u8)>, // (delay_ms, dx, dy, buttons)
+    enable_hpet: bool,
+    tap_name: String, // TAP device name (empty = no networking)
+    bridge: String,   // Bridge name to attach TAP to (optional)
 }
 
 fn parse_args() -> Args {
@@ -47,6 +50,9 @@ fn parse_args() -> Args {
         append: String::new(),
         send_keys: Vec::new(),
         send_mouse: Vec::new(),
+        enable_hpet: false,
+        tap_name: String::new(),
+        bridge: String::new(),
     };
 
     let mut i = 1;
@@ -126,6 +132,9 @@ fn parse_args() -> Args {
                     }
                 }
             }
+            "--hpet" => { args.enable_hpet = true; }
+            "--tap" => { i += 1; if i < argv.len() { args.tap_name = argv[i].clone(); } }
+            "--bridge" => { i += 1; if i < argv.len() { args.bridge = argv[i].clone(); } }
             _ => {}
         }
         i += 1;
@@ -161,13 +170,45 @@ fn main() {
     if args.hpet {
         corevm_setup_hpet(handle);
         eprintln!("[vmctl] HPET enabled");
+        corevm_setup_acpi_tables_with_hpet(handle);
+    } else {
+        corevm_setup_acpi_tables(handle);
     }
-    corevm_setup_acpi_tables(handle);
     corevm_setup_ahci(handle, 6);
 
     // E1000 NIC — default MAC 52:54:00:12:34:56 (QEMU-style locally administered)
     let mac: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     corevm_setup_e1000(handle, mac.as_ptr());
+
+    // AC97 Audio Controller — disabled by default in CLI tool
+    // corevm_setup_ac97(handle);
+    // eprintln!("[vmctl] AC97 audio controller enabled");
+
+    // TAP network device (optional, requires root/CAP_NET_ADMIN)
+    let tap_device = if !args.tap_name.is_empty() {
+        match libcorevm::net::tap::TapDevice::new(&args.tap_name) {
+            Ok(tap) => {
+                if let Err(e) = tap.bring_up() {
+                    eprintln!("[vmctl] WARNING: Failed to bring up TAP: {}", e);
+                }
+                if !args.bridge.is_empty() {
+                    if let Err(e) = tap.add_to_bridge(&args.bridge) {
+                        eprintln!("[vmctl] WARNING: Failed to add TAP to bridge '{}': {}", args.bridge, e);
+                    } else {
+                        eprintln!("[vmctl] TAP '{}' added to bridge '{}'", tap.name(), args.bridge);
+                    }
+                }
+                eprintln!("[vmctl] TAP network: {}", tap.name());
+                Some(tap)
+            }
+            Err(e) => {
+                eprintln!("[vmctl] WARNING: Failed to create TAP device '{}': {} (networking disabled)", args.tap_name, e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // VGA LFB is mapped internally by setup_standard_devices via KVM slot 1.
     // Get the SVGA framebuffer pointer for reading display output.
@@ -293,13 +334,15 @@ fn main() {
 
     // Timer thread to cancel vCPU periodically (needed for CMOS/RTC advance,
     // HPET timer polling, and AHCI IRQ polling when guest is in HLT/idle state).
-    // 10ms interval ensures HPET timer interrupts (~64 Hz) are delivered timely.
+    // 10ms when HPET is enabled (Windows needs timely HPET interrupts ~64 Hz),
+    // 100ms otherwise (avoids excessive VM exits for Linux guests).
+    let cancel_interval_ms = if args.enable_hpet { 10 } else { 100 };
     let cancel_handle = handle;
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let running2 = running.clone();
     thread::spawn(move || {
         while running2.load(std::sync::atomic::Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(cancel_interval_ms));
             corevm_cancel_vcpu(cancel_handle, 0);
         }
     });
@@ -414,6 +457,10 @@ fn main() {
     let mut total_irqs: u64 = 0;
     let mut mmio_addrs: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
     let mut io_ports: std::collections::HashMap<u16, u64> = std::collections::HashMap::new();
+    let mut last_net_poll = Instant::now();
+    let mut last_audio_poll = Instant::now();
+    let mut net_packets: u64 = 0;
+    let mut audio_samples: u64 = 0;
 
     loop {
         let mut exit = CExitReason::default();
@@ -508,6 +555,30 @@ fn main() {
 
         // Poll IRQs
         total_irqs += corevm_poll_irqs(handle) as u64;
+
+        // Network polling: exchange packets between TAP and E1000 (~every 1ms)
+        if tap_device.is_some() {
+            let now = Instant::now();
+            if now.duration_since(last_net_poll).as_micros() >= 1000 {
+                let tap = tap_device.as_ref().unwrap();
+                let n = libcorevm::net::tap::poll_network(tap, handle);
+                net_packets += n as u64;
+                last_net_poll = now;
+            }
+        }
+
+        // Audio polling: process AC97 DMA (~every 10ms)
+        {
+            let now = Instant::now();
+            if now.duration_since(last_audio_poll).as_millis() >= 10 {
+                corevm_ac97_process(handle);
+                // Drain audio samples (discard in vmctl — no audio output in headless mode)
+                let mut audio_buf = [0i16; 8192];
+                let n = corevm_ac97_take_audio(handle, audio_buf.as_mut_ptr(), audio_buf.len() as u32);
+                audio_samples += n as u64;
+                last_audio_poll = now;
+            }
+        }
 
         // Drain debug port
         {
