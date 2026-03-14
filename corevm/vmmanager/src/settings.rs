@@ -19,6 +19,23 @@ fn labeled_row(ui: &mut egui::Ui, label: &str, add_contents: impl FnOnce(&mut eg
     });
 }
 
+fn host_info_bar(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgb(35, 40, 48))
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::ACCENT_BLUE, egui::RichText::new("\u{2139}").size(14.0)); // ℹ
+                ui.add_space(4.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(160, 170, 185),
+                    egui::RichText::new(text).size(12.0),
+                );
+            });
+        });
+}
+
 fn section_heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(6.0);
     ui.label(egui::RichText::new(text).strong().color(theme::ACCENT_BLUE));
@@ -334,43 +351,139 @@ impl SettingsDialog {
     }
 
     fn page_processor(&mut self, ui: &mut egui::Ui) {
+        let host = crate::platform::host_info();
+
         section_heading(ui, "Processor");
 
+        // Host info bar
+        host_info_bar(ui, &format!(
+            "Host: {} cores available",
+            host.cpu_cores,
+        ));
+
+        ui.add_space(6.0);
+
         labeled_row(ui, "CPU Cores:", |ui| {
-            for &c in &[1u32, 2, 4, 8, 16] {
-                if ui.selectable_label(self.config.cpu_cores == c, format!("{}", c)).clicked() {
-                    self.config.cpu_cores = c;
-                }
+            let mut cores = self.config.cpu_cores as f32;
+            let max = (host.cpu_cores as f32).max(2.0);
+            ui.add(egui::Slider::new(&mut cores, 1.0..=max).step_by(1.0).clamp_to_range(true));
+            self.config.cpu_cores = (cores as u32).max(1);
+        });
+
+        // Recommendation
+        ui.add_space(4.0);
+        let recommended = (host.cpu_cores / 2).max(1);
+        let warn = self.config.cpu_cores > host.cpu_cores;
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + 8.0);
+            if warn {
+                ui.colored_label(
+                    theme::WARNING_ORANGE,
+                    format!("Exceeds host cores ({})! Performance may suffer.", host.cpu_cores),
+                );
+            } else {
+                ui.colored_label(
+                    egui::Color32::from_rgb(110, 110, 115),
+                    format!("Recommended: {} cores (half of host)", recommended),
+                );
             }
         });
     }
 
     fn page_memory(&mut self, ui: &mut egui::Ui) {
+        let host = crate::platform::host_info();
+        let host_ram = host.ram_total_mb;
+        let recommended_max = (host_ram * 3 / 4) as u32; // 75% of host
+        let slider_max = (host_ram as f32).max(1024.0);
+
         section_heading(ui, "Memory");
+
+        // Host info bar
+        host_info_bar(ui, &format!(
+            "Host: {:.1} GB total  |  Recommended max: {:.1} GB (75%)",
+            host_ram as f64 / 1024.0,
+            recommended_max as f64 / 1024.0,
+        ));
+
+        ui.add_space(6.0);
 
         labeled_row(ui, "RAM:", |ui| {
             let mut ram = self.config.ram_mb as f32;
-            ui.add(egui::Slider::new(&mut ram, 16.0..=16384.0).step_by(16.0).suffix(" MB"));
+            ui.add(egui::Slider::new(&mut ram, 16.0..=slider_max).step_by(16.0).suffix(" MB"));
             self.config.ram_mb = ram as u32;
         });
 
-        // Show human-readable
+        // Human-readable + warning
         ui.horizontal(|ui| {
             ui.add_space(LABEL_WIDTH + 8.0);
             let gb = self.config.ram_mb as f64 / 1024.0;
+            let pct = (self.config.ram_mb as f64 / host_ram as f64 * 100.0) as u32;
+
             if gb >= 1.0 {
                 ui.colored_label(
-                    egui::Color32::from_rgb(120, 120, 125),
+                    egui::Color32::from_rgb(180, 180, 185),
                     format!("{:.1} GB", gb),
+                );
+                ui.colored_label(
+                    egui::Color32::from_rgb(100, 100, 105),
+                    format!("({}% of host)", pct),
+                );
+            } else {
+                ui.colored_label(
+                    egui::Color32::from_rgb(180, 180, 185),
+                    format!("{} MB", self.config.ram_mb),
                 );
             }
         });
 
+        if self.config.ram_mb > recommended_max {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.add_space(LABEL_WIDTH + 8.0);
+                ui.colored_label(
+                    theme::WARNING_ORANGE,
+                    format!("Exceeds recommended maximum ({:.1} GB). Host may become unstable.",
+                        recommended_max as f64 / 1024.0),
+                );
+            });
+        }
+
+        // Quick presets
         ui.add_space(8.0);
+        labeled_row(ui, "Presets:", |ui| {
+            for &mb in &[256u32, 512, 1024, 2048, 4096, 8192, 16384] {
+                if mb as u64 > host_ram { break; }
+                let label = if mb >= 1024 {
+                    format!("{} GB", mb / 1024)
+                } else {
+                    format!("{} MB", mb)
+                };
+                if ui.selectable_label(self.config.ram_mb == mb, &label).clicked() {
+                    self.config.ram_mb = mb;
+                }
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(4.0);
 
         labeled_row(ui, "Allocation:", |ui| {
             ui.radio_value(&mut self.config.ram_alloc, RamAlloc::OnDemand, "On Demand");
             ui.radio_value(&mut self.config.ram_alloc, RamAlloc::Preallocate, "Preallocate");
+        });
+
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + 8.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(100, 100, 105),
+                if self.config.ram_alloc == RamAlloc::OnDemand {
+                    "Memory is allocated as the guest uses it."
+                } else {
+                    "All memory is reserved immediately at VM start."
+                },
+            );
         });
     }
 
