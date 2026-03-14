@@ -322,7 +322,20 @@ impl VirtQueue {
         // Notify device
         notify_fn();
 
-        // Busy-wait for completion
+        // Busy-wait for completion.
+        //
+        // Timeout raised to 200 million PAUSE iterations (~333 ms on a 3 GHz KVM guest
+        // at ~5 cycles/PAUSE). The previous 10 M limit (~16 ms) was too tight: on fast
+        // KVM boots, QEMU's virtio-gpu iothread can be busy with other devices during
+        // early boot and miss the first GPU kick for up to ~50 ms. A timeout shorter
+        // than that causes execute_sync to return None while the command is still
+        // queued. The caller then retries with the *same* shared cmd_buf/resp_buf
+        // physical pages, so the stale and new commands alias each other, permanently
+        // de-synchronising the virtqueue ring. Raising the limit high enough that we
+        // never time out under normal conditions eliminates the desync entirely.
+        //
+        // If the device truly hangs (hardware fault / QEMU crash), None is returned
+        // and the driver logs a non-verbose error so it is always visible.
         let mut timeout = 0u32;
         loop {
             if let Some((_id, len)) = self.poll_used() {
@@ -330,8 +343,8 @@ impl VirtQueue {
             }
             core::hint::spin_loop();
             timeout += 1;
-            if timeout > 10_000_000 {
-                crate::serial_verbose_println!("  VirtQueue: timeout waiting for device response");
+            if timeout > 200_000_000 {
+                crate::serial_println!("[VirtQueue] timeout waiting for device response (device hung?)");
                 return None;
             }
         }

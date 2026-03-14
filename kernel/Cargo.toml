@@ -6,6 +6,9 @@ edition = "2021"
 [features]
 default = []
 debug_verbose = []
+# Enable in-kernel KUnit self-tests.  Tests run during boot after heap init
+# and report results via serial output.  Never enable in production builds.
+kunit = []
 
 [dependencies]
 

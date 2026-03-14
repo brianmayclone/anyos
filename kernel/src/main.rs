@@ -15,6 +15,8 @@ mod drivers;
 mod fs;
 mod graphics;
 mod ipc;
+#[cfg(feature = "kunit")]
+mod kunit;
 mod memory;
 mod net;
 mod panic;
@@ -152,15 +154,11 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     memory::heap::init();
     serial_println!("[OK] Heap allocator initialized");
 
-    // Phase 4: Test heap allocation
-    {
-        use alloc::vec::Vec;
-        let mut v = Vec::new();
-        v.push(42u32);
-        v.push(43);
-        v.push(44);
-        serial_println!("Heap test: vec = {:?}", v);
-    }
+    // =========================================================================
+    // Phase 4: KUnit self-tests (only when built with --features kunit)
+    // =========================================================================
+    #[cfg(feature = "kunit")]
+    kunit::runner::run_all();
 
     // Initialize Cape Coral anti-aliased font (requires heap)
     #[cfg(target_arch = "x86_64")]
@@ -394,6 +392,25 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             task::scheduler::spawn(drivers::usb::poll_thread, 50, "usb_poll");
        
             drivers::boot_console::stop_spinner();
+
+            // Flush the current framebuffer content (boot splash with spinner cleared)
+            // to the display before the compositor starts.  This has two benefits:
+            //  1. The display always shows *something* during the brief gap between
+            //     stop_spinner() and the compositor's first compose+flush.
+            //  2. It warm-starts the VirtIO GPU command path: QEMU processes a
+            //     transfer+flush here so its virtio-gpu iothread is awake and ready
+            //     by the time the compositor fires its own commands.  Without this,
+            //     the compositor's very first GPU kick can arrive while QEMU is still
+            //     busy with block/net I/O from earlier boot phases, causing a timeout
+            //     and virtqueue de-synchronisation that results in a black screen.
+            #[cfg(target_arch = "x86_64")]
+            if let Some((w, h, _, _)) = drivers::gpu::with_gpu(|g| g.get_mode()) {
+                drivers::gpu::with_gpu(|g| {
+                    g.transfer_rect(0, 0, w, h);
+                    g.flush_display(0, 0, w, h);
+                });
+                serial_println!("[OK] Pre-compositor GPU flush ({}x{})", w, h);
+            }
 
             match task::loader::load_and_run("/System/compositor/compositor", "compositor") {
                 Ok(tid) => serial_println!("[OK] Userspace compositor spawned (TID={})", tid),

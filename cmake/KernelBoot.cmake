@@ -75,9 +75,17 @@ add_custom_command(
 # ============================================================
 # 4. Kernel (Cargo build)
 # ============================================================
-set(CARGO_FEATURES_ARG "")
+set(CARGO_FEATURES_LIST "")
 if(ANYOS_DEBUG_VERBOSE)
-  set(CARGO_FEATURES_ARG "--features;debug_verbose")
+  list(APPEND CARGO_FEATURES_LIST "debug_verbose")
+endif()
+if(ANYOS_KUNIT)
+  list(APPEND CARGO_FEATURES_LIST "kunit")
+endif()
+set(CARGO_FEATURES_ARG "")
+if(CARGO_FEATURES_LIST)
+  string(JOIN "," CARGO_FEATURES_STR ${CARGO_FEATURES_LIST})
+  set(CARGO_FEATURES_ARG "--features;${CARGO_FEATURES_STR}")
 endif()
 
 # Collect all kernel .rs source files so CMake re-invokes Cargo when any change.

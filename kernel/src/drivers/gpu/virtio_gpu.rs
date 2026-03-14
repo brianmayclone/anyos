@@ -398,7 +398,7 @@ impl VirtioGpu {
         );
 
         if result.is_none() {
-            crate::serial_verbose_println!("  VirtIO GPU: command timeout (type={:#x})", {
+            crate::serial_println!("[gpu] VirtIO GPU: command timeout (type={:#x})", {
                 let hdr = unsafe { &*(cmd.as_ptr() as *const GpuCtrlHdr) };
                 hdr.type_
             });
@@ -1217,13 +1217,19 @@ impl GpuDriver for VirtioGpu {
             return;
         }
         // Only transfer — no flush.
-        // Retry once on failure: VirtIO GPU commands can time out during early boot
-        // when the device is handling other requests (e.g. storage I/O on the same
-        // PCI bus). A single retry with a brief busy-wait catches transient overload
-        // without leaving the virtqueue in a corrupted state.
+        // Retry once on failure.  The execute_sync timeout was raised to 200 M
+        // iterations (~333 ms), so reaching here implies the device truly could
+        // not respond.  Before retrying we spin for ~1 M iterations (~1.7 ms) to
+        // give QEMU time to process the in-flight command and write its completion
+        // to the used ring; then we drain any pending used-ring entries so the
+        // virtqueue is in a clean, synchronised state before the retry command is
+        // pushed.  Without the drain, the retry would re-use the same shared DMA
+        // buffers (cmd_buf / resp_buf) while the old descriptors still reference
+        // them, causing silent response aliasing and permanent ring de-sync.
         if !self.cmd_transfer_to_host_2d(self.scanout_resource_id, x, y, w, h) {
-            // Brief busy-wait then retry
-            for _ in 0..1000 { core::hint::spin_loop(); }
+            for _ in 0..1_000_000u32 { core::hint::spin_loop(); }
+            // Drain stale completions so the queue is in sync before retry.
+            while self.controlq.poll_used().is_some() {}
             if !self.cmd_transfer_to_host_2d(self.scanout_resource_id, x, y, w, h) {
                 crate::serial_println!(
                     "[gpu] VirtIO TRANSFER_TO_HOST_2D failed: ({},{} {}x{}) res={}",
@@ -1245,9 +1251,10 @@ impl GpuDriver for VirtioGpu {
             return;
         }
         // Only flush — all transfers already done.
-        // Retry once on failure (same rationale as transfer_rect).
+        // Retry once on failure (same rationale and drain pattern as transfer_rect).
         if !self.cmd_resource_flush(self.scanout_resource_id, x, y, w, h) {
-            for _ in 0..1000 { core::hint::spin_loop(); }
+            for _ in 0..1_000_000u32 { core::hint::spin_loop(); }
+            while self.controlq.poll_used().is_some() {}
             if !self.cmd_resource_flush(self.scanout_resource_id, x, y, w, h) {
                 crate::serial_println!(
                     "[gpu] VirtIO RESOURCE_FLUSH failed: ({},{} {}x{}) res={}",
