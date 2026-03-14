@@ -179,8 +179,6 @@ impl Cmos {
             data[0x08] = bin2bcd(m as u8);
             data[0x09] = bin2bcd((y % 100) as u8);
             data[0x32] = bin2bcd((y / 100) as u8);       // century (BCD)
-            eprintln!("[cmos] RTC init: {}-{:02}-{:02} {:02}:{:02}:{:02} UTC (BCD regs: yr={:#x} cen={:#x})",
-                y, m, d, hour, min, sec, data[0x09], data[0x32]);
         }
         #[cfg(not(feature = "std"))]
         {

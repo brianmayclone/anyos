@@ -47,6 +47,14 @@ pub struct Vm {
     /// Used for level-triggered interrupt semantics: only call set_irq_line when
     /// the state changes.
     pub ahci_irq_asserted: bool,
+
+    /// Thread-safe queue for mouse events from external threads (e.g., UI or
+    /// injection threads).  The FFI function `corevm_ps2_mouse_move` pushes
+    /// events here instead of calling `ps2.mouse_move()` directly, avoiding
+    /// data races on the PS/2 controller.  The VM loop drains this queue in
+    /// `corevm_poll_irqs` (single-threaded context).
+    #[cfg(feature = "std")]
+    pub pending_mouse: std::sync::Mutex<alloc::vec::Vec<(i16, i16, u8)>>,
 }
 
 impl Vm {
@@ -101,6 +109,8 @@ impl Vm {
             fw_cfg_ptr: core::ptr::null_mut(),
             cmos_ptr: core::ptr::null_mut(),
             ahci_irq_asserted: false,
+            #[cfg(feature = "std")]
+            pending_mouse: std::sync::Mutex::new(alloc::vec::Vec::new()),
         })
     }
 

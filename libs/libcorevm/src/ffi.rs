@@ -474,12 +474,31 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
         Some(vm) => {
             let mut injected = 0u32;
 
+            // Drain pending mouse events from the thread-safe queue into
+            // the PS/2 controller (single-threaded context — no races).
+            // We drain into a local vec first to avoid borrow conflicts
+            // between pending_mouse (immutable borrow of vm) and ps2() (mutable).
+            #[cfg(feature = "std")]
+            {
+                let events: alloc::vec::Vec<(i16, i16, u8)> = {
+                    if let Ok(mut queue) = vm.pending_mouse.lock() {
+                        queue.drain(..).collect()
+                    } else {
+                        alloc::vec::Vec::new()
+                    }
+                };
+                if !events.is_empty() {
+                    if let Some(ps2) = vm.ps2() {
+                        for (dx, dy, buttons) in events {
+                            ps2.mouse_move(dx, dy, buttons);
+                        }
+                    }
+                }
+            }
+
             // PS/2 keyboard → IRQ 1, mouse → IRQ 12
             if let Some(ps2) = vm.ps2() {
                 // Proactively try to fill output buffer from device buffers.
-                // This ensures data injected from the UI thread (mouse_move)
-                // gets moved to the output buffer even if update_output_buffer
-                // was called while STATUS_OUTPUT_FULL was set.
                 ps2.try_fill_output();
 
                 // Fire IRQ if output buffer has data ready for the guest.
@@ -489,8 +508,15 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                     || (ps2.status & 0x01 != 0); // STATUS_OUTPUT_FULL
                 if need_irq {
                     ps2.irq_needed = false;
-                    let is_mouse = (ps2.status & 0x20) != 0;
-                    let irq: u8 = if is_mouse { 12 } else { 1 };
+                    // Use IRQ 12 for mouse data, IRQ 1 for keyboard data.
+                    // Linux's i8042 driver registers separate handlers for
+                    // IRQ 1 (KBD) and IRQ 12 (AUX). During AUX detection,
+                    // i8042_check_aux registers a test handler on IRQ 12
+                    // and expects IRQ 12 to fire for loopback data.
+                    // KVM_IRQ_LINE signals BOTH PIC and IOAPIC, so even if
+                    // IOAPIC pin 12 is masked, the PIC still delivers it.
+                    let is_mouse_data = ps2.status & 0x20 != 0; // STATUS_MOUSE_DATA
+                    let irq: u8 = if is_mouse_data { 12 } else { 1 };
                     #[cfg(feature = "linux")]
                     {
                         let _ = vm.backend.set_irq_line(irq as u32, true);
@@ -507,6 +533,27 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                         {
                             vm.backend.ioapic_set_irq(irq, true);
                             vm.backend.ioapic_set_irq(irq, false);
+                        }
+                    }
+                }
+            }
+
+            // Serial COM1 IRQ → IRQ 4 (edge-triggered)
+            // Fire when the serial device has a new interrupt pending (THRE or RXDA).
+            if let Some(serial) = vm.serial() {
+                if serial.irq_pending {
+                    serial.irq_pending = false;
+                    #[cfg(feature = "linux")]
+                    {
+                        let _ = vm.backend.set_irq_line(4, true);
+                        let _ = vm.backend.set_irq_line(4, false);
+                        injected += 1;
+                    }
+                    #[cfg(not(feature = "linux"))]
+                    {
+                        if !vm.pic_ptr.is_null() {
+                            let pic = unsafe { &mut *vm.pic_ptr };
+                            pic.raise_irq(4);
                         }
                     }
                 }
@@ -1208,12 +1255,26 @@ pub extern "C" fn corevm_ps2_key_release(handle: u64, scancode: u8) -> i32 {
 }
 
 /// Send a PS/2 mouse movement.
+///
+/// Thread-safe: pushes the event into a Mutex-protected queue.
+/// The VM loop drains it in `corevm_poll_irqs` (single-threaded).
 #[no_mangle]
 pub extern "C" fn corevm_ps2_mouse_move(handle: u64, dx: i16, dy: i16, buttons: u8) -> i32 {
     let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
-    match vm.ps2() {
-        Some(ps2) => { ps2.mouse_move(dx, dy, buttons); 0 }
-        None => -1,
+    #[cfg(feature = "std")]
+    {
+        if let Ok(mut queue) = vm.pending_mouse.lock() {
+            queue.push((dx, dy, buttons));
+            return 0;
+        }
+        return -1;
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        match vm.ps2() {
+            Some(ps2) => { ps2.mouse_move(dx, dy, buttons); 0 }
+            None => -1,
+        }
     }
 }
 
@@ -1231,6 +1292,43 @@ pub extern "C" fn corevm_ps2_mouse_state(handle: u64) -> u32 {
             enabled | mbuf | kbuf
         }
         None => 0xFFFFFFFF,
+    }
+}
+
+/// Debug: dump KVM in-kernel IOAPIC redirection table entry for a given pin.
+/// Returns the 64-bit redirection entry value, or 0xFFFFFFFF_FFFFFFFF on error.
+#[no_mangle]
+pub extern "C" fn corevm_ioapic_pin_state(handle: u64, pin: u32) -> u64 {
+    #[cfg(feature = "linux")]
+    {
+        let vm = match get_vm(handle) { Some(v) => v, None => return u64::MAX };
+        // KVM IOAPIC chip_id = 2
+        match vm.backend.get_irqchip(2) {
+            Ok(data) => {
+                // KVM ioapic state layout:
+                // u64 base_address (8 bytes)
+                // u32 ioregsel (4 bytes)
+                // u32 id (4 bytes)
+                // u32 irr (4 bytes)
+                // u32 pad (4 bytes)
+                // Then 24 entries of: union { u64 bits; struct { u8 vector, ... } } (8 bytes each)
+                // = kvm_ioapic_state
+                let entry_offset = 24 + (pin as usize) * 8; // 8+4+4+4+4=24 header bytes
+                if entry_offset + 8 <= data.len() {
+                    let mut bytes = [0u8; 8];
+                    bytes.copy_from_slice(&data[entry_offset..entry_offset + 8]);
+                    u64::from_le_bytes(bytes)
+                } else {
+                    u64::MAX
+                }
+            }
+            Err(_) => u64::MAX,
+        }
+    }
+    #[cfg(not(feature = "linux"))]
+    {
+        let _ = (handle, pin);
+        u64::MAX
     }
 }
 

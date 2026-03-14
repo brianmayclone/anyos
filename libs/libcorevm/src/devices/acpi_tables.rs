@@ -114,8 +114,8 @@ fn build_fadt() -> Vec<u8> {
     write_u16(&mut t, 98, 0x03E9);
     // IAPC_BOOT_ARCH (8042, legacy devices)
     write_u16(&mut t, 109, 0x0003);
-    // FLAGS: WBINVD | PROC_C1 | SLP_BUTTON | RTC_S4 | TMR_VAL_EXT
-    write_u32(&mut t, 112, 0x000000A5);
+    // FLAGS: WBINVD(0) | PROC_C1(2) | SLP_BUTTON(5) | RTC_S4(7) | TMR_VAL_EXT(8)
+    write_u32(&mut t, 112, 0x000001A5);
 
     // ACPI 2.0 extended fields (offset 132+)
     // X_FIRMWARE_CTRL (u64 at offset 132), patched by loader
@@ -257,8 +257,53 @@ fn build_dsdt() -> Vec<u8> {
     //   \_SB_.PCI0.ISA_.TIMR PNP0100  System timer (IRQ 0)
     //   \_SB_.PCI0.ISA_.SPKR PNP0800  Speaker
     //   \_SB_.PCI0._PRT  PCI interrupt routing table
+    //   \_PIC method     Interrupt mode switching (PIC/APIC/SAPIC)
+    //   \_S5_ sleep object  Soft-off power state
+    //   \_PR_.CPU0       Processor object
 
     let mut aml = Vec::new();
+
+    // ── Global \_PIC method ──
+    // Windows calls \_PIC(n) during HAL init to switch interrupt mode:
+    //   0 = PIC mode, 1 = APIC mode, 2 = SAPIC mode
+    // Method(\_PIC, 1) { Store(Arg0, PICM) }
+    // We also need: Name(PICM, 0)
+    {
+        // Name(PICM, Zero) — global variable for interrupt mode
+        aml.push(0x08); // NameOp
+        aml.extend_from_slice(b"PICM");
+        aml.push(0x00); // Zero (initial value)
+
+        // Method(\_PIC, 1, NotSerialized) { Store(Arg0, PICM) }
+        let mut method_body = Vec::new();
+        // Store(Arg0, PICM)
+        method_body.push(0x70); // StoreOp
+        method_body.push(0x68); // Arg0
+        method_body.extend_from_slice(b"PICM"); // target = PICM
+        // Wrap: MethodOp(0x14) PkgLength NameSeg MethodFlags body
+        aml.push(0x14); // MethodOp
+        let m_body_len = 4 + 1 + method_body.len(); // name(4) + flags(1) + body
+        aml_push_pkg_len(&mut aml, m_body_len);
+        aml.extend_from_slice(b"_PIC");
+        aml.push(0x01); // MethodFlags: ArgCount=1, NotSerialized
+        aml.extend_from_slice(&method_body);
+    }
+
+    // ── \_S5_ (Soft Off) sleep object ──
+    // Name(\_S5_, Package(4) { 0, 0, 0, 0 })
+    // Windows needs this for shutdown support.
+    {
+        aml.push(0x08); // NameOp
+        aml.extend_from_slice(b"_S5_");
+        aml.push(0x12); // PackageOp
+        // Body: NumElements(1) + BytePrefix+5(2) + BytePrefix+5(2) + Zero(1) + Zero(1) = 7
+        aml_push_pkg_len(&mut aml, 7);
+        aml.push(4);    // NumElements
+        aml.push(0x0A); aml.push(0x05); // BytePrefix + SLP_TYP_S5 = 5
+        aml.push(0x0A); aml.push(0x05); // BytePrefix + SLP_TYP_S5 = 5
+        aml.push(0x00); // Zero
+        aml.push(0x00); // Zero
+    }
 
     // ── Build \_SB_ scope contents ──
 
@@ -353,6 +398,83 @@ fn build_dsdt() -> Vec<u8> {
     pci0_inner.extend_from_slice(&[0x08]); // NameOp
     pci0_inner.extend_from_slice(b"_BBN");
     pci0_inner.push(0x00);
+
+    // _CRS — PCI root bridge resource descriptors (bus range, I/O, memory)
+    // Windows needs this to enumerate PCI devices.
+    {
+        let mut crs_body = Vec::new();
+
+        // Word Bus Number descriptor: bus 0-255
+        // WordBusNumber(ResourceProducer, MinFixed, MaxFixed, , 0, 0, 0xFF, 0, 0x100)
+        // Large resource: type=0x88, length=0x0D (13 = restype+genflags+typeflags+5*u16)
+        crs_body.extend_from_slice(&[0x88, 0x0D, 0x00]); // tag + length(13) LE
+        crs_body.push(0x02); // ResourceType=2 (bus range)
+        crs_body.push(0x0C); // General Flags: MinFixed | MaxFixed
+        crs_body.push(0x00); // Type Specific Flags (none for bus number)
+        crs_body.extend_from_slice(&0u16.to_le_bytes()); // _GRA (granularity)
+        crs_body.extend_from_slice(&0u16.to_le_bytes()); // _MIN (bus 0)
+        crs_body.extend_from_slice(&0xFFu16.to_le_bytes()); // _MAX (bus 255)
+        crs_body.extend_from_slice(&0u16.to_le_bytes()); // _TRA (translation)
+        crs_body.extend_from_slice(&0x100u16.to_le_bytes()); // _LEN (256 buses)
+
+        // DWord I/O range: 0x0000 - 0x0CF7
+        // DWordIO(ResourceProducer, MinFixed, MaxFixed, PosDecode, EntireRange, 0, 0, 0x0CF7, 0, 0x0CF8)
+        crs_body.extend_from_slice(&[0x87, 0x17, 0x00]); // tag + length(23) LE
+        crs_body.push(0x01); // ResourceType=1 (I/O)
+        crs_body.push(0x0C); // MinFixed | MaxFixed, PosDecode
+        crs_body.push(0x03); // ISA+non-ISA ranges
+        crs_body.extend_from_slice(&0u32.to_le_bytes()); // _GRA
+        crs_body.extend_from_slice(&0u32.to_le_bytes()); // _MIN
+        crs_body.extend_from_slice(&0x0CF7u32.to_le_bytes()); // _MAX
+        crs_body.extend_from_slice(&0u32.to_le_bytes()); // _TRA
+        crs_body.extend_from_slice(&0x0CF8u32.to_le_bytes()); // _LEN
+
+        // DWord I/O range: 0x0D00 - 0xFFFF (above PCI config)
+        crs_body.extend_from_slice(&[0x87, 0x17, 0x00]);
+        crs_body.push(0x01);
+        crs_body.push(0x0C);
+        crs_body.push(0x03);
+        crs_body.extend_from_slice(&0u32.to_le_bytes());
+        crs_body.extend_from_slice(&0x0D00u32.to_le_bytes());
+        crs_body.extend_from_slice(&0xFFFFu32.to_le_bytes());
+        crs_body.extend_from_slice(&0u32.to_le_bytes());
+        crs_body.extend_from_slice(&0xF300u32.to_le_bytes());
+
+        // DWord Memory range: 0xE0000000 - 0xFEBFFFFF (PCI MMIO)
+        // DWordMemory(ResourceProducer, PosDecode, MinFixed, MaxFixed, NonCacheable, ReadWrite,
+        //   0, 0xE0000000, 0xFEBFFFFF, 0, 0x0EC00000)
+        crs_body.extend_from_slice(&[0x87, 0x17, 0x00]); // tag + length(23) LE
+        crs_body.push(0x00); // ResourceType=0 (Memory)
+        crs_body.push(0x0C); // MinFixed | MaxFixed
+        crs_body.push(0x01); // ReadWrite
+        crs_body.extend_from_slice(&0u32.to_le_bytes()); // _GRA
+        crs_body.extend_from_slice(&0xE000_0000u32.to_le_bytes()); // _MIN
+        crs_body.extend_from_slice(&0xFEBF_FFFFu32.to_le_bytes()); // _MAX
+        crs_body.extend_from_slice(&0u32.to_le_bytes()); // _TRA
+        crs_body.extend_from_slice(&0x0EC0_0000u32.to_le_bytes()); // _LEN
+
+        // End tag
+        crs_body.extend_from_slice(&[0x79, 0x00]);
+
+        // Name(_CRS, ResourceTemplate() { ... })
+        // Buffer: BufferOp(0x11) PkgLength BufferSize data
+        // BufferSize prefix: BytePrefix(0x0A, 2 bytes) or WordPrefix(0x0B, 3 bytes)
+        pci0_inner.extend_from_slice(&[0x08]); // NameOp
+        pci0_inner.extend_from_slice(b"_CRS");
+        pci0_inner.push(0x11); // BufferOp
+        let size_prefix_len = if crs_body.len() < 64 { 2 } else { 3 };
+        let buf_body_len = size_prefix_len + crs_body.len();
+        aml_push_pkg_len(&mut pci0_inner, buf_body_len);
+        if crs_body.len() < 64 {
+            pci0_inner.push(0x0A); // BytePrefix
+            pci0_inner.push(crs_body.len() as u8);
+        } else {
+            pci0_inner.push(0x0B); // WordPrefix
+            pci0_inner.extend_from_slice(&(crs_body.len() as u16).to_le_bytes());
+        }
+        pci0_inner.extend_from_slice(&crs_body);
+    }
+
     // _PRT
     pci0_inner.extend_from_slice(&prt_name);
     // ISA bridge
@@ -374,6 +496,30 @@ fn build_dsdt() -> Vec<u8> {
     scope.extend_from_slice(&pci0_dev);
 
     aml.extend_from_slice(&scope);
+
+    // ── Processor object: Scope(\_PR_) { Processor(CPU0, 0, 0, 0) {} } ──
+    // Windows needs at least one processor object.
+    {
+        let mut pr_inner = Vec::new();
+        // Processor(CPU0, 0, 0x00000000, 0x00)
+        // ProcessorOp = 0x5B 0x83, PkgLength, NameSeg, ProcID(1), PblkAddr(4), PblkLen(1)
+        pr_inner.extend_from_slice(&[0x5B, 0x83]); // ProcessorOp
+        let proc_body_len = 4 + 1 + 4 + 1; // name + procID + PblkAddr + PblkLen (no body)
+        aml_push_pkg_len(&mut pr_inner, proc_body_len);
+        pr_inner.extend_from_slice(b"CPU0");
+        pr_inner.push(0x00);  // ProcID = 0
+        pr_inner.extend_from_slice(&0u32.to_le_bytes()); // PblkAddr = 0
+        pr_inner.push(0x00);  // PblkLen = 0
+
+        // Scope(\_PR_) { ... }
+        let mut pr_scope = Vec::new();
+        pr_scope.push(0x10); // ScopeOp
+        let pr_scope_body_len = 5 + pr_inner.len(); // \_PR_ name (5 bytes) + contents
+        aml_push_pkg_len(&mut pr_scope, pr_scope_body_len);
+        pr_scope.extend_from_slice(&[0x5C, 0x5F, 0x50, 0x52, 0x5F]); // \_PR_
+        pr_scope.extend_from_slice(&pr_inner);
+        aml.extend_from_slice(&pr_scope);
+    }
 
     let total_len = 36 + aml.len();
     let mut t = vec![0u8; total_len];

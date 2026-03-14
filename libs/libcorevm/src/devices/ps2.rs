@@ -28,7 +28,8 @@ use crate::io::IoHandler;
 #[derive(Debug)]
 pub struct Ps2Controller {
     /// Data ready to be read by the guest via port 0x60.
-    pub output_buffer: VecDeque<u8>,
+    /// Each entry is `(byte, is_mouse)` so STATUS_MOUSE_DATA tracks per-byte.
+    output_buffer: VecDeque<(u8, bool)>,
     /// Controller status register.
     pub status: u8,
     /// Controller configuration byte (read/written via commands 0x20/0x60).
@@ -41,8 +42,6 @@ pub struct Ps2Controller {
     /// Whether the keyboard port is enabled.
     pub keyboard_enabled: bool,
     /// Active scancode set (1, 2, or 3). Defaults to scancode set 1.
-    /// We default to set 1 because the external API (key_press/key_release)
-    /// receives set-1 scancodes from the host input layer.
     pub scancode_set: u8,
     /// Buffered mouse data packets.
     pub mouse_buffer: VecDeque<u8>,
@@ -62,6 +61,9 @@ pub struct Ps2Controller {
     pub irq_needed: bool,
     /// Alternation flag for fair scheduling between keyboard and mouse buffers.
     mouse_priority: bool,
+    /// Remaining bytes in the current 3-byte mouse movement packet.
+    /// When > 0, update_output_buffer will ALWAYS serve from mouse_buffer.
+    mouse_packet_remaining: u8,
 }
 
 /// Status register bit masks.
@@ -88,13 +90,11 @@ impl Ps2Controller {
             last_read: 0,
             irq_needed: false,
             mouse_priority: false,
+            mouse_packet_remaining: 0,
         }
     }
 
     /// Enqueue a keyboard make (press) scancode.
-    ///
-    /// The caller provides a scancode set 1 make code. This is always
-    /// injected as-is because the host input layer uses set 1.
     pub fn key_press(&mut self, scancode: u8) {
         if self.keyboard_enabled {
             self.keyboard_buffer.push_back(scancode);
@@ -103,11 +103,6 @@ impl Ps2Controller {
     }
 
     /// Enqueue a keyboard break (release) scancode.
-    ///
-    /// The caller provides a scancode set 1 make code. The break code
-    /// is always `scancode | 0x80` (set 1 format), regardless of the
-    /// guest-selected scancode set, because the host input layer
-    /// provides set 1 scancodes exclusively.
     pub fn key_release(&mut self, scancode: u8) {
         if self.keyboard_enabled {
             self.keyboard_buffer.push_back(scancode | 0x80);
@@ -116,68 +111,59 @@ impl Ps2Controller {
     }
 
     /// Enqueue a 3-byte mouse movement packet.
-    ///
-    /// # Arguments
-    /// - `dx`: horizontal displacement (-256..255)
-    /// - `dy`: vertical displacement (-256..255)
-    /// - `buttons`: button state (bit 0=left, bit 1=right, bit 2=middle)
     pub fn mouse_move(&mut self, dx: i16, dy: i16, buttons: u8) {
         if !self.mouse_enabled {
             return;
         }
 
-        // Byte 0: status byte — buttons, sign bits, overflow bits.
         let mut status_byte: u8 = buttons & 0x07;
-        // Bit 3 is always set in standard PS/2 mouse protocol.
-        status_byte |= 0x08;
-        if dx < 0 {
-            status_byte |= 0x10; // X sign bit
-        }
-        if dy < 0 {
-            status_byte |= 0x20; // Y sign bit
-        }
-        // Overflow bits (bits 6, 7) — set if magnitude exceeds 255.
-        if dx > 255 || dx < -256 {
-            status_byte |= 0x40;
-        }
-        if dy > 255 || dy < -256 {
-            status_byte |= 0x80;
-        }
+        status_byte |= 0x08; // bit 3 always set
+        if dx < 0 { status_byte |= 0x10; }
+        if dy < 0 { status_byte |= 0x20; }
+        if dx > 255 || dx < -256 { status_byte |= 0x40; }
+        if dy > 255 || dy < -256 { status_byte |= 0x80; }
 
         self.mouse_buffer.push_back(status_byte);
-        self.mouse_buffer.push_back(dx as u8); // low 8 bits of dx
-        self.mouse_buffer.push_back(dy as u8); // low 8 bits of dy
+        self.mouse_buffer.push_back(dx as u8);
+        self.mouse_buffer.push_back(dy as u8);
 
+        if self.mouse_packet_remaining == 0 {
+            self.mouse_packet_remaining = 3;
+        }
         self.update_output_buffer();
     }
 
-    /// Transfer buffered device data into the output buffer for guest reading.
+    /// Transfer one byte from device buffers into the output buffer.
     ///
-    /// Alternates between keyboard and mouse data to prevent starvation.
-    /// Without this, keyboard init ACKs can block all mouse responses,
-    /// causing the guest's mouse driver init to time out.
+    /// Mouse movement packets are served atomically (all 3 bytes before
+    /// any keyboard data) to prevent packet misalignment. Init responses
+    /// and keyboard data alternate to prevent starvation.
     fn update_output_buffer(&mut self) {
         if self.status & STATUS_OUTPUT_FULL != 0 {
-            // Output buffer already has data; do not overwrite.
             return;
         }
 
-        // Alternate: if both buffers have data, alternate between them
-        // to prevent mouse starvation during init sequences.
-        let serve_mouse_first = self.mouse_priority
-            && !self.mouse_buffer.is_empty()
-            && !self.keyboard_buffer.is_empty();
-
-        let byte_and_source = if serve_mouse_first {
+        let byte_and_source = if self.mouse_packet_remaining > 0 && !self.mouse_buffer.is_empty() {
+            self.mouse_packet_remaining -= 1;
             self.mouse_buffer.pop_front().map(|b| (b, true))
-        } else if let Some(byte) = self.keyboard_buffer.pop_front() {
-            Some((byte, false))
         } else {
-            self.mouse_buffer.pop_front().map(|b| (b, true))
+            if self.mouse_packet_remaining > 0 && self.mouse_buffer.is_empty() {
+                self.mouse_packet_remaining = 0;
+            }
+            let serve_mouse_first = self.mouse_priority
+                && !self.mouse_buffer.is_empty()
+                && !self.keyboard_buffer.is_empty();
+            if serve_mouse_first {
+                self.mouse_buffer.pop_front().map(|b| (b, true))
+            } else if let Some(byte) = self.keyboard_buffer.pop_front() {
+                Some((byte, false))
+            } else {
+                self.mouse_buffer.pop_front().map(|b| (b, true))
+            }
         };
 
         if let Some((byte, is_mouse)) = byte_and_source {
-            self.output_buffer.push_back(byte);
+            self.output_buffer.push_back((byte, is_mouse));
             self.status |= STATUS_OUTPUT_FULL;
             if is_mouse {
                 self.status |= STATUS_MOUSE_DATA;
@@ -185,13 +171,11 @@ impl Ps2Controller {
                 self.status &= !STATUS_MOUSE_DATA;
             }
             self.irq_needed = true;
-            // Toggle priority for next call when both buffers have data
             self.mouse_priority = !self.mouse_priority;
         }
     }
 
     /// Try to fill the output buffer if it's empty and device buffers have data.
-    /// Called proactively from poll_irqs to ensure cross-thread data gets delivered.
     pub fn try_fill_output(&mut self) {
         if self.status & STATUS_OUTPUT_FULL == 0 {
             self.update_output_buffer();
@@ -204,24 +188,20 @@ impl Ps2Controller {
             self.kbd_expecting_param = None;
             match cmd {
                 0xED => {
-                    // Set LEDs — acknowledge and ignore the LED state.
                     self.keyboard_buffer.push_back(0xFA);
                 }
                 0xF0 => {
-                    // Set scancode set.
                     if byte == 0 {
-                        // Query: respond with current set.
                         self.keyboard_buffer.push_back(0xFA);
                         self.keyboard_buffer.push_back(self.scancode_set);
                     } else if byte >= 1 && byte <= 3 {
                         self.scancode_set = byte;
                         self.keyboard_buffer.push_back(0xFA);
                     } else {
-                        self.keyboard_buffer.push_back(0xFE); // resend
+                        self.keyboard_buffer.push_back(0xFE);
                     }
                 }
                 0xF3 => {
-                    // Set typematic rate/delay — acknowledge and ignore.
                     self.keyboard_buffer.push_back(0xFA);
                 }
                 _ => {
@@ -234,94 +214,120 @@ impl Ps2Controller {
 
         match byte {
             0xED => {
-                // Set LEDs (next byte is the LED state).
                 self.keyboard_buffer.push_back(0xFA);
                 self.kbd_expecting_param = Some(0xED);
             }
             0xF0 => {
-                // Get/set scancode set (next byte is the set number).
                 self.keyboard_buffer.push_back(0xFA);
                 self.kbd_expecting_param = Some(0xF0);
             }
             0xF3 => {
-                // Set typematic rate/delay (next byte is the rate).
                 self.keyboard_buffer.push_back(0xFA);
                 self.kbd_expecting_param = Some(0xF3);
             }
             0xF4 => {
-                // Enable scanning.
                 self.keyboard_enabled = true;
                 self.keyboard_buffer.push_back(0xFA);
             }
             0xF5 => {
-                // Disable scanning.
                 self.keyboard_enabled = false;
                 self.keyboard_buffer.push_back(0xFA);
             }
             0xF6 => {
-                // Set default parameters.
                 self.scancode_set = 1;
                 self.keyboard_buffer.push_back(0xFA);
             }
             0xFF => {
-                // Reset keyboard.
-                self.keyboard_buffer.push_back(0xFA); // ACK
-                self.keyboard_buffer.push_back(0xAA); // self-test passed
+                self.keyboard_buffer.push_back(0xFA);
+                self.keyboard_buffer.push_back(0xAA);
                 self.scancode_set = 1;
             }
             _ => {
-                // Unknown command — ACK anyway (many guests expect this).
                 self.keyboard_buffer.push_back(0xFA);
             }
         }
         self.update_output_buffer();
+    }
+
+    /// Push a mouse init response directly into the output buffer.
+    /// These are NOT movement packets and need their own is_mouse tag.
+    fn push_mouse_response(&mut self, byte: u8) {
+        self.output_buffer.push_back((byte, true));
+        self.status |= STATUS_OUTPUT_FULL | STATUS_MOUSE_DATA;
+        self.irq_needed = true;
     }
 
     /// Handle a device command written to port 0x60 targeting the mouse.
     fn handle_mouse_data(&mut self, byte: u8) {
         match byte {
+            0xE6 => { self.push_mouse_response(0xFA); }
+            0xE7 => { self.push_mouse_response(0xFA); }
+            0xE8 => { self.push_mouse_response(0xFA); }
+            0xE9 => {
+                self.push_mouse_response(0xFA);
+                let status = if self.mouse_enabled { 0x20 } else { 0x00 };
+                self.push_mouse_response(status);
+                self.push_mouse_response(0x02);
+                self.push_mouse_response(100);
+            }
+            0xEA => { self.push_mouse_response(0xFA); }
+            0xF0 => { self.push_mouse_response(0xFA); }
+            0xF2 => {
+                self.push_mouse_response(0xFA);
+                self.push_mouse_response(0x00);
+            }
+            0xF3 => { self.push_mouse_response(0xFA); }
             0xF4 => {
-                // Enable data reporting.
                 self.mouse_enabled = true;
-                self.mouse_buffer.push_back(0xFA);
+                self.push_mouse_response(0xFA);
             }
             0xF5 => {
-                // Disable data reporting.
                 self.mouse_enabled = false;
-                self.mouse_buffer.push_back(0xFA);
+                self.push_mouse_response(0xFA);
             }
             0xFF => {
-                // Reset mouse.
-                self.mouse_buffer.push_back(0xFA); // ACK
-                self.mouse_buffer.push_back(0xAA); // self-test passed
-                self.mouse_buffer.push_back(0x00); // mouse ID
+                self.push_mouse_response(0xFA);
+                self.push_mouse_response(0xAA);
+                self.push_mouse_response(0x00);
                 self.mouse_enabled = false;
             }
             _ => {
-                // ACK unknown commands.
-                self.mouse_buffer.push_back(0xFA);
+                self.push_mouse_response(0xFA);
             }
         }
-        self.update_output_buffer();
     }
 }
 
 impl IoHandler for Ps2Controller {
-    /// Read from PS/2 controller ports.
-    ///
-    /// - Port 0x60: reads the next byte from the output buffer and updates
-    ///   status flags.
-    /// - Port 0x64: reads the status register.
     fn read(&mut self, port: u16, _size: u8) -> Result<u32> {
         let val = match port {
             0x60 => {
-                let byte = self.output_buffer.pop_front().unwrap_or(self.last_read);
+                let (byte, is_mouse) = if let Some(entry) = self.output_buffer.pop_front() {
+                    entry
+                } else {
+                    // Output buffer empty — return latched last value.
+                    // Use the CURRENT STATUS_MOUSE_DATA since we have no per-byte info.
+                    (self.last_read, self.status & STATUS_MOUSE_DATA != 0)
+                };
                 self.last_read = byte;
                 // Clear output buffer full flag.
                 self.status &= !STATUS_OUTPUT_FULL;
                 self.status &= !STATUS_MOUSE_DATA;
-                // Immediately try to fill with next available data.
-                self.update_output_buffer();
+
+                // Set STATUS_MOUSE_DATA for the NEXT byte in the buffer,
+                // so port 0x64 reads reflect what the NEXT port 0x60 read
+                // will return. This is critical for the i8042 handler which
+                // checks status BEFORE reading data.
+                if let Some(&(_, next_is_mouse)) = self.output_buffer.front() {
+                    self.status |= STATUS_OUTPUT_FULL;
+                    if next_is_mouse {
+                        self.status |= STATUS_MOUSE_DATA;
+                    }
+                } else {
+                    // Try to fill from device buffers.
+                    self.update_output_buffer();
+                }
+
                 byte
             }
             0x64 => self.status,
@@ -330,25 +336,31 @@ impl IoHandler for Ps2Controller {
         Ok(val as u32)
     }
 
-    /// Write to PS/2 controller ports.
-    ///
-    /// - Port 0x60: data written here goes either to the controller (if
-    ///   it is expecting a data byte for a command) or to the keyboard/mouse
-    ///   device.
-    /// - Port 0x64: controller commands.
     fn write(&mut self, port: u16, _size: u8, val: u32) -> Result<()> {
         let byte = val as u8;
         match port {
             0x60 => {
                 if let Some(cmd) = self.expecting_data.take() {
-                    // Data byte for a controller command.
                     match cmd {
                         0x60 => {
-                            // Write controller configuration byte.
                             self.command_byte = byte;
                         }
+                        0xD1 => {
+                            // Write Controller Output Port.
+                            // Bit 0 = system reset (0 = reset), bit 1 = A20 gate.
+                            // We don't emulate A20/reset here — just consume the byte.
+                            #[cfg(feature = "std")]
+                            eprintln!("[ps2-data] output_port={:#04x} (A20={}, reset={})",
+                                byte, (byte >> 1) & 1, byte & 1);
+                        }
+                        0xD3 => {
+                            // Write to AUX output buffer (loopback test).
+                            // Echo the byte back with AUXDATA set.
+                            self.output_buffer.push_back((byte, true));
+                            self.status |= STATUS_OUTPUT_FULL | STATUS_MOUSE_DATA;
+                            self.irq_needed = true;
+                        }
                         0xD4 => {
-                            // Write to mouse.
                             self.handle_mouse_data(byte);
                         }
                         _ => {}
@@ -357,62 +369,92 @@ impl IoHandler for Ps2Controller {
                     self.write_to_mouse = false;
                     self.handle_mouse_data(byte);
                 } else {
-                    // Device command to keyboard.
                     self.handle_keyboard_data(byte);
                 }
             }
             0x64 => {
-                // Controller commands.
                 match byte {
                     0x20 => {
-                        // Read controller configuration byte.
-                        self.output_buffer.push_back(self.command_byte);
+                        self.output_buffer.push_back((self.command_byte, false));
                         self.status |= STATUS_OUTPUT_FULL;
                         self.status &= !STATUS_MOUSE_DATA;
                     }
                     0x60 => {
-                        // Write controller configuration byte (next data byte).
                         self.expecting_data = Some(0x60);
                     }
                     0xA7 => {
-                        // Disable mouse port.
+                        // Disable AUX (mouse) port — set bit 5 of command byte.
                         self.mouse_enabled = false;
+                        self.command_byte |= 0x20;
                     }
                     0xA8 => {
-                        // Enable mouse port.
+                        // Enable AUX (mouse) port — clear bit 5 of command byte.
                         self.mouse_enabled = true;
+                        self.command_byte &= !0x20;
                     }
                     0xAA => {
                         // Controller self-test — return 0x55 (test passed).
-                        self.output_buffer.push_back(0x55);
+                        self.output_buffer.push_back((0x55, false));
+                        self.status |= STATUS_OUTPUT_FULL;
+                        self.status &= !STATUS_MOUSE_DATA;
+                    }
+                    0xA9 => {
+                        // AUX (mouse) interface test — return 0x00 (no error).
+                        self.output_buffer.push_back((0x00, false));
                         self.status |= STATUS_OUTPUT_FULL;
                         self.status &= !STATUS_MOUSE_DATA;
                     }
                     0xAB => {
                         // Keyboard interface test — return 0x00 (no error).
-                        self.output_buffer.push_back(0x00);
+                        self.output_buffer.push_back((0x00, false));
                         self.status |= STATUS_OUTPUT_FULL;
                         self.status &= !STATUS_MOUSE_DATA;
                     }
                     0xAD => {
-                        // Disable keyboard.
+                        // Disable keyboard — set bit 4 of command byte.
                         self.keyboard_enabled = false;
+                        self.command_byte |= 0x10;
                     }
                     0xAE => {
-                        // Enable keyboard.
+                        // Enable keyboard — clear bit 4 of command byte.
                         self.keyboard_enabled = true;
+                        self.command_byte &= !0x10;
+                    }
+                    0xD0 => {
+                        // Read Controller Output Port.
+                        // Bits: 0=system reset (1=normal), 1=A20 gate,
+                        //   4=IRQ1 output, 5=IRQ12 output, 6=kbd clock, 7=kbd data
+                        // Return 0xCF: system running, A20 enabled, IRQ outputs active,
+                        //   kbd clock+data high.
+                        let output_port: u8 = 0xCF
+                            | if self.status & STATUS_OUTPUT_FULL != 0 { 0x10 } else { 0 };
+                        self.output_buffer.push_back((output_port, false));
+                        self.status |= STATUS_OUTPUT_FULL;
+                        self.status &= !STATUS_MOUSE_DATA;
+                    }
+                    0xD1 => {
+                        // Write Controller Output Port — next byte to port 0x60
+                        // sets output port bits (A20 gate, system reset).
+                        self.expecting_data = Some(0xD1);
+                    }
+                    0xD3 => {
+                        // Write next byte to AUX output buffer.
+                        // The byte written to port 0x60 appears in the output
+                        // buffer with AUXDATA set, as if it came from the mouse.
+                        // Linux uses this as a loopback test to detect the AUX port.
+                        self.expecting_data = Some(0xD3);
                     }
                     0xD4 => {
-                        // Next byte written to port 0x60 goes to the mouse.
+                        // Next byte written to port 0x60 goes to the mouse device.
                         self.expecting_data = Some(0xD4);
                     }
                     0xFE => {
-                        // System reset — pulse CPU reset line.
                         self.reset_requested = true;
                     }
-                    _ => {
-                        // Unknown controller command — ignore.
+                    0xFF => {
+                        // Pulse all output port lines — no-op.
                     }
+                    _ => {}
                 }
             }
             _ => {}

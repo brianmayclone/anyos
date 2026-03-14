@@ -174,6 +174,11 @@ impl CoreVmApp {
                     if let Some(entry) = self.find_vm_mut(&uuid) {
                         vm::stop_vm(entry);
                     }
+                    // Mark for mouse release (actual release in update() where ctx is available)
+                    if self.display.mouse_captured {
+                        self.display.mouse_captured = false;
+                        self.display.needs_cursor_restore = true;
+                    }
                 }
             }
             ToolbarAction::Pause => {
@@ -214,6 +219,33 @@ impl CoreVmApp {
 impl eframe::App for CoreVmApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         theme::apply_theme(ctx);
+
+        // Restore cursor if mouse capture was cleared externally (e.g., VM stopped via toolbar).
+        // The display's release_mouse() can't be called from toolbar handlers because they
+        // don't have ctx, so we check and restore here.
+        if self.display.needs_cursor_restore {
+            self.display.needs_cursor_restore = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+        }
+
+        // Check for mouse release shortcuts BEFORE keyboard handling consumes events.
+        // handle_keyboard_events removes all Key events, so Ctrl+Alt+G would never
+        // reach display.show() otherwise.
+        if self.display.mouse_captured {
+            let release = ctx.input(|i| {
+                i.events.iter().any(|e| matches!(e,
+                    egui::Event::Key { key: egui::Key::G, pressed: true, modifiers, .. }
+                        if modifiers.ctrl && modifiers.alt
+                ) || matches!(e,
+                    egui::Event::Key { key: egui::Key::Escape, pressed: true, modifiers, .. }
+                        if modifiers.ctrl && modifiers.alt
+                ))
+            });
+            if release {
+                self.display.release_mouse(ctx);
+            }
+        }
 
         // Intercept keyboard events BEFORE egui widgets consume Enter/Tab/etc.
         // Use display_focused from the previous frame (updated at end of this frame).
@@ -573,6 +605,7 @@ impl eframe::App for CoreVmApp {
         }
 
         // Check if any running VM thread has exited
+        let mut vm_exited = false;
         for vm in &mut self.vms {
             if vm.state == VmState::Running {
                 if let Some(ref ctl) = vm.control {
@@ -581,6 +614,7 @@ impl eframe::App for CoreVmApp {
                             .map(|r| r.clone())
                             .unwrap_or_default();
                         vm.state = VmState::Stopped;
+                        vm_exited = true;
                         self.error_message = Some(format!(
                             "VM '{}' stopped ({})",
                             vm.config.name, reason
@@ -588,6 +622,11 @@ impl eframe::App for CoreVmApp {
                     }
                 }
             }
+        }
+        // Release mouse capture when VM exits unexpectedly
+        if vm_exited && self.display.mouse_captured {
+            self.display.mouse_captured = false;
+            self.display.needs_cursor_restore = true;
         }
 
         // Repaint when VM running

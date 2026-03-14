@@ -53,7 +53,7 @@ impl AcpiPm {
         AcpiPm {
             pm1_status: 0,
             pm1_enable: 0,
-            pm1_control: 0,
+            pm1_control: 1, // SCI_EN=1: ACPI mode always active (no SMI transition needed)
             timer_count: 0,
             instruction_credit: 0,
             #[cfg(feature = "std")]

@@ -389,6 +389,17 @@ pub struct DisplayWidget {
     last_mouse_pos: Option<egui::Pos2>,
     last_mouse_buttons: u8,
     mouse_debug_counter: u64,
+    /// Accumulated fractional mouse deltas (sub-pixel precision).
+    mouse_accum_x: f32,
+    mouse_accum_y: f32,
+    /// Whether the mouse is currently captured (grabbed) by the VM display.
+    /// Click on display to capture, Ctrl+Alt+G to release.
+    pub mouse_captured: bool,
+    /// Set when mouse_captured is cleared without ctx (e.g., toolbar stop).
+    /// update() checks this to restore cursor state.
+    pub needs_cursor_restore: bool,
+    /// Frames to skip after a cursor warp (warp generates a phantom delta).
+    warp_skip_frames: u8,
 }
 
 impl DisplayWidget {
@@ -400,6 +411,11 @@ impl DisplayWidget {
             last_mouse_pos: None,
             last_mouse_buttons: 0,
             mouse_debug_counter: 0,
+            mouse_accum_x: 0.0,
+            mouse_accum_y: 0.0,
+            mouse_captured: false,
+            needs_cursor_restore: false,
+            warp_skip_frames: 0,
         }
     }
 
@@ -444,6 +460,22 @@ impl DisplayWidget {
 
         let display_id = egui::Id::new("vm_display_area");
 
+        // Check for release shortcuts: Ctrl+Alt+G or Ctrl+Alt+Escape
+        if self.mouse_captured {
+            let release = ui.input(|i| {
+                i.events.iter().any(|e| match e {
+                    egui::Event::Key { key: egui::Key::G, pressed: true, modifiers, .. }
+                        if modifiers.ctrl && modifiers.alt => true,
+                    egui::Event::Key { key: egui::Key::Escape, pressed: true, modifiers, .. }
+                        if modifiers.ctrl && modifiers.alt => true,
+                    _ => false,
+                })
+            });
+            if release {
+                self.release_mouse(ctx);
+            }
+        }
+
         if let Some(ref texture) = self.texture {
             let available = ui.available_size();
             let tex_w = self.last_width as f32;
@@ -470,11 +502,27 @@ impl DisplayWidget {
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                         egui::Color32::WHITE,
                     );
+
+                    // Show capture hint overlay when not captured and hovering
+                    if !self.mouse_captured && response.hovered() {
+                        let hint = "Click to capture mouse (Ctrl+Alt+G or Ctrl+Alt+Esc to release)";
+                        let text_pos = egui::pos2(rect.min.x + 8.0, rect.max.y - 24.0);
+                        ui.painter().text(
+                            text_pos,
+                            egui::Align2::LEFT_BOTTOM,
+                            hint,
+                            egui::FontId::proportional(13.0),
+                            egui::Color32::from_rgba_premultiplied(200, 200, 200, 180),
+                        );
+                    }
                 }
 
-                // Click to focus
+                // Click on display → capture mouse
                 if response.clicked() || response.drag_started() {
                     ui.memory_mut(|m| m.request_focus(display_id));
+                    if !self.mouse_captured {
+                        self.capture_mouse(ctx);
+                    }
                 }
 
                 // Auto-focus when VM is running
@@ -482,9 +530,9 @@ impl DisplayWidget {
                     ui.memory_mut(|m| m.request_focus(display_id));
                 }
 
-                // Mouse handling: send PS/2 mouse events when hovering over display
+                // Mouse handling: send PS/2 mouse events to VM
                 if let Some(handle) = vm_handle {
-                    self.handle_mouse_input(ui, rect, handle, &response);
+                    self.handle_mouse_input(ui, ctx, rect, handle);
                 }
 
                 let focused = ui.memory(|m| m.has_focus(display_id));
@@ -498,13 +546,31 @@ impl DisplayWidget {
         (false, None)
     }
 
-    /// Handle mouse input over the display area and inject PS/2 events into the VM.
-    fn handle_mouse_input(&mut self, ui: &egui::Ui, display_rect: egui::Rect, vm_handle: u64, _response: &egui::Response) {
-        // Use latest_pos() instead of hover_pos() — hover_pos returns None during
-        // continuous repaint (request_repaint every frame). latest_pos() always
-        // returns the last known pointer position from the windowing system.
-        let pointer_pos = ui.input(|i| i.pointer.latest_pos());
+    /// Capture the mouse: hide cursor, confine to window.
+    fn capture_mouse(&mut self, ctx: &egui::Context) {
+        self.mouse_captured = true;
+        self.last_mouse_pos = None; // Will be set to center on first frame
+        self.mouse_accum_x = 0.0;
+        self.mouse_accum_y = 0.0;
+        // Use Confined: keeps cursor inside window. We use center-warp technique
+        // (warp cursor to display center each frame) to get unlimited relative motion.
+        // Locked is not reliably supported on X11.
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Confined));
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
+        eprintln!("[mouse] Captured — Ctrl+Alt+G to release");
+    }
 
+    /// Release the mouse: show cursor and ungrab.
+    pub fn release_mouse(&mut self, ctx: &egui::Context) {
+        self.mouse_captured = false;
+        self.last_mouse_pos = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+        eprintln!("[mouse] Released");
+    }
+
+    /// Handle mouse input over the display area and inject PS/2 events into the VM.
+    fn handle_mouse_input(&mut self, ui: &egui::Ui, ctx: &egui::Context, display_rect: egui::Rect, vm_handle: u64) {
         // Read current button state
         let buttons = ui.input(|i| {
             let mut b = 0u8;
@@ -518,37 +584,94 @@ impl DisplayWidget {
         self.mouse_debug_counter += 1;
         if self.mouse_debug_counter % 300 == 0 {
             let ps2_state = libcorevm::ffi::corevm_ps2_mouse_state(vm_handle);
-            eprintln!("[mouse-debug] latest_pos={:?} in_rect={} buttons={} ps2_enabled={} ps2_buf={}",
+            let pointer_pos = ui.input(|i| i.pointer.latest_pos());
+            // Also check IOAPIC pin 12 state from KVM
+            let ioapic_pin12 = libcorevm::ffi::corevm_ioapic_pin_state(vm_handle, 12);
+            let pin12_masked = (ioapic_pin12 >> 16) & 1;
+            let pin12_vector = ioapic_pin12 & 0xFF;
+            let pin12_deliv = (ioapic_pin12 >> 8) & 0x7;
+            eprintln!("[mouse-debug] captured={} pos={:?} in_rect={} buttons={} ps2_enabled={} ps2_buf={} ioapic_pin12: vec={:#x} deliv={} masked={}",
+                self.mouse_captured,
                 pointer_pos,
                 pointer_pos.map_or(false, |p| display_rect.contains(p)),
                 buttons,
-                ps2_state & 1, (ps2_state >> 8) & 0xFF);
+                ps2_state & 1, (ps2_state >> 8) & 0xFF,
+                pin12_vector, pin12_deliv, pin12_masked);
         }
 
-        if let Some(pos) = pointer_pos {
-            if display_rect.contains(pos) {
-                // Pointer is over the display area
-                if let Some(last) = self.last_mouse_pos {
-                    let dx = (pos.x - last.x) as i16;
-                    let dy = (pos.y - last.y) as i16;
-                    if dx != 0 || dy != 0 {
-                        libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, dx, dy, buttons);
-                    } else if buttons != self.last_mouse_buttons {
-                        // Button state changed without movement
-                        libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, 0, 0, buttons);
-                    }
-                }
-                self.last_mouse_pos = Some(pos);
-            } else {
-                // Pointer left the display area
-                if self.last_mouse_pos.is_some() {
-                    self.last_mouse_pos = None;
-                    if self.last_mouse_buttons != 0 {
-                        libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, 0, 0, 0);
-                    }
+        if !self.mouse_captured {
+            // Not captured — don't send mouse events to VM
+            self.last_mouse_buttons = buttons;
+            return;
+        }
+
+        // Use egui's pointer.delta() for raw OS-reported movement.
+        // CursorPosition warp is asynchronous on X11, so computing
+        // delta from (pos - center) causes doubled deltas and drift.
+        // We still warp to center periodically to prevent edge-sticking,
+        // but skip frames right after a warp (the warp generates a phantom delta).
+        let center = display_rect.center();
+
+        // Skip frames after a warp — the phantom delta from warping must be ignored.
+        if self.warp_skip_frames > 0 {
+            self.warp_skip_frames -= 1;
+            // Still consume the delta so it doesn't accumulate
+            let _ = ui.input(|i| i.pointer.delta());
+            // Check if we need another warp (cursor might still be far from center)
+            let pos = ui.input(|i| i.pointer.latest_pos());
+            if let Some(pos) = pos {
+                let dist = ((pos.x - center.x).powi(2) + (pos.y - center.y).powi(2)).sqrt();
+                if dist > 150.0 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(center));
+                    self.warp_skip_frames = 2;
                 }
             }
+            self.last_mouse_buttons = buttons;
+            ctx.request_repaint();
+            return;
         }
+
+        let (raw_dx, raw_dy) = ui.input(|i| {
+            let d = i.pointer.delta();
+            (d.x, d.y)
+        });
+
+        // Warp cursor back to center when it strays too far from center.
+        // This prevents the cursor from hitting the window edge (Confined mode).
+        let pos = ui.input(|i| i.pointer.latest_pos());
+        if let Some(pos) = pos {
+            let dist_from_center = ((pos.x - center.x).powi(2) + (pos.y - center.y).powi(2)).sqrt();
+            if dist_from_center > 150.0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(center));
+                self.warp_skip_frames = 2; // skip 2 frames for warp to take effect
+            }
+        }
+
+        // Accumulate fractional movement
+        self.mouse_accum_x += raw_dx;
+        self.mouse_accum_y += raw_dy;
+
+        // Extract integer part, keep fractional remainder
+        let int_x = self.mouse_accum_x as i16;
+        let int_y = self.mouse_accum_y as i16;
+        self.mouse_accum_x -= int_x as f32;
+        self.mouse_accum_y -= int_y as f32;
+
+        let dx = int_x;
+        let dy = -int_y; // PS/2: positive Y = UP, screen: positive Y = DOWN
+
+        if dx != 0 || dy != 0 {
+            libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, dx, dy, buttons);
+            if self.mouse_debug_counter < 30 || self.mouse_debug_counter % 60 == 0 {
+                let ps2_state = libcorevm::ffi::corevm_ps2_mouse_state(vm_handle);
+                eprintln!("[mouse-move] dx={} dy={} btn={} ps2_enabled={} ps2_buf={}",
+                    dx, dy, buttons, ps2_state & 1, (ps2_state >> 8) & 0xFF);
+            }
+        } else if buttons != self.last_mouse_buttons {
+            libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, 0, 0, buttons);
+        }
+
         self.last_mouse_buttons = buttons;
+        ctx.request_repaint();
     }
 }

@@ -752,12 +752,13 @@ impl KvmBackend {
                 let mut edx = e.edx;
 
                 // Filter CPUID: hide VMX, fix initial APIC ID for vCPU 0.
-                // Keep TSC-Deadline, hypervisor present, and KVM paravirt
-                // features — the in-kernel IRQCHIP/LAPIC handles them
-                // properly and 64-bit Linux kernels need them for stable
-                // timekeeping (kvmclock, TSC-deadline timer).
+                // Hide hypervisor bit and KVM PV features so Windows 7
+                // doesn't detect a hypervisor it can't use (it only knows
+                // Hyper-V). Linux guests still work fine — kvmclock is
+                // set up by SeaBIOS and KVM's in-kernel timers handle the rest.
                 if e.function == 1 {
                     ecx &= !(1 << 5);   // VMX — not useful inside guest
+                    ecx &= !(1 << 31);  // Hide hypervisor present bit
                     // Fix initial APIC ID in EBX[31:24] to 0 for vCPU 0.
                     // KVM_GET_SUPPORTED_CPUID returns the host CPU's APIC ID
                     // which causes "APIC ID mismatch" firmware bug warnings
@@ -770,9 +771,13 @@ impl KvmBackend {
                     edx = 0;
                 }
 
-                // Keep KVM paravirtualization (kvmclock, PV EOI, etc.)
-                // — the in-kernel IRQCHIP handles these correctly and they
-                // provide much better timekeeping than bare TSC/PIT.
+                // Hide KVM hypervisor signature (leaf 0x40000000+).
+                // Windows 7 doesn't understand KVM PV and gets confused.
+                // SeaBIOS already set up kvmclock which still works
+                // (the MSR is already programmed before CPUID filtering).
+                if e.function >= 0x4000_0000 && e.function <= 0x4000_00FF {
+                    continue; // Skip all hypervisor leaves
+                }
 
                 cpuid_entries.push(CpuidEntry {
                     function: e.function,

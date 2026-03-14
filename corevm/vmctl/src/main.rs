@@ -54,6 +54,7 @@ struct Args {
     initrd: String,
     append: String,
     send_keys: Vec<(u32, Vec<u8>)>,  // (delay_ms, scancodes)
+    send_mouse: Vec<(u32, i16, i16, u8)>, // (delay_ms, dx, dy, buttons)
 }
 
 fn parse_args() -> Args {
@@ -70,6 +71,7 @@ fn parse_args() -> Args {
         initrd: String::new(),
         append: String::new(),
         send_keys: Vec::new(),
+        send_mouse: Vec::new(),
     };
 
     let mut i = 1;
@@ -126,6 +128,23 @@ fn parse_args() -> Args {
                         };
                         if !scancodes.is_empty() {
                             args.send_keys.push((delay, scancodes));
+                        }
+                    }
+                }
+            }
+            "--mouse" => {
+                // --mouse <delay_ms>:<dx>,<dy>[,<buttons>]
+                // e.g. --mouse 5000:50,0 --mouse 6000:0,50 --mouse 7000:-30,-30,1
+                i += 1;
+                if i < argv.len() {
+                    if let Some((delay_str, rest)) = argv[i].split_once(':') {
+                        let delay: u32 = delay_str.parse().unwrap_or(1000);
+                        let parts: Vec<&str> = rest.split(',').collect();
+                        if parts.len() >= 2 {
+                            let dx: i16 = parts[0].parse().unwrap_or(0);
+                            let dy: i16 = parts[1].parse().unwrap_or(0);
+                            let btn: u8 = if parts.len() >= 3 { parts[2].parse().unwrap_or(0) } else { 0 };
+                            args.send_mouse.push((delay, dx, dy, btn));
                         }
                     }
                 }
@@ -422,6 +441,50 @@ fn main() {
         });
     }
 
+    // Mouse injection thread: schedule mouse movements at specified delays
+    if !args.send_mouse.is_empty() {
+        let mouse_handle = handle;
+        let moves = args.send_mouse.clone();
+        thread::spawn(move || {
+            let start = std::time::Instant::now();
+            for (delay_ms, dx, dy, buttons) in &moves {
+                // Delays are absolute from VM start, not cumulative.
+                let target = Duration::from_millis(*delay_ms as u64);
+                let elapsed = start.elapsed();
+                if target > elapsed {
+                    thread::sleep(target - elapsed);
+                }
+                corevm_ps2_mouse_move(mouse_handle, *dx, *dy, *buttons);
+                eprintln!("[vmctl] Sent mouse at {}ms: dx={} dy={} btn={}", delay_ms, dx, dy, buttons);
+            }
+        });
+    }
+
+    // Stdin forwarding thread: read from host stdin and inject into guest serial port.
+    // This enables interactive serial console (e.g., init=/bin/sh).
+    {
+        let stdin_handle = handle;
+        let running3 = running.clone();
+        thread::spawn(move || {
+            use std::io::Read;
+            let stdin = std::io::stdin();
+            let mut stdin = stdin.lock();
+            let mut buf = [0u8; 64];
+            loop {
+                if !running3.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                match stdin.read(&mut buf) {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        corevm_serial_send_input(stdin_handle, buf.as_ptr(), n as u32);
+                        // Wake up the vCPU so it processes the serial interrupt
+                        corevm_cancel_vcpu(stdin_handle, 0);
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
     eprintln!("[vmctl] VM started (timeout={}s)", args.timeout);
     println!("--- SERIAL OUTPUT ---");
 
@@ -455,32 +518,14 @@ fn main() {
                 } else {
                     let mut data = [0u8; 4];
                     corevm_handle_io_exit(handle, exit.port, 0, exit.size, data.as_mut_ptr());
-                    if exit.port >= 0x3F8 && exit.port <= 0x3FF {
-                        eprintln!("[serial-dbg] IN  port={:#06x} size={} -> data={:#x}", exit.port, exit.size, u32::from_le_bytes(data));
-                    }
                 }
             }
             1 => { // IoOut
                 *io_ports.entry(exit.port).or_insert(0) += 1;
-                if exit.port >= 0x3F8 && exit.port <= 0x3FF {
-                    eprintln!("[serial-dbg] OUT port={:#06x} size={} data={:#x}", exit.port, exit.size, exit.data_u32);
-                }
                 if exit.io_count > 1 {
                     // String I/O (REP OUTSB): handle all iterations at once
                     corevm_complete_string_io(handle, 0, exit.port, 1, exit.size, exit.io_count);
                 } else {
-                    // Capture COM1 serial output
-                    if exit.port == 0x3F8 && exit.size == 1 {
-                        let ch = (exit.data_u32 & 0xFF) as u8;
-                        if ch >= 0x20 || ch == b'\n' || ch == b'\r' || ch == b'\t' {
-                            print!("{}", ch as char);
-                            serial_bytes += 1;
-                            if ch == b'\n' {
-                                use std::io::Write;
-                                let _ = std::io::stdout().flush();
-                            }
-                        }
-                    }
                     let mut data = exit.data_u32.to_le_bytes();
                     corevm_handle_io_exit(handle, exit.port, 1, exit.size, data.as_mut_ptr());
                 }
@@ -558,6 +603,24 @@ fn main() {
                 if let Ok(s) = std::str::from_utf8(&dbg[..n as usize]) {
                     print!("{}", s);
                     serial_bytes += n as u64;
+                }
+            }
+        }
+
+        // Drain serial output (catches string I/O and any other writes to THR)
+        {
+            let mut ser = [0u8; 4096];
+            let n = corevm_serial_take_output(handle, ser.as_mut_ptr(), ser.len() as u32);
+            if n > 0 {
+                for &ch in &ser[..n as usize] {
+                    if ch >= 0x20 || ch == b'\n' || ch == b'\r' || ch == b'\t' {
+                        print!("{}", ch as char);
+                        serial_bytes += 1;
+                        if ch == b'\n' {
+                            use std::io::Write;
+                            let _ = std::io::stdout().flush();
+                        }
+                    }
                 }
             }
         }

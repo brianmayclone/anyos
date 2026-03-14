@@ -64,6 +64,12 @@ pub struct Serial {
     /// Characters available for the guest to read (RBR input), injected
     /// by the host via [`send_input`](Serial::send_input).
     pub input: VecDeque<u8>,
+    /// Whether a new IRQ 4 edge needs to be fired by the next poll_irqs call.
+    /// Set when interrupt conditions change; cleared after the IRQ is pulsed.
+    pub irq_pending: bool,
+    /// Tracks whether the THRE interrupt has been raised since the last THR write.
+    /// Prevents IRQ storms from the always-empty THR in our infinite-speed UART.
+    thre_raised: bool,
 }
 
 impl Serial {
@@ -87,6 +93,8 @@ impl Serial {
             dlm: 0,
             output: VecDeque::new(),
             input: VecDeque::new(),
+            irq_pending: false,
+            thre_raised: false,
         }
     }
 
@@ -100,6 +108,30 @@ impl Serial {
         }
         if !self.input.is_empty() {
             self.lsr |= LSR_DATA_READY;
+            self.update_iir();
+        }
+    }
+
+    /// Recalculate the IIR based on current interrupt conditions and
+    /// request an IRQ 4 edge if a new interrupt became pending.
+    fn update_iir(&mut self) {
+        let old_pending = (self.iir & 0x01) == 0;
+        // Priority: Receiver Line Status > Received Data > THR Empty > Modem Status
+        if (self.ier & 0x01) != 0 && (self.lsr & LSR_DATA_READY) != 0 {
+            // Received Data Available interrupt
+            self.iir = (self.iir & 0xC0) | 0x04; // IIR = 0b0100, bit 0=0 = pending
+        } else if (self.ier & 0x02) != 0 && (self.lsr & LSR_THR_EMPTY) != 0 && !self.thre_raised {
+            // THR Empty interrupt — only if not already raised since last THR write
+            self.iir = (self.iir & 0xC0) | 0x02;
+            self.thre_raised = true;
+        } else {
+            // No interrupt pending
+            self.iir = (self.iir & 0xC0) | 0x01; // bit 0=1 = no pending
+        }
+        let new_pending = (self.iir & 0x01) == 0;
+        // Request IRQ edge on any new interrupt condition
+        if new_pending && !old_pending {
+            self.irq_pending = true;
         }
     }
 
@@ -136,6 +168,7 @@ impl IoHandler for Serial {
                     if self.input.is_empty() {
                         self.lsr &= !LSR_DATA_READY;
                     }
+                    self.update_iir();
                     byte
                 }
             }
@@ -146,7 +179,16 @@ impl IoHandler for Serial {
                     self.ier
                 }
             }
-            2 => self.iir,
+            2 => {
+                let val = self.iir;
+                // Reading IIR with THR Empty pending clears the THRE condition
+                if val & 0x0F == 0x02 {
+                    self.iir = (self.iir & 0xC0) | 0x01; // no interrupt pending
+                    // After clearing THRE, check if a lower-priority interrupt is pending
+                    // (Don't call update_iir here — THRE stays cleared until next THR write)
+                }
+                val
+            }
             3 => self.lcr,
             4 => self.mcr,
             5 => self.lsr,
@@ -171,16 +213,33 @@ impl IoHandler for Serial {
                 } else {
                     // DLAB=0: Transmit Holding Register
                     self.thr = byte;
-                    self.output.push_back(byte);
+                    if self.mcr & 0x10 != 0 {
+                        // MCR bit 4: Loopback mode — data loops back to RBR.
+                        // Used by 8250 driver's IRQ probe to verify interrupts work.
+                        self.input.push_back(byte);
+                        self.lsr |= LSR_DATA_READY;
+                    } else {
+                        self.output.push_back(byte);
+                    }
                     // THR is immediately "empty" again (infinite speed UART).
                     self.lsr |= LSR_THR_EMPTY | LSR_XMIT_EMPTY;
+                    // Reset THRE raised flag — next update_iir can raise THRE again.
+                    self.thre_raised = false;
+                    self.update_iir();
                 }
             }
             1 => {
                 if self.dlab() {
                     self.dlm = byte;
                 } else {
+                    let old_ier = self.ier;
                     self.ier = byte & 0x0F; // only low 4 bits are writable
+                    // If THRE interrupt was just enabled, reset thre_raised to allow
+                    // the initial THRE interrupt when THR is already empty.
+                    if (byte & 0x02) != 0 && (old_ier & 0x02) == 0 {
+                        self.thre_raised = false;
+                    }
+                    self.update_iir();
                 }
             }
             2 => {
@@ -203,7 +262,20 @@ impl IoHandler for Serial {
                 }
             }
             3 => self.lcr = byte,
-            4 => self.mcr = byte,
+            4 => {
+                self.mcr = byte;
+                // In loopback mode (bit 4), MCR outputs feed back to MSR inputs:
+                //   MCR bit 1 (RTS)  → MSR bit 4 (CTS)
+                //   MCR bit 0 (DTR)  → MSR bit 5 (DSR)
+                //   MCR bit 2 (OUT1) → MSR bit 6 (RI)
+                //   MCR bit 3 (OUT2) → MSR bit 7 (DCD)
+                if byte & 0x10 != 0 {
+                    self.msr = ((byte & 0x02) << 3)  // RTS→CTS (bit 1→bit 4)
+                            | ((byte & 0x01) << 5)   // DTR→DSR (bit 0→bit 5)
+                            | ((byte & 0x04) << 4)   // OUT1→RI (bit 2→bit 6)
+                            | ((byte & 0x08) << 4);  // OUT2→DCD (bit 3→bit 7)
+                }
+            }
             5 => { /* LSR is read-only */ }
             6 => { /* MSR is read-only */ }
             7 => self.scratch = byte,
