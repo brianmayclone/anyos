@@ -265,6 +265,20 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         arch::x86::irq::register_irq(1, drivers::input::keyboard::irq_handler);
         arch::x86::irq::register_irq(12, drivers::input::mouse::irq_handler);
 
+        // Drain stale data from the 8042 PS/2 controller before unmasking
+        // keyboard/mouse IRQs.  The IOAPIC uses edge-triggered delivery for
+        // ISA IRQs: if the 8042 output buffer is full (IRQ line already HIGH)
+        // when we unmask, the IOAPIC never sees a rising edge and the
+        // interrupt is lost forever — keyboard appears completely dead.
+        // This can happen when a user presses keys during the boot sequence
+        // (phases 1-6) while all IOAPIC entries are still masked.
+        unsafe {
+            for _ in 0..64 {
+                if arch::x86::port::inb(0x64) & 0x01 == 0 { break; }
+                let _ = arch::x86::port::inb(0x60);
+            }
+        }
+
         if acpi_info.is_some() {
             arch::x86::irq::register_irq(0, arch::x86::pit::irq_handler);
             arch::x86::irq::register_irq(16, arch::x86::apic::timer_irq_handler);
@@ -273,6 +287,13 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             arch::x86::ioapic::unmask_irq(12);
         } else {
             arch::x86::irq::register_irq(0, arch::x86::pit::irq_handler_with_schedule);
+            // Drain 8042 output buffer (same edge-trigger issue applies to PIC)
+            unsafe {
+                for _ in 0..64 {
+                    if arch::x86::port::inb(0x64) & 0x01 == 0 { break; }
+                    let _ = arch::x86::port::inb(0x60);
+                }
+            }
             arch::x86::pic::unmask(0);
             arch::x86::pic::unmask(1);
             arch::x86::pic::unmask(12);
