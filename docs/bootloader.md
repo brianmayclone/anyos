@@ -139,6 +139,15 @@ description=text        # Description (for documentation, not displayed)
 
 The `params` field is copied into the `BootInfo` structure and made available to the kernel at boot. The kernel can use these to enable verbose logging, safe mode, or other runtime options.
 
+**Known parameter values:**
+
+| Value | Effect |
+|-------|--------|
+| *(empty)* | Normal GUI boot (compositor + desktop) |
+| `nogui` | Skip compositor; boot directly to text console login. See **[nogui Mode](nogui.md)**. |
+| `verbose` | Enable verbose kernel logging to serial and boot console |
+| `custom` | Prompts the user for interactive input at boot time (max 63 characters) |
+
 **Special value:** `params=custom` prompts the user for interactive input at boot time. A text input field appears below the menu where the user can type custom boot parameters (max 63 characters).
 
 ### Chainloading

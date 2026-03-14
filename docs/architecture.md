@@ -154,6 +154,12 @@ The kernel initializes subsystems in phases:
 15. **DLL Loading** -- Map boot-time DLIBs into kernel PD (uisys, libimage, librender, libcompositor); .so libraries (libanyui, libfont) loaded on demand via SYS_DLL_LOAD
 16. **Userspace** -- Load `/System/init` as first Ring 3 process, which starts the compositor
 
+### nogui Boot Mode
+
+When the boot parameter `params=nogui` is set, the kernel skips the compositor and desktop entirely and directly launches `/System/bin/textmode_console`. This provides a full-screen text console on the framebuffer with login, an interactive shell, ANSI color support, scrollback, and cursor blinking — no GUI required.
+
+See **[nogui Mode Documentation](nogui.md)** for the complete reference.
+
 ### Userspace Init Sequence
 
 After the kernel hands off to `/System/init`, the init program:
