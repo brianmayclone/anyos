@@ -159,7 +159,6 @@ pub extern "C" fn gl_swap_buffers() -> *const u32 {
             (drv.drv_present)(0);
 
             // Read back HW-rendered pixels into the software color buffer
-            crate::serial_println!("[libgl] swap: readback={}", drv.drv_readback.is_some());
             if let Some(readback) = drv.drv_readback {
                 let c = ctx();
                 let buf = unsafe {

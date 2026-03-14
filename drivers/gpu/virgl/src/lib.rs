@@ -82,7 +82,6 @@ const PIPE_CLEAR_STENCIL: u32 = 4;
 
 // Pipe formats (subset)
 const PIPE_FORMAT_B8G8R8A8_UNORM: u32 = 1;
-const PIPE_FORMAT_B8G8R8X8_UNORM: u32 = 2;
 const PIPE_FORMAT_S8_UINT_Z24_UNORM: u32 = 20;
 const PIPE_FORMAT_R32G32B32A32_FLOAT: u32 = 31;
 const PIPE_FORMAT_R8_UNORM: u32 = 64;
@@ -201,7 +200,7 @@ pub extern "C" fn drv_init(width: u32, height: u32) -> u32 {
 
     // Color buffer: PIPE_TEXTURE_2D, BGRA, RENDER_TARGET
     let color_res = libsyscall::gpu_3d_resource_create(
-        PIPE_TEXTURE_2D, PIPE_FORMAT_B8G8R8X8_UNORM,
+        PIPE_TEXTURE_2D, PIPE_FORMAT_B8G8R8A8_UNORM,
         VIRGL_BIND_RENDER_TARGET | VIRGL_BIND_SAMPLER_VIEW,
         width, height,
     );
@@ -229,7 +228,7 @@ pub extern "C" fn drv_init(width: u32, height: u32) -> u32 {
     cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SURFACE, 5);
     cmd.push(color_surf_h);
     cmd.push(color_res);                // resource handle
-    cmd.push(PIPE_FORMAT_B8G8R8X8_UNORM);
+    cmd.push(PIPE_FORMAT_B8G8R8A8_UNORM);
     cmd.push(0);                        // level = 0
     cmd.push(0);                        // first_layer=0 | (last_layer=0 << 16)
 
@@ -568,7 +567,6 @@ pub extern "C" fn drv_set_uniform_f32(location: i32, count: u32, values: *const 
     // SET_CONSTANT_BUFFER: shader_type, index, [data...]
     // Send to both VS and FS (both use CONST[0][...])
     let data_len = vals.len() as u32;
-    libsyscall::serial_println!("[virgl] set_uniform: loc={} count={} data_floats={}", location, count, data_len);
     for &shader_type in &[PIPE_SHADER_VERTEX, PIPE_SHADER_FRAGMENT] {
         s.cmd.push_cmd(VIRGL_CCMD_SET_CONSTANT_BUFFER, 0, 2 + data_len);
         s.cmd.push(shader_type);
@@ -703,7 +701,6 @@ pub extern "C" fn drv_draw_arrays(
     s.cmd.push(s.vbo_res_id);
 
     // 5. Draw
-    libsyscall::serial_println!("[virgl] draw_arrays: mode={} count={} stride={} vbo={}", mode, count, vertex_stride, s.vbo_res_id);
     s.cmd.push_cmd(VIRGL_CCMD_DRAW_VBO, 0, 12);
     s.cmd.push(0);              // start (vertex data already offset by libgl)
     s.cmd.push(count);          // count
@@ -832,7 +829,13 @@ pub extern "C" fn drv_readback(buf: *mut u8, buf_len: u32) -> u32 {
     }
     let out = unsafe { slice::from_raw_parts_mut(buf, buf_len as usize) };
     let r = libsyscall::gpu_3d_surface_dma_read(s.color_res_id, out, s.width, s.height);
-    libsyscall::serial_println!("[virgl] readback: res={} {}x{} len={} -> {}", s.color_res_id, s.width, s.height, buf_len, r);
+    // Check first few pixels
+    let mut nonzero = 0u32;
+    for i in 0..core::cmp::min(out.len(), (s.width * s.height * 4) as usize) {
+        if out[i] != 0 { nonzero += 1; }
+    }
+    let p0 = if out.len() >= 4 { u32::from_le_bytes([out[0], out[1], out[2], out[3]]) } else { 0 };
+    libsyscall::serial_println!("[virgl] readback: res={} {}x{} len={} -> {} nonzero={} px0=0x{:08x}", s.color_res_id, s.width, s.height, buf_len, r, nonzero, p0);
     r
 }
 

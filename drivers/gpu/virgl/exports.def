@@ -21,3 +21,4 @@ EXPORTS
     drv_flush
     drv_finish
     drv_present
+    drv_readback
