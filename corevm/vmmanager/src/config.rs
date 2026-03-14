@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 
+pub use libcorevm::setup::{GuestOs, GuestArch};
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum BootOrder { DiskFirst, CdFirst, FloppyFirst }
 
@@ -20,6 +22,8 @@ pub enum MacMode { Dynamic, Static }
 pub struct VmConfig {
     pub uuid: String,
     pub name: String,
+    pub guest_os: GuestOs,
+    pub guest_arch: GuestArch,
     pub ram_mb: u32,
     pub cpu_cores: u32,
     pub disk_images: Vec<String>,
@@ -48,6 +52,8 @@ impl Default for VmConfig {
         Self {
             uuid: uuid::Uuid::new_v4().to_string().replace("-", ""),
             name: "New VM".into(),
+            guest_os: GuestOs::Other,
+            guest_arch: GuestArch::X64,
             ram_mb: 256,
             cpu_cores: 1,
             disk_images: Vec::new(),
@@ -102,11 +108,16 @@ impl VmConfig {
         if self.disk_images.is_empty() {
             disk_lines.push_str("disk=\n");
         }
+        let arch = match self.guest_arch {
+            GuestArch::X86 => "x86",
+            GuestArch::X64 => "x64",
+        };
         let content = format!(
-            "name={}\nram={}\ncpu_cores={}\n{}iso={}\nboot={}\nbios={}\n\
+            "name={}\nguest_os={}\nguest_arch={}\nram={}\ncpu_cores={}\n{}iso={}\nboot={}\nbios={}\n\
              ram_alloc={}\ngpu={}\nnet_enabled={}\nnet_mode={}\nnet_host_nic={}\n\
              mac_mode={}\nmac_address={}\ndiagnostics={}\n",
-            self.name, self.ram_mb, self.cpu_cores, disk_lines, self.iso_image,
+            self.name, self.guest_os.to_config_str(), arch,
+            self.ram_mb, self.cpu_cores, disk_lines, self.iso_image,
             boot, bios,
             alloc, self.gpu_type,
             if self.net_enabled { "1" } else { "0" },
@@ -128,6 +139,11 @@ impl VmConfig {
             let Some((key, val)) = line.split_once('=') else { continue };
             match key.trim() {
                 "name" => cfg.name = val.to_string(),
+                "guest_os" => cfg.guest_os = GuestOs::from_config_str(val),
+                "guest_arch" => cfg.guest_arch = match val {
+                    "x86" => GuestArch::X86,
+                    _ => GuestArch::X64,
+                },
                 "ram" => cfg.ram_mb = val.parse().unwrap_or(256),
                 "cpu_cores" => cfg.cpu_cores = val.parse().unwrap_or(1),
                 "disk" => {

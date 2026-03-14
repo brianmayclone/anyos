@@ -8,6 +8,163 @@ use std::path::{Path, PathBuf};
 use crate::ffi::*;
 use crate::backend::{VcpuRegs, VcpuSregs, SegmentReg, DescriptorTable};
 
+// ── Guest OS and architecture types ─────────────────────────────────
+
+/// Guest CPU architecture.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GuestArch {
+    /// 32-bit x86 (i386/i686)
+    X86,
+    /// 64-bit x86_64 / AMD64
+    X64,
+}
+
+/// Guest operating system type.
+///
+/// Used by the VM setup logic to apply OS-specific tweaks (e.g. ACPI
+/// table variants, CPUID feature masks, boot parameters).
+#[derive(Clone, Debug, PartialEq)]
+pub enum GuestOs {
+    Other,
+    // Windows desktop
+    Windows7,
+    Windows8,
+    Windows10,
+    Windows11,
+    // Windows server
+    WindowsServer2016,
+    WindowsServer2019,
+    WindowsServer2022,
+    // Linux
+    Ubuntu,
+    Debian,
+    Fedora,
+    OpenSuse,
+    RedHat,
+    Arch,
+    LinuxOther,
+    // BSD / DOS
+    FreeBsd,
+    DosFreeDos,
+}
+
+impl GuestOs {
+    /// All known guest OS variants, grouped by category.
+    pub const ALL: &'static [GuestOs] = &[
+        GuestOs::Other,
+        GuestOs::Windows7,
+        GuestOs::Windows8,
+        GuestOs::Windows10,
+        GuestOs::Windows11,
+        GuestOs::WindowsServer2016,
+        GuestOs::WindowsServer2019,
+        GuestOs::WindowsServer2022,
+        GuestOs::Ubuntu,
+        GuestOs::Debian,
+        GuestOs::Fedora,
+        GuestOs::OpenSuse,
+        GuestOs::RedHat,
+        GuestOs::Arch,
+        GuestOs::LinuxOther,
+        GuestOs::FreeBsd,
+        GuestOs::DosFreeDos,
+    ];
+
+    /// Human-readable display label.
+    pub fn label(&self) -> &'static str {
+        match self {
+            GuestOs::Other              => "Other / Unknown",
+            GuestOs::Windows7           => "Windows 7",
+            GuestOs::Windows8           => "Windows 8 / 8.1",
+            GuestOs::Windows10          => "Windows 10",
+            GuestOs::Windows11          => "Windows 11",
+            GuestOs::WindowsServer2016  => "Windows Server 2016",
+            GuestOs::WindowsServer2019  => "Windows Server 2019",
+            GuestOs::WindowsServer2022  => "Windows Server 2022",
+            GuestOs::Ubuntu             => "Ubuntu Linux",
+            GuestOs::Debian             => "Debian Linux",
+            GuestOs::Fedora             => "Fedora Linux",
+            GuestOs::OpenSuse           => "openSUSE Linux",
+            GuestOs::RedHat             => "Red Hat Enterprise Linux",
+            GuestOs::Arch               => "Arch Linux",
+            GuestOs::LinuxOther         => "Linux (Other)",
+            GuestOs::FreeBsd            => "FreeBSD",
+            GuestOs::DosFreeDos         => "DOS / FreeDOS",
+        }
+    }
+
+    /// Category grouping for UI display.
+    pub fn category(&self) -> &'static str {
+        match self {
+            GuestOs::Other => "Other",
+            GuestOs::Windows7 | GuestOs::Windows8 | GuestOs::Windows10
+            | GuestOs::Windows11 | GuestOs::WindowsServer2016
+            | GuestOs::WindowsServer2019 | GuestOs::WindowsServer2022 => "Windows",
+            GuestOs::Ubuntu | GuestOs::Debian | GuestOs::Fedora
+            | GuestOs::OpenSuse | GuestOs::RedHat | GuestOs::Arch
+            | GuestOs::LinuxOther => "Linux",
+            GuestOs::FreeBsd => "BSD",
+            GuestOs::DosFreeDos => "DOS",
+        }
+    }
+
+    /// Serialize to config file string.
+    pub fn to_config_str(&self) -> &'static str {
+        match self {
+            GuestOs::Other              => "other",
+            GuestOs::Windows7           => "win7",
+            GuestOs::Windows8           => "win8",
+            GuestOs::Windows10          => "win10",
+            GuestOs::Windows11          => "win11",
+            GuestOs::WindowsServer2016  => "winserv2016",
+            GuestOs::WindowsServer2019  => "winserv2019",
+            GuestOs::WindowsServer2022  => "winserv2022",
+            GuestOs::Ubuntu             => "ubuntu",
+            GuestOs::Debian             => "debian",
+            GuestOs::Fedora             => "fedora",
+            GuestOs::OpenSuse           => "opensuse",
+            GuestOs::RedHat             => "rhel",
+            GuestOs::Arch               => "arch",
+            GuestOs::LinuxOther         => "linux",
+            GuestOs::FreeBsd            => "freebsd",
+            GuestOs::DosFreeDos         => "dos",
+        }
+    }
+
+    /// Deserialize from config file string.
+    pub fn from_config_str(s: &str) -> GuestOs {
+        match s {
+            "win7"        => GuestOs::Windows7,
+            "win8"        => GuestOs::Windows8,
+            "win10"       => GuestOs::Windows10,
+            "win11"       => GuestOs::Windows11,
+            "winserv2016" => GuestOs::WindowsServer2016,
+            "winserv2019" => GuestOs::WindowsServer2019,
+            "winserv2022" => GuestOs::WindowsServer2022,
+            "ubuntu"      => GuestOs::Ubuntu,
+            "debian"      => GuestOs::Debian,
+            "fedora"      => GuestOs::Fedora,
+            "opensuse"    => GuestOs::OpenSuse,
+            "rhel"        => GuestOs::RedHat,
+            "arch"        => GuestOs::Arch,
+            "linux"       => GuestOs::LinuxOther,
+            "freebsd"     => GuestOs::FreeBsd,
+            "dos"         => GuestOs::DosFreeDos,
+            _             => GuestOs::Other,
+        }
+    }
+
+    /// Returns true if this is a Windows guest.
+    pub fn is_windows(&self) -> bool {
+        self.category() == "Windows"
+    }
+
+    /// Returns true if this is a Linux guest.
+    pub fn is_linux(&self) -> bool {
+        self.category() == "Linux"
+    }
+}
+
 // ── Error helpers ────────────────────────────────────────────────────
 
 /// Retrieve the last error message from libcorevm.
