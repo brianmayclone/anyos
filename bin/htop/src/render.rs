@@ -68,9 +68,13 @@ pub fn fmt_mem_short<'a>(buf: &'a mut [u8; 12], kb: u32) -> &'a str {
 // ─── Bar rendering ────────────────────────────────────────────────────────────
 
 /// Print a fixed-width bar: `[||||   XX%]` — exactly `width` columns.
+/// Percentage is always shown as " X%" (3 chars, space-padded), so the
+/// suffix `" X%]"` is always 4 chars → `fill_area = width - 5`.
 pub fn print_bar_fixed(pct: u32, width: usize, fill_bg: &str, fill_fg: &str) {
-    if width < 6 { anyos_std::print!("[{:>3}%]", pct); return; }
-    let fill_area = width - 5;
+    // Clamp to 99 so the suffix " X%]" / "XX%]" never exceeds 4 chars (100% → "99%")
+    let pct = pct.min(99);
+    if width < 6 { anyos_std::print!("[{:>2}%]", pct); return; }
+    let fill_area = width - 5; // '[' + fill + ' X%]' (4)
     let filled = ((pct as usize) * fill_area / 100).min(fill_area);
     let empty  = fill_area - filled;
 
@@ -180,16 +184,15 @@ pub fn render_frame(f: &FrameData) {
     anyos_std::print!("  {}Uptime:{} {:02}:{:02}:{:02}\x1B[K\n",
         BOLD, RESET, f.hours, f.mins, f.secs);
 
-    anyos_std::print!("\x1B[K\n"); // blank line
-
     // ── Tab bar ───────────────────────────────────────────────────────────────
     anyos_std::print!("{}{}  Main  {}{}  I/O  {}\x1B[K\n",
         BG_BCYAN, FG_BLACK, RESET, FG_BBLACK, RESET);
 
     // ── Column header ─────────────────────────────────────────────────────────
-    // Fixed columns: PID(7) USER(8) PRI(3) NI(3) VIRT(5) RES(5) SHR(5) S(1) CPU%(5) MEM%(5) TIME+(7)
-    // + separating spaces = 7+1+8+1+3+1+3+1+5+1+5+1+5+1+1+1+5+1+5+1+7+1 = 64
-    let cmd_w = f.term_cols.saturating_sub(64).max(4);
+    // Fixed part: "  PID USER      PRI  NI  VIRT   RES   SHR S  CPU%  MEM%   TIME+ "
+    // Widths:      7+1 + 8+1 + 3+1 + 3+1 + 5+1 + 5+1 + 5+1 + 1+1 + 5+1 + 5+1 + 7+1 = 65 chars
+    // cmd_w fills the rest → total = 65 + cmd_w = term_cols → cmd_w = term_cols - 65
+    let cmd_w = f.term_cols.saturating_sub(65).max(4);
     anyos_std::print!("{}{}", BG_BCYAN, FG_BLACK);
     anyos_std::print!("{:>7} {:<8} {:>3} {:>3} {:>5} {:>5} {:>5} {:1} {:>5} {:>5} {:>7} ",
         "PID", "USER", "PRI", "NI", "VIRT", "RES", "SHR", "S", "CPU%", "MEM%", "TIME+");
@@ -197,8 +200,8 @@ pub fn render_frame(f: &FrameData) {
     anyos_std::print!("{}\x1B[K\n", RESET);
 
     // ── Process rows ──────────────────────────────────────────────────────────
-    // Rows used so far: cpu_rows + 2(mem/swp) + 2(summary) + 1(blank) + 1(tab) + 1(col) = cpu_rows+7
-    let header_rows = cpu_rows + 7;
+    // Rows used so far: cpu_rows + 2(mem/swp) + 2(summary) + 1(tab) + 1(col) = cpu_rows+6
+    let header_rows = cpu_rows + 6;
     let max_rows = f.term_rows.saturating_sub(header_rows + 1); // +1 for fnbar
     let visible  = f.task_count.min(max_rows);
 
