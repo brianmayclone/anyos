@@ -782,6 +782,20 @@ impl VirtioGpu {
         self.send_ctrl_cmd(bytes) == VIRTIO_GPU_RESP_OK_NODATA
     }
 
+    /// Detach a resource from a context.
+    fn cmd_ctx_detach_resource(&mut self, ctx_id: u32, resource_id: u32) -> bool {
+        let mut cmd = CtxResource {
+            hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE),
+            resource_id,
+            padding: 0,
+        };
+        cmd.hdr.ctx_id = ctx_id;
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<CtxResource>())
+        };
+        self.send_ctrl_cmd(bytes) == VIRTIO_GPU_RESP_OK_NODATA
+    }
+
     /// Create a 3D resource (texture, buffer, etc.).
     fn cmd_resource_create_3d(
         &mut self, resource_id: u32, target: u32, format: u32, bind: u32,
@@ -963,39 +977,102 @@ impl GpuDriver for VirtioGpu {
 
     fn dma_surface_download(&mut self, sid: u32, buf: &mut [u8], width: u32, height: u32) -> bool {
         if !self.virgl_capable { return false; }
-        if buf.len() > 64 * 1024 { return false; }
 
-        let num_pages = (buf.len() + 4095) / 4096;
         let ctx_id = self.virgl_ctx_id;
+        let row_bytes = (width * 4) as usize;
+        let staging_cap = 64 * 1024usize;
+        // How many rows fit in the 64 KiB staging buffer?
+        let rows_per_chunk = (staging_cap / row_bytes).max(1) as u32;
 
-        // Attach, transfer from host, detach
-        unsafe { core::ptr::write_bytes(self.cmd_3d_buf as *mut u8, 0, buf.len()); }
-        if !self.cmd_attach_backing(sid, self.cmd_3d_buf, num_pages) {
-            return false;
+        let num_pages = (staging_cap + 4095) / 4096;
+
+        let mut y = 0u32;
+        while y < height {
+            let chunk_h = rows_per_chunk.min(height - y);
+            let chunk_bytes = (chunk_h as usize) * row_bytes;
+            let buf_offset = (y as usize) * row_bytes;
+
+            unsafe { core::ptr::write_bytes(self.cmd_3d_buf as *mut u8, 0, chunk_bytes); }
+
+            if !self.cmd_attach_backing(sid, self.cmd_3d_buf, num_pages) {
+                return false;
+            }
+
+            let ok = self.cmd_transfer_from_host_3d(
+                sid, 0, y, 0, width, chunk_h, 1,
+                0, 0, 0, 0, ctx_id,
+            );
+
+            if ok {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        self.cmd_3d_buf as *const u8,
+                        buf.as_mut_ptr().add(buf_offset),
+                        chunk_bytes,
+                    );
+                }
+            }
+
+            // Detach backing
+            let detach = ResourceDetachBacking {
+                hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING),
+                resource_id: sid,
+                padding: 0,
+            };
+            let bytes = unsafe {
+                core::slice::from_raw_parts(&detach as *const _ as *const u8, core::mem::size_of::<ResourceDetachBacking>())
+            };
+            self.send_ctrl_cmd(bytes);
+
+            if !ok { return false; }
+            y += chunk_h;
         }
 
-        let ok = self.cmd_transfer_from_host_3d(
-            sid, 0, 0, 0, width, height, 1,
-            0, 0, 0, 0, ctx_id,
-        );
+        true
+    }
 
-        if ok {
-            unsafe {
-                core::ptr::copy_nonoverlapping(self.cmd_3d_buf as *const u8, buf.as_mut_ptr(), buf.len());
+    fn create_3d_resource(&mut self, target: u32, format: u32, bind: u32,
+        width: u32, height: u32, depth: u32, array_size: u32,
+        last_level: u32, nr_samples: u32, flags: u32) -> Option<u32>
+    {
+        if !self.virgl_capable { return None; }
+
+        // Ensure virgl context exists
+        if self.virgl_ctx_id == 0 {
+            self.virgl_ctx_id = 1;
+            if !self.cmd_ctx_create(self.virgl_ctx_id) {
+                self.virgl_ctx_id = 0;
+                return None;
             }
         }
 
-        let detach = ResourceDetachBacking {
-            hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING),
-            resource_id: sid,
-            padding: 0,
-        };
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&detach as *const _ as *const u8, core::mem::size_of::<ResourceDetachBacking>())
-        };
-        self.send_ctrl_cmd(bytes);
+        // Allocate resource ID from counter (starts at 1, shared with scanout/cursor)
+        let resource_id = self.next_resource_id;
+        self.next_resource_id += 1;
 
-        ok
+        if !self.cmd_resource_create_3d(resource_id, target, format, bind,
+            width, height, depth, array_size, last_level, nr_samples, flags)
+        {
+            return None;
+        }
+
+        // Attach resource to the virgl rendering context
+        if !self.cmd_ctx_attach_resource(self.virgl_ctx_id, resource_id) {
+            self.cmd_resource_unref(resource_id);
+            return None;
+        }
+
+        Some(resource_id)
+    }
+
+    fn destroy_3d_resource(&mut self, resource_id: u32) -> bool {
+        if !self.virgl_capable { return false; }
+        // Detach from virgl context if active
+        if self.virgl_ctx_id != 0 {
+            self.cmd_ctx_detach_resource(self.virgl_ctx_id, resource_id);
+        }
+        self.cmd_resource_unref(resource_id);
+        true
     }
 
     fn set_mode(&mut self, width: u32, height: u32, _bpp: u32) -> Option<(u32, u32, u32, u32)> {

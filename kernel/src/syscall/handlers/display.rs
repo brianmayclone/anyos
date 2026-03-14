@@ -1124,3 +1124,44 @@ pub fn sys_gpu_query_type(buf_ptr: u32, buf_len: u32) -> u32 {
 pub fn sys_gpu_query_type(_buf_ptr: u32, _buf_len: u32) -> u32 {
     0
 }
+
+// =========================================================================
+// GPU 3D Resource Management (virgl control plane)
+// =========================================================================
+
+/// SYS_GPU_3D_RESOURCE_CREATE (518): Create a virgl 3D resource via the control plane.
+/// arg1=target, arg2=format, arg3=bind, arg4=width, arg5=height
+/// Uses defaults: depth=1, array_size=1, last_level=0, nr_samples=0, flags=0.
+/// Returns the allocated resource ID, or u32::MAX on failure.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_gpu_3d_resource_create(target: u32, format: u32, bind: u32, width: u32, height: u32) -> u32 {
+    if width == 0 || height == 0 {
+        return u32::MAX;
+    }
+    crate::drivers::gpu::with_gpu(|g| {
+        g.create_3d_resource(target, format, bind, width, height, 1, 1, 0, 0, 0)
+            .unwrap_or(u32::MAX)
+    }).unwrap_or(u32::MAX)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_gpu_3d_resource_create(_target: u32, _format: u32, _bind: u32, _width: u32, _height: u32) -> u32 {
+    u32::MAX
+}
+
+/// SYS_GPU_3D_RESOURCE_DESTROY (519): Destroy a virgl 3D resource.
+/// arg1=resource_id. Returns 0 on success, u32::MAX on failure.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_gpu_3d_resource_destroy(resource_id: u32) -> u32 {
+    if resource_id == 0 {
+        return u32::MAX;
+    }
+    crate::drivers::gpu::with_gpu(|g| {
+        if g.destroy_3d_resource(resource_id) { 0u32 } else { u32::MAX }
+    }).unwrap_or(u32::MAX)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_gpu_3d_resource_destroy(_resource_id: u32) -> u32 {
+    u32::MAX
+}

@@ -82,19 +82,22 @@ const PIPE_CLEAR_STENCIL: u32 = 4;
 
 // Pipe formats (subset)
 const PIPE_FORMAT_B8G8R8A8_UNORM: u32 = 1;
-const PIPE_FORMAT_Z24_UNORM_S8_UINT: u32 = 36;
+const PIPE_FORMAT_B8G8R8X8_UNORM: u32 = 2;
+const PIPE_FORMAT_S8_UINT_Z24_UNORM: u32 = 20;
 const PIPE_FORMAT_R32G32B32A32_FLOAT: u32 = 31;
+const PIPE_FORMAT_R8_UNORM: u32 = 64;
 
-// Pipe bind flags
-const PIPE_BIND_RENDER_TARGET: u32    = 1 << 1;
-const PIPE_BIND_DEPTH_STENCIL: u32    = 1 << 2;
-const PIPE_BIND_VERTEX_BUFFER: u32    = 1 << 3;
-const PIPE_BIND_INDEX_BUFFER: u32     = 1 << 4;
-const PIPE_BIND_CONSTANT_BUFFER: u32  = 1 << 5;
+// Virgl bind flags (VIRGL_BIND_*, NOT Gallium PIPE_BIND_*)
+const VIRGL_BIND_DEPTH_STENCIL: u32   = 1 << 0;
+const VIRGL_BIND_RENDER_TARGET: u32   = 1 << 1;
+const VIRGL_BIND_SAMPLER_VIEW: u32    = 1 << 3;
+const VIRGL_BIND_VERTEX_BUFFER: u32   = 1 << 4;
+const VIRGL_BIND_INDEX_BUFFER: u32    = 1 << 5;
+const VIRGL_BIND_CONSTANT_BUFFER: u32 = 1 << 6;
 
-// Pipe texture target
+// Pipe texture target (enum pipe_texture_target)
+const PIPE_BUFFER: u32       = 0;
 const PIPE_TEXTURE_2D: u32   = 2;
-const PIPE_BUFFER: u32       = 7;
 
 // ── Attrib descriptor (matches drv_loader::DrvAttrib layout) ─────────────
 
@@ -147,15 +150,26 @@ struct VirglState {
     height: u32,
     next_handle: u32,
 
-    // Pre-created resource handles
+    // Render target resources (created via virtio-gpu control plane)
+    color_res_id: u32,
+    depth_res_id: u32,
     color_surface_handle: u32,
     depth_surface_handle: u32,
-    framebuffer_set: bool,
 
     // Blend/DSA/rasterizer objects
     blend_handle: u32,
     dsa_handle: u32,
     rast_handle: u32,
+
+    // Vertex element object
+    ve_handle: u32,
+    ve_num_attribs: u32,
+
+    // Reusable vertex/index buffer resources
+    vbo_res_id: u32,
+    vbo_size: u32,
+    ibo_res_id: u32,
+    ibo_size: u32,
 
     // Current shader bindings
     current_vs: u32,
@@ -180,85 +194,104 @@ fn alloc_handle() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn drv_init(width: u32, height: u32) -> u32 {
     let mut cmd = CmdBuf::new();
+    let mut next_h = 1u32;
+    let mut alloc_h = || { let h = next_h; next_h += 1; h };
 
-    let color_handle = 1u32;
-    let depth_handle = 2u32;
-    let blend_handle = 3u32;
-    let dsa_handle = 4u32;
-    let rast_handle = 5u32;
+    // ── Create render target resources via virtio-gpu control plane ──
 
-    // Create color surface (VIRGL_OBJECT_SURFACE referencing the scanout resource)
-    // For virgl, surfaces are views on resources. The host creates the actual
-    // GL framebuffer. We just need to set framebuffer state.
+    // Color buffer: PIPE_TEXTURE_2D, BGRA, RENDER_TARGET
+    let color_res = libsyscall::gpu_3d_resource_create(
+        PIPE_TEXTURE_2D, PIPE_FORMAT_B8G8R8X8_UNORM,
+        VIRGL_BIND_RENDER_TARGET | VIRGL_BIND_SAMPLER_VIEW,
+        width, height,
+    );
+    libsyscall::serial_println!("[virgl] drv_init: color_res={}", color_res);
+    if color_res == u32::MAX { return 0; }
 
-    // Create and activate sub-context (required before any object creation)
-    // Must be submitted separately — virglrenderer needs sub-ctx active
-    // before processing any CREATE_OBJECT commands in the same batch.
+    // Depth/stencil buffer: PIPE_TEXTURE_2D, Z24S8, DEPTH_STENCIL
+    let depth_res = libsyscall::gpu_3d_resource_create(
+        PIPE_TEXTURE_2D, PIPE_FORMAT_S8_UINT_Z24_UNORM,
+        VIRGL_BIND_DEPTH_STENCIL,
+        width, height,
+    );
+    libsyscall::serial_println!("[virgl] drv_init: depth_res={}", depth_res);
+    if depth_res == u32::MAX { return 0; }
+
+    // ── Sub-context (must be submitted before CREATE_OBJECT) ──
     cmd.push_cmd(VIRGL_CCMD_CREATE_SUB_CTX, 0, 1);
-    cmd.push(1); // sub-context ID
+    cmd.push(1);
     cmd.push_cmd(VIRGL_CCMD_SET_SUB_CTX, 0, 1);
     cmd.push(1);
     cmd.submit();
 
-    // Create default blend state (no blending)
-    // Virgl blend layout: handle(1) + S0(1) + S1(1) + S2[0..7](8) = 11 words
-    // S2 per-RT: blend_enable[0] | rgb_func[3:1] | rgb_src[8:4] | rgb_dst[13:9]
-    //            | alpha_func[16:14] | alpha_src[21:17] | alpha_dst[26:22] | colormask[30:27]
+    // ── Create surface objects (views on resources) ──
+    let color_surf_h = alloc_h();
+    cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SURFACE, 5);
+    cmd.push(color_surf_h);
+    cmd.push(color_res);                // resource handle
+    cmd.push(PIPE_FORMAT_B8G8R8X8_UNORM);
+    cmd.push(0);                        // level = 0
+    cmd.push(0);                        // first_layer=0 | (last_layer=0 << 16)
+
+    let depth_surf_h = alloc_h();
+    cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SURFACE, 5);
+    cmd.push(depth_surf_h);
+    cmd.push(depth_res);
+    cmd.push(PIPE_FORMAT_S8_UINT_Z24_UNORM);
+    cmd.push(0);
+    cmd.push(0);
+
+    // ── Set framebuffer state: 1 color buffer + depth ──
+    cmd.push_cmd(VIRGL_CCMD_SET_FRAMEBUFFER_STATE, 0, 3);
+    cmd.push(1);               // nr_cbufs = 1
+    cmd.push(depth_surf_h);    // zsurf_handle
+    cmd.push(color_surf_h);    // cbuf[0]
+
+    // ── Create default blend (no blending, colormask=RGBA) ──
+    let blend_handle = alloc_h();
     cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_BLEND, 11);
     cmd.push(blend_handle);
-    cmd.push(0); // S0: independent_blend_enable=0, logicop=0, dither=0
-    cmd.push(0); // S1: logicop_func=0
-    // S2[0]: RT0 — colormask=0xF (RGBA) at bits 27:30
-    cmd.push(0x0F << 27);
-    // S2[1..7]: RT1–RT7 disabled
-    for _ in 1..8 {
-        cmd.push(0);
-    }
+    cmd.push(0); // S0
+    cmd.push(0); // S1
+    cmd.push(0x0F << 27); // S2[0]: colormask RGBA
+    for _ in 1..8 { cmd.push(0); }
 
-    // Create default DSA state (depth test disabled)
-    // CREATE_OBJECT(DSA): handle, S0 (depth), S1 (stencil)
+    // ── Create default DSA (depth test disabled) ──
+    let dsa_handle = alloc_h();
     cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_DSA, 5);
     cmd.push(dsa_handle);
-    cmd.push(0); // S0: depth.enabled=0, depth.writemask=0, depth.func=0
-    cmd.push(0); // S1: stencil[0]
-    cmd.push(0); // S1: stencil[1]
-    cmd.push(0); // alpha ref
+    cmd.push(0); cmd.push(0); cmd.push(0); cmd.push(0);
 
-    // Create default rasterizer state
-    // Layout: handle, S0, point_size, sprite_coord_enable, S3, line_width,
-    //         offset_units, offset_scale, offset_clamp
+    // ── Create default rasterizer ──
+    let rast_handle = alloc_h();
     cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_RASTERIZER, 9);
     cmd.push(rast_handle);
-    cmd.push(0x00000002); // S0: flatshade=0, depth_clip=1 (bit 1)
-    cmd.push(0);          // point_size (float)
+    cmd.push(0x00000002); // depth_clip=1
+    cmd.push(0);          // point_size
     cmd.push(0);          // sprite_coord_enable
-    cmd.push(0);          // S3: line_stipple_pattern/factor/clip_plane_enable
+    cmd.push(0);          // S3
     cmd.push(0x3F800000); // line_width = 1.0f
-    cmd.push(0);          // offset_units (float)
-    cmd.push(0);          // offset_scale (float)
-    cmd.push(0);          // offset_clamp (float)
+    cmd.push(0); cmd.push(0); cmd.push(0); // offset
 
-    // Bind blend, DSA, rasterizer
+    // ── Bind state objects ──
     cmd.push_cmd(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_BLEND, 1);
     cmd.push(blend_handle);
-
     cmd.push_cmd(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_DSA, 1);
     cmd.push(dsa_handle);
-
     cmd.push_cmd(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_RASTERIZER, 1);
     cmd.push(rast_handle);
 
-    // Set viewport
+    // ── Set viewport ──
     cmd.push_cmd(VIRGL_CCMD_SET_VIEWPORT_STATE, 0, 7);
-    cmd.push(0); // start_slot
+    cmd.push(0);
     let half_w = width as f32 / 2.0;
     let half_h = height as f32 / 2.0;
-    cmd.push_f32(half_w);   // scale.x
-    cmd.push_f32(-half_h);  // scale.y (flip Y for GL)
-    cmd.push_f32(0.5);      // scale.z
-    cmd.push_f32(half_w);   // translate.x
-    cmd.push_f32(half_h);   // translate.y
-    cmd.push_f32(0.5);      // translate.z
+    cmd.push_f32(half_w);
+    cmd.push_f32(-half_h);
+    cmd.push_f32(0.5);
+    cmd.push_f32(half_w);
+    cmd.push_f32(half_h);
+    cmd.push_f32(0.5);
 
     let result = cmd.submit();
     if result != 0 { return 0; }
@@ -268,13 +301,20 @@ pub extern "C" fn drv_init(width: u32, height: u32) -> u32 {
             cmd,
             width,
             height,
-            next_handle: 6, // 1-5 are pre-allocated
-            color_surface_handle: color_handle,
-            depth_surface_handle: depth_handle,
-            framebuffer_set: false,
+            next_handle: next_h,
+            color_res_id: color_res,
+            depth_res_id: depth_res,
+            color_surface_handle: color_surf_h,
+            depth_surface_handle: depth_surf_h,
             blend_handle,
             dsa_handle,
             rast_handle,
+            ve_handle: 0,
+            ve_num_attribs: 0,
+            vbo_res_id: 0,
+            vbo_size: 0,
+            ibo_res_id: 0,
+            ibo_size: 0,
             current_vs: 0,
             current_fs: 0,
         });
@@ -329,29 +369,36 @@ pub extern "C" fn drv_create_shader(shader_type: u32, _version: u32, text: *cons
     let pipe_type = if shader_type == 0 { PIPE_SHADER_VERTEX } else { PIPE_SHADER_FRAGMENT };
     let text_bytes = unsafe { slice::from_raw_parts(text, len as usize) };
 
-    // Virgl shader protocol (TGSI text):
+    // Virgl shader protocol (TGSI text, num_so=0):
+    //   HDR_SIZE(0) = 5 (no SO strides when num_so=0)
     //   [0] handle
     //   [1] type (PIPE_SHADER_VERTEX/FRAGMENT)
     //   [2] offlen = byte length of TGSI text (bit 31=0 for first/only packet)
-    //   [3] num_tokens = 0 (text mode, not binary tokens)
+    //   [3] num_tokens = token array size for tgsi_text_translate
     //   [4] num_so_outputs = 0
-    //   [5..8] SO strides (4 dwords, ALWAYS present even when num_so=0)
-    //   [9..] TGSI text packed into u32 words
-    let text_words = (len as usize + 3) / 4;
-    let payload_len = 9 + text_words as u32;
+    //   [5..] TGSI text packed into u32 words (null-terminated!)
+    //
+    // Constraints:
+    //   - pkt_length (text dwords) = payload_len - HDR_SIZE = must == (offlen+3)/4
+    //   - Last 4 bytes of text must contain a '\0' (vrend_shader_assign_tgsi check)
+    //   - num_tokens > 0: size of token array for tgsi_text_translate output
+
+    // Ensure null termination: add a NUL byte to text length
+    let text_len_with_nul = len + 1;
+    let text_words = ((text_len_with_nul as usize) + 3) / 4;
+    // num_tokens: estimated token count for tgsi_text_translate output buffer
+    // Conservative estimate: ~2 tokens per TGSI instruction line
+    let num_tokens = (text_words as u32).max(256);
+    let payload_len = 5 + text_words as u32;
 
     s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SHADER, payload_len);
     s.cmd.push(handle);
     s.cmd.push(pipe_type);
-    s.cmd.push(len);        // offlen = text byte length (bit 31=0: not continuation)
-    s.cmd.push(0);          // num_tokens = 0 (TGSI text, not binary)
-    s.cmd.push(0);          // num_so_outputs = 0
-    s.cmd.push(0);          // SO stride[0]
-    s.cmd.push(0);          // SO stride[1]
-    s.cmd.push(0);          // SO stride[2]
-    s.cmd.push(0);          // SO stride[3]
+    s.cmd.push(text_len_with_nul);  // offlen = byte length including NUL
+    s.cmd.push(num_tokens);         // num_tokens = output token array size
+    s.cmd.push(0);                  // num_so_outputs = 0
 
-    // Pack text bytes into u32 words (little-endian)
+    // Pack text bytes into u32 words (little-endian, zero-padded → null terminated)
     for i in 0..text_words {
         let base = i * 4;
         let mut word = 0u32;
@@ -519,12 +566,16 @@ pub extern "C" fn drv_set_uniform_f32(location: i32, count: u32, values: *const 
     let vals = unsafe { slice::from_raw_parts(values, (count * 4) as usize) };
 
     // SET_CONSTANT_BUFFER: shader_type, index, [data...]
+    // Send to both VS and FS (both use CONST[0][...])
     let data_len = vals.len() as u32;
-    s.cmd.push_cmd(VIRGL_CCMD_SET_CONSTANT_BUFFER, 0, 2 + data_len);
-    s.cmd.push(PIPE_SHADER_VERTEX);
-    s.cmd.push(location as u32); // constant buffer index
-    for &v in vals {
-        s.cmd.push_f32(v);
+    libsyscall::serial_println!("[virgl] set_uniform: loc={} count={} data_floats={}", location, count, data_len);
+    for &shader_type in &[PIPE_SHADER_VERTEX, PIPE_SHADER_FRAGMENT] {
+        s.cmd.push_cmd(VIRGL_CCMD_SET_CONSTANT_BUFFER, 0, 2 + data_len);
+        s.cmd.push(shader_type);
+        s.cmd.push(0); // constant buffer index 0
+        for &v in vals {
+            s.cmd.push_f32(v);
+        }
     }
     s.cmd.submit();
 }
@@ -535,18 +586,126 @@ pub extern "C" fn drv_set_uniform_mat4(location: i32, values: *const f32) {
     drv_set_uniform_f32(location, 4, values);
 }
 
+/// Ensure a VBO resource exists with at least `size` bytes, creating/resizing as needed.
+fn ensure_vbo(s: &mut VirglState, size: u32) {
+    if s.vbo_res_id != 0 && s.vbo_size >= size {
+        return;
+    }
+    if s.vbo_res_id != 0 {
+        libsyscall::gpu_3d_resource_destroy(s.vbo_res_id);
+    }
+    let res = libsyscall::gpu_3d_resource_create(
+        PIPE_BUFFER, PIPE_FORMAT_R8_UNORM, VIRGL_BIND_VERTEX_BUFFER, size, 1,
+    );
+    libsyscall::serial_println!("[virgl] ensure_vbo: size={} -> res_id={}", size, res);
+    s.vbo_res_id = res;
+    s.vbo_size = size;
+}
+
+/// Ensure an IBO resource exists with at least `size` bytes.
+fn ensure_ibo(s: &mut VirglState, size: u32) {
+    if s.ibo_res_id != 0 && s.ibo_size >= size {
+        return;
+    }
+    if s.ibo_res_id != 0 {
+        libsyscall::gpu_3d_resource_destroy(s.ibo_res_id);
+    }
+    let res = libsyscall::gpu_3d_resource_create(
+        PIPE_BUFFER, PIPE_FORMAT_R8_UNORM, VIRGL_BIND_INDEX_BUFFER, size, 1,
+    );
+    s.ibo_res_id = res;
+    s.ibo_size = size;
+}
+
+/// Upload raw bytes to a resource via RESOURCE_INLINE_WRITE.
+fn inline_write(cmd: &mut CmdBuf, res_handle: u32, data: &[u8]) {
+    let data_words = (data.len() + 3) / 4;
+    // 11 header dwords + data
+    cmd.push_cmd(VIRGL_CCMD_RESOURCE_INLINE_WRITE, 0, 11 + data_words as u32);
+    cmd.push(res_handle);       // resource handle
+    cmd.push(0);                // level
+    cmd.push(0);                // usage
+    cmd.push(0);                // stride (buffer = 0)
+    cmd.push(0);                // layer_stride
+    cmd.push(0);                // x
+    cmd.push(0);                // y
+    cmd.push(0);                // z
+    cmd.push(data.len() as u32); // width = byte count
+    cmd.push(1);                // height
+    cmd.push(1);                // depth
+    // Pack data into u32 words
+    for i in 0..data_words {
+        let base = i * 4;
+        let mut word = 0u32;
+        for j in 0..4 {
+            if base + j < data.len() {
+                word |= (data[base + j] as u32) << (j * 8);
+            }
+        }
+        cmd.push(word);
+    }
+}
+
+/// Create/update vertex elements object from attrib descriptors.
+fn setup_vertex_elements(s: &mut VirglState, attribs: &[DrvAttrib]) {
+    let n = attribs.len() as u32;
+    if s.ve_handle != 0 && s.ve_num_attribs == n {
+        // Already created with same count — reuse (attrib layout is stable per shader)
+        return;
+    }
+    if s.ve_handle != 0 {
+        s.cmd.push_cmd(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_VERTEX_ELEMENTS, 1);
+        s.cmd.push(s.ve_handle);
+    }
+    let handle = alloc_handle();
+    // Payload: handle + 4 dwords per element
+    s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_VERTEX_ELEMENTS, 1 + n * 4);
+    s.cmd.push(handle);
+    for attr in attribs {
+        s.cmd.push(attr.offset);              // src_offset
+        s.cmd.push(0);                        // instance_divisor
+        s.cmd.push(0);                        // vertex_buffer_index
+        s.cmd.push(PIPE_FORMAT_R32G32B32A32_FLOAT); // src_format (all attribs are vec4)
+    }
+    s.ve_handle = handle;
+    s.ve_num_attribs = n;
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn drv_draw_arrays(
     mode: u32, first: u32, count: u32,
-    vertex_data: *const u8, vertex_data_len: u32,
+    vertex_data: *const u8, vertex_stride: u32,
     attribs: *const DrvAttrib, num_attribs: u32,
 ) {
+    if vertex_data.is_null() || count == 0 || num_attribs == 0 {
+        return;
+    }
+    let vdata_len = (count * vertex_stride) as usize;
+    let vdata = unsafe { slice::from_raw_parts(vertex_data, vdata_len) };
+    let attrs = unsafe { slice::from_raw_parts(attribs, num_attribs as usize) };
     let s = state();
-    let _ = (vertex_data, vertex_data_len, attribs, num_attribs);
 
-    // DRAW_VBO: mode, start, count, ...
+    // 1. Create/reuse VBO resource and upload vertex data
+    ensure_vbo(s, vdata_len as u32);
+    inline_write(&mut s.cmd, s.vbo_res_id, vdata);
+
+    // 2. Create vertex elements object
+    setup_vertex_elements(s, attrs);
+
+    // 3. Bind vertex elements
+    s.cmd.push_cmd(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_VERTEX_ELEMENTS, 1);
+    s.cmd.push(s.ve_handle);
+
+    // 4. Set vertex buffer: stride, offset, handle
+    s.cmd.push_cmd(VIRGL_CCMD_SET_VERTEX_BUFFERS, 0, 3);
+    s.cmd.push(vertex_stride);
+    s.cmd.push(0);              // offset
+    s.cmd.push(s.vbo_res_id);
+
+    // 5. Draw
+    libsyscall::serial_println!("[virgl] draw_arrays: mode={} count={} stride={} vbo={}", mode, count, vertex_stride, s.vbo_res_id);
     s.cmd.push_cmd(VIRGL_CCMD_DRAW_VBO, 0, 12);
-    s.cmd.push(first);          // start
+    s.cmd.push(0);              // start (vertex data already offset by libgl)
     s.cmd.push(count);          // count
     s.cmd.push(mode);           // mode
     s.cmd.push(0);              // indexed = false
@@ -556,21 +715,75 @@ pub extern "C" fn drv_draw_arrays(
     s.cmd.push(0);              // primitive_restart
     s.cmd.push(0);              // restart_index
     s.cmd.push(0);              // min_index
-    s.cmd.push(first + count);  // max_index
-    s.cmd.push(0);              // cso (vertex elements handle, 0=default)
-    s.cmd.submit();
+    s.cmd.push(count - 1);     // max_index
+    s.cmd.push(0);              // cso
+    let r = s.cmd.submit();
+    if r != 0 { libsyscall::serial_println!("[virgl] draw_arrays submit FAILED: {}", r); }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn drv_draw_elements(
-    mode: u32, count: u32, _index_type: u32,
-    _vertex_data: *const u8,
-    _index_data: *const u8, _index_data_len: u32,
-    _attribs: *const DrvAttrib, _num_attribs: u32,
+    mode: u32, count: u32, index_type: u32,
+    index_data: *const u8,
+    vertex_data: *const u8, vertex_stride: u32,
+    attribs: *const DrvAttrib, num_attribs: u32,
 ) {
+    if vertex_data.is_null() || index_data.is_null() || count == 0 || num_attribs == 0 {
+        return;
+    }
+    let attrs = unsafe { slice::from_raw_parts(attribs, num_attribs as usize) };
     let s = state();
 
-    // DRAW_VBO with indexed=true
+    // Index element size from GL type
+    let index_size = match index_type {
+        0x1401 /* GL_UNSIGNED_BYTE */ => 1u32,
+        0x1403 /* GL_UNSIGNED_SHORT */ => 2,
+        0x1405 /* GL_UNSIGNED_INT */ => 4,
+        _ => 2,
+    };
+    let index_data_len = count * index_size;
+    let idata = unsafe { slice::from_raw_parts(index_data, index_data_len as usize) };
+
+    // Find max index to determine vertex data extent
+    let mut max_idx = 0u32;
+    for i in 0..count as usize {
+        let idx = match index_size {
+            1 => idata[i] as u32,
+            2 => u16::from_le_bytes([idata[i*2], idata[i*2+1]]) as u32,
+            4 => u32::from_le_bytes([idata[i*4], idata[i*4+1], idata[i*4+2], idata[i*4+3]]),
+            _ => 0,
+        };
+        if idx > max_idx { max_idx = idx; }
+    }
+    let vbo_bytes = (max_idx + 1) * vertex_stride;
+    let vdata = unsafe { slice::from_raw_parts(vertex_data, vbo_bytes as usize) };
+
+    // 1. Upload vertex data
+    ensure_vbo(s, vbo_bytes);
+    inline_write(&mut s.cmd, s.vbo_res_id, vdata);
+
+    // 2. Upload index data
+    ensure_ibo(s, index_data_len);
+    inline_write(&mut s.cmd, s.ibo_res_id, idata);
+
+    // 3. Setup vertex elements + bind
+    setup_vertex_elements(s, attrs);
+    s.cmd.push_cmd(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_VERTEX_ELEMENTS, 1);
+    s.cmd.push(s.ve_handle);
+
+    // 4. Set vertex buffer
+    s.cmd.push_cmd(VIRGL_CCMD_SET_VERTEX_BUFFERS, 0, 3);
+    s.cmd.push(vertex_stride);
+    s.cmd.push(0);
+    s.cmd.push(s.vbo_res_id);
+
+    // 5. Set index buffer: handle, index_size, offset
+    s.cmd.push_cmd(VIRGL_CCMD_SET_INDEX_BUFFER, 0, 3);
+    s.cmd.push(s.ibo_res_id);
+    s.cmd.push(index_size);
+    s.cmd.push(0); // offset
+
+    // 6. Draw indexed
     s.cmd.push_cmd(VIRGL_CCMD_DRAW_VBO, 0, 12);
     s.cmd.push(0);              // start
     s.cmd.push(count);          // count
@@ -582,7 +795,7 @@ pub extern "C" fn drv_draw_elements(
     s.cmd.push(0);              // primitive_restart
     s.cmd.push(0);              // restart_index
     s.cmd.push(0);              // min_index
-    s.cmd.push(count);          // max_index
+    s.cmd.push(max_idx);        // max_index
     s.cmd.push(0);              // cso
     s.cmd.submit();
 }
@@ -606,6 +819,21 @@ pub extern "C" fn drv_present(_sid: u32) {
     let s = state();
     s.cmd.submit();
     libsyscall::gpu_3d_sync();
+}
+
+/// Read back the rendered color buffer into user-provided BGRA pixel buffer.
+/// Called by gl_swap_buffers to get HW-rendered pixels into the software framebuffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn drv_readback(buf: *mut u8, buf_len: u32) -> u32 {
+    let s = state();
+    if s.color_res_id == 0 || buf.is_null() || buf_len == 0 {
+        libsyscall::serial_println!("[virgl] readback: SKIP (res={} buf_null={} len={})", s.color_res_id, buf.is_null(), buf_len);
+        return u32::MAX;
+    }
+    let out = unsafe { slice::from_raw_parts_mut(buf, buf_len as usize) };
+    let r = libsyscall::gpu_3d_surface_dma_read(s.color_res_id, out, s.width, s.height);
+    libsyscall::serial_println!("[virgl] readback: res={} {}x{} len={} -> {}", s.color_res_id, s.width, s.height, buf_len, r);
+    r
 }
 
 // ── Panic handler ────────────────────────────────────────────────────────

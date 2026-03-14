@@ -29,3 +29,4 @@ a.out
 docs/plans/
 docs/superpowers/
 corevm/vmmanager/fw_cfg_debug.log
+*.tmp

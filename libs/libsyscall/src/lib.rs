@@ -62,6 +62,8 @@ pub const SYS_GPU_3D_SYNC: u32 = 514;
 pub const SYS_GPU_3D_SURFACE_DMA: u32 = 515;
 pub const SYS_GPU_3D_SURFACE_DMA_READ: u32 = 516;
 pub const SYS_GPU_QUERY_TYPE: u32 = 517;
+pub const SYS_GPU_3D_RESOURCE_CREATE: u32 = 518;
+pub const SYS_GPU_3D_RESOURCE_DESTROY: u32 = 519;
 
 // Shared memory
 pub const SYS_SHM_CREATE: u32 = 140;
@@ -649,6 +651,17 @@ pub fn gpu_3d_surface_dma_read(sid: u32, buf: &mut [u8], width: u32, height: u32
         width as u64,
         height as u64,
     ) as u32
+}
+
+/// Create a virgl 3D resource via the control plane.
+/// Returns the allocated resource ID, or u32::MAX on failure.
+pub fn gpu_3d_resource_create(target: u32, format: u32, bind: u32, width: u32, height: u32) -> u32 {
+    syscall5(SYS_GPU_3D_RESOURCE_CREATE, target as u64, format as u64, bind as u64, width as u64, height as u64) as u32
+}
+
+/// Destroy a virgl 3D resource. Returns 0 on success, u32::MAX on failure.
+pub fn gpu_3d_resource_destroy(resource_id: u32) -> u32 {
+    syscall1(SYS_GPU_3D_RESOURCE_DESTROY, resource_id as u64) as u32
 }
 
 /// Query the GPU driver type name (e.g. "svga3d", "virgl", "none").

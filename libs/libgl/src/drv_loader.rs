@@ -227,6 +227,9 @@ pub struct GpuDrv {
     pub drv_flush: extern "C" fn(),
     pub drv_finish: extern "C" fn(),
     pub drv_present: extern "C" fn(u32),
+
+    // Readback (optional — NULL if not supported)
+    pub drv_readback: Option<extern "C" fn(*mut u8, u32) -> u32>,
 }
 
 static mut DRV: Option<GpuDrv> = None;
@@ -253,6 +256,11 @@ pub fn deinit() {
 
 /// Resolve a single symbol from a DlHandle, returning None on failure.
 unsafe fn resolve<T>(handle: &DlHandle, name: &str) -> Option<T> {
+    let ptr = dl_sym(handle, name)?;
+    Some(transmute_copy::<*const (), T>(&ptr))
+}
+
+unsafe fn resolve_opt<T>(handle: &DlHandle, name: &str) -> Option<T> {
     let ptr = dl_sym(handle, name)?;
     Some(transmute_copy::<*const (), T>(&ptr))
 }
@@ -327,6 +335,7 @@ fn init_inner(width: u32, height: u32) -> Option<()> {
             drv_flush:            resolve(&handle, "drv_flush")?,
             drv_finish:           resolve(&handle, "drv_finish")?,
             drv_present:          resolve(&handle, "drv_present")?,
+            drv_readback:         resolve_opt(&handle, "drv_readback"),
             _handle: handle,
         };
 

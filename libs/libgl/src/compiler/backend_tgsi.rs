@@ -157,7 +157,7 @@ impl<'a> TgsiCtx<'a> {
             let _ = write!(self.out, "DCL OUT[0], COLOR\n");
         }
 
-        // Constant buffer (uniforms)
+        // Constant buffer (uniforms) — 2D syntax: CONST[buffer][range]
         if self.num_consts > 0 {
             if self.num_consts == 1 {
                 let _ = write!(self.out, "DCL CONST[0][0]\n");

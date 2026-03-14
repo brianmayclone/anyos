@@ -156,7 +156,21 @@ pub extern "C" fn gl_swap_buffers() -> *const u32 {
     if unsafe { USE_HW_BACKEND } {
         if let Some(drv) = drv_loader::drv() {
             (drv.drv_flush)();
-            (drv.drv_present)(0); // present to scanout 0
+            (drv.drv_present)(0);
+
+            // Read back HW-rendered pixels into the software color buffer
+            crate::serial_println!("[libgl] swap: readback={}", drv.drv_readback.is_some());
+            if let Some(readback) = drv.drv_readback {
+                let c = ctx();
+                let buf = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        c.default_fb.color.as_mut_ptr() as *mut u8,
+                        c.default_fb.color.len() * 4,
+                    )
+                };
+                readback(buf.as_mut_ptr(), buf.len() as u32);
+                return c.default_fb.color.as_ptr();
+            }
         }
     }
 

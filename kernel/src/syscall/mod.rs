@@ -260,6 +260,8 @@ pub const SYS_GPU_3D_SYNC: u32   = 514;
 pub const SYS_GPU_3D_SURFACE_DMA: u32 = 515;
 pub const SYS_GPU_3D_SURFACE_DMA_READ: u32 = 516;
 pub const SYS_GPU_QUERY_TYPE: u32 = 517;
+pub const SYS_GPU_3D_RESOURCE_CREATE: u32 = 518;
+pub const SYS_GPU_3D_RESOURCE_DESTROY: u32 = 519;
 
 // Disk / partition management
 pub const SYS_DISK_LIST: u32 = 270;
@@ -605,6 +607,8 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         SYS_GPU_3D_SURFACE_DMA => handlers::sys_gpu_3d_surface_dma(arg1, arg2, arg3, arg4, arg5),
         SYS_GPU_3D_SURFACE_DMA_READ => handlers::sys_gpu_3d_surface_dma_read(arg1, arg2, arg3, arg4, arg5),
         SYS_GPU_QUERY_TYPE => handlers::sys_gpu_query_type(arg1, arg2),
+        SYS_GPU_3D_RESOURCE_CREATE => handlers::sys_gpu_3d_resource_create(arg1, arg2, arg3, arg4, arg5),
+        SYS_GPU_3D_RESOURCE_DESTROY => handlers::sys_gpu_3d_resource_destroy(arg1),
 
         // Hostname
         SYS_GET_HOSTNAME => handlers::sys_get_hostname(arg1, arg2),

@@ -191,6 +191,15 @@ pub trait GpuDriver: Send {
     /// `width`, `height`: surface dimensions (for DMA copy box).
     /// Returns true on success.
     fn dma_surface_download(&mut self, _sid: u32, _buf: &mut [u8], _width: u32, _height: u32) -> bool { false }
+
+    /// Create a 3D resource via the control plane (virgl).
+    /// Returns the allocated resource ID, or None on failure.
+    fn create_3d_resource(&mut self, _target: u32, _format: u32, _bind: u32,
+        _width: u32, _height: u32, _depth: u32, _array_size: u32,
+        _last_level: u32, _nr_samples: u32, _flags: u32) -> Option<u32> { None }
+
+    /// Destroy a 3D resource. Returns true on success.
+    fn destroy_3d_resource(&mut self, _resource_id: u32) -> bool { false }
 }
 
 // ──────────────────────────────────────────────
