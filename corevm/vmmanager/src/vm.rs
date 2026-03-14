@@ -116,9 +116,15 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         BiosType::CoreVm => setup::load_corevm_bios(handle, &extra_bios_paths)?,
     }
 
-    // Attach ISO if configured (as AHCI CDROM on port 1)
+    // Attach ISO — use IDE for Windows guests (built-in driver), AHCI for others
     if !config.iso_image.is_empty() {
-        setup::attach_image_to_ahci(handle, &config.iso_image, 1, true)?;
+        if config.guest_os.is_windows() {
+            setup::attach_cdrom_to_ide(handle, &config.iso_image)?;
+            entry.diag_log.log(DiagCategory::Info, "ISO attached via IDE (Windows compat)".into());
+        } else {
+            setup::attach_image_to_ahci(handle, &config.iso_image, 1, true)?;
+            entry.diag_log.log(DiagCategory::Info, "ISO attached via AHCI".into());
+        }
     }
 
     // Attach disk images (port 0, 2, 3, 4, 5 — port 1 is reserved for CDROM)

@@ -25,6 +25,7 @@ struct Args {
     initrd: String,
     append: String,
     hpet: bool,
+    ide_cdrom: bool,
     send_keys: Vec<(u32, Vec<u8>)>,  // (delay_ms, scancodes)
     send_mouse: Vec<(u32, i16, i16, u8)>, // (delay_ms, dx, dy, buttons)
 }
@@ -40,6 +41,7 @@ fn parse_args() -> Args {
         show_screen: false,
         show_regs: false,
         hpet: false,
+        ide_cdrom: false,
         kernel: String::new(),
         initrd: String::new(),
         append: String::new(),
@@ -60,6 +62,7 @@ fn parse_args() -> Args {
             "-t" => { i += 1; if i < argv.len() { args.timeout = argv[i].parse().unwrap_or(30); } }
             "-s" => { args.show_screen = true; }
             "--hpet" => { args.hpet = true; }
+            "--ide-cdrom" => { args.ide_cdrom = true; }
             "-g" => { args.show_regs = true; }
             "-k" => { i += 1; if i < argv.len() { args.kernel = argv[i].clone(); } }
             "--initrd" => { i += 1; if i < argv.len() { args.initrd = argv[i].clone(); } }
@@ -172,13 +175,21 @@ fn main() {
     let mut vga_fb_size: u32 = 0;
     corevm_vga_get_framebuffer(handle, &mut vga_fb_ptr as *mut *const u8 as *mut *const u8, &mut vga_fb_size);
 
-    // Attach ISO
+    // Attach ISO — --ide-cdrom uses legacy IDE (Windows-compatible)
     if !args.iso.is_empty() {
-        if let Err(e) = setup::attach_image_to_ahci(handle, &args.iso, 1, true) {
-            eprintln!("[vmctl] ERROR: {}", e);
-            std::process::exit(1);
+        if args.ide_cdrom {
+            if let Err(e) = setup::attach_cdrom_to_ide(handle, &args.iso) {
+                eprintln!("[vmctl] ERROR: {}", e);
+                std::process::exit(1);
+            }
+            eprintln!("[vmctl] ISO (IDE): {}", args.iso);
+        } else {
+            if let Err(e) = setup::attach_image_to_ahci(handle, &args.iso, 1, true) {
+                eprintln!("[vmctl] ERROR: {}", e);
+                std::process::exit(1);
+            }
+            eprintln!("[vmctl] ISO (AHCI): {}", args.iso);
         }
-        eprintln!("[vmctl] ISO: {}", args.iso);
     }
 
     // Attach disk

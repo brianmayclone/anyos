@@ -44,6 +44,7 @@ pub struct Vm {
     pub fw_cfg_ptr: *mut crate::devices::fw_cfg::FwCfg,
     pub cmos_ptr: *mut crate::devices::cmos::Cmos,
     pub hpet_ptr: *mut Hpet,
+    pub ide_ptr: *mut crate::devices::ide::Ide,
 
     /// Tracks whether AHCI IRQ 11 is currently asserted on the in-kernel irqchip.
     /// Used for level-triggered interrupt semantics: only call set_irq_line when
@@ -111,6 +112,7 @@ impl Vm {
             fw_cfg_ptr: core::ptr::null_mut(),
             cmos_ptr: core::ptr::null_mut(),
             hpet_ptr: core::ptr::null_mut(),
+            ide_ptr: core::ptr::null_mut(),
             ahci_irq_asserted: false,
             #[cfg(feature = "std")]
             pending_mouse: std::sync::Mutex::new(alloc::vec::Vec::new()),
@@ -259,7 +261,9 @@ impl Vm {
         self.memory.add_mmio(0xB000_0000, 0x1000_0000, Box::new(PciMmcfgHandler::new(pci_bus_ptr)));
 
         // IDE (0x1F0-0x1F7, 0x3F6, 0x170-0x177, 0x376)
-        self.io.register(0x1F0, 8, Box::new(Ide::new()));
+        let ide = Box::new(Ide::new());
+        self.ide_ptr = &*ide as *const Ide as *mut Ide;
+        self.io.register(0x1F0, 8, ide);
 
         // Note: HPET is optional — call setup_hpet() separately if needed
         // (required for Windows guests).

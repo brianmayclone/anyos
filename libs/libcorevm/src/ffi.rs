@@ -1041,6 +1041,25 @@ pub extern "C" fn corevm_setup_hpet(handle: u64) -> i32 {
     }
 }
 
+/// Attach a CDROM image to the IDE controller (slave device).
+/// This uses the legacy ISA IDE controller which has built-in Windows drivers.
+/// `fd` is a file descriptor, `size` is the image size in bytes.
+#[no_mangle]
+pub extern "C" fn corevm_ide_attach_cdrom(handle: u64, fd: i32, size: u64) -> i32 {
+    match get_vm(handle) {
+        Some(vm) => {
+            if vm.ide_ptr.is_null() {
+                set_last_error("IDE controller not initialized".into());
+                return -1;
+            }
+            let ide = unsafe { &mut *vm.ide_ptr };
+            ide.attach_slave_fd(fd, size);
+            0
+        }
+        None => -1,
+    }
+}
+
 /// Generate and register ACPI tables via fw_cfg.
 /// Must be called after corevm_setup_standard_devices (needs fw_cfg device).
 #[no_mangle]

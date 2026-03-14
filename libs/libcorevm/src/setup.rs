@@ -468,6 +468,48 @@ pub fn attach_image_to_ahci(handle: u64, path: &str, port: u32, is_cdrom: bool) 
     Ok(())
 }
 
+/// Attach a CDROM/ISO image to the IDE controller (legacy, Windows-compatible).
+/// Uses IDE slave device — Windows has built-in ATAPI drivers for this.
+#[cfg(unix)]
+pub fn attach_cdrom_to_ide(handle: u64, path: &str) -> Result<(), String> {
+    use std::os::unix::io::IntoRawFd;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|e| format!("Failed to open {}: {}", path, e))?;
+    let size = file.metadata()
+        .map_err(|e| format!("Failed to stat {}: {}", path, e))?.len();
+    let fd = file.into_raw_fd();
+
+    let ret = corevm_ide_attach_cdrom(handle, fd, size);
+    if ret != 0 {
+        unsafe { drop(std::fs::File::from_raw_fd(fd)); }
+        return Err(format!("Failed to attach {} to IDE CDROM", path));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn attach_cdrom_to_ide(handle: u64, path: &str) -> Result<(), String> {
+    use std::os::windows::io::IntoRawHandle;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|e| format!("Failed to open {}: {}", path, e))?;
+    let size = file.metadata()
+        .map_err(|e| format!("Failed to stat {}: {}", path, e))?.len();
+    let handle_raw = file.into_raw_handle();
+    let fd = handle_raw as isize as i32;
+
+    let ret = corevm_ide_attach_cdrom(handle, fd, size);
+    if ret != 0 {
+        return Err(format!("Failed to attach {} to IDE CDROM", path));
+    }
+    Ok(())
+}
+
 // ── MAC address handling ────────────────────────────────────────────
 
 /// Generate a deterministic locally-administered MAC from a VM UUID.
