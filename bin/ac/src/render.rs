@@ -28,7 +28,7 @@ mod pal {
     // Panel
     pub const PANEL_BORDER_FG: u8 = color::BRIGHT_CYAN;
     pub const PANEL_TITLE_FG:  u8 = color::BRIGHT_WHITE;
-    pub const PANEL_BG:        u8 = 4; // blue
+    pub const PANEL_BG:        u8 = color::BLUE;
     pub const PANEL_FILE_FG:   u8 = color::BRIGHT_WHITE;
     pub const PANEL_DIR_FG:    u8 = color::BRIGHT_CYAN;
     pub const PANEL_LINK_FG:   u8 = color::BRIGHT_MAGENTA;
@@ -46,7 +46,7 @@ mod pal {
     pub const FNBAR_NUM_FG:    u8 = color::BLACK;
     pub const FNBAR_NUM_BG:    u8 = color::BRIGHT_WHITE;
     pub const FNBAR_LBL_FG:    u8 = color::BRIGHT_WHITE;
-    pub const FNBAR_LBL_BG:    u8 = 4;
+    pub const FNBAR_LBL_BG:    u8 = color::BLUE;
 }
 
 use pal::*;
@@ -150,9 +150,9 @@ fn render_panel(
     term::goto(buf, col, row);
     term::fg16(buf, border_fg);
     term::bg16(buf, PANEL_BG);
-    buf.push_str("┌");
-    for _ in 0..width.saturating_sub(2) { buf.push_str("─"); }
-    buf.push_str("┐");
+    buf.push_str("+");
+    for _ in 0..width.saturating_sub(2) { buf.push_str("-"); }
+    buf.push_str("+");
 
     // Title (path) centered on top border
     let path = panel.path();
@@ -242,9 +242,9 @@ fn render_panel(
     term::goto(buf, col, bottom_row);
     term::fg16(buf, border_fg);
     term::bg16(buf, PANEL_BG);
-    buf.push_str("└");
-    for _ in 0..width.saturating_sub(2) { buf.push_str("─"); }
-    buf.push_str("┘");
+    buf.push_str("+");
+    for _ in 0..width.saturating_sub(2) { buf.push_str("-"); }
+    buf.push_str("+");
 
     // ── Status line inside bottom border ─────────────────────────────────────
     let status_row = bottom_row - 1;
@@ -361,7 +361,7 @@ fn render_cmdline(buf: &mut TermBuf, cols: u32, rows: u32, cmdline: &[u8], cmdli
     let row = rows - 1;
     term::goto(buf, 1, row);
     term::fg16(buf, color::BRIGHT_WHITE);
-    term::bg16(buf, 4); // dark blue bg
+    term::bg16(buf, color::BLUE);
     buf.push_str("ac:$ ");
     let vis_w = (cols as usize).saturating_sub(6);
     let start = if cmdline_len > vis_w { cmdline_len - vis_w } else { 0 };

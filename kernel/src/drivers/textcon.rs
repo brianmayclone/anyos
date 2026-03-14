@@ -15,14 +15,19 @@ use crate::sync::spinlock::Spinlock;
 
 static READY: AtomicBool  = AtomicBool::new(false);
 
-/// Integer scale factor applied to each font pixel (nearest-neighbour upscale).
-/// Computed at init time so the console fits approximately 80×25 cells on screen.
-static CELL_SCALE: AtomicU32 = AtomicU32::new(1);
+/// Cell width in pixels  = fb_width  / CONSOLE_COLS  (computed at init).
+static CELL_W: AtomicU32 = AtomicU32::new(8);
+/// Cell height in pixels = fb_height / CONSOLE_ROWS  (computed at init).
+static CELL_H: AtomicU32 = AtomicU32::new(16);
+
+/// Target console dimensions.
+const CONSOLE_COLS: u32 = 80;
+const CONSOLE_ROWS: u32 = 25;
 
 #[inline(always)]
-fn cell_w() -> u32 { FONT_WIDTH  * CELL_SCALE.load(Ordering::Relaxed) }
+fn cell_w() -> u32 { CELL_W.load(Ordering::Relaxed) }
 #[inline(always)]
-fn cell_h() -> u32 { FONT_HEIGHT * CELL_SCALE.load(Ordering::Relaxed) }
+fn cell_h() -> u32 { CELL_H.load(Ordering::Relaxed) }
 
 // ─── Console mode flags ───────────────────────────────────────────────────────
 /// Bit 0: cursor hidden  Bit 1: auto-scroll disabled
@@ -42,26 +47,26 @@ static CURSOR_VISIBLE: AtomicBool = AtomicBool::new(false);
 
 // ─── ANSI escape sequence parser state ───────────────────────────────────────
 
-/// ANSI 8-color palette (normal intensity) — matches Terminal.app default theme.
+/// ANSI 8-color palette (normal intensity) — classic VGA/xterm colors.
 const ANSI_COLORS: [u32; 8] = [
-    0xFF505050, // 0 black
-    0xFFFF5555, // 1 red
-    0xFF50FA7B, // 2 green
-    0xFFF1FA8C, // 3 yellow
-    0xFF6272A4, // 4 blue
-    0xFFFF79C6, // 5 magenta
-    0xFF8BE9FD, // 6 cyan
-    0xFFCCCCCC, // 7 white
+    0xFF000000, // 0 black
+    0xFFAA0000, // 1 red
+    0xFF00AA00, // 2 green
+    0xFFAA5500, // 3 yellow (dark)
+    0xFF0000AA, // 4 blue
+    0xFFAA00AA, // 5 magenta
+    0xFF00AAAA, // 6 cyan
+    0xFFAAAAAA, // 7 white (light gray)
 ];
-/// ANSI 8-color palette (bright/bold intensity).
+/// ANSI 8-color palette (bright/bold intensity) — classic VGA/xterm bright colors.
 const ANSI_BRIGHT: [u32; 8] = [
-    0xFF6A6A6A, // 0 bright black
-    0xFFFF6E6E, // 1 bright red
-    0xFF69FF94, // 2 bright green
-    0xFFFFFFA5, // 3 bright yellow
-    0xFF7B8ABD, // 4 bright blue
-    0xFFFF92DF, // 5 bright magenta
-    0xFFA4F0FF, // 6 bright cyan
+    0xFF555555, // 0 bright black (dark gray)
+    0xFFFF5555, // 1 bright red
+    0xFF55FF55, // 2 bright green
+    0xFFFFFF55, // 3 bright yellow
+    0xFF5555FF, // 4 bright blue
+    0xFFFF55FF, // 5 bright magenta
+    0xFF55FFFF, // 6 bright cyan
     0xFFFFFFFF, // 7 bright white
 ];
 
@@ -118,9 +123,9 @@ impl EscState {
 static ESC: Spinlock<EscState> = Spinlock::new(EscState::new());
 
 // Default foreground / background colors.
-const COLOR_FG: u32 = 0xFFCCCCCC; // light gray
-const COLOR_BG: u32 = 0xFF0D0D14; // very dark blue-gray
-const COLOR_CURSOR: u32 = 0xFFCCCCCC;
+const COLOR_FG: u32 = 0xFFAAAAAA; // light gray (matches ANSI white)
+const COLOR_BG: u32 = 0xFF000000; // black
+const COLOR_CURSOR: u32 = 0xFFAAAAAA;
 
 /// Font data (8×16 bitmap, same as boot_console / error mode).
 static FONT_DATA: &[u8] = include_bytes!("../graphics/font_8x16.bin");
@@ -136,18 +141,18 @@ pub fn init() {
         FB_WIDTH.store(fb.width, Ordering::Relaxed);
         FB_HEIGHT.store(fb.height, Ordering::Relaxed);
 
-        // Choose the largest integer scale that still fits ≥80 columns and ≥25 rows.
-        // scale = floor(min(fb_w / (80*8), fb_h / (25*16))), clamped to [1, 8].
-        let scale_x = fb.width  / (80 * FONT_WIDTH);   // how many times font fits in 80-col target
-        let scale_y = fb.height / (25 * FONT_HEIGHT);  // how many times font fits in 25-row target
-        let scale = scale_x.min(scale_y).max(1).min(8);
-        CELL_SCALE.store(scale, Ordering::Relaxed);
+        // Compute cell size so we always get exactly CONSOLE_COLS × CONSOLE_ROWS cells,
+        // regardless of framebuffer resolution.  No integer-scale restriction.
+        let cw = (fb.width  / CONSOLE_COLS).max(FONT_WIDTH);
+        let ch = (fb.height / CONSOLE_ROWS).max(FONT_HEIGHT);
+        CELL_W.store(cw, Ordering::Relaxed);
+        CELL_H.store(ch, Ordering::Relaxed);
 
-        let cols = fb.width  / (FONT_WIDTH  * scale);
-        let rows = fb.height / (FONT_HEIGHT * scale);
+        let cols = fb.width  / cw;
+        let rows = fb.height / ch;
         crate::serial_println!(
-            "[OK] textcon: {}x{} fb, scale={}, console {}x{}",
-            fb.width, fb.height, scale, cols, rows
+            "[OK] textcon: {}x{} fb, cell {}x{}, console {}x{}",
+            fb.width, fb.height, cw, ch, cols, rows
         );
 
         CUR_X.store(0, Ordering::Relaxed);
@@ -242,23 +247,20 @@ fn draw_glyph(cx: u32, cy: u32, ch: u8, fg: u32, bg: u32) {
     let c = ch as u32;
     let idx = if c >= 32 && c <= 126 { (c - 32) as usize } else { 0 };
     let glyph_offset = idx * FONT_HEIGHT as usize;
-    let scale = CELL_SCALE.load(Ordering::Relaxed);
-    for row in 0..FONT_HEIGHT as usize {
-        let bits = if glyph_offset + row < FONT_DATA.len() {
-            FONT_DATA[glyph_offset + row]
+    let cw = cell_w();
+    let ch_px = cell_h();
+    // Nearest-neighbour scaling from FONT_WIDTH×FONT_HEIGHT → cw×ch_px.
+    // For each output pixel (px, py) we map back to the nearest source pixel.
+    for py in 0..ch_px {
+        // Map output row py → source row (0..FONT_HEIGHT)
+        let src_row = (py * FONT_HEIGHT) / ch_px;
+        let bits = if glyph_offset + (src_row as usize) < FONT_DATA.len() {
+            FONT_DATA[glyph_offset + src_row as usize]
         } else { 0 };
-        for col in 0..FONT_WIDTH as usize {
-            let color = if bits & (0x80 >> col) != 0 { fg } else { bg };
-            // Nearest-neighbour upscale: paint scale×scale pixel block
-            for sy in 0..scale {
-                for sx in 0..scale {
-                    put_pixel(
-                        cx + col as u32 * scale + sx,
-                        cy + row as u32 * scale + sy,
-                        color,
-                    );
-                }
-            }
+        for px in 0..cw {
+            let src_col = (px * FONT_WIDTH) / cw;
+            let color = if bits & (0x80 >> src_col) != 0 { fg } else { bg };
+            put_pixel(cx + px, cy + py, color);
         }
     }
 }
@@ -694,6 +696,27 @@ pub fn get_size_packed() -> u32 {
     let cols = FB_WIDTH.load(Ordering::Relaxed) / cell_w();
     let rows = FB_HEIGHT.load(Ordering::Relaxed) / cell_h();
     (cols << 16) | rows
+}
+
+/// Resize the console to exactly `cols` columns and `rows` rows by recomputing
+/// CELL_W / CELL_H from the current framebuffer dimensions.
+/// Clears the screen and homes the cursor.  Returns new packed size, or 0 if not ready.
+pub fn resize(cols: u32, rows: u32) -> u32 {
+    if !is_ready() { return 0; }
+    if cols == 0 || rows == 0 { return 0; }
+    let fb_w = FB_WIDTH.load(Ordering::Relaxed);
+    let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
+    let cw = (fb_w / cols).max(FONT_WIDTH);
+    let ch = (fb_h / rows).max(FONT_HEIGHT);
+    CELL_W.store(cw, Ordering::Relaxed);
+    CELL_H.store(ch, Ordering::Relaxed);
+    // Clear screen and home cursor
+    fill_rect(0, 0, fb_w, fb_h, COLOR_BG);
+    CUR_X.store(0, Ordering::Relaxed);
+    CUR_Y.store(0, Ordering::Relaxed);
+    CURSOR_VISIBLE.store(false, Ordering::Relaxed);
+    flush_rect(0, 0, fb_w, fb_h);
+    get_size_packed()
 }
 
 /// Set console mode flags. Returns previous flags.

@@ -114,11 +114,17 @@ pub fn read_dir(path: &str, out: &mut [DirEntry; MAX_ENTRIES]) -> usize {
     let count = (n as usize).min(MAX_ENTRIES).min(RAW_CHUNK / RAW_ENTRY_SIZE);
     for i in 0..count {
         let off = i * RAW_ENTRY_SIZE;
-        let kind = match raw[off] {
-            2 => EntryKind::Dir,
-            1 => EntryKind::File,
-            3 => EntryKind::Symlink,
-            _ => EntryKind::Unknown,
+        // Kernel layout: 0=Regular, 1=Directory, 2=Device
+        // Symlink flag is in byte [off+2], bit 0
+        let is_symlink = raw[off + 2] & 1 != 0;
+        let kind = if is_symlink {
+            EntryKind::Symlink
+        } else {
+            match raw[off] {
+                1 => EntryKind::Dir,
+                0 => EntryKind::File,
+                _ => EntryKind::Unknown,
+            }
         };
         let name_len = raw[off + 1] as usize;
         let name_len = name_len.min(55);

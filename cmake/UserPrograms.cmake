@@ -576,6 +576,7 @@ add_rust_user_program(unzip)
 add_rust_user_program(gzip)
 add_rust_user_program(tar)
 add_rust_user_program(apkg)
+add_rust_user_program(mode)
 # gunzip is a copy of gzip (detects via argv[0])
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/bin/gunzip

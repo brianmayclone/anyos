@@ -295,6 +295,10 @@ pub const SYS_CON_GET_SIZE: u32  = 293;
 ///   bit 1 (0x02): disable auto-scroll (1) / enable auto-scroll (0)
 /// Returns previous flags.
 pub const SYS_CON_SET_MODE: u32  = 294;
+/// Resize the text console to exactly `cols` columns and `rows` rows.
+/// arg1 = cols (high 16) | rows (low 16).  Recomputes CELL_W/CELL_H and repaints.
+/// Returns new packed size (same format as SYS_CON_GET_SIZE), or 0 on error.
+pub const SYS_CON_RESIZE: u32   = 295;
 
 // Hardware virtualization (VT-x / AMD-V)
 pub const SYS_VM_CREATE: u32 = 600;
@@ -640,6 +644,7 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         SYS_CON_POLL_KEY  => handlers::sys_con_poll_key(),
         SYS_CON_GET_SIZE  => handlers::sys_con_get_size(),
         SYS_CON_SET_MODE  => handlers::sys_con_set_mode(arg1),
+        SYS_CON_RESIZE    => handlers::sys_con_resize(arg1),
 
         // Debug / trace (anyTrace)
         SYS_DEBUG_ATTACH => handlers::sys_debug_attach(arg1),

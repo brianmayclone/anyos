@@ -15,7 +15,7 @@ use crate::input::{self, Key};
 
 /// Dialog border / title color.
 const DLG_FG:     u8 = color::BRIGHT_WHITE;
-const DLG_BG:     u8 = 4;   // blue (ANSI bg 44)
+const DLG_BG:     u8 = color::BLUE;
 const DLG_BTN_FG: u8 = color::BLACK;
 const DLG_BTN_BG: u8 = color::BRIGHT_WHITE;
 const DLG_ERR_BG: u8 = color::RED;
@@ -37,19 +37,19 @@ fn draw_box(buf: &mut TermBuf, cols: u32, rows: u32, width: u32, height: u32, ti
         term::bg16(buf, bg);
         if r == 0 {
             // Top border
-            buf.push_str("╔");
-            for _ in 0..width.saturating_sub(2) { buf.push_str("═"); }
-            buf.push_str("╗");
+            buf.push_str("+");
+            for _ in 0..width.saturating_sub(2) { buf.push_str("="); }
+            buf.push_str("+");
         } else if r + 1 == height {
             // Bottom border
-            buf.push_str("╚");
-            for _ in 0..width.saturating_sub(2) { buf.push_str("═"); }
-            buf.push_str("╝");
+            buf.push_str("+");
+            for _ in 0..width.saturating_sub(2) { buf.push_str("="); }
+            buf.push_str("+");
         } else {
             // Side borders + fill
-            buf.push_str("║");
+            buf.push_str("|");
             term::spaces(buf, width.saturating_sub(2) as usize);
-            buf.push_str("║");
+            buf.push_str("|");
         }
     }
 

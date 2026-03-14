@@ -231,6 +231,14 @@ pub fn con_get_size() -> (u32, u32) {
     (packed >> 16, packed & 0xFFFF)
 }
 
+/// Resize the text console to exactly `cols` columns and `rows` rows.
+/// Recomputes cell dimensions from the framebuffer, clears the screen, homes cursor.
+/// Returns new `(cols, rows)` on success, `(0, 0)` on failure.
+pub fn con_resize(cols: u32, rows: u32) -> (u32, u32) {
+    let packed = syscall1(SYS_CON_RESIZE, ((cols << 16) | rows) as u64);
+    (packed >> 16, packed & 0xFFFF)
+}
+
 /// Set console mode flags. Returns the previous flags value.
 ///
 /// Flags bitmask:
@@ -267,6 +275,13 @@ pub const KEY_UP: u32     = KEY_ARROW_PREFIX | 0x41;
 pub const KEY_DOWN: u32   = KEY_ARROW_PREFIX | 0x42;
 pub const KEY_RIGHT: u32  = KEY_ARROW_PREFIX | 0x43;
 pub const KEY_LEFT: u32   = KEY_ARROW_PREFIX | 0x44;
+
+/// Shift modifier bit for arrow keys (bit 28).
+pub const KEY_SHIFT_BIT: u32   = 0x1400_0000;
+pub const KEY_SHIFT_UP: u32    = KEY_SHIFT_BIT | 0x41;
+pub const KEY_SHIFT_DOWN: u32  = KEY_SHIFT_BIT | 0x42;
+pub const KEY_SHIFT_RIGHT: u32 = KEY_SHIFT_BIT | 0x43;
+pub const KEY_SHIFT_LEFT: u32  = KEY_SHIFT_BIT | 0x44;
 
 pub const KEY_HOME: u32     = KEY_NAV_PREFIX | 0x48;
 pub const KEY_END: u32      = KEY_NAV_PREFIX | 0x4B;

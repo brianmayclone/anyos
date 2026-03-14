@@ -766,10 +766,10 @@ pub fn sys_con_poll_key() -> u32 {
                     Key::Backspace => b'\x08' as u32,
                     Key::Tab       => b'\t' as u32,
                     Key::Escape    => 0x1B,
-                    Key::Up        => 0x10_0041, // CSI A
-                    Key::Down      => 0x10_0042,
-                    Key::Left      => 0x10_0044,
-                    Key::Right     => 0x10_0043,
+                    Key::Up    => if evt.modifiers.shift { 0x1400_0041 } else { 0x10_0041 },
+                    Key::Down  => if evt.modifiers.shift { 0x1400_0042 } else { 0x10_0042 },
+                    Key::Left  => if evt.modifiers.shift { 0x1400_0044 } else { 0x10_0044 },
+                    Key::Right => if evt.modifiers.shift { 0x1400_0043 } else { 0x10_0043 },
                     Key::Space     => b' ' as u32,
                     // Navigation keys (encoded as 0x20_00XX)
                     Key::Home      => 0x20_0048,
@@ -832,3 +832,16 @@ pub fn sys_con_set_mode(flags: u32) -> u32 {
 
 #[cfg(not(target_arch = "x86_64"))]
 pub fn sys_con_set_mode(_flags: u32) -> u32 { 0 }
+
+/// SYS_CON_RESIZE (295): Resize the text console to a specific number of columns/rows.
+/// arg1 = (cols << 16) | rows.  Recomputes cell size and repaints the screen.
+/// Returns new packed size on success, 0 if not initialised.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_con_resize(packed: u32) -> u32 {
+    let cols = packed >> 16;
+    let rows = packed & 0xFFFF;
+    crate::drivers::textcon::resize(cols, rows)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn sys_con_resize(_packed: u32) -> u32 { 0 }

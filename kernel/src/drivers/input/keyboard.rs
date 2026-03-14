@@ -75,6 +75,24 @@ static MODIFIERS: Spinlock<Modifiers> = Spinlock::new(Modifiers {
 /// PS/2 sends 0xE0 as a separate byte on one IRQ, then the actual scancode next.
 static E0_PENDING: Spinlock<bool> = Spinlock::new(false);
 
+// ─── Key-repeat state ─────────────────────────────────────────────────────────
+// Typematic repeat: 500 ms initial delay, then 30 ms repeat interval (1000 Hz ticks).
+const REPEAT_DELAY_TICKS: u32 = 500;
+const REPEAT_INTERVAL_TICKS: u32 = 30;
+
+/// The currently held-down key (if any) and the tick it was pressed.
+struct RepeatState {
+    event:      Option<KeyEvent>,
+    pressed_at: u32,   // tick when key was first pressed
+    next_repeat: u32,  // tick when next repeat fires
+}
+
+static REPEAT: Spinlock<RepeatState> = Spinlock::new(RepeatState {
+    event: None,
+    pressed_at: 0,
+    next_repeat: 0,
+});
+
 /// Translate a scancode to a Key, considering E0 prefix and modifiers.
 fn scancode_to_key(scancode: u8, is_e0: bool, mods: &Modifiers) -> Key {
     // E0-prefixed keys: navigation cluster, right modifiers
@@ -199,6 +217,34 @@ pub fn handle_scancode(scancode: u8) {
             buf.push_back(event);
         }
     }
+
+    // Update key-repeat state
+    {
+        let mut rep = REPEAT.lock();
+        if pressed {
+            // Only repeat non-modifier keys
+            let is_modifier = matches!(key,
+                Key::LeftShift | Key::RightShift |
+                Key::LeftCtrl  | Key::RightCtrl  |
+                Key::LeftAlt   | Key::RightAlt   |
+                Key::CapsLock
+            );
+            if !is_modifier {
+                let now = crate::arch::hal::timer_current_ticks();
+                rep.event       = Some(event);
+                rep.pressed_at  = now;
+                rep.next_repeat = now.wrapping_add(REPEAT_DELAY_TICKS);
+            }
+        } else {
+            // Key released — cancel repeat for this key
+            if let Some(ref held) = rep.event {
+                if held.scancode == code && held.key == key {
+                    rep.event = None;
+                }
+            }
+        }
+    }
+
     // Wake compositor outside KEY_BUFFER lock to avoid lock ordering issues.
     crate::syscall::handlers::wake_compositor_if_blocked();
 }
@@ -216,6 +262,30 @@ pub fn has_event() -> bool {
 /// Get current modifier state
 pub fn modifiers() -> Modifiers {
     *MODIFIERS.lock()
+}
+
+/// Called once per timer tick to generate key-repeat events.
+/// Should be called from the timer IRQ handler at TICK_HZ (1000 Hz).
+pub fn tick() {
+    let mut rep = REPEAT.lock();
+    let event = match rep.event {
+        Some(e) => e,
+        None    => return,
+    };
+    let now = crate::arch::hal::timer_current_ticks();
+    // Wrapping comparison: handles tick counter wrap-around
+    if now.wrapping_sub(rep.next_repeat) < 0x8000_0000 {
+        // Time reached — fire a repeat event
+        rep.next_repeat = now.wrapping_add(REPEAT_INTERVAL_TICKS);
+        drop(rep);
+        {
+            let mut buf = KEY_BUFFER.lock();
+            if buf.len() < 256 {
+                buf.push_back(event);
+            }
+        }
+        crate::syscall::handlers::wake_compositor_if_blocked();
+    }
 }
 
 /// PS/2 keyboard IRQ handler (IRQ 1). Reads scancode from port 0x60.

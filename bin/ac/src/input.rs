@@ -117,11 +117,11 @@ pub fn poll() -> Option<Key> {
     if raw == 0 { None } else { Some(decode(raw)) }
 }
 
-/// Blocking poll — spins (with yield) until a key arrives.
+/// Blocking poll — sleeps briefly between polls until a key arrives.
 pub fn read_key() -> Key {
     loop {
         let raw = anyos_std::sys::con_poll_key();
         if raw != 0 { return decode(raw); }
-        anyos_std::process::yield_cpu();
+        anyos_std::process::sleep(1);
     }
 }

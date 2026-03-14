@@ -139,11 +139,10 @@ fn main() {
             state.dirty = false;
         }
 
-        // Poll for input
-        match input::poll() {
-            None      => { anyos_std::process::yield_cpu(); }
-            Some(key) => handle_key(&mut state, &mut buf, key),
-        }
+        // Blocking read: wait for the next key without burning CPU.
+        // input::read_key() yields internally between polls.
+        let key = input::read_key();
+        handle_key(&mut state, &mut buf, key);
     }
 
     // Restore terminal

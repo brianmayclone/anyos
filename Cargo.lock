@@ -792,6 +792,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mode"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "mount"
 version = "0.1.0"
 dependencies = [

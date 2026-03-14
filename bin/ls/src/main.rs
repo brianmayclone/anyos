@@ -422,8 +422,11 @@ fn main() {
     let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
 
-    // Check for --color before standard arg parsing (parser only handles single-char flags)
-    let color = raw.contains("--color");
+    // Enable color if --color is passed explicitly, or if $TERM is set (auto-detect terminal).
+    let mut term_buf = [0u8; 32];
+    let term_len = anyos_std::env::get("TERM", &mut term_buf);
+    let has_term = term_len != u32::MAX && term_len > 0;
+    let color = raw.contains("--color") || has_term;
     // Strip --color from args so the standard parser doesn't choke on it
     let mut cleaned_buf = [0u8; 256];
     let parse_raw = if color {
