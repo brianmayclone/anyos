@@ -193,8 +193,21 @@ fn handle_key(state: &mut AppState, buf: &mut TermBuf, key: Key) {
             state.dirty = true;
         }
 
-        // ── Enter: open dir or execute file ───────────────────────────────────
+        // ── Enter: run cmdline command or open dir / execute file ─────────────
         Key::Enter => {
+            // Check cmdline for built-in commands first
+            if state.cmdline_len > 0 {
+                let cmd = core::str::from_utf8(&state.cmdline[..state.cmdline_len]).unwrap_or("");
+                let cmd = cmd.trim();
+                if cmd == "exit" || cmd == "quit" {
+                    state.running = false;
+                    return;
+                }
+                // Unknown command: clear cmdline and ignore
+                state.cmdline_len = 0;
+                state.dirty = true;
+                return;
+            }
             let entered = state.active_panel_mut().enter_dir();
             if !entered {
                 // File: try to exec it

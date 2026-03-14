@@ -32,6 +32,39 @@ fn cell_h() -> u32 { CELL_H.load(Ordering::Relaxed) }
 // ─── Console mode flags ───────────────────────────────────────────────────────
 /// Bit 0: cursor hidden  Bit 1: auto-scroll disabled
 static CON_MODE_FLAGS: AtomicU32 = AtomicU32::new(0);
+
+// ─── Scroll-back buffer ───────────────────────────────────────────────────────
+//
+// We maintain a ring buffer of text-cell rows (character + fg + bg per cell).
+// MAX_COLS covers the widest supported mode (mode 3: 160 cols).
+// SCROLLBACK_ROWS is the number of off-screen rows kept in history.
+// The "live" screen rows are stored in a separate shadow cell buffer so we can
+// re-render any viewport position without re-running ANSI sequences.
+
+const MAX_COLS: usize = 160;
+/// Number of off-screen history rows available for scrolling back.
+const SCROLLBACK_ROWS: usize = 200;
+/// Max visible rows covered by the shadow buffer (mode 3: 50 rows max).
+const MAX_VISIBLE_ROWS: usize = 50;
+
+/// Character byte for each cell.  0 = space.
+static mut SCRBUF_CH:  [[u8;  MAX_COLS]; SCROLLBACK_ROWS] = [[b' '; MAX_COLS]; SCROLLBACK_ROWS];
+/// Foreground color for each cell (ARGB, 0 = COLOR_FG default).
+static mut SCRBUF_FG:  [[u32; MAX_COLS]; SCROLLBACK_ROWS] = [[0u32; MAX_COLS]; SCROLLBACK_ROWS];
+/// Background color for each cell (ARGB, 0 = COLOR_BG default).
+static mut SCRBUF_BG:  [[u32; MAX_COLS]; SCROLLBACK_ROWS] = [[0u32; MAX_COLS]; SCROLLBACK_ROWS];
+
+/// Shadow buffer for the live visible screen (up to MAX_VISIBLE_ROWS rows).
+static mut SHADOW_CH:  [[u8;  MAX_COLS]; MAX_VISIBLE_ROWS] = [[b' '; MAX_COLS]; MAX_VISIBLE_ROWS];
+static mut SHADOW_FG:  [[u32; MAX_COLS]; MAX_VISIBLE_ROWS] = [[0u32; MAX_COLS]; MAX_VISIBLE_ROWS];
+static mut SHADOW_BG:  [[u32; MAX_COLS]; MAX_VISIBLE_ROWS] = [[0u32; MAX_COLS]; MAX_VISIBLE_ROWS];
+
+/// Ring-buffer head: index of the *oldest* row in SCRBUF (next slot to overwrite).
+static SCRBUF_HEAD: AtomicU32 = AtomicU32::new(0);
+/// Number of valid rows stored in the scroll-back buffer (≤ SCROLLBACK_ROWS).
+static SCRBUF_COUNT: AtomicU32 = AtomicU32::new(0);
+/// How many rows the viewport is scrolled back from the live view.  0 = live.
+static SCROLL_OFFSET: AtomicU32 = AtomicU32::new(0);
 static FB_ADDR:  AtomicU64 = AtomicU64::new(0);
 static FB_PITCH: AtomicU32 = AtomicU32::new(0);
 static FB_WIDTH: AtomicU32 = AtomicU32::new(0);
@@ -191,6 +224,10 @@ fn fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) {
 
 /// Copy a block of rows upward by `rows` glyph rows.
 fn scroll_up(rows: u32) {
+    // Save displaced rows into scroll-back buffer before pixel-shifting
+    for _ in 0..rows {
+        shadow_scroll_up();
+    }
     let addr  = FB_ADDR.load(Ordering::Relaxed) as *mut u32;
     let pitch = FB_PITCH.load(Ordering::Relaxed) as usize / 4;
     let w     = FB_WIDTH.load(Ordering::Relaxed) as usize;
@@ -227,6 +264,11 @@ fn clear_screen_bg() {
             unsafe { *addr.add(row * pitch + col) = COLOR_BG; }
         }
     }
+    // Also reset shadow buffer and scroll state
+    shadow_clear_all();
+    SCRBUF_HEAD.store(0, Ordering::Relaxed);
+    SCRBUF_COUNT.store(0, Ordering::Relaxed);
+    SCROLL_OFFSET.store(0, Ordering::Relaxed);
 }
 
 fn flush_rect(x: u32, y: u32, w: u32, h: u32) {
@@ -238,21 +280,217 @@ fn flush_rect(x: u32, y: u32, w: u32, h: u32) {
     }
 }
 
+// ─── Shadow cell buffer helpers ──────────────────────────────────────────────
+
+/// Number of visible rows given current cell height.
+#[inline]
+fn vis_rows() -> usize {
+    let h = FB_HEIGHT.load(Ordering::Relaxed);
+    let ch = cell_h();
+    if ch == 0 { return CONSOLE_ROWS as usize; }
+    (h / ch).min(MAX_VISIBLE_ROWS as u32) as usize
+}
+
+/// Number of visible cols given current cell width.
+#[inline]
+fn vis_cols() -> usize {
+    let w = FB_WIDTH.load(Ordering::Relaxed);
+    let cw = cell_w();
+    if cw == 0 { return CONSOLE_COLS as usize; }
+    (w / cw).min(MAX_COLS as u32) as usize
+}
+
+/// Write a cell into the shadow buffer (live screen mirror).
+#[inline]
+fn shadow_set(row: usize, col: usize, ch: u8, fg: u32, bg: u32) {
+    if row < MAX_VISIBLE_ROWS && col < MAX_COLS {
+        unsafe {
+            SHADOW_CH[row][col] = ch;
+            SHADOW_FG[row][col] = fg;
+            SHADOW_BG[row][col] = bg;
+        }
+    }
+}
+
+/// Clear the entire shadow buffer (used on screen clear / resize).
+fn shadow_clear_all() {
+    unsafe {
+        for r in 0..MAX_VISIBLE_ROWS {
+            for c in 0..MAX_COLS {
+                SHADOW_CH[r][c] = b' ';
+                SHADOW_FG[r][c] = 0;
+                SHADOW_BG[r][c] = 0;
+            }
+        }
+    }
+}
+
+/// Erase a range of cells in the shadow buffer (for EL/ED erase operations).
+/// `row` is the cell row, `col_start..col_end` is the column range.
+fn shadow_erase_cells(row: usize, col_start: usize, col_end: usize) {
+    if row >= MAX_VISIBLE_ROWS { return; }
+    let end = col_end.min(MAX_COLS);
+    unsafe {
+        for c in col_start..end {
+            SHADOW_CH[row][c] = b' ';
+            SHADOW_FG[row][c] = 0;
+            SHADOW_BG[row][c] = 0;
+        }
+    }
+}
+
+/// Erase all cells from (row, 0) to end of screen in shadow buffer.
+fn shadow_erase_from_row(start_row: usize) {
+    let rows = vis_rows();
+    let cols = vis_cols();
+    unsafe {
+        for r in start_row..rows.min(MAX_VISIBLE_ROWS) {
+            for c in 0..cols { SHADOW_CH[r][c] = b' '; SHADOW_FG[r][c] = 0; SHADOW_BG[r][c] = 0; }
+        }
+    }
+}
+
+/// Erase all cells up to (row, col) from start of screen in shadow buffer.
+fn shadow_erase_to_row(end_row: usize, end_col: usize) {
+    unsafe {
+        for r in 0..end_row.min(MAX_VISIBLE_ROWS) {
+            let cols = vis_cols();
+            for c in 0..cols { SHADOW_CH[r][c] = b' '; SHADOW_FG[r][c] = 0; SHADOW_BG[r][c] = 0; }
+        }
+        if end_row < MAX_VISIBLE_ROWS {
+            for c in 0..end_col.min(MAX_COLS) {
+                SHADOW_CH[end_row][c] = b' '; SHADOW_FG[end_row][c] = 0; SHADOW_BG[end_row][c] = 0;
+            }
+        }
+    }
+}
+
+/// Push the top shadow row (row 0) into the scroll-back ring buffer,
+/// then shift all shadow rows up by one.
+fn shadow_scroll_up() {
+    let cols = vis_cols();
+    // Save row 0 into ring buffer
+    let head = SCRBUF_HEAD.load(Ordering::Relaxed) as usize;
+    unsafe {
+        SCRBUF_CH[head][..cols].copy_from_slice(&SHADOW_CH[0][..cols]);
+        SCRBUF_FG[head][..cols].copy_from_slice(&SHADOW_FG[0][..cols]);
+        SCRBUF_BG[head][..cols].copy_from_slice(&SHADOW_BG[0][..cols]);
+    }
+    let next_head = (head + 1) % SCROLLBACK_ROWS;
+    SCRBUF_HEAD.store(next_head as u32, Ordering::Relaxed);
+    let count = SCRBUF_COUNT.load(Ordering::Relaxed) as usize;
+    if count < SCROLLBACK_ROWS {
+        SCRBUF_COUNT.store((count + 1) as u32, Ordering::Relaxed);
+    }
+    // Shift shadow rows up by one
+    let rows = vis_rows();
+    unsafe {
+        for r in 0..rows.saturating_sub(1) {
+            SHADOW_CH[r][..cols].copy_from_slice(&SHADOW_CH[r + 1][..cols]);
+            SHADOW_FG[r][..cols].copy_from_slice(&SHADOW_FG[r + 1][..cols]);
+            SHADOW_BG[r][..cols].copy_from_slice(&SHADOW_BG[r + 1][..cols]);
+        }
+        // Clear last row
+        if rows > 0 {
+            let last = rows - 1;
+            for c in 0..cols { SHADOW_CH[last][c] = b' '; SHADOW_FG[last][c] = 0; SHADOW_BG[last][c] = 0; }
+        }
+    }
+}
+
+/// Render a single row from either the scroll-back buffer or the shadow buffer
+/// onto the framebuffer at vertical pixel position `y_px`.
+/// `row_idx` is the logical row index from the top of the current viewport.
+/// When `offset > 0`, row 0 of the viewport maps to a row in the scroll-back buffer.
+/// Scroll the viewport up (delta > 0) or down (delta < 0) by `|delta|` rows.
+/// Called from `sys_con_poll_key` when Shift+Up / Shift+Down is pressed.
+pub fn scroll_viewport(delta: i32) {
+    if !is_ready() { return; }
+    let count = SCRBUF_COUNT.load(Ordering::Relaxed) as i32;
+    let rows = vis_rows() as i32;
+    let max_offset = (count).min(SCROLLBACK_ROWS as i32 - rows).max(0);
+    let cur = SCROLL_OFFSET.load(Ordering::Relaxed) as i32;
+    let new_offset = (cur + delta).clamp(0, max_offset);
+    if new_offset == cur { return; }
+    SCROLL_OFFSET.store(new_offset as u32, Ordering::Relaxed);
+    repaint_viewport();
+}
+
+/// Re-render the entire visible screen from shadow+scrollback at current offset.
+fn repaint_viewport() {
+    let offset = SCROLL_OFFSET.load(Ordering::Relaxed) as usize;
+    let rows = vis_rows();
+    let count = SCRBUF_COUNT.load(Ordering::Relaxed) as usize;
+    let ch = cell_h();
+    let fb_w = FB_WIDTH.load(Ordering::Relaxed);
+    let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
+
+    // Each visible row:
+    //   viewport row 0 → oldest in scrollback shown = scrbuf[(head - offset) % SCROLLBACK_ROWS]
+    //   viewport row k  →
+    //     if k < offset and k < count: from scroll-back
+    //     else:                        from shadow[k - offset]
+    let head = SCRBUF_HEAD.load(Ordering::Relaxed) as usize;
+
+    for r in 0..rows {
+        let y_px = r as u32 * ch;
+        if r < offset && r < count {
+            // from scroll-back ring buffer
+            // oldest visible = (head - offset) mod SCROLLBACK_ROWS
+            let scr_idx = (head + SCROLLBACK_ROWS - offset + r) % SCROLLBACK_ROWS;
+            let cols = vis_cols();
+            for col in 0..cols {
+                let (cell_ch, fg, bg) = unsafe {(
+                    SCRBUF_CH[scr_idx][col],
+                    SCRBUF_FG[scr_idx][col],
+                    SCRBUF_BG[scr_idx][col],
+                )};
+                let fg = if fg != 0 { fg } else { COLOR_FG };
+                let bg = if bg != 0 { bg } else { COLOR_BG };
+                let x_px = col as u32 * cell_w();
+                draw_glyph_pixels(x_px, y_px, cell_ch, fg, bg);
+            }
+        } else {
+            // from live shadow buffer
+            let shadow_row = r.saturating_sub(offset);
+            let cols = vis_cols();
+            if shadow_row < rows {
+                for col in 0..cols {
+                    let (cell_ch, fg, bg) = unsafe {(
+                        SHADOW_CH[shadow_row][col],
+                        SHADOW_FG[shadow_row][col],
+                        SHADOW_BG[shadow_row][col],
+                    )};
+                    let fg = if fg != 0 { fg } else { COLOR_FG };
+                    let bg = if bg != 0 { bg } else { COLOR_BG };
+                    let x_px = col as u32 * cell_w();
+                    draw_glyph_pixels(x_px, y_px, cell_ch, fg, bg);
+                }
+                // blank any cols beyond vis_cols
+                let cw = cell_w();
+                let used_w = cols as u32 * cw;
+                if used_w < fb_w { fill_rect(used_w, y_px, fb_w - used_w, ch, COLOR_BG); }
+            } else {
+                fill_rect(0, y_px, fb_w, ch, COLOR_BG);
+            }
+        }
+    }
+    flush_rect(0, 0, fb_w, fb_h);
+}
+
 // ─── Cursor ──────────────────────────────────────────────────────────────────
 // Cursor state is managed inside write_str — no separate flush per cursor op.
 
 // ─── Text output ─────────────────────────────────────────────────────────────
 
-fn draw_glyph(cx: u32, cy: u32, ch: u8, fg: u32, bg: u32) {
+/// Render glyph pixels only — no shadow update.  Used during viewport repaint.
+fn draw_glyph_pixels(cx: u32, cy: u32, ch: u8, fg: u32, bg: u32) {
+    let cw = cell_w();
+    let ch_px = cell_h();
     let c = ch as u32;
     let idx = if c >= 32 && c <= 126 { (c - 32) as usize } else { 0 };
     let glyph_offset = idx * FONT_HEIGHT as usize;
-    let cw = cell_w();
-    let ch_px = cell_h();
-    // Nearest-neighbour scaling from FONT_WIDTH×FONT_HEIGHT → cw×ch_px.
-    // For each output pixel (px, py) we map back to the nearest source pixel.
     for py in 0..ch_px {
-        // Map output row py → source row (0..FONT_HEIGHT)
         let src_row = (py * FONT_HEIGHT) / ch_px;
         let bits = if glyph_offset + (src_row as usize) < FONT_DATA.len() {
             FONT_DATA[glyph_offset + src_row as usize]
@@ -263,6 +501,18 @@ fn draw_glyph(cx: u32, cy: u32, ch: u8, fg: u32, bg: u32) {
             put_pixel(cx + px, cy + py, color);
         }
     }
+}
+
+fn draw_glyph(cx: u32, cy: u32, ch: u8, fg: u32, bg: u32) {
+    // Update shadow cell buffer (for scroll-back).
+    let cw = cell_w();
+    let ch_px = cell_h();
+    if cw > 0 && ch_px > 0 {
+        let col = (cx / cw) as usize;
+        let row = (cy / ch_px) as usize;
+        shadow_set(row, col, ch, fg, bg);
+    }
+    draw_glyph_pixels(cx, cy, ch, fg, bg);
 }
 
 fn advance_cursor() {
@@ -375,6 +625,10 @@ fn execute_csi(params: &[u8], final_byte: u8) -> bool {
                     if cy + ch < fb_h {
                         fill_rect(0, cy + ch, fb_w, fb_h - cy - ch, erase_bg);
                     }
+                    let row = (cy / ch) as usize;
+                    let col = (cx / cw) as usize;
+                    shadow_erase_cells(row, col, vis_cols());
+                    shadow_erase_from_row(row + 1);
                 }
                 1 => {
                     // Erase from start to cursor
@@ -382,10 +636,14 @@ fn execute_csi(params: &[u8], final_byte: u8) -> bool {
                     let cy = CUR_Y.load(Ordering::Relaxed);
                     if cy > 0 { fill_rect(0, 0, fb_w, cy, erase_bg); }
                     fill_rect(0, cy, cx + cw, ch, erase_bg);
+                    let row = (cy / ch) as usize;
+                    let col = ((cx + cw) / cw) as usize;
+                    shadow_erase_to_row(row, col);
                 }
                 _ => {
                     // Erase entire display (ESC[2J)
                     fill_rect(0, 0, fb_w, fb_h, erase_bg);
+                    shadow_clear_all();
                     // Note: cursor stays (apps send ESC[H separately to home)
                 }
             }
@@ -397,10 +655,20 @@ fn execute_csi(params: &[u8], final_byte: u8) -> bool {
             let cx = CUR_X.load(Ordering::Relaxed);
             let cy = CUR_Y.load(Ordering::Relaxed);
             let erase_bg = ESC.lock().bg();
+            let row = (cy / ch) as usize;
             match n {
-                0 => fill_rect(cx, cy, fb_w - cx, ch, erase_bg),
-                1 => fill_rect(0, cy, cx + cw, ch, erase_bg),
-                _ => fill_rect(0, cy, fb_w, ch, erase_bg),
+                0 => {
+                    fill_rect(cx, cy, fb_w - cx, ch, erase_bg);
+                    shadow_erase_cells(row, (cx / cw) as usize, vis_cols());
+                }
+                1 => {
+                    fill_rect(0, cy, cx + cw, ch, erase_bg);
+                    shadow_erase_cells(row, 0, ((cx + cw) / cw) as usize);
+                }
+                _ => {
+                    fill_rect(0, cy, fb_w, ch, erase_bg);
+                    shadow_erase_cells(row, 0, vis_cols());
+                }
             }
             false
         }
@@ -624,6 +892,12 @@ pub fn write_str(s: &str) {
         return;
     }
 
+    // If user was scrolled back, return to live view before writing new output.
+    if SCROLL_OFFSET.load(Ordering::Relaxed) > 0 {
+        SCROLL_OFFSET.store(0, Ordering::Relaxed);
+        repaint_viewport();
+    }
+
     let fb_w = FB_WIDTH.load(Ordering::Relaxed);
     let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
 
@@ -710,8 +984,12 @@ pub fn resize(cols: u32, rows: u32) -> u32 {
     let ch = (fb_h / rows).max(FONT_HEIGHT);
     CELL_W.store(cw, Ordering::Relaxed);
     CELL_H.store(ch, Ordering::Relaxed);
-    // Clear screen and home cursor
+    // Clear screen, home cursor, reset scroll-back state
     fill_rect(0, 0, fb_w, fb_h, COLOR_BG);
+    shadow_clear_all();
+    SCRBUF_HEAD.store(0, Ordering::Relaxed);
+    SCRBUF_COUNT.store(0, Ordering::Relaxed);
+    SCROLL_OFFSET.store(0, Ordering::Relaxed);
     CUR_X.store(0, Ordering::Relaxed);
     CUR_Y.store(0, Ordering::Relaxed);
     CURSOR_VISIBLE.store(false, Ordering::Relaxed);
@@ -724,8 +1002,17 @@ pub fn resize(cols: u32, rows: u32) -> u32 {
 /// Bit 1 (0x02): 1 = disable auto-scroll, 0 = enable auto-scroll.
 pub fn set_mode(flags: u32) -> u32 {
     let prev = CON_MODE_FLAGS.swap(flags, Ordering::Relaxed);
-    // If cursor is now shown but was hidden, or vice-versa: update display
     if !is_ready() { return prev; }
+
+    // Any mode change (cursor visibility or scroll enable/disable) clears the
+    // scroll-back buffer and resets the viewport — the screen context has changed.
+    if flags != prev {
+        shadow_clear_all();
+        SCRBUF_HEAD.store(0, Ordering::Relaxed);
+        SCRBUF_COUNT.store(0, Ordering::Relaxed);
+        SCROLL_OFFSET.store(0, Ordering::Relaxed);
+    }
+
     let cursor_now_hidden = flags & 0x01 != 0;
     let cursor_was_hidden = prev & 0x01 != 0;
     if cursor_now_hidden && !cursor_was_hidden {

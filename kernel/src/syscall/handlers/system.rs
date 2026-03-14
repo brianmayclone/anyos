@@ -766,8 +766,16 @@ pub fn sys_con_poll_key() -> u32 {
                     Key::Backspace => b'\x08' as u32,
                     Key::Tab       => b'\t' as u32,
                     Key::Escape    => 0x1B,
-                    Key::Up    => if evt.modifiers.shift { 0x1400_0041 } else { 0x10_0041 },
-                    Key::Down  => if evt.modifiers.shift { 0x1400_0042 } else { 0x10_0042 },
+                    Key::Up    => if evt.modifiers.shift {
+                        // Shift+Up: scroll viewport back — handled entirely in kernel
+                        crate::drivers::textcon::scroll_viewport(1);
+                        continue; // consume key, return nothing to userspace
+                    } else { 0x10_0041 },
+                    Key::Down  => if evt.modifiers.shift {
+                        // Shift+Down: scroll viewport forward — handled entirely in kernel
+                        crate::drivers::textcon::scroll_viewport(-1);
+                        continue; // consume key, return nothing to userspace
+                    } else { 0x10_0042 },
                     Key::Left  => if evt.modifiers.shift { 0x1400_0044 } else { 0x10_0044 },
                     Key::Right => if evt.modifiers.shift { 0x1400_0043 } else { 0x10_0043 },
                     Key::Space     => b' ' as u32,

@@ -265,16 +265,6 @@ fn read_line_interactive(prompt: &str) -> String {
                 }
             }
 
-            // Shift+UP — scroll viewport up one line
-            sys::KEY_SHIFT_UP => {
-                sys::con_write("\x1b[1T");
-            }
-
-            // Shift+DOWN — scroll viewport down one line
-            sys::KEY_SHIFT_DOWN => {
-                sys::con_write("\x1b[1S");
-            }
-
             // Normal printable character
             ch if ch >= 0x20 && ch < 0x7F => {
                 if line_len < line.len() - 1 {
