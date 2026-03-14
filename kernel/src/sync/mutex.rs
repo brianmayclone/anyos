@@ -61,6 +61,26 @@ impl<T> Mutex<T> {
             crate::task::scheduler::schedule();
         }
     }
+
+    /// Try to acquire the mutex without blocking.
+    ///
+    /// Returns `Some(guard)` if the mutex was free, `None` if it was already
+    /// held. Never blocks or yields. Safe to call from any context including
+    /// panic handlers where yielding is not possible.
+    pub fn try_lock(&self) -> Option<MutexGuard<T>> {
+        let mut locked = self.inner.lock();
+        if !*locked {
+            *locked = true;
+            Some(MutexGuard { mutex: self })
+        } else {
+            None
+        }
+    }
+
+    /// Check if this mutex is currently held (by any thread).
+    pub fn is_locked(&self) -> bool {
+        *self.inner.lock()
+    }
 }
 
 impl<'a, T> Deref for MutexGuard<'a, T> {

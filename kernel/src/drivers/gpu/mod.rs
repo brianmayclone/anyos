@@ -12,6 +12,7 @@ pub mod vmware_svga;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use crate::sync::spinlock::Spinlock;
+use crate::sync::mutex::Mutex;
 
 /// Validate a `&dyn GpuDriver` trait object's vtable pointer.
 /// Returns false if data or vtable pointer is outside kernel higher-half,
@@ -207,7 +208,16 @@ pub trait GpuDriver: Send {
 // ──────────────────────────────────────────────
 
 /// Global GPU driver instance, set during PCI probe.
-static GPU: Spinlock<Option<Box<dyn GpuDriver>>> = Spinlock::new(None);
+///
+/// Uses a yielding [`Mutex`] (not a spinlock) so that long-running DMA
+/// operations inside the driver (VirtIO virtqueue polling, VMware SVGA FIFO
+/// sync) do **not** hold interrupts disabled. The timer IRQ keeps firing,
+/// other threads keep running, and the scheduler cannot deadlock.
+///
+/// Rule: never acquire this lock from an interrupt handler. IRQ-context code
+/// that needs GPU state must use [`try_lock_gpu`] (non-blocking) and handle
+/// the `None` case gracefully.
+static GPU: Mutex<Option<Box<dyn GpuDriver>>> = Mutex::new(None);
 
 /// Register a GPU driver (called from HAL driver factory during PCI probe).
 pub fn register(driver: Box<dyn GpuDriver>) {
@@ -217,8 +227,10 @@ pub fn register(driver: Box<dyn GpuDriver>) {
 }
 
 /// Access the registered GPU driver within a closure.
-/// Returns None if no GPU driver is registered or if the trait object
-/// vtable appears corrupted (prevents RIP=0x3 crash from heap corruption).
+///
+/// Acquires the GPU [`Mutex`] with interrupts **enabled** — safe to hold
+/// across long operations (DMA, FIFO sync, VirtIO polling). Returns `None`
+/// if no driver is registered or the vtable appears corrupted.
 pub fn with_gpu<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut dyn GpuDriver) -> R,
@@ -237,13 +249,16 @@ pub fn is_available() -> bool {
     GPU.lock().is_some()
 }
 
-/// Lock-free check if the GPU lock is currently held.
+/// Check if the GPU mutex is currently held (by any thread).
 pub fn is_gpu_locked() -> bool {
     GPU.is_locked()
 }
 
-/// Non-blocking GPU lock (for use during panic/RSOD where deadlock must be avoided).
-pub fn try_lock_gpu() -> Option<crate::sync::spinlock::SpinlockGuard<'static, Option<Box<dyn GpuDriver>>>> {
+/// Non-blocking GPU access (for use during panic/RSOD where yielding is not safe).
+///
+/// Returns `Some(guard)` only if the mutex is currently free.
+/// Callers **must** handle `None` gracefully — the GPU may be in use by another thread.
+pub fn try_lock_gpu() -> Option<crate::sync::mutex::MutexGuard<'static, Option<Box<dyn GpuDriver>>>> {
     GPU.try_lock()
 }
 

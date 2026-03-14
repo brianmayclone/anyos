@@ -353,9 +353,14 @@ pub struct VirtioGpu {
     virgl_capable: bool,
     virgl_ctx_id: u32,          // active virgl rendering context (0 = none)
     cmd_3d_buf: u64,            // 64 KiB DMA buffer for 3D command submission
+
+    /// IDs of 3D resources that are currently alive (created but not yet destroyed).
+    /// Checked by dma_surface_download to reject requests for dead/freed surfaces,
+    /// which would otherwise loop indefinitely returning all-zero data.
+    live_3d_resources: Vec<u32>,
 }
 
-// VirtioGpu is accessed under the GPU Spinlock
+// VirtioGpu is accessed under the GPU Mutex (yields instead of spinning)
 unsafe impl Send for VirtioGpu {}
 
 impl VirtioGpu {
@@ -920,6 +925,20 @@ impl GpuDriver for VirtioGpu {
         self.virgl_capable
     }
 
+    fn sync(&mut self) {
+        if !self.virgl_capable || self.virgl_ctx_id == 0 { return; }
+        // Send a virgl NOP command (header only, length=0) and wait for the
+        // synchronous response. This stalls until virglrenderer has processed
+        // all previously submitted commands, ensuring rendered pixels are
+        // committed before TRANSFER_FROM_HOST_3D reads them back.
+        // Header: (length=0 << 16) | (obj=0 << 8) | cmd=0 = 0x00000000
+        let nop_word: u32 = 0u32;
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&nop_word as *const u32 as *const u8, 4)
+        };
+        self.cmd_submit_3d(bytes, self.virgl_ctx_id);
+    }
+
     fn submit_3d_commands(&mut self, words: &[u32]) -> bool {
         if !self.virgl_capable { return false; }
 
@@ -977,6 +996,13 @@ impl GpuDriver for VirtioGpu {
 
     fn dma_surface_download(&mut self, sid: u32, buf: &mut [u8], width: u32, height: u32) -> bool {
         if !self.virgl_capable { return false; }
+        // Reject downloads for destroyed/unknown surfaces immediately.
+        // Without this check a freed surface keeps the loop running forever,
+        // consuming CPU while returning all-zero data ("zombie surface").
+        if !self.live_3d_resources.contains(&sid) {
+            crate::serial_println!("[gpu] dma_download: sid={} is not a live resource — rejected", sid);
+            return false;
+        }
 
         let ctx_id = self.virgl_ctx_id;
         let row_bytes = (width * 4) as usize;
@@ -1079,11 +1105,14 @@ impl GpuDriver for VirtioGpu {
             return None;
         }
 
+        self.live_3d_resources.push(resource_id);
         Some(resource_id)
     }
 
     fn destroy_3d_resource(&mut self, resource_id: u32) -> bool {
         if !self.virgl_capable { return false; }
+        // Remove from live set — subsequent dma_surface_download calls for this ID will fail fast.
+        self.live_3d_resources.retain(|&id| id != resource_id);
         // Detach from virgl context if active
         if self.virgl_ctx_id != 0 {
             self.cmd_ctx_detach_resource(self.virgl_ctx_id, resource_id);
@@ -1518,6 +1547,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         virgl_capable,
         virgl_ctx_id: 0,
         cmd_3d_buf,
+        live_3d_resources: Vec::new(),
     };
 
     // 9. Query native display resolution and build supported modes list.

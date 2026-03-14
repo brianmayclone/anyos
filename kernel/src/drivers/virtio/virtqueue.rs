@@ -322,20 +322,22 @@ impl VirtQueue {
         // Notify device
         notify_fn();
 
-        // Busy-wait for completion.
+        // Busy-wait for completion with periodic yields (cond_resched pattern).
         //
-        // Timeout raised to 200 million PAUSE iterations (~333 ms on a 3 GHz KVM guest
-        // at ~5 cycles/PAUSE). The previous 10 M limit (~16 ms) was too tight: on fast
-        // KVM boots, QEMU's virtio-gpu iothread can be busy with other devices during
-        // early boot and miss the first GPU kick for up to ~50 ms. A timeout shorter
-        // than that causes execute_sync to return None while the command is still
-        // queued. The caller then retries with the *same* shared cmd_buf/resp_buf
-        // physical pages, so the stale and new commands alias each other, permanently
-        // de-synchronising the virtqueue ring. Raising the limit high enough that we
-        // never time out under normal conditions eliminates the desync entirely.
+        // Timeout: 200 million PAUSE iterations (~333 ms on a 3 GHz KVM guest at
+        // ~5 cycles/PAUSE). The previous 10 M limit was too tight: QEMU's virtio-gpu
+        // iothread can be busy during early boot and miss the first GPU kick for up
+        // to ~50 ms, causing ring desync if the caller retries with the same DMA buf.
         //
-        // If the device truly hangs (hardware fault / QEMU crash), None is returned
-        // and the driver logs a non-verbose error so it is always visible.
+        // Every 1 M iterations we call schedule() (Linux's cond_resched pattern):
+        // this lets other ready threads run while we wait for QEMU to process the
+        // virtqueue entry. Without this yield the polling CPU starves lower-priority
+        // threads (compositor, shell) for the entire ~333 ms worst case.
+        //
+        // Safe to yield here because:
+        //  - The GPU Mutex is held by our thread (not a Spinlock), so IRQs are enabled.
+        //  - schedule() re-queues us as Ready; the next tick will return us here.
+        //  - The VirtQueue ring state is stable between yields (no re-entrancy).
         let mut timeout = 0u32;
         loop {
             if let Some((_id, len)) = self.poll_used() {
@@ -343,6 +345,14 @@ impl VirtQueue {
             }
             core::hint::spin_loop();
             timeout += 1;
+
+            // Yield every 1 M iterations so other threads keep running.
+            // Only yield after the scheduler is initialised (before that,
+            // schedule() is a no-op but we avoid the call overhead).
+            if timeout % 1_000_000 == 0 {
+                crate::task::scheduler::schedule();
+            }
+
             if timeout > 200_000_000 {
                 crate::serial_println!("[VirtQueue] timeout waiting for device response (device hung?)");
                 return None;
