@@ -147,7 +147,7 @@ fn read_line_interactive(prompt: &str) -> String {
 
         match key {
             // Enter
-            b'\n' as u32 | b'\r' as u32 => {
+            0x0A | 0x0D => {
                 sys::con_write("\n");
                 let s = core::str::from_utf8(&line[..line_len]).unwrap_or("").trim_end();
                 let result = String::from(s);
@@ -662,9 +662,16 @@ fn shell_loop(username: &str) {
                 return;
             }
             "cd" => {
+                let cd_home_buf: String;
                 let dest = if args_expanded.is_empty() {
-                    let uid = process::getuid();
-                    if uid == 0 { "/root" } else { "/" }
+                    let mut hbuf = [0u8; 128];
+                    let hl = env::get("HOME", &mut hbuf);
+                    cd_home_buf = if hl != u32::MAX && hl > 0 {
+                        String::from(core::str::from_utf8(&hbuf[..hl as usize]).unwrap_or("/"))
+                    } else {
+                        String::from("/")
+                    };
+                    cd_home_buf.as_str()
                 } else {
                     args_expanded[0].as_str()
                 };
@@ -686,6 +693,38 @@ fn shell_loop(username: &str) {
             // clear: ANSI sequence direct to framebuffer console — no external needed
             "clear" => {
                 sys::con_write("\x1b[2J\x1b[H");
+            }
+            // export / set: list all env vars, or set KEY=VALUE
+            "export" | "set" => {
+                if args_expanded.is_empty() {
+                    // List all environment variables
+                    let mut buf = [0u8; 4096];
+                    let n = env::list(&mut buf);
+                    if n > 0 {
+                        let avail = (n as usize).min(buf.len());
+                        let s = core::str::from_utf8(&buf[..avail]).unwrap_or("");
+                        for var in s.split('\0').filter(|v| !v.is_empty()) {
+                            let msg = format!("export {}", var);
+                            println(&msg);
+                        }
+                    }
+                } else {
+                    for arg in args_expanded {
+                        let a = arg.as_str();
+                        if let Some(eq) = a.find('=') {
+                            let key = &a[..eq];
+                            let val = &a[eq + 1..];
+                            if !key.is_empty() { env::set(key, val); }
+                        }
+                        // export KEY (no =) — silently accepted, var already in env
+                    }
+                }
+            }
+            // unset: remove env variable
+            "unset" => {
+                for arg in args_expanded {
+                    env::unset(arg.as_str());
+                }
             }
             _ => {
                 // Check for pipeline

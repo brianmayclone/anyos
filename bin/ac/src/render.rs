@@ -42,11 +42,11 @@ mod pal {
     pub const STATUS_FG:       u8 = color::BLACK;
     pub const STATUS_BG:       u8 = color::BRIGHT_CYAN;
 
-    // Function key bar
+    // Function key bar — gray background like classic MC
     pub const FNBAR_NUM_FG:    u8 = color::BLACK;
     pub const FNBAR_NUM_BG:    u8 = color::BRIGHT_WHITE;
-    pub const FNBAR_LBL_FG:    u8 = color::BRIGHT_WHITE;
-    pub const FNBAR_LBL_BG:    u8 = color::BLUE;
+    pub const FNBAR_LBL_FG:    u8 = color::BLACK;
+    pub const FNBAR_LBL_BG:    u8 = color::WHITE;  // gray background
 }
 
 use pal::*;
@@ -85,10 +85,12 @@ pub fn render_all(
 // ─── Menu bar ────────────────────────────────────────────────────────────────
 
 fn render_menubar(buf: &mut TermBuf, cols: u32) {
+    // Fill entire row first so no gaps at the end
     term::goto(buf, 1, 1);
     term::fg16(buf, MENU_FG);
     term::bg16(buf, MENU_BG);
     term::spaces(buf, cols as usize);
+    // Reposition at start to write menu items over the filled row
     term::goto(buf, 1, 1);
 
     // Menu items with highlighted hotkey (first letter)
@@ -125,7 +127,7 @@ fn render_panels(buf: &mut TermBuf, cols: u32, rows: u32, left: &Panel, right: &
     let p_rows = panel_rows(rows);
     if p_rows < 3 { return; }
 
-    // Divide horizontally: left takes floor(cols/2), right takes ceil(cols/2)
+    // Split evenly: left gets floor(cols/2), right gets the rest
     let left_w  = cols / 2;
     let right_w = cols - left_w;
 
@@ -144,28 +146,25 @@ fn render_panel(
 ) {
     if width < 5 || height < 3 { return; }
 
-    let border_fg = if focused { PANEL_BORDER_FG } else { color::CYAN };
+    let border_bg = if focused { PANEL_BORDER_FG } else { color::CYAN };
 
-    // ── Top border ────────────────────────────────────────────────────────────
+    // ── Top border: solid colored bar (spaces with border background color) ──
     term::goto(buf, col, row);
-    term::fg16(buf, border_fg);
-    term::bg16(buf, PANEL_BG);
-    buf.push_str("+");
-    for _ in 0..width.saturating_sub(2) { buf.push_str("-"); }
-    buf.push_str("+");
+    term::fg16(buf, color::BRIGHT_WHITE);
+    term::bg16(buf, border_bg);
+    term::spaces(buf, width as usize);
 
-    // Title (path) centered on top border
+    // Title (path) centered on top border — white text on border color
     let path = panel.path();
     let max_title = width.saturating_sub(4) as usize;
     let tlen = path.len().min(max_title);
-    // Show the last `max_title` chars of the path
     let tstart_byte = path.len().saturating_sub(tlen);
     let title_str = &path[tstart_byte..];
     let twidth = title_str.len();
     let title_col = col + (width.saturating_sub(twidth as u32 + 2)) / 2;
     term::goto(buf, title_col, row);
-    term::fg16(buf, PANEL_TITLE_FG);
-    term::bg16(buf, PANEL_BG);
+    term::fg16(buf, color::BLACK);
+    term::bg16(buf, border_bg);
     if focused { term::bold(buf); }
     buf.push_str("[ ");
     buf.push_bytes(title_str.as_bytes());
@@ -237,14 +236,12 @@ fn render_panel(
     }
     term::reset(buf);
 
-    // ── Bottom border ─────────────────────────────────────────────────────────
+    // ── Bottom border: solid colored bar ─────────────────────────────────────
     let bottom_row = row + height - 1;
     term::goto(buf, col, bottom_row);
-    term::fg16(buf, border_fg);
-    term::bg16(buf, PANEL_BG);
-    buf.push_str("+");
-    for _ in 0..width.saturating_sub(2) { buf.push_str("-"); }
-    buf.push_str("+");
+    term::fg16(buf, color::BLACK);
+    term::bg16(buf, border_bg);
+    term::spaces(buf, width as usize);
 
     // ── Status line inside bottom border ─────────────────────────────────────
     let status_row = bottom_row - 1;
@@ -377,26 +374,36 @@ fn render_cmdline(buf: &mut TermBuf, cols: u32, rows: u32, cmdline: &[u8], cmdli
 
 fn render_fnbar(buf: &mut TermBuf, cols: u32, rows: u32) {
     term::goto(buf, 1, rows);
-    let cell_w = (cols as usize) / FN_LABELS.len();
+    let n = FN_LABELS.len();
+    let cols = cols as usize;
 
+    // Distribute width as evenly as possible; last cell gets the remainder.
+    let base_w = cols / n;
+    let extra   = cols % n;  // first `extra` cells get one more column
+
+    let mut col = 0usize;
     for (i, label) in FN_LABELS.iter().enumerate() {
+        let cell_w = base_w + if i < extra { 1 } else { 0 };
         let num = i + 1;
-        // Number in bright bg
+        let num_digits = if num >= 10 { 2 } else { 1 };
+
+        // Number part (white bg, black text)
         term::fg16(buf, FNBAR_NUM_FG);
         term::bg16(buf, FNBAR_NUM_BG);
         term::bold(buf);
         buf.push_u32(num as u32);
-        // Label
+
+        // Label part (gray bg, black text) — fills rest of cell
         term::fg16(buf, FNBAR_LBL_FG);
         term::bg16(buf, FNBAR_LBL_BG);
-        let llen = label.len().min(cell_w.saturating_sub(2));
+        let label_space = cell_w.saturating_sub(num_digits);
+        let llen = label.len().min(label_space);
         buf.push_bytes(&label.as_bytes()[..llen]);
-        // Pad to cell width
-        let used = 1 + if num >= 10 { 2 } else { 1 } + llen;
-        term::spaces(buf, cell_w.saturating_sub(used));
-        term::reset(buf);
+        term::spaces(buf, label_space.saturating_sub(llen));
+
+        col += cell_w;
+        let _ = col;
     }
-    term::erase_to_eol(buf);
     term::reset(buf);
 }
 

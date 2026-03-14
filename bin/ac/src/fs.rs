@@ -111,7 +111,23 @@ pub fn read_dir(path: &str, out: &mut [DirEntry; MAX_ENTRIES]) -> usize {
     let n = anyos_std::fs::readdir(path, raw);
     if n == 0 || n == u32::MAX { return 0; }
 
-    let count = (n as usize).min(MAX_ENTRIES).min(RAW_CHUNK / RAW_ENTRY_SIZE);
+    // Prepend ".." for all directories except root "/"
+    let add_dotdot = path != "/" && !path.is_empty();
+    let start = if add_dotdot {
+        out[0] = {
+            let mut e = DirEntry::EMPTY;
+            e.name[0] = b'.';
+            e.name[1] = b'.';
+            e.name_len = 2;
+            e.kind = EntryKind::Dir;
+            e
+        };
+        1
+    } else {
+        0
+    };
+
+    let count = (n as usize).min(MAX_ENTRIES - start).min(RAW_CHUNK / RAW_ENTRY_SIZE);
     for i in 0..count {
         let off = i * RAW_ENTRY_SIZE;
         // Kernel layout: 0=Regular, 1=Directory, 2=Device
@@ -135,9 +151,9 @@ pub fn read_dir(path: &str, out: &mut [DirEntry; MAX_ENTRIES]) -> usize {
         entry.name_len = name_len;
         entry.kind = kind;
         entry.size = size;
-        out[i] = entry;
+        out[start + i] = entry;
     }
-    count
+    start + count
 }
 
 // ─── Sort ────────────────────────────────────────────────────────────────────
