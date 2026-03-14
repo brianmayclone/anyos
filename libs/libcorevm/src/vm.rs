@@ -10,6 +10,7 @@ use crate::devices::serial::Serial;
 use crate::devices::ps2::Ps2Controller;
 use crate::devices::svga::Svga;
 use crate::devices::ahci::Ahci;
+use crate::devices::hpet::Hpet;
 
 /// The virtual machine instance.
 ///
@@ -42,6 +43,7 @@ pub struct Vm {
     pub pci_bus_ptr: *mut crate::devices::bus::PciBus,
     pub fw_cfg_ptr: *mut crate::devices::fw_cfg::FwCfg,
     pub cmos_ptr: *mut crate::devices::cmos::Cmos,
+    pub hpet_ptr: *mut Hpet,
 
     /// Tracks whether AHCI IRQ 11 is currently asserted on the in-kernel irqchip.
     /// Used for level-triggered interrupt semantics: only call set_irq_line when
@@ -108,6 +110,7 @@ impl Vm {
             pci_bus_ptr: core::ptr::null_mut(),
             fw_cfg_ptr: core::ptr::null_mut(),
             cmos_ptr: core::ptr::null_mut(),
+            hpet_ptr: core::ptr::null_mut(),
             ahci_irq_asserted: false,
             #[cfg(feature = "std")]
             pending_mouse: std::sync::Mutex::new(alloc::vec::Vec::new()),
@@ -257,6 +260,14 @@ impl Vm {
 
         // IDE (0x1F0-0x1F7, 0x3F6, 0x170-0x177, 0x376)
         self.io.register(0x1F0, 8, Box::new(Ide::new()));
+
+        // HPET at 0xFED00000 (1KB)
+        {
+            use crate::devices::hpet::{HPET_BASE, HPET_SIZE};
+            let hpet = Box::new(Hpet::new());
+            self.hpet_ptr = &*hpet as *const Hpet as *mut Hpet;
+            self.memory.add_mmio(HPET_BASE, HPET_SIZE, hpet);
+        }
 
         // I/O APIC and Local APIC MMIO.
         // On Linux/KVM with KVM_CREATE_IRQCHIP, these are handled in-kernel.
@@ -594,6 +605,14 @@ impl Vm {
             None
         } else {
             Some(unsafe { &mut *self.cmos_ptr })
+        }
+    }
+
+    pub fn hpet_mut(&mut self) -> Option<&mut Hpet> {
+        if self.hpet_ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *self.hpet_ptr })
         }
     }
 }

@@ -36,3 +36,4 @@ pub mod acpi;
 pub mod acpi_tables;
 pub mod apm;
 pub mod ahci;
+pub mod hpet;

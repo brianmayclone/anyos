@@ -253,6 +253,10 @@ fn main() {
     corevm_setup_acpi_tables(handle);
     corevm_setup_ahci(handle, 6);
 
+    // E1000 NIC — default MAC 52:54:00:12:34:56 (QEMU-style locally administered)
+    let mac: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    corevm_setup_e1000(handle, mac.as_ptr());
+
     // VGA LFB is mapped internally by setup_standard_devices via KVM slot 1.
     // Get the SVGA framebuffer pointer for reading display output.
     let mut vga_fb_ptr: *const u8 = core::ptr::null();
@@ -376,16 +380,15 @@ fn main() {
     // Install SIGUSR1 handler so cancel_vcpu can interrupt KVM_RUN mid-execution
     libcorevm::backend::kvm::install_sigusr1_handler();
 
-    // Timer thread to cancel vCPU periodically (needed for CMOS/RTC advance and
-    // AHCI IRQ polling when guest is in HLT/idle state).
-    // With KVM in-kernel IRQCHIP, LAPIC/PIT timers are handled by KVM internally,
-    // so we only need periodic wakeups for device polling — 100ms is sufficient.
+    // Timer thread to cancel vCPU periodically (needed for CMOS/RTC advance,
+    // HPET timer polling, and AHCI IRQ polling when guest is in HLT/idle state).
+    // 10ms interval ensures HPET timer interrupts (~64 Hz) are delivered timely.
     let cancel_handle = handle;
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let running2 = running.clone();
     thread::spawn(move || {
         while running2.load(std::sync::atomic::Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(10));
             corevm_cancel_vcpu(cancel_handle, 0);
         }
     });
@@ -864,8 +867,8 @@ fn main() {
                             eprintln!("[acpi] RSDP XSDT={:#x}", xsdt_addr);
                             // Try to read XSDT header
                             if xsdt_addr > 0 && xsdt_addr < args.ram_mb as u64 * 1024 * 1024 {
-                                let mut xsdt_hdr = [0u8; 52];
-                                corevm_read_phys(handle, xsdt_addr, xsdt_hdr.as_mut_ptr(), 52);
+                                let mut xsdt_hdr = [0u8; 128];
+                                corevm_read_phys(handle, xsdt_addr, xsdt_hdr.as_mut_ptr(), 128);
                                 let sig = core::str::from_utf8(&xsdt_hdr[0..4]).unwrap_or("????");
                                 let len = u32::from_le_bytes([xsdt_hdr[4], xsdt_hdr[5], xsdt_hdr[6], xsdt_hdr[7]]);
                                 eprintln!("[acpi] XSDT sig='{}' len={}", sig, len);

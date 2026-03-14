@@ -58,19 +58,19 @@ fn build_rsdp() -> Vec<u8> {
     r
 }
 
-/// Build RSDT with 32-bit pointers to FADT and MADT (36 + 2*4 = 44 bytes).
+/// Build RSDT with 32-bit pointers to FADT, MADT, HPET (36 + 3*4 = 48 bytes).
 fn build_rsdt() -> Vec<u8> {
-    let mut t = vec![0u8; 44];
-    write_acpi_header(&mut t, 0, b"RSDT", 44, 1);
-    // [36..40] FADT pointer (u32), [40..44] MADT pointer (u32) — patched by loader
+    let mut t = vec![0u8; 48];
+    write_acpi_header(&mut t, 0, b"RSDT", 48, 1);
+    // [36..40] FADT, [40..44] MADT, [44..48] HPET — patched by loader
     t
 }
 
-/// Build XSDT with 64-bit pointers to FADT and MADT (36 + 2*8 = 52 bytes).
+/// Build XSDT with 64-bit pointers to FADT, MADT, HPET (36 + 3*8 = 60 bytes).
 fn build_xsdt() -> Vec<u8> {
-    let mut t = vec![0u8; 52];
-    write_acpi_header(&mut t, 0, b"XSDT", 52, 1);
-    // [36..44] FADT pointer (u64), [44..52] MADT pointer (u64) — patched by loader
+    let mut t = vec![0u8; 60];
+    write_acpi_header(&mut t, 0, b"XSDT", 60, 1);
+    // [36..44] FADT, [44..52] MADT, [52..60] HPET — patched by loader
     t
 }
 
@@ -528,6 +528,39 @@ fn build_dsdt() -> Vec<u8> {
     t
 }
 
+/// Build HPET ACPI table (38 bytes).
+/// Describes the HPET at 0xFED00000 with hardware revision 1.
+fn build_hpet_table() -> Vec<u8> {
+    let len: u32 = 56; // ACPI header (36) + HPET-specific (20)
+    let mut t = vec![0u8; len as usize];
+    write_acpi_header(&mut t, 0, b"HPET", len, 1);
+
+    // [36] Hardware Rev ID (from HPET General Capabilities register)
+    t[36] = 0x01;
+    // [37] Byte 1 of Event Timer Block ID:
+    //   Bits [4:0] = NUM_COMPARATORS (bits 12:8 of dword) = 2 (3 timers)
+    //   Bit 5 = COUNT_SIZE_CAP (bit 13 of dword) = 1 (64-bit)
+    //   Bit 6 = reserved (bit 14)
+    //   Bit 7 = LEG_RT_CAP (bit 15 of dword) = 1
+    t[37] = 2 | (1 << 5) | (1 << 7);
+    // PCI vendor ID = 0x8086 (Intel)
+    write_u16(&mut t, 38, 0x8086);
+
+    // [40..52] Base Address Structure (GAS, 12 bytes) — Memory-mapped
+    t[40] = 0;  // address_space_id = System Memory
+    t[41] = 64; // register_bit_width
+    t[42] = 0;  // register_bit_offset
+    t[43] = 0;  // access_size (undefined for memory)
+    write_u64(&mut t, 44, 0xFED0_0000); // HPET base address
+
+    // [52] HPET number (sequence number for this HPET block)
+    t[52] = 0;
+    // [54..56] Minimum clock tick (in periodic mode, without losing interrupts)
+    write_u16(&mut t, 54, 0x0080); // 128 ticks minimum
+
+    t
+}
+
 fn build_madt() -> Vec<u8> {
     let len: u32 = 104; // header(44) + local_apic(8) + ioapic(12) + 4*override(40)
     let mut t = vec![0u8; len as usize];
@@ -630,8 +663,9 @@ pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let facs = build_facs();
     let dsdt = build_dsdt();
     let madt = build_madt();
+    let hpet = build_hpet_table();
 
-    // Layout: RSDT | XSDT | FADT | FACS | DSDT | MADT
+    // Layout: RSDT | XSDT | FADT | FACS | DSDT | MADT | HPET
     let rsdt_off: u32 = 0;
     let xsdt_off = rsdt.len() as u32;
 
@@ -645,27 +679,30 @@ pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let facs_off = fadt_off + fadt.len() as u32;
     let dsdt_off = facs_off + facs.len() as u32;
     let madt_off = dsdt_off + dsdt.len() as u32;
+    let hpet_off = madt_off + madt.len() as u32;
     let madt_len = madt.len() as u32;
+    let hpet_len = hpet.len() as u32;
 
-    let mut tables = Vec::with_capacity((madt_off + madt_len) as usize);
+    let mut tables = Vec::with_capacity((hpet_off + hpet_len) as usize);
     tables.extend_from_slice(&rsdt);
     tables.extend_from_slice(&xsdt);
     tables.extend_from_slice(&fadt);
     tables.extend_from_slice(&facs);
     tables.extend_from_slice(&dsdt);
     tables.extend_from_slice(&madt);
+    tables.extend_from_slice(&hpet);
 
     // Pre-fill pointer fields with intra-buffer offsets.
     // ADD_POINTER adds the allocated base address of src to the value at dest[offset].
 
-    // RSDT -> FADT (u32 at offset 36)
+    // RSDT -> FADT (u32 at offset 36), MADT (40), HPET (44)
     write_u32(&mut tables, (rsdt_off + 36) as usize, fadt_off);
-    // RSDT -> MADT (u32 at offset 40)
     write_u32(&mut tables, (rsdt_off + 40) as usize, madt_off);
-    // XSDT -> FADT (u64 at offset 36)
+    write_u32(&mut tables, (rsdt_off + 44) as usize, hpet_off);
+    // XSDT -> FADT (u64 at offset 36), MADT (44), HPET (52)
     write_u64(&mut tables, (xsdt_off + 36) as usize, fadt_off as u64);
-    // XSDT -> MADT (u64 at offset 44)
     write_u64(&mut tables, (xsdt_off + 44) as usize, madt_off as u64);
+    write_u64(&mut tables, (xsdt_off + 52) as usize, hpet_off as u64);
     // FADT -> FACS (u32 at offset 36)
     write_u32(&mut tables, (fadt_off + 36) as usize, facs_off);
     // FADT -> DSDT (u32 at offset 40)
@@ -697,20 +734,23 @@ pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     emit(loader_add_pointer(&tables_file, &tables_file, fadt_off + 140, 8));
     emit(loader_add_checksum(&tables_file, fadt_off + 9, fadt_off, 244));
 
-    // 4. RSDT -> FADT, RSDT -> MADT (u32 pointers)
+    // 4. RSDT -> FADT, RSDT -> MADT, RSDT -> HPET (u32 pointers)
     emit(loader_add_pointer(&tables_file, &tables_file, rsdt_off + 36, 4));
     emit(loader_add_pointer(&tables_file, &tables_file, rsdt_off + 40, 4));
-    emit(loader_add_checksum(&tables_file, rsdt_off + 9, rsdt_off, 44));
+    emit(loader_add_pointer(&tables_file, &tables_file, rsdt_off + 44, 4));
+    emit(loader_add_checksum(&tables_file, rsdt_off + 9, rsdt_off, 48));
 
-    // 5. XSDT -> FADT, XSDT -> MADT (u64 pointers)
+    // 5. XSDT -> FADT, XSDT -> MADT, XSDT -> HPET (u64 pointers)
     emit(loader_add_pointer(&tables_file, &tables_file, xsdt_off + 36, 8));
     emit(loader_add_pointer(&tables_file, &tables_file, xsdt_off + 44, 8));
-    emit(loader_add_checksum(&tables_file, xsdt_off + 9, xsdt_off, 52));
+    emit(loader_add_pointer(&tables_file, &tables_file, xsdt_off + 52, 8));
+    emit(loader_add_checksum(&tables_file, xsdt_off + 9, xsdt_off, 60));
 
-    // 6. DSDT and MADT checksums
+    // 6. DSDT, MADT, HPET checksums
     let dsdt_len = dsdt.len() as u32;
     emit(loader_add_checksum(&tables_file, dsdt_off + 9, dsdt_off, dsdt_len));
     emit(loader_add_checksum(&tables_file, madt_off + 9, madt_off, madt_len));
+    emit(loader_add_checksum(&tables_file, hpet_off + 9, hpet_off, hpet_len));
 
     (rsdp, tables, loader)
 }

@@ -591,6 +591,32 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                 }
             }
 
+            // HPET Timer 0 → IRQ (edge-triggered pulse on KVM)
+            if !vm.hpet_ptr.is_null() {
+                let hpet = unsafe { &mut *vm.hpet_ptr };
+                if hpet.check_timer() {
+                    let irq = hpet.timer0_irq();
+                    #[cfg(feature = "linux")]
+                    {
+                        let _ = vm.backend.set_irq_line(irq, true);
+                        let _ = vm.backend.set_irq_line(irq, false);
+                        injected += 1;
+                    }
+                    #[cfg(not(feature = "linux"))]
+                    {
+                        if !vm.pic_ptr.is_null() {
+                            let pic = unsafe { &mut *vm.pic_ptr };
+                            pic.raise_irq(irq as u8);
+                        }
+                        #[cfg(feature = "windows")]
+                        {
+                            vm.backend.ioapic_set_irq(irq as u8, true);
+                            vm.backend.ioapic_set_irq(irq as u8, false);
+                        }
+                    }
+                }
+            }
+
             // Software PIC injection (non-Linux only).
             // On KVM/Linux the in-kernel irqchip handles injection automatically.
             #[cfg(not(feature = "linux"))]
@@ -1046,15 +1072,21 @@ pub extern "C" fn corevm_setup_acpi_tables(handle: u64) -> i32 {
 /// Set up the E1000 NIC with the given MAC address (6 bytes).
 ///
 /// Registers the E1000 as:
-/// - MMIO region at 0xFEBC0000 (128 KB) for register access
+/// - MMIO region at 0xF0000000 (128 KB) for register access
 /// - PCI device 00:04.0 (Intel 82540EM, 8086:100E) so the guest can discover it
+///
+/// The MMIO base must NOT overlap with AHCI catch-all (0xFE000000-0xFEBFFFFF),
+/// VGA LFB (0xE0000000-0xE7FFFFFF), IOAPIC (0xFEC00000), or LAPIC (0xFEE00000).
 #[no_mangle]
 pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
+    const E1000_MMIO_BASE: u64 = 0xF000_0000;
+    const E1000_MMIO_SIZE: u64 = 0x2_0000; // 128 KB
+
     let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
     if mac.is_null() { return -1; }
     let m: [u8; 6] = unsafe { [*mac, *mac.add(1), *mac.add(2), *mac.add(3), *mac.add(4), *mac.add(5)] };
     let e1000 = crate::devices::e1000::E1000::new(m);
-    vm.memory.add_mmio(0xFEBC_0000, 0x2_0000, Box::new(e1000));
+    vm.memory.add_mmio(E1000_MMIO_BASE, E1000_MMIO_SIZE, Box::new(e1000));
 
     // Register E1000 as a PCI device so the guest can discover it via PCI scan.
     if !vm.pci_bus_ptr.is_null() {
@@ -1062,8 +1094,8 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
         // Intel 82540EM: vendor 8086, device 100E, class 02 (Network), subclass 00 (Ethernet)
         let mut pci_dev = crate::devices::bus::PciDevice::new(0x8086, 0x100E, 0x02, 0x00, 0x00);
         pci_dev.device = 4; // PCI slot 00:04.0
-        // BAR0: MMIO at 0xFEBC0000, size 128 KB
-        pci_dev.set_bar(0, 0xFEBC_0000, 0x2_0000, true);
+        // BAR0: MMIO at 0xF0000000, size 128 KB
+        pci_dev.set_bar(0, E1000_MMIO_BASE as u32, E1000_MMIO_SIZE as u32, true);
         // Interrupt: IRQ 11, pin INTA
         pci_dev.set_interrupt(11, 1);
         // Subsystem ID (common for 82540EM)

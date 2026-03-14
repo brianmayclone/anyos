@@ -3,7 +3,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app::{VmEntry, FrameBufferData};
-use crate::config::BiosType;
+use crate::config::{BiosType, MacMode};
 use crate::diagnostics::{DiagLog, DiagCategory};
 use crate::display;
 use crate::platform;
@@ -13,7 +13,7 @@ use libcorevm::ffi::{
     CExitReason,
     corevm_create, corevm_create_vcpu, corevm_destroy,
     corevm_run_vcpu, corevm_handle_io_exit, corevm_handle_mmio_exit, corevm_handle_string_io_exit,
-    corevm_setup_standard_devices, corevm_setup_acpi_tables, corevm_setup_ahci,
+    corevm_setup_standard_devices, corevm_setup_acpi_tables, corevm_setup_ahci, corevm_setup_e1000,
     corevm_ahci_attach_disk, corevm_ahci_attach_cdrom,
     corevm_load_binary, corevm_complete_string_io,
     corevm_get_vcpu_regs, corevm_set_vcpu_regs,
@@ -98,6 +98,16 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
 
     // Setup AHCI controller (replaces IDE)
     corevm_setup_ahci(handle, 6);
+
+    // E1000 NIC — only if enabled in config
+    if config.net_enabled {
+        let mac = resolve_mac(&config);
+        corevm_setup_e1000(handle, mac.as_ptr());
+        entry.diag_log.log(DiagCategory::Info, format!(
+            "E1000 NIC enabled (mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+        ));
+    }
 
     // Load BIOS
     load_bios(handle, &config.bios_type)?;
@@ -913,4 +923,49 @@ fn load_bios(handle: u64, bios_type: &BiosType) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// Resolve the MAC address from config: parse static or generate dynamic.
+fn resolve_mac(config: &crate::config::VmConfig) -> [u8; 6] {
+    if config.mac_mode == MacMode::Static && !config.mac_address.is_empty() {
+        if let Some(mac) = parse_mac(&config.mac_address) {
+            return mac;
+        }
+    }
+    generate_mac(&config.uuid)
+}
+
+/// Generate a deterministic locally-administered MAC from the VM UUID.
+/// Uses prefix 52:54:00 (QEMU-style) + 3 bytes derived from UUID hash.
+fn generate_mac(uuid: &str) -> [u8; 6] {
+    // Simple hash of UUID string to get 3 unique bytes
+    let mut h: u32 = 5381;
+    for b in uuid.bytes() {
+        h = h.wrapping_mul(33).wrapping_add(b as u32);
+    }
+    [
+        0x52,                          // locally administered, unicast
+        0x54,
+        0x00,
+        ((h >> 16) & 0xFF) as u8,
+        ((h >> 8) & 0xFF) as u8,
+        (h & 0xFF) as u8,
+    ]
+}
+
+/// Parse a MAC address string like "52:54:00:AB:CD:EF" or "52-54-00-AB-CD-EF".
+fn parse_mac(s: &str) -> Option<[u8; 6]> {
+    let parts: Vec<&str> = if s.contains(':') {
+        s.split(':').collect()
+    } else if s.contains('-') {
+        s.split('-').collect()
+    } else {
+        return None;
+    };
+    if parts.len() != 6 { return None; }
+    let mut mac = [0u8; 6];
+    for (i, part) in parts.iter().enumerate() {
+        mac[i] = u8::from_str_radix(part, 16).ok()?;
+    }
+    Some(mac)
 }
