@@ -330,14 +330,15 @@ pub extern "C" fn drv_create_shader(shader_type: u32, _version: u32, text: *cons
     let text_bytes = unsafe { slice::from_raw_parts(text, len as usize) };
 
     // Virgl shader protocol (TGSI text):
-    //   [1] handle
-    //   [2] type (PIPE_SHADER_VERTEX/FRAGMENT)
-    //   [3] offlen = byte length of TGSI text (bit 31=0 for first/only packet)
-    //   [4] num_tokens = 0 (text mode, not binary tokens)
-    //   [5] num_so_outputs = 0
-    //   [6..] TGSI text packed into u32 words
+    //   [0] handle
+    //   [1] type (PIPE_SHADER_VERTEX/FRAGMENT)
+    //   [2] offlen = byte length of TGSI text (bit 31=0 for first/only packet)
+    //   [3] num_tokens = 0 (text mode, not binary tokens)
+    //   [4] num_so_outputs = 0
+    //   [5..8] SO strides (4 dwords, ALWAYS present even when num_so=0)
+    //   [9..] TGSI text packed into u32 words
     let text_words = (len as usize + 3) / 4;
-    let payload_len = 5 + text_words as u32;
+    let payload_len = 9 + text_words as u32;
 
     s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SHADER, payload_len);
     s.cmd.push(handle);
@@ -345,6 +346,10 @@ pub extern "C" fn drv_create_shader(shader_type: u32, _version: u32, text: *cons
     s.cmd.push(len);        // offlen = text byte length (bit 31=0: not continuation)
     s.cmd.push(0);          // num_tokens = 0 (TGSI text, not binary)
     s.cmd.push(0);          // num_so_outputs = 0
+    s.cmd.push(0);          // SO stride[0]
+    s.cmd.push(0);          // SO stride[1]
+    s.cmd.push(0);          // SO stride[2]
+    s.cmd.push(0);          // SO stride[3]
 
     // Pack text bytes into u32 words (little-endian)
     for i in 0..text_words {
