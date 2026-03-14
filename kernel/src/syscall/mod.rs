@@ -314,6 +314,8 @@ pub const SYS_VCPU_INJECT_IRQ: u32 = 609;
 pub const SYS_VCPU_INJECT_EXCEPTION: u32 = 610;
 pub const SYS_VCPU_INJECT_NMI: u32 = 611;
 pub const SYS_VM_SET_CPUID: u32 = 612;
+/// Returns the hardware virtualization type: 0 = none, 1 = VMX (Intel), 2 = SVM (AMD).
+pub const SYS_VM_HW_INFO: u32 = 613;
 
 // Debug / trace (anyTrace)
 pub const SYS_DEBUG_ATTACH: u32         = 300;
@@ -668,19 +670,19 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         #[cfg(target_arch = "x86_64")]
         SYS_VM_DESTROY => crate::arch::x86::virt::syscalls::sys_vm_destroy(arg1),
         #[cfg(target_arch = "x86_64")]
-        SYS_VM_SET_MEMORY => crate::arch::x86::virt::syscalls::sys_vm_set_memory(arg1, arg2, arg3),
+        SYS_VM_SET_MEMORY => crate::arch::x86::virt::syscalls::sys_vm_set_memory(arg1, arg2, arg3 as u64),
         #[cfg(target_arch = "x86_64")]
         SYS_VCPU_CREATE => crate::arch::x86::virt::syscalls::sys_vcpu_create(arg1, arg2),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_RUN => crate::arch::x86::virt::syscalls::sys_vcpu_run(arg1, arg2, arg3),
+        SYS_VCPU_RUN => crate::arch::x86::virt::syscalls::sys_vcpu_run(arg1, arg2, arg3 as u64),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_GET_REGS => crate::arch::x86::virt::syscalls::sys_vcpu_get_regs(arg1, arg2, arg3),
+        SYS_VCPU_GET_REGS => crate::arch::x86::virt::syscalls::sys_vcpu_get_regs(arg1, arg2, arg3 as u64),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_SET_REGS => crate::arch::x86::virt::syscalls::sys_vcpu_set_regs(arg1, arg2, arg3),
+        SYS_VCPU_SET_REGS => crate::arch::x86::virt::syscalls::sys_vcpu_set_regs(arg1, arg2, arg3 as u64),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_GET_SREGS => crate::arch::x86::virt::syscalls::sys_vcpu_get_sregs(arg1, arg2, arg3),
+        SYS_VCPU_GET_SREGS => crate::arch::x86::virt::syscalls::sys_vcpu_get_sregs(arg1, arg2, arg3 as u64),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_SET_SREGS => crate::arch::x86::virt::syscalls::sys_vcpu_set_sregs(arg1, arg2, arg3),
+        SYS_VCPU_SET_SREGS => crate::arch::x86::virt::syscalls::sys_vcpu_set_sregs(arg1, arg2, arg3 as u64),
         #[cfg(target_arch = "x86_64")]
         SYS_VCPU_INJECT_IRQ => crate::arch::x86::virt::syscalls::sys_vcpu_inject_irq(arg1, arg2, arg3),
         #[cfg(target_arch = "x86_64")]
@@ -688,7 +690,9 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         #[cfg(target_arch = "x86_64")]
         SYS_VCPU_INJECT_NMI => crate::arch::x86::virt::syscalls::sys_vcpu_inject_nmi(arg1, arg2),
         #[cfg(target_arch = "x86_64")]
-        SYS_VM_SET_CPUID => crate::arch::x86::virt::syscalls::sys_vm_set_cpuid(arg1, arg2, arg3),
+        SYS_VM_SET_CPUID => crate::arch::x86::virt::syscalls::sys_vm_set_cpuid(arg1, arg2 as u64, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VM_HW_INFO => crate::arch::x86::virt::syscalls::sys_vm_hw_info(),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);
@@ -779,19 +783,74 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     }
 
     // Full 64-bit argument extraction (R10 is in the RCX slot per syscall_fast.asm)
-    let _arg1_64: u64 = regs.rbx;
-    let _arg2_64: u64 = regs.rcx; // actually R10
-    let _arg3_64: u64 = regs.rdx;
-    let _arg4_64: u64 = regs.rsi;
-    let _arg5_64: u64 = regs.rdi;
+    let arg1_64: u64 = regs.rbx;
+    let arg2_64: u64 = regs.rcx; // actually R10
+    let arg3_64: u64 = regs.rdx;
+    let arg4_64: u64 = regs.rsi;
+    let arg5_64: u64 = regs.rdi;
+
+    // Hardware virtualization syscalls require full 64-bit pointer args — dispatch
+    // them before the u32 truncation below so kernel addresses are preserved.
+    #[cfg(target_arch = "x86_64")]
+    match syscall_num {
+        SYS_VM_SET_MEMORY => {
+            let r = crate::arch::x86::virt::syscalls::sys_vm_set_memory(
+                arg1_64 as u32, arg2_64 as u32, arg3_64,
+            );
+            handlers::deliver_pending_signal_default();
+            return r as u64;
+        }
+        SYS_VCPU_RUN => {
+            let r = crate::arch::x86::virt::syscalls::sys_vcpu_run(
+                arg1_64 as u32, arg2_64 as u32, arg3_64,
+            );
+            handlers::deliver_pending_signal_default();
+            return r as u64;
+        }
+        SYS_VCPU_GET_REGS => {
+            let r = crate::arch::x86::virt::syscalls::sys_vcpu_get_regs(
+                arg1_64 as u32, arg2_64 as u32, arg3_64,
+            );
+            handlers::deliver_pending_signal_default();
+            return r as u64;
+        }
+        SYS_VCPU_SET_REGS => {
+            let r = crate::arch::x86::virt::syscalls::sys_vcpu_set_regs(
+                arg1_64 as u32, arg2_64 as u32, arg3_64,
+            );
+            handlers::deliver_pending_signal_default();
+            return r as u64;
+        }
+        SYS_VCPU_GET_SREGS => {
+            let r = crate::arch::x86::virt::syscalls::sys_vcpu_get_sregs(
+                arg1_64 as u32, arg2_64 as u32, arg3_64,
+            );
+            handlers::deliver_pending_signal_default();
+            return r as u64;
+        }
+        SYS_VCPU_SET_SREGS => {
+            let r = crate::arch::x86::virt::syscalls::sys_vcpu_set_sregs(
+                arg1_64 as u32, arg2_64 as u32, arg3_64,
+            );
+            handlers::deliver_pending_signal_default();
+            return r as u64;
+        }
+        SYS_VM_SET_CPUID => {
+            let r = crate::arch::x86::virt::syscalls::sys_vm_set_cpuid(
+                arg1_64 as u32, arg2_64, arg3_64 as u32,
+            );
+            handlers::deliver_pending_signal_default();
+            return r as u64;
+        }
+        _ => {}
+    }
 
     // Truncate to u32 for existing handler signatures.
-    // When handlers are widened to u64, use the _argN_64 values directly.
-    let arg1 = _arg1_64 as u32;
-    let arg2 = _arg2_64 as u32;
-    let arg3 = _arg3_64 as u32;
-    let arg4 = _arg4_64 as u32;
-    let arg5 = _arg5_64 as u32;
+    let arg1 = arg1_64 as u32;
+    let arg2 = arg2_64 as u32;
+    let arg3 = arg3_64 as u32;
+    let arg4 = arg4_64 as u32;
+    let arg5 = arg5_64 as u32;
 
     let result = dispatch_inner(syscall_num, arg1, arg2, arg3, arg4, arg5);
     handlers::deliver_pending_signal_default();

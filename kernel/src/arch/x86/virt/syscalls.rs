@@ -26,7 +26,7 @@ pub fn sys_vm_destroy(vm_id: u32) -> u32 {
 
 /// Set a memory region for a VM.
 /// arg1=vm_id, arg2=slot, arg3=ptr to {gpa: u64, size: u64, uva: u64} struct.
-pub fn sys_vm_set_memory(vm_id: u32, slot: u32, desc_ptr: u32) -> u32 {
+pub fn sys_vm_set_memory(vm_id: u32, slot: u32, desc_ptr: u64) -> u32 {
     // Read the descriptor from userspace
     let desc = desc_ptr as *const MemRegionDesc;
     let (gpa, size, hpa) = unsafe {
@@ -58,7 +58,7 @@ pub fn sys_vcpu_create(vm_id: u32, vcpu_id: u32) -> u32 {
 }
 
 /// Run a vCPU until a VM-exit occurs. Copies exit info to user pointer.
-pub fn sys_vcpu_run(vm_id: u32, vcpu_id: u32, exit_info_ptr: u32) -> u32 {
+pub fn sys_vcpu_run(vm_id: u32, vcpu_id: u32, exit_info_ptr: u64) -> u32 {
     let exit = match super::virt_type() {
         VirtType::Vmx => super::vmx::vcpu_run(vm_id, vcpu_id),
         VirtType::Svm => super::svm::vcpu_run(vm_id, vcpu_id),
@@ -80,7 +80,7 @@ pub fn sys_vcpu_run(vm_id: u32, vcpu_id: u32, exit_info_ptr: u32) -> u32 {
 }
 
 /// Get guest GPRs. Copies to user pointer.
-pub fn sys_vcpu_get_regs(vm_id: u32, vcpu_id: u32, regs_ptr: u32) -> u32 {
+pub fn sys_vcpu_get_regs(vm_id: u32, vcpu_id: u32, regs_ptr: u64) -> u32 {
     let gprs = match super::virt_type() {
         VirtType::Vmx => super::vmx::get_regs(vm_id, vcpu_id),
         VirtType::Svm => super::svm::get_regs(vm_id, vcpu_id),
@@ -98,7 +98,7 @@ pub fn sys_vcpu_get_regs(vm_id: u32, vcpu_id: u32, regs_ptr: u32) -> u32 {
 }
 
 /// Set guest GPRs from user pointer.
-pub fn sys_vcpu_set_regs(vm_id: u32, vcpu_id: u32, regs_ptr: u32) -> u32 {
+pub fn sys_vcpu_set_regs(vm_id: u32, vcpu_id: u32, regs_ptr: u64) -> u32 {
     if regs_ptr == 0 {
         return u32::MAX;
     }
@@ -112,7 +112,7 @@ pub fn sys_vcpu_set_regs(vm_id: u32, vcpu_id: u32, regs_ptr: u32) -> u32 {
 }
 
 /// Get guest segment/control registers. Copies to user pointer.
-pub fn sys_vcpu_get_sregs(vm_id: u32, vcpu_id: u32, sregs_ptr: u32) -> u32 {
+pub fn sys_vcpu_get_sregs(vm_id: u32, vcpu_id: u32, sregs_ptr: u64) -> u32 {
     let sregs = match super::virt_type() {
         VirtType::Vmx => super::vmx::get_sregs(vm_id, vcpu_id),
         VirtType::Svm => super::svm::get_sregs(vm_id, vcpu_id),
@@ -130,7 +130,7 @@ pub fn sys_vcpu_get_sregs(vm_id: u32, vcpu_id: u32, sregs_ptr: u32) -> u32 {
 }
 
 /// Set guest segment/control registers from user pointer.
-pub fn sys_vcpu_set_sregs(vm_id: u32, vcpu_id: u32, sregs_ptr: u32) -> u32 {
+pub fn sys_vcpu_set_sregs(vm_id: u32, vcpu_id: u32, sregs_ptr: u64) -> u32 {
     if sregs_ptr == 0 {
         return u32::MAX;
     }
@@ -178,7 +178,7 @@ pub fn sys_vcpu_inject_nmi(vm_id: u32, vcpu_id: u32) -> u32 {
 
 /// Set CPUID emulation table for a VM.
 /// arg2 = pointer to array of CpuidEntry, arg3 = count.
-pub fn sys_vm_set_cpuid(vm_id: u32, entries_ptr: u32, count: u32) -> u32 {
+pub fn sys_vm_set_cpuid(vm_id: u32, entries_ptr: u64, count: u32) -> u32 {
     if entries_ptr == 0 || count == 0 {
         return u32::MAX;
     }
@@ -191,6 +191,16 @@ pub fn sys_vm_set_cpuid(vm_id: u32, entries_ptr: u32, count: u32) -> u32 {
         VirtType::None => false,
     };
     if ok { 0 } else { u32::MAX }
+}
+
+/// Query hardware virtualization availability.
+/// Returns: 0 = none, 1 = Intel VT-x (VMX), 2 = AMD-V (SVM).
+pub fn sys_vm_hw_info() -> u32 {
+    match super::virt_type() {
+        super::VirtType::Vmx  => 1,
+        super::VirtType::Svm  => 2,
+        super::VirtType::None => 0,
+    }
 }
 
 // ── Memory region descriptor (passed from userspace) ─────────────────────

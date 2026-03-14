@@ -376,21 +376,27 @@ fn ascii_to_scancode(ch: u8) -> (u8, bool) {
     }
 }
 
-// ── Subcommand: run ──────────────────────────────────────────────────────
+// ── libcorevm init helper ────────────────────────────────────────────────
 
-/// Run a VM until timeout or shutdown, streaming serial output to stdout.
-fn cmd_run(config: VmConfig, timeout_secs: u32, show_screen: bool, show_regs: bool) {
+/// Load libcorevm and print hardware virtualization status. Exits on failure.
+fn init_libcorevm() {
     anyos_std::println!("[vmctl] Initializing libcorevm...");
     if !libcorevm_client::init() {
         anyos_std::println!("[vmctl] ERROR: Failed to load libcorevm.so");
         anyos_std::process::exit(1);
     }
-
     if VmHandle::has_hw_support() {
-        anyos_std::println!("[vmctl] Hardware virtualization available");
+        anyos_std::println!("[vmctl] Hardware virtualization: {}", VmHandle::hw_type());
     } else {
-        anyos_std::println!("[vmctl] Using software emulation");
+        anyos_std::println!("[vmctl] WARNING: No hardware virtualization available");
     }
+}
+
+// ── Subcommand: run ──────────────────────────────────────────────────────
+
+/// Run a VM until timeout or shutdown, streaming serial output to stdout.
+fn cmd_run(config: VmConfig, timeout_secs: u32, show_screen: bool, show_regs: bool) {
+    init_libcorevm();
 
     // Create VM
     anyos_std::println!("[vmctl] Creating VM '{}' ({} MiB RAM, bios={})...",
@@ -678,10 +684,7 @@ fn cmd_serial(config: VmConfig) {
     anyos_std::println!("[vmctl] (Serial I/O connected to stdin/stdout)");
     anyos_std::println!("");
 
-    if !libcorevm_client::init() {
-        anyos_std::println!("[vmctl] ERROR: Failed to load libcorevm.so");
-        anyos_std::process::exit(1);
-    }
+    init_libcorevm();
 
     let handle = match VmHandle::new(config.ram_mb) {
         Ok(h) => h,
@@ -996,17 +999,7 @@ fn main() {
 /// Run a VM, type text after a delay, then continue until timeout/shutdown.
 fn run_with_typing(config: VmConfig, timeout_secs: u32, show_screen: bool,
                    show_regs: bool, text: &str, delay_ms: u32) {
-    anyos_std::println!("[vmctl] Initializing libcorevm...");
-    if !libcorevm_client::init() {
-        anyos_std::println!("[vmctl] ERROR: Failed to load libcorevm.so");
-        anyos_std::process::exit(1);
-    }
-
-    if VmHandle::has_hw_support() {
-        anyos_std::println!("[vmctl] Hardware virtualization available");
-    } else {
-        anyos_std::println!("[vmctl] Using software emulation");
-    }
+    init_libcorevm();
 
     anyos_std::println!("[vmctl] Creating VM '{}' ({} MiB RAM, bios={})...",
         config.name, config.ram_mb, config.bios_type);

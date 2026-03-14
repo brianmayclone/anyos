@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 
 // ── Syscall numbers ──────────────────────────────────────────────────────
 
+const SYS_VM_HW_INFO: u64 = 613;
 const SYS_VM_CREATE: u64 = 600;
 const SYS_VM_DESTROY: u64 = 601;
 const SYS_VM_SET_MEMORY: u64 = 602;
@@ -230,6 +231,12 @@ struct MemorySlot {
 pub struct AnyOsBackend {
     vm_id: u32,
     memory_slots: Vec<MemorySlot>,
+}
+
+/// Query hardware virtualization type from the kernel.
+/// Returns 0 = none, 1 = VMX (Intel VT-x), 2 = SVM (AMD-V).
+pub fn syscall_vm_hw_info() -> u32 {
+    unsafe { syscall0(SYS_VM_HW_INFO) as u32 }
 }
 
 impl AnyOsBackend {

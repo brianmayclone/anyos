@@ -497,9 +497,19 @@ impl VmHandle {
 
     // ── Hardware support ─────────────────────────────────────────
 
-    /// Returns true if hardware virtualization (e.g., KVM) is available.
+    /// Returns true if hardware virtualization is available.
     pub fn has_hw_support() -> bool {
         (lib().has_hw_support)() != 0
+    }
+
+    /// Returns the hardware virtualization type as a string:
+    /// "VT-x", "AMD-V", or "none".
+    pub fn hw_type() -> &'static str {
+        match (lib().has_hw_support)() {
+            1 => "Intel VT-x",
+            2 => "AMD-V",
+            _ => "none",
+        }
     }
 
     // ── I/O and MMIO exit dispatch ───────────────────────────────

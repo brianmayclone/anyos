@@ -31,7 +31,7 @@ pub enum VmError {
 impl core::fmt::Display for VmError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            VmError::NoHardwareSupport => write!(f, "No hardware virtualization support (KVM/WHP not available)"),
+            VmError::NoHardwareSupport => write!(f, "No hardware virtualization support (VT-x/AMD-V not available or not enabled in kernel)"),
             VmError::VmxInitFailed => write!(f, "Intel VT-x initialization failed"),
             VmError::SvmInitFailed => write!(f, "AMD-V (SVM) initialization failed"),
             VmError::InvalidVcpuId => write!(f, "Invalid vCPU ID"),

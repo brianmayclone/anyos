@@ -228,6 +228,9 @@ extern "C" fn ap_entry() -> ! {
     // Initialize per-AP power management (HWP / P-state)
     crate::arch::x86::power::init_ap();
 
+    // Enable VMX/SVM on this AP core (global init already ran on BSP)
+    crate::arch::x86::virt::per_cpu_init();
+
     // Register ourselves in CPU_DATA BEFORE signaling ready and enabling
     // interrupts.  This prevents a race where the LAPIC timer fires and
     // schedule_inner → current_cpu_id() can't find our LAPIC ID in

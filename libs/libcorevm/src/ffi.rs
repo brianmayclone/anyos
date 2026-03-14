@@ -729,7 +729,12 @@ pub extern "C" fn corevm_load_binary(handle: u64, guest_phys: u64, data: *const 
 
 // ── Hardware support ────────────────────────────────────────────────────────
 
-/// Returns 1 if hardware virtualization is available, 0 otherwise.
+/// Returns the hardware virtualization type:
+///   0 = none / not available
+///   1 = Intel VT-x (VMX)
+///   2 = AMD-V (SVM)
+///
+/// A return value != 0 means hardware virtualization is available.
 #[no_mangle]
 pub extern "C" fn corevm_has_hw_support() -> i32 {
     #[cfg(feature = "linux")]
@@ -747,7 +752,10 @@ pub extern "C" fn corevm_has_hw_support() -> i32 {
         };
     }
     #[cfg(feature = "anyos")]
-    { return 1; }
+    {
+        // Ask the kernel: 0=none, 1=VMX, 2=SVM.
+        return unsafe { crate::backend::anyos::syscall_vm_hw_info() as i32 };
+    }
     #[allow(unreachable_code)]
     0
 }

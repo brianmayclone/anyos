@@ -567,10 +567,7 @@ fn run_session(sock: u32, handle: &VmHandle, sw: usize, sh: usize, password: Opt
 // ── VM setup helper ───────────────────────────────────────────────────────────
 
 fn setup_vm(config: &VmConfig) -> Option<VmHandle> {
-    if !libcorevm_client::init() {
-        println!("[vmctl-vnc] ERROR: Failed to load libcorevm.so");
-        return None;
-    }
+    crate::init_libcorevm();
 
     let handle = match VmHandle::new(config.ram_mb) {
         Ok(h) => h,
