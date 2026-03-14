@@ -242,19 +242,86 @@ pub struct GuestSregs {
 
 // ── Page allocation helper ───────────────────────────────────────────────
 
-/// Allocate a zeroed 4KB-aligned page suitable for VMCS/VMCB/page tables.
-/// Returns the physical address. The page is accessible via identity mapping
-/// (phys < 128 MiB).
+// ── Phys→Virt lookup table for virt-subsystem pages ─────────────────────
+//
+// EPT/NPT page-table walkers store physical addresses in entries (required by
+// hardware) but need virtual addresses for kernel pointer access.  We maintain
+// a small static lookup table so `phys_to_virt(phys)` can resolve any page
+// allocated by `alloc_page_zeroed`.
+//
+// Maximum entries: 64 VMs × ~16 NPT/EPT pages + VMCS/VMCB/bitmaps ≈ 2048.
+// Each entry is 2 × u64 = 16 bytes → 32 KiB total — negligible.
+
+const VPAGE_TABLE_SIZE: usize = 2048;
+
+#[derive(Copy, Clone)]
+struct VPageEntry {
+    phys: u64,
+    virt: u64,
+}
+
+static VPAGE_TABLE: crate::sync::spinlock::Spinlock<[VPageEntry; VPAGE_TABLE_SIZE]> =
+    crate::sync::spinlock::Spinlock::new(
+        [const { VPageEntry { phys: 0, virt: 0 } }; VPAGE_TABLE_SIZE]
+    );
+
+fn vpage_insert(phys: u64, virt: u64) {
+    let mut tbl = VPAGE_TABLE.lock();
+    for entry in tbl.iter_mut() {
+        if entry.phys == 0 {
+            entry.phys = phys;
+            entry.virt = virt;
+            return;
+        }
+    }
+    // Table full — should never happen with VPAGE_TABLE_SIZE = 2048
+    crate::serial_println!("[virt] WARNING: vpage table full, phys={:#x}", phys);
+}
+
+fn vpage_remove(phys: u64) {
+    let mut tbl = VPAGE_TABLE.lock();
+    for entry in tbl.iter_mut() {
+        if entry.phys == phys {
+            entry.phys = 0;
+            entry.virt = 0;
+            return;
+        }
+    }
+}
+
+/// Translate a physical address (allocated by `alloc_page_zeroed`) to its
+/// kernel virtual address for pointer access.
+pub(crate) fn phys_to_virt(phys: u64) -> u64 {
+    let tbl = VPAGE_TABLE.lock();
+    for entry in tbl.iter() {
+        if entry.phys == phys {
+            return entry.virt;
+        }
+    }
+    // Fallback: identity mapping (for pages allocated before this mechanism
+    // was in place, or pages in the first 128 MiB). If phys < 128 MiB, the
+    // identity map makes phys == virt.
+    phys
+}
+
+/// Allocate a zeroed 4KB-aligned page suitable for VMCS/VMCB/EPT/NPT tables.
+/// Returns the physical address. Use `phys_to_virt(phys)` to get the kernel VA.
+///
+/// Allocates any physical frame, maps it into permanent kernel virtual address
+/// space, zeros it via the virtual address, and registers the phys→virt mapping
+/// in the lookup table so EPT/NPT walkers can dereference entries by phys.
 pub(crate) fn alloc_page_zeroed() -> Option<u64> {
     let phys = crate::memory::physical::alloc_frame()?;
-    let ptr = phys.as_u64() as *mut u8;
+    let virt = crate::memory::virtual_mem::map_kernel_phys_page(phys)?;
     unsafe {
-        core::ptr::write_bytes(ptr, 0, 4096);
+        core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, 4096);
     }
+    vpage_insert(phys.as_u64(), virt.as_u64());
     Some(phys.as_u64())
 }
 
 /// Free a page previously allocated with `alloc_page_zeroed`.
 pub(crate) fn free_page(phys: u64) {
+    vpage_remove(phys);
     crate::memory::physical::free_frame(crate::memory::address::PhysAddr::new(phys));
 }

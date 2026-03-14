@@ -4,7 +4,7 @@
 //! EPT uses Intel-specific entry format; NPT uses standard x86-64 page table format.
 //! Both support 4KB pages and 2MB large pages.
 
-use super::{alloc_page_zeroed, free_page};
+use super::{alloc_page_zeroed, free_page, phys_to_virt};
 
 const PAGE_SIZE_4K: u64 = 0x1000;
 const PAGE_SIZE_2M: u64 = 0x20_0000;
@@ -66,20 +66,21 @@ fn ept_map_page(root: u64, gpa: u64, hpa: u64, writable: bool, executable: bool)
     ];
 
     unsafe {
-        let mut table = root as *mut u64;
+        let mut table = phys_to_virt(root) as *mut u64;
 
         // Walk PML4 → PDPT → PD, creating intermediate tables as needed.
         for level in 0..3 {
             let entry = table.add(indices[level]);
             if *entry == 0 {
-                let new_table = match alloc_page_zeroed() {
+                let new_phys = match alloc_page_zeroed() {
                     Some(p) => p,
                     None => return,
                 };
                 // Intermediate EPT entries: R+W+X so the walk succeeds.
-                *entry = new_table | EPT_READ | EPT_WRITE | EPT_EXECUTE;
+                *entry = new_phys | EPT_READ | EPT_WRITE | EPT_EXECUTE;
             }
-            table = (*entry & ADDR_MASK) as *mut u64;
+            let child_phys = *entry & ADDR_MASK;
+            table = phys_to_virt(child_phys) as *mut u64;
         }
 
         // Write leaf (PT) entry.
@@ -100,19 +101,20 @@ fn ept_map_large_page(root: u64, gpa: u64, hpa: u64, writable: bool, executable:
     ];
 
     unsafe {
-        let mut table = root as *mut u64;
+        let mut table = phys_to_virt(root) as *mut u64;
 
         // Walk PML4 → PDPT, creating intermediate tables as needed.
         for level in 0..2 {
             let entry = table.add(indices[level]);
             if *entry == 0 {
-                let new_table = match alloc_page_zeroed() {
+                let new_phys = match alloc_page_zeroed() {
                     Some(p) => p,
                     None => return,
                 };
-                *entry = new_table | EPT_READ | EPT_WRITE | EPT_EXECUTE;
+                *entry = new_phys | EPT_READ | EPT_WRITE | EPT_EXECUTE;
             }
-            table = (*entry & ADDR_MASK) as *mut u64;
+            let child_phys = *entry & ADDR_MASK;
+            table = phys_to_virt(child_phys) as *mut u64;
         }
 
         // Write PD large-page leaf.  Bit 7 = EPT_LARGE_PAGE signals a 2MB leaf.
@@ -195,18 +197,19 @@ fn npt_map_page(root: u64, gpa: u64, hpa: u64, writable: bool) {
     ];
 
     unsafe {
-        let mut table = root as *mut u64;
+        let mut table = phys_to_virt(root) as *mut u64;
 
         for level in 0..3 {
             let entry = table.add(indices[level]);
             if *entry & NPT_PRESENT == 0 {
-                let new_table = match alloc_page_zeroed() {
+                let new_phys = match alloc_page_zeroed() {
                     Some(p) => p,
                     None => return,
                 };
-                *entry = new_table | NPT_PRESENT | NPT_RW | NPT_USER;
+                *entry = new_phys | NPT_PRESENT | NPT_RW | NPT_USER;
             }
-            table = (*entry & ADDR_MASK) as *mut u64;
+            let child_phys = *entry & ADDR_MASK;
+            table = phys_to_virt(child_phys) as *mut u64;
         }
 
         let entry = table.add(indices[3]);
@@ -225,18 +228,19 @@ fn npt_map_large_page(root: u64, gpa: u64, hpa: u64, writable: bool) {
     ];
 
     unsafe {
-        let mut table = root as *mut u64;
+        let mut table = phys_to_virt(root) as *mut u64;
 
         for level in 0..2 {
             let entry = table.add(indices[level]);
             if *entry & NPT_PRESENT == 0 {
-                let new_table = match alloc_page_zeroed() {
+                let new_phys = match alloc_page_zeroed() {
                     Some(p) => p,
                     None => return,
                 };
-                *entry = new_table | NPT_PRESENT | NPT_RW | NPT_USER;
+                *entry = new_phys | NPT_PRESENT | NPT_RW | NPT_USER;
             }
-            table = (*entry & ADDR_MASK) as *mut u64;
+            let child_phys = *entry & ADDR_MASK;
+            table = phys_to_virt(child_phys) as *mut u64;
         }
 
         let entry = table.add(indices[2]);
@@ -259,7 +263,7 @@ unsafe fn free_ept_table(phys: u64, level: u32) {
     if phys == 0 { return; }
 
     if level > 1 {
-        let table = phys as *const u64;
+        let table = phys_to_virt(phys) as *const u64;
         for i in 0..ENTRIES_PER_TABLE {
             let entry = *table.add(i);
             if entry & EPT_READ != 0 {
@@ -285,7 +289,7 @@ unsafe fn free_npt_table(phys: u64, level: u32) {
     if phys == 0 { return; }
 
     if level > 1 {
-        let table = phys as *const u64;
+        let table = phys_to_virt(phys) as *const u64;
         for i in 0..ENTRIES_PER_TABLE {
             let entry = *table.add(i);
             if entry & NPT_PRESENT != 0 {

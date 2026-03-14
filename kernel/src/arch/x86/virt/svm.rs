@@ -277,6 +277,15 @@ pub fn set_memory(vm_id: u32, slot: u32, gpa: u64, size: u64, hpa: u64) -> bool 
     true
 }
 
+/// Map a single 4KB page in the NPT for a VM (used by sys_vm_set_memory for pages
+/// beyond the first, which are mapped without slot re-registration).
+pub fn map_page_in_npt(vm_id: u32, gpa: u64, hpa: u64) {
+    let mut vms = VMS.lock();
+    if let Some(vm) = find_vm_mut(&mut vms, vm_id) {
+        super::ept::npt_map_range(vm.npt_root, gpa, hpa, 0x1000, true, true);
+    }
+}
+
 pub fn set_cpuid(vm_id: u32, entries: &[CpuidEntry]) -> bool {
     let mut vms = VMS.lock();
     let vm = match find_vm_mut(&mut vms, vm_id) {
@@ -338,7 +347,7 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         };
 
         // Initialize VMCB
-        let vmcb = &mut *(vmcb_phys as *mut Vmcb);
+        let vmcb = &mut *(super::phys_to_virt(vmcb_phys) as *mut Vmcb);
 
         // Control area
         vmcb.control.intercepts = INTERCEPT_CPUID | INTERCEPT_HLT
@@ -364,10 +373,12 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         vmcb.state.gdtr = VmcbSegment { selector: 0, base: 0, limit: 0xFFFF, attrib: 0 };
         vmcb.state.idtr = VmcbSegment { selector: 0, base: 0, limit: 0xFFFF, attrib: 0 };
 
-        vmcb.state.cr0 = 0x0000_0030; // ET + NE
+        vmcb.state.cr0 = 0x0000_0030; // ET + NE (real mode)
         vmcb.state.cr3 = 0;
         vmcb.state.cr4 = 0;
-        vmcb.state.efer = (1 << 12); // SVME must be set in guest EFER
+        // EFER: SVME must be 0 in guest (AMD APM Vol.2 §15.5.1).
+        // Leave EFER = 0 for a real-mode guest.
+        vmcb.state.efer = 0;
         vmcb.state.rip = 0xFFF0;
         vmcb.state.rsp = 0;
         vmcb.state.rflags = 0x2;
@@ -396,7 +407,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
     let vmcb_phys = vcpu.vmcb_phys;
 
     unsafe {
-        let vmcb = &mut *(vmcb_phys as *mut Vmcb);
+        let vmcb = &mut *(super::phys_to_virt(vmcb_phys) as *mut Vmcb);
 
         // Write non-RAX GPRs into registers before VMRUN, read them back after.
         // RAX is in the VMCB state-save area.
@@ -416,7 +427,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
         let vm = find_vm_mut(&mut vms, vm_id)?;
         let vcpu = vm.vcpus[idx].as_mut()?;
 
-        let vmcb = &*(vmcb_phys as *const Vmcb);
+        let vmcb = &*(super::phys_to_virt(vmcb_phys) as *const Vmcb);
 
         // Save RAX back from VMCB
         vcpu.guest_gprs.rax = vmcb.state.rax;
@@ -550,7 +561,7 @@ unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
 
 /// Handle CPUID exit by emulating the instruction.
 unsafe fn handle_cpuid_exit(cpuid_table: &[Option<CpuidEntry>], vcpu: &mut SvmVcpu, vmcb_phys: u64) {
-    let vmcb = &mut *(vmcb_phys as *mut Vmcb);
+    let vmcb = &mut *(super::phys_to_virt(vmcb_phys) as *mut Vmcb);
     let leaf = vmcb.state.rax as u32;
     let subleaf = vcpu.guest_gprs.rcx as u32;
 
@@ -599,7 +610,7 @@ pub fn get_regs(vm_id: u32, vcpu_id: u32) -> Option<GuestGprs> {
     let mut gprs = vcpu.guest_gprs;
     // RAX is in the VMCB
     unsafe {
-        let vmcb = &*(vcpu.vmcb_phys as *const Vmcb);
+        let vmcb = &*(super::phys_to_virt(vcpu.vmcb_phys) as *const Vmcb);
         gprs.rax = vmcb.state.rax;
     }
     Some(gprs)
@@ -611,7 +622,7 @@ pub fn set_regs(vm_id: u32, vcpu_id: u32, gprs: &GuestGprs) -> bool {
     let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
     vcpu.guest_gprs = *gprs;
     unsafe {
-        let vmcb = &mut *(vcpu.vmcb_phys as *mut Vmcb);
+        let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
         vmcb.state.rax = gprs.rax;
     }
     true
@@ -623,7 +634,7 @@ pub fn get_sregs(vm_id: u32, vcpu_id: u32) -> Option<GuestSregs> {
     let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
 
     unsafe {
-        let vmcb = &*(vcpu.vmcb_phys as *const Vmcb);
+        let vmcb = &*(super::phys_to_virt(vcpu.vmcb_phys) as *const Vmcb);
         Some(GuestSregs {
             cs_selector: vmcb.state.cs.selector,
             cs_base: vmcb.state.cs.base,
@@ -678,7 +689,7 @@ pub fn set_sregs(vm_id: u32, vcpu_id: u32, sregs: &GuestSregs) -> bool {
     let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
 
     unsafe {
-        let vmcb = &mut *(vcpu.vmcb_phys as *mut Vmcb);
+        let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
         vmcb.state.cs = VmcbSegment { selector: sregs.cs_selector, base: sregs.cs_base, limit: sregs.cs_limit, attrib: sregs.cs_ar as u16 };
         vmcb.state.ds = VmcbSegment { selector: sregs.ds_selector, base: sregs.ds_base, limit: sregs.ds_limit, attrib: sregs.ds_ar as u16 };
         vmcb.state.es = VmcbSegment { selector: sregs.es_selector, base: sregs.es_base, limit: sregs.es_limit, attrib: sregs.es_ar as u16 };
@@ -709,7 +720,7 @@ pub fn inject_irq(vm_id: u32, vcpu_id: u32, vector: u8) -> bool {
     let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() { Some(v) => v, None => return false };
 
     unsafe {
-        let vmcb = &mut *(vcpu.vmcb_phys as *mut Vmcb);
+        let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
         vmcb.control.event_inj = (vector as u64) | (0u64 << 8) | (1u64 << 31);
     }
     true
@@ -721,7 +732,7 @@ pub fn inject_exception(vm_id: u32, vcpu_id: u32, vector: u8, error_code: u32) -
     let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() { Some(v) => v, None => return false };
 
     unsafe {
-        let vmcb = &mut *(vcpu.vmcb_phys as *mut Vmcb);
+        let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
         let has_error = matches!(vector, 8 | 10 | 11 | 12 | 13 | 14 | 17);
         let mut info: u64 = (vector as u64)
             | (3 << 8)
@@ -740,7 +751,7 @@ pub fn inject_nmi(vm_id: u32, vcpu_id: u32) -> bool {
     let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() { Some(v) => v, None => return false };
 
     unsafe {
-        let vmcb = &mut *(vcpu.vmcb_phys as *mut Vmcb);
+        let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
         let info: u64 = 2 | (2u64 << 8) | (1u64 << 31);
         vmcb.control.event_inj = info;
     }

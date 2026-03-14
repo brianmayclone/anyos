@@ -26,25 +26,80 @@ pub fn sys_vm_destroy(vm_id: u32) -> u32 {
 
 /// Set a memory region for a VM.
 /// arg1=vm_id, arg2=slot, arg3=ptr to {gpa: u64, size: u64, uva: u64} struct.
+///
+/// The `host_phys` field in the descriptor is actually a user virtual address.
+/// We translate it page-by-page to real physical addresses using the current
+/// process's page tables before programming the NPT/EPT entries.
 pub fn sys_vm_set_memory(vm_id: u32, slot: u32, desc_ptr: u64) -> u32 {
-    // Read the descriptor from userspace
     let desc = desc_ptr as *const MemRegionDesc;
-    let (gpa, size, hpa) = unsafe {
+    let (gpa, size, uva) = unsafe {
         if desc.is_null() {
             return u32::MAX;
         }
         let d = &*desc;
-        // The userspace passes a user virtual address which, for anyOS,
-        // maps to a physical address. We use it directly as host physical.
         (d.guest_phys, d.size, d.host_phys)
     };
 
-    let ok = match super::virt_type() {
-        VirtType::Vmx => super::vmx::set_memory(vm_id, slot, gpa, size, hpa),
-        VirtType::Svm => super::svm::set_memory(vm_id, slot, gpa, size, hpa),
-        VirtType::None => false,
-    };
-    if ok { 0 } else { u32::MAX }
+    if size == 0 {
+        return u32::MAX;
+    }
+
+    const PAGE_SIZE: u64 = 0x1000;
+
+    // Use slot for the first page; subsequent pages reuse slot 0 within the
+    // existing NPT/EPT map (npt_map_range / ept_map_range just inserts PTEs —
+    // calling set_memory once per page is correct but we only need to register
+    // the MemoryRegion once.  We call the backend once for the first page to
+    // register the region, then map remaining pages directly via npt/ept.
+    let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    let mut first = true;
+
+    for i in 0..pages {
+        let page_uva = uva + i * PAGE_SIZE;
+        let page_gpa = gpa + i * PAGE_SIZE;
+
+        // Translate user virtual address → physical address via recursive mapping.
+        let page_hpa = match crate::memory::virtual_mem::virt_to_phys(
+            crate::memory::address::VirtAddr::new(page_uva)
+        ) {
+            Some(p) => p & !0xFFF, // page-aligned physical address
+            None => {
+                crate::serial_println!(
+                    "[virt] sys_vm_set_memory: uva {:#x} not mapped (page {})",
+                    page_uva, i
+                );
+                return u32::MAX;
+            }
+        };
+
+        if first {
+            // Register the memory region with the backend (uses slot tracking).
+            let ok = match super::virt_type() {
+                super::VirtType::Vmx => super::vmx::set_memory(vm_id, slot, page_gpa, PAGE_SIZE, page_hpa),
+                super::VirtType::Svm => super::svm::set_memory(vm_id, slot, page_gpa, PAGE_SIZE, page_hpa),
+                super::VirtType::None => false,
+            };
+            if !ok {
+                return u32::MAX;
+            }
+            first = false;
+        } else {
+            // Map remaining pages directly into NPT/EPT without slot re-registration.
+            match super::virt_type() {
+                super::VirtType::Vmx => {
+                    // Acquire EPT root from VMX backend and map directly.
+                    super::vmx::map_page_in_ept(vm_id, page_gpa, page_hpa);
+                }
+                super::VirtType::Svm => {
+                    // Acquire NPT root from SVM backend and map directly.
+                    super::svm::map_page_in_npt(vm_id, page_gpa, page_hpa);
+                }
+                super::VirtType::None => {}
+            }
+        }
+    }
+
+    0
 }
 
 /// Create a vCPU within a VM.

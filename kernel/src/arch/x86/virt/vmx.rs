@@ -285,7 +285,7 @@ pub fn per_cpu_init() {
         // Write VMCS revision ID to first 4 bytes
         let vmx_basic = rdmsr(IA32_VMX_BASIC);
         let revision = (vmx_basic & 0x7FFF_FFFF) as u32;
-        *(page as *mut u32) = revision;
+        *(super::phys_to_virt(page) as *mut u32) = revision;
 
         // Execute VMXON
         vmxon(page);
@@ -389,6 +389,16 @@ pub fn set_memory(vm_id: u32, slot: u32, gpa: u64, size: u64, hpa: u64) -> bool 
     true
 }
 
+/// Map a single 4KB page in the EPT for a VM (used by sys_vm_set_memory for pages
+/// beyond the first, which are mapped without slot re-registration).
+pub fn map_page_in_ept(vm_id: u32, gpa: u64, hpa: u64) {
+    let mut vms = VMS.lock();
+    if let Some(vm) = find_vm_mut(&mut vms, vm_id) {
+        super::ept::ept_map_range(vm.ept_root, gpa, hpa, 0x1000, true, true);
+        unsafe { super::ept::invept_all_context(); }
+    }
+}
+
 /// Set CPUID table for a VM.
 pub fn set_cpuid(vm_id: u32, entries: &[CpuidEntry]) -> bool {
     let mut vms = VMS.lock();
@@ -409,22 +419,22 @@ pub fn set_cpuid(vm_id: u32, entries: &[CpuidEntry]) -> bool {
 
 /// Clear the RDMSR intercept bit for an MSR in the low range (0x0000–0x1FFF).
 /// Clearing = passthrough (no VM-exit on RDMSR for that MSR).
-unsafe fn msr_bitmap_clear_rdmsr(bitmap: u64, msr: u32) {
+unsafe fn msr_bitmap_clear_rdmsr(bitmap_phys: u64, msr: u32) {
     debug_assert!(msr <= 0x1FFF);
     let byte = (msr / 8) as usize;    // byte index in the 1K RDMSR-low block
     let bit  = (msr % 8) as u8;
-    let ptr = bitmap as *mut u8;
+    let ptr = super::phys_to_virt(bitmap_phys) as *mut u8;
     *ptr.add(byte) &= !(1 << bit);
 }
 
 /// Clear the RDMSR intercept bit for an MSR in the high range
 /// (0xC000_0000–0xC000_1FFF), i.e. only pass the low 13 bits.
-unsafe fn msr_bitmap_clear_rdmsr_high(bitmap: u64, msr_low: u32) {
+unsafe fn msr_bitmap_clear_rdmsr_high(bitmap_phys: u64, msr_low: u32) {
     debug_assert!(msr_low <= 0x1FFF);
     // High RDMSR block starts at byte 1024.
     let byte = 1024 + (msr_low / 8) as usize;
     let bit  = (msr_low % 8) as u8;
-    let ptr = bitmap as *mut u8;
+    let ptr = super::phys_to_virt(bitmap_phys) as *mut u8;
     *ptr.add(byte) &= !(1 << bit);
 }
 
@@ -458,7 +468,7 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
             }
         };
         // Start: intercept everything.
-        core::ptr::write_bytes(msr_bitmap_phys as *mut u8, 0xFF, 4096);
+        core::ptr::write_bytes(super::phys_to_virt(msr_bitmap_phys) as *mut u8, 0xFF, 4096);
         // Clear intercept bits for common read-only MSRs so the guest can
         // read them without a VM-exit (they are safe to pass through directly).
         //
@@ -482,7 +492,7 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         // Write revision ID
         let vmx_basic = rdmsr(IA32_VMX_BASIC);
         let revision = (vmx_basic & 0x7FFF_FFFF) as u32;
-        *(vmcs_phys as *mut u32) = revision;
+        *(super::phys_to_virt(vmcs_phys) as *mut u32) = revision;
 
         // Allocate a VPID for this vCPU.  Wrap around 0xFFFF; 0 is reserved.
         let vpid = {

@@ -241,9 +241,13 @@ pub fn syscall_vm_hw_info() -> u32 {
 
 impl AnyOsBackend {
     pub fn new(_ram_bytes: usize) -> Result<Self, VmError> {
+        // Check hardware support first so we can give a precise error.
+        if syscall_vm_hw_info() == 0 {
+            return Err(VmError::NoHardwareSupport);
+        }
         let vm_id = unsafe { syscall0(SYS_VM_CREATE) } as u32;
         if vm_id == 0 || vm_id == u32::MAX {
-            return Err(VmError::NoHardwareSupport);
+            return Err(VmError::VmCreateFailed);
         }
         Ok(Self {
             vm_id,
@@ -326,7 +330,7 @@ impl VmBackend for AnyOsBackend {
         self.destroy();
         let vm_id = unsafe { syscall0(SYS_VM_CREATE) } as u32;
         if vm_id == 0 || vm_id == u32::MAX {
-            return Err(VmError::NoHardwareSupport);
+            return Err(VmError::VmCreateFailed);
         }
         self.vm_id = vm_id;
         // Re-register memory regions.

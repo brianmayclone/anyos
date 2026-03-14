@@ -555,6 +555,21 @@ pub fn read_pte(virt: VirtAddr) -> u64 {
     }
 }
 
+/// Translate a virtual address to its physical address using the current page tables.
+///
+/// Uses the recursive mapping (PML4[510]) to read the leaf PTE.
+/// Returns `None` if the address is not mapped (any intermediate table absent,
+/// or the PTE itself not present).
+///
+/// The page offset is preserved: `phys = (pte & ADDR_MASK) | (virt & 0xFFF)`.
+pub fn virt_to_phys(virt: VirtAddr) -> Option<u64> {
+    let pte = read_pte(virt);
+    if pte & PAGE_PRESENT == 0 {
+        return None;
+    }
+    Some((pte & ADDR_MASK) | (virt.as_u64() & 0xFFF))
+}
+
 /// Mark a kernel heap page as a guard page (not-present, access causes #PF).
 ///
 /// Clears `PAGE_PRESENT` and sets `PTE_GUARD` in the leaf PTE.  The physical
@@ -1293,4 +1308,28 @@ pub fn map_mmio(phys_base: PhysAddr, pages: usize) -> Option<VirtAddr> {
     }
 
     Some(VirtAddr::new(base))
+}
+
+/// Map a single physical page into the kernel virtual address space with
+/// normal write-back caching (Present + Writable, no PCD).
+///
+/// Uses the same MMIO VA pool but with cacheable flags — suitable for
+/// VMCS/VMCB/page-table pages that must be accessible to write but whose
+/// physical address is used directly by the hardware.
+///
+/// The virtual mapping is permanent (VA never recycled), which is fine for
+/// long-lived kernel structures like VM control pages.
+pub fn map_kernel_phys_page(phys: PhysAddr) -> Option<VirtAddr> {
+    let mut next = MMIO_NEXT.lock();
+    let base = *next;
+    if base + FRAME_SIZE as u64 > 0xFFFF_FFFF_D100_0000 {
+        return None;
+    }
+    *next = base + FRAME_SIZE as u64;
+    drop(next);
+
+    const KERN_FLAGS: u64 = 0x03; // Present | Writable (write-back, no PCD)
+    let virt = VirtAddr::new(base);
+    map_page(virt, phys, KERN_FLAGS);
+    Some(virt)
 }

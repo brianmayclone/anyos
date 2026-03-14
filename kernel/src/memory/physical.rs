@@ -249,6 +249,27 @@ pub fn free_frames() -> usize {
     ALLOCATOR.lock().free_frames
 }
 
+/// Allocate a single 4 KiB physical frame from the identity-mapped low region
+/// (physical address < 128 MiB on x86-64, full range on aarch64).
+///
+/// Used by the hardware virtualization subsystem for VMCS/VMCB/page-table pages
+/// that must be accessible via the kernel's identity mapping.
+pub fn alloc_frame_low() -> Option<PhysAddr> {
+    let mut alloc = ALLOCATOR.lock();
+    if alloc.free_frames == 0 {
+        return None;
+    }
+    let limit = alloc.total_frames.min(CONTIGUOUS_MAX_FRAME);
+    for i in 0..limit {
+        if !alloc.is_used(i) {
+            alloc.set_used(i);
+            alloc.free_frames -= 1;
+            return Some(PhysAddr::new((i * FRAME_SIZE) as u64));
+        }
+    }
+    None
+}
+
 /// Maximum physical address for contiguous allocations (128 MiB).
 ///
 /// Contiguous allocations are used for DMA buffers and GPU framebuffers that are
