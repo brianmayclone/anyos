@@ -395,6 +395,8 @@ pub struct DisplayWidget {
     /// Whether the mouse is currently captured (grabbed) by the VM display.
     /// Click on display to capture, Ctrl+Alt+G to release.
     pub mouse_captured: bool,
+    /// Frame counter for periodic cursor re-center (prevents edge-sticking on X11).
+    warp_counter: u32,
     /// Set when mouse_captured is cleared without ctx (e.g., toolbar stop).
     /// update() checks this to restore cursor state.
     pub needs_cursor_restore: bool,
@@ -418,6 +420,7 @@ impl DisplayWidget {
             mouse_accum_x: 0.0,
             mouse_accum_y: 0.0,
             mouse_captured: false,
+            warp_counter: 0,
             needs_cursor_restore: false,
             warp_skip_frames: 0,
             right_click_start: None,
@@ -551,7 +554,8 @@ impl DisplayWidget {
         self.last_mouse_pos = None;
         self.mouse_accum_x = 0.0;
         self.mouse_accum_y = 0.0;
-        self.warp_skip_frames = 0;
+        self.warp_skip_frames = 2; // Skip first frames after grab to avoid phantom deltas
+        self.warp_counter = 0;
         // Use Locked: provides raw relative deltas without cursor position warping.
         // This avoids X11 rendering issues caused by CursorPosition viewport commands.
         // Falls back to Confined if Locked is not supported on the platform.
@@ -665,9 +669,22 @@ impl DisplayWidget {
             return;
         }
 
-        // With CursorGrab::Locked, pointer.delta() provides raw relative motion
-        // without needing cursor position warps. No warp = no phantom deltas,
-        // no rendering interference on X11.
+        // Skip frames right after a cursor warp to discard phantom deltas
+        // caused by the warp itself.
+        if self.warp_skip_frames > 0 {
+            self.warp_skip_frames -= 1;
+            self.mouse_accum_x = 0.0;
+            self.mouse_accum_y = 0.0;
+            // Still handle button changes during skip
+            if buttons != self.last_mouse_buttons {
+                libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, 0, 0, buttons);
+                self.last_mouse_buttons = buttons;
+            }
+            ctx.request_repaint();
+            return;
+        }
+
+        // With CursorGrab::Locked, pointer.delta() provides raw relative motion.
         let (raw_dx, raw_dy) = ui.input(|i| {
             let d = i.pointer.delta();
             (d.x, d.y)
@@ -698,6 +715,23 @@ impl DisplayWidget {
         }
 
         self.last_mouse_buttons = buttons;
+
+        // Periodically re-center the invisible cursor to prevent it from
+        // reaching the screen/window edge, which stops delta generation on X11.
+        // We re-grab instead of using CursorPosition (which caused black screen
+        // on X11). Releasing and re-grabbing resets the internal cursor position.
+        self.warp_counter += 1;
+        if self.warp_counter >= 120 {
+            // Every ~2 seconds at 60fps: release and re-grab to reset cursor position.
+            // The cursor is invisible, so the user won't notice.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
+            self.warp_counter = 0;
+            self.warp_skip_frames = 1; // Skip next frame's delta (re-grab artifact)
+            self.mouse_accum_x = 0.0;
+            self.mouse_accum_y = 0.0;
+        }
+
         ctx.request_repaint();
     }
 }

@@ -110,26 +110,46 @@ impl Ps2Controller {
         }
     }
 
-    /// Enqueue a 3-byte mouse movement packet.
+    /// Enqueue mouse movement as one or more 3-byte PS/2 packets.
+    ///
+    /// Large deltas are split into multiple packets clamped to the 9-bit
+    /// signed range (-255..=255) to avoid overflow bits, which cause Linux's
+    /// psmouse driver to discard the entire packet.
     pub fn mouse_move(&mut self, dx: i16, dy: i16, buttons: u8) {
         if !self.mouse_enabled {
             return;
         }
 
-        let mut status_byte: u8 = buttons & 0x07;
-        status_byte |= 0x08; // bit 3 always set
-        if dx < 0 { status_byte |= 0x10; }
-        if dy < 0 { status_byte |= 0x20; }
-        if dx > 255 || dx < -256 { status_byte |= 0x40; }
-        if dy > 255 || dy < -256 { status_byte |= 0x80; }
+        let mut rem_dx = dx as i32;
+        let mut rem_dy = dy as i32;
 
-        self.mouse_buffer.push_back(status_byte);
-        self.mouse_buffer.push_back(dx as u8);
-        self.mouse_buffer.push_back(dy as u8);
+        loop {
+            // Clamp each chunk to the PS/2 9-bit signed range.
+            let chunk_dx = rem_dx.clamp(-255, 255) as i16;
+            let chunk_dy = rem_dy.clamp(-255, 255) as i16;
 
-        if self.mouse_packet_remaining == 0 {
-            self.mouse_packet_remaining = 3;
+            let mut status_byte: u8 = buttons & 0x07;
+            status_byte |= 0x08; // bit 3 always set
+            if chunk_dx < 0 { status_byte |= 0x10; }
+            if chunk_dy < 0 { status_byte |= 0x20; }
+            // No overflow bits — we clamped to valid range.
+
+            self.mouse_buffer.push_back(status_byte);
+            self.mouse_buffer.push_back(chunk_dx as u8);
+            self.mouse_buffer.push_back(chunk_dy as u8);
+
+            if self.mouse_packet_remaining == 0 {
+                self.mouse_packet_remaining = 3;
+            }
+
+            rem_dx -= chunk_dx as i32;
+            rem_dy -= chunk_dy as i32;
+
+            if rem_dx == 0 && rem_dy == 0 {
+                break;
+            }
         }
+
         self.update_output_buffer();
     }
 
