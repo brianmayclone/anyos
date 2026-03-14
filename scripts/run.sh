@@ -14,7 +14,7 @@
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   --virtio   VirtIO GPU (modern transport, ARGB cursor, 2D only)
 #   --virgl    VirtIO GPU + virglrenderer (3D acceleration via host OpenGL)
-#   --res WxH  Set display size. VirtIO: sets GPU resolution. std/vmware: sets QEMU window size via GTK zoom. Example: --res 1280x1024
+#   --res WxH  Set display size. VirtIO/virgl: sets GPU EDID resolution. std/vmware: sets QEMU GTK window size. Example: --res 1280x1024
 #   --ide      Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
 #   --cdrom    Boot from ISO image (CD-ROM) instead of hard drive
 #   --audio    Enable AC'97 audio device
@@ -588,6 +588,7 @@ elif [ "$VGA" = "virtio" ]; then
 elif [ -n "$RESOLUTION" ]; then
     RES_W="${RESOLUTION%%x*}"
     RES_H="${RESOLUTION#*x}"
+    DISPLAY_FLAGS="-display gtk,grab-on-hover=on,window-size=${RES_W}x${RES_H}"
     RES_LABEL=", res: ${RESOLUTION}"
 fi
 
@@ -638,16 +639,6 @@ fi
 
 echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL"
 
-# On Linux with --res and non-virtio: use xdotool to resize QEMU window after startup
-USE_XDOTOOL=false
-if [ -n "$RESOLUTION" ] && [ "$VGA" != "virtio" ] && [ "$VGA" != "virgl" ] && [ "$(uname -s)" = "Linux" ] && [[ "$QEMU_BIN" != *.exe ]]; then
-    if command -v xdotool &>/dev/null; then
-        USE_XDOTOOL=true
-    else
-        echo "Warning: xdotool not found -- window will not be resized to ${RES_W}x${RES_H}"
-        echo "  Install with: sudo apt-get install xdotool"
-    fi
-fi
 
 QEMU_CMD="$QEMU_BIN_ESC \
     $CPU_FLAGS \
@@ -665,25 +656,4 @@ QEMU_CMD="$QEMU_BIN_ESC \
     -no-reboot \
     -no-shutdown"
 
-if [ "$USE_XDOTOOL" = true ]; then
-    eval "$QEMU_CMD" &
-    QEMU_PID=$!
-
-    # Wait for QEMU window to appear (up to 10s), then resize it
-    WIN_ID=""
-    for i in $(seq 1 20); do
-        sleep 0.5
-        WIN_ID=$(xdotool search --pid "$QEMU_PID" --name "" 2>/dev/null | head -1)
-        [ -n "$WIN_ID" ] && break
-    done
-
-    if [ -n "$WIN_ID" ]; then
-        xdotool windowsize "$WIN_ID" "$RES_W" "$RES_H"
-    else
-        echo "Warning: Could not find QEMU window to resize"
-    fi
-
-    wait "$QEMU_PID"
-else
-    eval "$QEMU_CMD"
-fi
+eval "$QEMU_CMD"
