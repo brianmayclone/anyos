@@ -94,6 +94,7 @@ pub struct CoreVmApp {
     pub snapshots_dialog: Option<SnapshotsDialog>,
     pub diagnostics_window: Option<DiagnosticsWindow>,
     pub error_message: Option<String>,
+    pub info_message: Option<String>,
     pub file_browser: Option<FileBrowserDialog>,
     pub file_pick_target: Option<FilePickTarget>,
     pub sidebar_state: SidebarState,
@@ -138,6 +139,7 @@ impl CoreVmApp {
             snapshots_dialog: None,
             diagnostics_window: None,
             error_message: None,
+            info_message: None,
             file_browser: None,
             file_pick_target: None,
             sidebar_state: SidebarState::default(),
@@ -218,7 +220,7 @@ impl CoreVmApp {
                         if fb.width > 0 && fb.height > 0 && !fb.pixels.is_empty() {
                             match copy_framebuffer_to_clipboard(&fb) {
                                 Ok(()) => {
-                                    self.error_message = Some(format!(
+                                    self.info_message = Some(format!(
                                         "Screenshot copied to clipboard ({}x{})",
                                         fb.width, fb.height
                                     ));
@@ -681,6 +683,38 @@ impl eframe::App for CoreVmApp {
                 });
             if dismiss {
                 self.error_message = None;
+            }
+        }
+
+        // Info dialog (success messages — green accent)
+        if let Some(msg) = self.info_message.clone() {
+            let mut dismiss = false;
+            egui::Window::new("Info")
+                .collapsible(false)
+                .resizable(false)
+                .min_width(350.0)
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_pos(ctx.screen_rect().center())
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("\u{2714}").size(20.0).color(theme::SUCCESS_GREEN));
+                        ui.add_space(4.0);
+                        ui.label(&msg);
+                    });
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(egui::Button::new("OK").fill(theme::SUCCESS_GREEN).min_size(egui::vec2(80.0, 28.0))).clicked() {
+                                dismiss = true;
+                            }
+                        });
+                    });
+                });
+            if dismiss {
+                self.info_message = None;
             }
         }
 
