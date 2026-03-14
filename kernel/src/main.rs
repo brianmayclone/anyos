@@ -43,8 +43,7 @@ pub fn boot_mode() -> u8 {
 
 /// Kernel entry point called from assembly after boot.
 ///
-/// On x86-64: receives the physical address of the [`BootInfo`] struct.
-/// On AArch64: receives the DTB physical address from the bootloader.
+/// Receives the physical address of the [`BootInfo`] struct.
 #[no_mangle]
 pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     /// Initialize serial port early so we can print debug info during boot.
@@ -53,12 +52,8 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     // =========================================================================
     // Phase 1: Early output
     // =========================================================================
-    let arch = if cfg!(target_arch = "x86_64") { "x86_64" } else 
-               if cfg!(target_arch = "aarch64") { "aarch64" } else 
-               { "unknown" };
-    
     serial_println!("");
-    serial_println!("  .anyOS Kernel ({}) v{}", arch, env!("ANYOS_VERSION"));
+    serial_println!("  .anyOS Kernel (x86_64) v{}", env!("ANYOS_VERSION"));
 
     #[cfg(target_arch = "x86_64")]
     {
@@ -117,11 +112,6 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
 
         boot_info
     };
-    #[cfg(target_arch = "aarch64")]
-    {
-        arch::arm64::boot::save_dtb_addr(boot_info_addr);
-        serial_println!("DTB at {:#018x}", boot_info_addr);
-    }
 
     // =========================================================================
     // Phase 2: CPU setup
@@ -149,26 +139,6 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
 
         arch::x86::power::init();
     }
-    #[cfg(target_arch = "aarch64")]
-    {
-        arch::arm64::exceptions::init();
-        serial_println!("[OK] Exception vectors installed (VBAR_EL1)");
-
-        arch::arm64::cpu_features::detect();
-
-        arch::arm64::gic::init_distributor();
-        let cpu = arch::arm64::smp::current_cpu_id();
-        arch::arm64::gic::init_cpu(cpu);
-        serial_println!("[OK] GICv3 initialized (CPU {})", cpu);
-
-        arch::arm64::generic_timer::init();
-
-        arch::arm64::smp::init_bsp();
-        serial_println!("[OK] BSP initialized (CPU {})", cpu);
-
-        arch::arm64::syscall::init_bsp();
-        arch::arm64::power::init();
-    }
 
     // =========================================================================
     // Phase 3: Memory
@@ -178,15 +148,6 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         arch::x86::pat::init(); // Program PAT before mapping framebuffer with WC
         memory::physical::init(boot_info);
         memory::virtual_mem::init(boot_info);
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        arch::arm64::mmu::init();
-        serial_println!("[OK] MMU configured (TCR_EL1 + MAIR_EL1)");
-
-        let (ram_base, ram_size) = arch::arm64::boot::detect_memory();
-        memory::physical::init_arm64(ram_base, ram_size);
-        serial_println!("[OK] Physical frame allocator initialized");
     }
     memory::heap::init();
     serial_println!("[OK] Heap allocator initialized");
@@ -300,17 +261,6 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             arch::x86::pic::unmask(1);
             arch::x86::pic::unmask(12);
         }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        // Timer IRQ (PPI 30 = physical timer) with schedule tick
-        arch::arm64::exceptions::register_irq(30, arch::arm64::generic_timer::irq_handler_with_schedule);
-        serial_println!("[OK] Timer IRQ registered (PPI 30)");
-
-        // HAL legacy devices (serial port)
-        drivers::hal::init();
-        drivers::hal::register_legacy_devices();
-        drivers::hal::print_devices();
     }
     arch::hal::enable_interrupts();
     serial_println!("[OK] Interrupts enabled");
@@ -461,108 +411,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         serial_println!("FATAL: No framebuffer available, cannot start compositor.");
     }
 
-    // =========================================================================
-    // ARM64: Full init — VirtIO devices, filesystem, userspace
-    // =========================================================================
-    #[cfg(target_arch = "aarch64")]
-    {
-        // Phase 5: VirtIO MMIO Device Discovery
-        serial_println!("");
-        serial_println!("  [Phase 5] ARM64 VirtIO device discovery...");
-        let virtio_devices = drivers::arm::probe_all();
-        serial_println!("  Found {} VirtIO MMIO device(s)", virtio_devices.len());
-
-        for dev in &virtio_devices {
-            match dev.device_id() {
-                2 => {
-                    drivers::arm::blk::init(dev);
-                }
-                16 => {
-                    drivers::arm::gpu::init(dev);
-                }
-                18 => {
-                    drivers::arm::input::init(dev);
-                }
-                id => {
-                    serial_println!("  VirtIO device ID {} (not handled)", id);
-                }
-            }
-        }
-
-        // Show boot logo on framebuffer (if GPU initialized)
-        drivers::boot_console::init();
-        // VirtIO GPU requires explicit flush to transfer pixels to host display
-        if let Some((_, w, h)) = drivers::arm::gpu::framebuffer_info() {
-            drivers::arm::gpu::flush(0, 0, w, h);
-        }
-
-        // Phase 7e: Filesystem
-        serial_println!("");
-        serial_println!("  [Phase 7e] ARM64 filesystem init...");
-        drivers::arm::storage::init_filesystem();
-
-        // Phase 8b: Start Application Processors (SMP)
-        {
-            let num_cpus = 4; // QEMU virt default; DTB CPU count would refine this
-            if num_cpus > 1 {
-                serial_println!("");
-                serial_println!("  [Phase 8b] Starting {} application processors...", num_cpus - 1);
-                arch::arm64::smp::start_aps(num_cpus);
-                serial_println!("  Online CPUs: {}", arch::arm64::smp::cpu_count());
-            }
-        }
-
-        // Phase 8c: Load shared DLIBs (if filesystem is mounted)
-        if fs::vfs::has_root_fs() {
-            serial_println!("");
-            serial_println!("  [Phase 8c] Loading shared libraries...");
-            const DLLS: [(&str, u64); 4] = [
-                ("/Libraries/uisys.dlib", 0x0400_0000u64),
-                ("/Libraries/libimage.dlib", 0x0410_0000u64),
-                ("/Libraries/librender.dlib", 0x0430_0000u64),
-                ("/Libraries/libcompositor.dlib", 0x0438_0000u64),
-            ];
-            for (path, base) in DLLS {
-                let name = path.rsplit('/').next().unwrap_or(path);
-                match task::dll::load_dll(path, base) {
-                    Ok(pages) => serial_println!("[OK] {}: {} pages", name, pages),
-                    Err(e) => serial_println!("[WARN] {} not loaded: {}", name, e),
-                }
-            }
-
-            // Phase 9: Start userspace
-            serial_println!("");
-            serial_println!("  [Phase 9] Starting userspace...");
-
-            arch::hal::disable_interrupts();
-
-            match task::loader::load_and_run("/System/compositor/compositor", "compositor") {
-                Ok(tid) => serial_println!("[OK] Compositor spawned (TID={})", tid),
-                Err(e) => serial_println!("[WARN] Failed to load compositor: {}", e),
-            }
-            match task::loader::load_and_run("/System/init", "init") {
-                Ok(tid) => serial_println!("[OK] Init spawned (TID={})", tid),
-                Err(e) => serial_println!("[WARN] Failed to load init: {}", e),
-            }
-        }
-
-        let fs_ok = if fs::vfs::has_root_fs() { "mounted" } else { "not available" };
-        serial_println!("");
-        serial_println!("========================================");
-        serial_println!("  anyOS ARM64 boot complete");
-        serial_println!("  CPUs online:  {}", arch::hal::cpu_count());
-        serial_println!("  Filesystem:   {}", fs_ok);
-        serial_println!("  Display:      {}x{}",
-            drivers::arm::gpu::framebuffer_info().map_or(0, |f| f.1),
-            drivers::arm::gpu::framebuffer_info().map_or(0, |f| f.2));
-        serial_println!("  Input:        {} device(s)", drivers::arm::input::device_count());
-        serial_println!("  Entering scheduler...");
-        serial_println!("========================================");
-        serial_println!("");
-        task::scheduler::run();
-    }
-
-    // Fallback idle loop (unreachable on architectures that call scheduler::run())
+    // Fallback idle loop
     #[allow(unreachable_code)]
     loop { arch::hal::halt(); }
 }

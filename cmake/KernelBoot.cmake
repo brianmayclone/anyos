@@ -36,11 +36,11 @@ add_custom_command(
 # 3. Kernel ASM stubs
 # ============================================================
 set(KERNEL_ASM_SOURCES
-  ${CMAKE_SOURCE_DIR}/kernel/asm/boot.asm
-  ${CMAKE_SOURCE_DIR}/kernel/asm/interrupts.asm
-  ${CMAKE_SOURCE_DIR}/kernel/asm/context_switch.asm
-  ${CMAKE_SOURCE_DIR}/kernel/asm/syscall_entry.asm
-  ${CMAKE_SOURCE_DIR}/kernel/asm/syscall_fast.asm
+  ${CMAKE_SOURCE_DIR}/kernel/asm/x86/boot.asm
+  ${CMAKE_SOURCE_DIR}/kernel/asm/x86/interrupts.asm
+  ${CMAKE_SOURCE_DIR}/kernel/asm/x86/context_switch.asm
+  ${CMAKE_SOURCE_DIR}/kernel/asm/x86/syscall_entry.asm
+  ${CMAKE_SOURCE_DIR}/kernel/asm/x86/syscall_fast.asm
 )
 
 set(KERNEL_ASM_OBJECTS "")
@@ -53,7 +53,7 @@ foreach(ASM_SRC ${KERNEL_ASM_SOURCES})
       -o ${ASM_OBJ}
       ${ASM_SRC}
     DEPENDS ${ASM_SRC}
-    COMMENT "Assembling kernel/${ASM_NAME}.asm"
+    COMMENT "Assembling kernel/asm/x86/${ASM_NAME}.asm"
   )
   list(APPEND KERNEL_ASM_OBJECTS ${ASM_OBJ})
 endforeach()
@@ -67,8 +67,8 @@ add_custom_command(
   OUTPUT ${AP_TRAMPOLINE_BIN}
   COMMAND ${NASM_EXECUTABLE} -w-all -f bin
     -o ${AP_TRAMPOLINE_BIN}
-    ${CMAKE_SOURCE_DIR}/kernel/asm/ap_trampoline.asm
-  DEPENDS ${CMAKE_SOURCE_DIR}/kernel/asm/ap_trampoline.asm
+    ${CMAKE_SOURCE_DIR}/kernel/asm/x86/ap_trampoline.asm
+  DEPENDS ${CMAKE_SOURCE_DIR}/kernel/asm/x86/ap_trampoline.asm
   COMMENT "Assembling AP trampoline (flat binary)"
 )
 
@@ -117,10 +117,10 @@ add_custom_command(
 
 # ARM64 ASM stubs (assembled with clang, not NASM)
 set(KERNEL_ARM64_ASM_SOURCES
-  ${CMAKE_SOURCE_DIR}/kernel/asm_arm64/boot.S
-  ${CMAKE_SOURCE_DIR}/kernel/asm_arm64/exceptions.S
-  ${CMAKE_SOURCE_DIR}/kernel/asm_arm64/context_switch.S
-  ${CMAKE_SOURCE_DIR}/kernel/asm_arm64/ap_startup.S
+  ${CMAKE_SOURCE_DIR}/kernel/asm/aarch64/boot.S
+  ${CMAKE_SOURCE_DIR}/kernel/asm/aarch64/exceptions.S
+  ${CMAKE_SOURCE_DIR}/kernel/asm/aarch64/context_switch.S
+  ${CMAKE_SOURCE_DIR}/kernel/asm/aarch64/ap_startup.S
 )
 
 set(KERNEL_ARM64_ASM_OBJECTS "")
@@ -131,7 +131,7 @@ foreach(ASM_SRC ${KERNEL_ARM64_ASM_SOURCES})
     OUTPUT ${ASM_OBJ}
     COMMAND clang --target=aarch64-none-elf -c -o ${ASM_OBJ} ${ASM_SRC}
     DEPENDS ${ASM_SRC}
-    COMMENT "Assembling kernel/asm_arm64/${ASM_NAME}.S (AArch64)"
+    COMMENT "Assembling kernel/asm/aarch64/${ASM_NAME}.S (AArch64)"
   )
   list(APPEND KERNEL_ARM64_ASM_OBJECTS ${ASM_OBJ})
 endforeach()
