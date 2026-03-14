@@ -285,18 +285,7 @@ fn handle_key(state: &mut AppState, buf: &mut TermBuf, key: Key) {
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
 fn go_parent(state: &mut AppState) {
-    let parent = {
-        let path = state.active_panel().path();
-        let p = fs::path_parent(path);
-        // copy to stack
-        let b = p.as_bytes();
-        let mut arr = [0u8; fs::MAX_PATH];
-        let n = b.len().min(fs::MAX_PATH);
-        arr[..n].copy_from_slice(&b[..n]);
-        (arr, n)
-    };
-    let path_str = core::str::from_utf8(&parent.0[..parent.1]).unwrap_or("/");
-    state.active_panel_mut().go_to(path_str);
+    state.active_panel_mut().go_to_parent();
     state.dirty = true;
 }
 

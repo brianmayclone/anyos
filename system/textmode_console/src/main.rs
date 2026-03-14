@@ -114,6 +114,201 @@ fn history_append(entry: &str) {
     let _ = fs::write_bytes(&path, out.as_bytes());
 }
 
+// ─── Tab completion ───────────────────────────────────────────────────────────
+
+const TC_BUILTINS: &[&str] = &[
+    "cd", "clear", "exit", "logout", "export", "set", "unset",
+];
+
+/// List directory entries as (name, is_dir) pairs.
+fn list_dir_entries(path: &str) -> Vec<(String, bool)> {
+    let mut entries = Vec::new();
+    let mut dir_buf = [0u8; 64 * 256];
+    let count = fs::readdir(path, &mut dir_buf);
+    if count == u32::MAX { return entries; }
+    let max = (count as usize).min(dir_buf.len() / 64);
+    for i in 0..max {
+        let off = i * 64;
+        let entry_type = dir_buf[off];
+        let name_len = dir_buf[off + 1] as usize;
+        let name_bytes = &dir_buf[off + 8..off + 8 + name_len.min(56)];
+        if let Ok(name) = core::str::from_utf8(name_bytes) {
+            if !name.is_empty() && name != "." && name != ".." {
+                entries.push((String::from(name), entry_type == 1));
+            }
+        }
+    }
+    entries
+}
+
+/// Find the longest common prefix among a set of strings.
+fn common_prefix(items: &[String]) -> String {
+    if items.is_empty() { return String::new(); }
+    let first = &items[0];
+    let mut len = first.len();
+    for item in &items[1..] {
+        len = len.min(item.len());
+        for (i, (a, b)) in first.bytes().zip(item.bytes()).enumerate() {
+            if i >= len { break; }
+            if a != b { len = i; break; }
+        }
+    }
+    String::from(&first[..len])
+}
+
+/// Complete a command name (first token).
+fn complete_command(prefix: &str) -> Vec<String> {
+    let mut matches: Vec<String> = Vec::new();
+    for &b in TC_BUILTINS {
+        if b.starts_with(prefix) { matches.push(String::from(b)); }
+    }
+    let mut path_buf = [0u8; 256];
+    let plen = env::get("PATH", &mut path_buf);
+    if plen != u32::MAX && plen > 0 {
+        if let Ok(path_str) = core::str::from_utf8(&path_buf[..plen as usize]) {
+            for dir in path_str.split(':') {
+                let dir = dir.trim();
+                if dir.is_empty() { continue; }
+                for (name, _) in list_dir_entries(dir) {
+                    if name.starts_with(prefix) && !matches.iter().any(|m| *m == name) {
+                        matches.push(name);
+                    }
+                }
+            }
+        }
+    }
+    // Also always check /System/bin
+    for (name, _) in list_dir_entries("/System/bin") {
+        if name.starts_with(prefix) && !matches.iter().any(|m| *m == name) {
+            matches.push(name);
+        }
+    }
+    matches.sort_unstable();
+    matches
+}
+
+/// Complete a file/directory path (argument position).
+fn complete_path(word: &str, cwd: &str) -> Vec<String> {
+    let (dir_prefix, file_prefix) = if let Some(pos) = word.rfind('/') {
+        (&word[..pos + 1], &word[pos + 1..])
+    } else {
+        ("", word)
+    };
+    let search_dir = if dir_prefix.is_empty() {
+        String::from(cwd)
+    } else if dir_prefix.starts_with('/') {
+        let p = dir_prefix.trim_end_matches('/');
+        if p.is_empty() { String::from("/") } else { String::from(p) }
+    } else {
+        if cwd == "/" { format!("/{}", dir_prefix.trim_end_matches('/')) }
+        else { format!("{}/{}", cwd, dir_prefix.trim_end_matches('/')) }
+    };
+    let mut matches: Vec<String> = Vec::new();
+    for (name, is_dir) in list_dir_entries(&search_dir) {
+        if name.starts_with(file_prefix) {
+            let completion = if is_dir { format!("{}{}/", dir_prefix, name) }
+                             else { format!("{}{}", dir_prefix, name) };
+            matches.push(completion);
+        }
+    }
+    matches.sort_unstable();
+    matches
+}
+
+/// Handle TAB key: complete current word, update line/cursor in place.
+/// Returns true if the display needs a full repaint (multi-match list printed).
+fn handle_tab(line: &mut [u8], line_len: &mut usize, cursor: &mut usize, prompt: &str, cwd: &str) {
+    let input = core::str::from_utf8(&line[..*line_len]).unwrap_or("");
+    // Find start of current word (split on spaces, up to cursor)
+    let before = &input[..*cursor];
+    let word_start = before.rfind(' ').map(|i| i + 1).unwrap_or(0);
+    let word = &before[word_start..];
+    let is_command = !before[..word_start].contains(' ');
+
+    let completions = if is_command {
+        complete_command(word)
+    } else {
+        complete_path(word, cwd)
+    };
+    if completions.is_empty() { return; }
+
+    let match_len = word.len();
+
+    if completions.len() == 1 {
+        // Single match: insert the rest directly
+        let completion = &completions[0];
+        if completion.len() > match_len {
+            let rest = &completion[match_len..];
+            // Append rest + space to line at cursor
+            for b in rest.bytes() {
+                if *line_len < line.len() - 1 {
+                    for i in (*cursor..*line_len).rev() { line[i + 1] = line[i]; }
+                    line[*cursor] = b;
+                    *line_len += 1;
+                    *cursor += 1;
+                }
+            }
+            // Add trailing space if not a directory
+            if !completion.ends_with('/') && *line_len < line.len() - 1 {
+                for i in (*cursor..*line_len).rev() { line[i + 1] = line[i]; }
+                line[*cursor] = b' ';
+                *line_len += 1;
+                *cursor += 1;
+            }
+        } else if !completion.ends_with('/') && *line_len < line.len() - 1 {
+            // Already complete — just add space
+            for i in (*cursor..*line_len).rev() { line[i + 1] = line[i]; }
+            line[*cursor] = b' ';
+            *line_len += 1;
+            *cursor += 1;
+        }
+        // Redraw whole line
+        sys::con_write("\r\x1b[2K");
+        sys::con_write(prompt);
+        sys::con_write(core::str::from_utf8(&line[..*line_len]).unwrap_or(""));
+        if *cursor < *line_len {
+            let back = *line_len - *cursor;
+            let mut esc = [0u8; 16];
+            let n = format_usize_into(&mut esc, back);
+            sys::con_write("\x1b[");
+            sys::con_write(core::str::from_utf8(&esc[..n]).unwrap_or(""));
+            sys::con_write("D");
+        }
+    } else {
+        // Multiple matches: fill in common prefix then list all
+        let common = common_prefix(&completions);
+        if common.len() > match_len {
+            let rest = &common[match_len..];
+            for b in rest.bytes() {
+                if *line_len < line.len() - 1 {
+                    for i in (*cursor..*line_len).rev() { line[i + 1] = line[i]; }
+                    line[*cursor] = b;
+                    *line_len += 1;
+                    *cursor += 1;
+                }
+            }
+        }
+        // Print the list on a new line
+        sys::con_write("\n");
+        for c in &completions {
+            sys::con_write(c.as_str());
+            sys::con_write("  ");
+        }
+        sys::con_write("\n");
+        // Redraw prompt + current input
+        sys::con_write(prompt);
+        sys::con_write(core::str::from_utf8(&line[..*line_len]).unwrap_or(""));
+        if *cursor < *line_len {
+            let back = *line_len - *cursor;
+            let mut esc = [0u8; 16];
+            let n = format_usize_into(&mut esc, back);
+            sys::con_write("\x1b[");
+            sys::con_write(core::str::from_utf8(&esc[..n]).unwrap_or(""));
+            sys::con_write("D");
+        }
+    }
+}
+
 // ─── Interactive read_line with history + cursor movement ────────────────────
 
 fn format_usize_into(buf: &mut [u8], mut n: usize) -> usize {
@@ -125,8 +320,8 @@ fn format_usize_into(buf: &mut [u8], mut n: usize) -> usize {
     len
 }
 
-/// Full-featured readline: history navigation, left/right cursor, Shift+arrow scroll.
-fn read_line_interactive(prompt: &str) -> String {
+/// Full-featured readline: history navigation, left/right cursor, TAB completion.
+fn read_line_interactive(prompt: &str, cwd: &str) -> String {
     let history = history_load();
     // hist_idx: history.len() = current input, < len = browsing history
     let mut hist_idx = history.len();
@@ -159,6 +354,11 @@ fn read_line_interactive(prompt: &str) -> String {
             0x03 => {
                 sys::con_write("^C\n");
                 return String::new();
+            }
+
+            // TAB — complete command or path
+            0x09 => {
+                handle_tab(&mut line, &mut line_len, &mut cursor, prompt, cwd);
             }
 
             // Backspace
@@ -608,6 +808,7 @@ fn shell_loop(username: &str) {
         String::from("/")
     };
     env::set("PWD", &cwd);
+    fs::chdir(&cwd); // sync kernel thread CWD so spawned processes inherit the right directory
     let mut pipe_counter: u32 = 0;
 
     loop {
@@ -622,7 +823,7 @@ fn shell_loop(username: &str) {
         let prompt = format!("{}@{}:{} {} ", display_user, hn, cwd, prompt_suffix);
         print(&prompt);
 
-        let line = read_line_interactive(&prompt);
+        let line = read_line_interactive(&prompt, &cwd);
         if line.is_empty() { continue; }
         let line_trimmed = line.trim();
 
@@ -630,6 +831,17 @@ fn shell_loop(username: &str) {
         let (line_no_out, redirect) = shell::parse_redirects(line_trimmed, &cwd);
         // Strip input redirect
         let (cmd_line, input_redirect) = shell::parse_input_redirect(&line_no_out, &cwd);
+        let cmd_line = cmd_line.trim();
+        if cmd_line.is_empty() { continue; }
+
+        // Detect background suffix (&) — must be checked before expand_args
+        let (cmd_line, background) = if cmd_line.ends_with(" &") || cmd_line.ends_with("\t&") {
+            (&cmd_line[..cmd_line.len() - 2], true)
+        } else if cmd_line.ends_with('&') && cmd_line.len() > 1 {
+            (&cmd_line[..cmd_line.len() - 1], true)
+        } else {
+            (cmd_line, false)
+        };
         let cmd_line = cmd_line.trim();
         if cmd_line.is_empty() { continue; }
 
@@ -669,8 +881,10 @@ fn shell_loop(username: &str) {
                 let mut stat_buf = [0u32; 7];
                 if fs::stat(&resolved, &mut stat_buf) == 0 {
                     if stat_buf[0] == 1 {
-                        cwd = resolved;
+                        cwd = resolved.clone();
                         env::set("PWD", &cwd);
+                        // Also update kernel thread CWD so spawned processes inherit it.
+                        fs::chdir(&resolved);
                     } else {
                         let msg = format!("cd: {}: Not a directory", dest);
                         println(&msg);
@@ -717,26 +931,53 @@ fn shell_loop(username: &str) {
                 }
             }
             _ => {
+                // nohup: strip it and run the rest in the background (no SIGHUP in anyOS)
+                let (cmd, args_expanded, background) = if cmd == "nohup" {
+                    if args_expanded.is_empty() {
+                        println("nohup: missing command");
+                        continue;
+                    }
+                    (args_expanded[0].as_str(), &args_expanded[1..], true)
+                } else {
+                    (cmd, args_expanded, background)
+                };
+
                 // Check for pipeline
                 if shell::has_pipe(cmd_line) {
+                    if background {
+                        // Pipeline with & — not supported in background, warn and run fg
+                        println("[bg] pipeline background not supported, running in foreground");
+                    }
                     run_pipeline(cmd_line, &cwd, redirect, &mut pipe_counter);
                     continue;
                 }
 
-                // External program
-                let prog_path = shell::resolve_cmd_path(cmd, &cwd);
-                // For `ls` with no path argument, inject cwd so it lists the right directory.
+                // Build args: for `ls` inject cwd when no path given
                 let mut effective_args: Vec<String> = args_expanded.to_vec();
                 if cmd == "ls" && effective_args.iter().all(|a| a.starts_with('-')) {
                     effective_args.push(cwd.clone());
                 }
                 let args_str = shell::join(&effective_args);
                 let full_args = if args_str.is_empty() {
-                    format!("{} {}", cmd, cwd)
+                    String::from(cmd)
                 } else {
                     format!("{} {}", cmd, args_str)
                 };
-                run_external(&prog_path, &full_args, redirect, stdin_data, &mut pipe_counter);
+                let prog_path = shell::resolve_cmd_path(cmd, &cwd);
+
+                if background {
+                    // Spawn without pipe or waiting — fire and forget
+                    let tid = process::spawn(&prog_path, &full_args);
+                    if tid == u32::MAX {
+                        let msg = format!("{}: command not found", cmd);
+                        println(&msg);
+                    } else {
+                        let msg = format!("[bg] pid={}", tid);
+                        println(&msg);
+                    }
+                } else {
+                    run_external(&prog_path, &full_args, redirect, stdin_data, &mut pipe_counter);
+                }
             }
         }
     }

@@ -111,8 +111,10 @@ pub fn read_dir(path: &str, out: &mut [DirEntry; MAX_ENTRIES]) -> usize {
     // SAFETY: AC is single-threaded; this function is never re-entered.
     static mut RAW_BUF: [u8; RAW_CHUNK] = [0u8; RAW_CHUNK];
     let raw: &mut [u8] = unsafe { &mut RAW_BUF };
-    let n = anyos_std::fs::readdir(path, raw);
-    if n == 0 || n == u32::MAX { return 0; }
+    let raw_count = {
+        let r = anyos_std::fs::readdir(path, raw);
+        if r == u32::MAX { 0usize } else { r as usize }
+    };
 
     // Prepend ".." for all directories except root "/"
     let add_dotdot = path != "/" && !path.is_empty();
@@ -130,7 +132,10 @@ pub fn read_dir(path: &str, out: &mut [DirEntry; MAX_ENTRIES]) -> usize {
         0
     };
 
-    let count = (n as usize).min(MAX_ENTRIES - start).min(RAW_CHUNK / RAW_ENTRY_SIZE);
+    // Empty directory: only ".." (already added above)
+    if raw_count == 0 { return start; }
+
+    let count = raw_count.min(MAX_ENTRIES - start).min(RAW_CHUNK / RAW_ENTRY_SIZE);
     for i in 0..count {
         let off = i * RAW_ENTRY_SIZE;
         // Kernel layout: 0=Regular, 1=Directory, 2=Device

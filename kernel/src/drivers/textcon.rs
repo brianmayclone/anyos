@@ -286,6 +286,21 @@ fn flush_rect(x: u32, y: u32, w: u32, h: u32) {
     }
 }
 
+/// IRQ-safe flush: uses try_lock so it never blocks or yields.
+/// Called exclusively from tick_blink() (PIT interrupt context).
+/// If the GPU mutex is held by another thread, the blink simply
+/// skips this cycle — the cursor will update on the next tick.
+fn flush_rect_irq(x: u32, y: u32, w: u32, h: u32) {
+    if crate::drivers::framebuffer::info().is_none() { return; }
+    if let Some(mut gpu_guard) = crate::drivers::gpu::try_lock_gpu() {
+        if let Some(g) = gpu_guard.as_mut() {
+            g.transfer_rect(x, y, w, h);
+            g.flush_display(x, y, w, h);
+        }
+    }
+    // None = GPU locked by another thread; skip this blink cycle silently.
+}
+
 // ─── Shadow cell buffer helpers ──────────────────────────────────────────────
 
 /// Number of visible rows given current cell height.
@@ -1091,11 +1106,11 @@ pub fn tick_blink() {
         CURSOR_VISIBLE.store(false, Ordering::Relaxed);
     }
 
-    // Flush just the cursor cell.
+    // Flush just the cursor cell — IRQ-safe (non-blocking try_lock).
     let flush_w = cw.min(fb_w.saturating_sub(cx));
     let flush_h = ch.min(fb_h.saturating_sub(cy));
     if flush_w > 0 && flush_h > 0 {
-        flush_rect(cx, cy, flush_w, flush_h);
+        flush_rect_irq(cx, cy, flush_w, flush_h);
     }
 }
 

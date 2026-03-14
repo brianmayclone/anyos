@@ -156,23 +156,59 @@ impl Panel {
         if !entry.is_dir() { return false; }
 
         if entry.is_dotdot() {
-            // Go to parent — copy parent path to avoid borrow conflict
-            let pp = path_parent(self.path());
-            let pb = pp.as_bytes();
-            let mut arr = [0u8; MAX_PATH];
-            let n = pb.len().min(MAX_PATH);
-            arr[..n].copy_from_slice(&pb[..n]);
-            let parent_s = core::str::from_utf8(&arr[..n]).unwrap_or("/");
-            self.set_path(parent_s);
+            self.go_to_parent();
         } else {
             let (buf, len) = path_join(self.path(), entry.name_str());
             let new_path = core::str::from_utf8(&buf[..len]).unwrap_or("/");
             self.set_path(new_path);
+            self.cursor = 0;
+            self.scroll = 0;
+            self.reload();
         }
+        true
+    }
+
+    /// Navigate to the parent directory, selecting the directory we came from.
+    pub fn go_to_parent(&mut self) {
+        if self.path() == "/" { return; }
+
+        // Remember the last component of the current path so we can select it.
+        let current_path = self.path();
+        let child_name = {
+            let trimmed = current_path.trim_end_matches('/');
+            match trimmed.rfind('/') {
+                Some(i) => &trimmed[i + 1..],
+                None    => trimmed,
+            }
+        };
+        // Copy child name to stack before we mutate self.
+        let mut child_buf = [0u8; 56];
+        let child_len = child_name.len().min(56);
+        child_buf[..child_len].copy_from_slice(&child_name.as_bytes()[..child_len]);
+
+        let pp = path_parent(current_path);
+        let pb = pp.as_bytes();
+        let mut arr = [0u8; MAX_PATH];
+        let n = pb.len().min(MAX_PATH);
+        arr[..n].copy_from_slice(&pb[..n]);
+        let parent_s = core::str::from_utf8(&arr[..n]).unwrap_or("/");
+        self.set_path(parent_s);
         self.cursor = 0;
         self.scroll = 0;
         self.reload();
-        true
+
+        // Find and select the child directory we came from.
+        if child_len > 0 {
+            for i in 0..self.entry_count {
+                if self.entries[i].name_len == child_len
+                    && self.entries[i].name[..child_len] == child_buf[..child_len]
+                {
+                    self.cursor = i;
+                    self.ensure_visible();
+                    break;
+                }
+            }
+        }
     }
 
     /// Navigate directly to a given path.

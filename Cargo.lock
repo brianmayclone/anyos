@@ -169,6 +169,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bcedit"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "button_demo"
 version = "0.1.0"
 dependencies = [
@@ -1007,6 +1014,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdel"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "sed"
 version = "0.1.0"
 dependencies = [
@@ -1038,6 +1052,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sget"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "shell"
 version = "0.1.0"
 dependencies = [
@@ -1053,6 +1074,13 @@ dependencies = [
 
 [[package]]
 name = "sort"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "sstore"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
