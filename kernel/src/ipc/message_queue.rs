@@ -14,7 +14,7 @@ const MAX_MSG_SIZE: usize = 256;
 const MAX_QUEUE_DEPTH: usize = 64;
 
 /// A single message in the queue, carrying sender identity, type tag, and payload.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Message {
     /// PID of the sending process.
     pub sender_pid: u32,

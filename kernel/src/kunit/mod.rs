@@ -20,6 +20,7 @@
 //! }
 //! ```
 
+pub mod integration;
 pub mod runner;
 pub mod tests;
 

@@ -155,10 +155,11 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     serial_println!("[OK] Heap allocator initialized");
 
     // =========================================================================
-    // Phase 4: KUnit self-tests (only when built with --features kunit)
+    // Phase 4: KUnit unit tests — pure algorithm / data-structure tests.
+    // No hardware, scheduler, or driver state required.
     // =========================================================================
     #[cfg(feature = "kunit")]
-    kunit::runner::run_all();
+    kunit::runner::run_unit_tests();
 
     // Initialize Cape Coral anti-aliased font (requires heap)
     #[cfg(target_arch = "x86_64")]
@@ -182,6 +183,19 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         } else {
             serial_println!("  ACPI not found, using legacy PIC");
         }
+        // KUnit: store ACPI results for integration tests.
+        #[cfg(feature = "kunit")]
+        {
+            let ctx = kunit::integration::IntegrationCtx {
+                acpi_present:     acpi_info.is_some(),
+                lapic_address:    acpi_info.as_ref().map_or(0, |i| i.lapic_address),
+                processor_count:  acpi_info.as_ref().map_or(0, |i| i.processors.len()),
+                ioapic_count:     acpi_info.as_ref().map_or(0, |i| i.io_apics.len()),
+                iso_count:        acpi_info.as_ref().map_or(0, |i| i.isos.len()),
+            };
+            kunit::integration::set_context(ctx);
+        }
+
         acpi_info
     };
 
@@ -279,6 +293,13 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         drivers::hal::register_legacy_devices();
         drivers::hal::print_devices();
     }
+
+    // =========================================================================
+    // Phase 7i: KUnit integration tests — hardware state after full init.
+    // Runs after: ACPI, APIC, IRQ routing, PIT, scheduler, interrupts enabled.
+    // =========================================================================
+    #[cfg(feature = "kunit")]
+    kunit::runner::run_integration_tests();
 
     // =========================================================================
     // Phase 7e-9: Filesystem, Drivers, SMP, Userspace (x86 full path)

@@ -1,4 +1,12 @@
 pub mod alloc_tests;
+pub mod capabilities_tests;
+pub mod crypto_tests;
+pub mod datetime_tests;
+pub mod heap_stress_tests;
+pub mod ipc_tests;
 pub mod memory_tests;
 pub mod net_tests;
+pub mod net_types_tests;
 pub mod sync_tests;
+pub mod syscall_safety_tests;
+pub mod vma_tests;

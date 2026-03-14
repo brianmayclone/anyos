@@ -15,6 +15,7 @@ pub const PROTO_UDP: u8 = 17;
 pub const PROTO_TCP: u8 = 6;
 
 /// A parsed IPv4 packet with a reference to its payload.
+#[derive(Debug)]
 pub struct Ipv4Packet<'a> {
     pub src: Ipv4Addr,
     pub dst: Ipv4Addr,

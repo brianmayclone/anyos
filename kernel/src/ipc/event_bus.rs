@@ -41,7 +41,7 @@ const MAX_QUEUE_DEPTH: usize = 512;
 /// Fixed-size event payload: 5 x u32 words = 20 bytes.
 ///
 /// `words[0]` holds the event type; `words[1..5]` carry type-specific payload data.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct EventData {
     pub words: [u32; 5],
 }
