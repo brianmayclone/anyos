@@ -261,6 +261,19 @@ pub fn set_memory(vm_id: u32, slot: u32, gpa: u64, size: u64, hpa: u64) -> bool 
     });
 
     super::ept::npt_map_range(vm.npt_root, gpa, hpa, size, true, true);
+
+    // Flush stale nested-page TLB entries via INVLPGA.
+    // INVLPGA flushes TLB entries for a given virtual address and ASID.
+    // Using address=0 and ASID=0xFFFF_FFFF flushes all entries for all ASIDs.
+    unsafe {
+        core::arch::asm!(
+            "invlpga rax, ecx",
+            in("rax") 0u64,
+            in("ecx") 0xFFFF_FFFFu32,
+            options(nostack, preserves_flags),
+        );
+    }
+
     true
 }
 
@@ -443,8 +456,12 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                 }
             }
             VMEXIT_NPF => {
+                // AMD APM Vol. 2 §15.25.6, EXITINFO1 for #NPF:
+                //   Bit 1 = the access was a write (W=1).
+                //   Bit 0 = page was present at the time of the fault.
+                // So: is_read = !(write bit), i.e. bit 1 == 0 → read access.
                 info.is_read = if (exit_info1 >> 1) & 1 != 0 { 0 } else { 1 };
-                info.access_size = 4; // default
+                info.access_size = 4; // default; instruction decode needed for exact size
                 if info.is_read == 0 {
                     info.io_data = vcpu.guest_gprs.rax;
                 }
@@ -552,7 +569,19 @@ unsafe fn handle_cpuid_exit(cpuid_table: &[Option<CpuidEntry>], vcpu: &mut SvmVc
     }
 
     if !found {
-        let (eax, ebx, ecx, edx) = crate::arch::x86::cpuid::cpuid(leaf, subleaf);
+        let (eax, ebx, mut ecx, edx) = crate::arch::x86::cpuid::cpuid(leaf, subleaf);
+        match leaf {
+            // Leaf 1: mask VMX capability and set hypervisor-present.
+            1 => {
+                ecx &= !(1 << 5);  // clear VMX (ECX bit 5)
+                ecx |=  1 << 31;   // set Hypervisor Present (ECX bit 31)
+            }
+            // Leaf 0x8000_0001: mask SVM capability (ECX bit 2).
+            0x8000_0001 => {
+                ecx &= !(1 << 2);
+            }
+            _ => {}
+        }
         vmcb.state.rax = eax as u64;
         vcpu.guest_gprs.rbx = ebx as u64;
         vcpu.guest_gprs.rcx = ecx as u64;

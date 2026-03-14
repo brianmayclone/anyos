@@ -94,6 +94,7 @@ const VM_EXIT_CONTROLS: u32 = 0x400C;
 const VM_ENTRY_CONTROLS: u32 = 0x4012;
 const EPT_POINTER: u32 = 0x201A;
 const MSR_BITMAP_ADDR: u32 = 0x2004;
+const VIRTUAL_PROCESSOR_ID: u32 = 0x0000; // VPID (16-bit)
 
 // Exit information
 const VM_EXIT_REASON: u32 = 0x4402;
@@ -160,7 +161,11 @@ struct VmxVcpu {
     guest_gprs: GuestGprs,
     launched: bool,
     msr_bitmap_phys: u64,
+    vpid: u16,
 }
+
+// Global VPID allocator.  0 is reserved (means "no VPID"), so start at 1.
+static NEXT_VPID: AtomicU32 = AtomicU32::new(1);
 
 struct VmxVm {
     id: u32,
@@ -180,13 +185,12 @@ static VMS: Spinlock<[Option<VmxVm>; MAX_VMS]> = Spinlock::new([const { None }; 
 
 #[inline]
 unsafe fn vmxon(phys_addr: u64) -> bool {
-    let success: u8;
     core::arch::asm!(
         "vmxon [{}]",
         in(reg) &phys_addr,
         options(nostack),
     );
-    // If we reach here without fault, VMXON succeeded
+    // If we reach here without fault, VMXON succeeded.
     true
 }
 
@@ -378,6 +382,10 @@ pub fn set_memory(vm_id: u32, slot: u32, gpa: u64, size: u64, hpa: u64) -> bool 
     // Map in EPT
     super::ept::ept_map_range(vm.ept_root, gpa, hpa, size, true, true);
 
+    // Flush stale EPT-derived TLB entries.  Must be done after any EPT
+    // mapping change so all CPUs see the new translation.
+    unsafe { super::ept::invept_all_context(); }
+
     true
 }
 
@@ -395,6 +403,29 @@ pub fn set_cpuid(vm_id: u32, entries: &[CpuidEntry]) -> bool {
     }
     vm.cpuid_count = count;
     true
+}
+
+// ── MSR bitmap helpers ────────────────────────────────────────────────────
+
+/// Clear the RDMSR intercept bit for an MSR in the low range (0x0000–0x1FFF).
+/// Clearing = passthrough (no VM-exit on RDMSR for that MSR).
+unsafe fn msr_bitmap_clear_rdmsr(bitmap: u64, msr: u32) {
+    debug_assert!(msr <= 0x1FFF);
+    let byte = (msr / 8) as usize;    // byte index in the 1K RDMSR-low block
+    let bit  = (msr % 8) as u8;
+    let ptr = bitmap as *mut u8;
+    *ptr.add(byte) &= !(1 << bit);
+}
+
+/// Clear the RDMSR intercept bit for an MSR in the high range
+/// (0xC000_0000–0xC000_1FFF), i.e. only pass the low 13 bits.
+unsafe fn msr_bitmap_clear_rdmsr_high(bitmap: u64, msr_low: u32) {
+    debug_assert!(msr_low <= 0x1FFF);
+    // High RDMSR block starts at byte 1024.
+    let byte = 1024 + (msr_low / 8) as usize;
+    let bit  = (msr_low % 8) as u8;
+    let ptr = bitmap as *mut u8;
+    *ptr.add(byte) &= !(1 << bit);
 }
 
 /// Create a vCPU within a VM. Returns true on success.
@@ -417,7 +448,8 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
             None => return false,
         };
 
-        // Allocate MSR bitmap (all 1s = exit on all MSR access)
+        // Allocate MSR bitmap. Fill with 1s then selectively clear bits for
+        // MSRs we want to pass through without a VM-exit.
         let msr_bitmap_phys = match alloc_page_zeroed() {
             Some(p) => p,
             None => {
@@ -425,26 +457,53 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
                 return false;
             }
         };
-        // Fill MSR bitmap with 1s (intercept all MSRs)
+        // Start: intercept everything.
         core::ptr::write_bytes(msr_bitmap_phys as *mut u8, 0xFF, 4096);
+        // Clear intercept bits for common read-only MSRs so the guest can
+        // read them without a VM-exit (they are safe to pass through directly).
+        //
+        // MSR bitmap layout (Intel SDM Vol. 3C §24.6.9):
+        //   Bytes   0–1023: RDMSR intercepts for MSR 0x0000–0x1FFF
+        //   Bytes 1024–2047: RDMSR intercepts for MSR 0xC000_0000–0xC000_1FFF
+        //   Bytes 2048–3071: WRMSR intercepts for MSR 0x0000–0x1FFF
+        //   Bytes 3072–4095: WRMSR intercepts for MSR 0xC000_0000–0xC000_1FFF
+        //
+        // Bit index within each range = MSR low 13 bits.
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x10);        // IA32_TSC
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x1B);        // IA32_APIC_BASE (read-only view)
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x8B);        // IA32_BIOS_SIGN_ID
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0xFE);        // IA32_MTRRCAP
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x174);       // IA32_SYSENTER_CS
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x175);       // IA32_SYSENTER_ESP
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x176);       // IA32_SYSENTER_EIP
+        // IA32_TSC_AUX (0xC0000103) — C000 range read
+        msr_bitmap_clear_rdmsr_high(msr_bitmap_phys, 0x103);
 
         // Write revision ID
         let vmx_basic = rdmsr(IA32_VMX_BASIC);
         let revision = (vmx_basic & 0x7FFF_FFFF) as u32;
         *(vmcs_phys as *mut u32) = revision;
 
+        // Allocate a VPID for this vCPU.  Wrap around 0xFFFF; 0 is reserved.
+        let vpid = {
+            let raw = NEXT_VPID.fetch_add(1, Ordering::Relaxed);
+            let v = (raw & 0xFFFF) as u16;
+            if v == 0 { 1 } else { v }
+        };
+
         // VMCLEAR then VMPTRLD
         vmclear(vmcs_phys);
         vmptrld(vmcs_phys);
 
         // Initialize VMCS fields
-        init_vmcs(vm.ept_root, msr_bitmap_phys);
+        init_vmcs(vm.ept_root, msr_bitmap_phys, vpid);
 
         vm.vcpus[idx] = Some(VmxVcpu {
             vmcs_phys,
             guest_gprs: GuestGprs::default(),
             launched: false,
             msr_bitmap_phys,
+            vpid,
         });
     }
 
@@ -452,7 +511,7 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
 }
 
 /// Initialize all VMCS fields for a new vCPU.
-unsafe fn init_vmcs(ept_root: u64, msr_bitmap_phys: u64) {
+unsafe fn init_vmcs(ept_root: u64, msr_bitmap_phys: u64, vpid: u16) {
     // Check for TRUE controls support
     let vmx_basic = rdmsr(IA32_VMX_BASIC);
     let use_true_ctls = (vmx_basic >> 55) & 1 != 0;
@@ -477,12 +536,19 @@ unsafe fn init_vmcs(ept_root: u64, msr_bitmap_phys: u64) {
     vmwrite(PRIMARY_PROC_BASED_VM_EXEC_CONTROL, primary as u64);
 
     // Secondary proc-based controls
+    // Bit 5 = Enable VPID.  We attempt to enable it; adjust_control will
+    // silently drop the bit if the CPU doesn't support it.
     let secondary = adjust_control(
         (1 << 1)  // Enable EPT
+        | (1 << 5) // Enable VPID
         | (1 << 7), // Unrestricted guest
         IA32_VMX_PROCBASED_CTLS2,
     );
     vmwrite(SECONDARY_PROC_BASED_VM_EXEC_CONTROL, secondary as u64);
+
+    // Write VPID (only meaningful when the VPID secondary-control bit is set,
+    // but harmless to write regardless).
+    vmwrite(VIRTUAL_PROCESSOR_ID, vpid as u64);
 
     // VM-exit controls
     let exit_msr = if use_true_ctls { IA32_VMX_TRUE_EXIT_CTLS } else { IA32_VMX_EXIT_CTLS };
@@ -515,11 +581,18 @@ unsafe fn init_vmcs(ept_root: u64, msr_bitmap_phys: u64) {
     // Exception bitmap: intercept nothing by default
     vmwrite(EXCEPTION_BITMAP, 0);
 
-    // CR0/CR4 guest/host mask and shadow: let guest control all bits
-    vmwrite(CR0_GUEST_HOST_MASK, 0);
-    vmwrite(CR0_READ_SHADOW, 0);
-    vmwrite(CR4_GUEST_HOST_MASK, 0);
-    vmwrite(CR4_READ_SHADOW, 0);
+    // CR0 guest/host mask: the host owns CR0.PE (bit 0) and CR0.NE (bit 5) so
+    // writes to those bits cause a VM-exit.  The guest sees our shadow values.
+    // We expose PE=0 in the shadow (real-mode start) and NE=1.
+    let cr0_owned: u64 = (1 << 0) | (1 << 5); // PE, NE
+    vmwrite(CR0_GUEST_HOST_MASK, cr0_owned);
+    vmwrite(CR0_READ_SHADOW, 1 << 5); // NE=1, PE=0 (real mode)
+
+    // CR4 guest/host mask: the host owns CR4.VMXE (bit 13) — the guest must
+    // never be able to clear it.  We show the guest VMXE=0 in the shadow.
+    let cr4_owned: u64 = 1 << 13; // VMXE
+    vmwrite(CR4_GUEST_HOST_MASK, cr4_owned);
+    vmwrite(CR4_READ_SHADOW, 0); // guest sees VMXE=0
 
     // Guest state: real mode defaults
     vmwrite(GUEST_CS_SELECTOR, 0xF000);
@@ -797,7 +870,11 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                     }
                 }
                 EXIT_REASON_EPT_VIOLATION => {
-                    info.is_read = if (qualification >> 1) & 1 != 0 { 0 } else { 1 };
+                    // Intel SDM Vol. 3C §27.2.1, Table 27-7:
+                    //   Qualification bit 0 = the access causing the violation was a read.
+                    //   Qualification bit 1 = the access was a write.
+                    //   Qualification bit 2 = the access was an instruction fetch.
+                    info.is_read = (qualification & 1) as u8;
                     info.access_size = 4; // default; exact size requires instruction decode
                     if info.is_read == 0 {
                         info.io_data = vcpu.guest_gprs.rax;
@@ -844,8 +921,23 @@ unsafe fn handle_cpuid_exit(cpuid_table: &[Option<CpuidEntry>], vcpu: &mut VmxVc
     }
 
     if !found {
-        // Pass through host CPUID (with some masking)
-        let (eax, ebx, ecx, edx) = crate::arch::x86::cpuid::cpuid(leaf, subleaf);
+        // Pass through host CPUID with required masking.
+        let (eax, ebx, mut ecx, edx) = crate::arch::x86::cpuid::cpuid(leaf, subleaf);
+        match leaf {
+            // Leaf 1: feature flags
+            1 => {
+                // ECX bit  5 = VMX — guests must not see VMX support.
+                ecx &= !(1 << 5);
+                // ECX bit 31 = Hypervisor present — set it so the guest knows
+                // it is running inside a hypervisor (KVM convention).
+                ecx |= 1 << 31;
+            }
+            // Leaf 0x8000_0001 (AMD extended): clear SVM bit (ECX bit 2)
+            0x8000_0001 => {
+                ecx &= !(1 << 2);
+            }
+            _ => {}
+        }
         vcpu.guest_gprs.rax = eax as u64;
         vcpu.guest_gprs.rbx = ebx as u64;
         vcpu.guest_gprs.rcx = ecx as u64;
