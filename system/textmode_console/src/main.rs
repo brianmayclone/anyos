@@ -796,6 +796,16 @@ fn run_pipeline(line: &str, cwd: &str, redirect: Option<Redirect>, pipe_counter:
     sys::con_set_mode(0);
 }
 
+/// Re-read the actual console size from the kernel and update COLUMNS/LINES.
+/// Called after every external command in case `mode` changed the size.
+fn sync_term_size() {
+    let (cols, rows) = sys::con_get_size();
+    if cols > 0 && rows > 0 {
+        env::set("COLUMNS", &format!("{}", cols));
+        env::set("LINES",   &format!("{}", rows));
+    }
+}
+
 // ─── Shell loop ──────────────────────────────────────────────────────────────
 
 fn shell_loop(username: &str) {
@@ -949,6 +959,7 @@ fn shell_loop(username: &str) {
                         println("[bg] pipeline background not supported, running in foreground");
                     }
                     run_pipeline(cmd_line, &cwd, redirect, &mut pipe_counter);
+                    sync_term_size();
                     continue;
                 }
 
@@ -977,6 +988,7 @@ fn shell_loop(username: &str) {
                     }
                 } else {
                     run_external(&prog_path, &full_args, redirect, stdin_data, &mut pipe_counter);
+                    sync_term_size();
                 }
             }
         }

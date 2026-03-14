@@ -50,3 +50,4 @@ EXPORTS
     corevm_vga_get_mode
     corevm_vga_get_lfb_addr
     corevm_set_whp_debug_callback
+    corevm_cmos_advance

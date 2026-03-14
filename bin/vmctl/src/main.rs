@@ -9,6 +9,7 @@
 //! ```text
 //! vmctl run [--uuid UUID | --ram N] [--disk path] [--iso path]
 //!           [--bios corevm|seabios] [--timeout N] [--serial-log path]
+//! vmctl vnc [-p <port>] [--vnc-pass <pw>] [--uuid UUID | -r N] [-d path] [-i path]
 //! vmctl list
 //! vmctl info <uuid>
 //! vmctl create-disk <path> <size_mb>
@@ -17,6 +18,7 @@
 //! # Subcommands
 //!
 //! - `run`         — Create a VM, run it, stream serial output, dump state on exit
+//! - `vnc`         — Start a VM and serve its display via built-in VNC server
 //! - `list`        — List configured VMs from /System/shared/vmmanager/vms/
 //! - `info <uuid>` — Show VM configuration details
 //! - `create-disk` — Create a blank disk image
@@ -24,6 +26,8 @@
 
 #![no_std]
 #![no_main]
+
+mod vnc;
 
 use alloc::format;
 use alloc::string::String;
@@ -800,6 +804,7 @@ fn print_help() {
     anyos_std::println!("COMMANDS:");
     anyos_std::println!("  run           Create and run a VM, stream serial output");
     anyos_std::println!("  serial        Interactive serial console (stdin/stdout)");
+    anyos_std::println!("  vnc           Start VM with built-in VNC display server");
     anyos_std::println!("  list          List configured VMs");
     anyos_std::println!("  info <uuid>   Show VM configuration");
     anyos_std::println!("  create-disk   Create a blank disk image");
@@ -818,11 +823,18 @@ fn print_help() {
     anyos_std::println!("  -k <text>     Type text via PS/2 keyboard after boot");
     anyos_std::println!("  -w <ms>       Wait N ms before typing -k text");
     anyos_std::println!("");
+    anyos_std::println!("VNC OPTIONS:");
+    anyos_std::println!("  -p <port>         VNC listen port (default: 5900)");
+    anyos_std::println!("  --vnc-pass <pw>   VNC password (up to 8 chars, DES auth)");
+    anyos_std::println!("  (also accepts -u, -r, -d, -i, -b, -n like run)");
+    anyos_std::println!("");
     anyos_std::println!("EXAMPLES:");
     anyos_std::println!("  vmctl run -r 128 -d /data/disk.img -t 30 -s -g");
     anyos_std::println!("  vmctl run -u 01234567890abcdef -t 60 -s");
     anyos_std::println!("  vmctl run -r 64 -i /data/boot.iso -b seabios -t 10 -s");
     anyos_std::println!("  vmctl serial -r 64 -d /data/disk.img");
+    anyos_std::println!("  vmctl vnc -r 128 -d /data/disk.img -p 5901");
+    anyos_std::println!("  vmctl vnc -r 256 -i /data/win.iso -b seabios --vnc-pass secret");
     anyos_std::println!("  vmctl list");
     anyos_std::println!("  vmctl info 01234567890abcdef");
     anyos_std::println!("  vmctl create-disk /data/blank.img 256");
@@ -840,7 +852,7 @@ fn print_help() {
 fn main() {
     let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
-    let args = anyos_std::args::parse(raw, b"urdibtkw");
+    let args = anyos_std::args::parse(raw, b"urdibtkwp");
 
     let command = args.first_or("help");
 
@@ -899,6 +911,62 @@ fn main() {
                     cmd_run(config, timeout, show_screen, show_regs);
                 }
             }
+        }
+        "vnc" => {
+            // Build config from UUID or CLI flags (same as run/serial)
+            let mut config = if let Some(uuid) = args.opt(b'u') {
+                match read_vm_config(uuid) {
+                    Some(c) => c,
+                    None => {
+                        anyos_std::println!("[vmctl] ERROR: VM config not found for UUID '{}'", uuid);
+                        anyos_std::process::exit(1);
+                    }
+                }
+            } else {
+                VmConfig::new()
+            };
+
+            if let Some(ram) = args.opt(b'r') {
+                let r = parse_u32(ram);
+                if r > 0 { config.ram_mb = r; }
+            }
+            if let Some(disk) = args.opt(b'd') {
+                config.disk_image = String::from(disk);
+            }
+            if let Some(iso) = args.opt(b'i') {
+                config.iso_image = String::from(iso);
+            }
+            if let Some(bios) = args.opt(b'b') {
+                config.bios_type = String::from(bios);
+            }
+            if args.has(b'n') {
+                config.net_enabled = true;
+            }
+
+            let port: u16 = args.opt_u32(b'p', 5900) as u16;
+
+            // --vnc-pass <password> — look for it as a long-option positional arg
+            // We scan the raw args for "--vnc-pass"
+            let mut vnc_pass: Option<[u8; 8]> = None;
+            {
+                let raw_str = raw;
+                let needle = "--vnc-pass";
+                if let Some(pos) = raw_str.find(needle) {
+                    let after = &raw_str[pos + needle.len()..];
+                    let pw_str = after.trim_start_matches(|c: char| c == ' ' || c == '=');
+                    // Take up to next space or end
+                    let end = pw_str.find(' ').unwrap_or(pw_str.len());
+                    let pw_str = &pw_str[..end];
+                    if !pw_str.is_empty() {
+                        let mut key = [0u8; 8];
+                        let copy_len = if pw_str.len() < 8 { pw_str.len() } else { 8 };
+                        key[..copy_len].copy_from_slice(&pw_str.as_bytes()[..copy_len]);
+                        vnc_pass = Some(key);
+                    }
+                }
+            }
+
+            vnc::cmd_vnc(config, port, vnc_pass.as_ref());
         }
         "list" => cmd_list(),
         "info" => {
