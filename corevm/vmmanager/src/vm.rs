@@ -363,6 +363,10 @@ fn vm_run_loop(
                         let val = match exit.size { 1 => data[0] as u32, 2 => u16::from_le_bytes([data[0], data[1]]) as u32, _ => u32::from_le_bytes(data) };
                         diag.log(DiagCategory::IoPort, format!("IN  port=0x{:04X} size={} -> 0x{:X}", exit.port, exit.size, val));
                     }
+                    // Process UHCI frames on every UHCI I/O read (SeaBIOS polls USBSTS)
+                    if usb_tablet {
+                        corevm_uhci_process(handle);
+                    }
                 }
             }
             1 => {
@@ -398,6 +402,10 @@ fn vm_run_loop(
                     }
                     let mut data = exit.data_u32.to_le_bytes();
                     corevm_handle_io_exit(handle, exit.port, 1, exit.size, data.as_mut_ptr());
+                    // Process UHCI frames on every UHCI I/O write (SeaBIOS configures UHCI)
+                    if usb_tablet {
+                        corevm_uhci_process(handle);
+                    }
                 }
             }
             2 => {
@@ -642,7 +650,9 @@ fn vm_run_loop(
             corevm_ac97_process(handle);
         }
 
-        // Process UHCI USB frames (~1kHz)
+        // Process UHCI USB frames — always process when UHCI is active,
+        // not just when USB tablet is enabled. SeaBIOS probes the UHCI
+        // during boot and hangs if frames are not processed.
         if usb_tablet {
             corevm_uhci_process(handle);
         }

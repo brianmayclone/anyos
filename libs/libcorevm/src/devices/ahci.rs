@@ -163,6 +163,10 @@ impl GuestDma {
                 let n = (bc as usize).min(buf.len() - offset);
                 if let Some(chunk) = self.read_bytes(dba, n) {
                     buf[offset..offset + n].copy_from_slice(&chunk);
+                } else {
+                    #[cfg(feature = "std")]
+                    eprintln!("[ahci] PRDT READ FAILED: dba=0x{:X} bc={} prdtl={} i={} ram_len=0x{:X}",
+                        dba, bc, prdtl, i, self.len);
                 }
                 offset += n;
             }
@@ -301,12 +305,24 @@ impl AhciDrive {
                 use std::io::{Write, Seek, SeekFrom};
                 let mut file = unsafe { Self::borrow_file(self.disk_fd) };
                 if let Err(_e) = file.seek(SeekFrom::Start(offset)) {
-                    #[cfg(feature = "std")]
-                    eprintln!("[ahci] WRITE SEEK ERROR at offset={}: {}", offset, _e);
+                    eprintln!("[ahci] WRITE SEEK ERROR at offset=0x{:X}: {}", offset, _e);
                 }
                 if let Err(_e) = file.write_all(buf) {
-                    #[cfg(feature = "std")]
-                    eprintln!("[ahci] WRITE ERROR at offset={} len={}: {}", offset, buf.len(), _e);
+                    eprintln!("[ahci] WRITE ERROR at offset=0x{:X} len={}: {}", offset, buf.len(), _e);
+                }
+                // Verify: read back what we just wrote
+                static WRITE_VERIFY_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                let cnt = WRITE_VERIFY_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                if cnt < 5 && buf.len() <= 4096 {
+                    let _ = file.seek(SeekFrom::Start(offset));
+                    let mut verify = vec![0u8; buf.len()];
+                    use std::io::Read;
+                    let _ = file.read_exact(&mut verify);
+                    if verify != buf {
+                        eprintln!("[ahci] WRITE VERIFY FAILED at offset=0x{:X} len={}: wrote != readback!", offset, buf.len());
+                    } else {
+                        eprintln!("[ahci] WRITE VERIFY OK at offset=0x{:X} len={} fd={}", offset, buf.len(), self.disk_fd);
+                    }
                 }
                 core::mem::forget(file);
                 return;
@@ -429,6 +445,8 @@ pub struct Ahci {
     irq_pending: bool,
     /// MSI state — updated when guest writes PCI config space MSI registers.
     pub msi_enabled: bool,
+    #[cfg(feature = "std")]
+    debug_access_count: u32,
     pub msi_address: u64,
     pub msi_data: u32,
     guest_mem_ptr: *mut u8,
@@ -459,6 +477,8 @@ impl Ahci {
             msi_enabled: false,
             msi_address: 0,
             msi_data: 0,
+            #[cfg(feature = "std")]
+            debug_access_count: 0,
             guest_mem_ptr: core::ptr::null_mut(),
             guest_mem_len: 0,
         }
@@ -524,7 +544,12 @@ impl Ahci {
 
         let dma = self.dma();
         let port = &mut self.ports[port_idx];
-        if !port.drive.present || port.cmd & PORT_CMD_ST == 0 { return; }
+        if !port.drive.present || port.cmd & PORT_CMD_ST == 0 {
+            #[cfg(feature = "std")]
+            eprintln!("[ahci] process_commands port{} SKIPPED: present={} ST={}",
+                port_idx, port.drive.present, port.cmd & PORT_CMD_ST != 0);
+            return;
+        }
 
         let ci = port.ci;
         if ci == 0 { return; }
@@ -533,7 +558,17 @@ impl Ahci {
             if ci & (1 << slot) == 0 { continue; }
 
             let cmd_hdr_addr = port.clb + (slot as u64) * 32;
-            let header = match dma.read_bytes(cmd_hdr_addr, 32) { Some(h) => h, None => continue };
+            let header = match dma.read_bytes(cmd_hdr_addr, 32) {
+                Some(h) => h,
+                None => {
+                    #[cfg(feature = "std")]
+                    eprintln!("[ahci] DMA READ FAILED: clb=0x{:X} cmd_hdr_addr=0x{:X} slot={} ram_len=0x{:X}",
+                        port.clb, cmd_hdr_addr, slot, dma.len);
+                    // Clear CI bit to prevent infinite retry
+                    port.ci &= !(1 << slot);
+                    continue;
+                }
+            };
 
             let dw0 = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
             let prdtl = (dw0 >> 16) & 0xFFFF;
@@ -541,10 +576,34 @@ impl Ahci {
             let ctba = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as u64
                 | (u32::from_le_bytes([header[12], header[13], header[14], header[15]]) as u64) << 32;
 
-            let cfis = match dma.read_bytes(ctba, 64) { Some(f) => f, None => continue };
-            if cfis[0] != FIS_TYPE_REG_H2D { continue; }
+            let cfis = match dma.read_bytes(ctba, 64) {
+                Some(f) => f,
+                None => {
+                    #[cfg(feature = "std")]
+                    eprintln!("[ahci] CFIS READ FAILED: ctba=0x{:X} slot={} ram_len=0x{:X}", ctba, slot, dma.len);
+                    port.ci &= !(1 << slot);
+                    continue;
+                }
+            };
+            if cfis[0] != FIS_TYPE_REG_H2D {
+                #[cfg(feature = "std")]
+                eprintln!("[ahci] BAD FIS TYPE: 0x{:02X} (expected 0x27) slot={} ctba=0x{:X} clb=0x{:X}",
+                    cfis[0], slot, ctba, port.clb);
+                port.ci &= !(1 << slot);
+                continue;
+            }
 
             let command = cfis[2];
+            #[cfg(feature = "std")]
+            {
+                static CMD_DBG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                let cnt = CMD_DBG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                if cnt < 30 {
+                    eprintln!("[ahci-cmd] port{} slot{} cmd=0x{:02X} kind={:?} lba_raw=[{:02X},{:02X},{:02X},{:02X},{:02X},{:02X}]",
+                        port_idx, slot, command, port.drive.kind,
+                        cfis[4], cfis[5], cfis[6], cfis[8], cfis[9], cfis[10]);
+                }
+            }
             let lba = cfis[4] as u64 | (cfis[5] as u64) << 8 | (cfis[6] as u64) << 16
                 | (cfis[8] as u64) << 24 | (cfis[9] as u64) << 32 | (cfis[10] as u64) << 40;
             let mut count = (cfis[13] as u32) << 8 | cfis[12] as u32;
@@ -606,6 +665,18 @@ impl Ahci {
                     dma.write_u32(cmd_hdr_addr + 4, total as u32);
                     port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
                     port.is |= PORT_IS_DHRS;
+                    #[cfg(feature = "std")]
+                    {
+                        static WRITE_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+                        static WRITE_BYTES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+                        let wc = WRITE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        WRITE_BYTES.fetch_add(total as u64, core::sync::atomic::Ordering::Relaxed);
+                        if wc < 3 || wc % 10000 == 0 {
+                            let wb = WRITE_BYTES.load(core::sync::atomic::Ordering::Relaxed);
+                            eprintln!("[ahci] WRITE #{} port{} lba={} count={} bytes={} total_writes={} total_bytes={}",
+                                wc, port_idx, lba, count, total, wc+1, wb);
+                        }
+                    }
                 }
                 ATA_CMD_FLUSH | ATA_CMD_FLUSH_EXT => {
                     // Flush write cache — call fsync on the host fd
@@ -724,9 +795,14 @@ impl Ahci {
             PORT_CMD => {
                 let old = self.ports[idx].cmd;
                 self.ports[idx].cmd = val & !(PORT_CMD_CR | PORT_CMD_FR);
-                // When ST is set (start), clear TFD error bits (mimics HBA reset-to-ready)
+                // When ST is set (start), clear TFD error bits and process pending commands.
+                // SeaBIOS writes PORT_CI first, then sets PORT_CMD.ST — so commands
+                // queued before ST was set must be processed now.
                 if val & PORT_CMD_ST != 0 && old & PORT_CMD_ST == 0 {
                     self.ports[idx].tfd = TFD_STS_DRDY | TFD_STS_DSC;
+                    if self.ports[idx].ci != 0 {
+                        self.process_commands(idx);
+                    }
                 }
             }
             PORT_SCTL => {
@@ -738,6 +814,16 @@ impl Ahci {
             PORT_SACT => { self.ports[idx].sact |= val; }
             PORT_CI => {
                 self.ports[idx].ci |= val;
+                #[cfg(feature = "std")]
+                {
+                    static AHCI_CI_DBG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    let cnt = AHCI_CI_DBG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if cnt < 20 {
+                        eprintln!("[ahci] PORT_CI write port{} ci=0x{:X} cmd=0x{:X} ST={} present={}",
+                            idx, val, self.ports[idx].cmd, self.ports[idx].cmd & PORT_CMD_ST != 0,
+                            self.ports[idx].drive.present);
+                    }
+                }
                 self.process_commands(idx);
             }
             PORT_FBS => { self.ports[idx].fbs = val; }
@@ -780,6 +866,24 @@ impl Drop for Ahci {
 
 impl MmioHandler for Ahci {
     fn read(&mut self, offset: u64, size: u8) -> Result<u64> {
+        #[cfg(feature = "std")]
+        {
+            if self.debug_access_count < 50 {
+                self.debug_access_count += 1;
+                let preview = match offset {
+                    0x100..=0x10FF => {
+                        let po = offset - 0x100;
+                        self.port_read((po / 0x80) as usize, po % 0x80)
+                    }
+                    0x00 => self.cap,
+                    0x04 => self.ghc,
+                    0x08 => self.is,
+                    0x0C => self.pi,
+                    _ => 0
+                };
+                eprintln!("[ahci-rd] off=0x{:03X} val=0x{:08X} pi=0x{:X}", offset, preview, self.pi);
+            }
+        }
         let val = match offset {
             HBA_CAP => self.cap, HBA_GHC => self.ghc, HBA_IS => self.is,
             HBA_PI => self.pi, HBA_VS => self.vs, HBA_CCC_CTL => self.ccc_ctl,
@@ -809,7 +913,10 @@ impl MmioHandler for Ahci {
                     }
                     self.is = 0; self.ghc = GHC_AE; self.irq_pending = false;
                     #[cfg(feature = "std")]
-                    eprintln!("[ahci] HBA RESET");
+                    {
+                        eprintln!("[ahci] HBA RESET (pi=0x{:X})", self.pi);
+                        self.debug_access_count = 0;
+                    }
                 } else {
                     let old = self.ghc;
                     self.ghc = v | GHC_AE;

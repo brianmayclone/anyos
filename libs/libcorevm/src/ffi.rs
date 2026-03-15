@@ -736,14 +736,11 @@ pub extern "C" fn corevm_ahci_poll_irq(handle: u64) {
     if !vm.pci_bus_ptr.is_null() {
         let bus = unsafe { &mut *vm.pci_bus_ptr };
         let msi_cap = crate::devices::ahci::AHCI_MSI_CAP_OFFSET;
-        // Message Control Register: offset+2 (16-bit), Bit 0 = MSI Enable
         let mcr = bus.mmcfg_read(0, 3, 0, msi_cap + 2, 2) as u16;
         let ahci = unsafe { &mut *vm.ahci_ptr };
         ahci.msi_enabled = (mcr & 0x01) != 0;
         if ahci.msi_enabled {
-            // Message Address (32-bit at offset+4)
             let addr_lo = bus.mmcfg_read(0, 3, 0, msi_cap + 4, 4) as u32;
-            // Message Data (16-bit at offset+8)
             let data = bus.mmcfg_read(0, 3, 0, msi_cap + 8, 2) as u32;
             ahci.msi_address = addr_lo as u64;
             ahci.msi_data = data;
@@ -758,7 +755,18 @@ pub extern "C" fn corevm_ahci_poll_irq(handle: u64) {
         if ahci.msi_enabled {
             // MSI mode: edge-triggered, fire once per interrupt then clear
             if want_asserted {
-                let _ = vm.backend.signal_msi(ahci.msi_address, ahci.msi_data);
+                match vm.backend.signal_msi(ahci.msi_address, ahci.msi_data) {
+                    Ok(_) => {},
+                    Err(e) => {
+                        eprintln!("[ahci] MSI SIGNAL FAILED: addr=0x{:X} data=0x{:X} err={:?}",
+                            ahci.msi_address, ahci.msi_data, e);
+                        // Fallback to legacy IRQ
+                        if !vm.ahci_irq_asserted {
+                            let _ = vm.backend.set_irq_line(11, true);
+                            vm.ahci_irq_asserted = true;
+                        }
+                    }
+                }
                 ahci.clear_irq();
                 // Deassert legacy IRQ line if it was still asserted
                 if vm.ahci_irq_asserted {
