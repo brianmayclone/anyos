@@ -392,7 +392,7 @@ impl Ac97 {
                 return match offset {
                     0x2C => self.glob_cnt,
                     0x30 => self.glob_sta,
-                    0x34 => 0x01, // CAS: Codec Access Semaphore (always ready)
+                    0x34 => 0x00, // CAS: Codec Access Semaphore (0=ready, 1=busy)
                     _ => 0,
                 };
             }

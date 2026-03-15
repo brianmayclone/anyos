@@ -31,6 +31,7 @@ const PORT_CSC: u16 = 0x0002;
 const PORT_PE: u16  = 0x0004;
 const PORT_PEC: u16 = 0x0008;
 const PORT_PR: u16  = 0x0200;
+const PORT_ALWAYS1: u16 = 0x0080; // Bit 7: reserved, always reads as 1
 
 const TD_ACTIVE: u32 = 1 << 23;
 const TD_IOC: u32    = 1 << 24;
@@ -128,7 +129,7 @@ impl Uhci {
             frnum: 0,
             flbaseadd: 0,
             sofmod: 64,
-            portsc: [PORT_CCS, 0], // port 1: tablet connected
+            portsc: [PORT_CCS | PORT_ALWAYS1, PORT_ALWAYS1], // port 1: tablet connected
             current_report: TabletReport { buttons: 0, x: 0, y: 0 },
             device_address: 0,
             configured: false,
@@ -411,7 +412,7 @@ impl Uhci {
         self.flbaseadd = 0;
         self.sofmod = 64;
         // After reset: device connected on port 1, CSC set to trigger enumeration
-        self.portsc = [PORT_CCS | PORT_CSC, 0];
+        self.portsc = [PORT_CCS | PORT_CSC | PORT_ALWAYS1, PORT_ALWAYS1];
         self.device_address = 0;
         self.configured = false;
         self.ctrl_response.clear();
@@ -445,12 +446,12 @@ impl Uhci {
         let old = self.portsc[port_idx];
 
         if val & PORT_PR != 0 {
-            self.portsc[port_idx] = PORT_PR | (old & PORT_CCS);
+            self.portsc[port_idx] = PORT_PR | (old & PORT_CCS) | PORT_ALWAYS1;
             return;
         }
 
         if old & PORT_PR != 0 && val & PORT_PR == 0 {
-            let mut new_val = PORT_PE | PORT_CSC | PORT_PEC;
+            let mut new_val = PORT_PE | PORT_CSC | PORT_PEC | PORT_ALWAYS1;
             if port_idx == 0 {
                 new_val |= PORT_CCS;
             }
@@ -464,6 +465,8 @@ impl Uhci {
         new_val = (new_val & !PORT_PE) | (val & PORT_PE);
         // CCS is read-only
         new_val = (new_val & !PORT_CCS) | (old & PORT_CCS);
+        // Bit 7 always reads 1
+        new_val |= PORT_ALWAYS1;
         self.portsc[port_idx] = new_val;
     }
 }

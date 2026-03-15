@@ -479,6 +479,9 @@ impl Ahci {
             let prdt_base = ctba + 0x80;
 
 
+            #[cfg(feature = "std")]
+            eprintln!("[ahci] port{} slot{} cmd=0x{:02X} lba={} count={} prdtl={}", port_idx, slot, command, lba, count, prdtl);
+
             match command {
                 ATA_CMD_IDENTIFY | ATA_CMD_IDENTIFY_PACKET => {
                     let id = port.drive.build_identify();
@@ -513,6 +516,25 @@ impl Ahci {
                     port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
                     port.is |= PORT_IS_DHRS;
                 }
+                0xB0 => { // SMART
+                    let sub = cfis[3]; // features register = subcommand
+                    match sub {
+                        0xD0 | 0xD1 => { // SMART READ DATA / SMART READ THRESHOLDS
+                            let mut data = [0u8; 512];
+                            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &data); }
+                            dma.write_u32(cmd_hdr_addr + 4, 512);
+                            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+                        }
+                        0xD8 | 0xD9 | 0xDA => { // SMART ENABLE/DISABLE OPERATIONS / RETURN STATUS
+                            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+                        }
+                        _ => {
+                            // Unsupported SMART sub — just succeed
+                            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+                        }
+                    }
+                    port.is |= PORT_IS_DHRS;
+                }
                 ATA_CMD_PACKET => {
                     if let Some(acmd) = dma.read_bytes(ctba + 0x40, 16) {
                         process_atapi(port, &dma, &acmd, prdt_base, prdtl, cmd_hdr_addr);
@@ -522,7 +544,10 @@ impl Ahci {
                     }
                 }
                 _ => {
-                    port.tfd = TFD_STS_DRDY | TFD_STS_DSC | 1;
+                    #[cfg(feature = "std")]
+                    eprintln!("[ahci] UNSUPPORTED ATA cmd=0x{:02X}", command);
+                    // Return ABRT error for unsupported commands
+                    port.tfd = TFD_STS_DRDY | TFD_STS_DSC | (0x04 << 8) | 1; // ERR + ABRT
                     port.is |= PORT_IS_DHRS;
                 }
             }
@@ -648,6 +673,8 @@ impl MmioHandler for Ahci {
 // ── ATAPI command processing (free function to avoid borrow issues) ──
 
 fn process_atapi(port: &mut AhciPort, dma: &GuestDma, acmd: &[u8], prdt_base: u64, prdtl: u32, cmd_hdr_addr: u64) {
+    #[cfg(feature = "std")]
+    eprintln!("[ahci-atapi] opcode=0x{:02X} acmd={:02X?}", acmd[0], &acmd[..acmd.len().min(12)]);
     match acmd[0] {
         0x00 => { // TEST UNIT READY
             port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
@@ -663,15 +690,47 @@ fn process_atapi(port: &mut AhciPort, dma: &GuestDma, acmd: &[u8], prdt_base: u6
             port.is |= PORT_IS_DHRS;
         }
         0x12 => { // INQUIRY
+            let evpd = acmd[1] & 0x01 != 0;
+            let page_code = acmd[2];
             let al = ((acmd[3] as usize) << 8) | acmd[4] as usize;
-            let mut d = [0u8; 36];
-            d[0] = 0x05; d[1] = 0x80; d[2] = 0x05; d[3] = 0x32; d[4] = 31;
-            d[8..16].copy_from_slice(b"CoreVM  ");
-            d[16..32].copy_from_slice(b"Virtual CD-ROM  ");
-            d[32..36].copy_from_slice(b"1.0 ");
-            let len = al.min(36);
-            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
-            dma.write_u32(cmd_hdr_addr + 4, len as u32);
+            if evpd {
+                match page_code {
+                    0x00 => { // Supported VPD pages
+                        let d = [0x05u8, 0x00, 0x00, 0x03, 0x00, 0x80, 0x83];
+                        let len = al.min(d.len());
+                        if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+                        dma.write_u32(cmd_hdr_addr + 4, len as u32);
+                    }
+                    0x80 => { // Unit Serial Number
+                        let d = [0x05u8, 0x80, 0x00, 0x08,
+                            b'C', b'V', b'M', b'0', b'0', b'0', b'0', b'1'];
+                        let len = al.min(d.len());
+                        if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+                        dma.write_u32(cmd_hdr_addr + 4, len as u32);
+                    }
+                    0x83 => { // Device Identification
+                        let d = [0x05u8, 0x83, 0x00, 0x00]; // empty
+                        let len = al.min(d.len());
+                        if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+                        dma.write_u32(cmd_hdr_addr + 4, len as u32);
+                    }
+                    _ => {
+                        // Unsupported VPD page — return CHECK CONDITION
+                        port.tfd = TFD_STS_DRDY | TFD_STS_DSC | 1;
+                        port.is |= PORT_IS_DHRS;
+                        return;
+                    }
+                }
+            } else {
+                let mut d = [0u8; 36];
+                d[0] = 0x05; d[1] = 0x80; d[2] = 0x05; d[3] = 0x32; d[4] = 31;
+                d[8..16].copy_from_slice(b"CoreVM  ");
+                d[16..32].copy_from_slice(b"Virtual CD-ROM  ");
+                d[32..36].copy_from_slice(b"1.0 ");
+                let len = al.min(36);
+                if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+                dma.write_u32(cmd_hdr_addr + 4, len as u32);
+            }
             port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
             port.is |= PORT_IS_DHRS;
         }
@@ -701,18 +760,59 @@ fn process_atapi(port: &mut AhciPort, dma: &GuestDma, acmd: &[u8], prdt_base: u6
         }
         0x43 => { // READ TOC
             let msf = acmd[1] & 0x02 != 0;
+            let format = acmd[2] & 0x0F; // or (acmd[9] >> 6) for some variants
             let al = u16::from_be_bytes([acmd[7], acmd[8]]) as usize;
             let secs = port.drive.total_sectors() as u32;
-            let mut d = vec![0u8; 20];
-            d[0] = 0; d[1] = 18; d[2] = 1; d[3] = 1;
-            d[5] = 0x14; d[6] = 1;
-            if msf { let (m,s,f) = lba_to_msf(0); d[9]=m; d[10]=s; d[11]=f; }
-            d[13] = 0x14; d[14] = 0xAA;
-            if msf { let (m,s,f) = lba_to_msf(secs); d[17]=m; d[18]=s; d[19]=f; }
-            else { d[16..20].copy_from_slice(&secs.to_be_bytes()); }
-            let len = al.min(d.len());
-            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
-            dma.write_u32(cmd_hdr_addr + 4, len as u32);
+            match format {
+                0 => { // TOC
+                    let mut d = vec![0u8; 20];
+                    d[0] = 0; d[1] = 18; d[2] = 1; d[3] = 1;
+                    d[5] = 0x14; d[6] = 1;
+                    if msf { let (m,s,f) = lba_to_msf(0); d[9]=m; d[10]=s; d[11]=f; }
+                    d[13] = 0x14; d[14] = 0xAA;
+                    if msf { let (m,s,f) = lba_to_msf(secs); d[17]=m; d[18]=s; d[19]=f; }
+                    else { d[16..20].copy_from_slice(&secs.to_be_bytes()); }
+                    let len = al.min(d.len());
+                    if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+                    dma.write_u32(cmd_hdr_addr + 4, len as u32);
+                }
+                1 => { // Multisession info
+                    let mut d = vec![0u8; 12];
+                    d[0] = 0; d[1] = 10; // length
+                    d[2] = 1; d[3] = 1; // first/last session
+                    d[5] = 0x14; d[6] = 1; // track 1
+                    // Start address of first track in last session = 0
+                    let len = al.min(d.len());
+                    if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+                    dma.write_u32(cmd_hdr_addr + 4, len as u32);
+                }
+                2 => { // Raw TOC (Full TOC)
+                    let mut d = vec![0u8; 48];
+                    d[0] = 0; d[1] = 46; // length
+                    d[2] = 1; d[3] = 1; // first/last session
+                    // Point A0 — first track
+                    d[5] = 0x01; d[7] = 0xA0; d[11] = 0x01; d[13] = 0x00;
+                    // Point A1 — last track
+                    d[16+5-11] = 0x01; d[16+7-11] = 0xA1; d[16+11-11] = 0x01;
+                    // Point A2 — lead-out
+                    let (m,s,f) = lba_to_msf(secs);
+                    d[32+5-22] = 0x01; d[32+7-22] = 0xA2; d[32+11-22] = m; d[32+12-22] = s; d[32+13-22] = f;
+                    let len = al.min(d.len());
+                    if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+                    dma.write_u32(cmd_hdr_addr + 4, len as u32);
+                }
+                _ => {
+                    // Just return format 0 as fallback
+                    let mut d = vec![0u8; 20];
+                    d[0] = 0; d[1] = 18; d[2] = 1; d[3] = 1;
+                    d[5] = 0x14; d[6] = 1;
+                    d[13] = 0x14; d[14] = 0xAA;
+                    d[16..20].copy_from_slice(&secs.to_be_bytes());
+                    let len = al.min(d.len());
+                    if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+                    dma.write_u32(cmd_hdr_addr + 4, len as u32);
+                }
+            }
             port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
             port.is |= PORT_IS_DHRS;
         }
@@ -734,7 +834,7 @@ fn process_atapi(port: &mut AhciPort, dma: &GuestDma, acmd: &[u8], prdt_base: u6
             port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
             port.is |= PORT_IS_DHRS;
         }
-        0x1A | 0x5A => { // MODE SENSE
+        0x1A => { // MODE SENSE (6)
             let d = [0u8; 8];
             if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d); }
             dma.write_u32(cmd_hdr_addr + 4, 8);
@@ -745,7 +845,48 @@ fn process_atapi(port: &mut AhciPort, dma: &GuestDma, acmd: &[u8], prdt_base: u6
             port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
             port.is |= PORT_IS_DHRS;
         }
+        0x51 => { // READ DISC INFORMATION
+            let al = u16::from_be_bytes([acmd[7], acmd[8]]) as usize;
+            let mut d = [0u8; 34];
+            d[0] = 0; d[1] = 32; // length
+            d[2] = 0x0E; // last session complete, disc finalized
+            d[3] = 1; // first track
+            d[4] = 1; // number of sessions (LSB)
+            d[5] = 1; // first track in last session (LSB)
+            d[6] = 1; // last track in last session (LSB)
+            d[7] = 0x20; // unrestricted use
+            d[8] = 0x00; // CD-ROM disc type
+            let len = al.min(34);
+            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+            dma.write_u32(cmd_hdr_addr + 4, len as u32);
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
+        0x5A => { // MODE SENSE (10) — handled separately for proper response
+            let page = acmd[2] & 0x3F;
+            let al = u16::from_be_bytes([acmd[7], acmd[8]]) as usize;
+            let mut d = [0u8; 28];
+            // Mode parameter header (8 bytes for MODE SENSE 10)
+            d[1] = 6; // mode data length (excluding first 2 bytes)
+            d[2] = 0x00; // medium type (CD-ROM)
+            // Return minimal response
+            let len = al.min(8);
+            if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &d[..len]); }
+            dma.write_u32(cmd_hdr_addr + 4, len as u32);
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
+        0x2A => { // WRITE (10) — CD-ROM is read-only, return error
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC | 1; // ERR bit set
+            port.is |= PORT_IS_DHRS;
+        }
+        0x35 => { // SYNCHRONIZE CACHE
+            port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+            port.is |= PORT_IS_DHRS;
+        }
         _ => {
+            #[cfg(feature = "std")]
+            eprintln!("[ahci-atapi] UNSUPPORTED opcode 0x{:02X}", acmd[0]);
             port.tfd = TFD_STS_DRDY | TFD_STS_DSC | 1;
             port.is |= PORT_IS_DHRS;
         }
