@@ -64,6 +64,9 @@ pub struct Vm {
     /// Tracks whether E1000 IRQ 11 is currently asserted (level-triggered).
     pub e1000_irq_asserted: bool,
 
+    /// Set when the guest writes to port 0xCF9 requesting a system reset.
+    pub cf9_reset_pending: bool,
+
     /// Thread-safe queue for mouse events from external threads (e.g., UI or
     /// injection threads).  The FFI function `corevm_ps2_mouse_move` pushes
     /// events here instead of calling `ps2.mouse_move()` directly, avoiding

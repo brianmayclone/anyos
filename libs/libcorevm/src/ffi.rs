@@ -711,6 +711,30 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
     }
 }
 
+/// Check if the guest has requested a system reset (e.g. PS/2 0xFE, port 0xCF9).
+/// Returns 1 if reset was requested (and clears the flag), 0 otherwise.
+#[no_mangle]
+pub extern "C" fn corevm_check_reset(handle: u64) -> i32 {
+    match get_vm(handle) {
+        Some(vm) => {
+            // Check PS/2 controller reset request (0xFE to port 0x64)
+            if let Some(ps2) = vm.ps2() {
+                if ps2.reset_requested {
+                    ps2.reset_requested = false;
+                    return 1;
+                }
+            }
+            // Check port 0xCF9 reset (stored in VM state)
+            if vm.cf9_reset_pending {
+                vm.cf9_reset_pending = false;
+                return 1;
+            }
+            0
+        }
+        None => 0,
+    }
+}
+
 /// Debug: return PIC master state as packed u32.
 /// bits 0-7: IRR, 8-15: IMR, 16-23: ISR, 24: icw_step>0
 #[no_mangle]
