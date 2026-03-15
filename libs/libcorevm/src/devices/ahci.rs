@@ -53,6 +53,7 @@ const PORT_CMD_CR: u32 = 1 << 15;
 const PORT_CMD_ICC_ACTIVE: u32 = 1 << 28;
 
 const PORT_IS_DHRS: u32 = 1 << 0;
+const PORT_IS_TFES: u32 = 1 << 30; // Task File Error Status
 
 const GHC_HR: u32 = 1 << 0;
 const GHC_IE: u32 = 1 << 1;
@@ -1162,9 +1163,17 @@ fn process_atapi(port: &mut AhciPort, dma: &GuestDma, acmd: &[u8], prdt_base: u6
         }
         _ => {
             #[cfg(feature = "std")]
-            eprintln!("[ahci-atapi] UNSUPPORTED opcode 0x{:02X}", acmd[0]);
-            port.tfd = TFD_STS_DRDY | TFD_STS_DSC | 1;
-            port.is |= PORT_IS_DHRS;
+            {
+                static ATAPI_UNK_DBG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                if ATAPI_UNK_DBG.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 5 {
+                    eprintln!("[ahci-atapi] UNSUPPORTED opcode 0x{:02X}", acmd[0]);
+                }
+            }
+            // Return CHECK CONDITION with sense: ILLEGAL REQUEST (0x05) /
+            // INVALID COMMAND OPERATION CODE (ASC=0x20, ASCQ=0x00).
+            // TFD byte 0 = Status (CHK=1, DRDY=1), byte 1 = Error (Sense Key << 4)
+            port.tfd = ((0x05 << 4) << 8) | TFD_STS_DRDY | 1; // Error=SenseKey=5, Status=DRDY|CHK
+            port.is |= PORT_IS_DHRS | PORT_IS_TFES;
         }
     }
 }

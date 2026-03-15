@@ -349,7 +349,13 @@ impl Vm {
         // address is handled by the MMIO fallback proxy if any guest
         // driver tries to use it instead of the VBE address.
         // (Slot 0 = RAM below PCI hole, slot 1 = reserved for BIOS ROM, slot 3 = RAM above 4GB)
-        self.backend.set_memory_region(2, 0xE000_0000, fb_size, fb_ptr)
+        self.backend.set_memory_region(2, 0xE000_0000, fb_size, fb_ptr)?;
+
+        // Slot 4: VGA LFB at PCI BAR0 address (0xFD000000).
+        // Linux bochs-drm uses the PCI BAR0 address, not 0xE0000000.
+        // Cap at 16 MB to avoid colliding with PCI Expansion ROMs at 0xFE000000.
+        let bar0_size = fb_size.min(0x0100_0000); // max 16 MB
+        self.backend.set_memory_region(4, 0xFD00_0000, bar0_size, fb_ptr)
     }
 
     // ── VmBackend delegations ──
