@@ -61,6 +61,9 @@ pub struct Vm {
     /// the state changes.
     pub ahci_irq_asserted: bool,
 
+    /// Tracks whether E1000 IRQ 11 is currently asserted (level-triggered).
+    pub e1000_irq_asserted: bool,
+
     /// Thread-safe queue for mouse events from external threads (e.g., UI or
     /// injection threads).  The FFI function `corevm_ps2_mouse_move` pushes
     /// events here instead of calling `ps2.mouse_move()` directly, avoiding
@@ -129,6 +132,7 @@ impl Vm {
             pci_mmio_router_ptr: core::ptr::null_mut(),
             pci_io_router_ptr: core::ptr::null_mut(),
             ahci_irq_asserted: false,
+            e1000_irq_asserted: false,
             #[cfg(feature = "std")]
             pending_mouse: std::sync::Mutex::new(alloc::vec::Vec::new()),
         })
@@ -483,6 +487,12 @@ impl Vm {
     }
 
     /// Route an MMIO exit to the registered device handler.
+    ///
+    /// If no registered MMIO region matches, checks whether the address falls
+    /// within the VGA BAR2 region (Bochs VBE DISPI registers). SeaBIOS may
+    /// remap BAR2 to an address different from our statically registered ones,
+    /// so this fallback ensures the bochs-drm driver always reaches the VBE
+    /// registers regardless of where the firmware places BAR2.
     pub fn handle_mmio(&mut self, addr: u64, is_write: bool, size: u8, data: &mut [u8]) {
         if is_write {
             let val = match size {
@@ -495,16 +505,79 @@ impl Vm {
                 ]),
                 _ => 0,
             };
-            self.memory.dispatch_mmio_write(addr, size, val);
+            if !self.memory.dispatch_mmio_write(addr, size, val) {
+                // Fallback: check VGA BAR2 for VBE DISPI registers
+                if let Some(offset) = self.vga_bar2_offset(addr) {
+                    self.svga_dispi_write(offset, size, val);
+                }
+            }
         } else {
-            let val = self.memory.dispatch_mmio_read(addr, size).unwrap_or(0xFFFF_FFFF_FFFF_FFFF);
-            let bytes = val.to_le_bytes();
-            for i in 0..size as usize {
-                if i < data.len() {
-                    data[i] = bytes[i];
+            match self.memory.dispatch_mmio_read(addr, size) {
+                Some(val) => {
+                    let bytes = val.to_le_bytes();
+                    for i in 0..size as usize {
+                        if i < data.len() {
+                            data[i] = bytes[i];
+                        }
+                    }
+                }
+                None => {
+                    // Fallback: check VGA BAR2 for VBE DISPI registers
+                    let val = if let Some(offset) = self.vga_bar2_offset(addr) {
+                        self.svga_dispi_read(offset, size)
+                    } else {
+                        0xFFFF_FFFF_FFFF_FFFF
+                    };
+                    let bytes = val.to_le_bytes();
+                    for i in 0..size as usize {
+                        if i < data.len() {
+                            data[i] = bytes[i];
+                        }
+                    }
                 }
             }
         }
+    }
+
+    /// Check if `addr` falls within the current VGA BAR2 region (4KB).
+    /// Returns the offset within the BAR2 region, or None.
+    fn vga_bar2_offset(&self, addr: u64) -> Option<u64> {
+        if self.pci_bus_ptr.is_null() { return None; }
+        let pci_bus = unsafe { &*self.pci_bus_ptr };
+        // VGA is device 2 (00:02.0) — read BAR2 (config offset 0x18)
+        if let Some(vga_dev) = pci_bus.devices.iter().find(|d| d.device == 2 && d.function == 0) {
+            let bar2 = u32::from_le_bytes([
+                vga_dev.config_space[0x18],
+                vga_dev.config_space[0x19],
+                vga_dev.config_space[0x1A],
+                vga_dev.config_space[0x1B],
+            ]) & 0xFFFFF000; // Mask out type bits
+            if bar2 != 0 {
+                let bar2_base = bar2 as u64;
+                if addr >= bar2_base && addr < bar2_base + 0x1000 {
+                    return Some(addr - bar2_base);
+                }
+            }
+        }
+        None
+    }
+
+    /// Read from VBE DISPI MMIO registers via the SVGA device.
+    fn svga_dispi_read(&mut self, offset: u64, size: u8) -> u64 {
+        if self.svga_ptr.is_null() { return 0xFFFF_FFFF; }
+        let svga = unsafe { &mut *self.svga_ptr };
+        let mut proxy = SvgaDispiMmioProxy(svga as *mut _);
+        use crate::memory::mmio::MmioHandler;
+        proxy.read(offset, size).unwrap_or(0xFFFF_FFFF)
+    }
+
+    /// Write to VBE DISPI MMIO registers via the SVGA device.
+    fn svga_dispi_write(&mut self, offset: u64, size: u8, val: u64) {
+        if self.svga_ptr.is_null() { return; }
+        let svga = unsafe { &mut *self.svga_ptr };
+        let mut proxy = SvgaDispiMmioProxy(svga as *mut _);
+        use crate::memory::mmio::MmioHandler;
+        let _ = proxy.write(offset, size, val);
     }
 
     // ── KVM-specific response writing ──

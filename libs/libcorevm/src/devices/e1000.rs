@@ -50,6 +50,7 @@ const REG_CTRL: usize = 0x0000;
 const REG_STATUS: usize = 0x0008;
 const REG_EECD: usize = 0x0010;
 const REG_EERD: usize = 0x0014;
+const REG_MDIC: usize = 0x0020;
 const REG_ICR: usize = 0x00C0;
 const REG_ICS: usize = 0x00C4;
 const REG_IMS: usize = 0x00C8;
@@ -99,6 +100,30 @@ const EECD_PRES: u32 = 1 << 8; // EEPROM Present
 /// Microwire opcode: read = 0b110
 const MW_OPCODE_READ: u8 = 0b110;
 
+// MDIC register bits (PHY management via MDI).
+const MDIC_DATA_MASK: u32 = 0xFFFF;       // Bits 15:0 — data
+const MDIC_REG_SHIFT: u32 = 16;           // Bits 20:16 — PHY register
+const MDIC_REG_MASK: u32 = 0x1F << 16;
+const MDIC_PHY_SHIFT: u32 = 21;           // Bits 25:21 — PHY address
+const MDIC_OP_WRITE: u32 = 1 << 26;       // Opcode: write
+const MDIC_OP_READ: u32 = 2 << 26;        // Opcode: read
+const MDIC_READY: u32 = 1 << 28;          // Ready bit (set by hardware)
+const MDIC_ERROR: u32 = 1 << 30;          // Error bit
+
+// PHY register addresses (M88E1000 / Marvell Alaska).
+const PHY_CTRL: u32 = 0x00;
+const PHY_STATUS: u32 = 0x01;
+const PHY_ID1: u32 = 0x02;
+const PHY_ID2: u32 = 0x03;
+const PHY_AUTONEG_ADV: u32 = 0x04;
+const PHY_LP_ABILITY: u32 = 0x05;
+const PHY_1000T_CTRL: u32 = 0x09;
+const PHY_1000T_STATUS: u32 = 0x0A;
+// M88E1000 specific registers.
+const M88_PHY_SPEC_CTRL: u32 = 0x10;
+const M88_PHY_SPEC_STATUS: u32 = 0x11;
+const M88_EXT_PHY_SPEC_CTRL: u32 = 0x14;
+
 /// EEPROM checksum target: sum of all 64 words must equal this.
 const EEPROM_CHECKSUM_TARGET: u16 = 0xBABA;
 
@@ -123,8 +148,29 @@ enum EepromState {
     SendingData { bits_sent: u8, data: u16 },
 }
 
+/// PCI hole constants for guest physical → host offset translation.
+/// Guest RAM > 3.5GB is split: 0..0xE0000000 and 0x100000000..
+/// Host memory is contiguous, so GPA 0x100000000+ maps to host offset 0xE0000000+.
+const PCI_HOLE_START: u64 = 0xE000_0000;
+const PCI_HOLE_END: u64   = 0x1_0000_0000;
+
+/// ICR bit: Transmit Descriptor Written Back.
+const ICR_TXDW: u32 = 1 << 0;
+/// ICR bit: Receive Timer Interrupt.
+const ICR_RXT0: u32 = 1 << 7;
+
+/// TX descriptor CMD bits.
+const TXD_CMD_EOP: u8 = 1 << 0; // End of Packet
+const TXD_CMD_RS: u8  = 1 << 3; // Report Status
+
+/// TX descriptor STA bits.
+const TXD_STA_DD: u8 = 1 << 0; // Descriptor Done
+
+/// RX descriptor status bits.
+const RXD_STA_DD: u8  = 1 << 0; // Descriptor Done
+const RXD_STA_EOP: u8 = 1 << 1; // End of Packet
+
 /// Simplified Intel E1000 network interface card.
-#[derive(Debug)]
 pub struct E1000 {
     /// Full 128 KB register space stored as 32-bit words.
     pub regs: Vec<u32>,
@@ -142,6 +188,14 @@ pub struct E1000 {
     ee_sk_prev: bool,
     /// Current EECD register value (managed separately from regs[]).
     ee_cd: u32,
+    /// PHY registers (32 x 16-bit, accessed via MDIC).
+    phy_regs: [u16; 32],
+    /// I/O indirect register address (written via I/O BAR port+0, used at port+4).
+    pub io_addr: u32,
+    /// Guest memory pointer for DMA (TX/RX descriptor ring access).
+    pub guest_mem_ptr: *mut u8,
+    /// Guest memory length in bytes.
+    pub guest_mem_len: usize,
 }
 
 impl E1000 {
@@ -188,6 +242,32 @@ impl E1000 {
         // EECD: EEPROM present, Microwire type, 64-word size, grant access.
         let ee_cd = EECD_PRES | EECD_GNT | EECD_FWE;
 
+        // PHY registers (M88E1000 / Marvell Alaska 88E1011).
+        let mut phy_regs = [0u16; 32];
+        // PHY Control: auto-negotiate enabled.
+        phy_regs[PHY_CTRL as usize] = 0x1140;
+        // PHY Status: link up, auto-negotiate complete, extended capability.
+        phy_regs[PHY_STATUS as usize] = 0x796D;
+        // PHY ID: Marvell 88E1011 (0x01410C20) — the 82540EM uses M88E1011,
+        // NOT M88E1000.  The Linux driver's e1000_detect_gig_phy() checks for
+        // M88E1011_I_PHY_ID = 0x01410C20 and rejects 0x01410C60.
+        phy_regs[PHY_ID1 as usize] = 0x0141;
+        phy_regs[PHY_ID2 as usize] = 0x0C20;
+        // Auto-Negotiate Advertisement: 10/100 + selector.
+        phy_regs[PHY_AUTONEG_ADV as usize] = 0x01E1;
+        // Link Partner Ability: 10/100/1000.
+        phy_regs[PHY_LP_ABILITY as usize] = 0x45E1;
+        // 1000BASE-T Control: advertise 1000.
+        phy_regs[PHY_1000T_CTRL as usize] = 0x0300;
+        // 1000BASE-T Status: partner capable of 1000.
+        phy_regs[PHY_1000T_STATUS as usize] = 0x3C00;
+        // M88 PHY Specific Status: speed=1000, duplex=full, link=up, resolved.
+        phy_regs[M88_PHY_SPEC_STATUS as usize] = 0xAC04;
+        // M88 PHY Specific Control: defaults.
+        phy_regs[M88_PHY_SPEC_CTRL as usize] = 0x0068;
+        // M88 Extended PHY Specific Control.
+        phy_regs[M88_EXT_PHY_SPEC_CTRL as usize] = 0x0D60;
+
         E1000 {
             regs,
             mac_address: mac,
@@ -197,6 +277,10 @@ impl E1000 {
             ee_state: EepromState::Idle,
             ee_sk_prev: false,
             ee_cd,
+            phy_regs,
+            io_addr: 0,
+            guest_mem_ptr: core::ptr::null_mut(),
+            guest_mem_len: 0,
         }
     }
 
@@ -254,6 +338,190 @@ impl E1000 {
         self.ee_cd = EECD_PRES | EECD_GNT | EECD_FWE;
     }
 
+    /// Translate guest physical address to host memory offset.
+    #[inline]
+    fn gpa_to_host(&self, gpa: u64) -> Option<*mut u8> {
+        let offset = if gpa < PCI_HOLE_START {
+            gpa as usize
+        } else if gpa >= PCI_HOLE_END {
+            (PCI_HOLE_START + (gpa - PCI_HOLE_END)) as usize
+        } else {
+            return None;
+        };
+        if offset >= self.guest_mem_len || self.guest_mem_ptr.is_null() {
+            return None;
+        }
+        Some(unsafe { self.guest_mem_ptr.add(offset) })
+    }
+
+    /// Read bytes from guest physical memory.
+    fn dma_read(&self, gpa: u64, buf: &mut [u8]) -> bool {
+        let ptr = match self.gpa_to_host(gpa) {
+            Some(p) => p,
+            None => return false,
+        };
+        if (gpa as usize) + buf.len() > self.guest_mem_len {
+            return false;
+        }
+        unsafe { core::ptr::copy_nonoverlapping(ptr, buf.as_mut_ptr(), buf.len()); }
+        true
+    }
+
+    /// Write bytes to guest physical memory.
+    fn dma_write(&self, gpa: u64, data: &[u8]) -> bool {
+        let ptr = match self.gpa_to_host(gpa) {
+            Some(p) => p,
+            None => return false,
+        };
+        if (gpa as usize) + data.len() > self.guest_mem_len {
+            return false;
+        }
+        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len()); }
+        true
+    }
+
+    /// Process TX descriptor ring: read descriptors, extract packet data,
+    /// push complete packets to tx_buffer.
+    ///
+    /// Called when the guest writes TDT (TX Descriptor Tail).
+    fn process_tx_ring(&mut self) {
+        let tdbal = self.regs[REG_TDBAL / 4] as u64;
+        let tdbah = self.regs[REG_TDBAH / 4] as u64;
+        let td_base = (tdbah << 32) | tdbal;
+        let tdlen = self.regs[REG_TDLEN / 4] as u64; // Ring length in bytes
+        if tdlen == 0 || td_base == 0 { return; }
+
+        let num_descs = (tdlen / 16) as u32; // Each descriptor is 16 bytes
+        let mut head = self.regs[REG_TDH / 4];
+        let tail = self.regs[REG_TDT / 4];
+
+        let mut pkt_data: Vec<u8> = Vec::new();
+        let mut processed = 0u32;
+
+        while head != tail && processed < num_descs {
+            // Read 16-byte legacy TX descriptor from guest memory.
+            let desc_addr = td_base + (head as u64) * 16;
+            let mut desc = [0u8; 16];
+            if !self.dma_read(desc_addr, &mut desc) { break; }
+
+            // Parse descriptor fields.
+            let buf_addr = u64::from_le_bytes([
+                desc[0], desc[1], desc[2], desc[3],
+                desc[4], desc[5], desc[6], desc[7],
+            ]);
+            let length = u16::from_le_bytes([desc[8], desc[9]]) as usize;
+            let cmd = desc[11];
+            let eop = cmd & TXD_CMD_EOP != 0;
+            let rs = cmd & TXD_CMD_RS != 0;
+
+            // Read packet data from buffer address.
+            if length > 0 && length <= 16384 && buf_addr != 0 {
+                let start = pkt_data.len();
+                pkt_data.resize(start + length, 0);
+                if !self.dma_read(buf_addr, &mut pkt_data[start..]) {
+                    pkt_data.truncate(start);
+                    break;
+                }
+            }
+
+            // Write back DD (descriptor done) bit if RS is set.
+            if rs {
+                desc[12] |= TXD_STA_DD;
+                self.dma_write(desc_addr + 12, &desc[12..13]);
+            }
+
+            // Advance head (ring wrap).
+            head = (head + 1) % num_descs;
+
+            if eop {
+                // Complete packet — push to tx_buffer.
+                if !pkt_data.is_empty() {
+                    self.tx_buffer.push(core::mem::take(&mut pkt_data));
+                }
+            }
+
+            processed += 1;
+        }
+
+        // Update TDH.
+        self.regs[REG_TDH / 4] = head;
+
+        // Set TXDW interrupt if we processed any descriptors.
+        if processed > 0 {
+            self.regs[REG_ICR / 4] |= ICR_TXDW;
+        }
+    }
+
+    /// Deliver pending RX packets to the guest via the RX descriptor ring.
+    ///
+    /// Called from the poll loop when rx_buffer has packets.
+    pub fn process_rx_ring(&mut self) {
+        let rdbal = self.regs[REG_RDBAL / 4] as u64;
+        let rdbah = self.regs[REG_RDBAH / 4] as u64;
+        let rd_base = (rdbah << 32) | rdbal;
+        let rdlen = self.regs[REG_RDLEN / 4] as u64;
+        if rdlen == 0 || rd_base == 0 { return; }
+
+        let num_descs = (rdlen / 16) as u32;
+        let mut head = self.regs[REG_RDH / 4];
+        let tail = self.regs[REG_RDT / 4];
+
+        // RX ring is empty when head == tail (no available descriptors).
+        // Available descriptors: from head to tail (exclusive).
+        // We need at least one descriptor to deliver a packet.
+
+        while let Some(pkt) = self.rx_buffer.front() {
+            // Check if there's an available descriptor.
+            let next_head = (head + 1) % num_descs;
+            // The ring is full when advancing head would equal tail.
+            // But actually: driver fills descriptors from tail to head.
+            // Head points to next descriptor to use; tail is where driver last wrote.
+            // Available = (tail - head) mod num_descs, but we must not let head == tail.
+            if head == tail { break; } // No available descriptors
+
+            let desc_addr = rd_base + (head as u64) * 16;
+            let mut desc = [0u8; 16];
+            if !self.dma_read(desc_addr, &mut desc) { break; }
+
+            // Read buffer address from descriptor.
+            let buf_addr = u64::from_le_bytes([
+                desc[0], desc[1], desc[2], desc[3],
+                desc[4], desc[5], desc[6], desc[7],
+            ]);
+
+            if buf_addr == 0 { break; }
+
+            // Write packet data to guest buffer.
+            let pkt = self.rx_buffer.pop_front().unwrap();
+            let write_len = pkt.len().min(2048); // Standard receive buffer size
+            if !self.dma_write(buf_addr, &pkt[..write_len]) { break; }
+
+            // Update descriptor: length, status (DD + EOP), clear errors.
+            let len_bytes = (write_len as u16).to_le_bytes();
+            desc[8] = len_bytes[0]; // length low
+            desc[9] = len_bytes[1]; // length high
+            desc[10] = 0; // checksum (not computed)
+            desc[11] = 0; // checksum high
+            desc[12] = RXD_STA_DD | RXD_STA_EOP; // status: done + end of packet
+            desc[13] = 0; // errors: none
+            desc[14] = 0; // special low
+            desc[15] = 0; // special high
+
+            // Write back updated descriptor.
+            self.dma_write(desc_addr, &desc);
+
+            // Advance head.
+            head = (head + 1) % num_descs;
+        }
+
+        self.regs[REG_RDH / 4] = head;
+
+        // Set RX interrupt if we delivered any packets.
+        if !self.rx_buffer.is_empty() || head != self.regs[REG_RDH / 4] {
+            self.regs[REG_ICR / 4] |= ICR_RXT0;
+        }
+    }
+
     /// Handle a write to the EECD register (Microwire bit-bang protocol).
     ///
     /// The driver clocks data via DI on rising edges of SK while CS is
@@ -305,12 +573,12 @@ impl E1000 {
                             } else {
                                 0xFFFF
                             };
-                            // Set DO to MSB of data (bit 15).
-                            if data & 0x8000 != 0 {
-                                self.ee_cd |= EECD_DO;
-                            } else {
-                                self.ee_cd &= !EECD_DO;
-                            }
+                            // Transition to SendingData.  DO is NOT set here — the
+                            // driver will clock it on the next rising edge, which
+                            // outputs bit 15 (MSB).  Setting DO on this edge would
+                            // cause an off-by-one: the driver reads DO after the
+                            // NEXT rising edge, so bit 15 would be lost.
+                            self.ee_cd &= !EECD_DO;
                             self.ee_state = EepromState::SendingData {
                                 bits_sent: 0,
                                 data,
@@ -329,22 +597,23 @@ impl E1000 {
                     }
                 }
                 EepromState::SendingData { bits_sent, data } => {
-                    let new_sent = bits_sent + 1;
-                    if new_sent >= 16 {
+                    if bits_sent >= 16 {
                         // All 16 bits sent, go idle (CS still high, driver
                         // will deassert CS to end transaction).
                         self.ee_state = EepromState::Idle;
                         self.ee_cd &= !EECD_DO;
                     } else {
-                        // Output next bit (MSB first): bit (15 - new_sent).
-                        let bit_pos = 15 - new_sent;
+                        // Output current bit (MSB first): bit (15 - bits_sent).
+                        // The driver reads DO after this rising edge, so we must
+                        // output the bit BEFORE advancing the counter.
+                        let bit_pos = 15 - bits_sent;
                         if data & (1 << bit_pos) != 0 {
                             self.ee_cd |= EECD_DO;
                         } else {
                             self.ee_cd &= !EECD_DO;
                         }
                         self.ee_state = EepromState::SendingData {
-                            bits_sent: new_sent,
+                            bits_sent: bits_sent + 1,
                             data,
                         };
                     }
@@ -375,6 +644,11 @@ impl MmioHandler for E1000 {
                 // Return the EEPROM control register (managed separately).
                 self.ee_cd
             }
+            REG_MDIC => {
+                // Return the MDIC register — the write handler already placed
+                // the result (data + READY) into regs[].
+                self.regs[dword_offset]
+            }
             REG_EERD => {
                 // If a read was started, return the requested EEPROM word.
                 let eerd = self.regs[dword_offset];
@@ -385,8 +659,8 @@ impl MmioHandler for E1000 {
                     } else {
                         0xFFFF
                     };
-                    // Return data in bits [31:16], done in bit 4.
-                    ((data as u32) << 16) | EERD_DONE
+                    let result = ((data as u32) << 16) | EERD_DONE;
+                    result
                 } else {
                     eerd
                 }
@@ -453,6 +727,35 @@ impl MmioHandler for E1000 {
                 // Drive the Microwire bit-bang state machine.
                 self.write_eecd(new_val);
             }
+            REG_MDIC => {
+                // PHY register access via MDI.
+                let phy_reg = ((new_val & MDIC_REG_MASK) >> MDIC_REG_SHIFT) as usize;
+                if new_val & MDIC_OP_READ != 0 {
+                    // Read: return PHY register value with READY bit.
+                    let data = if phy_reg < self.phy_regs.len() {
+                        self.phy_regs[phy_reg]
+                    } else {
+                        0
+                    };
+                    self.regs[dword_offset] = (new_val & !MDIC_DATA_MASK & !MDIC_ERROR)
+                        | (data as u32)
+                        | MDIC_READY;
+                } else if new_val & MDIC_OP_WRITE != 0 {
+                    // Write: store PHY register value.
+                    let mut phy_data = (new_val & MDIC_DATA_MASK) as u16;
+                    if phy_reg == PHY_CTRL as usize && phy_data & 0x8000 != 0 {
+                        // PHY reset (bit 15) is self-clearing — the real PHY
+                        // completes the reset instantly, so clear it immediately.
+                        phy_data &= !0x8000;
+                    }
+                    if phy_reg < self.phy_regs.len() {
+                        self.phy_regs[phy_reg] = phy_data;
+                    }
+                    self.regs[dword_offset] = (new_val & !MDIC_ERROR) | MDIC_READY;
+                } else {
+                    self.regs[dword_offset] = new_val;
+                }
+            }
             REG_ICS => {
                 // Writing to ICS sets interrupt cause bits.
                 self.regs[REG_ICR / 4] |= new_val;
@@ -464,6 +767,11 @@ impl MmioHandler for E1000 {
             REG_IMC => {
                 // Writing to IMC clears interrupt mask bits.
                 self.regs[REG_IMS / 4] &= !new_val;
+            }
+            REG_TDT => {
+                // TX Descriptor Tail — guest signals new packets to transmit.
+                self.regs[dword_offset] = new_val;
+                self.process_tx_ring();
             }
             _ => {
                 self.regs[dword_offset] = new_val;

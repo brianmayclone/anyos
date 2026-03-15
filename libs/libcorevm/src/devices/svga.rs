@@ -287,11 +287,12 @@ impl IoHandler for Svga {
             // Bochs VBE data register.
             0x1CF => {
                 let idx = self.vbe_index as usize;
-                return Ok(if idx < self.vbe_regs.len() {
+                let val = if idx < self.vbe_regs.len() {
                     self.vbe_regs[idx] as u32
                 } else {
                     0
-                });
+                };
+                return Ok(val);
             }
             0x3C0 => {
                 // Attribute controller: return current index.
@@ -395,6 +396,12 @@ impl IoHandler for Svga {
                     let w = self.vbe_regs[1] as u32;
                     let h = self.vbe_regs[2] as u32;
                     let bpp = self.vbe_regs[3] as u8;
+                    // Update VIRT_WIDTH/HEIGHT to match actual resolution
+                    // (QEMU does this; bochs-drm reads these to calculate pitch)
+                    if self.vbe_regs[6] == 0 || (v & 0x04) != 0 { // update if 0 or if NOCLEARMEM not set
+                        self.vbe_regs[6] = w as u16;
+                    }
+                    self.vbe_regs[7] = h as u16;
                     if w > 0 && h > 0 && bpp > 0 {
                         self.set_mode(VgaMode::LinearFramebuffer {
                             width: w,

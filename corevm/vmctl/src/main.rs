@@ -923,12 +923,17 @@ fn main() {
             b"xinit",
             b"login",
             b"EXT4",
+            b"e1000: eth",
+            b"e1000 0000:",
+            b"Intel(R) PRO/1000",
+            b"EEPROM Checksum",
+            b"Hardware Err",
         ];
-        let scan_end = (args.ram_mb as u64 * 1024 * 1024).min(256 * 1024 * 1024);
+        let scan_end = (args.ram_mb as u64 * 1024 * 1024).min(512 * 1024 * 1024);
         let mut page = [0u8; 4096];
         let mut matches_found = 0u32;
         let mut addr = 0x100000u64;
-        while addr < scan_end && matches_found < 15 {
+        while addr < scan_end && matches_found < 20 {
             corevm_read_phys(handle, addr, page.as_mut_ptr(), 4096);
             for pattern in patterns {
                 if pattern.len() > 4096 { continue; }

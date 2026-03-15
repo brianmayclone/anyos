@@ -69,7 +69,7 @@ impl Default for VmConfig {
             mac_mode: MacMode::Dynamic,
             mac_address: String::new(),
             audio_enabled: true,
-            usb_tablet: true,
+            usb_tablet: false,
             ram_alloc: RamAlloc::OnDemand,
             diagnostics: false,
         }

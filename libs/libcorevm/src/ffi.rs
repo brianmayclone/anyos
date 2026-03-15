@@ -598,6 +598,39 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                 }
             }
 
+            // E1000 NIC → IRQ 11 (level-triggered, shared with AHCI)
+            // Also process pending RX packets into the descriptor ring.
+            if !vm.e1000_ptr.is_null() {
+                let e1000 = unsafe { &mut *vm.e1000_ptr };
+                // Deliver any pending RX packets to guest via DMA.
+                if !e1000.rx_buffer.is_empty() {
+                    e1000.process_rx_ring();
+                }
+                let icr = e1000.regs[0x00C0 / 4];
+                let ims = e1000.regs[0x00C8 / 4];
+                let want_asserted = (icr & ims) != 0;
+                #[cfg(feature = "linux")]
+                {
+                    if want_asserted && !vm.e1000_irq_asserted {
+                        let _ = vm.backend.set_irq_line(11, true);
+                        vm.e1000_irq_asserted = true;
+                        injected += 1;
+                    } else if !want_asserted && vm.e1000_irq_asserted {
+                        let _ = vm.backend.set_irq_line(11, false);
+                        vm.e1000_irq_asserted = false;
+                    }
+                }
+                #[cfg(not(feature = "linux"))]
+                {
+                    if want_asserted {
+                        if !vm.pic_ptr.is_null() {
+                            let pic = unsafe { &mut *vm.pic_ptr };
+                            pic.raise_irq(11);
+                        }
+                    }
+                }
+            }
+
             // HPET Timer 0 → IRQ (edge-triggered pulse on KVM)
             if !vm.hpet_ptr.is_null() {
                 let hpet = unsafe { &mut *vm.hpet_ptr };
@@ -1160,11 +1193,16 @@ pub extern "C" fn corevm_setup_acpi_tables_with_hpet(handle: u64) -> i32 {
 pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
     const E1000_MMIO_BASE: u64 = 0xF000_0000;
     const E1000_MMIO_SIZE: u64 = 0x2_0000; // 128 KB
+    const E1000_IO_BASE: u16 = 0xC000; // I/O BAR for indirect register access
 
     let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
     if mac.is_null() { return -1; }
     let m: [u8; 6] = unsafe { [*mac, *mac.add(1), *mac.add(2), *mac.add(3), *mac.add(4), *mac.add(5)] };
-    let e1000 = Box::new(crate::devices::e1000::E1000::new(m));
+    let mut e1000 = Box::new(crate::devices::e1000::E1000::new(m));
+    // Give E1000 access to guest RAM for DMA (TX/RX descriptor rings).
+    let (ram_ptr, ram_len) = vm.memory.ram_mut_ptr();
+    e1000.guest_mem_ptr = ram_ptr;
+    e1000.guest_mem_len = ram_len;
     let e1000_ptr = &*e1000 as *const crate::devices::e1000::E1000 as *mut crate::devices::e1000::E1000;
     vm.e1000_ptr = e1000_ptr;
 
@@ -1172,6 +1210,15 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
     // based on the current BAR0 address (which SeaBIOS may remap).
     if !vm.pci_mmio_router_ptr.is_null() {
         let router = unsafe { &mut *vm.pci_mmio_router_ptr };
+        router.e1000 = e1000_ptr;
+    }
+
+    // Add E1000 to the PCI I/O router for BAR2 indirect register access.
+    // The 82540EM driver uses E1000_WRITE_REG_IO (I/O BAR) for CTRL.RST
+    // because of a hardware bug where the 82540 can't ACK 64-bit MMIO writes
+    // during reset.  Without this, e1000_reset_hw() fails → "Hardware Error".
+    if !vm.pci_io_router_ptr.is_null() {
+        let router = unsafe { &mut *vm.pci_io_router_ptr };
         router.e1000 = e1000_ptr;
     }
 
@@ -1186,6 +1233,8 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
         pci_dev.device = 4; // PCI slot 00:04.0
         // BAR0: MMIO at 0xF0000000, size 128 KB
         pci_dev.set_bar(0, E1000_MMIO_BASE as u32, E1000_MMIO_SIZE as u32, true);
+        // BAR2: I/O ports for indirect register access (8 bytes: IOADDR+IODATA)
+        pci_dev.set_bar(2, E1000_IO_BASE as u32, 8, false);
         // Interrupt: IRQ 11, pin INTA
         pci_dev.set_interrupt(11, 1);
         // Subsystem ID (common for 82540EM)
@@ -1208,6 +1257,7 @@ const PCI_MMIO_CATCHALL_SIZE: u64 = 0xEC0_0000; // up to 0xFEBFFFFF
 pub struct PciMmioRouter {
     pub ahci: *mut crate::devices::ahci::Ahci,
     pub e1000: *mut crate::devices::e1000::E1000,
+    pub svga: *mut crate::devices::svga::Svga,
     pci_bus: *mut crate::devices::bus::PciBus,
 }
 
@@ -1229,6 +1279,15 @@ impl PciMmioRouter {
         let val = bus.mmcfg_read(0, 4, 0, 0x10, 4);
         val & 0xFFFFFFF0
     }
+
+    /// Read VGA BAR2 (device 00:02.0, offset 0x18) from PCI config space.
+    /// BAR2 holds the Bochs VBE DISPI MMIO registers (4KB).
+    fn vga_bar2(&self) -> u64 {
+        if self.pci_bus.is_null() || self.svga.is_null() { return 0; }
+        let bus = unsafe { &mut *self.pci_bus };
+        let val = bus.mmcfg_read(0, 2, 0, 0x18, 4);
+        val & 0xFFFFF000
+    }
 }
 
 impl crate::memory::mmio::MmioHandler for PciMmioRouter {
@@ -1247,6 +1306,17 @@ impl crate::memory::mmio::MmioHandler for PciMmioRouter {
         if ahci_base != 0 && abs_addr >= ahci_base && abs_addr < ahci_base + 0x1000 {
             let ahci = unsafe { &mut *self.ahci };
             return ahci.read(abs_addr - ahci_base, size);
+        }
+
+        // Check VGA BAR2 — Bochs VBE DISPI MMIO registers (4KB region).
+        // SeaBIOS may remap BAR2 from 0xFEBE0000 to another address; bochs-drm
+        // (Linux kernel) reads VBE registers via MMIO here. Without this routing,
+        // the ID check fails ("ID mismatch") and bochs-drm won't load.
+        let vga_bar2 = self.vga_bar2();
+        if vga_bar2 != 0 && abs_addr >= vga_bar2 && abs_addr < vga_bar2 + 0x1000 {
+            let svga = unsafe { &mut *self.svga };
+            let bar2_off = abs_addr - vga_bar2;
+            return svga_dispi_mmio_read(svga, bar2_off, size);
         }
 
         Ok(0xFFFFFFFF)
@@ -1269,8 +1339,67 @@ impl crate::memory::mmio::MmioHandler for PciMmioRouter {
             return ahci.write(abs_addr - ahci_base, size, val);
         }
 
+        // Check VGA BAR2 — Bochs VBE DISPI MMIO registers (4KB region)
+        let vga_bar2 = self.vga_bar2();
+        if vga_bar2 != 0 && abs_addr >= vga_bar2 && abs_addr < vga_bar2 + 0x1000 {
+            let svga = unsafe { &mut *self.svga };
+            let bar2_off = abs_addr - vga_bar2;
+            return svga_dispi_mmio_write(svga, bar2_off, size, val);
+        }
+
         Ok(())
     }
+}
+
+/// Read from VGA BAR2 MMIO (Bochs VBE DISPI registers).
+/// Same layout as SvgaDispiMmioProxy in vm.rs but callable from PciMmioRouter.
+fn svga_dispi_mmio_read(svga: &mut crate::devices::svga::Svga, offset: u64, size: u8) -> crate::error::Result<u64> {
+    if offset >= 0x500 && offset < 0x600 {
+        let idx = ((offset - 0x500) / 2) as usize;
+        if idx < svga.vbe_regs.len() {
+            let val = svga.vbe_regs[idx] as u64;
+            return Ok(match size {
+                1 => if offset & 1 == 0 { val & 0xFF } else { (val >> 8) & 0xFF },
+                2 => val,
+                4 => {
+                    let hi = if idx + 1 < svga.vbe_regs.len() { svga.vbe_regs[idx + 1] as u64 } else { 0 };
+                    val | (hi << 16)
+                }
+                _ => val,
+            });
+        }
+        return Ok(0);
+    } else if offset < 0x400 {
+        let port = 0x3C0 + offset as u16;
+        return <crate::devices::svga::Svga as crate::io::IoHandler>::read(svga, port, size).map(|v| v as u64);
+    }
+    Ok(0xFFFF_FFFF)
+}
+
+/// Write to VGA BAR2 MMIO (Bochs VBE DISPI registers).
+fn svga_dispi_mmio_write(svga: &mut crate::devices::svga::Svga, offset: u64, size: u8, val: u64) -> crate::error::Result<()> {
+    if offset >= 0x500 && offset < 0x600 {
+        let idx = ((offset - 0x500) / 2) as usize;
+        let v = val as u16;
+        if idx < svga.vbe_regs.len() {
+            svga.vbe_regs[idx] = v;
+            if idx == 4 && (v & 0x01) != 0 {
+                let w = svga.vbe_regs[1] as u32;
+                let h = svga.vbe_regs[2] as u32;
+                let bpp = svga.vbe_regs[3] as u8;
+                if w > 0 && h > 0 && bpp > 0 {
+                    svga.set_mode(crate::devices::svga::VgaMode::LinearFramebuffer { width: w, height: h, bpp });
+                }
+            } else if idx == 4 && (v & 0x01) == 0 {
+                svga.set_mode(crate::devices::svga::VgaMode::Text80x25);
+            }
+        }
+        return Ok(());
+    } else if offset < 0x400 {
+        let port = 0x3C0 + offset as u16;
+        return <crate::devices::svga::Svga as crate::io::IoHandler>::write(svga, port, size, val as u32);
+    }
+    Ok(())
 }
 
 /// Set up the AHCI SATA controller with the given number of ports.
@@ -1286,6 +1415,7 @@ pub extern "C" fn corevm_setup_ahci(handle: u64, num_ports: u8) -> i32 {
     let router = Box::new(PciMmioRouter {
         ahci: vm.ahci_ptr,
         e1000: core::ptr::null_mut(), // added later by corevm_setup_e1000()
+        svga: vm.svga_ptr,
         pci_bus: vm.pci_bus_ptr,
     });
     let router_ptr = &*router as *const PciMmioRouter as *mut PciMmioRouter;
@@ -1665,6 +1795,8 @@ pub extern "C" fn corevm_e1000_receive(handle: u64, data: *const u8, len: u32) -
     let pkt = unsafe { core::slice::from_raw_parts(data, len as usize) };
     let e1000 = match vm.e1000() { Some(e) => e, None => return -1 };
     e1000.receive_packet(pkt);
+    // Immediately try to deliver to guest via RX descriptor ring DMA.
+    e1000.process_rx_ring();
     0
 }
 
@@ -1774,6 +1906,7 @@ const PCI_IO_ROUTER_SIZE: u16 = 0x1000; // 4KB: 0xC000-0xCFFF
 pub struct PciIoRouter {
     pub uhci: *mut crate::devices::uhci::Uhci,
     pub ac97: *mut crate::devices::ac97::Ac97,
+    pub e1000: *mut crate::devices::e1000::E1000,
     pci_bus: *mut crate::devices::bus::PciBus,
 }
 
@@ -1796,6 +1929,15 @@ impl PciIoRouter {
         (val & 0xFF00) as u16 // I/O BAR, 256-byte aligned
     }
 
+    /// Read E1000 BAR2 (device 00:04.0, config offset 0x18) — I/O BAR for
+    /// indirect register access (IOADDR at +0, IODATA at +4).
+    fn e1000_bar2(&self) -> u16 {
+        if self.pci_bus.is_null() || self.e1000.is_null() { return 0; }
+        let bus = unsafe { &mut *self.pci_bus };
+        let val = bus.mmcfg_read(0, 4, 0, 0x18, 4); // BAR2 at config offset 0x18
+        (val & 0xFFF8) as u16 // I/O BAR, 8-byte aligned
+    }
+
     /// Read AC97 NABM BAR1 (device 00:05.0, config offset 0x14).
     fn ac97_bar1(&self) -> u16 {
         if self.pci_bus.is_null() || self.ac97.is_null() { return 0; }
@@ -1807,6 +1949,22 @@ impl PciIoRouter {
 
 impl crate::io::IoHandler for PciIoRouter {
     fn read(&mut self, port: u16, size: u8) -> crate::error::Result<u32> {
+        // Check E1000 BAR2 (8 bytes: IOADDR at +0, IODATA at +4)
+        // The 82540EM driver uses E1000_WRITE_REG_IO for reset — this is
+        // critical for e1000_reset_hw() to work.
+        let e1000_io = self.e1000_bar2();
+        if e1000_io != 0 && port >= e1000_io && port < e1000_io + 8 {
+            let e1000 = unsafe { &mut *self.e1000 };
+            let offset = port - e1000_io;
+            if offset < 4 {
+                return Ok(e1000.io_addr);
+            } else {
+                use crate::memory::mmio::MmioHandler;
+                let val = e1000.read(e1000.io_addr as u64, 4)?;
+                return Ok(val as u32);
+            }
+        }
+
         // Check UHCI BAR4 (32 bytes)
         let uhci_base = self.uhci_bar4();
         if uhci_base != 0 && port >= uhci_base && port < uhci_base + 32 {
@@ -1832,6 +1990,20 @@ impl crate::io::IoHandler for PciIoRouter {
     }
 
     fn write(&mut self, port: u16, size: u8, val: u32) -> crate::error::Result<()> {
+        // Check E1000 BAR2 (8 bytes: IOADDR at +0, IODATA at +4)
+        let e1000_io = self.e1000_bar2();
+        if e1000_io != 0 && port >= e1000_io && port < e1000_io + 8 {
+            let e1000 = unsafe { &mut *self.e1000 };
+            let offset = port - e1000_io;
+            if offset < 4 {
+                e1000.io_addr = val;
+            } else {
+                use crate::memory::mmio::MmioHandler;
+                let _ = e1000.write(e1000.io_addr as u64, 4, val as u64);
+            }
+            return Ok(());
+        }
+
         // Check UHCI BAR4 (32 bytes)
         let uhci_base = self.uhci_bar4();
         if uhci_base != 0 && port >= uhci_base && port < uhci_base + 32 {
@@ -1882,6 +2054,7 @@ pub extern "C" fn corevm_setup_uhci(handle: u64) -> i32 {
         let router = Box::new(PciIoRouter {
             uhci: uhci_ptr,
             ac97: vm.ac97_ptr,
+            e1000: vm.e1000_ptr,
             pci_bus: vm.pci_bus_ptr,
         });
         let router_ptr = &*router as *const PciIoRouter as *mut PciIoRouter;

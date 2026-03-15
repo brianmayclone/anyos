@@ -524,6 +524,14 @@ i10_display_combo:
 VBE_MODE_640x480x32     equ 0x0112
 VBE_MODE_800x600x32     equ 0x0115
 VBE_MODE_1024x768x32    equ 0x0118
+VBE_MODE_1280x1024x32   equ 0x011B
+VBE_MODE_1280x720x32    equ 0x0140
+VBE_MODE_1280x800x32    equ 0x0141
+VBE_MODE_1366x768x32    equ 0x0142
+VBE_MODE_1400x1050x32   equ 0x0143
+VBE_MODE_1600x1200x32   equ 0x0144
+VBE_MODE_1920x1080x32   equ 0x0145
+VBE_MODE_1920x1200x32   equ 0x0146
 
 str_vbe_oem:    db 'CoreVM VBE', 0
 
@@ -531,11 +539,34 @@ vbe_mode_list:
     dw VBE_MODE_640x480x32
     dw VBE_MODE_800x600x32
     dw VBE_MODE_1024x768x32
+    dw VBE_MODE_1280x1024x32
+    dw VBE_MODE_1280x720x32
+    dw VBE_MODE_1280x800x32
+    dw VBE_MODE_1366x768x32
+    dw VBE_MODE_1400x1050x32
+    dw VBE_MODE_1600x1200x32
+    dw VBE_MODE_1920x1080x32
+    dw VBE_MODE_1920x1200x32
     dw 0xFFFF
 
 vbe_mi_xres:    dw 0
 vbe_mi_yres:    dw 0
 vbe_mi_pitch:   dw 0
+
+; VBE mode lookup table: mode_number, xres, yres, pitch (each dw)
+vbe_mode_table:
+    dw VBE_MODE_640x480x32,    640,  480, 2560
+    dw VBE_MODE_800x600x32,    800,  600, 3200
+    dw VBE_MODE_1024x768x32,  1024,  768, 4096
+    dw VBE_MODE_1280x1024x32, 1280, 1024, 5120
+    dw VBE_MODE_1280x720x32,  1280,  720, 5120
+    dw VBE_MODE_1280x800x32,  1280,  800, 5120
+    dw VBE_MODE_1366x768x32,  1366,  768, 5464
+    dw VBE_MODE_1400x1050x32, 1400, 1050, 5600
+    dw VBE_MODE_1600x1200x32, 1600, 1200, 6400
+    dw VBE_MODE_1920x1080x32, 1920, 1080, 7680
+    dw VBE_MODE_1920x1200x32, 1920, 1200, 7680
+    dw 0xFFFF, 0, 0, 0
 
 current_vbe_mode:   dw 0x0003
 
@@ -582,33 +613,29 @@ i10_vbe_mode_info:
 
     and cx, 0x01FF
 
-    cmp cx, VBE_MODE_640x480x32
-    je .mi_640
-    cmp cx, VBE_MODE_800x600x32
-    je .mi_800
-    cmp cx, VBE_MODE_1024x768x32
-    je .mi_1024
+    ; Look up mode in table
+    mov si, vbe_mode_table
+.mi_search:
+    cmp word [cs:si], 0xFFFF
+    je .mi_not_found
+    cmp cx, [cs:si]
+    je .mi_found
+    add si, 8              ; next entry (mode + xres + yres + pitch)
+    jmp .mi_search
+
+.mi_not_found:
     mov ax, 0x014F
     pop cx
     pop di
     iret
 
-.mi_640:
-    mov word [vbe_mi_xres], 640
-    mov word [vbe_mi_yres], 480
-    mov word [vbe_mi_pitch], 2560
-    jmp .mi_fill
-
-.mi_800:
-    mov word [vbe_mi_xres], 800
-    mov word [vbe_mi_yres], 600
-    mov word [vbe_mi_pitch], 3200
-    jmp .mi_fill
-
-.mi_1024:
-    mov word [vbe_mi_xres], 1024
-    mov word [vbe_mi_yres], 768
-    mov word [vbe_mi_pitch], 4096
+.mi_found:
+    mov ax, [cs:si + 2]
+    mov [vbe_mi_xres], ax
+    mov ax, [cs:si + 4]
+    mov [vbe_mi_yres], ax
+    mov ax, [cs:si + 6]
+    mov [vbe_mi_pitch], ax
 
 .mi_fill:
     mov word [es:di + 0], 0x009B
@@ -650,34 +677,29 @@ i10_vbe_set_mode:
     mov cx, bx
     and cx, 0x01FF
 
-    cmp cx, VBE_MODE_640x480x32
-    je .sm_640
-    cmp cx, VBE_MODE_800x600x32
-    je .sm_800
-    cmp cx, VBE_MODE_1024x768x32
-    je .sm_1024
     cmp cx, 0x0003
     je .sm_text
+
+    ; Look up mode in table
+    push si
+    mov si, vbe_mode_table
+.sm_search:
+    cmp word [cs:si], 0xFFFF
+    je .sm_not_found
+    cmp cx, [cs:si]
+    je .sm_found
+    add si, 8
+    jmp .sm_search
+
+.sm_not_found:
+    pop si
     mov ax, 0x014F
     jmp .sm_done
 
-.sm_640:
-    mov bx, 640
-    mov cx, 480
-    mov dl, 32
-    call vbe_set_mode
-    jmp .sm_ok
-
-.sm_800:
-    mov bx, 800
-    mov cx, 600
-    mov dl, 32
-    call vbe_set_mode
-    jmp .sm_ok
-
-.sm_1024:
-    mov bx, 1024
-    mov cx, 768
+.sm_found:
+    mov bx, [cs:si + 2]    ; width
+    mov cx, [cs:si + 4]    ; height
+    pop si
     mov dl, 32
     call vbe_set_mode
     jmp .sm_ok

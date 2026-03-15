@@ -578,11 +578,18 @@ fn main() {
     let history_path = get_history_path();
     let (mut entries, retention_days) = load_history(&history_path);
 
-    // Get current clipboard content as baseline
+    // Get current clipboard content as baseline and add to history if new
     let mut clip_buf = [0u8; 4096];
     let clip_len = anyui::clipboard_get(&mut clip_buf);
     let last_clipboard = if clip_len > 0 {
-        String::from(core::str::from_utf8(&clip_buf[..clip_len as usize]).unwrap_or(""))
+        let text = String::from(core::str::from_utf8(&clip_buf[..clip_len as usize]).unwrap_or(""));
+        if !text.trim().is_empty() && !entries.iter().any(|e| e.text == text) {
+            entries.insert(0, ClipEntry {
+                text: text.clone(),
+                time: now_string(),
+            });
+        }
+        text
     } else {
         String::new()
     };
