@@ -1678,10 +1678,15 @@ pub extern "C" fn corevm_setup_ac97(handle: u64) -> i32 {
     let ac97_ptr = &*ac97 as *const crate::devices::ac97::Ac97 as *mut crate::devices::ac97::Ac97;
     vm.ac97_ptr = ac97_ptr;
 
-    // Register NAM (mixer) I/O ports
+    // Register NAM/NABM at initial I/O ports (for direct access before BAR remap)
     vm.io.register(AC97_NAM_BASE, 256, Box::new(crate::devices::ac97::Ac97Nam(ac97_ptr)));
-    // Register NABM (bus master) I/O ports
     vm.io.register(AC97_NABM_BASE, 64, Box::new(crate::devices::ac97::Ac97Nabm(ac97_ptr)));
+
+    // Also register in PCI I/O router for after SeaBIOS remaps BARs
+    if !vm.pci_io_router_ptr.is_null() {
+        let router = unsafe { &mut *vm.pci_io_router_ptr };
+        router.ac97 = ac97_ptr;
+    }
 
     // Leak the Ac97 box — it lives as long as the VM
     core::mem::forget(ac97);
@@ -1735,6 +1740,168 @@ pub extern "C" fn corevm_ac97_sample_rate(handle: u64) -> u32 {
     let vm = match get_vm(handle) { Some(v) => v, None => return 48000 };
     let ac97 = match vm.ac97() { Some(a) => a, None => return 48000 };
     ac97.sample_rate()
+}
+
+// ── PCI I/O Port Router ──
+// SeaBIOS remaps PCI BAR I/O addresses. This catch-all I/O handler covers
+// the typical PCI I/O allocation range (0xC000-0xCFFF) and dynamically
+// routes accesses to UHCI and AC97 based on their current PCI BAR values.
+
+const PCI_IO_ROUTER_BASE: u16 = 0xC000;
+const PCI_IO_ROUTER_SIZE: u16 = 0x1000; // 4KB: 0xC000-0xCFFF
+
+pub struct PciIoRouter {
+    pub uhci: *mut crate::devices::uhci::Uhci,
+    pub ac97: *mut crate::devices::ac97::Ac97,
+    pci_bus: *mut crate::devices::bus::PciBus,
+}
+
+unsafe impl Send for PciIoRouter {}
+
+impl PciIoRouter {
+    /// Read UHCI BAR4 (device 00:06.0, config offset 0x20) from PCI config.
+    fn uhci_bar4(&self) -> u16 {
+        if self.pci_bus.is_null() || self.uhci.is_null() { return 0; }
+        let bus = unsafe { &mut *self.pci_bus };
+        let val = bus.mmcfg_read(0, 6, 0, 0x20, 4); // BAR4 at offset 0x20
+        (val & 0xFFE0) as u16 // I/O BAR, mask lower 5 bits (32-byte aligned)
+    }
+
+    /// Read AC97 NAM BAR0 (device 00:05.0, config offset 0x10).
+    fn ac97_bar0(&self) -> u16 {
+        if self.pci_bus.is_null() || self.ac97.is_null() { return 0; }
+        let bus = unsafe { &mut *self.pci_bus };
+        let val = bus.mmcfg_read(0, 5, 0, 0x10, 4);
+        (val & 0xFF00) as u16 // I/O BAR, 256-byte aligned
+    }
+
+    /// Read AC97 NABM BAR1 (device 00:05.0, config offset 0x14).
+    fn ac97_bar1(&self) -> u16 {
+        if self.pci_bus.is_null() || self.ac97.is_null() { return 0; }
+        let bus = unsafe { &mut *self.pci_bus };
+        let val = bus.mmcfg_read(0, 5, 0, 0x14, 4);
+        (val & 0xFFC0) as u16 // I/O BAR, 64-byte aligned
+    }
+}
+
+impl crate::io::IoHandler for PciIoRouter {
+    fn read(&mut self, port: u16, size: u8) -> crate::error::Result<u32> {
+        // Check UHCI BAR4 (32 bytes)
+        let uhci_base = self.uhci_bar4();
+        if uhci_base != 0 && port >= uhci_base && port < uhci_base + 32 {
+            let uhci = unsafe { &mut *self.uhci };
+            return uhci.read(port - uhci_base, size);
+        }
+
+        // Check AC97 NAM BAR0 (256 bytes)
+        let ac97_nam = self.ac97_bar0();
+        if ac97_nam != 0 && port >= ac97_nam && port < ac97_nam + 256 {
+            let ac97 = unsafe { &mut *self.ac97 };
+            return crate::devices::ac97::Ac97Nam::read_static(ac97, port - ac97_nam, size);
+        }
+
+        // Check AC97 NABM BAR1 (64 bytes)
+        let ac97_nabm = self.ac97_bar1();
+        if ac97_nabm != 0 && port >= ac97_nabm && port < ac97_nabm + 64 {
+            let ac97 = unsafe { &mut *self.ac97 };
+            return crate::devices::ac97::Ac97Nabm::read_static(ac97, port - ac97_nabm, size);
+        }
+
+        Ok(0xFFFFFFFF) // bus float
+    }
+
+    fn write(&mut self, port: u16, size: u8, val: u32) -> crate::error::Result<()> {
+        // Check UHCI BAR4 (32 bytes)
+        let uhci_base = self.uhci_bar4();
+        if uhci_base != 0 && port >= uhci_base && port < uhci_base + 32 {
+            let uhci = unsafe { &mut *self.uhci };
+            return uhci.write(port - uhci_base, size, val);
+        }
+
+        // Check AC97 NAM BAR0 (256 bytes)
+        let ac97_nam = self.ac97_bar0();
+        if ac97_nam != 0 && port >= ac97_nam && port < ac97_nam + 256 {
+            let ac97 = unsafe { &mut *self.ac97 };
+            return crate::devices::ac97::Ac97Nam::write_static(ac97, port - ac97_nam, size, val);
+        }
+
+        // Check AC97 NABM BAR1 (64 bytes)
+        let ac97_nabm = self.ac97_bar1();
+        if ac97_nabm != 0 && port >= ac97_nabm && port < ac97_nabm + 64 {
+            let ac97 = unsafe { &mut *self.ac97 };
+            return crate::devices::ac97::Ac97Nabm::write_static(ac97, port - ac97_nabm, size, val);
+        }
+
+        Ok(())
+    }
+}
+
+// ── UHCI USB Controller ──
+
+/// Set up the UHCI USB 1.1 controller with an integrated USB tablet device.
+/// Registers as PCI device 00:06.0 (Intel PIIX3 UHCI, 8086:7020).
+/// I/O ports are dynamically routed via the PCI I/O Router. IRQ 9.
+#[no_mangle]
+pub extern "C" fn corevm_setup_uhci(handle: u64) -> i32 {
+    const UHCI_IO_BASE: u16 = 0xC100; // initial BAR value (SeaBIOS will remap)
+
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+
+    let mut uhci = Box::new(crate::devices::uhci::Uhci::new());
+    let (ram_ptr, ram_size) = vm.memory.ram_mut_ptr();
+    uhci.set_guest_memory(ram_ptr, ram_size);
+
+    let uhci_ptr = &*uhci as *const crate::devices::uhci::Uhci as *mut crate::devices::uhci::Uhci;
+    vm.uhci_ptr = uhci_ptr;
+    core::mem::forget(uhci);
+
+    // Register PCI I/O Router if not yet registered
+    // (covers 0xC000-0xCFFF for all PCI I/O BAR devices)
+    if vm.pci_io_router_ptr.is_null() {
+        let router = Box::new(PciIoRouter {
+            uhci: uhci_ptr,
+            ac97: vm.ac97_ptr,
+            pci_bus: vm.pci_bus_ptr,
+        });
+        let router_ptr = &*router as *const PciIoRouter as *mut PciIoRouter;
+        vm.pci_io_router_ptr = router_ptr;
+        vm.io.register(PCI_IO_ROUTER_BASE, PCI_IO_ROUTER_SIZE, router);
+    } else {
+        // Router already exists — just add UHCI pointer
+        let router = unsafe { &mut *vm.pci_io_router_ptr };
+        router.uhci = uhci_ptr;
+    }
+
+    // Register as PCI device
+    if !vm.pci_bus_ptr.is_null() {
+        let pci_bus = unsafe { &mut *vm.pci_bus_ptr };
+        let mut pci_dev = crate::devices::bus::PciDevice::new(0x8086, 0x7020, 0x0C, 0x03, 0x00);
+        pci_dev.device = 6;
+        pci_dev.set_bar(4, UHCI_IO_BASE as u32, 32, false);
+        pci_dev.set_interrupt(9, 4);
+        pci_dev.set_subsystem(0x8086, 0x0000);
+        pci_bus.add_device(pci_dev);
+    }
+    0
+}
+
+/// Send absolute tablet coordinates to the USB tablet device.
+/// x, y are in range 0..32767. buttons: bit0=left, bit1=right, bit2=middle.
+#[no_mangle]
+pub extern "C" fn corevm_usb_tablet_move(handle: u64, x: u16, y: u16, buttons: u8) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+    let uhci = match vm.uhci() { Some(u) => u, None => return -1 };
+    uhci.tablet_move(x, y, buttons);
+    0
+}
+
+/// Process one UHCI frame (call periodically, ~1kHz or at least every 10ms).
+/// Returns 1 if IRQ pending, 0 otherwise.
+#[no_mangle]
+pub extern "C" fn corevm_uhci_process(handle: u64) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return 0 };
+    let uhci = match vm.uhci() { Some(u) => u, None => return 0 };
+    if uhci.process_frame() { 1 } else { 0 }
 }
 
 // Re-export WHP debug callback setter for use by vmmanager.

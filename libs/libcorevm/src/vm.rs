@@ -49,10 +49,12 @@ pub struct Vm {
     pub ide_ptr: *mut crate::devices::ide::Ide,
     pub e1000_ptr: *mut E1000,
     pub ac97_ptr: *mut Ac97,
+    pub uhci_ptr: *mut crate::devices::uhci::Uhci,
 
     /// Pointer to the PCI MMIO router (lives inside the MMIO dispatch regions).
     /// Used by `corevm_setup_e1000()` to add E1000 to the router after AHCI setup.
     pub pci_mmio_router_ptr: *mut crate::ffi::PciMmioRouter,
+    pub pci_io_router_ptr: *mut crate::ffi::PciIoRouter,
 
     /// Tracks whether AHCI IRQ 11 is currently asserted on the in-kernel irqchip.
     /// Used for level-triggered interrupt semantics: only call set_irq_line when
@@ -123,7 +125,9 @@ impl Vm {
             ide_ptr: core::ptr::null_mut(),
             e1000_ptr: core::ptr::null_mut(),
             ac97_ptr: core::ptr::null_mut(),
+            uhci_ptr: core::ptr::null_mut(),
             pci_mmio_router_ptr: core::ptr::null_mut(),
+            pci_io_router_ptr: core::ptr::null_mut(),
             ahci_irq_asserted: false,
             #[cfg(feature = "std")]
             pending_mouse: std::sync::Mutex::new(alloc::vec::Vec::new()),
@@ -645,6 +649,12 @@ impl Vm {
         } else {
             Some(unsafe { &mut *self.e1000_ptr })
         }
+    }
+
+    /// Get a mutable reference to the UHCI USB controller, if set up.
+    pub fn uhci(&mut self) -> Option<&mut crate::devices::uhci::Uhci> {
+        if self.uhci_ptr.is_null() { None }
+        else { Some(unsafe { &mut *self.uhci_ptr }) }
     }
 
     /// Get a mutable reference to the AC97 audio controller, if set up.

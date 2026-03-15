@@ -406,6 +406,8 @@ pub struct DisplayWidget {
     right_click_start: Option<std::time::Instant>,
     /// Consecutive Escape press times for triple-press detection.
     escape_presses: Vec<std::time::Instant>,
+    /// USB tablet mode: send absolute coordinates, no capture needed.
+    pub usb_tablet_mode: bool,
 }
 
 impl DisplayWidget {
@@ -425,6 +427,7 @@ impl DisplayWidget {
             warp_skip_frames: 0,
             right_click_start: None,
             escape_presses: Vec::new(),
+            usb_tablet_mode: false,
         }
     }
 
@@ -661,6 +664,24 @@ impl DisplayWidget {
                 buttons,
                 ps2_state & 1, (ps2_state >> 8) & 0xFF,
                 pin12_vector, pin12_deliv, pin12_masked);
+        }
+
+        // USB Tablet mode: send absolute coordinates without capture
+        if self.usb_tablet_mode {
+            let pointer_pos = ui.input(|i| i.pointer.latest_pos());
+            if let Some(pos) = pointer_pos {
+                if display_rect.contains(pos) {
+                    // Map screen position to 0..32767
+                    let rel_x = (pos.x - display_rect.left()) / display_rect.width();
+                    let rel_y = (pos.y - display_rect.top()) / display_rect.height();
+                    let abs_x = (rel_x.clamp(0.0, 1.0) * 32767.0) as u16;
+                    let abs_y = (rel_y.clamp(0.0, 1.0) * 32767.0) as u16;
+
+                    libcorevm::ffi::corevm_usb_tablet_move(vm_handle, abs_x, abs_y, buttons);
+                }
+            }
+            self.last_mouse_buttons = buttons;
+            return;
         }
 
         if !self.mouse_captured {

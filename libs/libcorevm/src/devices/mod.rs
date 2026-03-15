@@ -38,3 +38,4 @@ pub mod apm;
 pub mod ahci;
 pub mod hpet;
 pub mod ac97;
+pub mod uhci;

@@ -189,7 +189,7 @@ impl SettingsDialog {
                                     Category::CdDvd       => Self::page_cd_dvd(&mut self.config, ui, &mut browse_target),
                                     Category::Network     => self.page_network(ui),
                                     Category::Sound       => self.page_sound(ui),
-                                    Category::Usb         => Self::page_placeholder(ui, "USB", "USB controller emulation is not yet implemented."),
+                                    Category::Usb         => self.page_usb(ui),
                                     Category::Diagnostics => self.page_diagnostics(ui),
                                     Category::Expert      => self.page_expert(ui),
                                 }
@@ -651,6 +651,36 @@ impl SettingsDialog {
             egui::Color32::from_rgb(120, 120, 125),
             "Emulates an Intel 82801AA AC'97 audio controller.\nDisable for server guests or if audio causes issues.",
         );
+    }
+
+    fn page_usb(&mut self, ui: &mut egui::Ui) {
+        section_heading(ui, "USB Controller");
+
+        ui.checkbox(&mut self.config.usb_tablet, "Enable USB Controller (UHCI)");
+
+        if self.config.usb_tablet {
+            ui.add_space(4.0);
+
+            labeled_row(ui, "Controller:", |ui| {
+                ui.label(egui::RichText::new("Intel PIIX3 UHCI (USB 1.1)").color(egui::Color32::from_rgb(160, 160, 160)));
+            });
+
+            section_heading(ui, "USB Devices");
+
+            labeled_row(ui, "Tablet:", |ui| {
+                ui.label(egui::RichText::new("USB HID Tablet (absolute positioning)").color(egui::Color32::from_rgb(160, 160, 160)));
+            });
+
+            ui.add_space(4.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(110, 110, 115),
+                "The USB tablet provides absolute mouse coordinates,\nwhich works better than PS/2 relative mouse in most guests.",
+            );
+        }
+
+        ui.add_space(8.0);
+
+        host_info_bar(ui, "The USB tablet is recommended for all guests.\nPS/2 mouse remains active as fallback.");
     }
 
     fn page_diagnostics(&mut self, ui: &mut egui::Ui) {

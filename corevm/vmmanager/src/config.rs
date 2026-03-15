@@ -37,6 +37,7 @@ pub struct VmConfig {
     pub mac_mode: MacMode,
     pub mac_address: String,
     pub audio_enabled: bool,
+    pub usb_tablet: bool,
     pub ram_alloc: RamAlloc,
     pub diagnostics: bool,
 }
@@ -68,6 +69,7 @@ impl Default for VmConfig {
             mac_mode: MacMode::Dynamic,
             mac_address: String::new(),
             audio_enabled: true,
+            usb_tablet: true,
             ram_alloc: RamAlloc::OnDemand,
             diagnostics: false,
         }
@@ -117,7 +119,7 @@ impl VmConfig {
         let content = format!(
             "name={}\nguest_os={}\nguest_arch={}\nram={}\ncpu_cores={}\n{}iso={}\nboot={}\nbios={}\n\
              ram_alloc={}\ngpu={}\nnet_enabled={}\nnet_mode={}\nnet_host_nic={}\n\
-             mac_mode={}\nmac_address={}\naudio_enabled={}\ndiagnostics={}\n",
+             mac_mode={}\nmac_address={}\naudio_enabled={}\nusb_tablet={}\ndiagnostics={}\n",
             self.name, self.guest_os.to_config_str(), arch,
             self.ram_mb, self.cpu_cores, disk_lines, self.iso_image,
             boot, bios,
@@ -125,6 +127,7 @@ impl VmConfig {
             if self.net_enabled { "1" } else { "0" },
             net_mode, self.net_host_nic, mac_mode, self.mac_address,
             if self.audio_enabled { "1" } else { "0" },
+            if self.usb_tablet { "1" } else { "0" },
             if self.diagnostics { "1" } else { "0" },
         );
         fs::write(&path, content)
@@ -199,6 +202,7 @@ impl VmConfig {
                 },
                 "mac_address" => cfg.mac_address = val.to_string(),
                 "audio_enabled" => cfg.audio_enabled = val == "1",
+                "usb_tablet" => cfg.usb_tablet = val == "1",
                 "diagnostics" => cfg.diagnostics = val == "1",
                 _ => {}
             }

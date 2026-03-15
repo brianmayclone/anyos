@@ -182,11 +182,24 @@ impl CoreVmApp {
         match action {
             ToolbarAction::Start => {
                 if let Some(uuid) = self.selected_vm.clone() {
+                    let mut started_ok = false;
+                    let mut usb_tablet = false;
+                    let mut diag_name = String::new();
                     if let Some(entry) = self.find_vm_mut(&uuid) {
+                        usb_tablet = entry.config.usb_tablet;
                         if let Err(e) = vm::start_vm(entry) {
                             self.error_message = Some(format!("Failed to start VM: {}", e));
-                        } else if entry.config.diagnostics {
-                            self.diagnostics_window = Some(DiagnosticsWindow::new(&entry.config.name));
+                        } else {
+                            started_ok = true;
+                            if entry.config.diagnostics {
+                                diag_name = entry.config.name.clone();
+                            }
+                        }
+                    }
+                    if started_ok {
+                        self.display.usb_tablet_mode = usb_tablet;
+                        if !diag_name.is_empty() {
+                            self.diagnostics_window = Some(DiagnosticsWindow::new(&diag_name));
                         }
                     }
                 }

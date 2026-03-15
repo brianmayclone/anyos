@@ -532,6 +532,45 @@ impl IoHandler for Ac97Nam {
     }
 }
 
+impl Ac97Nam {
+    /// Static read for use by PCI I/O router (takes &Ac97 directly).
+    pub fn read_static(ac97: &Ac97, offset: u16, size: u8) -> crate::error::Result<u32> {
+        let val = ac97.nam_read(offset);
+        Ok(match size {
+            1 => if offset & 1 == 0 { (val & 0xFF) as u32 } else { ((val >> 8) & 0xFF) as u32 },
+            2 => val as u32,
+            4 => {
+                let lo = ac97.nam_read(offset) as u32;
+                let hi = ac97.nam_read(offset + 2) as u32;
+                lo | (hi << 16)
+            }
+            _ => val as u32,
+        })
+    }
+
+    /// Static write for use by PCI I/O router.
+    pub fn write_static(ac97: &mut Ac97, offset: u16, size: u8, val: u32) -> crate::error::Result<()> {
+        match size {
+            1 => {
+                let old = ac97.nam_read(offset & !1);
+                let new = if offset & 1 == 0 {
+                    (old & 0xFF00) | (val & 0xFF) as u16
+                } else {
+                    (old & 0x00FF) | ((val & 0xFF) << 8) as u16
+                };
+                ac97.nam_write(offset & !1, new);
+            }
+            2 => ac97.nam_write(offset, val as u16),
+            4 => {
+                ac97.nam_write(offset, val as u16);
+                ac97.nam_write(offset + 2, (val >> 16) as u16);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
 /// NABM I/O port handler (BAR1).
 pub struct Ac97Nabm(pub *mut Ac97);
 unsafe impl Send for Ac97Nabm {}
@@ -546,6 +585,19 @@ impl IoHandler for Ac97Nabm {
     fn write(&mut self, port: u16, size: u8, val: u32) -> Result<()> {
         let ac97 = unsafe { &mut *self.0 };
         let offset = port & 0x3F;
+        ac97.nabm_write(offset, size, val);
+        Ok(())
+    }
+}
+
+impl Ac97Nabm {
+    /// Static read for use by PCI I/O router.
+    pub fn read_static(ac97: &Ac97, offset: u16, size: u8) -> crate::error::Result<u32> {
+        Ok(ac97.nabm_read(offset, size))
+    }
+
+    /// Static write for use by PCI I/O router.
+    pub fn write_static(ac97: &mut Ac97, offset: u16, size: u8, val: u32) -> crate::error::Result<()> {
         ac97.nabm_write(offset, size, val);
         Ok(())
     }

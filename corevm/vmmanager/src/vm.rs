@@ -14,6 +14,7 @@ use libcorevm::ffi::{
     corevm_create, corevm_create_vcpu, corevm_destroy,
     corevm_run_vcpu, corevm_handle_io_exit, corevm_handle_mmio_exit, corevm_handle_string_io_exit,
     corevm_setup_standard_devices, corevm_setup_acpi_tables, corevm_setup_acpi_tables_with_hpet, corevm_setup_ahci, corevm_setup_e1000, corevm_setup_hpet, corevm_setup_ac97, corevm_ac97_process,
+    corevm_setup_uhci, corevm_uhci_process,
     corevm_complete_string_io,
     corevm_get_vcpu_regs,
     corevm_get_vcpu_sregs,
@@ -114,6 +115,12 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         ));
     }
 
+    // UHCI USB Controller with tablet — if enabled in config
+    if config.usb_tablet {
+        corevm_setup_uhci(handle);
+        entry.diag_log.log(DiagCategory::Info, "UHCI USB controller + tablet enabled".to_string());
+    }
+
     // AC97 Audio Controller — only if enabled in config
     if config.audio_enabled {
         corevm_setup_ac97(handle);
@@ -127,13 +134,15 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         BiosType::CoreVm => setup::load_corevm_bios(handle, &extra_bios_paths)?,
     }
 
-    // Attach ISO — use IDE for Windows guests (built-in driver), AHCI for others
+    // Attach ISO — always on AHCI (port 1) for SeaBIOS boot.
+    // For Windows guests, also attach on IDE so Windows Setup can use its
+    // built-in ATAPI driver (Windows has no AHCI driver during Setup).
     if !config.iso_image.is_empty() {
+        setup::attach_image_to_ahci(handle, &config.iso_image, 1, true)?;
         if config.guest_os.is_windows() {
             setup::attach_cdrom_to_ide(handle, &config.iso_image)?;
-            entry.diag_log.log(DiagCategory::Info, "ISO attached via IDE (Windows compat)".into());
+            entry.diag_log.log(DiagCategory::Info, "ISO attached via AHCI + IDE (Windows compat)".into());
         } else {
-            setup::attach_image_to_ahci(handle, &config.iso_image, 1, true)?;
             entry.diag_log.log(DiagCategory::Info, "ISO attached via AHCI".into());
         }
     }
@@ -208,10 +217,11 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     let diag = entry.diag_log.clone();
     let diag_enabled = entry.config.diagnostics;
     let audio_enabled = entry.config.audio_enabled;
+    let usb_tablet = entry.config.usb_tablet;
 
     // Spawn VM execution thread
     let thread = thread::spawn(move || {
-        vm_run_loop(handle, fb, control_clone, diag, diag_enabled, audio_enabled);
+        vm_run_loop(handle, fb, control_clone, diag, diag_enabled, audio_enabled, usb_tablet);
         corevm_destroy(handle);
     });
 
@@ -260,6 +270,7 @@ fn vm_run_loop(
     diag: DiagLog,
     diag_enabled: bool,
     audio_enabled: bool,
+    usb_tablet: bool,
 ) {
     let mut last_fb_update = Instant::now();
     let mut last_pit_tick = Instant::now();
@@ -575,6 +586,11 @@ fn vm_run_loop(
         // Process AC97 audio DMA (reads audio data from guest buffers)
         if audio_enabled {
             corevm_ac97_process(handle);
+        }
+
+        // Process UHCI USB frames (~1kHz)
+        if usb_tablet {
+            corevm_uhci_process(handle);
         }
 
         // Drain debug port output on every iteration
