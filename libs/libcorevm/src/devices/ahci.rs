@@ -483,12 +483,34 @@ impl Ahci {
             eprintln!("[ahci] port{} slot{} cmd=0x{:02X} lba={} count={} prdtl={}", port_idx, slot, command, lba, count, prdtl);
 
             match command {
-                ATA_CMD_IDENTIFY | ATA_CMD_IDENTIFY_PACKET => {
-                    let id = port.drive.build_identify();
-                    if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &id); }
-                    dma.write_u32(cmd_hdr_addr + 4, 512);
-                    port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
-                    port.is |= PORT_IS_DHRS;
+                ATA_CMD_IDENTIFY => {
+                    if port.drive.kind == AhciDriveKind::AtapiCdrom {
+                        // ATAPI devices must abort IDENTIFY DEVICE (0xEC)
+                        // and only respond to IDENTIFY PACKET DEVICE (0xA1).
+                        // Set the signature in TFD so the driver can re-issue 0xA1.
+                        port.tfd = TFD_STS_DRDY | TFD_STS_DSC | (0x04 << 8) | 1; // ABRT
+                        port.is |= PORT_IS_DHRS;
+                    } else {
+                        let id = port.drive.build_identify();
+                        if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &id); }
+                        dma.write_u32(cmd_hdr_addr + 4, 512);
+                        port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+                        port.is |= PORT_IS_DHRS;
+                    }
+                }
+                ATA_CMD_IDENTIFY_PACKET => {
+                    if port.drive.kind == AhciDriveKind::AtaDisk {
+                        // ATA disks must abort IDENTIFY PACKET DEVICE (0xA1)
+                        // and only respond to IDENTIFY DEVICE (0xEC).
+                        port.tfd = TFD_STS_DRDY | TFD_STS_DSC | (0x04 << 8) | 1; // ABRT
+                        port.is |= PORT_IS_DHRS;
+                    } else {
+                        let id = port.drive.build_identify();
+                        if prdtl > 0 { dma.write_prdt(prdt_base, prdtl, &id); }
+                        dma.write_u32(cmd_hdr_addr + 4, 512);
+                        port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+                        port.is |= PORT_IS_DHRS;
+                    }
                 }
                 ATA_CMD_READ_DMA | ATA_CMD_READ_DMA_EXT
                 | ATA_CMD_READ_SECTORS | ATA_CMD_READ_SECTORS_EXT => {
@@ -536,7 +558,11 @@ impl Ahci {
                     port.is |= PORT_IS_DHRS;
                 }
                 ATA_CMD_PACKET => {
-                    if let Some(acmd) = dma.read_bytes(ctba + 0x40, 16) {
+                    if port.drive.kind != AhciDriveKind::AtapiCdrom {
+                        // ATA disks don't support PACKET command
+                        port.tfd = TFD_STS_DRDY | TFD_STS_DSC | (0x04 << 8) | 1; // ABRT
+                        port.is |= PORT_IS_DHRS;
+                    } else if let Some(acmd) = dma.read_bytes(ctba + 0x40, 16) {
                         process_atapi(port, &dma, &acmd, prdt_base, prdtl, cmd_hdr_addr);
                     } else {
                         port.tfd = TFD_STS_DRDY | TFD_STS_DSC | 1;
@@ -589,7 +615,21 @@ impl Ahci {
                 if c & PORT_CMD_FRE != 0 { c |= PORT_CMD_FR; }
                 c
             }
-            PORT_TFD => p.tfd, PORT_SIG => p.sig, PORT_SSTS => p.ssts,
+            PORT_TFD => p.tfd,
+            PORT_SIG => {
+                #[cfg(feature = "std")]
+                {
+                    static SIG_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                    let prev = SIG_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if prev < 20 {
+                        eprintln!("[ahci] port{} PxSIG read -> 0x{:08X} (kind={:?} present={})",
+                            idx, p.sig,
+                            p.drive.kind, p.drive.present);
+                    }
+                }
+                p.sig
+            }
+            PORT_SSTS => p.ssts,
             PORT_SCTL => p.sctl, PORT_SERR => p.serr, PORT_SACT => p.sact,
             PORT_CI => p.ci, PORT_SNTF => p.sntf, PORT_FBS => p.fbs,
             _ => 0,

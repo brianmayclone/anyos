@@ -163,6 +163,16 @@ impl GuestOs {
     pub fn is_linux(&self) -> bool {
         self.category() == "Linux"
     }
+
+    /// Returns true if this OS has a built-in AHCI driver during installation.
+    /// Windows 7 does NOT — it needs IDE for both disk and CDROM.
+    /// Windows 8+ and all Linux distros have native AHCI support.
+    pub fn has_native_ahci(&self) -> bool {
+        match self {
+            GuestOs::Windows7 | GuestOs::DosFreeDos => false,
+            _ => true,
+        }
+    }
 }
 
 // ── Error helpers ────────────────────────────────────────────────────
