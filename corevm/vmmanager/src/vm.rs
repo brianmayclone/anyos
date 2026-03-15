@@ -20,7 +20,8 @@ use libcorevm::ffi::{
     corevm_get_vcpu_sregs,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_fb_offset,
     corevm_pit_advance, corevm_pit_debug, corevm_cmos_advance, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu, corevm_lapic_timer_advance, corevm_lapic_debug,
-    corevm_read_phys, corevm_write_phys, corevm_debug_port_take_output,
+    corevm_read_phys, corevm_write_phys, corevm_debug_port_take_output, corevm_check_reset,
+    corevm_ahci_poll_irq,
 };
 use libcorevm::setup;
 use libcorevm::backend::{VcpuRegs, VcpuSregs};
@@ -355,6 +356,21 @@ fn vm_run_loop(
                     // String I/O (REP OUTSB): handle all iterations at once
                     corevm_complete_string_io(handle, 0, exit.port, 1, exit.size, exit.io_count);
                 } else {
+                    // Port 0xCF9: System Reset Control Register
+                    if exit.port == 0x0CF9 && exit.size == 1 {
+                        let val = exit.data_u32 & 0xFF;
+                        if val & 0x04 != 0 {
+                            // Bit 2 = System Reset — treat as reboot request
+                            if diag_enabled {
+                                diag.log(DiagCategory::Info, format!("System reset via port 0xCF9 (val=0x{:02X})", val));
+                            }
+                            if let Ok(mut r) = control.exit_reason.lock() {
+                                *r = "Reboot".into();
+                            }
+                            control.exited.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
                     // Capture serial port COM1 (0x3F8) data register output
                     if exit.port == 0x3F8 && exit.size == 1 {
                         let ch = (exit.data_u32 & 0xFF) as u8;
@@ -376,6 +392,8 @@ fn vm_run_loop(
                 if diag_enabled {
                     diag.log(DiagCategory::Mmio, format!("MMIO RD addr=0x{:08X} size={}", exit.addr, exit.size));
                 }
+                // Immediately update AHCI IRQ after MMIO access (level-triggered)
+                corevm_ahci_poll_irq(handle);
             }
             3 => {
                 // MmioWrite — dispatch to device
@@ -384,6 +402,8 @@ fn vm_run_loop(
                 }
                 let mut data = exit.data_u64.to_le_bytes();
                 corevm_handle_mmio_exit(handle, exit.addr, 1, exit.size, data.as_mut_ptr(), 0, 0);
+                // Immediately update AHCI IRQ after MMIO write (command completion)
+                corevm_ahci_poll_irq(handle);
             }
             7 => {
                 thread::sleep(Duration::from_millis(1));
@@ -581,6 +601,18 @@ fn vm_run_loop(
         let poll_inj = corevm_poll_irqs(handle);
         if poll_inj > 0 {
             diag.log(DiagCategory::Interrupt, format!("poll_irqs ret={:#010x}", poll_inj));
+        }
+
+        // Check if guest requested a system reset (PS/2 0xFE or port 0xCF9)
+        if corevm_check_reset(handle) != 0 {
+            if diag_enabled {
+                diag.log(DiagCategory::Info, "System reset requested by guest (PS/2 0xFE)".into());
+            }
+            if let Ok(mut r) = control.exit_reason.lock() {
+                *r = "Reboot".into();
+            }
+            control.exited.store(true, Ordering::Relaxed);
+            break;
         }
 
         // Process AC97 audio DMA (reads audio data from guest buffers)

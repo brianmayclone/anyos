@@ -711,6 +711,28 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
     }
 }
 
+/// Immediately check and update the AHCI IRQ line on the in-kernel irqchip.
+/// This must be called after every MMIO exit to ensure timely IRQ delivery,
+/// because AHCI commands are processed synchronously during MMIO writes and
+/// the guest may acknowledge the interrupt before poll_irqs runs.
+#[no_mangle]
+pub extern "C" fn corevm_ahci_poll_irq(handle: u64) {
+    let vm = match get_vm(handle) { Some(v) => v, None => return };
+    if vm.ahci_ptr.is_null() { return; }
+    let ahci = unsafe { &mut *vm.ahci_ptr };
+    let want_asserted = ahci.irq_raised();
+    #[cfg(feature = "linux")]
+    {
+        if want_asserted && !vm.ahci_irq_asserted {
+            let _ = vm.backend.set_irq_line(11, true);
+            vm.ahci_irq_asserted = true;
+        } else if !want_asserted && vm.ahci_irq_asserted {
+            let _ = vm.backend.set_irq_line(11, false);
+            vm.ahci_irq_asserted = false;
+        }
+    }
+}
+
 /// Check if the guest has requested a system reset (e.g. PS/2 0xFE, port 0xCF9).
 /// Returns 1 if reset was requested (and clears the flag), 0 otherwise.
 #[no_mangle]

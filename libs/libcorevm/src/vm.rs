@@ -136,6 +136,7 @@ impl Vm {
             pci_io_router_ptr: core::ptr::null_mut(),
             ahci_irq_asserted: false,
             e1000_irq_asserted: false,
+            cf9_reset_pending: false,
             #[cfg(feature = "std")]
             pending_mouse: std::sync::Mutex::new(alloc::vec::Vec::new()),
         })

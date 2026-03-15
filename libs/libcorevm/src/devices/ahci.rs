@@ -119,7 +119,7 @@ impl GuestDma {
 
     fn read_bytes(&self, addr: u64, count: usize) -> Option<Vec<u8>> {
         let a = self.gpa_to_offset(addr)?;
-        if a + count > self.len { return None; }
+        if count == 0 || a.checked_add(count).map_or(true, |end| end > self.len) { return None; }
         let mut buf = vec![0u8; count];
         unsafe { core::ptr::copy_nonoverlapping(self.ptr.add(a), buf.as_mut_ptr(), count); }
         Some(buf)
@@ -127,7 +127,7 @@ impl GuestDma {
 
     fn write_bytes(&self, addr: u64, data: &[u8]) {
         let a = match self.gpa_to_offset(addr) { Some(o) => o, None => return };
-        if a + data.len() > self.len { return; }
+        if data.is_empty() || a.checked_add(data.len()).map_or(true, |end| end > self.len) { return; }
         unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(a), data.len()); }
     }
 
@@ -251,7 +251,7 @@ impl AhciDrive {
             { buf.fill(0); }
         } else {
             let s = offset as usize;
-            let e = (s + buf.len()).min(self.disk.len());
+            let e = s.checked_add(buf.len()).unwrap_or(self.disk.len()).min(self.disk.len());
             if s < self.disk.len() {
                 buf[..e - s].copy_from_slice(&self.disk[s..e]);
                 for b in buf[e - s..].iter_mut() { *b = 0; }
@@ -281,12 +281,13 @@ impl AhciDrive {
             }
         } else {
             let s = offset as usize;
-            let e = s + buf.len();
-            if e <= self.disk.len() {
-                self.disk[s..e].copy_from_slice(buf);
-            } else if s < self.disk.len() {
-                let dl = self.disk.len();
-                self.disk[s..].copy_from_slice(&buf[..dl - s]);
+            if let Some(e) = s.checked_add(buf.len()) {
+                if e <= self.disk.len() {
+                    self.disk[s..e].copy_from_slice(buf);
+                } else if s < self.disk.len() {
+                    let dl = self.disk.len();
+                    self.disk[s..].copy_from_slice(&buf[..dl - s]);
+                }
             }
         }
     }
@@ -475,12 +476,11 @@ impl Ahci {
                 | (cfis[8] as u64) << 24 | (cfis[9] as u64) << 32 | (cfis[10] as u64) << 40;
             let mut count = (cfis[13] as u32) << 8 | cfis[12] as u32;
             if count == 0 { count = 256; }
+            // Cap count to prevent excessive memory allocation (max 256 sectors = 128KB for ATA)
+            if count > 0xFFFF { count = 0xFFFF; }
 
             let prdt_base = ctba + 0x80;
 
-
-            #[cfg(feature = "std")]
-            eprintln!("[ahci] port{} slot{} cmd=0x{:02X} lba={} count={} prdtl={}", port_idx, slot, command, lba, count, prdtl);
 
             match command {
                 ATA_CMD_IDENTIFY => {
@@ -534,7 +534,13 @@ impl Ahci {
                     port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
                     port.is |= PORT_IS_DHRS;
                 }
-                ATA_CMD_FLUSH | ATA_CMD_FLUSH_EXT | ATA_CMD_SET_FEATURES => {
+                ATA_CMD_FLUSH | ATA_CMD_FLUSH_EXT | ATA_CMD_SET_FEATURES
+                | 0xF5 // SECURITY FREEZE LOCK — no-op for VMs
+                | 0x27 // READ NATIVE MAX ADDRESS EXT — return success
+                | 0xE0 | 0xE1 // STANDBY IMMEDIATE / IDLE IMMEDIATE
+                | 0xE5 | 0xE6 // CHECK POWER MODE / SLEEP
+                | 0x91 // INITIALIZE DEVICE PARAMETERS
+                => {
                     port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
                     port.is |= PORT_IS_DHRS;
                 }
@@ -615,21 +621,7 @@ impl Ahci {
                 if c & PORT_CMD_FRE != 0 { c |= PORT_CMD_FR; }
                 c
             }
-            PORT_TFD => p.tfd,
-            PORT_SIG => {
-                #[cfg(feature = "std")]
-                {
-                    static SIG_LOG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                    let prev = SIG_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                    if prev < 20 {
-                        eprintln!("[ahci] port{} PxSIG read -> 0x{:08X} (kind={:?} present={})",
-                            idx, p.sig,
-                            p.drive.kind, p.drive.present);
-                    }
-                }
-                p.sig
-            }
-            PORT_SSTS => p.ssts,
+            PORT_TFD => p.tfd, PORT_SIG => p.sig, PORT_SSTS => p.ssts,
             PORT_SCTL => p.sctl, PORT_SERR => p.serr, PORT_SACT => p.sact,
             PORT_CI => p.ci, PORT_SNTF => p.sntf, PORT_FBS => p.fbs,
             _ => 0,
@@ -713,8 +705,6 @@ impl MmioHandler for Ahci {
 // ── ATAPI command processing (free function to avoid borrow issues) ──
 
 fn process_atapi(port: &mut AhciPort, dma: &GuestDma, acmd: &[u8], prdt_base: u64, prdtl: u32, cmd_hdr_addr: u64) {
-    #[cfg(feature = "std")]
-    eprintln!("[ahci-atapi] opcode=0x{:02X} acmd={:02X?}", acmd[0], &acmd[..acmd.len().min(12)]);
     match acmd[0] {
         0x00 => { // TEST UNIT READY
             port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
@@ -788,7 +778,7 @@ fn process_atapi(port: &mut AhciPort, dma: &GuestDma, acmd: &[u8], prdt_base: u6
         }
         0x28 => { // READ (10)
             let lba = u32::from_be_bytes([acmd[2], acmd[3], acmd[4], acmd[5]]) as u64;
-            let cnt = u16::from_be_bytes([acmd[7], acmd[8]]) as u32;
+            let cnt = (u16::from_be_bytes([acmd[7], acmd[8]]) as u32).min(256);
             let ss = port.drive.sector_size();
             let total = cnt as usize * ss;
             let mut buf = vec![0u8; total];
