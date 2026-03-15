@@ -224,6 +224,10 @@ impl Vm {
         self.memory.add_mmio(0xFEBE_0000, 0x1000, Box::new(SvgaDispiMmioProxy(self.svga_ptr)));
         self.memory.add_mmio(0xFE00_2000, 0x1000, Box::new(SvgaDispiMmioProxy(self.svga_ptr)));
 
+        // Port 0x92: Fast A20 Gate + System Reset
+        // Required by Windows 10 bootmgr to enable A20 and check system state.
+        self.io.register(0x92, 1, Box::new(Port92::new()));
+
         // Debug port (0x402)
         let dbg = Box::new(DebugPort::new());
         self.debug_port_ptr = &*dbg as *const DebugPort as *mut DebugPort;
@@ -851,6 +855,32 @@ impl crate::memory::mmio::MmioHandler for SvgaMmioProxy {
     }
     fn write(&mut self, offset: u64, size: u8, val: u64) -> crate::error::Result<()> {
         unsafe { &mut *self.0 }.write(offset, size, val)
+    }
+}
+
+/// Port 0x92: System Control Port A (Fast A20 Gate).
+/// Bit 0: Fast Reset (write 1 = system reset, always reads 0)
+/// Bit 1: A20 Gate Enable (1 = enabled, default = enabled in KVM)
+/// Bits 2-7: reserved, read as 0
+struct Port92 {
+    value: u8,
+}
+
+impl Port92 {
+    fn new() -> Self { Port92 { value: 0x02 } } // A20 enabled by default
+}
+
+impl crate::io::IoHandler for Port92 {
+    fn read(&mut self, _port: u16, _size: u8) -> crate::error::Result<u32> {
+        Ok(self.value as u32)
+    }
+    fn write(&mut self, _port: u16, _size: u8, val: u32) -> crate::error::Result<()> {
+        let v = val as u8;
+        // Bit 0: Fast Reset — if set, request system reset
+        // (handled by the VM loop checking cf9_reset_pending)
+        // Bit 1: A20 Gate — store it (KVM handles A20 internally)
+        self.value = v & 0x02; // only store A20 bit, clear reset bit
+        Ok(())
     }
 }
 

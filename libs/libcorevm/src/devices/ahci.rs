@@ -370,6 +370,15 @@ impl AhciDrive {
             write_word(&mut id, 0, 0x85C0);
         } else {
             write_word(&mut id, 0, 0x0040);
+            // CHS geometry (words 1, 3, 6) — required for INT 13h / bootmgr.
+            // Use standard translation: 16383 cylinders, 16 heads, 63 sectors.
+            let chs_sectors = sectors.min(16383 * 16 * 63);
+            let heads = 16u16;
+            let spt = 63u16;
+            let cyls = (chs_sectors / (heads as u64 * spt as u64)).min(16383) as u16;
+            write_word(&mut id, 1, cyls);  // word 1: cylinders
+            write_word(&mut id, 3, heads); // word 3: heads
+            write_word(&mut id, 6, spt);   // word 6: sectors per track
         }
         write_ata_string(&mut id, 10, b"COREVM_AHCI_0000", 20);
         write_ata_string(&mut id, 23, b"1.0     ", 8);
