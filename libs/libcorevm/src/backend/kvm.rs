@@ -221,6 +221,7 @@ const KVM_GET_VCPU_EVENTS: u64 = 0x8040_AE9F;
 const KVM_SET_VCPU_EVENTS: u64 = 0x4040_AEA0;
 const KVM_CREATE_IRQCHIP: u64 = 0xAE60;
 const KVM_IRQ_LINE: u64 = 0x4008_AE61;
+const KVM_ENABLE_CAP: u64 = 0x4068_AEA3;
 const KVM_SIGNAL_MSI: u64 = 0x4020_AEA5;
 const KVM_CREATE_PIT2: u64 = 0x4040_AE77;
 const KVM_GET_LAPIC: u64 = 0x8400_AE8E;
@@ -639,6 +640,15 @@ struct KvmPitState2 {
     _reserved: [u32; 9],
 }
 
+/// kvm_enable_cap for KVM_ENABLE_CAP
+#[repr(C)]
+struct KvmEnableCap {
+    cap: u32,
+    flags: u32,
+    args: [u64; 4],
+    _pad: [u8; 64],
+}
+
 /// kvm_irq_level for KVM_IRQ_LINE
 #[repr(C)]
 struct KvmIrqLevel {
@@ -727,7 +737,7 @@ impl KvmBackend {
 
             // Set TSS address (required by KVM on Intel before creating vCPUs).
             // Place at 0xFFFBD000 (same as QEMU) — just below 4GB, outside normal RAM.
-            let ret = sys_ioctl(vm_fd, KVM_SET_TSS_ADDR, 0xFFFB_D000u64);
+            let ret = sys_ioctl(vm_fd, KVM_SET_TSS_ADDR, 0xFEFF_D000u64);
             if ret < 0 {
                 sys_close(vm_fd);
                 sys_close(kvm_fd);
@@ -736,7 +746,7 @@ impl KvmBackend {
 
             // Set identity map address (required by KVM for real-mode emulation).
             // Place at 0xFFFBC000 (page below TSS).
-            let identity_addr: u64 = 0xFFFB_C000;
+            let identity_addr: u64 = 0xFEFF_C000;
             let ret = sys_ioctl(vm_fd, KVM_SET_IDENTITY_MAP_ADDR, &identity_addr as *const _ as u64);
             if ret < 0 {
                 sys_close(vm_fd);
@@ -752,9 +762,17 @@ impl KvmBackend {
                 return Err(VmError::BackendError(ret as i32));
             }
 
+            // Enable PIT reinjection control (KVM_CAP_REINJECT_CONTROL = 41).
+            // Required for correct PIT timer behavior — without this,
+            // Windows 10 bootmgr hangs waiting for timer interrupts.
+            {
+                let mut cap = KvmEnableCap { cap: 41, flags: 0, args: [0; 4], _pad: [0; 64] };
+                let _ = sys_ioctl(vm_fd, KVM_ENABLE_CAP, &cap as *const _ as u64);
+            }
+
             // Create in-kernel PIT (i8254 timer).
             let pit_config = KvmPitConfig {
-                flags: 0, // KVM_PIT_SPEAKER_DUMMY = 0 (no speaker)
+                flags: 1, // KVM_PIT_SPEAKER_DUMMY = 1 (match QEMU)
                 _pad: [0; 15],
             };
             let ret = sys_ioctl(

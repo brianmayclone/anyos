@@ -254,11 +254,16 @@ impl Cmos {
 impl IoHandler for Cmos {
     /// Read from CMOS ports.
     ///
-    /// - Port 0x70: not readable (returns 0xFF)
+    /// - Port 0x70: returns last written index | NMI-disable bit.
     /// - Port 0x71: returns the NVRAM byte at the currently selected index.
     ///   Reading status register C (0x0C) clears all interrupt flags.
     fn read(&mut self, port: u16, _size: u8) -> Result<u32> {
         let val = match port {
+            0x70 => {
+                // Return the last written value (index + NMI bit).
+                // Windows 10 bootmgr reads this to check NMI status.
+                self.index | if self.nmi_disabled { 0x80 } else { 0x00 }
+            }
             0x71 => {
                 let idx = (self.index & 0x7F) as usize;
                 let mut v = self.data[idx];
