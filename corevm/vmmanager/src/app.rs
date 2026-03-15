@@ -18,6 +18,7 @@ use crate::theme;
 use crate::toolbar::{self, ToolbarAction};
 use crate::vm;
 use crate::vm::VmControl;
+use libcorevm::ffi::{corevm_ps2_key_press, corevm_ps2_key_release};
 
 /// Shared framebuffer data between VM thread and UI
 pub struct FrameBufferData {
@@ -78,6 +79,8 @@ pub enum FilePickTarget {
     AddDiskBrowseExisting,
     AddDiskBrowseVmdk,
     AddDiskBrowseCreate,
+    ExportVmLog,
+    ExportBiosLog,
 }
 
 pub struct CoreVmApp {
@@ -416,14 +419,14 @@ impl eframe::App for CoreVmApp {
         let mut deferred_action: Option<ToolbarAction> = None;
 
         // Determine VM state for toolbar buttons
-        let (vm_selected, vm_running, vm_paused) = if let Some(uuid) = &self.selected_vm {
+        let (vm_selected, vm_running, vm_paused, vm_diag_enabled) = if let Some(uuid) = &self.selected_vm {
             if let Some(vm) = self.find_vm(uuid) {
-                (true, vm.state == VmState::Running, vm.state == VmState::Paused)
+                (true, vm.state == VmState::Running, vm.state == VmState::Paused, vm.config.diagnostics)
             } else {
-                (false, false, false)
+                (false, false, false, false)
             }
         } else {
-            (false, false, false)
+            (false, false, false, false)
         };
 
         // Combined menu + toolbar bar (VMware-style)
@@ -465,6 +468,64 @@ impl eframe::App for CoreVmApp {
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
                         });
+
+                        ui.menu_button("VM", |ui| {
+                            let can_send = vm_selected && vm_running;
+                            if ui.add_enabled(can_send, egui::Button::new("Send Ctrl+Alt+Del")).clicked() {
+                                if let Some(uuid) = &self.selected_vm {
+                                    if let Some(entry) = self.vms.iter().find(|v| &v.config.uuid == uuid) {
+                                        if let Some(handle) = entry.vm_handle {
+                                            // Ctrl press, Alt press, E0+Del press, E0+Del release, Alt release, Ctrl release
+                                            corevm_ps2_key_press(handle, 0x1D); // Ctrl
+                                            corevm_ps2_key_press(handle, 0x38); // Alt
+                                            corevm_ps2_key_press(handle, 0xE0); // Extended prefix
+                                            corevm_ps2_key_press(handle, 0x53); // Del make
+                                            corevm_ps2_key_press(handle, 0xE0); // Extended prefix
+                                            corevm_ps2_key_release(handle, 0x53); // Del break (0xD3)
+                                            corevm_ps2_key_release(handle, 0x38); // Alt release (0xB8)
+                                            corevm_ps2_key_release(handle, 0x1D); // Ctrl release (0x9D)
+                                        }
+                                    }
+                                }
+                                ui.close_menu();
+                            }
+                        });
+
+                        if vm_selected && vm_diag_enabled {
+                            ui.menu_button("Diagnostics", |ui| {
+                                let diag_open = self.diagnostics_window.is_some();
+                                let label = if diag_open { "Hide Diagnostics Window" } else { "Show Diagnostics Window" };
+                                if ui.add_enabled(vm_running, egui::Button::new(label)).clicked() {
+                                    if diag_open {
+                                        self.diagnostics_window = None;
+                                    } else if let Some(uuid) = &self.selected_vm {
+                                        if let Some(entry) = self.vms.iter().find(|v| &v.config.uuid == uuid) {
+                                            self.diagnostics_window = Some(DiagnosticsWindow::new(&entry.config.name));
+                                        }
+                                    }
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                if ui.add_enabled(vm_running, egui::Button::new("Export VM Log...")).clicked() {
+                                    let ts = chrono_timestamp();
+                                    self.file_browser = Some(FileBrowserDialog::new_save_with_name(
+                                        "Export VM Log", &["*.txt", "*.log"],
+                                        &format!("vm_log_{}.txt", ts),
+                                    ));
+                                    self.file_pick_target = Some(FilePickTarget::ExportVmLog);
+                                    ui.close_menu();
+                                }
+                                if ui.add_enabled(vm_running, egui::Button::new("Export BIOS Log...")).clicked() {
+                                    let ts = chrono_timestamp();
+                                    self.file_browser = Some(FileBrowserDialog::new_save_with_name(
+                                        "Export BIOS Log", &["*.txt", "*.log"],
+                                        &format!("bios_log_{}.txt", ts),
+                                    ));
+                                    self.file_pick_target = Some(FilePickTarget::ExportBiosLog);
+                                    ui.close_menu();
+                                }
+                            });
+                        }
 
                         ui.menu_button("Help", |ui| {
                             if ui.button("About CoreVM...").clicked() {
@@ -624,6 +685,22 @@ impl eframe::App for CoreVmApp {
                         dlg.set_path(path);
                     }
                 }
+                Some(FilePickTarget::ExportVmLog) => {
+                    if let Some(uuid) = &self.selected_vm {
+                        if let Some(entry) = self.vms.iter().find(|v| &v.config.uuid == uuid) {
+                            let text = entry.diag_log.export_vm_log();
+                            let _ = std::fs::write(&path, text);
+                        }
+                    }
+                }
+                Some(FilePickTarget::ExportBiosLog) => {
+                    if let Some(uuid) = &self.selected_vm {
+                        if let Some(entry) = self.vms.iter().find(|v| &v.config.uuid == uuid) {
+                            let text = entry.diag_log.export_bios_log();
+                            let _ = std::fs::write(&path, text);
+                        }
+                    }
+                }
                 Some(FilePickTarget::AddDisk) | None => {}
             }
             self.file_pick_target = None;
@@ -755,12 +832,30 @@ impl eframe::App for CoreVmApp {
             }
         }
 
-        // Diagnostics window
+        // Diagnostics window — shown in a separate OS-level window (viewport)
         if let Some(ref mut diag_win) = self.diagnostics_window {
-            // Find the selected VM's diag log
-            if let Some(uuid) = &self.selected_vm {
-                if let Some(entry) = self.vms.iter().find(|v| &v.config.uuid == uuid) {
-                    diag_win.show(ctx, &entry.diag_log);
+            if diag_win.open {
+                // Collect the diag log reference before the closure
+                let diag_log = self.selected_vm.as_ref().and_then(|uuid| {
+                    self.vms.iter().find(|v| &v.config.uuid == uuid)
+                }).map(|entry| entry.diag_log.clone());
+
+                if let Some(log) = diag_log {
+                    let title = format!("Diagnostics - {}", diag_win.vm_name);
+                    let vp_id = egui::ViewportId::from_hash_of("diagnostics_viewport");
+                    ctx.show_viewport_immediate(vp_id, egui::ViewportBuilder::default()
+                        .with_title(&title)
+                        .with_inner_size([700.0, 500.0])
+                        .with_min_inner_size([400.0, 200.0]),
+                        |ctx, _class| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                diag_win.show_contents(ui, &log);
+                            });
+                            if ctx.input(|i| i.viewport().close_requested()) {
+                                diag_win.open = false;
+                            }
+                        },
+                    );
                 }
             }
             if !diag_win.open {
@@ -832,25 +927,43 @@ impl eframe::App for CoreVmApp {
             }
         }
 
-        // Check if any running VM thread has exited
+        // Check if any running VM thread has exited (or requested reboot)
+        let mut reboot_uuid: Option<String> = None;
         let mut vm_exited = false;
         for vm in &mut self.vms {
             if vm.state == VmState::Running {
                 if let Some(ref ctl) = vm.control {
                     if ctl.exited.load(std::sync::atomic::Ordering::Relaxed) {
-                        let reason = ctl.exit_reason.lock()
-                            .map(|r| r.clone())
-                            .unwrap_or_default();
-                        vm.state = VmState::Stopped;
-                        vm_exited = true;
-                        self.error_message = Some(format!(
-                            "VM '{}' stopped ({})",
-                            vm.config.name, reason
-                        ));
+                        let wants_reboot = ctl.reboot_requested.load(std::sync::atomic::Ordering::Relaxed);
+                        if wants_reboot {
+                            // Guest requested reboot — stop and restart
+                            vm.state = VmState::Stopped;
+                            vm::stop_vm(vm);
+                            reboot_uuid = Some(vm.config.uuid.clone());
+                        } else {
+                            let reason = ctl.exit_reason.lock()
+                                .map(|r| r.clone())
+                                .unwrap_or_default();
+                            vm.state = VmState::Stopped;
+                            vm_exited = true;
+                            self.error_message = Some(format!(
+                                "VM '{}' stopped ({})",
+                                vm.config.name, reason
+                            ));
+                        }
                     }
                 }
             }
         }
+        // Handle reboot: restart the VM
+        if let Some(uuid) = reboot_uuid {
+            if let Some(entry) = self.find_vm_mut(&uuid) {
+                if let Err(e) = vm::start_vm(entry) {
+                    self.error_message = Some(format!("Reboot failed: {}", e));
+                }
+            }
+        }
+
         // Release mouse capture when VM exits unexpectedly
         if vm_exited && self.display.mouse_captured {
             self.display.mouse_captured = false;
@@ -1071,4 +1184,33 @@ fn copy_framebuffer_to_clipboard(fb: &FrameBufferData) -> Result<(), String> {
         .map_err(|e| format!("Failed to set clipboard image: {}", e))?;
 
     Ok(())
+}
+
+
+/// Generate a compact timestamp string for filenames (YYYYMMDD_HHMMSS).
+fn chrono_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let days = secs / 86400;
+    // Simple date calc (no leap-second accuracy needed for filenames)
+    let mut y = 1970u64;
+    let mut rem = days;
+    loop {
+        let ydays = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if rem < ydays { break; }
+        rem -= ydays;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let mdays = [31, if leap {29} else {28}, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mo = 0u64;
+    for &md in &mdays {
+        if rem < md { break; }
+        rem -= md;
+        mo += 1;
+    }
+    format!("{:04}{:02}{:02}_{:02}{:02}{:02}", y, mo + 1, rem + 1, h, m, s)
 }

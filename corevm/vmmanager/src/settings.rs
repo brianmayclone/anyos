@@ -50,12 +50,12 @@ enum Category {
     General,
     Processor,
     Memory,
+    Display,
     HardDisks,
     CdDvd,
     Network,
     Sound,
     Usb,
-    Diagnostics,
     Expert,
 }
 
@@ -64,12 +64,12 @@ impl Category {
         Category::General,
         Category::Processor,
         Category::Memory,
+        Category::Display,
         Category::HardDisks,
         Category::CdDvd,
         Category::Network,
         Category::Sound,
         Category::Usb,
-        Category::Diagnostics,
         Category::Expert,
     ];
 
@@ -78,12 +78,12 @@ impl Category {
             Category::General     => "General",
             Category::Processor   => "Processor",
             Category::Memory      => "Memory",
+            Category::Display     => "Display",
             Category::HardDisks   => "Hard Disks",
             Category::CdDvd       => "CD/DVD",
             Category::Network     => "Network",
             Category::Sound       => "Sound",
             Category::Usb         => "USB",
-            Category::Diagnostics => "Diagnostics",
             Category::Expert      => "Expert",
         }
     }
@@ -93,12 +93,12 @@ impl Category {
             Category::General     => "\u{2699}",  // ⚙
             Category::Processor   => "\u{2318}",  // ⌘
             Category::Memory      => "\u{25A6}",  // ▦
+            Category::Display     => "\u{1F5B5}", // 🖵
             Category::HardDisks   => "\u{1F4BE}", // 💾
             Category::CdDvd       => "\u{1F4BF}", // 💿
             Category::Network     => "\u{1F310}", // 🌐
             Category::Sound       => "\u{1F50A}", // 🔊
             Category::Usb         => "\u{1F50C}", // 🔌
-            Category::Diagnostics => "\u{1F41B}", // 🐛
             Category::Expert      => "\u{1F527}", // 🔧
         }
     }
@@ -111,6 +111,8 @@ pub struct SettingsDialog {
     category: Category,
     pub open: bool,
     pub saved: bool,
+    /// Index of disk being confirmed for reset (None = no confirmation dialog)
+    reset_confirm_disk: Option<usize>,
 }
 
 impl SettingsDialog {
@@ -120,6 +122,7 @@ impl SettingsDialog {
             category: Category::General,
             open: true,
             saved: false,
+            reset_confirm_disk: None,
         }
     }
 
@@ -185,12 +188,12 @@ impl SettingsDialog {
                                     Category::General     => self.page_general(ui),
                                     Category::Processor   => self.page_processor(ui),
                                     Category::Memory      => self.page_memory(ui),
-                                    Category::HardDisks   => Self::page_hard_disks(&mut self.config, ui, &mut browse_target),
+                                    Category::Display     => self.page_display(ui),
+                                    Category::HardDisks   => self.page_hard_disks(ui, &mut browse_target),
                                     Category::CdDvd       => Self::page_cd_dvd(&mut self.config, ui, &mut browse_target),
                                     Category::Network     => self.page_network(ui),
                                     Category::Sound       => self.page_sound(ui),
                                     Category::Usb         => self.page_usb(ui),
-                                    Category::Diagnostics => self.page_diagnostics(ui),
                                     Category::Expert      => self.page_expert(ui),
                                 }
                                 ui.add_space(8.0);
@@ -487,13 +490,70 @@ impl SettingsDialog {
         });
     }
 
-    fn page_hard_disks(config: &mut VmConfig, ui: &mut egui::Ui, browse_target: &mut Option<FilePickTarget>) {
+    fn page_display(&mut self, ui: &mut egui::Ui) {
+        use crate::config::GpuModel;
+
+        section_heading(ui, "Graphics Adapter");
+
+        labeled_row(ui, "Adapter:", |ui| {
+            egui::ComboBox::from_id_salt("gpu_model")
+                .selected_text(self.config.gpu_model.label())
+                .show_ui(ui, |ui| {
+                    for model in GpuModel::ALL {
+                        ui.selectable_value(&mut self.config.gpu_model, *model, model.label());
+                    }
+                });
+        });
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + 8.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(100, 100, 105),
+                match self.config.gpu_model {
+                    GpuModel::StdVga => "Bochs VBE compatible adapter. Works with all guest operating systems.",
+                },
+            );
+        });
+
+        ui.add_space(12.0);
+        section_heading(ui, "Video Memory");
+
+        labeled_row(ui, "VRAM:", |ui| {
+            egui::ComboBox::from_id_salt("vram_mb")
+                .selected_text(format!("{} MB", self.config.vram_mb))
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    for &mb in &[8u32, 16, 32, 64, 128, 256] {
+                        ui.selectable_value(&mut self.config.vram_mb, mb, format!("{} MB", mb));
+                    }
+                });
+        });
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + 8.0);
+            let hint = if self.config.vram_mb <= 8 {
+                "8 MB: Up to 1024x768. Low VRAM may limit available display modes."
+            } else if self.config.vram_mb <= 16 {
+                "16 MB: Up to 1920x1200. Recommended for most guests."
+            } else if self.config.vram_mb <= 64 {
+                "32-64 MB: High resolution support with room for double buffering."
+            } else {
+                "128-256 MB: Maximum resolution support."
+            };
+            ui.colored_label(egui::Color32::from_rgb(100, 100, 105), hint);
+        });
+    }
+
+    fn page_hard_disks(&mut self, ui: &mut egui::Ui, browse_target: &mut Option<FilePickTarget>) {
         section_heading(ui, "Hard Disks");
 
         let max_disks = 5;
         let mut remove_idx: Option<usize> = None;
+        let mut reset_confirm_idx: Option<usize> = None;
 
-        if config.disk_images.is_empty() {
+        if self.config.disk_images.is_empty() {
             ui.add_space(8.0);
             ui.colored_label(
                 egui::Color32::from_rgb(120, 120, 125),
@@ -504,7 +564,7 @@ impl SettingsDialog {
             let card_bg = egui::Color32::from_rgb(38, 38, 40);
             let card_border = egui::Color32::from_rgb(55, 55, 58);
 
-            for (i, disk) in config.disk_images.iter().enumerate() {
+            for (i, disk) in self.config.disk_images.iter().enumerate() {
                 let filename = std::path::Path::new(disk)
                     .file_name()
                     .map(|f| f.to_string_lossy().to_string())
@@ -541,10 +601,13 @@ impl SettingsDialog {
                                 );
                             });
 
-                            // Remove button (right-aligned)
+                            // Buttons (right-aligned)
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.small_button("Remove").clicked() {
                                     remove_idx = Some(i);
+                                }
+                                if ui.small_button("Reset").clicked() {
+                                    reset_confirm_idx = Some(i);
                                 }
                             });
                         });
@@ -555,11 +618,76 @@ impl SettingsDialog {
         }
 
         if let Some(idx) = remove_idx {
-            config.disk_images.remove(idx);
+            self.config.disk_images.remove(idx);
+        }
+        if let Some(idx) = reset_confirm_idx {
+            self.reset_confirm_disk = Some(idx);
+        }
+
+        // Disk reset confirmation dialog
+        if let Some(idx) = self.reset_confirm_disk {
+            let disk_name = self.config.disk_images.get(idx).cloned().unwrap_or_default();
+            let mut action = 0u8; // 0=nothing, 1=cancel, 2=reset
+
+            egui::Window::new("Reset Virtual Disk")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ui.ctx(), |ui| {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.colored_label(
+                            theme::WARNING_ORANGE,
+                            egui::RichText::new("\u{26A0}").size(24.0),
+                        );
+                        ui.add_space(8.0);
+                        ui.vertical(|ui| {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(255, 80, 80),
+                                egui::RichText::new("WARNING: This will permanently destroy all data!").strong(),
+                            );
+                            ui.add_space(4.0);
+                            ui.label("The virtual disk will be completely erased and recreated\nas an empty disk of the same size. This cannot be undone.");
+                            ui.add_space(4.0);
+                            ui.colored_label(
+                                egui::Color32::from_rgb(160, 160, 165),
+                                egui::RichText::new(&disk_name).small(),
+                            );
+                        });
+                    });
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            action = 1;
+                        }
+                        ui.add_space(8.0);
+                        let btn = egui::Button::new(
+                            egui::RichText::new("Reset Disk").color(egui::Color32::WHITE),
+                        ).fill(egui::Color32::from_rgb(180, 40, 40));
+                        if ui.add(btn).clicked() {
+                            action = 2;
+                        }
+                    });
+                });
+
+            if action == 2 {
+                if let Some(path_str) = self.config.disk_images.get(idx) {
+                    let path = std::path::Path::new(path_str);
+                    if let Ok(meta) = path.metadata() {
+                        let size = meta.len();
+                        if let Ok(f) = std::fs::File::create(path) {
+                            let _ = f.set_len(size);
+                        }
+                    }
+                }
+            }
+            if action > 0 {
+                self.reset_confirm_disk = None;
+            }
         }
 
         ui.add_space(4.0);
-        let can_add = config.disk_images.len() < max_disks;
+        let can_add = self.config.disk_images.len() < max_disks;
         ui.horizontal(|ui| {
             if ui.add_enabled(can_add, egui::Button::new("Add Disk...")).clicked() {
                 *browse_target = Some(FilePickTarget::AddDisk);
@@ -571,6 +699,48 @@ impl SettingsDialog {
                 );
             }
         });
+
+        // Disk I/O Cache section
+        if !self.config.disk_images.is_empty() {
+            ui.add_space(12.0);
+            section_heading(ui, "Disk I/O Cache");
+
+            labeled_row(ui, "Cache Mode:", |ui| {
+                ui.radio_value(&mut self.config.disk_cache_mode, crate::config::DiskCacheMode::WriteBack, "Write-Back");
+                ui.radio_value(&mut self.config.disk_cache_mode, crate::config::DiskCacheMode::WriteThrough, "Write-Through");
+                ui.radio_value(&mut self.config.disk_cache_mode, crate::config::DiskCacheMode::None, "Disabled");
+            });
+
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.add_space(LABEL_WIDTH + 8.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(100, 100, 105),
+                    match self.config.disk_cache_mode {
+                        crate::config::DiskCacheMode::WriteBack =>
+                            "Best performance. Writes are buffered and flushed periodically.\nSmall risk of data loss on host crash.",
+                        crate::config::DiskCacheMode::WriteThrough =>
+                            "Safe mode. Reads are cached, writes go to host immediately.\nRecommended for database workloads.",
+                        crate::config::DiskCacheMode::None =>
+                            "No caching. Every access hits the host disk directly.\nLowest performance, maximum safety.",
+                    },
+                );
+            });
+
+            if self.config.disk_cache_mode != crate::config::DiskCacheMode::None {
+                ui.add_space(4.0);
+                labeled_row(ui, "Cache Size:", |ui| {
+                    egui::ComboBox::from_id_salt("disk_cache_mb")
+                        .selected_text(format!("{} MB per disk", self.config.disk_cache_mb))
+                        .width(160.0)
+                        .show_ui(ui, |ui| {
+                            for &mb in &[8u32, 16, 32, 64, 128, 256] {
+                                ui.selectable_value(&mut self.config.disk_cache_mb, mb, format!("{} MB", mb));
+                            }
+                        });
+                });
+            }
+        }
     }
 
     fn page_cd_dvd(config: &mut VmConfig, ui: &mut egui::Ui, browse_target: &mut Option<FilePickTarget>) {
@@ -683,18 +853,6 @@ impl SettingsDialog {
         host_info_bar(ui, "The USB tablet is recommended for all guests.\nPS/2 mouse remains active as fallback.");
     }
 
-    fn page_diagnostics(&mut self, ui: &mut egui::Ui) {
-        section_heading(ui, "Diagnostics");
-
-        ui.checkbox(&mut self.config.diagnostics, "Enable Diagnostics Window");
-
-        ui.add_space(4.0);
-        ui.colored_label(
-            egui::Color32::from_rgb(120, 120, 125),
-            "When enabled, a diagnostics window will open alongside the VM\nshowing I/O ports, MMIO, interrupts, and CPU state.",
-        );
-    }
-
     fn page_expert(&mut self, ui: &mut egui::Ui) {
         // Warning banner
         egui::Frame::new()
@@ -739,6 +897,17 @@ impl SettingsDialog {
                 },
             );
         });
+
+        ui.add_space(12.0);
+        section_heading(ui, "Diagnostics");
+
+        ui.checkbox(&mut self.config.diagnostics, "Enable Diagnostics Window");
+
+        ui.add_space(4.0);
+        ui.colored_label(
+            egui::Color32::from_rgb(120, 120, 125),
+            "When enabled, a diagnostics window will open alongside the VM\nshowing I/O ports, MMIO, interrupts, and CPU state.",
+        );
     }
 
     fn page_placeholder(ui: &mut egui::Ui, title: &str, message: &str) {

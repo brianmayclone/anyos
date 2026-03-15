@@ -39,3 +39,5 @@ pub mod ahci;
 pub mod hpet;
 pub mod ac97;
 pub mod uhci;
+pub mod gpu;
+pub mod disk_cache;

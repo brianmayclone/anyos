@@ -160,6 +160,41 @@ impl PciDevice {
         config_write_u16(&mut self.config_space, 0x2C, vendor_id);
         config_write_u16(&mut self.config_space, 0x2E, device_id);
     }
+
+    /// Add a 32-bit MSI capability at the given config space offset.
+    ///
+    /// Sets up the PCI Capabilities List pointer (offset 0x34) and the
+    /// MSI capability structure (10 bytes):
+    ///   offset+0: Cap ID (0x05) | Next Cap (0x00)
+    ///   offset+2: Message Control (0x0000 = 1 vector, 32-bit, disabled)
+    ///   offset+4: Message Address (32-bit, guest-writable)
+    ///   offset+8: Message Data (16-bit, guest-writable)
+    ///
+    /// Also sets Status bit 4 (Capabilities List) in the PCI Status register.
+    pub fn add_msi_capability(&mut self, offset: usize) {
+        // Set Capabilities List bit in Status register (offset 0x06, bit 4)
+        self.config_space[0x06] |= 0x10;
+        // Capabilities pointer (offset 0x34) → points to our MSI cap
+        self.config_space[0x34] = offset as u8;
+        // MSI Capability ID = 0x05
+        self.config_space[offset] = 0x05;
+        // Next capability pointer = 0x00 (end of list)
+        self.config_space[offset + 1] = 0x00;
+        // Message Control: 0x0000
+        //   Bits 3:1 = 000 (1 vector allocated)
+        //   Bit 7 = 0 (32-bit address)
+        //   Bit 0 = 0 (MSI disabled initially, guest enables it)
+        self.config_space[offset + 2] = 0x00;
+        self.config_space[offset + 3] = 0x00;
+        // Message Address (32-bit): initially 0
+        self.config_space[offset + 4] = 0x00;
+        self.config_space[offset + 5] = 0x00;
+        self.config_space[offset + 6] = 0x00;
+        self.config_space[offset + 7] = 0x00;
+        // Message Data (16-bit): initially 0
+        self.config_space[offset + 8] = 0x00;
+        self.config_space[offset + 9] = 0x00;
+    }
 }
 
 /// PCI system bus holding registered devices.
@@ -260,6 +295,12 @@ impl PciBus {
                 // Normal write: store base address with enable bit
                 config_write_u32(&mut dev.config_space, 0x30, val32);
                 return;
+            }
+
+            // Debug: log MSI capability writes for AHCI (device 3)
+            #[cfg(feature = "std")]
+            if device == 3 && register >= 0x80 && register <= 0x8A {
+                eprintln!("[pci] AHCI MSI write: reg=0x{:02X} size={} val=0x{:X}", register, size, val);
             }
 
             // Read-only field protection.
@@ -366,6 +407,12 @@ impl PciBus {
                 }
                 config_write_u32(&mut dev.config_space, 0x30, val);
                 return;
+            }
+
+            // Debug: log MSI capability writes for AHCI (device 3) via I/O path
+            #[cfg(feature = "std")]
+            if device_num == 3 && register >= 0x80 && register <= 0x8C {
+                eprintln!("[pci-io] AHCI MSI write: reg=0x{:02X} val=0x{:08X}", register, val);
             }
 
             // General config space write.

@@ -520,6 +520,21 @@ pub fn attach_cdrom_to_ide(handle: u64, path: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ── Display / VRAM ─────────────────────────────────────────────────
+
+/// Set the VRAM size for the VM's virtual GPU.
+/// Must be called BEFORE `corevm_setup_standard_devices()`.
+/// `vram_mb`: size in MiB (8-256, 0 = default 16).
+pub fn set_vram_mb(handle: u64, vram_mb: u32) {
+    corevm_set_vram_mb(handle, vram_mb);
+}
+
+/// Configure disk I/O cache for an AHCI port.
+/// `mode`: 0 = WriteBack, 1 = WriteThrough, 2 = None.
+pub fn configure_disk_cache(handle: u64, port: u32, cache_mb: u32, mode: u32) {
+    corevm_ahci_set_cache(handle, port, cache_mb, mode);
+}
+
 // ── MAC address handling ────────────────────────────────────────────
 
 /// Generate a deterministic locally-administered MAC from a VM UUID.

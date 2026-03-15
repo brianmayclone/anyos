@@ -21,6 +21,7 @@ use libcorevm::ffi::{
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_fb_offset,
     corevm_pit_advance, corevm_pit_debug, corevm_cmos_advance, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu, corevm_lapic_timer_advance, corevm_lapic_debug,
     corevm_read_phys, corevm_write_phys, corevm_debug_port_take_output, corevm_check_reset,
+    corevm_ahci_flush_caches, corevm_ahci_needs_flush,
     corevm_ahci_poll_irq,
 };
 use libcorevm::setup;
@@ -46,6 +47,8 @@ pub struct VmControl {
     pub pause: AtomicBool,
     pub exited: AtomicBool,
     pub exit_reason: Mutex<String>,
+    /// Set when the guest requests a reboot (soft reset).
+    pub reboot_requested: AtomicBool,
 }
 
 /// Start a VM. Sets up libcorevm, spawns execution thread.
@@ -77,6 +80,9 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         corevm_destroy(handle);
         return Err(format!("Failed to create vCPU: {}", e));
     }
+
+    // Set VRAM size before device setup
+    setup::set_vram_mb(handle, config.vram_mb);
 
     // Setup devices (includes PCI bus)
     corevm_setup_standard_devices(handle);
@@ -154,6 +160,13 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         if !disk_path.is_empty() {
             if let Some(&port) = disk_ports.get(i) {
                 setup::attach_image_to_ahci(handle, disk_path, port, false)?;
+                // Configure disk cache
+                let cache_mode = match config.disk_cache_mode {
+                    crate::config::DiskCacheMode::WriteBack => 0u32,
+                    crate::config::DiskCacheMode::WriteThrough => 1,
+                    crate::config::DiskCacheMode::None => 2,
+                };
+                setup::configure_disk_cache(handle, port, config.disk_cache_mb, cache_mode);
             }
         }
     }
@@ -199,6 +212,7 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         pause: AtomicBool::new(false),
         exited: AtomicBool::new(false),
         exit_reason: Mutex::new(String::new()),
+        reboot_requested: AtomicBool::new(false),
     });
 
     // Register WHP debug callback to route output to the diagnostics UI
@@ -278,6 +292,7 @@ fn vm_run_loop(
     let fb_interval = Duration::from_millis(16); // ~60fps
     let mut consecutive_errors: u32 = 0;
     let mut fb_debug_count: u32 = 0;
+    let mut cache_flush_counter: u32 = 0;
 
     // Re-install SIGUSR1 handler in the VM thread to ensure it wasn't
     // overridden by eframe/winit signal handlers in the main thread.
@@ -603,14 +618,21 @@ fn vm_run_loop(
             diag.log(DiagCategory::Interrupt, format!("poll_irqs ret={:#010x}", poll_inj));
         }
 
+        // Periodic disk cache flush (every ~200 iterations or when cache is full)
+        cache_flush_counter += 1;
+        if cache_flush_counter >= 200 || corevm_ahci_needs_flush(handle) != 0 {
+            corevm_ahci_flush_caches(handle);
+            cache_flush_counter = 0;
+        }
+
         // Check if guest requested a system reset (PS/2 0xFE or port 0xCF9)
         if corevm_check_reset(handle) != 0 {
             if diag_enabled {
-                diag.log(DiagCategory::Info, "System reset requested by guest (PS/2 0xFE)".into());
+                diag.log(DiagCategory::Info, "System reset requested by guest — rebooting VM".into());
             }
-            if let Ok(mut r) = control.exit_reason.lock() {
-                *r = "Reboot".into();
-            }
+            // Flush caches before reboot
+            corevm_ahci_flush_caches(handle);
+            control.reboot_requested.store(true, Ordering::Relaxed);
             control.exited.store(true, Ordering::Relaxed);
             break;
         }
@@ -642,6 +664,10 @@ fn vm_run_loop(
             last_fb_update = Instant::now();
         }
     }
+
+    // Final cache flush — ensure all dirty blocks are written to disk
+    // before the VM is destroyed. Covers normal shutdown, reboot, and crash.
+    corevm_ahci_flush_caches(handle);
 }
 
 /// Read VGA state and update the shared framebuffer

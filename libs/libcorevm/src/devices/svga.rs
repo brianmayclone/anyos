@@ -110,17 +110,27 @@ pub struct Svga {
     pub vbe_regs: [u16; 20],
 }
 
-/// VGA VRAM size: 8 MiB (matches VBE_DISPI_INDEX_VIDEO_MEMORY_64K = 128).
-pub const VGA_VRAM_SIZE: usize = 8 * 1024 * 1024;
+/// Default VGA VRAM size: 16 MiB (enough for 1920x1200x32 with room to spare).
+pub const VGA_VRAM_SIZE: usize = 16 * 1024 * 1024;
 
 impl Svga {
     /// Create a new VGA adapter starting in 80x25 text mode.
     ///
-    /// The framebuffer is allocated at a fixed 8 MiB VRAM size (matching
-    /// the VBE-reported video memory). On `std` targets, it is page-aligned
-    /// so it can be mapped as a KVM/WHP memory region for fast guest access.
+    /// `vram_mb`: VRAM size in MiB (clamped to 8..=256). Pass 0 for default (16 MiB).
+    /// On `std` targets, the framebuffer is page-aligned so it can be mapped
+    /// as a KVM/WHP memory region for fast guest access.
+    pub fn new_with_vram(width: u32, height: u32, vram_mb: u32) -> Self {
+        let vram_mb = if vram_mb == 0 { 16 } else { vram_mb.clamp(8, 256) };
+        let fb_size = (vram_mb as usize) * 1024 * 1024;
+        Self::new_internal(width, height, fb_size)
+    }
+
+    /// Create with default 16 MiB VRAM.
     pub fn new(width: u32, height: u32) -> Self {
-        let fb_size = VGA_VRAM_SIZE;
+        Self::new_internal(width, height, VGA_VRAM_SIZE)
+    }
+
+    fn new_internal(width: u32, height: u32, fb_size: usize) -> Self {
         let mut dac_palette = [[0u8; 3]; 256];
 
         // Initialize the first 16 palette entries with standard VGA colors.
@@ -201,8 +211,8 @@ impl Svga {
                 r[6] = width as u16;
                 // VBE_DISPI_INDEX_VIRT_HEIGHT
                 r[7] = height as u16;
-                // VBE_DISPI_INDEX_VIDEO_MEMORY_64K: report 8 MiB VRAM (128 * 64KB).
-                r[10] = 128;
+                // VBE_DISPI_INDEX_VIDEO_MEMORY_64K: report actual VRAM in 64KB units.
+                r[10] = (fb_size / (64 * 1024)) as u16;
                 r
             },
         }
@@ -216,9 +226,14 @@ impl Svga {
     }
 
     /// Get a mutable raw pointer to the framebuffer for hypervisor mapping.
-    /// The buffer is page-aligned and VGA_VRAM_SIZE bytes.
+    /// The buffer is page-aligned and `vram_size()` bytes.
     pub fn framebuffer_mut_ptr(&mut self) -> *mut u8 {
         self.framebuffer.as_mut_ptr()
+    }
+
+    /// Actual VRAM size in bytes (may differ from VGA_VRAM_SIZE if configured).
+    pub fn vram_size(&self) -> usize {
+        self.framebuffer.len()
     }
 
     /// Get a reference to the text mode buffer.

@@ -13,6 +13,7 @@ pub struct FileBrowserDialog {
     pub open: bool,
     pub picked: Option<String>,
     error: Option<String>,
+    focus_requested: bool,
 }
 
 struct DirEntry {
@@ -37,6 +38,7 @@ impl FileBrowserDialog {
             open: true,
             picked: None,
             error: None,
+            focus_requested: false,
         };
         dlg.refresh();
         dlg
@@ -45,6 +47,12 @@ impl FileBrowserDialog {
     pub fn new_save(title: &str, filters: &[&str]) -> Self {
         let mut dlg = Self::new_open(title, filters);
         dlg.save_mode = true;
+        dlg
+    }
+
+    pub fn new_save_with_name(title: &str, filters: &[&str], default_name: &str) -> Self {
+        let mut dlg = Self::new_save(title, filters);
+        dlg.filename = default_name.to_string();
         dlg
     }
 
@@ -167,10 +175,21 @@ impl FileBrowserDialog {
 
                 ui.separator();
 
-                // Filename row
+                // Filename row (always visible in save mode, only when file selected in open mode)
                 ui.horizontal(|ui| {
                     ui.label("Filename:");
-                    ui.add(egui::TextEdit::singleline(&mut self.filename).desired_width(ui.available_width() - 10.0));
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.filename)
+                            .desired_width(ui.available_width() - 10.0)
+                    );
+                    // Keep focus on the filename field in save mode until user interacts
+                    if self.save_mode && !self.focus_requested {
+                        // Request focus for the first few frames to ensure it sticks
+                        response.request_focus();
+                        if response.has_focus() {
+                            self.focus_requested = true;
+                        }
+                    }
                 });
 
                 if let Some(err) = &self.error {

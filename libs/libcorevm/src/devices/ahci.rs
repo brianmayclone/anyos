@@ -184,11 +184,16 @@ struct AhciDrive {
     disk_fd: i32,
     total_bytes: u64,
     present: bool,
+    cache: super::disk_cache::DiskCache,
 }
 
 impl AhciDrive {
     fn new() -> Self {
-        AhciDrive { kind: AhciDriveKind::AtaDisk, disk: Vec::new(), disk_fd: -1, total_bytes: 0, present: false }
+        AhciDrive {
+            kind: AhciDriveKind::AtaDisk, disk: Vec::new(), disk_fd: -1,
+            total_bytes: 0, present: false,
+            cache: super::disk_cache::DiskCache::new(0, super::disk_cache::CacheMode::None),
+        }
     }
 
     fn sector_size(&self) -> usize {
@@ -217,12 +222,32 @@ impl AhciDrive {
         { let _ = byte_offset; }
     }
 
-    fn read_at(&self, offset: u64, buf: &mut [u8]) {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) {
+        // Try cache first
+        if self.cache.read(offset, buf) {
+            return;
+        }
+        // Cache miss — read from host
+        self.read_at_host(offset, buf);
+        // Populate cache with the block we just read (if block-aligned and fits)
+        if self.cache.enabled() && buf.len() <= 4096 {
+            let block_start = offset & !4095;
+            let mut block_buf = [0u8; 4096];
+            if block_start == offset && buf.len() == 4096 {
+                block_buf.copy_from_slice(buf);
+            } else {
+                // Read the full aligned block for caching
+                self.read_at_host(block_start, &mut block_buf);
+            }
+            self.cache.populate_read(block_start, &block_buf);
+        }
+    }
+
+    fn read_at_host(&self, offset: u64, buf: &mut [u8]) {
         if self.disk_fd >= 0 {
             #[cfg(feature = "std")]
             {
                 use std::io::{Read, Seek, SeekFrom};
-                // Borrow the fd/handle as a File without taking ownership.
                 let mut file = unsafe { Self::borrow_file(self.disk_fd) };
                 let _ = file.seek(SeekFrom::Start(offset));
                 let mut total = 0usize;
@@ -234,7 +259,6 @@ impl AhciDrive {
                     }
                 }
                 if total < buf.len() { buf[total..].fill(0); }
-                // Prevent File from closing the fd on drop.
                 core::mem::forget(file);
                 return;
             }
@@ -262,13 +286,28 @@ impl AhciDrive {
     }
 
     fn write_at(&mut self, offset: u64, buf: &[u8]) {
+        // Try cache — returns true if write was absorbed (write-back mode)
+        if self.cache.write(offset, buf) {
+            return; // Write-back: data is in cache, will be flushed later
+        }
+        // Write-through or uncached: write to host now
+        self.write_at_host(offset, buf);
+    }
+
+    fn write_at_host(&mut self, offset: u64, buf: &[u8]) {
         if self.disk_fd >= 0 {
             #[cfg(feature = "std")]
             {
                 use std::io::{Write, Seek, SeekFrom};
                 let mut file = unsafe { Self::borrow_file(self.disk_fd) };
-                let _ = file.seek(SeekFrom::Start(offset));
-                let _ = file.write_all(buf);
+                if let Err(_e) = file.seek(SeekFrom::Start(offset)) {
+                    #[cfg(feature = "std")]
+                    eprintln!("[ahci] WRITE SEEK ERROR at offset={}: {}", offset, _e);
+                }
+                if let Err(_e) = file.write_all(buf) {
+                    #[cfg(feature = "std")]
+                    eprintln!("[ahci] WRITE ERROR at offset={} len={}: {}", offset, buf.len(), _e);
+                }
                 core::mem::forget(file);
                 return;
             }
@@ -388,6 +427,10 @@ pub struct Ahci {
     ccc_ctl: u32, ccc_ports: u32, em_loc: u32, em_ctl: u32, cap2: u32, bohc: u32,
     ports: [AhciPort; MAX_PORTS],
     irq_pending: bool,
+    /// MSI state — updated when guest writes PCI config space MSI registers.
+    pub msi_enabled: bool,
+    pub msi_address: u64,
+    pub msi_data: u32,
     guest_mem_ptr: *mut u8,
     guest_mem_len: usize,
 }
@@ -413,6 +456,9 @@ impl Ahci {
             ccc_ctl: 0, ccc_ports: 0, em_loc: 0, em_ctl: 0, cap2: 0, bohc: 0,
             ports: core::array::from_fn(|_| AhciPort::new()),
             irq_pending: false,
+            msi_enabled: false,
+            msi_address: 0,
+            msi_data: 0,
             guest_mem_ptr: core::ptr::null_mut(),
             guest_mem_len: 0,
         }
@@ -421,14 +467,14 @@ impl Ahci {
     pub fn attach_disk(&mut self, port: usize, image: Vec<u8>, kind: AhciDriveKind) {
         if port >= MAX_PORTS { return; }
         let total = image.len() as u64;
-        self.ports[port].drive = AhciDrive { kind, disk: image, disk_fd: -1, total_bytes: total, present: true };
+        self.ports[port].drive = AhciDrive { kind, disk: image, disk_fd: -1, total_bytes: total, present: true, cache: super::disk_cache::DiskCache::new(0, super::disk_cache::CacheMode::None) };
         self.ports[port].update_presence();
         self.pi |= 1u32 << port;
     }
 
     pub fn attach_disk_fd(&mut self, port: usize, fd: i32, size: u64, kind: AhciDriveKind) {
         if port >= MAX_PORTS { return; }
-        self.ports[port].drive = AhciDrive { kind, disk: Vec::new(), disk_fd: fd, total_bytes: size, present: true };
+        self.ports[port].drive = AhciDrive { kind, disk: Vec::new(), disk_fd: fd, total_bytes: size, present: true, cache: super::disk_cache::DiskCache::new(0, super::disk_cache::CacheMode::None) };
         self.ports[port].update_presence();
         self.pi |= 1u32 << port;
     }
@@ -439,6 +485,33 @@ impl Ahci {
     pub fn set_guest_memory(&mut self, ptr: *mut u8, len: usize) {
         self.guest_mem_ptr = ptr;
         self.guest_mem_len = len;
+    }
+
+    /// Configure disk cache for a specific port.
+    /// `cache_mb`: cache size in MiB (0 = disabled).
+    /// `mode`: caching strategy.
+    pub fn configure_cache(&mut self, port: usize, cache_mb: u32, mode: super::disk_cache::CacheMode) {
+        if port < MAX_PORTS {
+            self.ports[port].drive.cache = super::disk_cache::DiskCache::new(cache_mb, mode);
+        }
+    }
+
+    /// Flush dirty cache blocks to host for all ports.
+    /// Should be called periodically from the VM loop (e.g. every 100-500ms).
+    pub fn flush_caches(&mut self) {
+        for port in &mut self.ports {
+            if !port.drive.present { continue; }
+            if port.drive.cache.dirty_count() == 0 { continue; }
+            let dirty = port.drive.cache.collect_dirty();
+            for (offset, data) in dirty {
+                port.drive.write_at_host(offset, &data);
+            }
+        }
+    }
+
+    /// Check if any port needs a cache flush.
+    pub fn any_cache_needs_flush(&self) -> bool {
+        self.ports.iter().any(|p| p.drive.cache.needs_flush())
     }
 
     fn dma(&self) -> GuestDma {
@@ -534,7 +607,18 @@ impl Ahci {
                     port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
                     port.is |= PORT_IS_DHRS;
                 }
-                ATA_CMD_FLUSH | ATA_CMD_FLUSH_EXT | ATA_CMD_SET_FEATURES
+                ATA_CMD_FLUSH | ATA_CMD_FLUSH_EXT => {
+                    // Flush write cache — call fsync on the host fd
+                    port.tfd = TFD_STS_DRDY | TFD_STS_DSC;
+                    port.is |= PORT_IS_DHRS;
+                    #[cfg(feature = "std")]
+                    if port.drive.disk_fd >= 0 {
+                        let file = unsafe { AhciDrive::borrow_file(port.drive.disk_fd) };
+                        let _ = file.sync_all();
+                        core::mem::forget(file);
+                    }
+                }
+                ATA_CMD_SET_FEATURES
                 | 0xF5 // SECURITY FREEZE LOCK — no-op for VMs
                 | 0x27 // READ NATIVE MAX ADDRESS EXT — return success
                 | 0xE0 | 0xE1 // STANDBY IMMEDIATE / IDLE IMMEDIATE
@@ -637,7 +721,14 @@ impl Ahci {
             PORT_FBU => { let lo = self.ports[idx].fb & 0xFFFF_FFFF; self.ports[idx].fb = (val as u64) << 32 | lo; }
             PORT_IS => { self.ports[idx].is &= !val; if self.ports[idx].is == 0 { self.is &= !(1 << idx); } }
             PORT_IE => { self.ports[idx].ie = val; }
-            PORT_CMD => { self.ports[idx].cmd = val & !(PORT_CMD_CR | PORT_CMD_FR); }
+            PORT_CMD => {
+                let old = self.ports[idx].cmd;
+                self.ports[idx].cmd = val & !(PORT_CMD_CR | PORT_CMD_FR);
+                // When ST is set (start), clear TFD error bits (mimics HBA reset-to-ready)
+                if val & PORT_CMD_ST != 0 && old & PORT_CMD_ST == 0 {
+                    self.ports[idx].tfd = TFD_STS_DRDY | TFD_STS_DSC;
+                }
+            }
             PORT_SCTL => {
                 let old = self.ports[idx].sctl & 0x0F;
                 self.ports[idx].sctl = val;
@@ -651,6 +742,38 @@ impl Ahci {
             }
             PORT_FBS => { self.ports[idx].fbs = val; }
             _ => {}
+        }
+    }
+}
+
+/// Ensure all disk file descriptors are synced and closed when AHCI is dropped.
+#[cfg(feature = "std")]
+impl Drop for Ahci {
+    fn drop(&mut self) {
+        for port in &mut self.ports {
+            if port.drive.disk_fd >= 0 {
+                // Flush any pending cache writes
+                if port.drive.cache.dirty_count() > 0 {
+                    let dirty = port.drive.cache.collect_dirty();
+                    for (offset, data) in dirty {
+                        port.drive.write_at_host(offset, &data);
+                    }
+                }
+                // Sync and close the fd
+                #[cfg(feature = "std")]
+                {
+                    // SAFETY: taking ownership of fd; File::drop will close it
+                    let file = unsafe { AhciDrive::borrow_file(port.drive.disk_fd) };
+                    // NOTE: we do NOT mem::forget here — let File drop to close the fd
+                    let _ = file.sync_all();
+                    // File drops here and closes the fd
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    // fd leaks on non-std — acceptable for no_std targets
+                }
+                port.drive.disk_fd = -1;
+            }
         }
     }
 }
@@ -685,8 +808,15 @@ impl MmioHandler for Ahci {
                         p.update_presence();
                     }
                     self.is = 0; self.ghc = GHC_AE; self.irq_pending = false;
+                    #[cfg(feature = "std")]
+                    eprintln!("[ahci] HBA RESET");
                 } else {
+                    let old = self.ghc;
                     self.ghc = v | GHC_AE;
+                    #[cfg(feature = "std")]
+                    if (v & GHC_IE != 0) && (old & GHC_IE == 0) {
+                        eprintln!("[ahci] GHC_IE enabled (GHC=0x{:08X})", self.ghc);
+                    }
                 }
             }
             HBA_IS => { self.is &= !v; if self.is == 0 { self.irq_pending = false; } }
@@ -945,10 +1075,15 @@ fn lba_to_msf(lba: u32) -> (u8, u8, u8) {
 }
 
 /// Create a PCI device entry for the AHCI controller.
+/// MSI capability offset in PCI config space for the AHCI controller.
+pub const AHCI_MSI_CAP_OFFSET: usize = 0x80;
+
 pub fn create_ahci_pci_device(mmio_base: u32) -> crate::devices::bus::PciDevice {
     let mut dev = crate::devices::bus::PciDevice::new(0x8086, 0x2922, 0x01, 0x06, 0x01);
     dev.set_subsystem(0x8086, 0x2922);
     dev.set_interrupt(11, 1);
     dev.set_bar(5, mmio_base, 0x1000, true);
+    // Add MSI capability at offset 0x80 (standard for Intel AHCI controllers)
+    dev.add_msi_capability(AHCI_MSI_CAP_OFFSET);
     dev
 }

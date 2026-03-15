@@ -67,6 +67,9 @@ pub struct Vm {
     /// Set when the guest writes to port 0xCF9 requesting a system reset.
     pub cf9_reset_pending: bool,
 
+    /// VRAM size in MiB (0 = default 16). Set before setup_standard_devices().
+    pub vram_mb: u32,
+
     /// Thread-safe queue for mouse events from external threads (e.g., UI or
     /// injection threads).  The FFI function `corevm_ps2_mouse_move` pushes
     /// events here instead of calling `ps2.mouse_move()` directly, avoiding
@@ -137,6 +140,7 @@ impl Vm {
             ahci_irq_asserted: false,
             e1000_irq_asserted: false,
             cf9_reset_pending: false,
+            vram_mb: 0,
             #[cfg(feature = "std")]
             pending_mouse: std::sync::Mutex::new(alloc::vec::Vec::new()),
         })
@@ -197,19 +201,23 @@ impl Vm {
         self.io.register(0x3F8, 8, serial);
 
         // VGA I/O ports (0x3C0-0x3DA) and MMIO framebuffer
-        let svga = Box::new(Svga::new(1024, 768));
+        let svga = Box::new(Svga::new_with_vram(1024, 768, self.vram_mb));
         self.svga_ptr = &*svga as *const Svga as *mut Svga;
         self.io.register(0x3C0, 0x1B, svga);
         // Bochs VBE ports (0x1CE-0x1CF) — same Svga device, accessed via svga_ptr
         self.io.register(0x1CE, 2, Box::new(SvgaVbePortProxy(self.svga_ptr)));
         // VGA legacy framebuffer MMIO at 0xA0000 (128KB)
         self.memory.add_mmio(0xA0000, 0x20000, Box::new(SvgaMmioProxy(self.svga_ptr)));
-        // VGA linear framebuffer MMIO at Bochs VBE default (0xE0000000, 8MB)
+        // VGA linear framebuffer MMIO at Bochs VBE default (0xE0000000)
         // and PCI BAR0 (0xFD000000). SeaVGABIOS uses 0xE0000000 for the LFB.
         // For software emulation, these catch guest LFB writes directly.
         // For hardware-virt (WHP/KVM), these are shadowed by RAM mappings.
-        self.memory.add_mmio(0xE000_0000, 0x80_0000, Box::new(SvgaLfbProxy(self.svga_ptr)));
-        self.memory.add_mmio(0xFD00_0000, 0x80_0000, Box::new(SvgaLfbProxy(self.svga_ptr)));
+        let lfb_size = unsafe { &*self.svga_ptr }.vram_size() as u64;
+        self.memory.add_mmio(0xE000_0000, lfb_size, Box::new(SvgaLfbProxy(self.svga_ptr)));
+        // BAR0 proxy at 0xFD000000: cap at 16 MB to avoid colliding with
+        // PCI Expansion ROMs that start at 0xFE000000.
+        let bar0_proxy_size = lfb_size.min(0x0100_0000);
+        self.memory.add_mmio(0xFD00_0000, bar0_proxy_size, Box::new(SvgaLfbProxy(self.svga_ptr)));
         // Bochs dispi register MMIO — covers both the PCI BAR2 default (0xFEBE0000)
         // and where SeaBIOS typically maps it (0xFE002000).
         // The PCI BAR mechanism will remap this, but register both common locations.
@@ -264,8 +272,9 @@ impl Vm {
         {
             let mut vga = PciDevice::new(0x1234, 0x1111, 0x03, 0x00, 0x00);
             vga.device = 2;
-            // BAR0: linear framebuffer (16MB)
-            vga.set_bar(0, 0xFD00_0000, 0x100_0000, true);
+            // BAR0: linear framebuffer (size matches VRAM)
+            let bar0_size = unsafe { &*self.svga_ptr }.vram_size() as u32;
+            vga.set_bar(0, 0xFD00_0000, bar0_size, true);
             // BAR2: Bochs dispi MMIO registers (4KB)
             vga.set_bar(2, 0xFEBE_0000, 0x1000, true);
             // Expansion ROM BAR (0xC0000 VGA BIOS area)
@@ -327,13 +336,16 @@ impl Vm {
         }
         let svga = unsafe { &mut *self.svga_ptr };
         let fb_ptr = svga.framebuffer_mut_ptr();
-        let fb_size = crate::devices::svga::VGA_VRAM_SIZE as u64;
-        // Slot 2: VGA LFB at 0xE0000000 (8 MiB) — VBE dispi default address.
-        // Slot 4: VGA LFB at 0xFD000000 (8 MiB) — PCI BAR0 address.
-        // Both map to the same host buffer so the guest can use either address.
+        let fb_size = svga.vram_size() as u64;
+        // Slot 2: VGA LFB at 0xE0000000 — VBE dispi default address.
+        // SeaVGABIOS always uses 0xE0000000 for the LFB, so this is the
+        // primary mapping. The PCI BAR0 region (0xFD000000) is NOT mapped
+        // as a separate KVM slot because for VRAM > 8 MB it would collide
+        // with other PCI device regions above 0xFE000000. The PCI BAR0
+        // address is handled by the MMIO fallback proxy if any guest
+        // driver tries to use it instead of the VBE address.
         // (Slot 0 = RAM below PCI hole, slot 1 = reserved for BIOS ROM, slot 3 = RAM above 4GB)
-        self.backend.set_memory_region(2, 0xE000_0000, fb_size, fb_ptr)?;
-        self.backend.set_memory_region(4, 0xFD00_0000, fb_size, fb_ptr)
+        self.backend.set_memory_region(2, 0xE000_0000, fb_size, fb_ptr)
     }
 
     // ── VmBackend delegations ──

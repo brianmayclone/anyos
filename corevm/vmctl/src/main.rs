@@ -29,6 +29,9 @@ struct Args {
     send_keys: Vec<(u32, Vec<u8>)>,  // (delay_ms, scancodes)
     send_mouse: Vec<(u32, i16, i16, u8)>, // (delay_ms, dx, dy, buttons)
     enable_hpet: bool,
+    vram_mb: u32,     // VRAM in MiB (0 = default 16)
+    disk_cache_mb: u32,
+    disk_cache_mode: String,
     tap_name: String, // TAP device name (empty = no networking)
     bridge: String,   // Bridge name to attach TAP to (optional)
 }
@@ -51,6 +54,9 @@ fn parse_args() -> Args {
         send_keys: Vec::new(),
         send_mouse: Vec::new(),
         enable_hpet: false,
+        vram_mb: 0,
+        disk_cache_mb: 32,
+        disk_cache_mode: String::from("writeback"),
         tap_name: String::new(),
         bridge: String::new(),
     };
@@ -69,6 +75,9 @@ fn parse_args() -> Args {
             "-s" => { args.show_screen = true; }
             "--hpet" => { args.hpet = true; }
             "--ide-cdrom" => { args.ide_cdrom = true; }
+            "--vram" => { i += 1; if i < argv.len() { args.vram_mb = argv[i].parse().unwrap_or(16); } }
+            "--disk-cache" => { i += 1; if i < argv.len() { args.disk_cache_mb = argv[i].parse().unwrap_or(32); } }
+            "--disk-cache-mode" => { i += 1; if i < argv.len() { args.disk_cache_mode = argv[i].clone(); } }
             "-g" => { args.show_regs = true; }
             "-k" => { i += 1; if i < argv.len() { args.kernel = argv[i].clone(); } }
             "--initrd" => { i += 1; if i < argv.len() { args.initrd = argv[i].clone(); } }
@@ -166,6 +175,9 @@ fn main() {
         std::process::exit(1);
     }
 
+    if args.vram_mb > 0 {
+        setup::set_vram_mb(handle, args.vram_mb);
+    }
     corevm_setup_standard_devices(handle);
     if args.hpet {
         corevm_setup_hpet(handle);
@@ -240,6 +252,16 @@ fn main() {
             std::process::exit(1);
         }
         eprintln!("[vmctl] Disk: {}", args.disk);
+        // Configure disk cache for port 0 (primary disk)
+        let cache_mode = match args.disk_cache_mode.as_str() {
+            "writethrough" => 1u32,
+            "none" => 2,
+            _ => 0, // writeback
+        };
+        setup::configure_disk_cache(handle, 0, args.disk_cache_mb, cache_mode);
+        if args.disk_cache_mb > 0 && cache_mode < 2 {
+            eprintln!("[vmctl] Disk cache: {} MB ({})", args.disk_cache_mb, args.disk_cache_mode);
+        }
     }
 
     // Load BIOS — use vmmanager asset paths as extra search dirs

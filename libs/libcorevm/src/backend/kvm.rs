@@ -221,6 +221,7 @@ const KVM_GET_VCPU_EVENTS: u64 = 0x8040_AE9F;
 const KVM_SET_VCPU_EVENTS: u64 = 0x4040_AEA0;
 const KVM_CREATE_IRQCHIP: u64 = 0xAE60;
 const KVM_IRQ_LINE: u64 = 0x4008_AE61;
+const KVM_SIGNAL_MSI: u64 = 0x4020_AEA5;
 const KVM_CREATE_PIT2: u64 = 0x4040_AE77;
 const KVM_GET_LAPIC: u64 = 0x8400_AE8E;
 const KVM_GET_IRQCHIP: u64 = 0xC208_AE62;
@@ -647,6 +648,17 @@ struct KvmIrqLevel {
     level: u32,
 }
 
+/// kvm_msi for KVM_SIGNAL_MSI
+#[repr(C)]
+struct KvmMsi {
+    address_lo: u32,
+    address_hi: u32,
+    data: u32,
+    flags: u32,
+    devid: u32,
+    _pad: [u8; 12],
+}
+
 // ── Memory region tracking for read_phys / write_phys ─────────────────────
 
 struct MemorySlot {
@@ -1027,6 +1039,27 @@ impl KvmBackend {
         };
         let ret = unsafe {
             sys_ioctl(self.vm_fd, KVM_IRQ_LINE, &irq_level as *const _ as u64)
+        };
+        if ret < 0 {
+            return Err(VmError::BackendError(ret as i32));
+        }
+        Ok(())
+    }
+
+    /// Inject an MSI interrupt into the guest via KVM_SIGNAL_MSI.
+    /// `address`: MSI address (written by guest to MSI capability register)
+    /// `data`: MSI data (written by guest to MSI capability register)
+    pub fn signal_msi(&self, address: u64, data: u32) -> Result<(), VmError> {
+        let msi = KvmMsi {
+            address_lo: address as u32,
+            address_hi: (address >> 32) as u32,
+            data,
+            flags: 0,
+            devid: 0,
+            _pad: [0; 12],
+        };
+        let ret = unsafe {
+            sys_ioctl(self.vm_fd, KVM_SIGNAL_MSI, &msi as *const _ as u64)
         };
         if ret < 0 {
             return Err(VmError::BackendError(ret as i32));

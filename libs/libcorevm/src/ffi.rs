@@ -566,19 +566,27 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                 }
             }
 
-            // AHCI IRQ → IRQ 11 (level-triggered)
+            // AHCI IRQ → MSI (preferred) or legacy IRQ 11 (level-triggered)
             if !vm.ahci_ptr.is_null() {
                 let ahci = unsafe { &mut *vm.ahci_ptr };
                 let want_asserted = ahci.irq_raised();
                 #[cfg(feature = "linux")]
                 {
-                    if want_asserted && !vm.ahci_irq_asserted {
-                        let _ = vm.backend.set_irq_line(11, true);
-                        vm.ahci_irq_asserted = true;
-                        injected += 1;
-                    } else if !want_asserted && vm.ahci_irq_asserted {
-                        let _ = vm.backend.set_irq_line(11, false);
-                        vm.ahci_irq_asserted = false;
+                    if ahci.msi_enabled {
+                        if want_asserted {
+                            let _ = vm.backend.signal_msi(ahci.msi_address, ahci.msi_data);
+                            ahci.clear_irq();
+                            injected += 1;
+                        }
+                    } else {
+                        if want_asserted && !vm.ahci_irq_asserted {
+                            let _ = vm.backend.set_irq_line(11, true);
+                            vm.ahci_irq_asserted = true;
+                            injected += 1;
+                        } else if !want_asserted && vm.ahci_irq_asserted {
+                            let _ = vm.backend.set_irq_line(11, false);
+                            vm.ahci_irq_asserted = false;
+                        }
                     }
                 }
                 #[cfg(not(feature = "linux"))]
@@ -711,24 +719,62 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
     }
 }
 
-/// Immediately check and update the AHCI IRQ line on the in-kernel irqchip.
+/// Immediately check and update the AHCI IRQ on the in-kernel irqchip.
 /// This must be called after every MMIO exit to ensure timely IRQ delivery,
 /// because AHCI commands are processed synchronously during MMIO writes and
 /// the guest may acknowledge the interrupt before poll_irqs runs.
+///
+/// Supports both legacy level-triggered IRQ 11 and MSI when the guest has
+/// enabled MSI via the PCI capability registers.
 #[no_mangle]
 pub extern "C" fn corevm_ahci_poll_irq(handle: u64) {
     let vm = match get_vm(handle) { Some(v) => v, None => return };
     if vm.ahci_ptr.is_null() { return; }
+
+    // Sync MSI state from PCI config space into AHCI struct.
+    // AHCI is PCI device 00:03.0, MSI cap at offset 0x80.
+    if !vm.pci_bus_ptr.is_null() {
+        let bus = unsafe { &mut *vm.pci_bus_ptr };
+        let msi_cap = crate::devices::ahci::AHCI_MSI_CAP_OFFSET;
+        // Message Control Register: offset+2 (16-bit), Bit 0 = MSI Enable
+        let mcr = bus.mmcfg_read(0, 3, 0, msi_cap + 2, 2) as u16;
+        let ahci = unsafe { &mut *vm.ahci_ptr };
+        ahci.msi_enabled = (mcr & 0x01) != 0;
+        if ahci.msi_enabled {
+            // Message Address (32-bit at offset+4)
+            let addr_lo = bus.mmcfg_read(0, 3, 0, msi_cap + 4, 4) as u32;
+            // Message Data (16-bit at offset+8)
+            let data = bus.mmcfg_read(0, 3, 0, msi_cap + 8, 2) as u32;
+            ahci.msi_address = addr_lo as u64;
+            ahci.msi_data = data;
+        }
+    }
+
     let ahci = unsafe { &mut *vm.ahci_ptr };
     let want_asserted = ahci.irq_raised();
+
     #[cfg(feature = "linux")]
     {
-        if want_asserted && !vm.ahci_irq_asserted {
-            let _ = vm.backend.set_irq_line(11, true);
-            vm.ahci_irq_asserted = true;
-        } else if !want_asserted && vm.ahci_irq_asserted {
-            let _ = vm.backend.set_irq_line(11, false);
-            vm.ahci_irq_asserted = false;
+        if ahci.msi_enabled {
+            // MSI mode: edge-triggered, fire once per interrupt then clear
+            if want_asserted {
+                let _ = vm.backend.signal_msi(ahci.msi_address, ahci.msi_data);
+                ahci.clear_irq();
+                // Deassert legacy IRQ line if it was still asserted
+                if vm.ahci_irq_asserted {
+                    let _ = vm.backend.set_irq_line(11, false);
+                    vm.ahci_irq_asserted = false;
+                }
+            }
+        } else {
+            // Legacy level-triggered mode
+            if want_asserted && !vm.ahci_irq_asserted {
+                let _ = vm.backend.set_irq_line(11, true);
+                vm.ahci_irq_asserted = true;
+            } else if !want_asserted && vm.ahci_irq_asserted {
+                let _ = vm.backend.set_irq_line(11, false);
+                vm.ahci_irq_asserted = false;
+            }
         }
     }
 }
@@ -1122,6 +1168,54 @@ pub extern "C" fn corevm_fw_cfg_set_kernel(
 
 /// Register all standard chipset devices into the VM.
 #[no_mangle]
+/// Set VRAM size in MiB. Must be called BEFORE corevm_setup_standard_devices().
+/// Valid range: 8-256 MiB. Pass 0 for default (16 MiB).
+#[unsafe(no_mangle)]
+pub extern "C" fn corevm_set_vram_mb(handle: u64, vram_mb: u32) -> i32 {
+    match get_vm(handle) {
+        Some(vm) => { vm.vram_mb = vram_mb; 0 }
+        None => -1,
+    }
+}
+
+/// Configure disk cache for an AHCI port.
+/// `port`: AHCI port number (0-based).
+/// `cache_mb`: Cache size in MiB (0 = disable cache).
+/// `mode`: 0 = WriteBack (best perf), 1 = WriteThrough (safe), 2 = None (no cache).
+/// Must be called AFTER corevm_setup_ahci() and disk attachment.
+#[unsafe(no_mangle)]
+pub extern "C" fn corevm_ahci_set_cache(handle: u64, port: u32, cache_mb: u32, mode: u32) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+    if vm.ahci_ptr.is_null() { return -1; }
+    let ahci = unsafe { &mut *vm.ahci_ptr };
+    let cache_mode = match mode {
+        0 => crate::devices::disk_cache::CacheMode::WriteBack,
+        1 => crate::devices::disk_cache::CacheMode::WriteThrough,
+        _ => crate::devices::disk_cache::CacheMode::None,
+    };
+    ahci.configure_cache(port as usize, cache_mb, cache_mode);
+    0
+}
+
+/// Flush all dirty cache blocks to host for all AHCI ports.
+/// Should be called periodically from the VM loop.
+#[unsafe(no_mangle)]
+pub extern "C" fn corevm_ahci_flush_caches(handle: u64) {
+    let vm = match get_vm(handle) { Some(v) => v, None => return };
+    if vm.ahci_ptr.is_null() { return; }
+    let ahci = unsafe { &mut *vm.ahci_ptr };
+    ahci.flush_caches();
+}
+
+/// Check if any AHCI port has dirty cache blocks that need flushing.
+#[unsafe(no_mangle)]
+pub extern "C" fn corevm_ahci_needs_flush(handle: u64) -> i32 {
+    let vm = match get_vm(handle) { Some(v) => v, None => return 0 };
+    if vm.ahci_ptr.is_null() { return 0; }
+    let ahci = unsafe { &*vm.ahci_ptr };
+    if ahci.any_cache_needs_flush() { 1 } else { 0 }
+}
+
 pub extern "C" fn corevm_setup_standard_devices(handle: u64) -> i32 {
     match get_vm(handle) {
         Some(vm) => {

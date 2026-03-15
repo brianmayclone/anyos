@@ -155,6 +155,23 @@ impl DiagLog {
             inner.entries.clear();
         }
     }
+
+    /// Export all VM log entries as plain text.
+    pub fn export_vm_log(&self) -> String {
+        let entries = self.entries();
+        let mut out = String::with_capacity(entries.len() * 80);
+        for e in &entries {
+            let secs = e.timestamp_ms as f64 / 1000.0;
+            let repeat = if e.repeat_count > 1 { format!(" x{}", e.repeat_count) } else { String::new() };
+            out.push_str(&format!("{:>9.3} {:?} {}{}\n", secs, e.category, e.message, repeat));
+        }
+        out
+    }
+
+    /// Export the BIOS debug port text (port 0x402 output).
+    pub fn export_bios_log(&self) -> String {
+        self.debug_text()
+    }
 }
 
 /// The diagnostics window shown alongside the VM display.
@@ -167,7 +184,7 @@ pub struct DiagnosticsWindow {
     filter_cpu: bool,
     filter_err: bool,
     filter_info: bool,
-    vm_name: String,
+    pub vm_name: String,
     active_tab: DiagTab,
 }
 
@@ -205,6 +222,24 @@ impl DiagnosticsWindow {
         }
     }
 
+    /// Render diagnostics content directly into a `Ui` (for use in a separate viewport).
+    pub fn show_contents(&mut self, ui: &mut egui::Ui, log: &DiagLog) {
+        // Tab bar
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.active_tab, DiagTab::Log, "VM Log");
+            ui.selectable_value(&mut self.active_tab, DiagTab::BiosLog, "BIOS Log");
+            ui.selectable_value(&mut self.active_tab, DiagTab::WhpDebug, "WHP Debug");
+        });
+        ui.separator();
+
+        match self.active_tab {
+            DiagTab::Log => self.show_log_tab(ui, log),
+            DiagTab::BiosLog => self.show_bios_log_tab(ui, log),
+            DiagTab::WhpDebug => self.show_whp_debug_tab(ui, log),
+        }
+    }
+
+    /// Legacy: show as egui::Window inside the main viewport (fallback).
     pub fn show(&mut self, ctx: &egui::Context, log: &DiagLog) {
         if !self.open { return; }
 
@@ -218,19 +253,7 @@ impl DiagnosticsWindow {
             .min_height(200.0)
             .resizable(true)
             .show(ctx, |ui| {
-                // Tab bar
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.active_tab, DiagTab::Log, "VM Log");
-                    ui.selectable_value(&mut self.active_tab, DiagTab::BiosLog, "BIOS Log");
-                    ui.selectable_value(&mut self.active_tab, DiagTab::WhpDebug, "WHP Debug");
-                });
-                ui.separator();
-
-                match self.active_tab {
-                    DiagTab::Log => self.show_log_tab(ui, log),
-                    DiagTab::BiosLog => self.show_bios_log_tab(ui, log),
-                    DiagTab::WhpDebug => self.show_whp_debug_tab(ui, log),
-                }
+                self.show_contents(ui, log);
             });
 
         self.open = still_open;

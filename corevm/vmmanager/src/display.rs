@@ -499,6 +499,11 @@ impl DisplayWidget {
                 // Allocate interactive area for the display (click_and_drag for mouse)
                 let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
 
+                // Hide host cursor when hovering over the VM display area
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+                }
+
                 // Draw the texture
                 if ui.is_rect_visible(rect) {
                     ui.painter().image(

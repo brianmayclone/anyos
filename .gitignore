@@ -32,3 +32,4 @@ corevm/vmmanager/fw_cfg_debug.log
 *.tmp
 corevm/vmmanager/disk0
 corevm/vmmanager/windows
+corevm/vmmanager/Test2

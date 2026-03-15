@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::fs;
 
 pub use libcorevm::setup::{GuestOs, GuestArch};
+pub use libcorevm::devices::gpu::GpuModel;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BootOrder { DiskFirst, CdFirst, FloppyFirst }
@@ -30,7 +31,8 @@ pub struct VmConfig {
     pub iso_image: String,
     pub boot_order: BootOrder,
     pub bios_type: BiosType,
-    pub gpu_type: String,
+    pub gpu_model: GpuModel,
+    pub vram_mb: u32,
     pub net_enabled: bool,
     pub net_mode: NetMode,
     pub net_host_nic: String,
@@ -40,6 +42,17 @@ pub struct VmConfig {
     pub usb_tablet: bool,
     pub ram_alloc: RamAlloc,
     pub diagnostics: bool,
+    /// Disk I/O cache size per disk in MiB (0 = disabled).
+    pub disk_cache_mb: u32,
+    /// Disk cache mode: "writeback", "writethrough", "none".
+    pub disk_cache_mode: DiskCacheMode,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DiskCacheMode {
+    WriteBack,
+    WriteThrough,
+    None,
 }
 
 impl VmConfig {
@@ -62,7 +75,8 @@ impl Default for VmConfig {
             iso_image: String::new(),
             boot_order: BootOrder::CdFirst,
             bios_type: BiosType::SeaBios,
-            gpu_type: "svga".into(),
+            gpu_model: GpuModel::StdVga,
+            vram_mb: 16,
             net_enabled: false,
             net_mode: NetMode::Nat,
             net_host_nic: String::new(),
@@ -72,6 +86,8 @@ impl Default for VmConfig {
             usb_tablet: false,
             ram_alloc: RamAlloc::OnDemand,
             diagnostics: false,
+            disk_cache_mb: 32,
+            disk_cache_mode: DiskCacheMode::WriteBack,
         }
     }
 }
@@ -118,17 +134,26 @@ impl VmConfig {
         };
         let content = format!(
             "name={}\nguest_os={}\nguest_arch={}\nram={}\ncpu_cores={}\n{}iso={}\nboot={}\nbios={}\n\
-             ram_alloc={}\ngpu={}\nnet_enabled={}\nnet_mode={}\nnet_host_nic={}\n\
-             mac_mode={}\nmac_address={}\naudio_enabled={}\nusb_tablet={}\ndiagnostics={}\n",
+             ram_alloc={}\ngpu={}\nvram_mb={}\nnet_enabled={}\nnet_mode={}\nnet_host_nic={}\n\
+             mac_mode={}\nmac_address={}\naudio_enabled={}\nusb_tablet={}\ndiagnostics={}\n\
+             disk_cache_mb={}\ndisk_cache_mode={}\n",
             self.name, self.guest_os.to_config_str(), arch,
             self.ram_mb, self.cpu_cores, disk_lines, self.iso_image,
             boot, bios,
-            alloc, self.gpu_type,
+            alloc,
+            match self.gpu_model { GpuModel::StdVga => "stdvga" },
+            self.vram_mb,
             if self.net_enabled { "1" } else { "0" },
             net_mode, self.net_host_nic, mac_mode, self.mac_address,
             if self.audio_enabled { "1" } else { "0" },
             if self.usb_tablet { "1" } else { "0" },
             if self.diagnostics { "1" } else { "0" },
+            self.disk_cache_mb,
+            match self.disk_cache_mode {
+                DiskCacheMode::WriteBack => "writeback",
+                DiskCacheMode::WriteThrough => "writethrough",
+                DiskCacheMode::None => "none",
+            },
         );
         fs::write(&path, content)
     }
@@ -189,7 +214,10 @@ impl VmConfig {
                     "preallocate" => RamAlloc::Preallocate,
                     _ => RamAlloc::OnDemand,
                 },
-                "gpu" => cfg.gpu_type = val.to_string(),
+                "gpu" => cfg.gpu_model = match val {
+                    _ => GpuModel::StdVga, // currently only one model
+                },
+                "vram_mb" => cfg.vram_mb = val.parse().unwrap_or(16),
                 "net_enabled" => cfg.net_enabled = val == "1",
                 "net_mode" => cfg.net_mode = match val {
                     "bridge" => NetMode::Bridge,
@@ -204,6 +232,12 @@ impl VmConfig {
                 "audio_enabled" => cfg.audio_enabled = val == "1",
                 "usb_tablet" => cfg.usb_tablet = val == "1",
                 "diagnostics" => cfg.diagnostics = val == "1",
+                "disk_cache_mb" => cfg.disk_cache_mb = val.parse().unwrap_or(32),
+                "disk_cache_mode" => cfg.disk_cache_mode = match val {
+                    "writethrough" => DiskCacheMode::WriteThrough,
+                    "none" => DiskCacheMode::None,
+                    _ => DiskCacheMode::WriteBack,
+                },
                 _ => {}
             }
         }
