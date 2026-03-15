@@ -624,6 +624,27 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                 }
             }
 
+            // UHCI USB → IRQ 9 (edge-triggered)
+            if !vm.uhci_ptr.is_null() {
+                let uhci = unsafe { &mut *vm.uhci_ptr };
+                if uhci.irq_pending {
+                    uhci.irq_pending = false;
+                    #[cfg(feature = "linux")]
+                    {
+                        let _ = vm.backend.set_irq_line(9, true);
+                        let _ = vm.backend.set_irq_line(9, false);
+                        injected += 1;
+                    }
+                    #[cfg(not(feature = "linux"))]
+                    {
+                        if !vm.pic_ptr.is_null() {
+                            let pic = unsafe { &mut *vm.pic_ptr };
+                            pic.raise_irq(9);
+                        }
+                    }
+                }
+            }
+
             // Software PIC injection (non-Linux only).
             // On KVM/Linux the in-kernel irqchip handles injection automatically.
             #[cfg(not(feature = "linux"))]
@@ -1879,7 +1900,12 @@ pub extern "C" fn corevm_setup_uhci(handle: u64) -> i32 {
         pci_dev.device = 6;
         pci_dev.set_bar(4, UHCI_IO_BASE as u32, 32, false);
         pci_dev.set_interrupt(9, 4);
-        pci_dev.set_subsystem(0x8086, 0x0000);
+        pci_dev.set_subsystem(0x8086, 0x7020);
+        // PIIX3 UHCI-specific: Serial Bus Release Number (USB 1.1 = 0x10)
+        pci_dev.config_space[0x60] = 0x10;
+        // LEGSUP register (Legacy Support) at 0xC0 — required by Windows UHCI driver
+        pci_dev.config_space[0xC0] = 0x00;
+        pci_dev.config_space[0xC1] = 0x20; // LEGSUP: bit 13 = USBPIRQ routed
         pci_bus.add_device(pci_dev);
     }
     0

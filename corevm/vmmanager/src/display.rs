@@ -508,8 +508,8 @@ impl DisplayWidget {
                         egui::Color32::WHITE,
                     );
 
-                    // Show capture hint overlay when not captured and hovering
-                    if !self.mouse_captured && response.hovered() {
+                    // Show capture hint overlay when not captured and hovering (PS/2 mode only)
+                    if !self.usb_tablet_mode && !self.mouse_captured && response.hovered() {
                         let hint = "Click to capture mouse (Ctrl+Alt+G or Ctrl+Alt+Esc to release)";
                         let text_pos = egui::pos2(rect.min.x + 8.0, rect.max.y - 24.0);
                         ui.painter().text(
@@ -522,8 +522,8 @@ impl DisplayWidget {
                     }
                 }
 
-                // Click on display → capture mouse
-                if response.clicked() || response.drag_started() {
+                // Click on display → capture mouse (PS/2 mode only)
+                if !self.usb_tablet_mode && (response.clicked() || response.drag_started()) {
                     ui.memory_mut(|m| m.request_focus(display_id));
                     if !self.mouse_captured {
                         self.capture_mouse(ctx);
@@ -535,9 +535,9 @@ impl DisplayWidget {
                     ui.memory_mut(|m| m.request_focus(display_id));
                 }
 
-                // Mouse handling: send PS/2 mouse events to VM
+                // Mouse handling: send mouse events to VM
                 if let Some(handle) = vm_handle {
-                    self.handle_mouse_input(ui, ctx, rect, handle);
+                    self.handle_mouse_input(ui, ctx, rect, handle, &response);
                 }
 
                 let focused = ui.memory(|m| m.has_focus(display_id));
@@ -637,7 +637,7 @@ impl DisplayWidget {
     }
 
     /// Handle mouse input over the display area and inject PS/2 events into the VM.
-    fn handle_mouse_input(&mut self, ui: &egui::Ui, ctx: &egui::Context, display_rect: egui::Rect, vm_handle: u64) {
+    fn handle_mouse_input(&mut self, ui: &egui::Ui, ctx: &egui::Context, display_rect: egui::Rect, vm_handle: u64, response: &egui::Response) {
         // Read current button state
         let buttons = ui.input(|i| {
             let mut b = 0u8;
@@ -666,19 +666,32 @@ impl DisplayWidget {
                 pin12_vector, pin12_deliv, pin12_masked);
         }
 
-        // USB Tablet mode: send absolute coordinates without capture
+        // USB Tablet mode: send absolute coordinates AND PS/2 relative as fallback.
+        // The guest will use whichever driver it has loaded (UHCI tablet or PS/2).
         if self.usb_tablet_mode {
-            let pointer_pos = ui.input(|i| i.pointer.latest_pos());
-            if let Some(pos) = pointer_pos {
-                if display_rect.contains(pos) {
-                    // Map screen position to 0..32767
-                    let rel_x = (pos.x - display_rect.left()) / display_rect.width();
-                    let rel_y = (pos.y - display_rect.top()) / display_rect.height();
-                    let abs_x = (rel_x.clamp(0.0, 1.0) * 32767.0) as u16;
-                    let abs_y = (rel_y.clamp(0.0, 1.0) * 32767.0) as u16;
+            let hover_pos = response.hover_pos();
 
-                    libcorevm::ffi::corevm_usb_tablet_move(vm_handle, abs_x, abs_y, buttons);
+            if let Some(pos) = hover_pos {
+                let rel_x = (pos.x - display_rect.left()) / display_rect.width();
+                let rel_y = (pos.y - display_rect.top()) / display_rect.height();
+                let abs_x = (rel_x.clamp(0.0, 1.0) * 32767.0) as u16;
+                let abs_y = (rel_y.clamp(0.0, 1.0) * 32767.0) as u16;
+
+                // Send absolute coords to USB tablet
+                libcorevm::ffi::corevm_usb_tablet_move(vm_handle, abs_x, abs_y, buttons);
+
+                // Also send relative PS/2 mouse events as fallback
+                // (works if guest uses PS/2 driver instead of USB)
+                if let Some(last_pos) = self.last_mouse_pos {
+                    let dx = (pos.x - last_pos.x) as i16;
+                    let dy = -(pos.y - last_pos.y) as i16; // PS/2: Y inverted
+                    if dx != 0 || dy != 0 || buttons != self.last_mouse_buttons {
+                        libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, dx, dy, buttons);
+                    }
+                } else if buttons != self.last_mouse_buttons {
+                    libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, 0, 0, buttons);
                 }
+                self.last_mouse_pos = Some(pos);
             }
             self.last_mouse_buttons = buttons;
             return;
