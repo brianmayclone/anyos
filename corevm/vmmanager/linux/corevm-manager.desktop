@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=CoreVM Manager
-Comment=Cross-platform x86 Virtual Machine Manager
-Exec=corevm-vmmanager
-Icon=corevm-manager
-Type=Application
-Categories=System;Emulator;
-Keywords=virtual;machine;vm;emulator;x86;

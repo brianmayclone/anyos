@@ -406,11 +406,15 @@ add_shared_lib(libsvg ${CMAKE_SOURCE_DIR}/libs/libsvg)
 add_shared_lib(libgl ${CMAKE_SOURCE_DIR}/libs/libgl)
 add_shared_lib(libm ${CMAKE_SOURCE_DIR}/libs/libm)
 add_shared_lib(libphysics ${CMAKE_SOURCE_DIR}/libs/libphysics)
-if(NOT ANYOS_ARCH STREQUAL "arm64")
-  add_shared_lib(libcorevm ${CMAKE_SOURCE_DIR}/libs/libcorevm)
+# --- CoreVM (optional, loaded from git submodule at corevm/) ---
+# libcorevm lives in its own repository. When the corevm submodule is checked
+# out, the library and BIOS are built; otherwise they are silently skipped.
+set(_COREVM_LIB_DIR "${CMAKE_SOURCE_DIR}/corevm/libs/libcorevm")
+if(NOT ANYOS_ARCH STREQUAL "arm64" AND EXISTS "${_COREVM_LIB_DIR}/Cargo.toml")
+  add_shared_lib(libcorevm ${_COREVM_LIB_DIR})
 
   # --- CoreVM BIOS (assembled with NASM, copied to sysroot) ---
-  set(_COREVM_BIOS_DIR "${CMAKE_SOURCE_DIR}/libs/libcorevm/bios")
+  set(_COREVM_BIOS_DIR "${_COREVM_LIB_DIR}/bios")
   set(_COREVM_BIOS_BIN "${CMAKE_BINARY_DIR}/bios.bin")
   set(_COREVM_BIOS_SYSROOT "${SYSROOT_DIR}/Libraries/libcorevm/bios/bios.bin")
   file(GLOB _COREVM_BIOS_SRC "${_COREVM_BIOS_DIR}/*.asm")
@@ -428,6 +432,8 @@ if(NOT ANYOS_ARCH STREQUAL "arm64")
     COMMENT "Installing CoreVM BIOS to sysroot"
   )
   add_custom_target(corevm_bios ALL DEPENDS ${_COREVM_BIOS_SYSROOT})
+elseif(NOT ANYOS_ARCH STREQUAL "arm64")
+  message(STATUS "CoreVM submodule not found at corevm/ — skipping libcorevm and BIOS")
 endif()
 
 # --- libhttp (custom: links BearSSL for HTTPS support) ---
