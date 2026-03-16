@@ -774,17 +774,14 @@ fn update_framebuffer(handle: u64, fb: &Arc<Mutex<FrameBufferData>>, diag: &Diag
             }
         };
 
-        if have_pixels {
-            if let Ok(mut fb_data) = fb.lock() {
-                fb_data.text_mode = false;
-                fb_data.width = vga_w;
-                fb_data.height = vga_h;
-                display::render_graphics_mode(&raw_pixels, vga_w, vga_h, vga_bpp, &mut fb_data.pixels);
-                fb_data.dirty = true;
-            }
-        } else {
-            // LFB is empty — guest switched to text mode without VBE disable.
-            render_text_fallback(handle, fb);
+        // Always render graphics mode when VGA reports it — even if the
+        // framebuffer appears black (e.g. Windows loading screen with dark background).
+        if let Ok(mut fb_data) = fb.lock() {
+            fb_data.text_mode = false;
+            fb_data.width = vga_w;
+            fb_data.height = vga_h;
+            display::render_graphics_mode(&raw_pixels, vga_w, vga_h, vga_bpp, &mut fb_data.pixels);
+            fb_data.dirty = true;
         }
     }
 }
