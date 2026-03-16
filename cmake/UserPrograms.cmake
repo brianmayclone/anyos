@@ -411,6 +411,18 @@ add_shared_lib(libphysics ${CMAKE_SOURCE_DIR}/libs/libphysics)
 # out, the library and BIOS are built; otherwise they are silently skipped.
 set(_COREVM_LIB_DIR "${CMAKE_SOURCE_DIR}/corevm/libs/libcorevm")
 if(NOT ANYOS_ARCH STREQUAL "arm64" AND EXISTS "${_COREVM_LIB_DIR}/Cargo.toml")
+  # Symlink the real anyOS crates into the corevm stubs directory so that
+  # libcorevm's Cargo.toml resolves libheap/libsyscall to the real implementations.
+  set(_STUBS_DIR "${CMAKE_SOURCE_DIR}/corevm/libs/stubs")
+  foreach(_DEP libheap libsyscall)
+    set(_STUB "${_STUBS_DIR}/${_DEP}")
+    set(_REAL "${CMAKE_SOURCE_DIR}/libs/${_DEP}")
+    if(EXISTS "${_REAL}" AND NOT IS_SYMLINK "${_STUB}")
+      file(REMOVE_RECURSE "${_STUB}")
+      execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink "${_REAL}" "${_STUB}")
+    endif()
+  endforeach()
+
   add_shared_lib(libcorevm ${_COREVM_LIB_DIR})
 
   # --- CoreVM BIOS (assembled with NASM, copied to sysroot) ---
