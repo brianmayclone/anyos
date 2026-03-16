@@ -52,9 +52,9 @@ const REG_EECD: usize = 0x0010;
 const REG_EERD: usize = 0x0014;
 const REG_MDIC: usize = 0x0020;
 const REG_ICR: usize = 0x00C0;
-const REG_ICS: usize = 0x00C4;
-const REG_IMS: usize = 0x00C8;
-const REG_IMC: usize = 0x00CC;
+const REG_ICS: usize = 0x00C8;
+const REG_IMS: usize = 0x00D0;
+const REG_IMC: usize = 0x00D8;
 const REG_RCTL: usize = 0x0100;
 const REG_TCTL: usize = 0x0400;
 const REG_RDBAL: usize = 0x2800;
@@ -322,9 +322,6 @@ impl E1000 {
 
         // Restore defaults.
         self.regs[REG_STATUS / 4] = STATUS_LINK_UP | STATUS_SPEED_1000;
-        // Trigger Link Status Change interrupt — the driver expects this
-        // after reset to confirm the link is up and proceed with init.
-        self.regs[REG_ICR / 4] = 1 << 2; // ICR_LSC
 
         // Restore MAC in RAL0/RAH0.
         let ral = (mac[0] as u32)
@@ -724,8 +721,6 @@ impl MmioHandler for E1000 {
             REG_CTRL => {
                 self.regs[dword_offset] = new_val;
                 if new_val & CTRL_RST != 0 {
-                    #[cfg(feature = "std")]
-                    eprintln!("[e1000] CTRL.RST (offset=0x{:04X} via {})", offset, if offset < 0x20000 { "MMIO" } else { "I/O" });
                     self.reset();
                 }
             }
@@ -766,22 +761,12 @@ impl MmioHandler for E1000 {
                 }
             }
             REG_ICS => {
-                // Writing to ICS sets interrupt cause bits.
+                // Writing to ICS ORs cause bits into ICR (software-triggered interrupt).
                 self.regs[REG_ICR / 4] |= new_val;
             }
             REG_IMS => {
-                let old_ims = self.regs[dword_offset];
                 // Writing to IMS sets (OR) interrupt mask bits.
                 self.regs[dword_offset] |= new_val;
-                #[cfg(feature = "std")]
-                eprintln!("[e1000] IMS = 0x{:08X}", self.regs[dword_offset]);
-                // Driver interrupt test: newly enabled bits get deferred to
-                // the next poll cycle so the driver sees ICR=0 on its
-                // immediate read, then gets the interrupt shortly after.
-                let newly_enabled = new_val & !old_ims;
-                if newly_enabled != 0 {
-                    self.deferred_icr |= newly_enabled;
-                }
             }
             REG_IMC => {
                 // Writing to IMC clears interrupt mask bits.

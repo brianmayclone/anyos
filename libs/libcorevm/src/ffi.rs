@@ -596,8 +596,11 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                             vm.ahci_irq_asserted = true;
                             injected += 1;
                         } else if !want_asserted && vm.ahci_irq_asserted {
-                            let _ = vm.backend.set_irq_line(11, false);
                             vm.ahci_irq_asserted = false;
+                            // Only de-assert IRQ 11 if E1000 also doesn't need it
+                            if !vm.e1000_irq_asserted {
+                                let _ = vm.backend.set_irq_line(11, false);
+                            }
                         }
                     }
                 }
@@ -622,27 +625,26 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
             // Also process pending RX packets into the descriptor ring.
             if !vm.e1000_ptr.is_null() {
                 let e1000 = unsafe { &mut *vm.e1000_ptr };
-                // Apply deferred ICR bits (driver interrupt test).
-                if e1000.deferred_icr != 0 {
-                    eprintln!("[e1000] poll: applying deferred ICR 0x{:08X}, IMS=0x{:08X}", e1000.deferred_icr, e1000.regs[0x00C8 / 4]);
-                    e1000.regs[0x00C0 / 4] |= e1000.deferred_icr;
-                    e1000.deferred_icr = 0;
-                }
                 // Deliver any pending RX packets to guest via DMA.
                 if !e1000.rx_buffer.is_empty() {
                     e1000.process_rx_ring();
                 }
                 let icr = e1000.regs[0x00C0 / 4];
-                let ims = e1000.regs[0x00C8 / 4];
+                let ims = e1000.regs[0x00D0 / 4];
                 let want_asserted = (icr & ims) != 0;
                 #[cfg(feature = "linux")]
                 {
                     if want_asserted && !vm.e1000_irq_asserted {
-                        let _ = vm.backend.set_irq_line(11, true);
                         vm.e1000_irq_asserted = true;
+                        // Shared IRQ 11: always assert (AHCI de-assert checks both flags)
+                        let _ = vm.backend.set_irq_line(11, true);
                         injected += 1;
                     } else if !want_asserted && vm.e1000_irq_asserted {
-                        let _ = vm.backend.set_irq_line(11, false);
+                        vm.e1000_irq_asserted = false;
+                        // Only de-assert IRQ 11 if AHCI also doesn't need it
+                        if !vm.ahci_irq_asserted {
+                            let _ = vm.backend.set_irq_line(11, false);
+                        }
                         vm.e1000_irq_asserted = false;
                     }
                 }
@@ -1480,7 +1482,7 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
         pci_dev.set_bar(0, E1000_MMIO_BASE as u32, E1000_MMIO_SIZE as u32, true);
         // BAR2: I/O ports for indirect register access (8 bytes: IOADDR+IODATA)
         pci_dev.set_bar(2, E1000_IO_BASE as u32, 8, false);
-        // Interrupt: IRQ 11, pin INTA (shared with AHCI — level-triggered)
+        // Interrupt: IRQ 11, pin INTA (shared with AHCI, level-triggered)
         pci_dev.set_interrupt(11, 1);
         // Subsystem ID (common for 82540EM)
         pci_dev.set_subsystem(0x8086, 0x001E);
@@ -2056,7 +2058,7 @@ pub extern "C" fn corevm_e1000_has_rx_irq(handle: u64) -> u32 {
     let vm = match get_vm(handle) { Some(v) => v, None => return 0 };
     let e1000 = match vm.e1000() { Some(e) => e, None => return 0 };
     let icr = e1000.regs[0x00C0 / 4];
-    let ims = e1000.regs[0x00C8 / 4];
+    let ims = e1000.regs[0x00D0 / 4];
     icr & ims // Only report masked-in interrupts
 }
 
@@ -2341,8 +2343,17 @@ impl crate::io::IoHandler for PciIoRouter {
                     e1000.io_addr = val;
                 } else {
                     use crate::memory::mmio::MmioHandler;
-                    eprintln!("[e1000] I/O write: IODATA reg=0x{:04X} val=0x{:08X}", e1000.io_addr, val);
-                    let _ = e1000.write(e1000.io_addr as u64, 4, val as u64);
+                    let reg = e1000.io_addr;
+                    let _ = e1000.write(reg as u64, 4, val as u64);
+                    // Log interesting register writes
+                    match reg {
+                        0x0000 => eprintln!("[e1000] I/O CTRL = 0x{:08X}{}", val, if val & (1<<26) != 0 { " RST" } else { "" }),
+                        0x00C0 => eprintln!("[e1000] I/O ICR write = 0x{:08X}", val),
+                        0x00C8 => eprintln!("[e1000] I/O ICS = 0x{:08X}", val),
+                        0x00D0 => eprintln!("[e1000] I/O IMS = 0x{:08X}", val),
+                        0x00D8 => eprintln!("[e1000] I/O IMC = 0x{:08X}", val),
+                        _ => {}
+                    }
                 }
                 return Ok(());
             }
