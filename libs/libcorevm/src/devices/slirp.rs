@@ -149,6 +149,8 @@ struct TcpConnection {
     state: TcpState,
     /// Our (gateway) sequence number.
     our_seq: u32,
+    /// Bytes sent but not yet ACKed by guest.
+    unacked: u32,
     /// Last ACKed guest sequence number.
     guest_seq: u32,
     /// Initial guest sequence from SYN.
@@ -192,6 +194,8 @@ pub struct SlirpNet {
     host_dns: SocketAddr,
     /// DHCP state — true once guest has been offered an address.
     dhcp_offered: bool,
+    /// Pending TCP connects (non-blocking, completed in poll_tcp).
+    pending_connects: Vec<(TcpFlowKey, std::sync::mpsc::Receiver<std::io::Result<TcpStream>>, u32, u32)>,
 }
 
 impl SlirpNet {
@@ -210,6 +214,7 @@ impl SlirpNet {
             ip_id: 1,
             host_dns,
             dhcp_offered: false,
+            pending_connects: Vec::new(),
         }
     }
 
@@ -315,6 +320,9 @@ impl SlirpNet {
         let src_port = u16be(payload, 0);
         let dst_port = u16be(payload, 2);
         let udp_data = &payload[8..];
+        eprintln!("[slirp] UDP {}.{}.{}.{}:{} → {}.{}.{}.{}:{} len={}",
+            src_ip[0],src_ip[1],src_ip[2],src_ip[3], src_port,
+            dst_ip[0],dst_ip[1],dst_ip[2],dst_ip[3], dst_port, udp_data.len());
 
         // DHCP (guest → broadcast or gateway, port 67)
         if dst_port == 67 {
@@ -582,26 +590,16 @@ impl SlirpNet {
                 Ipv4Addr::new(dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3]).into(),
                 dst_port,
             );
-            let socket = match TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(100)) {
-                Ok(s) => s,
-                Err(_) => {
-                    self.send_tcp_flags(key, 0x14, 0, seq.wrapping_add(1), &[]); // RST+ACK
-                    return;
-                }
-            };
-            let _ = socket.set_nonblocking(true);
-            let _ = socket.set_nodelay(true);
+            // Connect in a background thread to avoid blocking the VM loop.
+            // Store the receiver so we can check for completion in poll_tcp.
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5));
+                let _ = tx.send(result);
+            });
+
             let our_seq: u32 = 0x1000_0000;
-            let conn = TcpConnection {
-                stream: socket,
-                state: TcpState::SynReceived,
-                our_seq,
-                guest_seq: seq.wrapping_add(1),
-                guest_isn: seq,
-                read_buf: [0u8; 4096],
-            };
-            self.tcp_conns.insert(key, conn);
-            self.send_tcp_flags(key, 0x12, our_seq, seq.wrapping_add(1), &[]); // SYN+ACK
+            self.pending_connects.push((key, rx, seq, our_seq));
             return;
         }
 
@@ -617,9 +615,21 @@ impl SlirpNet {
                 conn.our_seq = conn.our_seq.wrapping_add(1); // SYN consumed
             }
 
+            // Process ACK: reduce unacked byte count
+            if ack_flag && conn.state == TcpState::Established {
+                let ack_num = u32be(payload, 8);
+                let acked = ack_num.wrapping_sub(conn.our_seq.wrapping_sub(conn.unacked));
+                if acked > 0 && acked <= conn.unacked {
+                    conn.unacked -= acked;
+                }
+            }
+
             // Data from guest → write to host socket
+            // Temporarily set blocking mode for write to ensure all data is sent
             if !tcp_data.is_empty() && conn.state == TcpState::Established {
+                let _ = conn.stream.set_nonblocking(false);
                 let _ = conn.stream.write_all(tcp_data);
+                let _ = conn.stream.set_nonblocking(true);
                 conn.guest_seq = seq.wrapping_add(tcp_data.len() as u32);
             }
 
@@ -648,48 +658,73 @@ impl SlirpNet {
     }
 
     fn poll_tcp(&mut self) {
-        // Read data from host sockets and inject into guest
+        // Complete pending connects (non-blocking check)
+        let mut completed = Vec::new();
+        let mut i = 0;
+        while i < self.pending_connects.len() {
+            match self.pending_connects[i].1.try_recv() {
+                Ok(Ok(stream)) => {
+                    let (key, _, guest_seq_raw, our_seq) = self.pending_connects.remove(i);
+                    let _ = stream.set_nonblocking(true);
+                    let _ = stream.set_nodelay(true);
+                    let conn = TcpConnection {
+                        stream,
+                        state: TcpState::SynReceived,
+                        our_seq,
+                        unacked: 0,
+                        guest_seq: guest_seq_raw.wrapping_add(1),
+                        guest_isn: guest_seq_raw,
+                        read_buf: [0u8; 4096],
+                    };
+                    completed.push((key, conn, our_seq, guest_seq_raw));
+                }
+                Ok(Err(_)) => {
+                    let (key, _, guest_seq_raw, _) = self.pending_connects.remove(i);
+                    self.send_tcp_flags(key, 0x14, 0, guest_seq_raw.wrapping_add(1), &[]);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => { i += 1; } // still connecting
+                Err(_) => { self.pending_connects.remove(i); } // thread died
+            }
+        }
+        for (key, conn, our_seq, guest_seq_raw) in completed {
+            self.tcp_conns.insert(key, conn);
+            self.send_tcp_flags(key, 0x12, our_seq, guest_seq_raw.wrapping_add(1), &[]);
+        }
+
+        const TCP_MSS: usize = 1460;
+        const MAX_UNACKED: u32 = (TCP_MSS * 8) as u32; // max 8 segments in flight
+
         let mut data_to_send: Vec<(TcpFlowKey, Vec<u8>)> = Vec::new();
         let mut closed: Vec<TcpFlowKey> = Vec::new();
 
         for (key, conn) in &mut self.tcp_conns {
             if conn.state != TcpState::Established { continue; }
-            // Back-pressure: stop reading if rx_queue has pending packets.
-            // This gives the guest time to drain the RX ring and send ACKs.
-            if self.rx_queue.len() > 32 { break; }
-            match conn.stream.read(&mut conn.read_buf) {
-                Ok(0) => {
-                    // EOF — host closed connection
-                    closed.push(*key);
-                }
-                Ok(n) => {
-                    data_to_send.push((*key, conn.read_buf[..n].to_vec()));
-                }
+
+            // Flow control: don't read more from host until guest has ACKed
+            // previous data. Also respect rx_queue backpressure.
+            if conn.unacked >= MAX_UNACKED { continue; }
+            if self.rx_queue.len() > 16 { break; }
+
+            // Read at most one MSS from host socket
+            let max_read = TCP_MSS.min(conn.read_buf.len());
+            match conn.stream.read(&mut conn.read_buf[..max_read]) {
+                Ok(0) => closed.push(*key),
+                Ok(n) => data_to_send.push((*key, conn.read_buf[..n].to_vec())),
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
-                Err(_) => {
-                    closed.push(*key);
-                }
+                Err(_) => closed.push(*key),
             }
         }
 
-        // Send data in MSS-sized segments (max 1460 bytes per TCP segment)
-        const TCP_MSS: usize = 1460;
+        // Send each chunk as a single TCP segment
         for (key, data) in data_to_send {
-            let mut offset = 0;
-            while offset < data.len() {
-                let end = (offset + TCP_MSS).min(data.len());
-                let segment = &data[offset..end];
-                let is_last = end == data.len();
-                if let Some(conn) = self.tcp_conns.get(&key) {
-                    let seq = conn.our_seq;
-                    let ack = conn.guest_seq;
-                    let flags = if is_last { 0x18 } else { 0x10 }; // PSH+ACK for last, ACK for others
-                    self.send_tcp_flags(key, flags, seq, ack, segment);
-                    if let Some(conn) = self.tcp_conns.get_mut(&key) {
-                        conn.our_seq = conn.our_seq.wrapping_add(segment.len() as u32);
-                    }
+            if let Some(conn) = self.tcp_conns.get(&key) {
+                let seq = conn.our_seq;
+                let ack = conn.guest_seq;
+                self.send_tcp_flags(key, 0x18, seq, ack, &data); // PSH+ACK
+                if let Some(conn) = self.tcp_conns.get_mut(&key) {
+                    conn.our_seq = conn.our_seq.wrapping_add(data.len() as u32);
+                    conn.unacked = conn.unacked.wrapping_add(data.len() as u32);
                 }
-                offset = end;
             }
         }
 
@@ -702,8 +737,19 @@ impl SlirpNet {
             self.tcp_conns.remove(&key);
         }
 
-        // Clean up closed connections
         self.tcp_conns.retain(|_, conn| conn.state != TcpState::Closed);
+
+        // Periodic status log
+        static mut POLL_COUNT: u64 = 0;
+        unsafe { POLL_COUNT += 1; }
+        if unsafe { POLL_COUNT } % 10000 == 0 && !self.tcp_conns.is_empty() {
+            for (key, conn) in &self.tcp_conns {
+                eprintln!("[tcp] conn :{} → {}:{} state={:?} unacked={} rxq={}",
+                    key.guest_port, key.remote_ip[0], key.remote_port,
+                    match conn.state { TcpState::SynReceived => "SYN", TcpState::Established => "EST", TcpState::FinWait => "FIN", TcpState::Closed => "CLS" },
+                    conn.unacked, self.rx_queue.len());
+            }
+        }
     }
 
     fn send_tcp_flags(&mut self, key: TcpFlowKey, flags: u8, seq: u32, ack: u32, data: &[u8]) {
@@ -715,7 +761,7 @@ impl SlirpNet {
         put_u32be(&mut tcp, 8, ack);
         tcp[12] = (hdr_len / 4) << 4; // data offset
         tcp[13] = flags;
-        put_u16be(&mut tcp, 14, 65535); // window size
+        put_u16be(&mut tcp, 14, 32768); // window size (32KB — reasonable for NAT)
         if !data.is_empty() {
             tcp[20..].copy_from_slice(data);
         }
@@ -732,6 +778,25 @@ impl SlirpNet {
         pseudo[12..].copy_from_slice(&tcp);
         let cksum = ip_checksum(&pseudo);
         put_u16be(&mut tcp, 16, cksum);
+
+        // Verify checksum before sending
+        #[cfg(feature = "std")]
+        if data.len() > 0 {
+            // Recompute checksum to verify
+            let mut verify_tcp = tcp.clone();
+            put_u16be(&mut verify_tcp, 16, 0); // clear checksum
+            let mut vpseudo = vec![0u8; 12 + verify_tcp.len()];
+            vpseudo[0..4].copy_from_slice(&src);
+            vpseudo[4..8].copy_from_slice(&dst);
+            vpseudo[9] = IP_PROTO_TCP;
+            put_u16be(&mut vpseudo, 10, verify_tcp.len() as u16);
+            vpseudo[12..].copy_from_slice(&verify_tcp);
+            let vcksum = ip_checksum(&vpseudo);
+            let vcksum = if vcksum == 0 { 0xFFFF } else { vcksum };
+            if vcksum != cksum {
+                eprintln!("[tcp] CHECKSUM MISMATCH! computed=0x{:04X} stored=0x{:04X} len={}", vcksum, cksum, tcp.len());
+            }
+        }
 
         self.send_ip_packet(IP_PROTO_TCP, key.remote_ip, GUEST_IP, &tcp);
     }

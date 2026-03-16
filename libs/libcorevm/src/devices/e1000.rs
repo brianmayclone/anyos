@@ -170,8 +170,6 @@ const TXD_STA_DD: u8 = 1 << 0; // Descriptor Done
 const RXD_STA_DD: u8  = 1 << 0; // Descriptor Done
 const RXD_STA_EOP: u8 = 1 << 1; // End of Packet
 const RXD_STA_IXSM: u8 = 1 << 2; // Ignore Checksum Indication
-const RXD_STA_IPCS: u8 = 1 << 3; // IP Checksum Calculated
-const RXD_STA_TCPCS: u8 = 1 << 5; // TCP/UDP Checksum Calculated
 
 /// Simplified Intel E1000 network interface card.
 pub struct E1000 {
@@ -501,7 +499,18 @@ impl E1000 {
 
         while let Some(_pkt) = self.rx_buffer.front() {
             if delivered_count >= MAX_RX_PER_POLL { break; }
-            if head == tail { break; } // No available descriptors
+            if head == tail {
+                #[cfg(feature = "std")]
+                if !self.rx_buffer.is_empty() {
+                    static mut STALL_COUNT: u32 = 0;
+                    unsafe { STALL_COUNT += 1; }
+                    if unsafe { STALL_COUNT } % 1000 == 1 {
+                        eprintln!("[e1000] RX STALL: head={} tail={} pending={} stalls={}",
+                            head, tail, self.rx_buffer.len(), unsafe { STALL_COUNT });
+                    }
+                }
+                break;
+            }
 
             let desc_addr = rd_base + (head as u64) * 16;
             let mut desc = [0u8; 16];
@@ -548,7 +557,7 @@ impl E1000 {
             desc[9] = len_bytes[1]; // length high
             desc[10] = 0; // checksum (not computed)
             desc[11] = 0; // checksum high
-            desc[12] = RXD_STA_DD | RXD_STA_EOP | RXD_STA_IPCS | RXD_STA_TCPCS; // status: done + eop + checksums valid
+            desc[12] = RXD_STA_DD | RXD_STA_EOP; // status: done + end of packet
             desc[13] = 0; // errors: none
             desc[14] = 0; // special low
             desc[15] = 0; // special high
