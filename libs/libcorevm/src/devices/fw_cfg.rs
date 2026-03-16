@@ -515,32 +515,12 @@ impl IoHandler for FwCfg {
                     } else {
                         alloc::string::String::new()
                     };
-                    eprintln!("[fw_cfg] select 0x{:04X}{}", sel, file_info);
+                    let _ = file_info; // suppress warning
                 }
                 #[cfg(all(feature = "anyos", not(any(feature = "linux", feature = "std"))))]
                 libsyscall::serial_print(format_args!(
                     "[fw_cfg] select 0x{:04X}\n", sel
                 ));
-                #[cfg(feature = "std")]
-                {
-                    use std::io::Write;
-                    let path = std::env::var("TEMP")
-                        .map(|t| std::format!("{}\\fw_cfg_debug.log", t))
-                        .unwrap_or_else(|_| std::string::String::from("fw_cfg_debug.log"));
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-                        let file_info = if sel >= 0x0020 {
-                            self.files.iter().find(|f| f.selector == sel)
-                                .map(|f| {
-                                    let name_end = f.name.iter().position(|&b| b == 0).unwrap_or(56);
-                                    std::format!(" -> file '{}' ({} bytes)", std::string::String::from_utf8_lossy(&f.name[..name_end]), f.data.len())
-                                })
-                                .unwrap_or_else(|| std::string::String::from(" -> (no file)"))
-                        } else {
-                            std::string::String::new()
-                        };
-                        let _ = writeln!(f, "[fw_cfg] select 0x{:04X}{}", sel, file_info);
-                    }
-                }
                 self.selector = sel;
                 self.offset = 0;
             }
@@ -552,25 +532,7 @@ impl IoHandler for FwCfg {
                 // DMA address low 32 bits (big-endian), triggers DMA.
                 let low = u32::from_be(val);
                 let desc_addr = ((self.dma_addr_high as u64) << 32) | (low as u64);
-                #[cfg(feature = "linux")]
-                {
-                    // Log the DMA descriptor details before processing
-                    if let Some(desc) = self.guest_read(desc_addr, 16) {
-                        let ctl = u32::from_be_bytes([desc[0], desc[1], desc[2], desc[3]]);
-                        let len = u32::from_be_bytes([desc[4], desc[5], desc[6], desc[7]]);
-                        let addr = u64::from_be_bytes([desc[8], desc[9], desc[10], desc[11],
-                                                       desc[12], desc[13], desc[14], desc[15]]);
-                        let new_sel = if ctl & 0x08 != 0 { (ctl >> 16) as u16 } else { self.selector };
-                        let op = if ctl & 0x02 != 0 { "READ" }
-                                 else if ctl & 0x04 != 0 { "SKIP" }
-                                 else if ctl & 0x10 != 0 { "WRITE" }
-                                 else { "NOP" };
-                        eprintln!("[fw_cfg] DMA {}: sel={:#x} len={} addr={:#x} (prev_sel={:#x})",
-                            op, new_sel, len, addr, self.selector);
-                    } else {
-                        eprintln!("[fw_cfg] DMA transfer: desc_addr={:#x} sel={:#x}", desc_addr, self.selector);
-                    }
-                }
+                // DMA transfer
                 self.process_dma(desc_addr);
                 self.dma_addr_high = 0;
             }

@@ -652,24 +652,7 @@ impl DisplayWidget {
             b
         });
 
-        // Debug: log state periodically
         self.mouse_debug_counter += 1;
-        if self.mouse_debug_counter % 300 == 0 {
-            let ps2_state = libcorevm::ffi::corevm_ps2_mouse_state(vm_handle);
-            let pointer_pos = ui.input(|i| i.pointer.latest_pos());
-            // Also check IOAPIC pin 12 state from KVM
-            let ioapic_pin12 = libcorevm::ffi::corevm_ioapic_pin_state(vm_handle, 12);
-            let pin12_masked = (ioapic_pin12 >> 16) & 1;
-            let pin12_vector = ioapic_pin12 & 0xFF;
-            let pin12_deliv = (ioapic_pin12 >> 8) & 0x7;
-            eprintln!("[mouse-debug] captured={} pos={:?} in_rect={} buttons={} ps2_enabled={} ps2_buf={} ioapic_pin12: vec={:#x} deliv={} masked={}",
-                self.mouse_captured,
-                pointer_pos,
-                pointer_pos.map_or(false, |p| display_rect.contains(p)),
-                buttons,
-                ps2_state & 1, (ps2_state >> 8) & 0xFF,
-                pin12_vector, pin12_deliv, pin12_masked);
-        }
 
         // USB Tablet mode: send absolute coordinates AND PS/2 relative as fallback.
         // The guest will use whichever driver it has loaded (UHCI tablet or PS/2).
@@ -744,11 +727,7 @@ impl DisplayWidget {
 
         if dx != 0 || dy != 0 {
             libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, dx, dy, buttons);
-            if self.mouse_debug_counter < 30 || self.mouse_debug_counter % 60 == 0 {
-                let ps2_state = libcorevm::ffi::corevm_ps2_mouse_state(vm_handle);
-                eprintln!("[mouse-move] dx={} dy={} btn={} ps2_enabled={} ps2_buf={}",
-                    dx, dy, buttons, ps2_state & 1, (ps2_state >> 8) & 0xFF);
-            }
+            // Mouse movement sent to PS/2
         } else if buttons != self.last_mouse_buttons {
             libcorevm::ffi::corevm_ps2_mouse_move(vm_handle, 0, 0, buttons);
         }

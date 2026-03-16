@@ -83,13 +83,50 @@ pub fn scancode_for_key(key: egui::Key) -> Option<(u8, bool)> {
     }
 }
 
+/// Track modifier key state to detect press/release transitions.
+static mut PREV_SHIFT: bool = false;
+static mut PREV_CTRL: bool = false;
+static mut PREV_ALT: bool = false;
+
 /// Handle keyboard events from egui and send to VM via libcorevm.
 /// vm_handle: the corevm VM handle (u64)
 /// display_focused: whether the display area has focus (captures all keys)
 /// Returns a label for the last key pressed (if any) for status bar display.
 pub fn handle_keyboard_events(ctx: &egui::Context, vm_handle: u64, display_focused: bool) -> Option<String> {
     if !display_focused {
+        // Release all modifiers when focus is lost
+        unsafe {
+            if PREV_SHIFT { libcorevm::ffi::corevm_ps2_key_release(vm_handle, 0x2A); PREV_SHIFT = false; }
+            if PREV_CTRL  { libcorevm::ffi::corevm_ps2_key_release(vm_handle, 0x1D); PREV_CTRL = false; }
+            if PREV_ALT   { libcorevm::ffi::corevm_ps2_key_release(vm_handle, 0x38); PREV_ALT = false; }
+        }
         return None;
+    }
+
+    // Track modifier state from egui and send press/release scancodes
+    let modifiers = ctx.input(|i| i.modifiers);
+    unsafe {
+        if modifiers.shift && !PREV_SHIFT {
+            libcorevm::ffi::corevm_ps2_key_press(vm_handle, 0x2A); // Left Shift
+            PREV_SHIFT = true;
+        } else if !modifiers.shift && PREV_SHIFT {
+            libcorevm::ffi::corevm_ps2_key_release(vm_handle, 0x2A);
+            PREV_SHIFT = false;
+        }
+        if modifiers.ctrl && !PREV_CTRL {
+            libcorevm::ffi::corevm_ps2_key_press(vm_handle, 0x1D); // Left Ctrl
+            PREV_CTRL = true;
+        } else if !modifiers.ctrl && PREV_CTRL {
+            libcorevm::ffi::corevm_ps2_key_release(vm_handle, 0x1D);
+            PREV_CTRL = false;
+        }
+        if modifiers.alt && !PREV_ALT {
+            libcorevm::ffi::corevm_ps2_key_press(vm_handle, 0x38); // Left Alt
+            PREV_ALT = true;
+        } else if !modifiers.alt && PREV_ALT {
+            libcorevm::ffi::corevm_ps2_key_release(vm_handle, 0x38);
+            PREV_ALT = false;
+        }
     }
 
     // Use input_mut to both process AND remove key events in one pass.
@@ -113,8 +150,6 @@ pub fn handle_keyboard_events(ctx: &egui::Context, vm_handle: u64, display_focus
                         }
                     }
                 }
-                // Ignore Text events entirely — we handle everything via Key events.
-                // Text events would cause duplicate input for keys already handled above.
                 _ => {}
             }
         }

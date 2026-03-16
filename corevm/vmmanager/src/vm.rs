@@ -568,7 +568,7 @@ fn vm_run_loop(
                 let mut fb_sample = [0u8; 16];
                 corevm_read_phys(handle, 0xE000_0000, fb_sample.as_mut_ptr(), 16);
                 let fb_nonzero = fb_sample.iter().any(|&b| b != 0);
-                eprintln!("[vm-state] exit={} RIP={:#x} CS={:#x} CR0={:#x} RFLAGS={:#x} IF={} PE={} PG={} FB={} VGA=[{}] exits=[io:{}/{} mmio:{}/{} hlt:{} cancel:{} shut:{} err:{}]",
+                diag.log(DiagCategory::CpuState, format!("[vm-state] exit={} RIP={:#x} CS={:#x} CR0={:#x} RFLAGS={:#x} IF={} PE={} PG={} FB={} VGA=[{}] exits=[io:{}/{} mmio:{}/{} hlt:{} cancel:{} shut:{} err:{}]",
                     exit.reason, regs.rip, sregs.cs.selector, sregs.cr0, regs.rflags,
                     if regs.rflags & 0x200 != 0 { 1 } else { 0 },
                     if sregs.cr0 & 1 != 0 { 1 } else { 0 },
@@ -581,7 +581,7 @@ fn vm_run_loop(
                     EXIT_COUNTS[13],                  // Cancelled (SIGUSR1/immediate_exit)
                     EXIT_COUNTS[9],                   // Shutdown
                     EXIT_COUNTS[11],                  // Error
-                );
+                ));
             }
         }
 

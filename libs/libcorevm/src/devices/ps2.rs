@@ -369,9 +369,7 @@ impl IoHandler for Ps2Controller {
                             // Write Controller Output Port.
                             // Bit 0 = system reset (0 = reset), bit 1 = A20 gate.
                             // We don't emulate A20/reset here — just consume the byte.
-                            #[cfg(feature = "std")]
-                            eprintln!("[ps2-data] output_port={:#04x} (A20={}, reset={})",
-                                byte, (byte >> 1) & 1, byte & 1);
+                            // PS/2 output port write (A20 gate, system reset)
                         }
                         0xD3 => {
                             // Write to AUX output buffer (loopback test).

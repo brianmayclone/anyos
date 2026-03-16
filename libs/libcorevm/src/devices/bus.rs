@@ -297,12 +297,6 @@ impl PciBus {
                 return;
             }
 
-            // Debug: log MSI capability writes for AHCI (device 3)
-            #[cfg(feature = "std")]
-            if device == 3 && register >= 0x80 && register <= 0x8A {
-                eprintln!("[pci] AHCI MSI write: reg=0x{:02X} size={} val=0x{:X}", register, size, val);
-            }
-
             // Read-only field protection.
             match register {
                 0x00..=0x03 | 0x08..=0x0B => { /* Vendor/Device ID, Class: read-only */ }
@@ -407,12 +401,6 @@ impl PciBus {
                 }
                 config_write_u32(&mut dev.config_space, 0x30, val);
                 return;
-            }
-
-            // Debug: log MSI capability writes for AHCI (device 3) via I/O path
-            #[cfg(feature = "std")]
-            if device_num == 3 && register >= 0x80 && register <= 0x8C {
-                eprintln!("[pci-io] AHCI MSI write: reg=0x{:02X} val=0x{:08X}", register, val);
             }
 
             // General config space write.
