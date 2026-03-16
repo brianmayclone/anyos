@@ -201,7 +201,19 @@ pub extern "C" fn corevm_reset(handle: u64) -> i32 {
 pub extern "C" fn corevm_create_vcpu(handle: u64, vcpu_id: u32) -> i32 {
     match get_vm(handle) {
         Some(vm) => match vm.create_vcpu(vcpu_id) {
-            Ok(()) => 0,
+            Ok(()) => {
+                // APs (vcpu_id > 0): set to INIT_RECEIVED so they wait
+                // for SIPI from the BSP.
+                // TODO: SMP boot hangs after handle_smp — BSP spin-waits
+                // without VM exits. Needs further debugging.
+                #[cfg(feature = "linux")]
+                if vcpu_id > 0 {
+                    let apic_base = 0xFEE0_0000u64 | (1 << 11);
+                    let _ = vm.backend.set_msrs(vcpu_id, &[(0x1B, apic_base)]);
+                    let _ = vm.backend.set_mp_state(vcpu_id, 2);
+                }
+                0
+            }
             Err(e) => { set_last_error(format!("{}", e)); -1 }
         },
         None => { set_last_error("no VM handle".into()); -1 },
@@ -1176,6 +1188,46 @@ pub extern "C" fn corevm_fw_cfg_set_kernel(
 
 /// Register all standard chipset devices into the VM.
 #[no_mangle]
+/// Set vCPU MP state. For APs (vcpu_id > 0), set to 1 (UNINITIALIZED) so they
+/// wait for SIPI from the BSP instead of running immediately.
+#[unsafe(no_mangle)]
+pub extern "C" fn corevm_set_mp_state(handle: u64, vcpu_id: u32, state: u32) -> i32 {
+    match get_vm(handle) {
+        Some(vm) => {
+            #[cfg(feature = "linux")]
+            match vm.backend.set_mp_state(vcpu_id, state) {
+                Ok(_) => 0,
+                Err(_) => -1,
+            }
+            #[cfg(not(feature = "linux"))]
+            { let _ = (vcpu_id, state); 0 }
+        }
+        None => -1,
+    }
+}
+
+/// Deprecated: ACPI _PRT is now auto-detected from device pointers.
+/// Kept for ABI compatibility — does nothing.
+#[unsafe(no_mangle)]
+pub extern "C" fn corevm_set_acpi_devices(_handle: u64, _has_e1000: i32, _has_ac97: i32, _has_uhci: i32) -> i32 {
+    0
+}
+
+/// Set the number of CPU cores. Must be called BEFORE corevm_setup_acpi_tables().
+#[unsafe(no_mangle)]
+pub extern "C" fn corevm_set_cpu_count(handle: u64, count: u32) -> i32 {
+    match get_vm(handle) {
+        Some(vm) => {
+            let c = count.max(1).min(32);
+            vm.cpu_count = c;
+            #[cfg(feature = "linux")]
+            { vm.backend.cpu_count = c; }
+            0
+        }
+        None => -1,
+    }
+}
+
 /// Set VRAM size in MiB. Must be called BEFORE corevm_setup_standard_devices().
 /// Valid range: 8-256 MiB. Pass 0 for default (16 MiB).
 #[unsafe(no_mangle)]
@@ -1296,12 +1348,26 @@ pub extern "C" fn corevm_setup_acpi_tables(handle: u64) -> i32 {
     }
     let fw_cfg = unsafe { &mut *vm.fw_cfg_ptr };
 
-    let (rsdp, tables, loader) = crate::devices::acpi_tables::generate_acpi_tables();
-    dbg(&alloc::format!("Generated: rsdp={} tables={} loader={} bytes (no HPET)", rsdp.len(), tables.len(), loader.len()));
+    let num_cpus = vm.cpu_count.max(1);
+    // Auto-detect which PCI devices are present from their pointers
+    let devices = crate::devices::acpi_tables::AcpiDeviceConfig {
+        has_e1000: !vm.e1000_ptr.is_null(),
+        has_ac97: !vm.ac97_ptr.is_null(),
+        has_uhci: !vm.uhci_ptr.is_null(),
+    };
+    let (rsdp, tables, loader) = crate::devices::acpi_tables::generate_acpi_tables_configured(false, num_cpus, &devices);
+    dbg(&alloc::format!("Generated ACPI: {} CPUs, e1000={} ac97={} uhci={}", num_cpus, devices.has_e1000, devices.has_ac97, devices.has_uhci));
 
     fw_cfg.add_file("etc/acpi/rsdp", rsdp);
     fw_cfg.add_file("etc/acpi/tables", tables);
     fw_cfg.add_file("etc/table-loader", loader);
+
+    // Set CMOS register 0x5F = CPU count for SeaBIOS SMP detection
+    if !vm.cmos_ptr.is_null() {
+        let cmos = unsafe { &mut *vm.cmos_ptr };
+        if num_cpus > 1 { cmos.data[0x5F] = num_cpus as u8; }
+    }
+
     dbg("ACPI files registered in fw_cfg");
     0
 }
@@ -1320,10 +1386,24 @@ pub extern "C" fn corevm_setup_acpi_tables_with_hpet(handle: u64) -> i32 {
         return -1;
     }
     let fw_cfg = unsafe { &mut *vm.fw_cfg_ptr };
-    let (rsdp, tables, loader) = crate::devices::acpi_tables::generate_acpi_tables_with_hpet();
+    let num_cpus = vm.cpu_count.max(1);
+    // Auto-detect which PCI devices are present from their pointers
+    let devices = crate::devices::acpi_tables::AcpiDeviceConfig {
+        has_e1000: !vm.e1000_ptr.is_null(),
+        has_ac97: !vm.ac97_ptr.is_null(),
+        has_uhci: !vm.uhci_ptr.is_null(),
+    };
+    let (rsdp, tables, loader) = crate::devices::acpi_tables::generate_acpi_tables_configured(true, num_cpus, &devices);
     fw_cfg.add_file("etc/acpi/rsdp", rsdp);
     fw_cfg.add_file("etc/acpi/tables", tables);
     fw_cfg.add_file("etc/table-loader", loader);
+
+    // Set CMOS register 0x5F = CPU count for SeaBIOS SMP detection
+    if !vm.cmos_ptr.is_null() {
+        let cmos = unsafe { &mut *vm.cmos_ptr };
+        if num_cpus > 1 { cmos.data[0x5F] = num_cpus as u8; }
+    }
+
     0
 }
 
@@ -1383,8 +1463,8 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
         pci_dev.set_bar(0, E1000_MMIO_BASE as u32, E1000_MMIO_SIZE as u32, true);
         // BAR2: I/O ports for indirect register access (8 bytes: IOADDR+IODATA)
         pci_dev.set_bar(2, E1000_IO_BASE as u32, 8, false);
-        // Interrupt: IRQ 11, pin INTA
-        pci_dev.set_interrupt(11, 1);
+        // Interrupt: INTA → PIRQA → IRQ 10 (via PIIX3 swizzle: (4+0)%4=0)
+        pci_dev.set_interrupt(10, 1);
         // Subsystem ID (common for 82540EM)
         pci_dev.set_subsystem(0x8086, 0x001E);
         pci_bus.add_device(pci_dev);
@@ -1959,6 +2039,84 @@ pub extern "C" fn corevm_e1000_has_rx_irq(handle: u64) -> u32 {
     icr & ims // Only report masked-in interrupts
 }
 
+// ── Network Backend ──
+
+/// Set up the network backend for the VM.
+/// mode: 0 = none, 1 = user-mode NAT (SLIRP), 2 = TAP (not yet implemented).
+/// Must be called AFTER corevm_setup_e1000().
+#[no_mangle]
+pub extern "C" fn corevm_setup_net(handle: u64, mode: i32) -> i32 {
+    #[cfg(feature = "std")]
+    {
+        let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+        match mode {
+            0 => {
+                vm.net_backend = Some(alloc::boxed::Box::new(crate::devices::net::NullNet));
+                0
+            }
+            1 => {
+                #[cfg(feature = "linux")]
+                {
+                    vm.net_backend = Some(alloc::boxed::Box::new(crate::devices::slirp::SlirpNet::new()));
+                    0
+                }
+                #[cfg(not(feature = "linux"))]
+                { -1 }
+            }
+            _ => -1, // unknown mode
+        }
+    }
+    #[cfg(not(feature = "std"))]
+    { let _ = (handle, mode); -1 }
+}
+
+/// Poll the network backend: move TX packets from E1000 to backend,
+/// move RX packets from backend to E1000. Call periodically from VM loop.
+/// Returns the number of RX packets delivered to the guest.
+#[no_mangle]
+pub extern "C" fn corevm_net_poll(handle: u64) -> i32 {
+    #[cfg(feature = "std")]
+    {
+        let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
+
+        // Take TX packets from E1000 and send to backend
+        let tx_packets = if !vm.e1000_ptr.is_null() {
+            let e1000 = unsafe { &mut *vm.e1000_ptr };
+            e1000.take_tx_packets()
+        } else {
+            alloc::vec::Vec::new()
+        };
+
+        let backend = match &mut vm.net_backend {
+            Some(b) => b,
+            None => return 0,
+        };
+
+        for pkt in &tx_packets {
+            backend.send(pkt);
+        }
+
+        // Poll backend for periodic work (timers, TCP reads, etc.)
+        backend.poll();
+
+        // Receive packets from backend and inject into E1000
+        let rx_packets = backend.recv();
+        let rx_count = rx_packets.len() as i32;
+
+        if !rx_packets.is_empty() && !vm.e1000_ptr.is_null() {
+            let e1000 = unsafe { &mut *vm.e1000_ptr };
+            for pkt in &rx_packets {
+                e1000.receive_packet(pkt);
+            }
+            e1000.process_rx_ring();
+        }
+
+        rx_count
+    }
+    #[cfg(not(feature = "std"))]
+    { let _ = handle; 0 }
+}
+
 // ── AC97 Audio ──
 
 /// Set up the AC97 audio controller on the VM.
@@ -2220,7 +2378,8 @@ pub extern "C" fn corevm_setup_uhci(handle: u64) -> i32 {
         let mut pci_dev = crate::devices::bus::PciDevice::new(0x8086, 0x7020, 0x0C, 0x03, 0x00);
         pci_dev.device = 6;
         pci_dev.set_bar(4, UHCI_IO_BASE as u32, 32, false);
-        pci_dev.set_interrupt(9, 4);
+        // Interrupt: INTD → PIRQB → IRQ 5 (via PIIX3 swizzle: (6+3)%4=1)
+        pci_dev.set_interrupt(5, 4);
         pci_dev.set_subsystem(0x8086, 0x7020);
         // PIIX3 UHCI-specific: Serial Bus Release Number (USB 1.1 = 0x10)
         pci_dev.config_space[0x60] = 0x10;

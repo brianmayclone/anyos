@@ -777,8 +777,17 @@ impl SettingsDialog {
             });
 
             labeled_row(ui, "Mode:", |ui| {
-                ui.radio_value(&mut self.config.net_mode, NetMode::Nat, "NAT");
-                ui.radio_value(&mut self.config.net_mode, NetMode::Bridge, "Bridge");
+                egui::ComboBox::from_id_salt("net_mode_combo")
+                    .selected_text(match self.config.net_mode {
+                        NetMode::Disconnected => "Disconnected",
+                        NetMode::UserMode => "NAT (User Mode)",
+                        NetMode::Bridge => "Bridge (TAP)",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.config.net_mode, NetMode::UserMode, "NAT (User Mode)");
+                        ui.selectable_value(&mut self.config.net_mode, NetMode::Bridge, "Bridge (TAP)");
+                        ui.selectable_value(&mut self.config.net_mode, NetMode::Disconnected, "Disconnected");
+                    });
             });
 
             if self.config.net_mode == NetMode::Bridge {

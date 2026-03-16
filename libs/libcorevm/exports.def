@@ -52,3 +52,5 @@ EXPORTS
     corevm_vga_get_lfb_addr
     corevm_set_whp_debug_callback
     corevm_cmos_advance
+    corevm_setup_net
+    corevm_net_poll

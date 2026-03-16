@@ -580,17 +580,19 @@ impl Ahci {
             //   [8] LBA Low (exp)    [9] LBA Mid (exp) [10] LBA High (exp) [11] Features (exp)
             //   [12] Count Low       [13] Count High
             //
-            // For 28-bit commands: LBA = [4] | [5]<<8 | [6]<<16 | ([7] & 0x0F)<<24
-            // For 48-bit commands: LBA = [4] | [5]<<8 | [6]<<16 | [8]<<24 | [9]<<32 | [10]<<40
-            let is_48bit = matches!(command,
+            // AHCI uses 48-bit FIS format, but for 28-bit commands the guest
+            // driver may not clear cfis[8-10]. Use all 6 bytes for 48-bit
+            // commands, only lower 4 bytes for 28-bit commands.
+            let is_ext = matches!(command,
                 ATA_CMD_READ_DMA_EXT | ATA_CMD_WRITE_DMA_EXT |
                 ATA_CMD_READ_SECTORS_EXT | ATA_CMD_WRITE_SECTORS_EXT |
-                ATA_CMD_FLUSH_EXT);
-            let lba = if is_48bit {
+                ATA_CMD_FLUSH_EXT | 0x27 /* READ NATIVE MAX ADDRESS EXT */);
+            let lba = if is_ext {
+                // 48-bit: use all 6 LBA bytes
                 cfis[4] as u64 | (cfis[5] as u64) << 8 | (cfis[6] as u64) << 16
                     | (cfis[8] as u64) << 24 | (cfis[9] as u64) << 32 | (cfis[10] as u64) << 40
             } else {
-                // 28-bit: Device register (cfis[7]) bits 3:0 = LBA bits 27:24
+                // 28-bit: only use cfis[4-6] + device register bits 3:0
                 cfis[4] as u64 | (cfis[5] as u64) << 8
                     | (cfis[6] as u64) << 16
                     | ((cfis[7] & 0x0F) as u64) << 24

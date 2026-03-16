@@ -3,7 +3,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app::{VmEntry, FrameBufferData};
-use crate::config::{BiosType, MacMode};
+use crate::config::{BiosType, MacMode, NetMode};
 use crate::diagnostics::{DiagLog, DiagCategory};
 use crate::display;
 use crate::platform;
@@ -20,9 +20,10 @@ use libcorevm::ffi::{
     corevm_get_vcpu_sregs,
     corevm_vga_get_framebuffer, corevm_vga_get_text_buffer, corevm_vga_get_mode, corevm_vga_get_fb_offset,
     corevm_pit_advance, corevm_pit_debug, corevm_cmos_advance, corevm_poll_irqs, corevm_pic_debug, corevm_cancel_vcpu, corevm_lapic_timer_advance, corevm_lapic_debug,
-    corevm_read_phys, corevm_write_phys, corevm_debug_port_take_output, corevm_check_reset,
+    corevm_read_phys, corevm_write_phys, corevm_debug_port_take_output, corevm_check_reset, corevm_set_cpu_count,
     corevm_ahci_flush_caches, corevm_ahci_needs_flush,
     corevm_ahci_poll_irq,
+    corevm_setup_net, corevm_net_poll,
 };
 use libcorevm::setup;
 use libcorevm::backend::{VcpuRegs, VcpuSregs};
@@ -73,15 +74,17 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         return Err(format!("Failed to create VM: {}", msg));
     }
 
-    // Create vCPU
-    let vcpu_rc = corevm_create_vcpu(handle, 0);
-    if vcpu_rc != 0 {
-        let e = setup::get_last_error().unwrap_or_else(|| "unknown".into());
-        corevm_destroy(handle);
-        return Err(format!("Failed to create vCPU: {}", e));
-    }
+    // Set CPU count BEFORE creating vCPUs (needed for CPUID topology)
+    let num_cpus = config.cpu_cores.max(1).min(32);
+    corevm_set_cpu_count(handle, num_cpus);
 
-    // Set VRAM size before device setup
+    // Create vCPUs — libcorevm sets CPUID per-vCPU and APs to INIT_RECEIVED
+    for cpu_id in 0..num_cpus {
+        if corevm_create_vcpu(handle, cpu_id) != 0 {
+            corevm_destroy(handle);
+            return Err(format!("Failed to create vCPU {}", cpu_id));
+        }
+    }
     setup::set_vram_mb(handle, config.vram_mb);
 
     // Setup devices (includes PCI bus)
@@ -92,14 +95,6 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         corevm_setup_hpet(handle);
         entry.diag_log.log(DiagCategory::Info, "HPET enabled (Windows guest)".into());
     }
-
-    // ACPI tables — include HPET table only for Windows guests
-    let acpi_rc = if config.guest_os.is_windows() {
-        corevm_setup_acpi_tables_with_hpet(handle)
-    } else {
-        corevm_setup_acpi_tables(handle)
-    };
-    entry.diag_log.log(DiagCategory::Info, format!("ACPI tables setup: rc={} (hpet={})", acpi_rc, config.guest_os.is_windows()));
 
     // VGA LFB is already mapped by setup_standard_devices → setup_vga_lfb_mapping
     // at slot 2 (0xE0000000, 8MB) pointing to the SVGA device's internal framebuffer.
@@ -120,6 +115,14 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
             "E1000 NIC enabled (mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
         ));
+        // Set up network backend — mode is just a number, logic is in libcorevm
+        let net_mode_id = match config.net_mode {
+            NetMode::Disconnected => 0,
+            NetMode::UserMode => 1,
+            NetMode::Bridge => 2,
+        };
+        corevm_setup_net(handle, net_mode_id);
+        entry.diag_log.log(DiagCategory::Info, format!("Network backend: {:?}", config.net_mode));
     }
 
     // UHCI USB Controller with tablet — if enabled in config
@@ -133,6 +136,15 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
         corevm_setup_ac97(handle);
         entry.diag_log.log(DiagCategory::Info, "AC97 audio controller enabled".to_string());
     }
+
+    // ACPI tables — MUST be generated AFTER all PCI devices are set up,
+    // because libcorevm auto-detects which devices are present for _PRT generation.
+    let acpi_rc = if config.guest_os.is_windows() {
+        corevm_setup_acpi_tables_with_hpet(handle)
+    } else {
+        corevm_setup_acpi_tables(handle)
+    };
+    entry.diag_log.log(DiagCategory::Info, format!("ACPI tables setup: rc={} (hpet={})", acpi_rc, config.guest_os.is_windows()));
 
     // Load BIOS
     let extra_bios_paths = platform::bios_search_paths();
@@ -233,10 +245,12 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
     let diag_enabled = entry.config.diagnostics;
     let audio_enabled = entry.config.audio_enabled;
     let usb_tablet = entry.config.usb_tablet;
+    let net_enabled = entry.config.net_enabled;
+    let num_cpus = entry.config.cpu_cores.max(1).min(32);
 
     // Spawn VM execution thread
     let thread = thread::spawn(move || {
-        vm_run_loop(handle, fb, control_clone, diag, diag_enabled, audio_enabled, usb_tablet);
+        vm_run_loop(handle, fb, control_clone, diag, diag_enabled, audio_enabled, usb_tablet, net_enabled, num_cpus);
         corevm_destroy(handle);
     });
 
@@ -286,6 +300,8 @@ fn vm_run_loop(
     diag_enabled: bool,
     audio_enabled: bool,
     usb_tablet: bool,
+    net_enabled: bool,
+    num_cpus: u32,
 ) {
     let mut last_fb_update = Instant::now();
     let mut last_pit_tick = Instant::now();
@@ -299,17 +315,71 @@ fn vm_run_loop(
     #[cfg(target_os = "linux")]
     libcorevm::backend::kvm::install_sigusr1_handler();
 
+    // AP threads for vCPU 1+.
+    let mut ap_threads: Vec<thread::JoinHandle<()>> = Vec::new();
+    for cpu_id in 1..num_cpus {
+        let ap_control = control.clone();
+        let ap_handle = handle;
+        ap_threads.push(thread::spawn(move || {
+            #[cfg(target_os = "linux")]
+            libcorevm::backend::kvm::install_sigusr1_handler();
+
+            loop {
+                if ap_control.stop.load(Ordering::Relaxed)
+                    || ap_control.exited.load(Ordering::Relaxed) {
+                    break;
+                }
+                if ap_control.pause.load(Ordering::Relaxed) {
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+
+                let mut exit = CExitReason::default();
+                let rc = corevm_run_vcpu(ap_handle, cpu_id, &mut exit);
+                if rc != 0 {
+                    thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+
+                match exit.reason {
+                    0 => {
+                        let mut data = [0u8; 4];
+                        corevm_handle_io_exit(ap_handle, exit.port, 0, exit.size, data.as_mut_ptr());
+                    }
+                    1 => {
+                        let mut data = exit.data_u32.to_le_bytes();
+                        corevm_handle_io_exit(ap_handle, exit.port, 1, exit.size, data.as_mut_ptr());
+                    }
+                    2 => {
+                        let mut data = [0u8; 8];
+                        corevm_handle_mmio_exit(ap_handle, exit.addr, 0, exit.size, data.as_mut_ptr(), exit.mmio_dest_reg, exit.mmio_instr_len);
+                        corevm_ahci_poll_irq(ap_handle);
+                    }
+                    3 => {
+                        let mut data = exit.data_u64.to_le_bytes();
+                        corevm_handle_mmio_exit(ap_handle, exit.addr, 1, exit.size, data.as_mut_ptr(), 0, 0);
+                        corevm_ahci_poll_irq(ap_handle);
+                    }
+                    7 | 13 => { /* HLT/Cancel — re-enter immediately */ }
+                    _ => {}
+                }
+            }
+        }));
+    }
 
     // Timer thread: periodically cancel run_vcpu so the main loop can
     // advance PIT, inject IRQs, and handle other events.
     let cancel_control = control.clone();
     let cancel_handle = handle;
+    let cancel_num_cpus = num_cpus;
     thread::spawn(move || {
         while !cancel_control.stop.load(Ordering::Relaxed)
             && !cancel_control.exited.load(Ordering::Relaxed)
         {
             thread::sleep(Duration::from_millis(10));
-            corevm_cancel_vcpu(cancel_handle, 0);
+            for cpu_id in 0..cancel_num_cpus {
+                corevm_cancel_vcpu(cancel_handle, cpu_id);
+            }
         }
     });
 
@@ -657,6 +727,11 @@ fn vm_run_loop(
             corevm_uhci_process(handle);
         }
 
+        // Poll network backend: TX from E1000 → backend, RX from backend → E1000
+        if net_enabled {
+            corevm_net_poll(handle);
+        }
+
         // Drain debug port output on every iteration
         {
             let mut dbg_buf = [0u8; 1024];
@@ -673,6 +748,11 @@ fn vm_run_loop(
             update_framebuffer(handle, &fb, &diag, &mut fb_debug_count);
             last_fb_update = Instant::now();
         }
+    }
+
+    // Wait for AP threads to finish
+    for t in ap_threads {
+        let _ = t.join();
     }
 
     // Final cache flush — ensure all dirty blocks are written to disk

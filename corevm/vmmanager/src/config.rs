@@ -14,7 +14,14 @@ pub enum BiosType { CoreVm, SeaBios }
 pub enum RamAlloc { Preallocate, OnDemand }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum NetMode { Nat, Bridge }
+pub enum NetMode {
+    /// No host networking — packets silently dropped.
+    Disconnected,
+    /// User-mode NAT (built-in DHCP/DNS, no root required).
+    UserMode,
+    /// TAP device bridged to host interface (requires root/CAP_NET_ADMIN).
+    Bridge,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum MacMode { Dynamic, Static }
@@ -78,7 +85,7 @@ impl Default for VmConfig {
             gpu_model: GpuModel::StdVga,
             vram_mb: 16,
             net_enabled: false,
-            net_mode: NetMode::Nat,
+            net_mode: NetMode::UserMode,
             net_host_nic: String::new(),
             mac_mode: MacMode::Dynamic,
             mac_address: String::new(),
@@ -86,8 +93,8 @@ impl Default for VmConfig {
             usb_tablet: false,
             ram_alloc: RamAlloc::OnDemand,
             diagnostics: false,
-            disk_cache_mb: 32,
-            disk_cache_mode: DiskCacheMode::WriteBack,
+            disk_cache_mb: 0,
+            disk_cache_mode: DiskCacheMode::None,
         }
     }
 }
@@ -109,7 +116,8 @@ impl VmConfig {
             RamAlloc::OnDemand => "ondemand",
         };
         let net_mode = match self.net_mode {
-            NetMode::Nat => "nat",
+            NetMode::Disconnected => "disconnected",
+            NetMode::UserMode => "usermode",
             NetMode::Bridge => "bridge",
         };
         let mac_mode = match self.mac_mode {
@@ -221,7 +229,8 @@ impl VmConfig {
                 "net_enabled" => cfg.net_enabled = val == "1",
                 "net_mode" => cfg.net_mode = match val {
                     "bridge" => NetMode::Bridge,
-                    _ => NetMode::Nat,
+                    "disconnected" => NetMode::Disconnected,
+                    "nat" | "usermode" | _ => NetMode::UserMode,
                 },
                 "net_host_nic" => cfg.net_host_nic = val.to_string(),
                 "mac_mode" => cfg.mac_mode = match val {

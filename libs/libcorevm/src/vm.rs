@@ -70,6 +70,13 @@ pub struct Vm {
     /// VRAM size in MiB (0 = default 16). Set before setup_standard_devices().
     pub vram_mb: u32,
 
+    /// Number of CPU cores. Set before setup_acpi_tables().
+    pub cpu_count: u32,
+
+    /// Network backend (user-mode NAT, TAP, etc.). Set via corevm_setup_net().
+    #[cfg(feature = "std")]
+    pub net_backend: Option<alloc::boxed::Box<dyn crate::devices::net::NetBackend>>,
+
     /// Thread-safe queue for mouse events from external threads (e.g., UI or
     /// injection threads).  The FFI function `corevm_ps2_mouse_move` pushes
     /// events here instead of calling `ps2.mouse_move()` directly, avoiding
@@ -141,6 +148,9 @@ impl Vm {
             e1000_irq_asserted: false,
             cf9_reset_pending: false,
             vram_mb: 0,
+            cpu_count: 1,
+            #[cfg(feature = "std")]
+            net_backend: None,
             #[cfg(feature = "std")]
             pending_mouse: std::sync::Mutex::new(alloc::vec::Vec::new()),
         })
@@ -264,11 +274,17 @@ impl Vm {
             isa.device = 1;
             // Header type 0x80 = multi-function device (SeaBIOS expects this)
             isa.config_space[0x0E] = 0x80;
-            // PIRQ routing registers (offsets 0x60-0x63): map PIRQA-D to IRQs 10,10,11,11
-            isa.config_space[0x60] = 10;
-            isa.config_space[0x61] = 10;
-            isa.config_space[0x62] = 11;
-            isa.config_space[0x63] = 11;
+            // PIRQ routing registers (offsets 0x60-0x63): map PIRQA-D to IRQs.
+            // PCI IRQ swizzle: PIRQ = (device_slot + pin - 1) % 4
+            //   Dev 2 VGA:   INTA → (2+0)%4=2 → PIRQC → IRQ 11
+            //   Dev 3 AHCI:  INTA → (3+0)%4=3 → PIRQD → IRQ 11
+            //   Dev 4 E1000: INTA → (4+0)%4=0 → PIRQA → IRQ 10
+            //   Dev 5 AC97:  INTA → (5+0)%4=1 → PIRQB → IRQ 5
+            //   Dev 6 UHCI:  INTD → (6+3)%4=1 → PIRQB → IRQ 5
+            isa.config_space[0x60] = 10;  // PIRQA → IRQ 10 (E1000)
+            isa.config_space[0x61] = 5;   // PIRQB → IRQ 5  (AC97, UHCI)
+            isa.config_space[0x62] = 11;  // PIRQC → IRQ 11 (VGA)
+            isa.config_space[0x63] = 11;  // PIRQD → IRQ 11 (AHCI)
             pci_bus.add_device(isa);
         }
 
@@ -281,6 +297,8 @@ impl Vm {
             vga.set_bar(0, 0xFD00_0000, bar0_size, true);
             // BAR2: Bochs dispi MMIO registers (4KB)
             vga.set_bar(2, 0xFEBE_0000, 0x1000, true);
+            // Interrupt: INTA → PIRQC → IRQ 11 (via PIIX3 swizzle: (2+0)%4=2)
+            vga.set_interrupt(11, 1);
             // Expansion ROM BAR (0xC0000 VGA BIOS area)
             vga.config_space[0x30] = 0x00; // ROM base (will be set by SeaBIOS)
             vga.config_space[0x31] = 0x00;

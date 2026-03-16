@@ -227,6 +227,8 @@ const KVM_CREATE_PIT2: u64 = 0x4040_AE77;
 const KVM_GET_LAPIC: u64 = 0x8400_AE8E;
 const KVM_GET_IRQCHIP: u64 = 0xC208_AE62;
 const KVM_GET_SUPPORTED_CPUID: u64 = 0xC008_AE05;
+const KVM_SET_MP_STATE: u64 = 0x4004_AE99;
+const KVM_SET_MSRS: u64 = 0x4008_AE89;
 const KVM_SET_TSS_ADDR: u64 = 0xAE47;
 const KVM_SET_IDENTITY_MAP_ADDR: u64 = 0x4008_AE48;
 const KVM_GET_PIT2: u64 = 0x8070_AE9F;
@@ -705,6 +707,8 @@ pub struct KvmBackend {
     mmap_size: usize,
     memory_slots: Vec<MemorySlot>,
     stored_cpuid: Option<Vec<CpuidEntry>>,
+    /// Number of configured CPU cores (for CPUID topology).
+    pub cpu_count: u32,
     /// Slot index into VM_SLOTS for per-VM cancel/PIT state.
     pub vm_slot: usize,
 }
@@ -794,6 +798,7 @@ impl KvmBackend {
                 mmap_size: mmap_size as usize,
                 memory_slots: Vec::new(),
                 stored_cpuid: None,
+                cpu_count: 1,
                 vm_slot: slot,
             };
 
@@ -837,19 +842,13 @@ impl KvmBackend {
                 let mut ecx = e.ecx;
                 let mut edx = e.edx;
 
-                // Filter CPUID: hide VMX, fix initial APIC ID for vCPU 0.
-                // Hide hypervisor bit and KVM PV features so Windows 7
-                // doesn't detect a hypervisor it can't use (it only knows
-                // Hyper-V). Linux guests still work fine — kvmclock is
-                // set up by SeaBIOS and KVM's in-kernel timers handle the rest.
+                // Filter CPUID: hide VMX, keep KVM hypervisor signature.
                 if e.function == 1 {
                     ecx &= !(1 << 5);   // VMX — not useful inside guest
-                    ecx &= !(1 << 31);  // Hide hypervisor present bit
-                    // Fix initial APIC ID in EBX[31:24] to 0 for vCPU 0.
-                    // KVM_GET_SUPPORTED_CPUID returns the host CPU's APIC ID
-                    // which causes "APIC ID mismatch" firmware bug warnings
-                    // and can break LAPIC timer delivery.
-                    ebx = (ebx & 0x00FF_FFFF) | (0 << 24);
+                    // Keep bit 31 (hypervisor present) — needed for KVM PV
+                    // features including SMP wakeup used by SeaBIOS.
+                    // EBX[31:24] and EBX[23:16] are set per-vCPU in create_vcpu
+                    ebx &= 0x0000_FFFF;
                 }
 
                 // Fix x2APIC topology (leaf 0xB): EDX = x2APIC ID = 0
@@ -857,13 +856,13 @@ impl KvmBackend {
                     edx = 0;
                 }
 
-                // Hide KVM hypervisor signature (leaf 0x40000000+).
-                // Windows 7 doesn't understand KVM PV and gets confused.
-                // SeaBIOS already set up kvmclock which still works
-                // (the MSR is already programmed before CPUID filtering).
-                if e.function >= 0x4000_0000 && e.function <= 0x4000_00FF {
-                    continue; // Skip all hypervisor leaves
-                }
+                // Keep KVM hypervisor leaves (0x40000000+) — SeaBIOS uses
+                // the KVM signature for PV SMP wakeup.
+                // Disable kvmclock (leaf 0x40000001 EAX bit 3) to prevent
+                // SeaBIOS from replacing the PIT timer with kvmclock,
+                // which breaks the timer when APs are present.
+                // Keep all KVM features including kvmclock — SeaBIOS needs
+                // kvmclock for time measurement during SMP init.
 
                 cpuid_entries.push(CpuidEntry {
                     function: e.function,
@@ -1064,6 +1063,47 @@ impl KvmBackend {
         Ok(())
     }
 
+    /// Set MSRs for a vCPU. Each entry is (index, value).
+    pub fn set_msrs(&self, vcpu_idx: u32, msrs: &[(u32, u64)]) -> Result<(), VmError> {
+        let vcpu = self.vcpus.get(vcpu_idx as usize)
+            .and_then(|v| v.as_ref())
+            .ok_or(VmError::BackendError(-1))?;
+        // kvm_msrs header: nmsrs(u32) + pad(u32) + entries[]
+        // kvm_msr_entry: index(u32) + reserved(u32) + data(u64) = 16 bytes
+        let buf_size = 8 + msrs.len() * 16;
+        let mut buf = vec![0u8; buf_size];
+        let nmsrs = msrs.len() as u32;
+        buf[0..4].copy_from_slice(&nmsrs.to_ne_bytes());
+        for (i, &(index, data)) in msrs.iter().enumerate() {
+            let off = 8 + i * 16;
+            buf[off..off+4].copy_from_slice(&index.to_ne_bytes());
+            buf[off+8..off+16].copy_from_slice(&data.to_ne_bytes());
+        }
+        let ret = unsafe {
+            sys_ioctl(vcpu.fd, KVM_SET_MSRS, buf.as_ptr() as u64)
+        };
+        if ret < 0 {
+            return Err(VmError::BackendError(ret as i32));
+        }
+        Ok(())
+    }
+
+    /// Set the MP state of a vCPU.
+    /// 0 = RUNNABLE, 1 = UNINITIALIZED, 2 = INIT_RECEIVED, 3 = HALTED, 4 = SIPI_RECEIVED
+    pub fn set_mp_state(&self, vcpu_idx: u32, state: u32) -> Result<(), VmError> {
+        let vcpu = self.vcpus.get(vcpu_idx as usize)
+            .and_then(|v| v.as_ref())
+            .ok_or(VmError::BackendError(-1))?;
+        let mp_state: u32 = state;
+        let ret = unsafe {
+            sys_ioctl(vcpu.fd, KVM_SET_MP_STATE, &mp_state as *const _ as u64)
+        };
+        if ret < 0 {
+            return Err(VmError::BackendError(ret as i32));
+        }
+        Ok(())
+    }
+
     /// Inject an MSI interrupt into the guest via KVM_SIGNAL_MSI.
     /// `address`: MSI address (written by guest to MSI capability register)
     /// `data`: MSI data (written by guest to MSI capability register)
@@ -1246,9 +1286,26 @@ impl VmBackend for KvmBackend {
                 mmap_size: self.mmap_size,
             };
 
-            // Apply stored CPUID if any
+            // Apply stored CPUID with per-vCPU adjustments
             if let Some(ref entries) = self.stored_cpuid {
-                let buf = Self::build_cpuid_buf(entries);
+                // Clone entries and fix per-vCPU fields
+                let mut adjusted = entries.clone();
+                let max_cpus = self.cpu_count.max(1);
+                for e in &mut adjusted {
+                    if e.function == 1 {
+                        // EBX[31:24] = Initial APIC ID = vcpu_id
+                        // EBX[23:16] = Max logical processors = cpu_count
+                        e.ebx = (e.ebx & 0x0000_FFFF)
+                            | ((max_cpus & 0xFF) << 16)
+                            | ((id as u32 & 0xFF) << 24);
+                    }
+                    if e.function == 0xB {
+                        // x2APIC topology: EDX = x2APIC ID = vcpu_id
+                        e.edx = id as u32;
+                    }
+                }
+                // CPUID configured for vCPU with correct APIC ID and topology
+                let buf = Self::build_cpuid_buf(&adjusted);
                 let ret = sys_ioctl(vcpu_fd, KVM_SET_CPUID2, buf.as_ptr() as u64);
                 if ret < 0 {
                     eprintln!("[kvm] KVM_SET_CPUID2 failed: ret={}", ret);

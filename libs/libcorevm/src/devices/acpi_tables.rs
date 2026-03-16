@@ -245,7 +245,8 @@ fn eisa_id(s: &str) -> [u8; 4] {
     ]
 }
 
-fn build_dsdt() -> Vec<u8> {
+fn build_dsdt_with_cpus(num_cpus: u32, devices: &AcpiDeviceConfig) -> Vec<u8> {
+    let num_cpus = num_cpus.max(1).min(32);
     // Build comprehensive DSDT with ISA devices and PCI interrupt routing.
     // Devices:
     //   \_SB_.PCI0       PNP0A03  PCI root bridge
@@ -363,19 +364,44 @@ fn build_dsdt() -> Vec<u8> {
         buf.push(0x0A); buf.push(gsi);  // BytePrefix + GSI
     }
 
-    // AHCI at dev 3, INTA → GSI 11
+    // PCI interrupt routing — must match PIIX3 PIRQ register values.
+    // ACPI _PRT pin is 0-based (0=INTA,1=INTB,2=INTC,3=INTD).
+    // PIIX3 swizzle: PIRQ index = (device_slot + pin - 1) % 4
+    //   PIRQA(0x60)=10, PIRQB(0x61)=5, PIRQC(0x62)=11, PIRQD(0x63)=11
+    let mut num_prt_entries = 0u8;
+
+    // Dev 2 (VGA): always present, INTA → PIRQC → GSI 11
+    prt_entry(&mut prt, 2, 0, 11);
+    num_prt_entries += 1;
+
+    // Dev 3 (AHCI): always present, INTA → PIRQD → GSI 11
     prt_entry(&mut prt, 3, 0, 11);
-    // Also add dev 3 INTB/C/D for completeness
-    prt_entry(&mut prt, 3, 1, 11);
-    prt_entry(&mut prt, 3, 2, 11);
-    prt_entry(&mut prt, 3, 3, 11);
+    num_prt_entries += 1;
+
+    // Dev 4 (E1000): INTA → PIRQA → GSI 10
+    if devices.has_e1000 {
+        prt_entry(&mut prt, 4, 0, 10);
+        num_prt_entries += 1;
+    }
+
+    // Dev 5 (AC97): INTA → PIRQB → GSI 5
+    if devices.has_ac97 {
+        prt_entry(&mut prt, 5, 0, 5);
+        num_prt_entries += 1;
+    }
+
+    // Dev 6 (UHCI): INTD → PIRQB → GSI 5
+    if devices.has_uhci {
+        prt_entry(&mut prt, 6, 3, 5);
+        num_prt_entries += 1;
+    }
 
     // Wrap in Package: PackageOp PkgLength NumElements entries...
     let mut prt_pkg = Vec::new();
     prt_pkg.push(0x12); // PackageOp
     let prt_body_len = 1 + prt.len(); // numElements + entries
     aml_push_pkg_len(&mut prt_pkg, prt_body_len);
-    prt_pkg.push(4); // NumElements = 4 entries
+    prt_pkg.push(num_prt_entries); // NumElements
     prt_pkg.extend_from_slice(&prt);
 
     // Name(_PRT, Package() { ... })
@@ -497,24 +523,28 @@ fn build_dsdt() -> Vec<u8> {
 
     aml.extend_from_slice(&scope);
 
-    // ── Processor object: Scope(\_PR_) { Processor(CPU0, 0, 0, 0) {} } ──
-    // Windows needs at least one processor object.
+    // ── Processor objects: Scope(\_PR_) { Processor(CPU0..CPUN, ...) } ──
+    // Windows/Linux need processor objects matching the MADT LAPIC entries.
     {
         let mut pr_inner = Vec::new();
-        // Processor(CPU0, 0, 0x00000000, 0x00)
-        // ProcessorOp = 0x5B 0x83, PkgLength, NameSeg, ProcID(1), PblkAddr(4), PblkLen(1)
-        pr_inner.extend_from_slice(&[0x5B, 0x83]); // ProcessorOp
-        let proc_body_len = 4 + 1 + 4 + 1; // name + procID + PblkAddr + PblkLen (no body)
-        aml_push_pkg_len(&mut pr_inner, proc_body_len);
-        pr_inner.extend_from_slice(b"CPU0");
-        pr_inner.push(0x00);  // ProcID = 0
-        pr_inner.extend_from_slice(&0u32.to_le_bytes()); // PblkAddr = 0
-        pr_inner.push(0x00);  // PblkLen = 0
+        for cpu_id in 0..num_cpus {
+            // Processor(CPUn, n, 0x00000000, 0x00)
+            // ProcessorOp = 0x5B 0x83, PkgLength, NameSeg, ProcID(1), PblkAddr(4), PblkLen(1)
+            pr_inner.extend_from_slice(&[0x5B, 0x83]); // ProcessorOp
+            let proc_body_len = 4 + 1 + 4 + 1; // name + procID + PblkAddr + PblkLen
+            aml_push_pkg_len(&mut pr_inner, proc_body_len);
+            // Name: CPU0, CPU1, ... CPU9, CPUA, ...
+            let digit = if cpu_id < 10 { b'0' + cpu_id as u8 } else { b'A' + (cpu_id - 10) as u8 };
+            pr_inner.extend_from_slice(&[b'C', b'P', b'U', digit]);
+            pr_inner.push(cpu_id as u8); // ProcID
+            pr_inner.extend_from_slice(&0u32.to_le_bytes()); // PblkAddr = 0
+            pr_inner.push(0x00); // PblkLen = 0
+        }
 
         // Scope(\_PR_) { ... }
         let mut pr_scope = Vec::new();
         pr_scope.push(0x10); // ScopeOp
-        let pr_scope_body_len = 5 + pr_inner.len(); // \_PR_ name (5 bytes) + contents
+        let pr_scope_body_len = 5 + pr_inner.len();
         aml_push_pkg_len(&mut pr_scope, pr_scope_body_len);
         pr_scope.extend_from_slice(&[0x5C, 0x5F, 0x50, 0x52, 0x5F]); // \_PR_
         pr_scope.extend_from_slice(&pr_inner);
@@ -565,8 +595,9 @@ fn build_hpet_table() -> Vec<u8> {
     t
 }
 
-fn build_madt() -> Vec<u8> {
-    let len: u32 = 104; // header(44) + local_apic(8) + ioapic(12) + 4*override(40)
+fn build_madt_with_cpus(num_cpus: u32) -> Vec<u8> {
+    let num_cpus = num_cpus.max(1).min(32);
+    let len: u32 = 44 + (num_cpus * 8) + 12 + 40; // header + N*LAPIC + IOAPIC + 4*override
     let mut t = vec![0u8; len as usize];
     write_acpi_header(&mut t, 0, b"APIC", len, 3);
     // Local APIC address
@@ -575,13 +606,15 @@ fn build_madt() -> Vec<u8> {
     write_u32(&mut t, 40, 1);
 
     let mut off = 44;
-    // Local APIC entry (type=0, len=8)
-    t[off] = 0;
-    t[off + 1] = 8;
-    t[off + 2] = 0; // ACPI processor ID
-    t[off + 3] = 0; // APIC ID
-    write_u32(&mut t, off + 4, 1); // flags: enabled
-    off += 8;
+    // Local APIC entries (type=0, len=8) — one per CPU
+    for cpu_id in 0..num_cpus {
+        t[off] = 0;      // type = Local APIC
+        t[off + 1] = 8;  // length
+        t[off + 2] = cpu_id as u8; // ACPI processor ID
+        t[off + 3] = cpu_id as u8; // APIC ID
+        write_u32(&mut t, off + 4, 1); // flags: enabled
+        off += 8;
+    }
 
     // IOAPIC entry (type=1, len=12)
     t[off] = 1;
@@ -653,29 +686,51 @@ fn loader_add_checksum(file: &[u8; FILESZ], offset: u32, start: u32, length: u32
     cmd
 }
 
+/// Device presence flags for dynamic ACPI table generation.
+#[derive(Clone, Debug, Default)]
+pub struct AcpiDeviceConfig {
+    pub has_e1000: bool,
+    pub has_ac97: bool,
+    pub has_uhci: bool,
+}
+
 /// Generate ACPI 2.0 tables for SeaBIOS fw_cfg.
 /// Returns (rsdp_data, tables_data, loader_data).
 pub fn generate_acpi_tables() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    generate_acpi_tables_with_options(false)
+    generate_acpi_tables_full(false, 1, &AcpiDeviceConfig::default())
 }
 
 pub fn generate_acpi_tables_with_hpet() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    generate_acpi_tables_with_options(true)
+    generate_acpi_tables_full(true, 1, &AcpiDeviceConfig::default())
 }
 
-fn generate_acpi_tables_with_options(enable_hpet: bool) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+pub fn generate_acpi_tables_smp(num_cpus: u32) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    generate_acpi_tables_full(false, num_cpus, &AcpiDeviceConfig::default())
+}
+
+pub fn generate_acpi_tables_smp_hpet(num_cpus: u32) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    generate_acpi_tables_full(true, num_cpus, &AcpiDeviceConfig::default())
+}
+
+/// Full ACPI table generation with device config.
+pub fn generate_acpi_tables_configured(enable_hpet: bool, num_cpus: u32, devices: &AcpiDeviceConfig) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    generate_acpi_tables_full(enable_hpet, num_cpus, devices)
+}
+
+fn generate_acpi_tables_full(enable_hpet: bool, num_cpus: u32, devices: &AcpiDeviceConfig) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let num_cpus = num_cpus.max(1).min(32);
     let tables_file = make_name(TABLES_NAME);
     let rsdp_file = make_name(RSDP_NAME);
 
     let mut rsdp = build_rsdp();
 
-    let num_tables: u32 = if enable_hpet { 3 } else { 2 }; // FADT, MADT [, HPET]
+    let num_tables: u32 = if enable_hpet { 3 } else { 2 };
     let rsdt = build_rsdt(num_tables);
     let xsdt = build_xsdt(num_tables);
     let fadt = build_fadt();
     let facs = build_facs();
-    let dsdt = build_dsdt();
-    let madt = build_madt();
+    let dsdt = build_dsdt_with_cpus(num_cpus, devices);
+    let madt = build_madt_with_cpus(num_cpus);
 
     // Layout: RSDT | XSDT | FADT | FACS | DSDT | MADT [| HPET]
     let rsdt_off: u32 = 0;
