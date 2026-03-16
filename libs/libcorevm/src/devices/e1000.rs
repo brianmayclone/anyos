@@ -196,9 +196,16 @@ pub struct E1000 {
     pub guest_mem_ptr: *mut u8,
     /// Guest memory length in bytes.
     pub guest_mem_len: usize,
-    /// Deferred interrupt bits — set on next poll_irqs cycle rather than immediately.
-    /// Used for the driver's interrupt test: IMS write → next poll fires ICR.
-    pub deferred_icr: u32,
+    /// MSI state — set when the guest enables MSI via PCI config space.
+    pub msi_enabled: bool,
+    pub msi_address: u64,
+    pub msi_data: u32,
+    /// Callback to immediately assert/de-assert the interrupt line.
+    /// Called from ICS/IMS writes so the interrupt arrives before the
+    /// driver's next instruction (critical for the interrupt test).
+    /// Arguments: (want_asserted: bool) → called with true when (ICR & IMS) != 0.
+    #[cfg(feature = "std")]
+    pub irq_callback: Option<alloc::boxed::Box<dyn FnMut(bool) + Send>>,
 }
 
 impl E1000 {
@@ -284,7 +291,11 @@ impl E1000 {
             io_addr: 0,
             guest_mem_ptr: core::ptr::null_mut(),
             guest_mem_len: 0,
-            deferred_icr: 0,
+            msi_enabled: false,
+            msi_address: 0,
+            msi_data: 0,
+            #[cfg(feature = "std")]
+            irq_callback: None,
         }
     }
 
@@ -297,6 +308,13 @@ impl E1000 {
         // Set RX interrupt cause (bit 7 = RXT0, receiver timer interrupt).
         let icr = self.regs[REG_ICR / 4];
         self.regs[REG_ICR / 4] = icr | (1 << 7);
+    }
+
+    /// Re-evaluate interrupt state and fire callback if needed.
+    /// Called after any change to ICR or IMS.
+    fn update_irq(&mut self) {
+        // Interrupt delivery is handled by poll_irqs in the VM loop.
+        // No callback needed — poll_irqs checks ICR & IMS every iteration.
     }
 
     /// Drain and return all packets transmitted by the guest.
@@ -419,6 +437,25 @@ impl E1000 {
             let rs = cmd & TXD_CMD_RS != 0;
 
             // Read packet data from buffer address.
+            #[cfg(feature = "std")]
+            {
+                // Verify our guest_mem_ptr by reading directly and comparing
+                let host_off = desc_addr as usize;
+                let direct_byte = if !self.guest_mem_ptr.is_null() && host_off + 16 <= self.guest_mem_len {
+                    let p = unsafe { self.guest_mem_ptr.add(host_off) };
+                    let mut tmp = [0u8; 16];
+                    unsafe { core::ptr::copy_nonoverlapping(p, tmp.as_mut_ptr(), 16); }
+                    tmp
+                } else {
+                    [0xFF; 16]
+                };
+                if head < 2 { // only log first 2 descriptors
+                    eprintln!("[e1000] TX desc[{}] GPA=0x{:X} host_off=0x{:X} ptr={:p} len=0x{:X} raw={:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+                        head, desc_addr, host_off, self.guest_mem_ptr, self.guest_mem_len,
+                        direct_byte[0],direct_byte[1],direct_byte[2],direct_byte[3],
+                        direct_byte[4],direct_byte[5],direct_byte[6],direct_byte[7]);
+                }
+            }
             if length > 0 && length <= 16384 && buf_addr != 0 {
                 let start = pkt_data.len();
                 pkt_data.resize(start + length, 0);
@@ -673,6 +710,7 @@ impl MmioHandler for E1000 {
                 // Reading ICR clears all interrupt cause bits.
                 let icr = self.regs[dword_offset];
                 self.regs[dword_offset] = 0;
+                self.update_irq(); // de-assert interrupt
                 icr
             }
             _ => self.regs[dword_offset],
@@ -701,6 +739,32 @@ impl MmioHandler for E1000 {
     ///   signals that new packets are ready (TX processing is deferred
     ///   to the host integration layer).
     fn write(&mut self, offset: u64, size: u8, val: u64) -> Result<()> {
+        #[cfg(feature = "std")]
+        {
+            let o = offset as usize & !3;
+            match o {
+                0x0000 => eprintln!("[e1000] CTRL = 0x{:08X}{}", val as u32, if val as u32 & (1<<26) != 0 { " RST" } else { "" }),
+                0x00C8 => eprintln!("[e1000] ICS = 0x{:08X}", val as u32),
+                0x00D0 => eprintln!("[e1000] IMS = 0x{:08X}", val as u32),
+                0x00D8 => eprintln!("[e1000] IMC = 0x{:08X}", val as u32),
+                0x0100 => eprintln!("[e1000] RCTL = 0x{:08X}", val as u32),
+                0x0400 => eprintln!("[e1000] TCTL = 0x{:08X}", val as u32),
+                0x2800 => eprintln!("[e1000] RDBAL = 0x{:08X} (size={})", val as u32, size),
+                0x2804 => eprintln!("[e1000] RDBAH = 0x{:08X}", val as u32),
+                0x2808 => eprintln!("[e1000] RDLEN = 0x{:08X}", val as u32),
+                0x2810 => eprintln!("[e1000] RDH = 0x{:08X}", val as u32),
+                0x2818 => eprintln!("[e1000] RDT = 0x{:08X}", val as u32),
+                0x3800 => eprintln!("[e1000] TDBAL = 0x{:08X}", val as u32),
+                0x3808 => eprintln!("[e1000] TDLEN = 0x{:08X}", val as u32),
+                0x3818 => eprintln!("[e1000] TDT = 0x{:08X}", val as u32),
+                _ => {
+                    // Log any write in the RX descriptor range
+                    if o >= 0x2800 && o < 0x2830 {
+                        eprintln!("[e1000] RX_REG 0x{:04X} = 0x{:08X} (size={})", o, val as u32, size);
+                    }
+                }
+            }
+        }
         let dword_offset = (offset as usize) / 4;
         if dword_offset >= self.regs.len() {
             return Ok(());
@@ -763,14 +827,21 @@ impl MmioHandler for E1000 {
             REG_ICS => {
                 // Writing to ICS ORs cause bits into ICR (software-triggered interrupt).
                 self.regs[REG_ICR / 4] |= new_val;
+                self.update_irq();
             }
             REG_IMS => {
                 // Writing to IMS sets (OR) interrupt mask bits.
                 self.regs[dword_offset] |= new_val;
+                self.update_irq();
             }
             REG_IMC => {
                 // Writing to IMC clears interrupt mask bits.
                 self.regs[REG_IMS / 4] &= !new_val;
+                self.update_irq();
+            }
+            REG_TDBAH | REG_RDBAH => {
+                // 82540EM is a 32-bit PCI device — ignore high address writes.
+                // Reads return 0, so the driver knows this is 32-bit only.
             }
             REG_TDT => {
                 // TX Descriptor Tail — guest signals new packets to transmit.

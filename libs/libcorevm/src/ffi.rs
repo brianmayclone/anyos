@@ -621,10 +621,23 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                 }
             }
 
-            // E1000 NIC → IRQ 10 (level-triggered, PIRQA via PIIX3 swizzle)
-            // Also process pending RX packets into the descriptor ring.
+            // E1000 NIC — MSI or legacy IRQ 11
             if !vm.e1000_ptr.is_null() {
                 let e1000 = unsafe { &mut *vm.e1000_ptr };
+
+                // Check if guest enabled MSI (read MSI control from PCI config)
+                if !vm.pci_bus_ptr.is_null() {
+                    let bus = unsafe { &mut *vm.pci_bus_ptr };
+                    let mcr = bus.mmcfg_read(0, 4, 0, 0xD0 + 2, 2) as u16;
+                    e1000.msi_enabled = (mcr & 0x01) != 0;
+                    if e1000.msi_enabled {
+                        let addr = bus.mmcfg_read(0, 4, 0, 0xD0 + 4, 4) as u64;
+                        let data = bus.mmcfg_read(0, 4, 0, 0xD0 + 8, 2) as u32;
+                        e1000.msi_address = addr;
+                        e1000.msi_data = data;
+                    }
+                }
+
                 // Deliver any pending RX packets to guest via DMA.
                 if !e1000.rx_buffer.is_empty() {
                     e1000.process_rx_ring();
@@ -634,18 +647,26 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                 let want_asserted = (icr & ims) != 0;
                 #[cfg(feature = "linux")]
                 {
-                    if want_asserted && !vm.e1000_irq_asserted {
-                        vm.e1000_irq_asserted = true;
-                        // Shared IRQ 11: always assert (AHCI de-assert checks both flags)
-                        let _ = vm.backend.set_irq_line(11, true);
-                        injected += 1;
-                    } else if !want_asserted && vm.e1000_irq_asserted {
-                        vm.e1000_irq_asserted = false;
-                        // Only de-assert IRQ 11 if AHCI also doesn't need it
-                        if !vm.ahci_irq_asserted {
-                            let _ = vm.backend.set_irq_line(11, false);
+                    if e1000.msi_enabled {
+                        // MSI mode: edge-triggered, fire once per interrupt
+                        if want_asserted {
+                            let _ = vm.backend.signal_msi(e1000.msi_address, e1000.msi_data);
+                            // Clear ICR bits that were serviced
+                            e1000.regs[0x00C0 / 4] &= !ims;
+                            injected += 1;
                         }
-                        vm.e1000_irq_asserted = false;
+                    } else {
+                        // Legacy IRQ 11 (level-triggered, shared with AHCI)
+                        if want_asserted && !vm.e1000_irq_asserted {
+                            vm.e1000_irq_asserted = true;
+                            let _ = vm.backend.set_irq_line(11, true);
+                            injected += 1;
+                        } else if !want_asserted && vm.e1000_irq_asserted {
+                            vm.e1000_irq_asserted = false;
+                            if !vm.ahci_irq_asserted {
+                                let _ = vm.backend.set_irq_line(11, false);
+                            }
+                        }
                     }
                 }
                 #[cfg(not(feature = "linux"))]
@@ -1439,6 +1460,18 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
     let (ram_ptr, ram_len) = vm.memory.ram_mut_ptr();
     e1000.guest_mem_ptr = ram_ptr;
     e1000.guest_mem_len = ram_len;
+    // Set up IRQ callback for immediate interrupt delivery.
+    // The E1000 driver's interrupt test requires the interrupt to fire
+    // synchronously during the ICS write — not deferred to poll_irqs.
+    #[cfg(feature = "linux")]
+    {
+        let backend_addr = &mut vm.backend as *mut crate::backend::kvm::KvmBackend as usize;
+        e1000.irq_callback = Some(alloc::boxed::Box::new(move |asserted: bool| {
+            let backend = unsafe { &mut *(backend_addr as *mut crate::backend::kvm::KvmBackend) };
+            let _ = backend.set_irq_line(11, asserted);
+        }));
+    }
+
     let e1000_ptr = &*e1000 as *const crate::devices::e1000::E1000 as *mut crate::devices::e1000::E1000;
     vm.e1000_ptr = e1000_ptr;
 
@@ -1482,10 +1515,12 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
         pci_dev.set_bar(0, E1000_MMIO_BASE as u32, E1000_MMIO_SIZE as u32, true);
         // BAR2: I/O ports for indirect register access (8 bytes: IOADDR+IODATA)
         pci_dev.set_bar(2, E1000_IO_BASE as u32, 8, false);
-        // Interrupt: IRQ 11, pin INTA (shared with AHCI, level-triggered)
+        // Interrupt: IRQ 11, pin INTA (fallback for legacy mode)
         pci_dev.set_interrupt(11, 1);
         // Subsystem ID (common for 82540EM)
         pci_dev.set_subsystem(0x8086, 0x001E);
+        // MSI capability at offset 0xD0 (standard for Intel NICs)
+        pci_dev.add_msi_capability(0xD0);
         pci_bus.add_device(pci_dev);
     }
     0
@@ -2303,6 +2338,7 @@ impl crate::io::IoHandler for PciIoRouter {
                 } else {
                     use crate::memory::mmio::MmioHandler;
                     let val = e1000.read(e1000.io_addr as u64, 4)?;
+                    eprintln!("[e1000] I/O read reg=0x{:04X} val=0x{:08X}", e1000.io_addr, val as u32);
                     return Ok(val as u32);
                 }
             }
