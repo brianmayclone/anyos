@@ -281,7 +281,7 @@ impl Vm {
             //   Dev 4 E1000: INTA → (4+0)%4=0 → PIRQA → IRQ 10
             //   Dev 5 AC97:  INTA → (5+0)%4=1 → PIRQB → IRQ 5
             //   Dev 6 UHCI:  INTD → (6+3)%4=1 → PIRQB → IRQ 5
-            isa.config_space[0x60] = 10;  // PIRQA → IRQ 10 (E1000)
+            isa.config_space[0x60] = 11;  // PIRQA → IRQ 11 (E1000, shared with AHCI)
             isa.config_space[0x61] = 5;   // PIRQB → IRQ 5  (AC97, UHCI)
             isa.config_space[0x62] = 11;  // PIRQC → IRQ 11 (VGA)
             isa.config_space[0x63] = 11;  // PIRQD → IRQ 11 (AHCI)

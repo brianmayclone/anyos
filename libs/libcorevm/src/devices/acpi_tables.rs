@@ -378,9 +378,9 @@ fn build_dsdt_with_cpus(num_cpus: u32, devices: &AcpiDeviceConfig) -> Vec<u8> {
     prt_entry(&mut prt, 3, 0, 11);
     num_prt_entries += 1;
 
-    // Dev 4 (E1000): INTA → PIRQA → GSI 10
+    // Dev 4 (E1000): INTA → GSI 11 (shared with AHCI)
     if devices.has_e1000 {
-        prt_entry(&mut prt, 4, 0, 10);
+        prt_entry(&mut prt, 4, 0, 11);
         num_prt_entries += 1;
     }
 

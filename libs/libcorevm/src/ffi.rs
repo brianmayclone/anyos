@@ -618,10 +618,16 @@ pub extern "C" fn corevm_poll_irqs(handle: u64) -> u32 {
                 }
             }
 
-            // E1000 NIC → IRQ 11 (level-triggered, shared with AHCI)
+            // E1000 NIC → IRQ 10 (level-triggered, PIRQA via PIIX3 swizzle)
             // Also process pending RX packets into the descriptor ring.
             if !vm.e1000_ptr.is_null() {
                 let e1000 = unsafe { &mut *vm.e1000_ptr };
+                // Apply deferred ICR bits (driver interrupt test).
+                if e1000.deferred_icr != 0 {
+                    eprintln!("[e1000] poll: applying deferred ICR 0x{:08X}, IMS=0x{:08X}", e1000.deferred_icr, e1000.regs[0x00C8 / 4]);
+                    e1000.regs[0x00C0 / 4] |= e1000.deferred_icr;
+                    e1000.deferred_icr = 0;
+                }
                 // Deliver any pending RX packets to guest via DMA.
                 if !e1000.rx_buffer.is_empty() {
                     e1000.process_rx_ring();
@@ -1445,7 +1451,18 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
     // The 82540EM driver uses E1000_WRITE_REG_IO (I/O BAR) for CTRL.RST
     // because of a hardware bug where the 82540 can't ACK 64-bit MMIO writes
     // during reset.  Without this, e1000_reset_hw() fails → "Hardware Error".
-    if !vm.pci_io_router_ptr.is_null() {
+    if vm.pci_io_router_ptr.is_null() {
+        // Create the PCI I/O router if it doesn't exist yet.
+        let router = Box::new(PciIoRouter {
+            uhci: vm.uhci_ptr,
+            ac97: vm.ac97_ptr,
+            e1000: e1000_ptr,
+            pci_bus: vm.pci_bus_ptr,
+        });
+        let router_ptr = &*router as *const PciIoRouter as *mut PciIoRouter;
+        vm.pci_io_router_ptr = router_ptr;
+        vm.io.register(PCI_IO_ROUTER_BASE, PCI_IO_ROUTER_SIZE, router);
+    } else {
         let router = unsafe { &mut *vm.pci_io_router_ptr };
         router.e1000 = e1000_ptr;
     }
@@ -1463,8 +1480,8 @@ pub extern "C" fn corevm_setup_e1000(handle: u64, mac: *const u8) -> i32 {
         pci_dev.set_bar(0, E1000_MMIO_BASE as u32, E1000_MMIO_SIZE as u32, true);
         // BAR2: I/O ports for indirect register access (8 bytes: IOADDR+IODATA)
         pci_dev.set_bar(2, E1000_IO_BASE as u32, 8, false);
-        // Interrupt: INTA → PIRQA → IRQ 10 (via PIIX3 swizzle: (4+0)%4=0)
-        pci_dev.set_interrupt(10, 1);
+        // Interrupt: IRQ 11, pin INTA (shared with AHCI — level-triggered)
+        pci_dev.set_interrupt(11, 1);
         // Subsystem ID (common for 82540EM)
         pci_dev.set_subsystem(0x8086, 0x001E);
         pci_bus.add_device(pci_dev);
@@ -1523,10 +1540,12 @@ impl crate::memory::mmio::MmioHandler for PciMmioRouter {
         let abs_addr = PCI_MMIO_CATCHALL_BASE + offset;
 
         // Check E1000 BAR0 (128KB region)
-        let e1000_base = self.e1000_bar0();
-        if e1000_base != 0 && abs_addr >= e1000_base && abs_addr < e1000_base + 0x2_0000 {
-            let e1000 = unsafe { &mut *self.e1000 };
-            return e1000.read(abs_addr - e1000_base, size);
+        if !self.e1000.is_null() {
+            let e1000_base = self.e1000_bar0();
+            if e1000_base != 0 && abs_addr >= e1000_base && abs_addr < e1000_base + 0x2_0000 {
+                let e1000 = unsafe { &mut *self.e1000 };
+                return e1000.read(abs_addr - e1000_base, size);
+            }
         }
 
         // Check AHCI BAR5 (4KB region)
@@ -1554,10 +1573,12 @@ impl crate::memory::mmio::MmioHandler for PciMmioRouter {
         let abs_addr = PCI_MMIO_CATCHALL_BASE + offset;
 
         // Check E1000 BAR0 (128KB region)
-        let e1000_base = self.e1000_bar0();
-        if e1000_base != 0 && abs_addr >= e1000_base && abs_addr < e1000_base + 0x2_0000 {
-            let e1000 = unsafe { &mut *self.e1000 };
-            return e1000.write(abs_addr - e1000_base, size, val);
+        if !self.e1000.is_null() {
+            let e1000_base = self.e1000_bar0();
+            if e1000_base != 0 && abs_addr >= e1000_base && abs_addr < e1000_base + 0x2_0000 {
+                let e1000 = unsafe { &mut *self.e1000 };
+                return e1000.write(abs_addr - e1000_base, size, val);
+            }
         }
 
         // Check AHCI BAR5 (4KB region)
@@ -2046,17 +2067,20 @@ pub extern "C" fn corevm_e1000_has_rx_irq(handle: u64) -> u32 {
 /// Must be called AFTER corevm_setup_e1000().
 #[no_mangle]
 pub extern "C" fn corevm_setup_net(handle: u64, mode: i32) -> i32 {
+    eprintln!("[corevm] corevm_setup_net called: mode={}", mode);
     #[cfg(feature = "std")]
     {
         let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
         match mode {
             0 => {
+                eprintln!("[corevm] Network backend: NullNet (disconnected)");
                 vm.net_backend = Some(alloc::boxed::Box::new(crate::devices::net::NullNet));
                 0
             }
             1 => {
                 #[cfg(feature = "linux")]
                 {
+                    eprintln!("[corevm] Network backend: SlirpNet (user-mode NAT)");
                     vm.net_backend = Some(alloc::boxed::Box::new(crate::devices::slirp::SlirpNet::new()));
                     0
                 }
@@ -2082,14 +2106,23 @@ pub extern "C" fn corevm_net_poll(handle: u64) -> i32 {
         // Take TX packets from E1000 and send to backend
         let tx_packets = if !vm.e1000_ptr.is_null() {
             let e1000 = unsafe { &mut *vm.e1000_ptr };
-            e1000.take_tx_packets()
+            let pkts = e1000.take_tx_packets();
+            if !pkts.is_empty() {
+                eprintln!("[net_poll] {} TX packets from E1000", pkts.len());
+            }
+            pkts
         } else {
             alloc::vec::Vec::new()
         };
 
         let backend = match &mut vm.net_backend {
             Some(b) => b,
-            None => return 0,
+            None => {
+                if !tx_packets.is_empty() {
+                    eprintln!("[net_poll] WARNING: no backend set! {} TX packets dropped", tx_packets.len());
+                }
+                return 0;
+            }
         };
 
         for pkt in &tx_packets {
@@ -2258,16 +2291,18 @@ impl crate::io::IoHandler for PciIoRouter {
         // Check E1000 BAR2 (8 bytes: IOADDR at +0, IODATA at +4)
         // The 82540EM driver uses E1000_WRITE_REG_IO for reset — this is
         // critical for e1000_reset_hw() to work.
-        let e1000_io = self.e1000_bar2();
-        if e1000_io != 0 && port >= e1000_io && port < e1000_io + 8 {
-            let e1000 = unsafe { &mut *self.e1000 };
-            let offset = port - e1000_io;
-            if offset < 4 {
-                return Ok(e1000.io_addr);
-            } else {
-                use crate::memory::mmio::MmioHandler;
-                let val = e1000.read(e1000.io_addr as u64, 4)?;
-                return Ok(val as u32);
+        if !self.e1000.is_null() {
+            let e1000_io = self.e1000_bar2();
+            if e1000_io != 0 && port >= e1000_io && port < e1000_io + 8 {
+                let e1000 = unsafe { &mut *self.e1000 };
+                let offset = port - e1000_io;
+                if offset < 4 {
+                    return Ok(e1000.io_addr);
+                } else {
+                    use crate::memory::mmio::MmioHandler;
+                    let val = e1000.read(e1000.io_addr as u64, 4)?;
+                    return Ok(val as u32);
+                }
             }
         }
 
@@ -2297,17 +2332,20 @@ impl crate::io::IoHandler for PciIoRouter {
 
     fn write(&mut self, port: u16, size: u8, val: u32) -> crate::error::Result<()> {
         // Check E1000 BAR2 (8 bytes: IOADDR at +0, IODATA at +4)
-        let e1000_io = self.e1000_bar2();
-        if e1000_io != 0 && port >= e1000_io && port < e1000_io + 8 {
-            let e1000 = unsafe { &mut *self.e1000 };
-            let offset = port - e1000_io;
-            if offset < 4 {
-                e1000.io_addr = val;
-            } else {
-                use crate::memory::mmio::MmioHandler;
-                let _ = e1000.write(e1000.io_addr as u64, 4, val as u64);
+        if !self.e1000.is_null() {
+            let e1000_io = self.e1000_bar2();
+            if e1000_io != 0 && port >= e1000_io && port < e1000_io + 8 {
+                let e1000 = unsafe { &mut *self.e1000 };
+                let offset = port - e1000_io;
+                if offset < 4 {
+                    e1000.io_addr = val;
+                } else {
+                    use crate::memory::mmio::MmioHandler;
+                    eprintln!("[e1000] I/O write: IODATA reg=0x{:04X} val=0x{:08X}", e1000.io_addr, val);
+                    let _ = e1000.write(e1000.io_addr as u64, 4, val as u64);
+                }
+                return Ok(());
             }
-            return Ok(());
         }
 
         // Check UHCI BAR4 (32 bytes)

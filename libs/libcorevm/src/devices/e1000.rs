@@ -196,6 +196,9 @@ pub struct E1000 {
     pub guest_mem_ptr: *mut u8,
     /// Guest memory length in bytes.
     pub guest_mem_len: usize,
+    /// Deferred interrupt bits — set on next poll_irqs cycle rather than immediately.
+    /// Used for the driver's interrupt test: IMS write → next poll fires ICR.
+    pub deferred_icr: u32,
 }
 
 impl E1000 {
@@ -281,6 +284,7 @@ impl E1000 {
             io_addr: 0,
             guest_mem_ptr: core::ptr::null_mut(),
             guest_mem_len: 0,
+            deferred_icr: 0,
         }
     }
 
@@ -318,6 +322,9 @@ impl E1000 {
 
         // Restore defaults.
         self.regs[REG_STATUS / 4] = STATUS_LINK_UP | STATUS_SPEED_1000;
+        // Trigger Link Status Change interrupt — the driver expects this
+        // after reset to confirm the link is up and proceed with init.
+        self.regs[REG_ICR / 4] = 1 << 2; // ICR_LSC
 
         // Restore MAC in RAL0/RAH0.
         let ral = (mac[0] as u32)
@@ -717,6 +724,8 @@ impl MmioHandler for E1000 {
             REG_CTRL => {
                 self.regs[dword_offset] = new_val;
                 if new_val & CTRL_RST != 0 {
+                    #[cfg(feature = "std")]
+                    eprintln!("[e1000] CTRL.RST (offset=0x{:04X} via {})", offset, if offset < 0x20000 { "MMIO" } else { "I/O" });
                     self.reset();
                 }
             }
@@ -761,8 +770,18 @@ impl MmioHandler for E1000 {
                 self.regs[REG_ICR / 4] |= new_val;
             }
             REG_IMS => {
+                let old_ims = self.regs[dword_offset];
                 // Writing to IMS sets (OR) interrupt mask bits.
                 self.regs[dword_offset] |= new_val;
+                #[cfg(feature = "std")]
+                eprintln!("[e1000] IMS = 0x{:08X}", self.regs[dword_offset]);
+                // Driver interrupt test: newly enabled bits get deferred to
+                // the next poll cycle so the driver sees ICR=0 on its
+                // immediate read, then gets the interrupt shortly after.
+                let newly_enabled = new_val & !old_ims;
+                if newly_enabled != 0 {
+                    self.deferred_icr |= newly_enabled;
+                }
             }
             REG_IMC => {
                 // Writing to IMC clears interrupt mask bits.
