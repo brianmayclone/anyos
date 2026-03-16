@@ -535,6 +535,32 @@ pub fn configure_disk_cache(handle: u64, port: u32, cache_mb: u32, mode: u32) {
     corevm_ahci_set_cache(handle, port, cache_mb, mode);
 }
 
+// ── Network ROM ─────────────────────────────────────────────────────
+
+/// Load the E1000 PXE/iPXE option ROM via fw_cfg.
+/// SeaBIOS discovers this as `genroms/pxe-e1000.rom` and loads it as
+/// a PCI option ROM for the E1000 NIC. Without this ROM, the NIC may
+/// not be fully initialized by the BIOS and guest drivers may fail.
+pub fn load_e1000_rom(handle: u64, extra_paths: &[PathBuf]) -> Result<(), String> {
+    let rom_path = find_bios("pxe-e1000.rom", extra_paths)
+        .ok_or("E1000 PXE ROM (pxe-e1000.rom) not found")?;
+    let rom_data = std::fs::read(&rom_path)
+        .map_err(|e| format!("Failed to read E1000 ROM: {}", e))?;
+    if rom_data.is_empty() {
+        return Err("E1000 ROM is empty".into());
+    }
+    let name = b"genroms/pxe-e1000.rom";
+    let rc = corevm_fw_cfg_add_file(
+        handle,
+        name.as_ptr(), name.len() as u32,
+        rom_data.as_ptr(), rom_data.len() as u32,
+    );
+    if rc != 0 {
+        return Err(format!("Failed to add E1000 ROM to fw_cfg (rc={})", rc));
+    }
+    Ok(())
+}
+
 // ── MAC address handling ────────────────────────────────────────────
 
 /// Generate a deterministic locally-administered MAC from a VM UUID.

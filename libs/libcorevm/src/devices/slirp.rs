@@ -443,41 +443,45 @@ impl SlirpNet {
         if msg_type != 1 { return; }
 
         let xid = &data[4..8];
+        let flags = [data[10], data[11]]; // flags (broadcast bit etc.)
         let chaddr = &data[28..34]; // client hardware address (first 6 bytes)
 
         // Find DHCP message type in options (after magic cookie at offset 236)
         let magic = &data[236..240];
-        if magic != [99, 130, 83, 99] { return; } // DHCP magic cookie
+        eprintln!("[slirp] DHCP: magic={:?}", magic);
+        if magic != [99, 130, 83, 99] { eprintln!("[slirp] DHCP: bad magic"); return; }
 
         let options = &data[240..];
         let dhcp_msg_type = find_dhcp_option(options, 53);
         let dhcp_msg_type = match dhcp_msg_type {
-            Some(t) if !t.is_empty() => t[0],
-            _ => return,
+            Some(t) if !t.is_empty() => { eprintln!("[slirp] DHCP: type={}", t[0]); t[0] },
+            _ => { eprintln!("[slirp] DHCP: no type option"); return; },
         };
 
         match dhcp_msg_type {
-            1 => self.send_dhcp_offer(xid, chaddr),  // DISCOVER
-            3 => self.send_dhcp_ack(xid, chaddr),     // REQUEST
+            1 => self.send_dhcp_offer(xid, chaddr, flags),
+            3 => self.send_dhcp_ack(xid, chaddr, flags),
             _ => {}
         }
     }
 
-    fn send_dhcp_offer(&mut self, xid: &[u8], chaddr: &[u8]) {
+    fn send_dhcp_offer(&mut self, xid: &[u8], chaddr: &[u8], flags: [u8; 2]) {
         self.dhcp_offered = true;
-        self.build_dhcp_reply(xid, chaddr, 2); // DHCPOFFER
+        self.build_dhcp_reply(xid, chaddr, flags, 2); // DHCPOFFER
     }
 
-    fn send_dhcp_ack(&mut self, xid: &[u8], chaddr: &[u8]) {
-        self.build_dhcp_reply(xid, chaddr, 5); // DHCPACK
+    fn send_dhcp_ack(&mut self, xid: &[u8], chaddr: &[u8], flags: [u8; 2]) {
+        self.build_dhcp_reply(xid, chaddr, flags, 5); // DHCPACK
     }
 
-    fn build_dhcp_reply(&mut self, xid: &[u8], chaddr: &[u8], msg_type: u8) {
+    fn build_dhcp_reply(&mut self, xid: &[u8], chaddr: &[u8], flags: [u8; 2], msg_type: u8) {
         let mut reply = vec![0u8; 576]; // minimum DHCP packet
         reply[0] = 2; // op = BOOTREPLY
         reply[1] = 1; // htype = Ethernet
         reply[2] = 6; // hlen
         reply[4..8].copy_from_slice(xid);
+        reply[10] = flags[0]; // flags (broadcast bit etc.)
+        reply[11] = flags[1];
         reply[16..20].copy_from_slice(&GUEST_IP); // yiaddr
         reply[20..24].copy_from_slice(&GATEWAY_IP); // siaddr (next server)
         // chaddr
@@ -506,17 +510,37 @@ impl SlirpNet {
         // 255: End
         reply[off] = 255;
 
-        // Wrap in UDP: src=67, dst=68
-        let udp_hdr = udp_header(67, 68, reply.len() as u16);
+        eprintln!("[slirp] DHCP reply: op={} xid={:02X}{:02X}{:02X}{:02X} yiaddr={}.{}.{}.{} chaddr={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} type={}",
+            reply[0], reply[4], reply[5], reply[6], reply[7],
+            reply[16], reply[17], reply[18], reply[19],
+            reply[28], reply[29], reply[30], reply[31], reply[32], reply[33],
+            msg_type);
+
+        // Build UDP with checksum
+        let src_ip = GATEWAY_IP;
+        let dst_ip: [u8; 4] = [255, 255, 255, 255];
+        let udp_len = (8 + reply.len()) as u16;
         let mut udp_payload = Vec::with_capacity(8 + reply.len());
-        udp_payload.extend_from_slice(&udp_hdr);
+        udp_payload.extend_from_slice(&udp_header(67, 68, reply.len() as u16));
         udp_payload.extend_from_slice(&reply);
 
-        // Build IP packet: src=GATEWAY, dst=BROADCAST (255.255.255.255)
-        let id = self.next_ip_id();
-        let ip_hdr = ip_header(IP_PROTO_UDP, GATEWAY_IP, [255, 255, 255, 255], udp_payload.len() as u16, id);
+        // Compute UDP checksum over pseudo-header + UDP header + data
+        let mut pseudo = Vec::with_capacity(12 + udp_payload.len());
+        pseudo.extend_from_slice(&src_ip);
+        pseudo.extend_from_slice(&dst_ip);
+        pseudo.push(0); // zero
+        pseudo.push(IP_PROTO_UDP);
+        let len_be = udp_len.to_be_bytes();
+        pseudo.extend_from_slice(&len_be);
+        pseudo.extend_from_slice(&udp_payload);
+        let cksum = ip_checksum(&pseudo);
+        // UDP checksum of 0x0000 is transmitted as 0xFFFF
+        let cksum = if cksum == 0 { 0xFFFF } else { cksum };
+        put_u16be(&mut udp_payload, 6, cksum);
 
-        // Build Ethernet frame: dst=broadcast
+        // Build IP + Ethernet
+        let id = self.next_ip_id();
+        let ip_hdr = ip_header(IP_PROTO_UDP, src_ip, dst_ip, udp_payload.len() as u16, id);
         let eth = eth_header(&[0xFF; 6], &GW_MAC, ETHERTYPE_IPV4);
 
         let mut frame = Vec::with_capacity(ETH_HDR + 20 + udp_payload.len());

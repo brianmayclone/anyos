@@ -2104,20 +2104,17 @@ pub extern "C" fn corevm_e1000_has_rx_irq(handle: u64) -> u32 {
 /// Must be called AFTER corevm_setup_e1000().
 #[no_mangle]
 pub extern "C" fn corevm_setup_net(handle: u64, mode: i32) -> i32 {
-    eprintln!("[corevm] corevm_setup_net called: mode={}", mode);
     #[cfg(feature = "std")]
     {
         let vm = match get_vm(handle) { Some(v) => v, None => return -1 };
         match mode {
             0 => {
-                eprintln!("[corevm] Network backend: NullNet (disconnected)");
                 vm.net_backend = Some(alloc::boxed::Box::new(crate::devices::net::NullNet));
                 0
             }
             1 => {
                 #[cfg(feature = "linux")]
                 {
-                    eprintln!("[corevm] Network backend: SlirpNet (user-mode NAT)");
                     vm.net_backend = Some(alloc::boxed::Box::new(crate::devices::slirp::SlirpNet::new()));
                     0
                 }
@@ -2144,9 +2141,6 @@ pub extern "C" fn corevm_net_poll(handle: u64) -> i32 {
         let tx_packets = if !vm.e1000_ptr.is_null() {
             let e1000 = unsafe { &mut *vm.e1000_ptr };
             let pkts = e1000.take_tx_packets();
-            if !pkts.is_empty() {
-                eprintln!("[net_poll] {} TX packets from E1000", pkts.len());
-            }
             pkts
         } else {
             alloc::vec::Vec::new()
@@ -2154,12 +2148,7 @@ pub extern "C" fn corevm_net_poll(handle: u64) -> i32 {
 
         let backend = match &mut vm.net_backend {
             Some(b) => b,
-            None => {
-                if !tx_packets.is_empty() {
-                    eprintln!("[net_poll] WARNING: no backend set! {} TX packets dropped", tx_packets.len());
-                }
-                return 0;
-            }
+            None => return 0,
         };
 
         for pkt in &tx_packets {

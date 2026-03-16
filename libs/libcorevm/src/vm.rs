@@ -228,11 +228,11 @@ impl Vm {
         // PCI Expansion ROMs that start at 0xFE000000.
         let bar0_proxy_size = lfb_size.min(0x0100_0000);
         self.memory.add_mmio(0xFD00_0000, bar0_proxy_size, Box::new(SvgaLfbProxy(self.svga_ptr)));
-        // Bochs dispi register MMIO — covers both the PCI BAR2 default (0xFEBE0000)
-        // and where SeaBIOS typically maps it (0xFE002000).
-        // The PCI BAR mechanism will remap this, but register both common locations.
+        // Bochs dispi register MMIO at the PCI BAR2 default (0xFEBE0000).
+        // SeaBIOS may remap BAR2 — the PCI MMIO router handles that dynamically.
+        // Do NOT register 0xFE002000 here — it collides with E1000 BAR0 offsets
+        // when SeaBIOS places the E1000 at 0xFE000000.
         self.memory.add_mmio(0xFEBE_0000, 0x1000, Box::new(SvgaDispiMmioProxy(self.svga_ptr)));
-        self.memory.add_mmio(0xFE00_2000, 0x1000, Box::new(SvgaDispiMmioProxy(self.svga_ptr)));
 
         // Port 0x92: Fast A20 Gate + System Reset
         // Required by Windows 10 bootmgr to enable A20 and check system state.

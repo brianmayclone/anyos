@@ -115,6 +115,12 @@ pub fn start_vm(entry: &mut VmEntry) -> Result<(), String> {
             "E1000 NIC enabled (mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
         ));
+        // Load E1000 PXE ROM — SeaBIOS needs this to initialize the NIC
+        let extra_bios_paths = platform::bios_search_paths();
+        match setup::load_e1000_rom(handle, &extra_bios_paths) {
+            Ok(()) => entry.diag_log.log(DiagCategory::Info, "E1000 PXE ROM loaded".into()),
+            Err(e) => entry.diag_log.log(DiagCategory::Info, format!("E1000 ROM warning: {}", e)),
+        }
         // Set up network backend — mode is just a number, logic is in libcorevm
         let net_mode_id = match config.net_mode {
             NetMode::Disconnected => 0,
