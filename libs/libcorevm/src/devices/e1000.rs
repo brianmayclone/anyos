@@ -170,6 +170,8 @@ const TXD_STA_DD: u8 = 1 << 0; // Descriptor Done
 const RXD_STA_DD: u8  = 1 << 0; // Descriptor Done
 const RXD_STA_EOP: u8 = 1 << 1; // End of Packet
 const RXD_STA_IXSM: u8 = 1 << 2; // Ignore Checksum Indication
+const RXD_STA_IPCS: u8 = 1 << 3; // IP Checksum Calculated
+const RXD_STA_TCPCS: u8 = 1 << 5; // TCP/UDP Checksum Calculated
 
 /// Simplified Intel E1000 network interface card.
 pub struct E1000 {
@@ -492,18 +494,14 @@ impl E1000 {
         // Available descriptors: from head to tail (exclusive).
         // We need at least one descriptor to deliver a packet.
 
-        while let Some(pkt) = self.rx_buffer.front() {
-            // Check if there's an available descriptor.
-            let next_head = (head + 1) % num_descs;
-            // The ring is full when advancing head would equal tail.
-            // But actually: driver fills descriptors from tail to head.
-            // Head points to next descriptor to use; tail is where driver last wrote.
-            // Available = (tail - head) mod num_descs, but we must not let head == tail.
-            if head == tail {
-                #[cfg(feature = "std")]
-                eprintln!("[e1000] RX: no descriptors (head={} tail={} rdbase=0x{:X} rdlen={})", head, tail, rd_base, rdlen);
-                break;
-            }
+        // Deliver at most 64 packets per call to avoid starving the guest.
+        // The driver needs time to process packets and update RDT.
+        let mut delivered_count = 0u32;
+        const MAX_RX_PER_POLL: u32 = 16;
+
+        while let Some(_pkt) = self.rx_buffer.front() {
+            if delivered_count >= MAX_RX_PER_POLL { break; }
+            if head == tail { break; } // No available descriptors
 
             let desc_addr = rd_base + (head as u64) * 16;
             let mut desc = [0u8; 16];
@@ -550,7 +548,7 @@ impl E1000 {
             desc[9] = len_bytes[1]; // length high
             desc[10] = 0; // checksum (not computed)
             desc[11] = 0; // checksum high
-            desc[12] = RXD_STA_DD | RXD_STA_EOP | RXD_STA_IXSM; // status: done + end of packet + ignore checksum
+            desc[12] = RXD_STA_DD | RXD_STA_EOP | RXD_STA_IPCS | RXD_STA_TCPCS; // status: done + eop + checksums valid
             desc[13] = 0; // errors: none
             desc[14] = 0; // special low
             desc[15] = 0; // special high
@@ -560,6 +558,7 @@ impl E1000 {
 
             // Advance head.
             head = (head + 1) % num_descs;
+            delivered_count += 1;
         }
 
         let delivered = head != self.regs[REG_RDH / 4];

@@ -198,6 +198,7 @@ impl SlirpNet {
     pub fn new() -> Self {
         // Detect host DNS resolver
         let host_dns = detect_host_dns();
+        eprintln!("[slirp] DNS relay → {}", host_dns);
 
         SlirpNet {
             guest_mac: [0; 6],
@@ -373,12 +374,7 @@ impl SlirpNet {
         }
 
         for (key, data) in responses {
-            // Send response back to guest
-            let udp_hdr = udp_header(key.remote_port, key.guest_port, data.len() as u16);
-            let mut payload = Vec::with_capacity(8 + data.len());
-            payload.extend_from_slice(&udp_hdr);
-            payload.extend_from_slice(&data);
-            self.send_ip_packet(IP_PROTO_UDP, key.remote_ip, GUEST_IP, &payload);
+            self.send_udp_packet(key.remote_ip, GUEST_IP, key.remote_port, key.guest_port, &data);
         }
 
         // Expire old flows (>60s idle)
@@ -426,11 +422,15 @@ impl SlirpNet {
             }
         }
         for (guest_port, data) in replies {
-            let udp_hdr = udp_header(53, guest_port, data.len() as u16);
-            let mut payload = Vec::with_capacity(8 + data.len());
-            payload.extend_from_slice(&udp_hdr);
-            payload.extend_from_slice(&data);
-            self.send_ip_packet(IP_PROTO_UDP, DNS_IP, GUEST_IP, &payload);
+            // Log DNS reply: txid, flags, qdcount, ancount
+            if data.len() >= 12 {
+                let flags = u16be(&data, 2);
+                let rcode = flags & 0x0F;
+                let ancount = u16be(&data, 6);
+                eprintln!("[slirp] DNS reply: len={} flags=0x{:04X} rcode={} answers={} → port {}",
+                    data.len(), flags, rcode, ancount, guest_port);
+            }
+            self.send_udp_packet(DNS_IP, GUEST_IP, 53, guest_port, &data);
         }
     }
 
@@ -578,33 +578,30 @@ impl SlirpNet {
 
         if syn && !ack_flag {
             // New connection: SYN
-            // Connect to real host
             let addr = SocketAddr::new(
                 Ipv4Addr::new(dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3]).into(),
                 dst_port,
             );
-            match TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5)) {
-                Ok(stream) => {
-                    let _ = stream.set_nonblocking(true);
-                    let _ = stream.set_nodelay(true);
-                    let our_seq: u32 = 0x1000_0000; // fixed ISN for simplicity
-                    let conn = TcpConnection {
-                        stream,
-                        state: TcpState::SynReceived,
-                        our_seq,
-                        guest_seq: seq.wrapping_add(1), // SYN counts as 1 byte
-                        guest_isn: seq,
-                        read_buf: [0u8; 4096],
-                    };
-                    self.tcp_conns.insert(key, conn);
-                    // Send SYN-ACK
-                    self.send_tcp_flags(key, 0x12, our_seq, seq.wrapping_add(1), &[]); // SYN+ACK
-                }
+            let socket = match TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(100)) {
+                Ok(s) => s,
                 Err(_) => {
-                    // Connection refused — send RST
                     self.send_tcp_flags(key, 0x14, 0, seq.wrapping_add(1), &[]); // RST+ACK
+                    return;
                 }
-            }
+            };
+            let _ = socket.set_nonblocking(true);
+            let _ = socket.set_nodelay(true);
+            let our_seq: u32 = 0x1000_0000;
+            let conn = TcpConnection {
+                stream: socket,
+                state: TcpState::SynReceived,
+                our_seq,
+                guest_seq: seq.wrapping_add(1),
+                guest_isn: seq,
+                read_buf: [0u8; 4096],
+            };
+            self.tcp_conns.insert(key, conn);
+            self.send_tcp_flags(key, 0x12, our_seq, seq.wrapping_add(1), &[]); // SYN+ACK
             return;
         }
 
@@ -657,6 +654,9 @@ impl SlirpNet {
 
         for (key, conn) in &mut self.tcp_conns {
             if conn.state != TcpState::Established { continue; }
+            // Back-pressure: stop reading if rx_queue has pending packets.
+            // This gives the guest time to drain the RX ring and send ACKs.
+            if self.rx_queue.len() > 32 { break; }
             match conn.stream.read(&mut conn.read_buf) {
                 Ok(0) => {
                     // EOF — host closed connection
@@ -672,15 +672,24 @@ impl SlirpNet {
             }
         }
 
+        // Send data in MSS-sized segments (max 1460 bytes per TCP segment)
+        const TCP_MSS: usize = 1460;
         for (key, data) in data_to_send {
-            if let Some(conn) = self.tcp_conns.get(&key) {
-                let seq = conn.our_seq;
-                let ack = conn.guest_seq;
-                self.send_tcp_flags(key, 0x18, seq, ack, &data); // PSH+ACK
-                // Advance our_seq
-                if let Some(conn) = self.tcp_conns.get_mut(&key) {
-                    conn.our_seq = conn.our_seq.wrapping_add(data.len() as u32);
+            let mut offset = 0;
+            while offset < data.len() {
+                let end = (offset + TCP_MSS).min(data.len());
+                let segment = &data[offset..end];
+                let is_last = end == data.len();
+                if let Some(conn) = self.tcp_conns.get(&key) {
+                    let seq = conn.our_seq;
+                    let ack = conn.guest_seq;
+                    let flags = if is_last { 0x18 } else { 0x10 }; // PSH+ACK for last, ACK for others
+                    self.send_tcp_flags(key, flags, seq, ack, segment);
+                    if let Some(conn) = self.tcp_conns.get_mut(&key) {
+                        conn.our_seq = conn.our_seq.wrapping_add(segment.len() as u32);
+                    }
                 }
+                offset = end;
             }
         }
 
@@ -692,6 +701,9 @@ impl SlirpNet {
             }
             self.tcp_conns.remove(&key);
         }
+
+        // Clean up closed connections
+        self.tcp_conns.retain(|_, conn| conn.state != TcpState::Closed);
     }
 
     fn send_tcp_flags(&mut self, key: TcpFlowKey, flags: u8, seq: u32, ack: u32, data: &[u8]) {
@@ -737,6 +749,28 @@ impl SlirpNet {
         frame.extend_from_slice(payload);
 
         self.rx_queue.push_back(frame);
+    }
+
+    /// Send a UDP packet with correct checksum.
+    fn send_udp_packet(&mut self, src_ip: [u8; 4], dst_ip: [u8; 4], src_port: u16, dst_port: u16, data: &[u8]) {
+        let udp_len = (8 + data.len()) as u16;
+        let mut udp = Vec::with_capacity(8 + data.len());
+        udp.extend_from_slice(&udp_header(src_port, dst_port, data.len() as u16));
+        udp.extend_from_slice(data);
+
+        // UDP checksum over pseudo-header
+        let mut pseudo = Vec::with_capacity(12 + udp.len());
+        pseudo.extend_from_slice(&src_ip);
+        pseudo.extend_from_slice(&dst_ip);
+        pseudo.push(0);
+        pseudo.push(IP_PROTO_UDP);
+        pseudo.extend_from_slice(&udp_len.to_be_bytes());
+        pseudo.extend_from_slice(&udp);
+        let cksum = ip_checksum(&pseudo);
+        let cksum = if cksum == 0 { 0xFFFF } else { cksum };
+        put_u16be(&mut udp, 6, cksum);
+
+        self.send_ip_packet(IP_PROTO_UDP, src_ip, dst_ip, &udp);
     }
 }
 
@@ -784,22 +818,39 @@ fn find_dhcp_option<'a>(options: &'a [u8], code: u8) -> Option<&'a [u8]> {
 }
 
 fn detect_host_dns() -> SocketAddr {
-    // Try to read /etc/resolv.conf
-    if let Ok(contents) = std::fs::read_to_string("/etc/resolv.conf") {
-        for line in contents.lines() {
-            let line = line.trim();
-            if line.starts_with("nameserver") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    if let Ok(ip) = parts[1].parse::<Ipv4Addr>() {
-                        // Skip loopback (systemd-resolved uses 127.0.0.53)
-                        // — it works fine for us since we forward from host context
-                        return SocketAddr::new(ip.into(), 53);
+    // Try systemd-resolve to get the real upstream DNS server
+    if let Ok(output) = std::process::Command::new("resolvectl").arg("status").output() {
+        if let Ok(text) = std::str::from_utf8(&output.stdout) {
+            for line in text.lines() {
+                if line.contains("DNS Server") {
+                    for part in line.split_whitespace() {
+                        if let Ok(ip) = part.parse::<Ipv4Addr>() {
+                            if !ip.is_loopback() && ip.octets()[0] != 127 {
+                                return SocketAddr::new(ip.into(), 53);
+                            }
+                        }
                     }
                 }
             }
         }
     }
+
+    // Try /etc/resolv.conf, skip loopback/stub addresses
+    if let Ok(contents) = std::fs::read_to_string("/etc/resolv.conf") {
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.starts_with("nameserver") {
+                if let Some(addr) = line.split_whitespace().nth(1) {
+                    if let Ok(ip) = addr.parse::<Ipv4Addr>() {
+                        if ip.octets()[0] != 127 {
+                            return SocketAddr::new(ip.into(), 53);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Fallback: Google DNS
     SocketAddr::new(Ipv4Addr::new(8, 8, 8, 8).into(), 53)
 }
