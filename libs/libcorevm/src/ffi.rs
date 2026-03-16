@@ -2158,13 +2158,21 @@ pub extern "C" fn corevm_net_poll(handle: u64) -> i32 {
         // Poll backend for periodic work (timers, TCP reads, etc.)
         backend.poll();
 
-        // Receive packets from backend and inject into E1000
+        // Receive packets from backend and inject into E1000.
+        // Limit how many we inject to avoid overflowing the rx_buffer
+        // when the guest can't keep up with the RX descriptor ring.
         let rx_packets = backend.recv();
         let rx_count = rx_packets.len() as i32;
 
         if !rx_packets.is_empty() && !vm.e1000_ptr.is_null() {
             let e1000 = unsafe { &mut *vm.e1000_ptr };
+            // Only inject packets if the rx_buffer isn't already backed up.
+            // The RX ring typically has 256 descriptors; keep a healthy margin.
+            const RX_BUFFER_LIMIT: usize = 512;
             for pkt in &rx_packets {
+                if e1000.rx_buffer.len() >= RX_BUFFER_LIMIT {
+                    break;
+                }
                 e1000.receive_packet(pkt);
             }
             e1000.process_rx_ring();

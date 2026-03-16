@@ -492,10 +492,11 @@ impl E1000 {
         // Available descriptors: from head to tail (exclusive).
         // We need at least one descriptor to deliver a packet.
 
-        // Deliver at most 64 packets per call to avoid starving the guest.
-        // The driver needs time to process packets and update RDT.
+        // Deliver up to 128 packets per call — enough to drain a burst
+        // without spinning forever if the ring is full. The guest updates
+        // RDT after processing; we'll deliver more on the next poll.
         let mut delivered_count = 0u32;
-        const MAX_RX_PER_POLL: u32 = 16;
+        const MAX_RX_PER_POLL: u32 = 128;
 
         while let Some(_pkt) = self.rx_buffer.front() {
             if delivered_count >= MAX_RX_PER_POLL { break; }

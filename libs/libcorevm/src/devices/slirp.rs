@@ -151,12 +151,18 @@ struct TcpConnection {
     our_seq: u32,
     /// Bytes sent but not yet ACKed by guest.
     unacked: u32,
-    /// Last ACKed guest sequence number.
+    /// Next expected guest sequence number (bytes we've received up to).
     guest_seq: u32,
     /// Initial guest sequence from SYN.
     guest_isn: u32,
     /// Read buffer for data from host socket.
     read_buf: [u8; 4096],
+    /// Last advertised window from the guest (for flow control).
+    guest_window: u16,
+    /// Retransmit queue: (seq, data) for segments not yet ACKed by guest.
+    retransmit_queue: Vec<(u32, Vec<u8>)>,
+    /// Timestamp of last retransmit check.
+    last_retransmit: Option<Instant>,
 }
 
 // ── UDP flow tracking ────────────────────────────────────────────────────────
@@ -610,27 +616,60 @@ impl SlirpNet {
                 None => return,
             };
 
+            // Track guest window size for flow control
+            let window = u16be(payload, 14);
+            conn.guest_window = window;
+
             if ack_flag && conn.state == TcpState::SynReceived {
                 conn.state = TcpState::Established;
                 conn.our_seq = conn.our_seq.wrapping_add(1); // SYN consumed
+                // Clear retransmit queue — SYN-ACK was acknowledged
+                conn.retransmit_queue.clear();
             }
 
-            // Process ACK: reduce unacked byte count
+            // Process ACK: reduce unacked byte count and purge retransmit queue
             if ack_flag && conn.state == TcpState::Established {
                 let ack_num = u32be(payload, 8);
-                let acked = ack_num.wrapping_sub(conn.our_seq.wrapping_sub(conn.unacked));
+                let oldest_unacked = conn.our_seq.wrapping_sub(conn.unacked);
+                let acked = ack_num.wrapping_sub(oldest_unacked);
                 if acked > 0 && acked <= conn.unacked {
                     conn.unacked -= acked;
+                    // Remove ACKed segments from retransmit queue
+                    conn.retransmit_queue.retain(|(seg_seq, seg_data)| {
+                        let seg_end = seg_seq.wrapping_add(seg_data.len() as u32);
+                        // Keep segment if its end is beyond the ACK point
+                        let acked_up_to = ack_num;
+                        seg_end.wrapping_sub(acked_up_to) < 0x8000_0000 // seg_end > ack_num (wrapping)
+                    });
                 }
             }
 
             // Data from guest → write to host socket
-            // Temporarily set blocking mode for write to ensure all data is sent
+            // Guard against retransmits: only forward data we haven't seen yet.
             if !tcp_data.is_empty() && conn.state == TcpState::Established {
-                let _ = conn.stream.set_nonblocking(false);
-                let _ = conn.stream.write_all(tcp_data);
-                let _ = conn.stream.set_nonblocking(true);
-                conn.guest_seq = seq.wrapping_add(tcp_data.len() as u32);
+                let expected = conn.guest_seq;
+                let seg_end = seq.wrapping_add(tcp_data.len() as u32);
+
+                if seq == expected {
+                    // In-order segment — forward all data
+                    let _ = conn.stream.write_all(tcp_data);
+                    conn.guest_seq = seg_end;
+                } else if seq.wrapping_sub(expected) < 0x8000_0000 {
+                    // Future segment (seq > expected) — we missed something.
+                    // Forward it anyway to avoid stalling; TCP on the host side
+                    // will handle the gap. Update guest_seq to track progress.
+                    let _ = conn.stream.write_all(tcp_data);
+                    conn.guest_seq = seg_end;
+                } else {
+                    // Retransmit (seq < expected) — check for partial new data
+                    let overlap = expected.wrapping_sub(seq) as usize;
+                    if overlap < tcp_data.len() {
+                        // Partial new data at the end
+                        let _ = conn.stream.write_all(&tcp_data[overlap..]);
+                        conn.guest_seq = seg_end;
+                    }
+                    // else: pure retransmit, all data already forwarded — drop it
+                }
             }
 
             if fin {
@@ -665,7 +704,8 @@ impl SlirpNet {
             match self.pending_connects[i].1.try_recv() {
                 Ok(Ok(stream)) => {
                     let (key, _, guest_seq_raw, our_seq) = self.pending_connects.remove(i);
-                    let _ = stream.set_nonblocking(true);
+                    // Keep socket blocking for writes (write_all must not lose data).
+                    // Reads use set_nonblocking temporarily in poll_tcp.
                     let _ = stream.set_nodelay(true);
                     let conn = TcpConnection {
                         stream,
@@ -675,6 +715,9 @@ impl SlirpNet {
                         guest_seq: guest_seq_raw.wrapping_add(1),
                         guest_isn: guest_seq_raw,
                         read_buf: [0u8; 4096],
+                        guest_window: 0,
+                        retransmit_queue: Vec::new(),
+                        last_retransmit: None,
                     };
                     completed.push((key, conn, our_seq, guest_seq_raw));
                 }
@@ -692,26 +735,54 @@ impl SlirpNet {
         }
 
         const TCP_MSS: usize = 1460;
-        const MAX_UNACKED: u32 = (TCP_MSS * 8) as u32; // max 8 segments in flight
+        // Use the guest's advertised window to limit in-flight data,
+        // capped to a reasonable maximum to avoid runaway buffering.
+        const MAX_UNACKED_CAP: u32 = 65535; // max we allow even if guest advertises more
+        const RETRANSMIT_TIMEOUT_MS: u128 = 200; // retransmit after 200ms
 
         let mut data_to_send: Vec<(TcpFlowKey, Vec<u8>)> = Vec::new();
         let mut closed: Vec<TcpFlowKey> = Vec::new();
+        let mut retransmits: Vec<(TcpFlowKey, u32, Vec<u8>)> = Vec::new();
+
+        let now = Instant::now();
 
         for (key, conn) in &mut self.tcp_conns {
             if conn.state != TcpState::Established { continue; }
 
-            // Flow control: don't read more from host until guest has ACKed
-            // previous data. Also respect rx_queue backpressure.
-            if conn.unacked >= MAX_UNACKED { continue; }
-            if self.rx_queue.len() > 16 { break; }
+            // Flow control: respect guest's advertised window, with fallback
+            let guest_win = if conn.guest_window > 0 { conn.guest_window as u32 } else { 32768 };
+            let max_unacked = guest_win.min(MAX_UNACKED_CAP);
+            if conn.unacked >= max_unacked { continue; }
 
-            // Read at most one MSS from host socket
-            let max_read = TCP_MSS.min(conn.read_buf.len());
+            // Respect rx_queue backpressure — don't flood the E1000 ring
+            if self.rx_queue.len() > 64 { break; }
+
+            // Non-blocking read: temporarily switch to non-blocking mode
+            let _ = conn.stream.set_nonblocking(true);
+            // Read up to the remaining window, capped at MSS
+            let remaining_window = max_unacked.saturating_sub(conn.unacked) as usize;
+            let max_read = TCP_MSS.min(conn.read_buf.len()).min(remaining_window.max(1));
             match conn.stream.read(&mut conn.read_buf[..max_read]) {
                 Ok(0) => closed.push(*key),
                 Ok(n) => data_to_send.push((*key, conn.read_buf[..n].to_vec())),
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
                 Err(_) => closed.push(*key),
+            }
+            let _ = conn.stream.set_nonblocking(false);
+
+            // Retransmit check: if we have unacked segments and haven't
+            // heard back in a while, retransmit the oldest segment.
+            if conn.unacked > 0 && !conn.retransmit_queue.is_empty() {
+                let should_retransmit = match conn.last_retransmit {
+                    Some(last) => now.duration_since(last).as_millis() >= RETRANSMIT_TIMEOUT_MS,
+                    None => true,
+                };
+                if should_retransmit {
+                    // Retransmit the first (oldest) unacked segment
+                    let (seg_seq, seg_data) = conn.retransmit_queue[0].clone();
+                    retransmits.push((*key, seg_seq, seg_data));
+                    conn.last_retransmit = Some(now);
+                }
             }
         }
 
@@ -722,9 +793,22 @@ impl SlirpNet {
                 let ack = conn.guest_seq;
                 self.send_tcp_flags(key, 0x18, seq, ack, &data); // PSH+ACK
                 if let Some(conn) = self.tcp_conns.get_mut(&key) {
+                    conn.retransmit_queue.push((seq, data.clone()));
                     conn.our_seq = conn.our_seq.wrapping_add(data.len() as u32);
                     conn.unacked = conn.unacked.wrapping_add(data.len() as u32);
+                    conn.last_retransmit = Some(now);
                 }
+            }
+        }
+
+        // Send retransmits
+        for (key, seg_seq, seg_data) in retransmits {
+            if let Some(conn) = self.tcp_conns.get(&key) {
+                let ack = conn.guest_seq;
+                self.send_tcp_flags(key, 0x18, seg_seq, ack, &seg_data); // PSH+ACK retransmit
+                #[cfg(feature = "std")]
+                eprintln!("[tcp] RETRANSMIT :{} → {}:{} seq={} len={}",
+                    key.guest_port, key.remote_ip[0], key.remote_port, seg_seq, seg_data.len());
             }
         }
 
@@ -744,10 +828,10 @@ impl SlirpNet {
         unsafe { POLL_COUNT += 1; }
         if unsafe { POLL_COUNT } % 10000 == 0 && !self.tcp_conns.is_empty() {
             for (key, conn) in &self.tcp_conns {
-                eprintln!("[tcp] conn :{} → {}:{} state={:?} unacked={} rxq={}",
+                eprintln!("[tcp] conn :{} → {}:{} state={:?} unacked={} rxq={} retxq={}",
                     key.guest_port, key.remote_ip[0], key.remote_port,
                     match conn.state { TcpState::SynReceived => "SYN", TcpState::Established => "EST", TcpState::FinWait => "FIN", TcpState::Closed => "CLS" },
-                    conn.unacked, self.rx_queue.len());
+                    conn.unacked, self.rx_queue.len(), conn.retransmit_queue.len());
             }
         }
     }
@@ -761,7 +845,9 @@ impl SlirpNet {
         put_u32be(&mut tcp, 8, ack);
         tcp[12] = (hdr_len / 4) << 4; // data offset
         tcp[13] = flags;
-        put_u16be(&mut tcp, 14, 32768); // window size (32KB — reasonable for NAT)
+        // Advertise a 64KB window — large enough for bulk transfers.
+        // This is what the guest sees as our receive capacity.
+        put_u16be(&mut tcp, 14, 65535);
         if !data.is_empty() {
             tcp[20..].copy_from_slice(data);
         }
