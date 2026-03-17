@@ -7,13 +7,14 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU on Windows
-# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Res "WxH"] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-Kvm] [-Fwd "H:G","H:G"] [-VBox] [-VMwareWS]
+# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Virgl] [-Res "WxH"] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-Kvm] [-Fwd "H:G","H:G"] [-VBox] [-VMwareWS]
 #
 #   -VBox     Start VirtualBox VM named 'anyos' and stream its COM1 serial output here
 #   -VMwareWS Start VMware Workstation VM named 'anyos' and stream its COM1 serial output here
 #   -Vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   -Std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
 #   -Virtio   VirtIO GPU (modern transport, ARGB cursor)
+#   -Virgl    VirtIO GPU with virglrenderer 3D (OpenGL via host GPU, SDL display)
 #   -Res WxH  Set initial GPU resolution (VirtIO only). Example: -Res "1280x1024"
 #   -Ide      Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
 #   -Cdrom    Boot from ISO image (CD-ROM) instead of hard drive
@@ -30,6 +31,7 @@ param(
     [switch]$Vmware,
     [switch]$Std,
     [switch]$Virtio,
+    [switch]$Virgl,
     [switch]$Ide,
     [switch]$Cdrom,
     [switch]$Audio,
@@ -461,6 +463,9 @@ $vgaLabel = "Bochs VGA (standard)"
 if ($Vmware) {
     $vga = "vmware"
     $vgaLabel = "VMware SVGA II (accelerated)"
+} elseif ($Virgl) {
+    $vga = "virtio"
+    $vgaLabel = "Virtio GPU + virglrenderer (3D OpenGL)"
 } elseif ($Virtio) {
     $vga = "virtio"
     $vgaLabel = "Virtio GPU (paravirtualized)"
@@ -472,8 +477,8 @@ $minResW = 1024
 $minResH = 768
 
 if ($Res -ne "") {
-    if (-not $Virtio) {
-        Write-Host "Error: -Res is only supported with -Virtio (VirtIO GPU sets resolution via device properties)" -ForegroundColor Red
+    if (-not $Virtio -and -not $Virgl) {
+        Write-Host "Error: -Res is only supported with -Virtio or -Virgl (VirtIO GPU sets resolution via device properties)" -ForegroundColor Red
         Write-Host "Bochs VGA and VMware SVGA set resolution from the guest OS."
         exit 1
     }
@@ -487,7 +492,7 @@ if ($Res -ne "") {
 }
 
 # VirtIO GPU: default to 1024x768 if no -Res specified
-if ($Virtio -and $Res -eq "") {
+if (($Virtio -or $Virgl) -and $Res -eq "") {
     $Res = "${minResW}x${minResH}"
     $resW = $minResW
     $resH = $minResH
@@ -566,8 +571,13 @@ if (-not $Kvm) {
     $args += "-cpu", "qemu64,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt"
 }
 
-# VGA device: VirtIO always uses explicit -device with edid=on for reliable resolution
-if ($Virtio) {
+# VGA device
+if ($Virgl) {
+    $args += "-vga", "none"
+    $args += "-device", "virtio-gpu-gl-pci,edid=on,xres=$resW,yres=$resH"
+    $args += "-display", "sdl,gl=on"
+    $vgaLabel = "Virtio GPU + virglrenderer 3D (${resW}x${resH})"
+} elseif ($Virtio) {
     $args += "-vga", "none"
     $args += "-device", "virtio-vga,edid=on,xres=$resW,yres=$resH"
     $vgaLabel = "Virtio GPU (${resW}x${resH})"
@@ -626,7 +636,7 @@ if ($Kvm) {
 }
 
 # VirtIO GPU: add USB tablet for absolute mouse (no VMware backdoor)
-if ($Virtio -and -not $Usb) {
+if (($Virtio -or $Virgl) -and -not $Usb) {
     $args += "-usb"
     $args += "-device", "usb-tablet"
 }
