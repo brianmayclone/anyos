@@ -1361,6 +1361,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wifi"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "xargs"
 version = "0.1.0"
 dependencies = [

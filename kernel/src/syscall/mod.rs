@@ -344,6 +344,15 @@ pub const SYS_VCPU_SET_MP_STATE: u32 = 620;
 /// arg1=vm_id, arg2=vcpu_id, arg3=ptr to TranslateRequest { gva: u64, out_gpa: u64, out_valid: u32 }.
 pub const SYS_VCPU_TRANSLATE: u32 = 621;
 
+// Platform / thermal / ACPI / I²C
+pub const SYS_THERMAL_READ: u32 = 320;
+pub const SYS_THERMAL_CPU: u32  = 321;
+pub const SYS_ACPI_SLEEP: u32   = 322;
+pub const SYS_ACPI_PERF: u32    = 323;
+pub const SYS_I2C_READ: u32     = 324;
+pub const SYS_I2C_WRITE: u32    = 325;
+pub const SYS_I2C_DETECT: u32   = 326;
+
 // Debug / trace (anyTrace)
 pub const SYS_DEBUG_ATTACH: u32         = 300;
 pub const SYS_DEBUG_DETACH: u32         = 301;
@@ -675,6 +684,22 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         SYS_CON_GET_SIZE  => handlers::sys_con_get_size(),
         SYS_CON_SET_MODE  => handlers::sys_con_set_mode(arg1),
         SYS_CON_RESIZE    => handlers::sys_con_resize(arg1),
+
+        // Platform / thermal / ACPI / I²C
+        #[cfg(target_arch = "x86_64")]
+        SYS_THERMAL_READ => handlers::sys_thermal_read(arg1, arg2),
+        #[cfg(target_arch = "x86_64")]
+        SYS_THERMAL_CPU => handlers::sys_thermal_cpu(),
+        #[cfg(target_arch = "x86_64")]
+        SYS_ACPI_SLEEP => handlers::sys_acpi_sleep(arg1),
+        #[cfg(target_arch = "x86_64")]
+        SYS_ACPI_PERF => handlers::sys_acpi_perf(arg1, arg2),
+        #[cfg(target_arch = "x86_64")]
+        SYS_I2C_READ => handlers::sys_i2c_read(arg1, arg2),
+        #[cfg(target_arch = "x86_64")]
+        SYS_I2C_WRITE => handlers::sys_i2c_write(arg1, arg2, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_I2C_DETECT => handlers::sys_i2c_detect(arg1),
 
         // Debug / trace (anyTrace)
         SYS_DEBUG_ATTACH => handlers::sys_debug_attach(arg1),

@@ -656,9 +656,8 @@ pub fn sys_shutdown(mode: u32) -> u32 {
                 crate::arch::x86::port::outb(0x64, 0xFE);
             }
         } else {
-            crate::serial_println!("kernel: powering off via ACPI...");
-            unsafe { crate::arch::x86::port::outw(0x604, 0x2000); }
-            unsafe { crate::arch::x86::port::outw(0xB004, 0x2000); }
+            crate::serial_println!("kernel: powering off via ACPI PM...");
+            crate::arch::x86::acpi_pm::shutdown();
         }
     }
     #[cfg(target_arch = "aarch64")]

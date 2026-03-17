@@ -18,8 +18,8 @@ const VMWARE_MAGIC: u32 = 0x564D_5868;
 
 // Backdoor commands
 const CMD_GETVERSION: u32 = 10;
-const CMD_ABSPOINTER_DATA: u32 = 39;
 const CMD_ABSPOINTER_STATUS: u32 = 40;
+const CMD_ABSPOINTER_DATA: u32 = 39;
 const CMD_ABSPOINTER_COMMAND: u32 = 41;
 
 // ABSPOINTER sub-commands (passed as arg to CMD_ABSPOINTER_COMMAND)
@@ -82,30 +82,19 @@ fn detect() -> bool {
 }
 
 /// Enable the vmmouse in absolute mode.
+///
+/// Minimal two-step sequence that works on both QEMU TCG/KVM and VMware:
+///   1. ENABLE  — activates the vmmouse channel
+///   2. ABSOLUTE — switches the pointer to absolute coordinate mode
+///
+/// STATUS and DATA calls are intentionally omitted:
+///   - CMD_ABSPOINTER_DATA causes the `in eax, dx` instruction to block
+///     indefinitely on QEMU TCG when the queue has 0 pending words.
+///   - CMD_ABSPOINTER_STATUS is not needed to activate absolute mode.
+///   - Command 86 (RESTRICT) is VMware-only and stalls on QEMU.
 fn enable() -> bool {
-    // Step 1: Send ENABLE command
     backdoor(CMD_ABSPOINTER_COMMAND, ABSPOINTER_ENABLE);
-
-    // Step 2: Check status — should return version info, not error
-    let status = backdoor(CMD_ABSPOINTER_STATUS, 0);
-    if (status.eax & 0xFFFF) == 0 || status.eax == 0xFFFF_0000 {
-        // Error — vmmouse not available or queue empty
-        return false;
-    }
-
-    // Step 3: Read any pending initial data (1 word)
-    let version = backdoor(CMD_ABSPOINTER_DATA, 1);
-    if version.eax != 0x3442554A { // VMMOUSE_VERSION_ID
-        return false;
-    }
-
-    // Step 4: Switch to absolute mode
     backdoor(CMD_ABSPOINTER_COMMAND, ABSPOINTER_ABSOLUTE);
-
-    // Step 5: Restrict ioport access, if possible.
-    // VMMOUSE_RESTRICT_CPL0 = 0x01
-    backdoor(86, 0x01); // VMWARE_CMD_ABSPOINTER_RESTRICT
-
     true
 }
 

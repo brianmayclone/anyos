@@ -265,6 +265,15 @@ pub(crate) const SYS_THREAD_INFO_EX: u32       = 313;
 pub(crate) const SYS_PIPE_BYTES_AVAILABLE: u32 = 157;
 pub(crate) const SYS_FCNTL_SC: u32 = 243;
 
+// Platform / thermal / ACPI / I²C  (320–326)
+pub(crate) const SYS_THERMAL_READ: u32 = 320;
+pub(crate) const SYS_THERMAL_CPU:  u32 = 321;
+pub(crate) const SYS_ACPI_SLEEP:   u32 = 322;
+pub(crate) const SYS_ACPI_PERF:    u32 = 323;
+pub(crate) const SYS_I2C_READ:     u32 = 324;
+pub(crate) const SYS_I2C_WRITE:    u32 = 325;
+pub(crate) const SYS_I2C_DETECT:   u32 = 326;
+
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;
 pub(crate) const SYS_EVT_SYS_POLL: u32 = 61;

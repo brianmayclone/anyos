@@ -233,6 +233,18 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         drivers::pci::print_devices();
         drivers::boot_console::tick_spinner();
 
+        // Phase 5b2: Platform subsystems (SMBus, Thermal, ACPI PM)
+        {
+            let pci_list = drivers::pci::devices();
+            drivers::smbus::init(&pci_list);
+            drivers::thermal::init(&pci_list);
+        }
+        {
+            let rsdp_addr = unsafe { core::ptr::addr_of!((*boot_info).rsdp_addr).read_unaligned() };
+            arch::x86::acpi_pm::init(rsdp_addr);
+        }
+        drivers::boot_console::tick_spinner();
+
         // Phase 5c: E1000 NIC + Network Stack
         if drivers::network::e1000::init() {
             net::init();

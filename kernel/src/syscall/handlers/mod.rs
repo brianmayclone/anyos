@@ -17,6 +17,7 @@ mod signal;
 mod system;
 mod disk;
 mod debug;
+mod platform;
 
 pub use process::*;
 pub use io::*;
@@ -30,6 +31,7 @@ pub use signal::*;
 pub use system::*;
 pub use disk::*;
 pub use debug::*;
+pub use platform::*;
 
 // =========================================================================
 // Shared compositor state

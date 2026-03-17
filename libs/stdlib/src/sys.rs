@@ -299,3 +299,111 @@ pub const KEY_F7: u32  = KEY_FN_PREFIX | 0x07;
 pub const KEY_F8: u32  = KEY_FN_PREFIX | 0x08;
 pub const KEY_F9: u32  = KEY_FN_PREFIX | 0x09;
 pub const KEY_F10: u32 = KEY_FN_PREFIX | 0x0A;
+
+// =========================================================================
+// Thermal sensors
+// =========================================================================
+
+/// Raw entry returned by [`thermal_read_raw`].
+///
+/// Layout matches the kernel ABI (8 bytes per entry):
+/// - `src_type`: 0=IntelCpu, 1=AmdCpu, 2=Lm75, 3=Smbus
+/// - `src_id`:   core index or SMBus address
+/// - `temp_x10`: temperature in 0.1 °C units (signed)
+#[derive(Debug, Clone, Copy)]
+pub struct ThermalEntry {
+    pub src_type: u8,
+    pub src_id:   u8,
+    pub temp_x10: i32,
+}
+
+/// Read all registered thermal sensors.
+///
+/// Returns a `Vec` of up to `max` entries.  Pass a large value (e.g. 32)
+/// to retrieve every available sensor.
+pub fn thermal_read(max: u32) -> alloc::vec::Vec<ThermalEntry> {
+    use alloc::vec;
+    if max == 0 { return vec![]; }
+    let entry_size = 8usize;
+    let mut buf = vec![0u8; max as usize * entry_size];
+    let count = syscall2(SYS_THERMAL_READ, buf.as_mut_ptr() as u64, max as u64) as usize;
+    let count = count.min(max as usize);
+    let mut out = alloc::vec::Vec::with_capacity(count);
+    for i in 0..count {
+        let off = i * entry_size;
+        let src_type = buf[off];
+        let src_id   = buf[off + 1];
+        let temp_x10 = i32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]);
+        out.push(ThermalEntry { src_type, src_id, temp_x10 });
+    }
+    out
+}
+
+/// Read the primary CPU temperature in 0.1 °C units.
+///
+/// Returns `None` if no CPU thermal sensor is available on this hardware.
+pub fn thermal_cpu() -> Option<i32> {
+    let v = syscall0(SYS_THERMAL_CPU);
+    if v == u32::MAX { None } else { Some(v as i32) }
+}
+
+// =========================================================================
+// ACPI power management
+// =========================================================================
+
+/// Request an ACPI sleep / power state.
+///
+/// | `state` | Meaning           |
+/// |---------|-------------------|
+/// | 0       | S0 — no-op        |
+/// | 3       | S3 — suspend RAM  |
+/// | 4       | S4 — hibernate    |
+/// | 5       | S5 — power off    |
+///
+/// Returns `Ok(())` on success, `Err(())` for an unrecognised state.
+pub fn acpi_sleep(state: u32) -> Result<(), ()> {
+    if syscall1(SYS_ACPI_SLEEP, state as u64) == u32::MAX { Err(()) } else { Ok(()) }
+}
+
+/// Get the current CPU P-state frequency ratio byte.
+///
+/// On Intel this is `IA32_PERF_CTL[15:8]`; on AMD `PERF_CTL[7:0]`.
+/// Returns `None` if the kernel call fails.
+pub fn acpi_perf_get() -> Option<u8> {
+    let v = syscall2(SYS_ACPI_PERF, 0, 0);
+    if v == u32::MAX { None } else { Some(v as u8) }
+}
+
+/// Set the CPU P-state frequency ratio.
+///
+/// Returns `Ok(())` on success, `Err(())` on failure.
+pub fn acpi_perf_set(ratio: u8) -> Result<(), ()> {
+    if syscall2(SYS_ACPI_PERF, 1, ratio as u64) == u32::MAX { Err(()) } else { Ok(()) }
+}
+
+// =========================================================================
+// I²C / SMBus
+// =========================================================================
+
+/// Read a byte from I²C device at 7-bit address `addr`, register `reg`.
+///
+/// Returns `None` if the device does not ACK or the address/register is out of range.
+pub fn i2c_read_byte(addr: u8, reg: u8) -> Option<u8> {
+    let v = syscall2(SYS_I2C_READ, addr as u64, reg as u64);
+    if v == u32::MAX { None } else { Some(v as u8) }
+}
+
+/// Write `value` to register `reg` of I²C device at 7-bit address `addr`.
+///
+/// Returns `Ok(())` on success, `Err(())` on error.
+pub fn i2c_write_byte(addr: u8, reg: u8, value: u8) -> Result<(), ()> {
+    let v = syscall3(SYS_I2C_WRITE, addr as u64, reg as u64, value as u64);
+    if v == u32::MAX { Err(()) } else { Ok(()) }
+}
+
+/// Probe whether an I²C device is present at 7-bit address `addr`.
+///
+/// Returns `true` if the device ACKed the quick-write probe.
+pub fn i2c_detect(addr: u8) -> bool {
+    syscall1(SYS_I2C_DETECT, addr as u64) == 1
+}

@@ -4,6 +4,7 @@
 //! I/O port access, IRQ management, ACPI parsing, and SMP startup.
 
 pub mod acpi;
+pub mod acpi_pm;
 pub mod apic;
 pub mod cpuid;
 pub mod gdt;

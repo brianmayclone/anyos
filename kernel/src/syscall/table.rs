@@ -126,6 +126,14 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_CON_POLL_KEY, "con_poll_key"),
     (SYS_CON_GET_SIZE, "con_get_size"),
     (SYS_CON_SET_MODE, "con_set_mode"),
+    // Platform / thermal / ACPI / I²C
+    (SYS_THERMAL_READ, "thermal_read"),
+    (SYS_THERMAL_CPU,  "thermal_cpu"),
+    (SYS_ACPI_SLEEP,   "acpi_sleep"),
+    (SYS_ACPI_PERF,    "acpi_perf"),
+    (SYS_I2C_READ,     "i2c_read"),
+    (SYS_I2C_WRITE,    "i2c_write"),
+    (SYS_I2C_DETECT,   "i2c_detect"),
     // Debug / trace (anyTrace)
     (SYS_DEBUG_ATTACH, "debug_attach"),
     (SYS_DEBUG_DETACH, "debug_detach"),
