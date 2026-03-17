@@ -989,6 +989,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "reboot"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "rev"
 version = "0.1.0"
 dependencies = [
@@ -1112,6 +1119,13 @@ dependencies = [
 
 [[package]]
 name = "su"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "sudo"
 version = "0.1.0"
 dependencies = [
  "anyos_std",

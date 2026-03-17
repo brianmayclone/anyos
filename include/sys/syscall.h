@@ -266,4 +266,148 @@
 #define SYS_GPU_3D_SURFACE_DMA     515
 #define SYS_GPU_3D_SURFACE_DMA_READ 516
 
+/* ---- Hardware virtualization (VT-x / AMD-V) ---- */
+/* VM lifecycle */
+#define SYS_VM_CREATE          600
+#define SYS_VM_DESTROY         601
+#define SYS_VM_SET_MEMORY      602
+#define SYS_VM_SET_CPUID       612
+#define SYS_VM_HW_INFO         613  /* returns 0=none, 1=VMX, 2=SVM */
+#define SYS_VM_GET_DIRTY_LOG   614  /* arg1=vm_id, arg2=ptr to DirtyLogRequest */
+/* vCPU lifecycle */
+#define SYS_VCPU_CREATE        603
+#define SYS_VCPU_RUN           604  /* blocks until VM-exit; arg3=ptr to VmExitInfo */
+#define SYS_VCPU_PAUSE         615
+#define SYS_VCPU_RESUME        616
+/* vCPU register access */
+#define SYS_VCPU_GET_REGS      605  /* arg3=ptr to GuestGprs */
+#define SYS_VCPU_SET_REGS      606
+#define SYS_VCPU_GET_SREGS     607  /* arg3=ptr to GuestSregs */
+#define SYS_VCPU_SET_SREGS     608
+#define SYS_VCPU_GET_FPU       617  /* arg3=ptr to GuestFpuState (512 B, FXSAVE) */
+#define SYS_VCPU_SET_FPU       618
+/* vCPU event injection */
+#define SYS_VCPU_INJECT_IRQ        609  /* arg3=vector */
+#define SYS_VCPU_INJECT_EXCEPTION  610  /* arg3=(vector|error_code<<8) */
+#define SYS_VCPU_INJECT_NMI        611
+/* vCPU multi-processor state */
+#define SYS_VCPU_GET_MP_STATE  619  /* returns VcpuMpState (0=run,1=uninit,2=halt,3=init) */
+#define SYS_VCPU_SET_MP_STATE  620  /* arg3=VcpuMpState */
+/* GVA translation */
+#define SYS_VCPU_TRANSLATE     621  /* arg3=ptr to TranslateRequest */
+
+/*
+ * Shared data structures (C layout — must match Rust #[repr(C)] types in virt/mod.rs)
+ */
+#ifndef __ANYOS_VIRT_STRUCTS
+#define __ANYOS_VIRT_STRUCTS
+#include <stdint.h>
+
+/* VmExitInfo — returned by SYS_VCPU_RUN */
+typedef struct {
+    uint32_t reason;          /* exit reason code (see EXIT_REASON_* / VMEXIT_* below) */
+    uint32_t _pad0;
+    uint64_t qualification;   /* exit qualification / exit_info1 */
+    uint64_t guest_phys_addr; /* for EPT/NPF violations */
+    uint32_t instruction_len; /* bytes of faulting instruction */
+    uint16_t io_port;         /* I/O port (I/O exits) */
+    uint8_t  access_size;     /* 1/2/4/8 bytes */
+    uint8_t  is_read;         /* 0=write/out, 1=read/in */
+    uint64_t io_data;         /* OUT data / MMIO write value / CPUID EAX input */
+    uint64_t io_data2;        /* CPUID ECX index / WRMSR value high */
+    uint32_t msr_index;       /* MSR number (RDMSR/WRMSR exits) */
+    uint32_t cpuid_function;  /* CPUID leaf EAX */
+    uint32_t cpuid_index;     /* CPUID subleaf ECX */
+    uint32_t _pad1;
+} VmExitInfo;
+
+/* Exit reason codes (portable — same values used for VMX and SVM) */
+#define VM_EXIT_EXCEPTION          0   /* guest exception / NMI */
+#define VM_EXIT_EXTERNAL_INTERRUPT 1   /* host interrupt while in guest */
+#define VM_EXIT_TRIPLE_FAULT       2   /* guest triple-fault */
+#define VM_EXIT_CPUID             10   /* CPUID instruction */
+#define VM_EXIT_HLT               12   /* HLT instruction */
+#define VM_EXIT_VMCALL            18   /* VMCALL / VMMCALL (hypercall) */
+#define VM_EXIT_IO                30   /* IN/OUT instruction */
+#define VM_EXIT_RDMSR             31   /* RDMSR */
+#define VM_EXIT_WRMSR             32   /* WRMSR */
+#define VM_EXIT_SHUTDOWN          0x7F /* guest triple-fault / shutdown (SVM 0x7F) */
+#define VM_EXIT_EPT_VIOLATION     48   /* EPT/NPT page not present or permission fault */
+#define VM_EXIT_EPT_MISCONFIG     49   /* EPT/NPT misconfiguration */
+#define VM_EXIT_MMIO              0x1000 /* synthetic: MMIO access (userspace-defined) */
+
+/* GuestGprs — general-purpose registers */
+typedef struct {
+    uint64_t rax, rbx, rcx, rdx;
+    uint64_t rsi, rdi, rbp;
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+} GuestGprs;
+
+/* GuestSregs — segment and control registers */
+typedef struct {
+    uint16_t cs_selector;  uint16_t _p0; uint32_t cs_limit;  uint32_t cs_ar;  uint32_t _p1;
+    uint64_t cs_base;
+    uint16_t ds_selector;  uint16_t _p2; uint32_t ds_limit;  uint32_t ds_ar;  uint32_t _p3;
+    uint64_t ds_base;
+    uint16_t es_selector;  uint16_t _p4; uint32_t es_limit;  uint32_t es_ar;  uint32_t _p5;
+    uint64_t es_base;
+    uint16_t fs_selector;  uint16_t _p6; uint32_t fs_limit;  uint32_t fs_ar;  uint32_t _p7;
+    uint64_t fs_base;
+    uint16_t gs_selector;  uint16_t _p8; uint32_t gs_limit;  uint32_t gs_ar;  uint32_t _p9;
+    uint64_t gs_base;
+    uint16_t ss_selector;  uint16_t _pa; uint32_t ss_limit;  uint32_t ss_ar;  uint32_t _pb;
+    uint64_t ss_base;
+    uint16_t tr_selector;  uint16_t _pc; uint32_t tr_limit;  uint32_t tr_ar;  uint32_t _pd;
+    uint64_t tr_base;
+    uint16_t ldtr_selector; uint16_t _pe; uint32_t ldtr_limit; uint32_t ldtr_ar; uint32_t _pf;
+    uint64_t ldtr_base;
+    uint64_t gdtr_base;    uint32_t gdtr_limit; uint32_t _pg;
+    uint64_t idtr_base;    uint32_t idtr_limit; uint32_t _ph;
+    uint64_t cr0, cr3, cr4, efer;
+    uint64_t rip, rsp, rflags;
+} GuestSregs;
+
+/* GuestFpuState — 512-byte FXSAVE layout (16-byte aligned) */
+typedef struct __attribute__((aligned(16))) {
+    uint8_t data[512];
+} GuestFpuState;
+
+/* VcpuMpState — multi-processor state */
+#define VCPU_MP_RUNNABLE    0
+#define VCPU_MP_UNINITIALIZED 1
+#define VCPU_MP_HALTED      2
+#define VCPU_MP_INIT_RECEIVED 3
+
+/* TranslateRequest — for SYS_VCPU_TRANSLATE */
+typedef struct {
+    uint64_t gva;       /* input: guest virtual address */
+    uint64_t out_gpa;   /* output: guest physical address */
+    uint32_t out_valid; /* output: 1 if translation succeeded */
+    uint32_t _pad;
+} TranslateRequest;
+
+/* MemRegionDesc — for SYS_VM_SET_MEMORY */
+typedef struct {
+    uint64_t guest_phys; /* guest physical base address */
+    uint64_t size;       /* size in bytes (must be page-aligned) */
+    uint64_t host_phys;  /* host virtual address of the backing buffer */
+} MemRegionDesc;
+
+/* DirtyLogRequest — for SYS_VM_GET_DIRTY_LOG */
+typedef struct {
+    uint32_t slot;       /* memory slot index */
+    uint32_t _pad;
+    uint64_t bitmap_ptr; /* pointer to caller-allocated bitmap */
+    uint64_t bitmap_size;/* size of bitmap in bytes */
+} DirtyLogRequest;
+
+/* CpuidEntry — for SYS_VM_SET_CPUID */
+typedef struct {
+    uint32_t function;
+    uint32_t index;
+    uint32_t eax, ebx, ecx, edx;
+} CpuidEntry;
+
+#endif /* __ANYOS_VIRT_STRUCTS */
+
 #endif /* _SYS_SYSCALL_H */

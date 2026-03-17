@@ -301,21 +301,45 @@ pub const SYS_CON_SET_MODE: u32  = 294;
 pub const SYS_CON_RESIZE: u32   = 295;
 
 // Hardware virtualization (VT-x / AMD-V)
+// --- VM lifecycle ---
 pub const SYS_VM_CREATE: u32 = 600;
 pub const SYS_VM_DESTROY: u32 = 601;
 pub const SYS_VM_SET_MEMORY: u32 = 602;
+pub const SYS_VM_SET_CPUID: u32 = 612;
+/// Returns the hardware virtualization type: 0 = none, 1 = VMX (Intel), 2 = SVM (AMD).
+pub const SYS_VM_HW_INFO: u32 = 613;
+/// Query the dirty-page bitmap for a memory slot (for live migration / snapshotting).
+/// arg1=vm_id, arg2=slot, arg3=ptr to u64 bitmap (one bit per 4KB page, caller-allocated).
+pub const SYS_VM_GET_DIRTY_LOG: u32 = 614;
+// --- vCPU lifecycle ---
 pub const SYS_VCPU_CREATE: u32 = 603;
 pub const SYS_VCPU_RUN: u32 = 604;
+/// Pause a vCPU (stop execution until SYS_VCPU_RESUME). Returns 0 on success.
+pub const SYS_VCPU_PAUSE: u32 = 615;
+/// Resume a previously paused vCPU. Returns 0 on success.
+pub const SYS_VCPU_RESUME: u32 = 616;
+// --- vCPU register access ---
 pub const SYS_VCPU_GET_REGS: u32 = 605;
 pub const SYS_VCPU_SET_REGS: u32 = 606;
 pub const SYS_VCPU_GET_SREGS: u32 = 607;
 pub const SYS_VCPU_SET_SREGS: u32 = 608;
+/// Get guest FPU / SSE / AVX state. arg3=ptr to GuestFpuState (512 bytes, FXSAVE layout).
+pub const SYS_VCPU_GET_FPU: u32 = 617;
+/// Set guest FPU / SSE / AVX state. arg3=ptr to GuestFpuState.
+pub const SYS_VCPU_SET_FPU: u32 = 618;
+// --- vCPU event injection ---
 pub const SYS_VCPU_INJECT_IRQ: u32 = 609;
 pub const SYS_VCPU_INJECT_EXCEPTION: u32 = 610;
 pub const SYS_VCPU_INJECT_NMI: u32 = 611;
-pub const SYS_VM_SET_CPUID: u32 = 612;
-/// Returns the hardware virtualization type: 0 = none, 1 = VMX (Intel), 2 = SVM (AMD).
-pub const SYS_VM_HW_INFO: u32 = 613;
+// --- vCPU multi-processor state ---
+/// Get vCPU MP state. Returns VcpuMpState value (0=runnable, 1=uninitialized, 2=halted, 3=init).
+pub const SYS_VCPU_GET_MP_STATE: u32 = 619;
+/// Set vCPU MP state. arg3=VcpuMpState value.
+pub const SYS_VCPU_SET_MP_STATE: u32 = 620;
+// --- GVA translation ---
+/// Translate a guest virtual address to guest physical address.
+/// arg1=vm_id, arg2=vcpu_id, arg3=ptr to TranslateRequest { gva: u64, out_gpa: u64, out_valid: u32 }.
+pub const SYS_VCPU_TRANSLATE: u32 = 621;
 
 // Debug / trace (anyTrace)
 pub const SYS_DEBUG_ATTACH: u32         = 300;
@@ -664,7 +688,7 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         SYS_DEBUG_WAIT_EVENT => handlers::sys_debug_wait_event(arg1, arg2, arg3),
         SYS_THREAD_INFO_EX => handlers::sys_thread_info_ex(arg1, arg2, arg3),
 
-        // Hardware virtualization
+        // Hardware virtualization (VT-x / AMD-V)
         #[cfg(target_arch = "x86_64")]
         SYS_VM_CREATE => crate::arch::x86::virt::syscalls::sys_vm_create(),
         #[cfg(target_arch = "x86_64")]
@@ -672,9 +696,19 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         #[cfg(target_arch = "x86_64")]
         SYS_VM_SET_MEMORY => crate::arch::x86::virt::syscalls::sys_vm_set_memory(arg1, arg2, arg3 as u64),
         #[cfg(target_arch = "x86_64")]
+        SYS_VM_SET_CPUID => crate::arch::x86::virt::syscalls::sys_vm_set_cpuid(arg1, arg2 as u64, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VM_HW_INFO => crate::arch::x86::virt::syscalls::sys_vm_hw_info(),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VM_GET_DIRTY_LOG => crate::arch::x86::virt::syscalls::sys_vm_get_dirty_log(arg1, arg2 as u64),
+        #[cfg(target_arch = "x86_64")]
         SYS_VCPU_CREATE => crate::arch::x86::virt::syscalls::sys_vcpu_create(arg1, arg2),
         #[cfg(target_arch = "x86_64")]
         SYS_VCPU_RUN => crate::arch::x86::virt::syscalls::sys_vcpu_run(arg1, arg2, arg3 as u64),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_PAUSE => crate::arch::x86::virt::syscalls::sys_vcpu_pause(arg1, arg2),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_RESUME => crate::arch::x86::virt::syscalls::sys_vcpu_resume(arg1, arg2),
         #[cfg(target_arch = "x86_64")]
         SYS_VCPU_GET_REGS => crate::arch::x86::virt::syscalls::sys_vcpu_get_regs(arg1, arg2, arg3 as u64),
         #[cfg(target_arch = "x86_64")]
@@ -684,15 +718,21 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         #[cfg(target_arch = "x86_64")]
         SYS_VCPU_SET_SREGS => crate::arch::x86::virt::syscalls::sys_vcpu_set_sregs(arg1, arg2, arg3 as u64),
         #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_GET_FPU => crate::arch::x86::virt::syscalls::sys_vcpu_get_fpu(arg1, arg2, arg3 as u64),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_SET_FPU => crate::arch::x86::virt::syscalls::sys_vcpu_set_fpu(arg1, arg2, arg3 as u64),
+        #[cfg(target_arch = "x86_64")]
         SYS_VCPU_INJECT_IRQ => crate::arch::x86::virt::syscalls::sys_vcpu_inject_irq(arg1, arg2, arg3),
         #[cfg(target_arch = "x86_64")]
         SYS_VCPU_INJECT_EXCEPTION => crate::arch::x86::virt::syscalls::sys_vcpu_inject_exception(arg1, arg2, arg3),
         #[cfg(target_arch = "x86_64")]
         SYS_VCPU_INJECT_NMI => crate::arch::x86::virt::syscalls::sys_vcpu_inject_nmi(arg1, arg2),
         #[cfg(target_arch = "x86_64")]
-        SYS_VM_SET_CPUID => crate::arch::x86::virt::syscalls::sys_vm_set_cpuid(arg1, arg2 as u64, arg3),
+        SYS_VCPU_GET_MP_STATE => crate::arch::x86::virt::syscalls::sys_vcpu_get_mp_state(arg1, arg2),
         #[cfg(target_arch = "x86_64")]
-        SYS_VM_HW_INFO => crate::arch::x86::virt::syscalls::sys_vm_hw_info(),
+        SYS_VCPU_SET_MP_STATE => crate::arch::x86::virt::syscalls::sys_vcpu_set_mp_state(arg1, arg2, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_VCPU_TRANSLATE => crate::arch::x86::virt::syscalls::sys_vcpu_translate(arg1, arg2, arg3 as u64),
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);
@@ -838,6 +878,34 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
         SYS_VM_SET_CPUID => {
             let r = crate::arch::x86::virt::syscalls::sys_vm_set_cpuid(
                 arg1_64 as u32, arg2_64, arg3_64 as u32,
+            );
+            handlers::deliver_pending_signal_default();
+            return r as u64;
+        }
+        SYS_VM_GET_DIRTY_LOG => {
+            let r = crate::arch::x86::virt::syscalls::sys_vm_get_dirty_log(
+                arg1_64 as u32, arg2_64,
+            );
+            handlers::deliver_pending_signal_default();
+            return r as u64;
+        }
+        SYS_VCPU_GET_FPU => {
+            let r = crate::arch::x86::virt::syscalls::sys_vcpu_get_fpu(
+                arg1_64 as u32, arg2_64 as u32, arg3_64,
+            );
+            handlers::deliver_pending_signal_default();
+            return r as u64;
+        }
+        SYS_VCPU_SET_FPU => {
+            let r = crate::arch::x86::virt::syscalls::sys_vcpu_set_fpu(
+                arg1_64 as u32, arg2_64 as u32, arg3_64,
+            );
+            handlers::deliver_pending_signal_default();
+            return r as u64;
+        }
+        SYS_VCPU_TRANSLATE => {
+            let r = crate::arch::x86::virt::syscalls::sys_vcpu_translate(
+                arg1_64 as u32, arg2_64 as u32, arg3_64,
             );
             handlers::deliver_pending_signal_default();
             return r as u64;

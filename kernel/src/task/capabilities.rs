@@ -27,11 +27,14 @@ pub const CAP_DLL: CapSet        = 1 << 11;
 pub const CAP_THREAD: CapSet     = 1 << 12;
 pub const CAP_MANAGE_PERMS: CapSet = 1 << 13;
 pub const CAP_DEBUG: CapSet        = 1 << 14;
+/// Hypervisor — create and run VMs via the VT-x / AMD-V interface.
+/// Must be declared explicitly in Info.conf (`capabilities=hypervisor`).
+pub const CAP_HYPERVISOR: CapSet   = 1 << 15;
 
 // ---- Predefined sets ----
 
 /// All capabilities — for system apps (compositor, terminal, finder).
-pub const CAP_ALL: CapSet = (1 << 15) - 1; // bits 0..14
+pub const CAP_ALL: CapSet = (1 << 16) - 1; // bits 0..15
 
 /// Default for CLI programs spawned from terminal.
 pub const CAP_DEFAULT: CapSet = CAP_FILESYSTEM | CAP_PROCESS | CAP_PIPE
@@ -70,6 +73,7 @@ pub fn parse_capabilities(s: &str) -> CapSet {
             "thread" => CAP_THREAD,
             "manage_perms" => CAP_MANAGE_PERMS,
             "debug" => CAP_DEBUG,
+            "hypervisor" => CAP_HYPERVISOR,
             _ => 0,
         };
     }
@@ -276,6 +280,30 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_DEBUG_GET_MEM_MAP
         | syscall::SYS_DEBUG_WAIT_EVENT
         | syscall::SYS_THREAD_INFO_EX => CAP_DEBUG,
+
+        // Hardware virtualization — all VM/vCPU syscalls require CAP_HYPERVISOR.
+        syscall::SYS_VM_CREATE
+        | syscall::SYS_VM_DESTROY
+        | syscall::SYS_VM_SET_MEMORY
+        | syscall::SYS_VM_SET_CPUID
+        | syscall::SYS_VM_HW_INFO
+        | syscall::SYS_VM_GET_DIRTY_LOG
+        | syscall::SYS_VCPU_CREATE
+        | syscall::SYS_VCPU_RUN
+        | syscall::SYS_VCPU_GET_REGS
+        | syscall::SYS_VCPU_SET_REGS
+        | syscall::SYS_VCPU_GET_SREGS
+        | syscall::SYS_VCPU_SET_SREGS
+        | syscall::SYS_VCPU_GET_FPU
+        | syscall::SYS_VCPU_SET_FPU
+        | syscall::SYS_VCPU_INJECT_IRQ
+        | syscall::SYS_VCPU_INJECT_EXCEPTION
+        | syscall::SYS_VCPU_INJECT_NMI
+        | syscall::SYS_VCPU_PAUSE
+        | syscall::SYS_VCPU_RESUME
+        | syscall::SYS_VCPU_GET_MP_STATE
+        | syscall::SYS_VCPU_SET_MP_STATE
+        | syscall::SYS_VCPU_TRANSLATE => CAP_HYPERVISOR,
 
         // Unknown syscalls — let the dispatch handle it (returns u32::MAX)
         _ => 0,

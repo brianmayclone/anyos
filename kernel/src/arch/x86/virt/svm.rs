@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::{
     alloc_page_zeroed, free_page, rdmsr, wrmsr,
-    CpuidEntry, GuestGprs, GuestSregs, MemoryRegion, VmExitInfo,
+    CpuidEntry, GuestFpuState, GuestGprs, GuestSregs, MemoryRegion, VcpuMpState, VmExitInfo,
 };
 use crate::sync::spinlock::Spinlock;
 
@@ -121,8 +121,11 @@ struct SvmVcpu {
     vmcb_phys: u64,
     /// Non-RAX GPRs (RAX is in the VMCB state-save area).
     guest_gprs: GuestGprs,
+    guest_fpu: GuestFpuState,
     iopm_phys: u64,
     msrpm_phys: u64,
+    paused: bool,
+    mp_state: VcpuMpState,
 }
 
 struct SvmVm {
@@ -133,6 +136,9 @@ struct SvmVm {
     memory_regions: [Option<MemoryRegion>; 32],
     cpuid_table: [Option<CpuidEntry>; 64],
     cpuid_count: usize,
+    /// Physical address of the dirty-log page (allocated on demand, 0 = not yet alloc'd).
+    /// Layout identical to VMX: slot_idx × 64 u64 words per slot, 1 page total.
+    dirty_log_phys: u64,
 }
 
 static VMS: Spinlock<[Option<SvmVm>; MAX_VMS]> = Spinlock::new([const { None }; MAX_VMS]);
@@ -191,6 +197,8 @@ pub fn create_vm() -> u32 {
         None => return 0,
     };
 
+    let dirty_log_phys = alloc_page_zeroed().unwrap_or(0);
+
     let vm = SvmVm {
         id,
         active: true,
@@ -199,6 +207,7 @@ pub fn create_vm() -> u32 {
         memory_regions: [const { None }; 32],
         cpuid_table: [const { None }; 64],
         cpuid_count: 0,
+        dirty_log_phys,
     };
 
     let mut vms = VMS.lock();
@@ -233,6 +242,9 @@ pub fn destroy_vm(vm_id: u32) -> bool {
                     }
                 }
                 super::ept::destroy_npt(vm.npt_root);
+                if vm.dirty_log_phys != 0 {
+                    free_page(vm.dirty_log_phys);
+                }
                 *slot = None;
                 return true;
             }
@@ -389,8 +401,11 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         vm.vcpus[idx] = Some(SvmVcpu {
             vmcb_phys,
             guest_gprs: GuestGprs::default(),
+            guest_fpu: GuestFpuState::default(),
             iopm_phys,
             msrpm_phys,
+            paused: false,
+            mp_state: VcpuMpState::Runnable,
         });
     }
 
@@ -403,6 +418,11 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
     let vm = find_vm_mut(&mut vms, vm_id)?;
     let idx = vcpu_id as usize;
     let vcpu = vm.vcpus[idx].as_mut()?;
+
+    // Refuse to enter a paused or halted vCPU.
+    if vcpu.paused || vcpu.mp_state == VcpuMpState::Halted {
+        return None;
+    }
 
     let vmcb_phys = vcpu.vmcb_phys;
 
@@ -442,26 +462,61 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
             vmcb.state.rip, vmcb.state.cs.base
         );
 
-        // Handle CPUID internally
+        // Handle CPUID internally — fill registers, advance RIP, return synthetic reason.
         if exit_code == VMEXIT_CPUID {
             handle_cpuid_exit(&vm.cpuid_table[..vm.cpuid_count], vcpu, vmcb_phys);
             return Some(VmExitInfo {
-                reason: exit_code as u32,
+                reason: super::exit_reason::CPUID_EMULATED,
+                hw_reason: exit_code as u32,
                 ..Default::default()
             });
         }
 
+        // Map SVM exit code → portable exit_reason::* value.
+        let reason = match exit_code {
+            VMEXIT_CPUID     => super::exit_reason::CPUID,
+            VMEXIT_HLT       => super::exit_reason::HLT,
+            VMEXIT_IOIO      => super::exit_reason::IO_INSTRUCTION,
+            VMEXIT_MSR       => {
+                // exit_info1: 0=RDMSR, 1=WRMSR
+                if exit_info1 == 0 { super::exit_reason::RDMSR } else { super::exit_reason::WRMSR }
+            }
+            VMEXIT_SHUTDOWN  => super::exit_reason::SHUTDOWN,
+            VMEXIT_NPF       => super::exit_reason::EPT_VIOLATION,
+            // SVM-specific intercepts mapped to portable codes
+            0x6E             => super::exit_reason::VMCALL,  // VMMCALL
+            0x14             => super::exit_reason::CR_ACCESS, // CR write
+            0x15             => super::exit_reason::CR_ACCESS, // CR read (varies by CR#)
+            0x1C             => super::exit_reason::DR_ACCESS, // DR write
+            0x1D             => super::exit_reason::DR_ACCESS, // DR read
+            0x6F             => super::exit_reason::INVD,
+            0x65             => super::exit_reason::PAUSE,
+            0x73             => super::exit_reason::XSETBV,
+            0x7E             => super::exit_reason::SMI,
+            _                => exit_code as u32,
+        };
+
+        let guest_phys = if exit_code == VMEXIT_NPF { exit_info2 } else { 0 };
+
         let mut info = VmExitInfo {
-            reason: exit_code as u32,
+            reason,
+            hw_reason: exit_code as u32,
             qualification: exit_info1,
-            guest_phys_addr: if exit_code == VMEXIT_NPF { exit_info2 } else { 0 },
+            guest_phys_addr: guest_phys,
             ..Default::default()
         };
 
         match exit_code {
+            VMEXIT_HLT => {
+                // RIP is already advanced past HLT by VMRUN hardware.
+                vcpu.mp_state = VcpuMpState::Halted;
+                info.reason = super::exit_reason::HLT_EMULATED;
+            }
             VMEXIT_IOIO => {
-                // SVM exit_info1 for IOIO: bit 0 = IN(1)/OUT(0), bits 6:4 = size encoding,
-                // bits 31:16 = port
+                // AMD APM Vol. 2 §15.10.2, EXITINFO1 for IOIO:
+                //   bit 0   = IN(1) / OUT(0)
+                //   bits 6:4 = data size (SZ8=1, SZ16=2, SZ32=4)
+                //   bits 31:16 = port number
                 info.io_port = (exit_info1 >> 16) as u16;
                 info.is_read = (exit_info1 & 1) as u8;
                 let sz_bits = (exit_info1 >> 4) & 0x7;
@@ -473,22 +528,27 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                 }
             }
             VMEXIT_NPF => {
-                // AMD APM Vol. 2 §15.25.6, EXITINFO1 for #NPF:
-                //   Bit 1 = the access was a write (W=1).
-                //   Bit 0 = page was present at the time of the fault.
-                // So: is_read = !(write bit), i.e. bit 1 == 0 → read access.
-                info.is_read = if (exit_info1 >> 1) & 1 != 0 { 0 } else { 1 };
-                info.access_size = 4; // default; instruction decode needed for exact size
-                if info.is_read == 0 {
+                // AMD APM Vol. 2 §15.25.6: EXITINFO1 bit 1 = Write (W=1).
+                let is_write = (exit_info1 >> 1) & 1;
+                info.is_read = if is_write != 0 { 0 } else { 1 };
+                info.access_size = 4;
+                if is_write != 0 {
                     info.io_data = vcpu.guest_gprs.rax;
+                    mark_dirty_page(vm.dirty_log_phys, &vm.memory_regions, exit_info2);
                 }
             }
             VMEXIT_MSR => {
                 info.msr_index = vcpu.guest_gprs.rcx as u32;
-                info.is_read = if exit_info1 == 0 { 1 } else { 0 }; // 0=RDMSR, 1=WRMSR
-                if info.is_read == 0 {
-                    info.io_data = (vcpu.guest_gprs.rdx << 32) | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
+                info.is_read = if exit_info1 == 0 { 1 } else { 0 };
+                if exit_info1 != 0 {
+                    // WRMSR: value = EDX:EAX
+                    info.io_data = (vcpu.guest_gprs.rdx << 32)
+                        | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
                 }
+            }
+            0x6E /* VMMCALL */ => {
+                info.io_data  = vcpu.guest_gprs.rax; // hypercall number
+                info.io_data2 = vcpu.guest_gprs.rbx; // first arg
             }
             _ => {}
         }
@@ -761,6 +821,166 @@ pub fn inject_nmi(vm_id: u32, vcpu_id: u32) -> bool {
         vmcb.control.event_inj = info;
     }
     true
+}
+
+/// Pause a vCPU.
+pub fn vcpu_pause(vm_id: u32, vcpu_id: u32) -> bool {
+    let mut vms = VMS.lock();
+    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    vcpu.paused = true;
+    true
+}
+
+/// Resume a paused vCPU.
+pub fn vcpu_resume(vm_id: u32, vcpu_id: u32) -> bool {
+    let mut vms = VMS.lock();
+    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    vcpu.paused = false;
+    if vcpu.mp_state == VcpuMpState::Halted {
+        vcpu.mp_state = VcpuMpState::Runnable;
+    }
+    true
+}
+
+/// Get guest FPU state.
+pub fn get_fpu(vm_id: u32, vcpu_id: u32) -> Option<GuestFpuState> {
+    let vms = VMS.lock();
+    let vm = find_vm(&vms, vm_id)?;
+    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
+    Some(vcpu.guest_fpu)
+}
+
+/// Set guest FPU state.
+pub fn set_fpu(vm_id: u32, vcpu_id: u32, fpu: &GuestFpuState) -> bool {
+    let mut vms = VMS.lock();
+    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    vcpu.guest_fpu = *fpu;
+    true
+}
+
+/// Get vCPU multi-processor state.
+pub fn get_mp_state(vm_id: u32, vcpu_id: u32) -> Option<VcpuMpState> {
+    let vms = VMS.lock();
+    let vm = find_vm(&vms, vm_id)?;
+    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
+    Some(vcpu.mp_state)
+}
+
+/// Set vCPU multi-processor state.
+pub fn set_mp_state(vm_id: u32, vcpu_id: u32, state: VcpuMpState) -> bool {
+    let mut vms = VMS.lock();
+    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    vcpu.mp_state = state;
+    true
+}
+
+/// Translate a guest virtual address to guest physical using the NPT.
+///
+/// Reads CR3 from the VMCB and walks the guest's 4-level page tables
+/// (64-bit long-mode only), resolving each table's HPA via NPT.
+pub fn translate_gva(vm_id: u32, vcpu_id: u32, gva: u64) -> Option<u64> {
+    let vms = VMS.lock();
+    let vm = find_vm(&vms, vm_id)?;
+    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
+
+    unsafe {
+        let vmcb = &*(super::phys_to_virt(vcpu.vmcb_phys) as *const Vmcb);
+        let cr3  = vmcb.state.cr3 & !0xFFF;
+        let efer = vmcb.state.efer;
+
+        // Long mode only.
+        if efer & 0x500 != 0x500 { return None; }
+
+        let walk_gpa = |table_gpa: u64, idx: usize| -> Option<u64> {
+            let hpa = super::ept::npt_translate(vm.npt_root, table_gpa)?;
+            let virt = super::phys_to_virt(hpa & !0xFFF) as *const u64;
+            Some(unsafe { *virt.add(idx) })
+        };
+
+        let pml4_idx = ((gva >> 39) & 0x1FF) as usize;
+        let pml4e = walk_gpa(cr3, pml4_idx)?;
+        if pml4e & 1 == 0 { return None; }
+
+        let pdpt_gpa = pml4e & 0x000F_FFFF_FFFF_F000;
+        let pdpt_idx = ((gva >> 30) & 0x1FF) as usize;
+        let pdpte = walk_gpa(pdpt_gpa, pdpt_idx)?;
+        if pdpte & 1 == 0 { return None; }
+        if pdpte & (1 << 7) != 0 {
+            return Some((pdpte & 0x000F_FFFC_0000_0000) | (gva & 0x3FFF_FFFF));
+        }
+
+        let pd_gpa = pdpte & 0x000F_FFFF_FFFF_F000;
+        let pd_idx = ((gva >> 21) & 0x1FF) as usize;
+        let pde = walk_gpa(pd_gpa, pd_idx)?;
+        if pde & 1 == 0 { return None; }
+        if pde & (1 << 7) != 0 {
+            return Some((pde & 0x000F_FFFF_FFE0_0000) | (gva & 0x1F_FFFF));
+        }
+
+        let pt_gpa = pde & 0x000F_FFFF_FFFF_F000;
+        let pt_idx = ((gva >> 12) & 0x1FF) as usize;
+        let pte = walk_gpa(pt_gpa, pt_idx)?;
+        if pte & 1 == 0 { return None; }
+        Some((pte & 0x000F_FFFF_FFFF_F000) | (gva & 0xFFF))
+    }
+}
+
+/// Get dirty-page log for a memory slot (page-based, identical layout to VMX).
+pub fn get_dirty_log(vm_id: u32, slot: u32, bitmap: &mut [u64]) -> Option<u32> {
+    let mut vms = VMS.lock();
+    let vm = find_vm_mut(&mut vms, vm_id)?;
+    let slot_idx = slot as usize;
+    if slot_idx >= 32 || vm.dirty_log_phys == 0 { return None; }
+
+    const WORDS_PER_SLOT: usize = 64;
+    let base = super::phys_to_virt(vm.dirty_log_phys) as *mut u64;
+    let slot_offset = slot_idx * WORDS_PER_SLOT;
+    let copy_words = bitmap.len().min(WORDS_PER_SLOT);
+    let mut dirty_count = 0u32;
+    unsafe {
+        for i in 0..copy_words {
+            let w = *base.add(slot_offset + i);
+            bitmap[i] = w;
+            dirty_count += w.count_ones();
+        }
+        for i in 0..WORDS_PER_SLOT {
+            *base.add(slot_offset + i) = 0;
+        }
+    }
+    Some(dirty_count)
+}
+
+// ── Internal dirty-tracking helper ───────────────────────────────────────
+
+fn mark_dirty_page(
+    dirty_log_phys: u64,
+    regions: &[Option<MemoryRegion>; 32],
+    gpa: u64,
+) {
+    if dirty_log_phys == 0 { return; }
+    const WORDS_PER_SLOT: usize = 64;
+
+    for (slot_idx, region_opt) in regions.iter().enumerate() {
+        if let Some(r) = region_opt {
+            if gpa >= r.guest_phys && gpa < r.guest_phys + r.size {
+                let page_offset = ((gpa - r.guest_phys) >> 12) as usize;
+                let word = page_offset / 64;
+                let bit  = page_offset % 64;
+                if word < WORDS_PER_SLOT {
+                    let base = super::phys_to_virt(dirty_log_phys) as *mut u64;
+                    let idx  = slot_idx * WORDS_PER_SLOT + word;
+                    if idx < 512 {
+                        unsafe { *base.add(idx) |= 1u64 << bit; }
+                    }
+                }
+                return;
+            }
+        }
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

@@ -140,20 +140,29 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_DEBUG_GET_MEM_MAP, "debug_get_mem_map"),
     (SYS_DEBUG_WAIT_EVENT, "debug_wait_event"),
     (SYS_THREAD_INFO_EX, "thread_info_ex"),
-    // Hardware virtualization
+    // Hardware virtualization (VT-x / AMD-V)
     (SYS_VM_CREATE, "vm_create"),
     (SYS_VM_DESTROY, "vm_destroy"),
     (SYS_VM_SET_MEMORY, "vm_set_memory"),
+    (SYS_VM_SET_CPUID, "vm_set_cpuid"),
+    (SYS_VM_HW_INFO, "vm_hw_info"),
+    (SYS_VM_GET_DIRTY_LOG, "vm_get_dirty_log"),
     (SYS_VCPU_CREATE, "vcpu_create"),
     (SYS_VCPU_RUN, "vcpu_run"),
+    (SYS_VCPU_PAUSE, "vcpu_pause"),
+    (SYS_VCPU_RESUME, "vcpu_resume"),
     (SYS_VCPU_GET_REGS, "vcpu_get_regs"),
     (SYS_VCPU_SET_REGS, "vcpu_set_regs"),
     (SYS_VCPU_GET_SREGS, "vcpu_get_sregs"),
     (SYS_VCPU_SET_SREGS, "vcpu_set_sregs"),
+    (SYS_VCPU_GET_FPU, "vcpu_get_fpu"),
+    (SYS_VCPU_SET_FPU, "vcpu_set_fpu"),
     (SYS_VCPU_INJECT_IRQ, "vcpu_inject_irq"),
     (SYS_VCPU_INJECT_EXCEPTION, "vcpu_inject_exception"),
     (SYS_VCPU_INJECT_NMI, "vcpu_inject_nmi"),
-    (SYS_VM_SET_CPUID, "vm_set_cpuid"),
+    (SYS_VCPU_GET_MP_STATE, "vcpu_get_mp_state"),
+    (SYS_VCPU_SET_MP_STATE, "vcpu_set_mp_state"),
+    (SYS_VCPU_TRANSLATE, "vcpu_translate"),
 ];
 
 /// Look up the human-readable name for a syscall number.

@@ -127,6 +127,81 @@ fn ept_map_large_page(root: u64, gpa: u64, hpa: u64, writable: bool, executable:
     }
 }
 
+/// Translate a guest physical address to host physical address using the EPT.
+///
+/// Walks the 4-level EPT structure and returns the HPA, or `None` if the GPA
+/// is not mapped. Handles both 4KB leaf pages and 2MB large pages.
+pub fn ept_translate(root: u64, gpa: u64) -> Option<u64> {
+    unsafe {
+        let pml4_idx = ((gpa >> 39) & 0x1FF) as usize;
+        let pdpt_idx = ((gpa >> 30) & 0x1FF) as usize;
+        let pd_idx   = ((gpa >> 21) & 0x1FF) as usize;
+        let pt_idx   = ((gpa >> 12) & 0x1FF) as usize;
+
+        let pml4 = phys_to_virt(root) as *const u64;
+        let pml4e = *pml4.add(pml4_idx);
+        if pml4e & EPT_READ == 0 { return None; }
+
+        let pdpt = phys_to_virt(pml4e & ADDR_MASK) as *const u64;
+        let pdpte = *pdpt.add(pdpt_idx);
+        if pdpte & EPT_READ == 0 { return None; }
+        if pdpte & EPT_LARGE_PAGE != 0 {
+            // 1GB page (rare — not mapped by our ept_map_range but handle defensively)
+            return Some((pdpte & 0x000F_FFFC_0000_0000) | (gpa & 0x3FFF_FFFF));
+        }
+
+        let pd = phys_to_virt(pdpte & ADDR_MASK) as *const u64;
+        let pde = *pd.add(pd_idx);
+        if pde & EPT_READ == 0 { return None; }
+        if pde & EPT_LARGE_PAGE != 0 {
+            // 2MB page
+            return Some((pde & 0x000F_FFFF_FFE0_0000) | (gpa & 0x1F_FFFF));
+        }
+
+        let pt = phys_to_virt(pde & ADDR_MASK) as *const u64;
+        let pte = *pt.add(pt_idx);
+        if pte & EPT_READ == 0 { return None; }
+        Some((pte & ADDR_MASK) | (gpa & 0xFFF))
+    }
+}
+
+/// Translate a guest physical address to host physical address using the NPT.
+///
+/// Uses the standard x86-64 PTE format (NPT_PRESENT = bit 0). Handles 4KB
+/// and 2MB large pages.
+pub fn npt_translate(root: u64, gpa: u64) -> Option<u64> {
+    unsafe {
+        let pml4_idx = ((gpa >> 39) & 0x1FF) as usize;
+        let pdpt_idx = ((gpa >> 30) & 0x1FF) as usize;
+        let pd_idx   = ((gpa >> 21) & 0x1FF) as usize;
+        let pt_idx   = ((gpa >> 12) & 0x1FF) as usize;
+
+        let pml4 = phys_to_virt(root) as *const u64;
+        let pml4e = *pml4.add(pml4_idx);
+        if pml4e & NPT_PRESENT == 0 { return None; }
+
+        let pdpt = phys_to_virt(pml4e & ADDR_MASK) as *const u64;
+        let pdpte = *pdpt.add(pdpt_idx);
+        if pdpte & NPT_PRESENT == 0 { return None; }
+        // 1GB page (PS bit in PDPT, same bit position as NPT_LARGE)
+        if pdpte & NPT_LARGE != 0 {
+            return Some((pdpte & 0x000F_FFFC_0000_0000) | (gpa & 0x3FFF_FFFF));
+        }
+
+        let pd = phys_to_virt(pdpte & ADDR_MASK) as *const u64;
+        let pde = *pd.add(pd_idx);
+        if pde & NPT_PRESENT == 0 { return None; }
+        if pde & NPT_LARGE != 0 {
+            return Some((pde & 0x000F_FFFF_FFE0_0000) | (gpa & 0x1F_FFFF));
+        }
+
+        let pt = phys_to_virt(pde & ADDR_MASK) as *const u64;
+        let pte = *pt.add(pt_idx);
+        if pte & NPT_PRESENT == 0 { return None; }
+        Some((pte & ADDR_MASK) | (gpa & 0xFFF))
+    }
+}
+
 /// Perform an INVEPT (all-context, type 2) to flush EPT-derived TLB entries.
 ///
 /// Must be called after any EPT mapping change to avoid stale translations.
