@@ -1,4 +1,4 @@
-//! Networking — config, ping, DHCP, DNS, ARP.
+//! Networking — config, ping, DHCP, DNS, ARP, and WiFi.
 
 use crate::raw::*;
 
@@ -329,4 +329,136 @@ pub fn net_stats() -> Option<NetStats> {
         tcp_curr_established: u32::from_le_bytes(buf[96..100].try_into().unwrap()),
         tcp_conn_errors: u32::from_le_bytes(buf[100..104].try_into().unwrap()),
     })
+}
+
+// =========================================================================
+// WiFi
+// =========================================================================
+
+/// WiFi state codes returned by [`wifi_state`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WifiState {
+    Disconnected,
+    Scanning,
+    Associating,
+    Authenticating,
+    Connected,
+}
+
+/// Security mode of a scanned access point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WifiSecurity {
+    Open,
+    Wpa2Personal,
+}
+
+/// Information about a single scanned access point.
+#[derive(Debug, Clone)]
+pub struct BssInfo {
+    pub bssid: [u8; 6],
+    pub ssid:  [u8; 32],
+    pub ssid_len: usize,
+    pub channel: u8,
+    pub rssi: i8,
+    pub security: WifiSecurity,
+}
+
+/// Check whether a WiFi driver is present.
+pub fn wifi_available() -> bool {
+    syscall1(SYS_WIFI, 0) == 1
+}
+
+/// Get the current WiFi state.
+pub fn wifi_state() -> WifiState {
+    match syscall1(SYS_WIFI, 1) {
+        1 => WifiState::Scanning,
+        2 => WifiState::Associating,
+        3 => WifiState::Authenticating,
+        4 => WifiState::Connected,
+        _ => WifiState::Disconnected,
+    }
+}
+
+/// Start a new WiFi scan.  Results become available via [`wifi_scan_results`].
+pub fn wifi_scan() {
+    syscall1(SYS_WIFI, 2);
+}
+
+/// Read scanned access points.  Returns up to `max` entries.
+pub fn wifi_scan_results(max: usize) -> alloc::vec::Vec<BssInfo> {
+    if max == 0 { return alloc::vec::Vec::new(); }
+    let mut buf = alloc::vec![0u8; max * 48];
+    let count = syscall3(SYS_WIFI, 3, buf.as_mut_ptr() as u64, max as u64) as usize;
+    let count = count.min(max);
+    let mut out = alloc::vec::Vec::with_capacity(count);
+    for i in 0..count {
+        let off = i * 48;
+        let mut bssid = [0u8; 6];
+        let mut ssid = [0u8; 32];
+        bssid.copy_from_slice(&buf[off..off + 6]);
+        ssid.copy_from_slice(&buf[off + 6..off + 38]);
+        let ssid_len = buf[off + 38] as usize;
+        let channel   = buf[off + 39];
+        let rssi      = buf[off + 40] as i8;
+        let security  = if buf[off + 41] == 0 { WifiSecurity::Open } else { WifiSecurity::Wpa2Personal };
+        out.push(BssInfo { bssid, ssid, ssid_len: ssid_len.min(32), channel, rssi, security });
+    }
+    out
+}
+
+/// Connect to a WPA2 Personal network.
+/// `ssid` and `password` must each be at most 32 / 64 bytes respectively.
+/// The connection is asynchronous — poll [`wifi_state`] to track progress.
+/// Returns 0 on success (parameters accepted), u32::MAX on invalid args.
+pub fn wifi_connect(ssid: &str, password: &str) -> u32 {
+    let ssid_b = ssid.as_bytes();
+    let pw_b   = password.as_bytes();
+    if ssid_b.len() > 32 || pw_b.len() > 64 { return u32::MAX; }
+    // buf layout: [ssid_len:1, ssid:32, pw_len:1, pw:64] = 98 bytes
+    let mut buf = [0u8; 98];
+    buf[0] = ssid_b.len() as u8;
+    buf[1..1 + ssid_b.len()].copy_from_slice(ssid_b);
+    buf[33] = pw_b.len() as u8;
+    buf[34..34 + pw_b.len()].copy_from_slice(pw_b);
+    syscall3(SYS_WIFI, 4, buf.as_ptr() as u64, 98)
+}
+
+/// Disconnect from the current WiFi network.
+pub fn wifi_disconnect() {
+    syscall1(SYS_WIFI, 5);
+}
+
+/// WiFi connection status — SSID, BSSID, channel, and state.
+pub struct WifiStatus {
+    pub state: WifiState,
+    pub connected: bool,
+    pub channel: u8,
+    pub bssid: [u8; 6],
+    pub ssid: [u8; 32],
+    pub ssid_len: usize,
+}
+
+/// Get the current connection status.
+pub fn wifi_status() -> WifiStatus {
+    let mut buf = [0u8; 48];
+    syscall3(SYS_WIFI, 6, buf.as_mut_ptr() as u64, 48);
+    let state = match buf[0] {
+        1 => WifiState::Scanning,
+        2 => WifiState::Associating,
+        3 => WifiState::Authenticating,
+        4 => WifiState::Connected,
+        _ => WifiState::Disconnected,
+    };
+    let mut bssid = [0u8; 6];
+    let mut ssid  = [0u8; 32];
+    bssid.copy_from_slice(&buf[4..10]);
+    ssid.copy_from_slice(&buf[10..42]);
+    WifiStatus {
+        state,
+        connected: buf[1] != 0,
+        channel:   buf[2],
+        bssid,
+        ssid,
+        ssid_len: buf[42] as usize,
+    }
 }

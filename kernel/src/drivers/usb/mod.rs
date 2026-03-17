@@ -1,10 +1,12 @@
 //! USB subsystem — host controller drivers and class drivers.
 //!
-//! Supports UHCI (USB 1.x, I/O port based) and EHCI (USB 2.0, MMIO based).
+//! Supports UHCI (USB 1.x, I/O port based), EHCI (USB 2.0, MMIO based),
+//! and xHCI (USB 3.x/2.0/1.x, MMIO based).
 //! Class drivers: HID, Mass Storage, Hub, CDC-ACM (serial), CDC-ECM (Ethernet).
 
 pub mod uhci;
 pub mod ehci;
+pub mod xhci;
 pub mod hid;
 pub mod storage;
 pub mod hub;
@@ -19,9 +21,10 @@ use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UsbSpeed {
-    Low,  // 1.5 Mbps (USB 1.0)
-    Full, // 12 Mbps (USB 1.1)
-    High, // 480 Mbps (USB 2.0)
+    Low,   // 1.5 Mbps  (USB 1.0)
+    Full,  // 12 Mbps   (USB 1.1)
+    High,  // 480 Mbps  (USB 2.0)
+    Super, // 5+ Gbps   (USB 3.x)
 }
 
 // ── USB Controller Type ──────────────────────────
@@ -30,6 +33,7 @@ pub enum UsbSpeed {
 pub enum ControllerType {
     Uhci,
     Ehci,
+    Xhci,
 }
 
 // ── USB Device ───────────────────────────────────
@@ -107,6 +111,8 @@ pub fn register_device(dev: UsbDevice) {
             0x03 => hid::probe(&dev, iface),
             0x08 => storage::probe(&dev, iface),
             0x09 => hub::probe(&dev, iface),
+            // Vendor-specific class: check for known WiFi chips (e.g. RTL8188EU)
+            0xFF => crate::drivers::network::rtl8188eu::probe(&dev, iface),
             _ => {}
         }
     }
@@ -134,6 +140,7 @@ pub fn remove_device(port: u8, controller: ControllerType) {
 pub fn poll_all_controllers() {
     uhci::poll_ports();
     ehci::poll_ports();
+    xhci::poll_ports();
 }
 
 /// USB polling kernel thread: HID input every 10ms, port hot-plug every 500ms.
@@ -176,6 +183,7 @@ pub fn hid_control_transfer(
     match controller {
         ControllerType::Uhci => uhci::hid_control_transfer(addr, setup, data_in, data_len),
         ControllerType::Ehci => ehci::hid_control_transfer(addr, speed, max_packet, setup, data_in, data_len),
+        ControllerType::Xhci => xhci::hid_control_transfer(addr, speed, max_packet, setup, data_in, data_len),
     }
 }
 
@@ -201,6 +209,9 @@ pub fn bulk_transfer(
         ControllerType::Ehci => ehci::bulk_transfer(
             dev_addr, speed, endpoint, max_packet, toggle, data_phys, len,
         ),
+        ControllerType::Xhci => xhci::bulk_transfer(
+            dev_addr, speed, endpoint, max_packet, toggle, data_phys, len,
+        ),
     }
 }
 
@@ -224,9 +235,10 @@ fn class_name(class: u8) -> &'static str {
 
 fn speed_name(speed: UsbSpeed) -> &'static str {
     match speed {
-        UsbSpeed::Low => "Low-Speed",
-        UsbSpeed::Full => "Full-Speed",
-        UsbSpeed::High => "High-Speed",
+        UsbSpeed::Low   => "Low-Speed",
+        UsbSpeed::Full  => "Full-Speed",
+        UsbSpeed::High  => "High-Speed",
+        UsbSpeed::Super => "SuperSpeed",
     }
 }
 
@@ -484,7 +496,8 @@ pub fn init(pci: &PciDevice) {
             crate::serial_verbose_println!("  USB: OHCI controller detected (prog_if=0x10) — not supported");
         }
         0x30 => {
-            crate::serial_verbose_println!("  USB: xHCI controller detected (prog_if=0x30) — not supported");
+            crate::serial_verbose_println!("  USB: xHCI controller detected (prog_if=0x30)");
+            xhci::init_controller(pci);
         }
         _ => {
             crate::serial_verbose_println!("  USB: unknown controller type (prog_if={:#04x})", pci.prog_if);

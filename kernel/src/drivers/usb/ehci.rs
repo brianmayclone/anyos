@@ -134,7 +134,7 @@ fn mmio_read8(base: u64, offset: u32) -> u8 {
 
 fn make_qh_chars(dev_addr: u8, endpoint: u8, speed: UsbSpeed, max_packet: u16) -> u32 {
     let eps = match speed {
-        UsbSpeed::High => 2u32,
+        UsbSpeed::High | UsbSpeed::Super => 2u32,
         UsbSpeed::Full => 0u32,
         UsbSpeed::Low => 1u32,
     };

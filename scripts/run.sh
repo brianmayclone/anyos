@@ -8,7 +8,7 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU (or VMware Workstation)
-# Usage: ./run.sh [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--vmware-ws] [--arm64]
+# Usage: ./run.sh [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--vmware-ws] [--arm64]
 #   --vmware-ws Start VMware Workstation VM named 'anyos' and stream its COM1 serial output
 #   --vmware   VMware SVGA II (2D acceleration, HW cursor)
 #   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
@@ -27,6 +27,7 @@
 #   --bridge [IFACE]  Use TAP/bridge networking instead of NAT. IFACE = host bridge (default: br0).
 #              Requires: sudo ip link add br0 type bridge && sudo ip link set eth0 master br0
 #              Or use virbr0 (libvirt): --bridge virbr0
+#   --wifi     Add a second NIC emulating a Wi-Fi adapter (virtio-net, NAT, appears as wlan0 in anyOS)
 #   --arm64    Run ARM64 kernel on QEMU virt machine (serial-only, no graphics)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -52,6 +53,8 @@ KBD_LAYOUT=""
 EXPECT_KBD=false
 BRIDGE_IFACE=""
 EXPECT_BRIDGE=false
+WIFI_FLAGS=""
+WIFI_LABEL=""
 VMWARE_WS=false
 ARM64_MODE=false
 MIN_RES_W=1024
@@ -249,11 +252,15 @@ for arg in "$@"; do
             EXPECT_BRIDGE=true
             BRIDGE_IFACE="br0"  # default; overridden if next arg is an iface name
             ;;
+        --wifi)
+            WIFI_FLAGS="-netdev user,id=wifi0 -device virtio-net-pci,netdev=wifi0,mac=52:54:00:12:34:57"
+            WIFI_LABEL=", wifi: virtio-net (NAT)"
+            ;;
         --arm64)
             ARM64_MODE=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--arm64]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--arm64]"
             exit 1
             ;;
     esac
@@ -654,7 +661,7 @@ if [ -n "$LD_LIBRARY_PATH" ]; then
     export LD_LIBRARY_PATH="$CLEAN_LD"
 fi
 
-echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL"
+echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL"
 
 
 QEMU_CMD="$QEMU_BIN_ESC \
@@ -668,6 +675,7 @@ QEMU_CMD="$QEMU_BIN_ESC \
     $VGA_FLAGS \
     $DISPLAY_FLAGS \
     $NET_FLAGS \
+    $WIFI_FLAGS \
     $AUDIO_FLAGS \
     $USB_FLAGS \
     -no-reboot \

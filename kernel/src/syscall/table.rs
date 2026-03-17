@@ -108,6 +108,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_UDP_LIST, "udp_list"),
     (SYS_NET_STATS, "net_stats"),
     (SYS_PIPE_BYTES_AVAILABLE, "pipe_bytes_available"),
+    (SYS_WIFI, "wifi"),
     (SYS_GPU_3D_SUBMIT, "gpu_3d_submit"),
     (SYS_GPU_3D_QUERY, "gpu_3d_query"),
     (SYS_GPU_3D_SYNC, "gpu_3d_sync"),

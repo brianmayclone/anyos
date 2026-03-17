@@ -169,6 +169,7 @@ pub(crate) const SYS_UDP_RECVFROM: u32 = 153;
 pub(crate) const SYS_UDP_SET_OPT: u32 = 154;
 pub(crate) const SYS_UDP_LIST: u32 = 155;
 pub(crate) const SYS_NET_STATS: u32 = 156;
+pub(crate) const SYS_WIFI: u32 = 158;
 
 // Keyboard layout
 pub(crate) const SYS_KBD_GET_LAYOUT: u32 = 200;

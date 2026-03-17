@@ -8,6 +8,7 @@
 //! RX polling remains driver-specific (IRQ-driven, not routed through the trait).
 
 pub mod e1000;
+pub mod rtl8188eu;
 
 use alloc::boxed::Box;
 use crate::sync::spinlock::Spinlock;
@@ -62,6 +63,37 @@ pub fn is_available() -> bool {
 /// Check if the network link is up.
 pub fn link_up() -> bool {
     with_net(|d| d.link_up()).unwrap_or(false)
+}
+
+// ── WiFi (second network slot) ───────────────────────────────────────────────
+
+/// Global WiFi driver instance (e.g. RTL8188EU). Set during USB probe.
+static WIFI: Spinlock<Option<Box<dyn NetworkDriver>>> = Spinlock::new(None);
+
+/// Register a WiFi network driver (called from USB WiFi driver probe).
+pub fn register_wifi(driver: Box<dyn NetworkDriver>) {
+    crate::serial_verbose_println!("  Network: registered WiFi '{}'", driver.name());
+    *WIFI.lock() = Some(driver);
+}
+
+/// Access the registered WiFi driver within a closure.
+pub fn with_wifi<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut dyn NetworkDriver) -> R,
+{
+    let mut wifi = WIFI.lock();
+    let driver = wifi.as_mut()?;
+    Some(f(driver.as_mut()))
+}
+
+/// Transmit a packet via the registered WiFi driver.
+pub fn wifi_transmit(data: &[u8]) -> bool {
+    with_wifi(|d| d.transmit(data)).unwrap_or(false)
+}
+
+/// Check if a WiFi driver is registered.
+pub fn wifi_available() -> bool {
+    WIFI.lock().is_some()
 }
 
 // ── HAL integration ─────────────────────────────────────────────────────────

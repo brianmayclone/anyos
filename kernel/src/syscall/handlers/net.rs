@@ -544,3 +544,142 @@ pub fn sys_net_arp(buf_ptr: u32, buf_size: u32) -> u32 {
     }
     entries.len() as u32
 }
+
+// =========================================================================
+// WiFi (SYS_WIFI)
+// =========================================================================
+//
+// arg1 = cmd, arg2 = buf_ptr, arg3 = buf_len
+//
+// Commands:
+//   0  WIFI_AVAILABLE    — returns 1 if a WiFi driver is registered, else 0
+//   1  WIFI_STATE        — returns current state code:
+//                          0=Disconnected, 1=Scanning, 2=Associating,
+//                          3=Authenticating, 4=Connected
+//   2  WIFI_SCAN         — start a new scan; returns 0
+//   3  WIFI_SCAN_RESULTS — read scan results into buf; each entry 48 bytes:
+//                          [bssid:6, ssid:32, ssid_len:1, channel:1, rssi:1(i8), security:1, pad:6]
+//                          Returns count of entries written.
+//   4  WIFI_CONNECT      — connect; buf = [ssid_len:1, ssid:32, pw_len:1, pw:64]
+//                          Returns 0 on success (connection is async).
+//   5  WIFI_DISCONNECT   — disconnect; returns 0
+//   6  WIFI_STATUS       — 48-byte status buf:
+//                          [state:1, connected:1, channel:1, rssi:1, pad:2,
+//                           bssid:6, ssid:32, ssid_len:1, pad:3]
+
+/// sys_wifi — WiFi management syscall.
+/// arg1=cmd, arg2=buf_ptr, arg3=buf_len
+pub fn sys_wifi(cmd: u32, buf_ptr: u32, _buf_len: u32) -> u32 {
+    match cmd {
+        // 0 — is WiFi hardware available?
+        0 => {
+            if crate::drivers::network::wifi_available() { 1 } else { 0 }
+        }
+
+        // 1 — get WiFi state code
+        1 => {
+            use crate::net::wifi::WifiState;
+            match crate::net::wifi::get_state() {
+                WifiState::Disconnected    => 0,
+                WifiState::Scanning        => 1,
+                WifiState::Associating {..} => 2,
+                WifiState::Authenticating {..} => 3,
+                WifiState::Connected {..}  => 4,
+            }
+        }
+
+        // 2 — start scan
+        2 => {
+            // Sets WiFi state to Scanning; the RTL8188EU poll thread will
+            // detect the Scanning state and perform an active channel sweep.
+            crate::net::wifi::start_scan();
+            0
+        }
+
+        // 3 — read scan results
+        3 => {
+            if buf_ptr == 0 { return 0; }
+            let results = crate::net::wifi::get_scan_results();
+            let max = if _buf_len > 0 { (_buf_len as usize / 48).min(results.len()) } else { results.len() };
+            let count = max;
+            if count == 0 { return 0; }
+            let buf = unsafe {
+                core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count * 48)
+            };
+            for (i, bss) in results.iter().take(count).enumerate() {
+                let off = i * 48;
+                buf[off..off + 6].copy_from_slice(&bss.bssid);
+                buf[off + 6..off + 38].copy_from_slice(&bss.ssid);
+                buf[off + 38] = bss.ssid_len as u8;
+                buf[off + 39] = bss.channel;
+                buf[off + 40] = bss.rssi as u8;
+                buf[off + 41] = match bss.security {
+                    crate::net::wifi::WifiSecurity::Open => 0,
+                    crate::net::wifi::WifiSecurity::Wpa2Personal => 1,
+                };
+                // pad [42..48]
+                for b in &mut buf[off + 42..off + 48] { *b = 0; }
+            }
+            count as u32
+        }
+
+        // 4 — connect to a network
+        4 => {
+            if buf_ptr == 0 { return u32::MAX; }
+            // buf layout: [ssid_len:1, ssid:32, pw_len:1, pw:64] = 98 bytes
+            let raw = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, 98) };
+            let ssid_len = raw[0] as usize;
+            if ssid_len > 32 { return u32::MAX; }
+            let ssid = &raw[1..1 + ssid_len];
+            let pw_len = raw[33] as usize;
+            if pw_len > 64 { return u32::MAX; }
+            let pw = &raw[34..34 + pw_len];
+            crate::net::wifi::connect(ssid, pw);
+            0
+        }
+
+        // 5 — disconnect
+        5 => {
+            crate::net::wifi::disconnect();
+            0
+        }
+
+        // 6 — get connection status (48-byte struct)
+        6 => {
+            if buf_ptr == 0 { return u32::MAX; }
+            use crate::net::wifi::WifiState;
+            let state = crate::net::wifi::get_state();
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 48) };
+            for b in buf.iter_mut() { *b = 0; }
+            match &state {
+                WifiState::Disconnected => {
+                    buf[0] = 0; buf[1] = 0;
+                }
+                WifiState::Scanning => {
+                    buf[0] = 1; buf[1] = 0;
+                }
+                WifiState::Associating { bssid, ssid, ssid_len, channel } => {
+                    buf[0] = 2; buf[1] = 0; buf[2] = *channel;
+                    buf[4..10].copy_from_slice(bssid);
+                    buf[10..42].copy_from_slice(ssid);
+                    buf[42] = *ssid_len as u8;
+                }
+                WifiState::Authenticating { bssid, ssid, ssid_len } => {
+                    buf[0] = 3; buf[1] = 0;
+                    buf[4..10].copy_from_slice(bssid);
+                    buf[10..42].copy_from_slice(ssid);
+                    buf[42] = *ssid_len as u8;
+                }
+                WifiState::Connected { bssid, ssid, ssid_len, channel } => {
+                    buf[0] = 4; buf[1] = 1; buf[2] = *channel;
+                    buf[4..10].copy_from_slice(bssid);
+                    buf[10..42].copy_from_slice(ssid);
+                    buf[42] = *ssid_len as u8;
+                }
+            }
+            0
+        }
+
+        _ => u32::MAX,
+    }
+}

@@ -7,7 +7,7 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU on Windows
-# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Virgl] [-Res "WxH"] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-Kvm] [-Fwd "H:G","H:G"] [-VBox] [-VMwareWS]
+# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Virgl] [-Res "WxH"] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-Kvm] [-Fwd "H:G","H:G"] [-Wifi] [-VBox] [-VMwareWS]
 #
 #   -VBox     Start VirtualBox VM named 'anyos' and stream its COM1 serial output here
 #   -VMwareWS Start VMware Workstation VM named 'anyos' and stream its COM1 serial output here
@@ -24,6 +24,7 @@
 #   -Kvm      Enable hardware virtualization (WHPX on Windows)
 #   -Fwd H:G  Forward host port H to guest port G (TCP). Repeatable.
 #             Example: -Fwd "2222:22","8080:8080"
+#   -Wifi     Add a second NIC emulating a Wi-Fi adapter (virtio-net, NAT, appears as wlan0 in anyOS)
 
 param(
     [switch]$VBox,
@@ -38,6 +39,7 @@ param(
     [switch]$Usb,
     [switch]$Uefi,
     [switch]$Kvm,
+    [switch]$Wifi,
     [string]$Res = "",
     [string[]]$Fwd = @()
 )
@@ -596,6 +598,15 @@ foreach ($rule in $Fwd) {
 }
 $args += "-netdev", "user,id=net0$fwdRules"
 $args += "-device", "e1000,netdev=net0"
+
+# Wi-Fi adapter (second NIC, virtio-net, separate NAT netdev)
+$wifiLabel = ""
+if ($Wifi) {
+    $args += "-netdev", "user,id=wifi0"
+    $args += "-device", "virtio-net-pci,netdev=wifi0,mac=52:54:00:12:34:57"
+    $wifiLabel = ", wifi: virtio-net (NAT)"
+}
+
 $args += "-no-reboot"
 $args += "-no-shutdown"
 
@@ -655,5 +666,5 @@ if ($Fwd.Count -gt 0) {
 
 # ── Launch ───────────────────────────────────────────────────────────────────
 
-Write-Host "Starting anyOS with $vgaLabel (-vga $vga), disk: $driveLabel$audioLabel$usbLabel$kvmLabel$resLabel$fwdLabel" -ForegroundColor Cyan
+Write-Host "Starting anyOS with $vgaLabel (-vga $vga), disk: $driveLabel$audioLabel$usbLabel$kvmLabel$resLabel$fwdLabel$wifiLabel" -ForegroundColor Cyan
 & $qemu @args

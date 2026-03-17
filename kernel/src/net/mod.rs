@@ -12,6 +12,7 @@ pub mod dhcp;
 pub mod dns;
 pub mod tcp;
 pub mod interfaces;
+pub mod wifi;
 
 #[allow(unused_imports)]
 use alloc::vec::Vec;
@@ -112,6 +113,11 @@ pub fn poll_rx() {
 
         // Process CDC-ECM (USB Ethernet) RX packets
         while let Some(packet) = crate::drivers::usb::cdc_ecm::recv_packet() {
+            ethernet::handle_frame(&packet);
+        }
+
+        // Poll RTL8188EU WiFi RX
+        while let Some(packet) = crate::drivers::network::rtl8188eu::recv_packet() {
             ethernet::handle_frame(&packet);
         }
     }
