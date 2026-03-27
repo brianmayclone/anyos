@@ -215,6 +215,27 @@ pub fn bulk_transfer(
     }
 }
 
+/// Perform a single interrupt IN transfer on a HID endpoint.
+/// Returns `Ok(n)` bytes received, or `Ok(0)` if device NAKed (no data).
+/// `toggle`: caller's data toggle state, updated on return.
+pub fn interrupt_in_transfer(
+    dev_addr: u8,
+    controller: ControllerType,
+    speed: UsbSpeed,
+    endpoint: u8,
+    max_packet: u16,
+    toggle: &mut u8,
+    buf: &mut [u8],
+) -> Result<usize, &'static str> {
+    match controller {
+        ControllerType::Uhci => uhci::interrupt_in_transfer(
+            dev_addr, speed, endpoint, max_packet, toggle, buf,
+        ),
+        // EHCI/xHCI: fall back to no-data for now (not yet implemented)
+        _ => Ok(0),
+    }
+}
+
 fn class_name(class: u8) -> &'static str {
     match class {
         0x00 => "Composite",

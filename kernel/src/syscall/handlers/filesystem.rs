@@ -18,15 +18,19 @@ pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
 
     match crate::fs::vfs::read_dir(&path) {
         Ok(entries) => {
+            if path.ends_with("/bin") || path.ends_with("/sbin") {
+                crate::serial_println!("[readdir] '{}': {} entries, buf_size={}", path, entries.len(), buf_size);
+            }
             let entry_size = 64u32;
             if buf_ptr != 0 && buf_size > 0
                 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64)
             {
                 let max_entries = (buf_size / entry_size) as usize;
+                let written = entries.len().min(max_entries);
                 let buf = unsafe {
                     core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize)
                 };
-                for (i, entry) in entries.iter().enumerate().take(max_entries) {
+                for (i, entry) in entries.iter().enumerate().take(written) {
                     let off = i * entry_size as usize;
                     buf[off] = match entry.file_type {
                         crate::fs::file::FileType::Regular => 0,
@@ -43,8 +47,11 @@ pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                     buf[off + 8..off + 8 + name_len].copy_from_slice(&name_bytes[..name_len]);
                     buf[off + 8 + name_len] = 0;
                 }
+                // Return only the count actually written to the buffer
+                written as u32
+            } else {
+                entries.len() as u32
             }
-            entries.len() as u32
         }
         Err(e) => fs_err(e),
     }
@@ -306,4 +313,29 @@ pub fn sys_list_mounts(buf_ptr: u32, buf_len: u32) -> u32 {
         *dst.add(to_copy) = 0; // null-terminate
     }
     to_copy as u32
+}
+
+/// sys_statfs - Get filesystem statistics for a mount point.
+/// arg1=path_ptr (null-terminated string)
+/// arg2=unused
+/// arg3=buf_ptr (output: 3 x u64 LE: total_bytes, used_bytes, free_bytes = 24 bytes)
+/// Returns 0 on success, u32::MAX on error.
+pub fn sys_statfs(path_ptr: u32, _path_len: u32, buf_ptr: u32) -> u32 {
+    if path_ptr == 0 || buf_ptr == 0 { return u32::MAX; }
+    if !is_valid_user_ptr(buf_ptr as u64, 24) { return u32::MAX; }
+
+    let path = unsafe { read_user_str(path_ptr) };
+    if path.is_empty() { return u32::MAX; }
+    let path = resolve_path(path);
+
+    match crate::fs::vfs::statfs(&path) {
+        Some(st) => {
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 24) };
+            buf[0..8].copy_from_slice(&st.total_bytes.to_le_bytes());
+            buf[8..16].copy_from_slice(&st.used_bytes.to_le_bytes());
+            buf[16..24].copy_from_slice(&st.free_bytes.to_le_bytes());
+            0
+        }
+        None => u32::MAX,
+    }
 }

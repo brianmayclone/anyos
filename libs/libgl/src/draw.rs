@@ -34,11 +34,57 @@ pub fn draw_elements(
 
 // ── Hardware draw path via drv_loader ──────────────────────────────────
 
+/// Bind all active GL textures to the virgl driver's sampler slots.
+///
+/// Scans the bound program's FS IR for TexSample instructions. If any exist,
+/// iterates the GL texture units and uploads + binds each non-zero texture
+/// to the corresponding virgl sampler slot.
+fn bind_textures_hw(ctx: &GlContext, drv: &drv_loader::GpuDrv) {
+    let upload_fn = match drv.drv_upload_texture {
+        Some(f) => f,
+        None => return,
+    };
+    let bind_fn = match drv.drv_bind_sampler_view {
+        Some(f) => f,
+        None => return,
+    };
+
+    // Check if the FS IR uses any TexSample instructions
+    let prog = match ctx.shaders.get_program(ctx.current_program) {
+        Some(p) if p.linked => p,
+        _ => return,
+    };
+    let fs_ir = match &prog.fs_ir {
+        Some(ir) => ir,
+        None => return,
+    };
+    let has_tex = fs_ir.instructions.iter().any(|i| {
+        matches!(i, crate::compiler::ir::Inst::TexSample(_, _, _))
+    });
+    if !has_tex { return; }
+
+    // Bind each active texture unit that has a texture bound
+    for unit in 0..crate::state::MAX_TEXTURE_UNITS {
+        let tex_id = ctx.bound_textures[unit];
+        if tex_id == 0 { continue; }
+        let tex = match ctx.textures.get(tex_id) {
+            Some(t) if !t.data.is_empty() && t.width > 0 => t,
+            _ => continue,
+        };
+        let data_ptr = tex.data.as_ptr() as *const u8;
+        let data_len = (tex.data.len() * 4) as u32;
+        let res_id = (upload_fn)(tex_id, data_ptr, data_len, tex.width, tex.height);
+        if res_id != 0 {
+            (bind_fn)(unit as u32, res_id);
+        }
+    }
+}
+
 /// Upload all uniform values to the hardware driver as a constant buffer.
 ///
-/// Packs uniforms into a contiguous vec4 array indexed by location.
-/// Each uniform location maps to one vec4 slot in CONST[0][location].
-/// Sends the same buffer to both vertex and fragment shader stages.
+/// Packs uniforms into a contiguous vec4 array matching the TGSI slot layout:
+/// mat4 = 4 consecutive vec4 slots, mat3 = 3 slots, everything else = 1 slot.
+/// Slot offsets are cumulative (same order as the compiler assigns LoadUniform indices).
 fn upload_uniforms(ctx: &GlContext, drv: &GpuDrv) {
     let prog_id = ctx.current_program;
     let program = match ctx.shaders.get_program(prog_id) {
@@ -47,29 +93,30 @@ fn upload_uniforms(ctx: &GlContext, drv: &GpuDrv) {
     };
     if program.uniforms.is_empty() { return; }
 
-    // Find max location to size the constant buffer
-    let max_loc = program.uniforms.iter().map(|u| {
-        let slots = match u.size {
-            16 => 4, // mat4 = 4 vec4 slots
-            9 => 3,  // mat3 = 3 vec4 slots (padded)
-            _ => 1,  // vec1..vec4 = 1 slot
-        };
-        u.location as u32 + slots
-    }).max().unwrap_or(0);
-
-    // Build contiguous float buffer (max_loc * 4 floats)
-    let mut buf: alloc::vec::Vec<f32> = alloc::vec![0.0; max_loc as usize * 4];
+    // Compute cumulative slot offsets matching the TGSI backend assignment.
+    // mat4 = 4 vec4 slots, mat3 = 3 vec4 slots (padded), all others = 1 slot.
+    let mut slot_offsets: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(program.uniforms.len());
+    let mut total_slots = 0u32;
     for u in &program.uniforms {
-        let base = u.location as usize * 4;
+        slot_offsets.push(total_slots);
+        total_slots += match u.size {
+            16 => 4,
+            9  => 3,
+            _  => 1,
+        };
+    }
+
+    // Build contiguous float buffer (total_slots * 4 floats)
+    let mut buf: alloc::vec::Vec<f32> = alloc::vec![0.0; total_slots as usize * 4];
+    for (i, u) in program.uniforms.iter().enumerate() {
+        let base = slot_offsets[i] as usize * 4;
         match u.size {
             16 => {
-                // mat4: 16 floats = 4 vec4 slots
-                for i in 0..16 {
-                    if base + i < buf.len() { buf[base + i] = u.value[i]; }
+                for j in 0..16 {
+                    if base + j < buf.len() { buf[base + j] = u.value[j]; }
                 }
             }
             9 => {
-                // mat3: 9 floats into 3 vec4 slots (padded with 0)
                 for row in 0..3 {
                     for col in 0..3 {
                         let idx = base + row * 4 + col;
@@ -78,16 +125,14 @@ fn upload_uniforms(ctx: &GlContext, drv: &GpuDrv) {
                 }
             }
             _ => {
-                // vec1..vec4: 4 floats
-                for i in 0..4 {
-                    if base + i < buf.len() { buf[base + i] = u.value[i]; }
+                for j in 0..4 {
+                    if base + j < buf.len() { buf[base + j] = u.value[j]; }
                 }
             }
         }
     }
 
-    let count = max_loc; // number of vec4 slots
-    (drv.drv_set_uniform_f32)(0, count, buf.as_ptr());
+    (drv.drv_set_uniform_f32)(0, total_slots, buf.as_ptr());
 }
 
 /// Hardware-accelerated draw arrays via loaded .drv.
@@ -146,6 +191,7 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
         core::slice::from_raw_parts(vertex_data.as_ptr() as *const u8, vertex_data.len() * 4)
     };
 
+    bind_textures_hw(ctx, drv);
     upload_uniforms(ctx, drv);
 
     (drv.drv_draw_arrays)(
@@ -240,6 +286,7 @@ fn draw_elements_hw(
     // Pass index data starting at the offset
     let index_start = &index_data[offset..];
 
+    bind_textures_hw(ctx, drv);
     upload_uniforms(ctx, drv);
 
     (drv.drv_draw_elements)(

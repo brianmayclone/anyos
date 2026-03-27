@@ -311,12 +311,16 @@ fn iso_name_to_string(bytes: &[u8]) -> String {
     result
 }
 
-/// Read a single 2048-byte CD block from USB CDROM or ATAPI drive.
+/// Read a single 2048-byte CD block from USB CDROM, AHCI ATAPI, or IDE ATAPI.
 #[cfg(target_arch = "x86_64")]
 fn read_cd_block(lba: u32, buf: &mut [u8]) -> bool {
     // Try USB CDROM first (via storage I/O override)
     if let Some(disk_id) = crate::drivers::usb::storage::first_cdrom_disk_id() {
         return crate::drivers::storage::read_via_override(disk_id, lba, 1, buf);
+    }
+    // Try AHCI ATAPI CD-ROM (e.g. CoreVM, modern QEMU)
+    if crate::drivers::storage::ahci::atapi_is_present() {
+        return crate::drivers::storage::ahci::read_cd_sectors(lba, 1, buf);
     }
     // Fall back to IDE ATAPI CD-ROM
     crate::drivers::storage::atapi::read_sectors(lba, 1, buf)

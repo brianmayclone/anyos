@@ -316,6 +316,10 @@ pub fn probe_and_bind_all() {
         }
 
         if let Some(entry) = best {
+            crate::serial_println!("  HAL: probing {:02x}:{:02x}.{} ({:04x}:{:04x} class {:02x}:{:02x}) -> driver match",
+                pci_dev.bus, pci_dev.device, pci_dev.function,
+                pci_dev.vendor_id, pci_dev.device_id,
+                pci_dev.class_code, pci_dev.subclass);
             if let Some(mut driver) = (entry.factory)(pci_dev) {
                 let dtype = driver.driver_type();
                 let type_idx = dtype as usize;

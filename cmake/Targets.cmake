@@ -11,6 +11,7 @@ add_custom_target(programs DEPENDS
   ${SYSROOT_DIR}/Libraries/system/buildsystem/.stamp
   ${C_TOOLCHAIN_DEPS}
   ${CXX_TOOLCHAIN_DEPS}
+  bootloader_sysroot
 )
 
 # ============================================================

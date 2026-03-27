@@ -169,6 +169,16 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
     result
 }
 
+/// Flush storage write cache to persistent media.
+pub fn flush() {
+    io_lock_acquire();
+    match unsafe { BACKEND } {
+        StorageBackend::Ahci => { ahci::flush(); }
+        _ => {} // ATA/NVMe/SCSI: no explicit flush needed or not supported
+    }
+    io_lock_release();
+}
+
 // ── HAL integration ─────────────────────────────────────────────────────────
 
 use alloc::boxed::Box;

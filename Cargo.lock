@@ -601,6 +601,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "install"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "installer"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
 name = "jp2a"
 version = "0.1.0"
 dependencies = [
@@ -614,6 +630,15 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libjs",
+]
+
+[[package]]
+name = "keyboard"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
 ]
 
 [[package]]
@@ -1144,6 +1169,13 @@ dependencies = [
 
 [[package]]
 name = "svc"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "sync"
 version = "0.1.0"
 dependencies = [
  "anyos_std",

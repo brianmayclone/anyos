@@ -103,27 +103,83 @@ fn read_config_file(path: &str) -> Option<String> {
     core::str::from_utf8(&data[..bytes_read]).ok().map(String::from)
 }
 
+/// Check if the system booted from a live CD (root filesystem is ISO 9660).
+fn is_live_cd_boot() -> bool {
+    let mut buf = [0u8; 1024];
+    let n = fs::list_mounts(&mut buf);
+    if n == 0 || n == u32::MAX {
+        return false;
+    }
+    if let Ok(text) = core::str::from_utf8(&buf[..n as usize]) {
+        for line in text.split('\n') {
+            let mut parts = line.splitn(2, '\t');
+            let mount = parts.next().unwrap_or("");
+            let fstype = parts.next().unwrap_or("");
+            if mount == "/" && fstype == "iso9660" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+const INSTALLER_NAME: &str = "Installer";
+const INSTALLER_PATH: &str = "/Applications/Installer.app";
+
+/// If booting from live CD, ensure the Installer is in the dock (after Finder).
+fn ensure_installer_on_live_cd(items: &mut Vec<DockItem>) {
+    if !is_live_cd_boot() {
+        return;
+    }
+    // Don't add if already present
+    if items.iter().any(|it| it.bin_path == INSTALLER_PATH) {
+        return;
+    }
+    // Insert after Finder (index 1), or at the beginning if no Finder
+    let pos = items.iter().position(|it| it.bin_path == FINDER_PATH)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    items.insert(pos, DockItem {
+        name: String::from(INSTALLER_NAME),
+        bin_path: String::from(INSTALLER_PATH),
+        icon: None,
+        icon_hires: None,
+        running: false,
+        tid: 0,
+        pinned: true,
+    });
+}
+
 /// Load dock items from config file.
 ///
 /// Format: one item per line: `name|path`
 /// Lines starting with '#' are comments, empty lines are skipped.
 pub fn load_dock_config() -> Vec<DockItem> {
     let path = config_path();
-    if let Some(text) = read_config_file(&path) {
-        let items = parse_config(&text);
-        if !items.is_empty() {
-            return items;
+    let mut items = if let Some(text) = read_config_file(&path) {
+        let parsed = parse_config(&text);
+        if !parsed.is_empty() {
+            parsed
+        } else if path != SYSTEM_CONFIG_PATH {
+            // User config was empty, try system fallback
+            read_config_file(SYSTEM_CONFIG_PATH)
+                .map(|t| parse_config(&t))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
         }
-    }
+    } else if path != SYSTEM_CONFIG_PATH {
+        read_config_file(SYSTEM_CONFIG_PATH)
+            .map(|t| parse_config(&t))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
-    // If user config was empty/missing and it's not the system path, try system fallback
-    if path != SYSTEM_CONFIG_PATH {
-        if let Some(text) = read_config_file(SYSTEM_CONFIG_PATH) {
-            return parse_config(&text);
-        }
-    }
+    // On live CD boot, add Installer to the dock
+    ensure_installer_on_live_cd(&mut items);
 
-    Vec::new()
+    items
 }
 
 /// Save pinned dock items to the dock config file.

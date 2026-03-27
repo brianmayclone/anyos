@@ -8,27 +8,69 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU (or VMware Workstation)
-# Usage: ./run.sh [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--vmware-ws] [--arm64]
-#   --vmware-ws Start VMware Workstation VM named 'anyos' and stream its COM1 serial output
-#   --vmware   VMware SVGA II (2D acceleration, HW cursor)
-#   --std      Bochs VGA / Standard VGA (double-buffering, no accel) [default]
-#   --virtio   VirtIO GPU (modern transport, ARGB cursor, 2D only)
-#   --virgl    VirtIO GPU + virglrenderer (3D acceleration via host OpenGL)
-#   --res WxH  Set display size. VirtIO/virgl: sets GPU EDID resolution. std/vmware: sets QEMU GTK window size. Example: --res 1280x1024
-#   --ide      Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
-#   --cdrom    Boot from ISO image (CD-ROM) instead of hard drive
-#   --audio    Enable AC'97 audio device
-#   --usb      Enable USB controller with keyboard + mouse devices
-#   --uefi     Boot via UEFI (OVMF) instead of BIOS
-#   --kvm      Enable hardware virtualization (KVM on Linux, HVF on macOS)
-#   --kbd LAY  Set keyboard layout: us, de, ch, fr, pl (default: keep current)
-#   --fwd H:G  Forward host port H to guest port G (TCP). Repeatable.
-#              Example: --fwd 2222:22 --fwd 8080:8080
-#   --bridge [IFACE]  Use TAP/bridge networking instead of NAT. IFACE = host bridge (default: br0).
-#              Requires: sudo ip link add br0 type bridge && sudo ip link set eth0 master br0
-#              Or use virbr0 (libvirt): --bridge virbr0
-#   --wifi     Add a second NIC emulating a Wi-Fi adapter (virtio-net, NAT, appears as wlan0 in anyOS)
-#   --arm64    Run ARM64 kernel on QEMU virt machine (serial-only, no graphics)
+#
+# Usage: ./run.sh [OPTIONS...]
+#
+# ── GPU / Display ─────────────────────────────────────────────────────────────
+#   --std         Bochs VGA / Standard VGA (double-buffering, no accel) [default]
+#   --vmware      VMware SVGA II (2D acceleration, HW cursor)
+#   --virtio      VirtIO GPU (modern transport, ARGB cursor, 2D only)
+#   --virgl       VirtIO GPU + virglrenderer (3D acceleration via host OpenGL)
+#   --res WxH     Set display resolution. Min: 1024x768.
+#                   VirtIO/virgl: sets GPU EDID resolution (guest sees this natively).
+#                   std/vmware: sets QEMU GTK window size.
+#                   Example: --res 1280x1024, --res 1920x1080
+#
+# ── Input Devices ─────────────────────────────────────────────────────────────
+#   (none)        PS/2 keyboard + PS/2 mouse + vmmouse backdoor [default].
+#                   vmmouse provides absolute mouse positioning via VMware backdoor.
+#                   Works with all GPU modes — no USB needed.
+#   --usb         USB keyboard + USB mouse (boot protocol, relative positioning).
+#                   Uses UHCI controller + interrupt transfers.
+#   --tablet      USB tablet (absolute mouse positioning, no keyboard).
+#                   PS/2 keyboard still handles keyboard input.
+#                   Good for HiDPI displays or when window resizing causes cursor offset.
+#   --kbd LAYOUT  Set keyboard layout in anyOS: us, de, ch, fr, pl
+#                   Writes /System/etc/inputmon.conf and rebuilds the disk image.
+#
+# ── Storage ───────────────────────────────────────────────────────────────────
+#   --ide         Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
+#   --cdrom       Boot from ISO image (CD-ROM) instead of hard drive
+#   --uefi        Boot via UEFI (OVMF firmware) instead of BIOS
+#
+# ── CPU / Acceleration ────────────────────────────────────────────────────────
+#   --kvm         Enable hardware virtualization (KVM on Linux, HVF on macOS).
+#                   Significant speedup. Requires /dev/kvm (Linux) or HV framework (macOS).
+#
+# ── Audio ─────────────────────────────────────────────────────────────────────
+#   --audio       Enable AC'97 audio device (PulseAudio on Linux, CoreAudio on macOS)
+#
+# ── Network ───────────────────────────────────────────────────────────────────
+#   --fwd H:G     Forward host TCP port H to guest port G. Repeatable.
+#                   Example: --fwd 2222:22 --fwd 8080:80
+#   --bridge [IF] Use TAP/bridge networking instead of NAT (default: br0).
+#                   Requires: qemu-bridge-helper + /etc/qemu/bridge.conf
+#                   Example: --bridge virbr0
+#   --wifi        Add a second NIC as Wi-Fi adapter (virtio-net, NAT, appears as wlan0)
+#
+# ── VMware Workstation ────────────────────────────────────────────────────────
+#   --vmware-ws   Start VMware Workstation VM named 'anyos' and stream COM1 serial.
+#                   Converts anyos.img to VMDK, configures serial pipe, starts VM.
+#                   Requires: VBoxManage (for VMDK conversion) + vmrun.
+#
+# ── ARM64 ─────────────────────────────────────────────────────────────────────
+#   --arm64       Run ARM64 kernel on QEMU aarch64 virt machine (serial-only).
+#                   Uses: virtio-gpu, virtio-keyboard, virtio-mouse, GICv3.
+#
+# ── Examples ──────────────────────────────────────────────────────────────────
+#   ./run.sh                                    # Bochs VGA, PS/2 input, NAT
+#   ./run.sh --kvm                              # Same + KVM acceleration
+#   ./run.sh --virtio --res 1920x1080 --kvm     # VirtIO GPU, PS/2 input, KVM
+#   ./run.sh --virgl --kvm --audio              # 3D accelerated + audio
+#   ./run.sh --kvm --tablet --kbd ch            # KVM, USB tablet, Swiss layout
+#   ./run.sh --kvm --usb --kbd de              # KVM, USB keyboard+mouse, German layout
+#   ./run.sh --kvm --fwd 2222:22 --fwd 80:80   # KVM + port forwarding
+#   ./run.sh --vmware --kvm --bridge virbr0     # VMware SVGA, KVM, bridged network
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -167,10 +209,6 @@ for arg in "$@"; do
         --virtio)
             VGA="virtio"
             VGA_LABEL="Virtio GPU (paravirtualized, 2D)"
-            # VirtIO GPU has no VMware backdoor — add USB tablet for absolute mouse positioning
-            if [ -z "$USB_FLAGS" ]; then
-                USB_FLAGS="-usb -device usb-tablet"
-            fi
             ;;
         --virgl)
             VGA="virgl"
@@ -184,9 +222,6 @@ for arg in "$@"; do
                     echo "Install with: sudo apt-get install qemu-system-x86"
                     exit 1
                 fi
-            fi
-            if [ -z "$USB_FLAGS" ]; then
-                USB_FLAGS="-usb -device usb-kbd -device usb-tablet"
             fi
             ;;
         --ide)
@@ -206,6 +241,10 @@ for arg in "$@"; do
         --usb)
             USB_FLAGS="-usb -device usb-kbd -device usb-mouse"
             USB_LABEL=", USB: keyboard + mouse"
+            ;;
+        --tablet)
+            USB_FLAGS="-usb -device usb-tablet"
+            USB_LABEL=", USB: tablet (absolute mouse)"
             ;;
         --uefi)
             UEFI_MODE=true
@@ -260,7 +299,7 @@ for arg in "$@"; do
             ARM64_MODE=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--audio] [--usb] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--arm64]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--arm64]"
             exit 1
             ;;
     esac
@@ -599,11 +638,10 @@ elif [ -n "$RESOLUTION" ]; then
     RES_LABEL=", res: ${RESOLUTION}"
 fi
 
-# Ensure usb-tablet is always present for correct absolute mouse positioning
-# (prevents cursor offset when window is resized or on HiDPI displays)
-if [ -z "$USB_FLAGS" ]; then
-    USB_FLAGS="-usb -device usb-tablet"
-fi
+# Default input: PS/2 keyboard + PS/2 mouse + vmmouse backdoor (absolute positioning).
+# The VMware backdoor (vmport) is always present in QEMU's 'pc' machine type,
+# regardless of GPU mode. Works with all VGA backends (std, vmware, virtio, virgl).
+# --usb / --tablet override this with USB HID devices (interrupt transfers).
 
 # Network: bridge or NAT (user)
 NET_FLAGS=""
@@ -659,6 +697,17 @@ unset GIO_MODULE_DIR
 if [ -n "$LD_LIBRARY_PATH" ]; then
     CLEAN_LD=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v '/snap/' | tr '\n' ':' | sed 's/:$//')
     export LD_LIBRARY_PATH="$CLEAN_LD"
+fi
+
+# Force GTK to use X11 backend to avoid NVIDIA GBM initialization errors
+# (NVIDIA proprietary driver fails GBM probe; GTK falls back anyway, but spams stderr)
+export GDK_BACKEND=x11
+
+# For virgl: force Mesa EGL instead of NVIDIA EGL.
+# NVIDIA's EGL GBM backend (10_nvidia.json) fails for virgl off-screen rendering;
+# Mesa (50_mesa.json) works correctly via renderD128.
+if [ "$VGA" = "virgl" ]; then
+    export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 fi
 
 echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL"

@@ -738,6 +738,23 @@ fn find_file_completions(partial: &str) -> Vec<String> {
     results
 }
 
+fn scan_dir_for_commands(dir: &str, partial: &str, results: &mut Vec<String>) {
+    let mut entry_buf = [0u8; 64 * 256];
+    let count = fs::readdir(dir, &mut entry_buf);
+    if count == u32::MAX { return; }
+    for i in 0..count as usize {
+        let base = i * 64;
+        let entry_type = entry_buf[base];
+        let name_len = (entry_buf[base + 1] as usize).min(56);
+        if entry_type != 0 { continue; } // Only regular files
+        if let Ok(name) = core::str::from_utf8(&entry_buf[base + 8..base + 8 + name_len]) {
+            if name.starts_with(partial) && !results.iter().any(|r: &String| r.as_str() == name) {
+                results.push(String::from(name));
+            }
+        }
+    }
+}
+
 fn find_command_completions(partial: &str) -> Vec<String> {
     let mut results = Vec::new();
 
@@ -755,23 +772,15 @@ fn find_command_completions(partial: &str) -> Vec<String> {
         if let Ok(path_str) = core::str::from_utf8(&path_buf[..path_len as usize]) {
             for dir in path_str.split(':') {
                 if dir.is_empty() { continue; }
-                let mut entry_buf = [0u8; 64 * 64];
-                let count = fs::readdir(dir, &mut entry_buf);
-                if count == u32::MAX { continue; }
-                for i in 0..count as usize {
-                    let base = i * 64;
-                    let entry_type = entry_buf[base];
-                    let name_len = (entry_buf[base + 1] as usize).min(56);
-                    if entry_type != 0 { continue; } // Only regular files
-                    if let Ok(name) = core::str::from_utf8(&entry_buf[base + 8..base + 8 + name_len]) {
-                        if name.starts_with(partial) && !results.iter().any(|r: &String| r.as_str() == name) {
-                            results.push(String::from(name));
-                        }
-                    }
-                }
+                scan_dir_for_commands(dir, partial, &mut results);
             }
         }
     }
+
+    // Always scan /System/bin and /System/sbin even if not in PATH
+    // (PATH may not be set in GUI sessions)
+    scan_dir_for_commands("/System/bin", partial, &mut results);
+    scan_dir_for_commands("/System/sbin", partial, &mut results);
 
     results
 }
@@ -1083,12 +1092,12 @@ fn main() {
                                         // On double-tab, show all matches
                                         if tab_count >= 2 {
                                             buf.feed(b"\r\n");
-                                            let show_count = matches.len().min(30);
+                                            let show_count = matches.len();
                                             for i in 0..show_count {
                                                 buf.feed(matches[i].as_bytes());
                                                 buf.feed(b"  ");
                                             }
-                                            if matches.len() > 30 {
+                                            if matches.len() > 200 {
                                                 let msg = format!("... ({} total)", matches.len());
                                                 buf.feed(msg.as_bytes());
                                             }
@@ -1111,11 +1120,11 @@ fn main() {
                             KEY_PAGE_UP => shell_proc.write(b"\x1b[5~"),
                             KEY_PAGE_DOWN => shell_proc.write(b"\x1b[6~"),
                             _ => {
-                                if char_val > 0 && char_val < 128 {
-                                    let c = char_val as u8;
-                                    if (mods & MOD_CTRL) != 0 {
+                                if char_val > 0 {
+                                    if (mods & MOD_CTRL) != 0 && char_val < 128 {
                                         // Forward Ctrl combinations as control codes
                                         // Ctrl+A=1, Ctrl+B=2, ..., Ctrl+Z=26
+                                        let c = char_val as u8;
                                         let ctrl_code = if c >= b'a' && c <= b'z' {
                                             c - b'a' + 1
                                         } else if c >= b'A' && c <= b'Z' {
@@ -1130,11 +1139,17 @@ fn main() {
                                                 input_line.clear();
                                             }
                                         }
-                                    } else if c >= b' ' {
-                                        shell_proc.write(&[c]);
-                                        // Local echo
-                                        buf.feed(&[c]);
-                                        input_line.push(c);
+                                    } else if let Some(ch) = char::from_u32(char_val) {
+                                        if !ch.is_control() {
+                                            let mut utf8_buf = [0u8; 4];
+                                            let encoded = ch.encode_utf8(&mut utf8_buf);
+                                            shell_proc.write(encoded.as_bytes());
+                                            // Local echo
+                                            buf.feed(encoded.as_bytes());
+                                            if char_val < 128 {
+                                                input_line.push(char_val as u8);
+                                            }
+                                        }
                                     }
                                 }
                                 tab_count = 0;

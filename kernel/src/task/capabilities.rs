@@ -127,6 +127,7 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_MOUNT
         | syscall::SYS_UMOUNT
         | syscall::SYS_LIST_MOUNTS
+        | syscall::SYS_STATFS
         | syscall::SYS_LSEEK
         | syscall::SYS_FSTAT
         | syscall::SYS_CHDIR

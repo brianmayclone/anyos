@@ -104,7 +104,7 @@ struct LibrenderExportsPartial {
     _draw_rect: usize,
     _draw_circle: usize,
     _draw_circle_aa: usize,
-    _draw_rounded_rect_aa: usize,
+    draw_rounded_rect_aa: extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, i32, u32),
     _fill_gradient_h: usize,
     _fill_gradient_v: usize,
     _blend_color: usize,
@@ -500,11 +500,17 @@ pub fn draw_bottom_shadow(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, c
 }
 
 /// Draw a 2px focus ring around a rounded rect using the accent color.
-/// Cost: 2 draw_rounded_border calls. Used for keyboard focus indication.
+/// Uses anti-aliased rounded border from librender for smooth corners.
 pub fn draw_focus_ring(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, color: u32) {
     if w > 2 && h > 2 {
-        draw_rounded_border(s, x - 1, y - 1, w + 2, h + 2, r + 1, color);
-        draw_rounded_border(s, x - 2, y - 2, w + 4, h + 4, r + 2, crate::theme::with_alpha(color, 100));
+        (librender().draw_rounded_rect_aa)(
+            s.pixels, s.width, s.height,
+            x - 1, y - 1, w + 2, h + 2, (r + 1) as i32, color,
+        );
+        (librender().draw_rounded_rect_aa)(
+            s.pixels, s.width, s.height,
+            x - 2, y - 2, w + 4, h + 4, (r + 2) as i32, crate::theme::with_alpha(color, 100),
+        );
     }
 }
 

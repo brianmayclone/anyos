@@ -1244,6 +1244,10 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         if declared == CAP_ALL {
             // System app (capabilities=all) — full access, no permission restriction
             CAP_ALL
+        } else if crate::fs::vfs::root_is_iso9660() {
+            // Live-CD boot: root is read-only ISO 9660, so permission files
+            // cannot be stored.  Grant all declared capabilities directly.
+            declared
         } else {
             // Intersect declared caps with stored user permissions:
             // - auto-granted caps (DLL, THREAD, SHM, EVENT, PIPE) always apply

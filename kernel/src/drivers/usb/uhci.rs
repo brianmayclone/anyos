@@ -72,6 +72,7 @@ struct UhciQh {
 
 // ── Controller State ────────────────────────────
 
+#[derive(Clone, Copy)]
 struct UhciController {
     io_base: u16,
     frame_list_phys: u64,
@@ -474,7 +475,7 @@ fn enumerate_device(ctrl: &UhciController, port: u8, speed: UsbSpeed) {
         crate::serial_verbose_println!("  UHCI: port {} — SET_ADDRESS failed: {}", port, e);
         return;
     }
-    delay_ms(20); // Device needs time to change address (QEMU requires longer)
+    delay_ms(20);
 
     // Step 3: GET_DESCRIPTOR (full 18 bytes) at new address
     let setup_full = SetupPacket {
@@ -792,18 +793,25 @@ pub fn init_controller(pci: &PciDevice) {
         port_connected: [false; 2],
     };
 
-    // Scan ports for connected devices and record initial state
-    scan_ports(&ctrl);
+    // Store controller in UHCI_CTRL BEFORE scan_ports — hub::probe() called
+    // during enumeration needs UHCI_CTRL to be set for hid_control_transfer().
+    // scan_ports uses a local COPY so it doesn't hold the lock — hub::probe can
+    // safely re-acquire it for its own control transfers.
+    let ctrl_copy = ctrl;
+    *UHCI_CTRL.lock() = Some(ctrl);
+
+    scan_ports(&ctrl_copy);
 
     // Record which ports have devices connected
-    let ports = [REG_PORTSC1, REG_PORTSC2];
-    for (i, &port_reg) in ports.iter().enumerate() {
-        let status = reg_read16(io_base, port_reg);
-        ctrl.port_connected[i] = status & PORT_CCS != 0;
+    {
+        let mut guard = UHCI_CTRL.lock();
+        let ctrl = guard.as_mut().unwrap();
+        let ports = [REG_PORTSC1, REG_PORTSC2];
+        for (i, &port_reg) in ports.iter().enumerate() {
+            let status = reg_read16(ctrl.io_base, port_reg);
+            ctrl.port_connected[i] = status & PORT_CCS != 0;
+        }
     }
-
-    // Store controller state for hot-plug polling
-    *UHCI_CTRL.lock() = Some(ctrl);
 }
 
 /// Poll UHCI ports for hot-plug events. Called periodically from the USB poll thread.
@@ -854,6 +862,117 @@ pub fn poll_ports() {
             super::storage::disconnect(port_num, super::ControllerType::Uhci);
             super::remove_device(port_num, super::ControllerType::Uhci);
         }
+    }
+}
+
+// ── NAK bit (not a real error — device has no data yet) ────────────
+const TD_NAK: u32 = 1 << 19;
+
+/// Perform a single interrupt IN transfer on a non-zero endpoint.
+/// Returns `Ok(n)` with number of bytes received, or `Ok(0)` if the device NAKed
+/// (no data available). The caller must track and provide the `data_toggle`.
+///
+/// UHCI TDs for interrupt and bulk are identical — the difference is only
+/// scheduling (frame list placement). Since our async QH is already in every
+/// frame list slot, a one-shot interrupt TD executes within 1ms.
+pub fn interrupt_in_transfer(
+    dev_addr: u8,
+    speed: UsbSpeed,
+    endpoint: u8,
+    max_packet: u16,
+    toggle: &mut u8,
+    buf_out: &mut [u8],
+) -> Result<usize, &'static str> {
+    let guard = UHCI_CTRL.lock();
+    let ctrl = guard.as_ref().ok_or("UHCI not initialized")?;
+
+    let td_phys = ctrl.td_pool_phys;
+    let data_phys = ctrl.data_buf_phys + 128; // offset to avoid collision with control xfers
+
+    // Clear any stale data
+    unsafe { core::ptr::write_bytes(data_phys as *mut u8, 0, max_packet as usize); }
+
+    // Clear pending status
+    reg_write16(ctrl.io_base, REG_USBSTS, 0xFFFF);
+
+    // Build a single IN TD
+    let ep_num = endpoint & 0x0F;
+    let mut ctrl_status = TD_ACTIVE | TD_IOC | TD_SPD | (3 << 27); // active, IOC, SPD, 3 retries
+    if speed == UsbSpeed::Low {
+        ctrl_status |= 1 << 26; // Low-speed bit
+    }
+
+    unsafe {
+        let td = td_phys as *mut UhciTd;
+        (*td).link_ptr = LP_TERMINATE;
+        (*td).ctrl_status = ctrl_status;
+        (*td).token = make_token(PID_IN, dev_addr, ep_num, *toggle, max_packet);
+        (*td).buffer_ptr = data_phys as u32;
+    }
+
+    // Point QH to our TD
+    unsafe {
+        let qh = ctrl.qh_phys as *mut UhciQh;
+        (*qh).element_link = td_phys as u32;
+    }
+
+    // Wait for completion (short timeout — 10ms is plenty for HID)
+    let timeout = 10u32;
+    let start = crate::arch::x86::pit::get_ticks();
+
+    loop {
+        let status = unsafe {
+            let td = td_phys as *mut UhciTd;
+            core::ptr::read_volatile(&(*td).ctrl_status)
+        };
+
+        if status & TD_ACTIVE == 0 {
+            // Deactivate QH
+            unsafe {
+                let qh = ctrl.qh_phys as *mut UhciQh;
+                (*qh).element_link = LP_TERMINATE;
+            }
+
+            // NAK = no data available (normal for interrupt polling)
+            if status & TD_NAK != 0 {
+                return Ok(0);
+            }
+
+            // Check for real errors (exclude NAK bit from error mask)
+            if status & (TD_ERR_MASK & !TD_NAK) != 0 {
+                return Err("interrupt transfer error");
+            }
+
+            // Success — calculate actual length from ActLen field (bits 10:0)
+            let act_len_raw = status & 0x7FF;
+            let act_len = if act_len_raw == 0x7FF { 0 } else { (act_len_raw + 1) as usize };
+
+            // Toggle data toggle for next transfer
+            *toggle ^= 1;
+
+            // Copy received data
+            let copy_len = act_len.min(buf_out.len());
+            if copy_len > 0 {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        data_phys as *const u8,
+                        buf_out.as_mut_ptr(),
+                        copy_len,
+                    );
+                }
+            }
+            return Ok(copy_len);
+        }
+
+        if crate::arch::x86::pit::get_ticks().wrapping_sub(start) > timeout {
+            unsafe {
+                let qh = ctrl.qh_phys as *mut UhciQh;
+                (*qh).element_link = LP_TERMINATE;
+            }
+            return Ok(0); // Timeout = no data (not an error for HID)
+        }
+
+        core::hint::spin_loop();
     }
 }
 

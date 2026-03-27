@@ -234,8 +234,12 @@ pub fn mount(mount_path: &str, device: &str, fs_type: u32) -> u32 {
     let mut mp_buf = [0u8; 257];
     prepare_path(mount_path, &mut mp_buf);
 
+    // Device string is NOT a file path — do not resolve relative to CWD.
+    // It can be a numeric device ID ("3") or a network path ("//server/share").
     let mut dev_buf = [0u8; 257];
-    prepare_path(device, &mut dev_buf);
+    let dev_len = device.len().min(256);
+    dev_buf[..dev_len].copy_from_slice(&device.as_bytes()[..dev_len]);
+    dev_buf[dev_len] = 0;
 
     sys_err(syscall3(SYS_MOUNT, mp_buf.as_ptr() as u64, dev_buf.as_ptr() as u64, fs_type as u64))
 }
@@ -249,10 +253,42 @@ pub fn umount(mount_path: &str) -> u32 {
     sys_err(syscall1(SYS_UMOUNT, buf.as_ptr() as u64))
 }
 
+/// Flush all filesystem metadata and storage write caches to disk.
+pub fn sync() {
+    syscall0(SYS_SYNC);
+}
+
 /// List all mount points. Writes tab-separated "path\tfstype\n" entries to buf.
 /// Returns bytes written, or u32::MAX on error.
 pub fn list_mounts(buf: &mut [u8]) -> u32 {
     sys_err(syscall2(SYS_LIST_MOUNTS, buf.as_mut_ptr() as u64, buf.len() as u64))
+}
+
+/// Filesystem statistics returned by [`statfs`].
+pub struct StatFs {
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub free_bytes: u64,
+}
+
+/// Get filesystem statistics for a mount point (e.g. "/", "/mnt/cdrom0").
+/// Returns `None` if the path is not a valid mount point.
+pub fn statfs(path: &str) -> Option<StatFs> {
+    let mut path_buf = [0u8; 257];
+    prepare_path(path, &mut path_buf);
+    let mut out = [0u8; 24];
+    let ret = syscall3(
+        SYS_STATFS,
+        path_buf.as_ptr() as u64,
+        path.len() as u64,
+        out.as_mut_ptr() as u64,
+    );
+    if ret == u32::MAX { return None; }
+    Some(StatFs {
+        total_bytes: u64::from_le_bytes(out[0..8].try_into().unwrap()),
+        used_bytes: u64::from_le_bytes(out[8..16].try_into().unwrap()),
+        free_bytes: u64::from_le_bytes(out[16..24].try_into().unwrap()),
+    })
 }
 
 /// Change file permissions. Returns 0 on success.

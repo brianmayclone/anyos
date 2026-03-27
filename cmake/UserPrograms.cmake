@@ -547,6 +547,7 @@ add_rust_user_program(env)
 add_rust_user_program(grep)
 add_rust_user_program(find)
 add_rust_user_program(sort)
+add_rust_user_program(sync)
 add_rust_user_program(uniq)
 add_rust_user_program(rev)
 add_rust_user_program(stat)
@@ -626,6 +627,7 @@ add_rust_sbin_program(addgroup)
 add_rust_sbin_program(delgroup)
 add_rust_user_program(passwd)
 add_rust_sbin_program(fdisk)
+add_rust_sbin_program(install)
 
 # true/false: package names are true_cmd/false_cmd (Rust keywords) but binaries named true/false
 add_custom_command(
@@ -708,6 +710,8 @@ endif()
 add_app(anymail     ${CMAKE_SOURCE_DIR}/apps/anymail       "anyMail")
 add_app(anyzilla    ${CMAKE_SOURCE_DIR}/apps/anyzilla      "anyzilla")
 add_app(notifications ${CMAKE_SOURCE_DIR}/apps/notifications "Notifications")
+add_app(installer    ${CMAKE_SOURCE_DIR}/apps/installer     "Installer")
+add_app(keyboard     ${CMAKE_SOURCE_DIR}/apps/keyboard      "Keyboard")
 
 # ============================================================
 # Session host, Desktop shell, Crash dialog
@@ -869,6 +873,22 @@ add_custom_command(
           ${CMAKE_SOURCE_DIR}/sysroot/System/compositor/compositor.conf
           ${CMAKE_SOURCE_DIR}/sysroot/System/etc/inputmon.conf
   COMMENT "Populating sysroot from tools/sysroot"
+)
+
+# Copy bootloader binaries to sysroot so the installer can find them
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/boot/stage1.bin ${SYSROOT_DIR}/boot/stage2.bin
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/boot
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_BINARY_DIR}/stage1.bin ${SYSROOT_DIR}/boot/stage1.bin
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_BINARY_DIR}/stage2.bin ${SYSROOT_DIR}/boot/stage2.bin
+  DEPENDS ${CMAKE_BINARY_DIR}/stage1.bin ${CMAKE_BINARY_DIR}/stage2.bin
+  COMMENT "Installing bootloader binaries to sysroot"
+)
+add_custom_target(bootloader_sysroot DEPENDS
+  ${SYSROOT_DIR}/boot/stage1.bin
+  ${SYSROOT_DIR}/boot/stage2.bin
 )
 
 # Install service config files only if they don't already exist in the build

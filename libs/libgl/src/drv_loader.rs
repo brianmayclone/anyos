@@ -230,6 +230,16 @@ pub struct GpuDrv {
 
     // Readback (optional — NULL if not supported)
     pub drv_readback: Option<extern "C" fn(*mut u8, u32) -> u32>,
+
+    // Resize render target (optional — NULL if not supported)
+    pub drv_resize: Option<extern "C" fn(u32, u32) -> u32>,
+
+    // Texture upload: (gl_tex_id, data_ptr, byte_len, width, height) -> virgl_res_id
+    // Returns 0 on failure. Caches by gl_tex_id (subsequent calls return cached id).
+    pub drv_upload_texture: Option<extern "C" fn(u32, *const u8, u32, u32, u32) -> u32>,
+
+    // Sampler view bind: (slot, virgl_res_id) — binds texture resource to FS SAMP[slot]
+    pub drv_bind_sampler_view: Option<extern "C" fn(u32, u32)>,
 }
 
 static mut DRV: Option<GpuDrv> = None;
@@ -336,6 +346,9 @@ fn init_inner(width: u32, height: u32) -> Option<()> {
             drv_finish:           resolve(&handle, "drv_finish")?,
             drv_present:          resolve(&handle, "drv_present")?,
             drv_readback:         resolve_opt(&handle, "drv_readback"),
+            drv_resize:           resolve_opt(&handle, "drv_resize"),
+            drv_upload_texture:   resolve_opt(&handle, "drv_upload_texture"),
+            drv_bind_sampler_view: resolve_opt(&handle, "drv_bind_sampler_view"),
             _handle: handle,
         };
 

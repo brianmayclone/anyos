@@ -6,6 +6,7 @@ use crate::fs::exfat::ExFatFs;
 use crate::fs::fat::FatFs;
 use crate::fs::iso9660::Iso9660Fs;
 use crate::fs::ntfs::NtfsFs;
+use crate::fs::overlayfs::OverlayFs;
 use crate::fs::smbfs::SmbFs;
 use crate::fs::file::{DirEntry, FileDescriptor, FileFlags, FileType, OpenFile};
 use crate::sync::mutex::Mutex;
@@ -50,6 +51,11 @@ struct VfsState {
     /// SMB network filesystem instances (mount_path, instance).
     /// Vec because multiple different SMB shares can be mounted simultaneously.
     smbfs: Vec<(String, SmbFs)>,
+    /// Mounted exFAT instances (mount_path, instance) for additional partitions.
+    /// Separate from `exfat_fs` which is the root filesystem.
+    mounted_exfat: Vec<(String, ExFatFs)>,
+    /// OverlayFS: writable RAM layer over ISO 9660 (active when booting from CD).
+    overlay_fs: Option<OverlayFs>,
 }
 
 impl VfsState {
@@ -91,6 +97,8 @@ pub enum FsType {
     DevFs,
     /// SMB/CIFS network filesystem.
     Smb,
+    /// Overlay filesystem (RamFS over ISO 9660).
+    Overlay,
 }
 
 /// Trait that all filesystem drivers must implement for the VFS.
@@ -357,6 +365,8 @@ pub fn init() {
         ntfs_fs: None,
         devfs: None,
         smbfs: Vec::new(),
+        mounted_exfat: Vec::new(),
+        overlay_fs: None,
     });
 
     // Reserve fd 0, 1, 2
@@ -466,6 +476,14 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
     });
 }
 
+/// Remove a mount point entry by path (used to clean up failed mounts).
+pub fn remove_mount(path: &str) {
+    let mut vfs = VFS.lock();
+    if let Some(ref mut state) = *vfs {
+        state.mount_points.retain(|mp| mp.path != path);
+    }
+}
+
 /// Mount the device filesystem at /dev, bridging built-in virtual devices
 /// with HAL-registered hardware devices.
 pub fn mount_devfs() {
@@ -480,6 +498,27 @@ pub fn mount_devfs() {
         device_id: 0,
     });
     crate::serial_verbose_println!("  Mounted DevFs at '/dev'");
+}
+
+/// Enable the OverlayFS: writable RAM layer over the ISO 9660 root filesystem.
+/// Call this after mounting ISO 9660 as root (CD-ROM boot without a disk filesystem).
+pub fn enable_overlay() {
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().expect("VFS not initialized");
+    if state.iso9660_fs.is_some() && state.overlay_fs.is_none() {
+        state.overlay_fs = Some(OverlayFs::new());
+        crate::serial_println!("[VFS] OverlayFS enabled (RAM overlay over ISO 9660)");
+    }
+}
+
+/// Check if the overlay filesystem is active.
+pub fn has_overlay() -> bool {
+    let vfs = VFS.lock();
+    if let Some(ref state) = *vfs {
+        state.overlay_fs.is_some()
+    } else {
+        false
+    }
 }
 
 /// Open a file by path with the given flags. Returns a file descriptor on success.
@@ -569,6 +608,60 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     return Ok(slot_id);
                 }
                 return Err(FsError::NotFound);
+            }
+            FsType::ExFat => {
+                let mount_path_owned = String::from(mount_path);
+                let exfat = state.mounted_exfat.iter_mut()
+                    .find(|(p, _)| *p == mount_path_owned)
+                    .map(|(_, fs)| fs)
+                    .ok_or(FsError::IoError)?;
+                let lookup_result = exfat.lookup(relative_path);
+                let (inode, file_type, size, parent_cluster) = match lookup_result {
+                    Ok((inode, file_type, size)) => {
+                        if flags.truncate && flags.write {
+                            let (parent_path, filename) = split_parent_name(relative_path)?;
+                            let (pr_inode, _, _) = exfat.lookup(parent_path)?;
+                            let (pc, _) = crate::fs::exfat::decode_inode(pr_inode);
+                            exfat.truncate_file(pc, filename)?;
+                            (0u32, file_type, 0u32, pc)
+                        } else {
+                            let pc = if flags.write {
+                                let (parent_path, _) = split_parent_name(relative_path)?;
+                                exfat.lookup(parent_path)
+                                    .map(|(i, _, _)| crate::fs::exfat::decode_inode(i).0)
+                                    .unwrap_or(0)
+                            } else { 0 };
+                            (inode, file_type, size, pc)
+                        }
+                    }
+                    Err(FsError::NotFound) if flags.create => {
+                        let (parent_path, filename) = split_parent_name(relative_path)?;
+                        let (pr_inode, pr_type, _) = exfat.lookup(parent_path)?;
+                        if pr_type != FileType::Directory {
+                            return Err(FsError::NotADirectory);
+                        }
+                        let pc = crate::fs::exfat::decode_inode(pr_inode).0;
+                        exfat.create_file(pc, filename)?;
+                        (0u32, FileType::Regular, 0u32, pc)
+                    }
+                    Err(e) => return Err(e),
+                };
+                let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
+                let position = if flags.append { size } else { 0 };
+                let file = OpenFile {
+                    fd: slot_id,
+                    path: String::from(path),
+                    file_type,
+                    flags,
+                    position,
+                    size,
+                    fs_id: 6, // Mounted exFAT
+                    inode,
+                    parent_cluster,
+                    refcount: 1,
+                };
+                state.open_files[slot_id as usize] = Some(file);
+                return Ok(slot_id);
             }
             FsType::Smb => {
                 let mount_path_owned = String::from(mount_path);
@@ -750,7 +843,48 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
         return Ok(slot_id);
     }
 
-    // --- ISO 9660 root fallback (CD-ROM boot, no FAT16 disk) ---
+    // --- OverlayFS root (CD-ROM boot with writable RAM overlay) ---
+    if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
+        let iso = state.iso9660_fs.as_ref().unwrap();
+        let overlay = state.overlay_fs.as_mut().unwrap();
+
+        let lookup_result = overlay.lookup(iso, path);
+        let (inode, file_type, size) = match lookup_result {
+            Ok(r) => {
+                if flags.truncate && flags.write {
+                    overlay.truncate(iso, path)?;
+                    let (i, ft, _) = overlay.lookup(iso, path)?;
+                    (i, ft, 0u32)
+                } else {
+                    r
+                }
+            }
+            Err(FsError::NotFound) if flags.create => {
+                let new_inode = overlay.create_file(path)?;
+                (new_inode, FileType::Regular, 0u32)
+            }
+            Err(e) => return Err(e),
+        };
+
+        let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
+        let position = if flags.append { size } else { 0 };
+        let file = OpenFile {
+            fd: slot_id,
+            path: String::from(path),
+            file_type,
+            flags,
+            position,
+            size,
+            fs_id: 7, // OverlayFS
+            inode,
+            parent_cluster: 0,
+            refcount: 1,
+        };
+        state.open_files[slot_id as usize] = Some(file);
+        return Ok(slot_id);
+    }
+
+    // --- ISO 9660 root fallback (CD-ROM boot without overlay, read-only) ---
     if let Some(ref iso) = state.iso9660_fs {
         if flags.write || flags.create || flags.truncate || flags.append {
             return Err(FsError::PermissionDenied);
@@ -837,6 +971,48 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
         let name = dev_name(&file.path);
         let devfs = state.devfs.as_ref().ok_or(FsError::IoError)?;
         return devfs.read(name, buf).ok_or(FsError::IoError);
+    }
+
+    // --- Mounted exFAT file ---
+    if file.fs_id == 6 {
+        if file.position >= file.size {
+            return Ok(0);
+        }
+        let remaining = (file.size - file.position) as usize;
+        let to_read = buf.len().min(remaining);
+        let file_path = file.path.clone();
+        let file_inode = file.inode;
+        let file_position = file.position;
+        let exfat = state.mounted_exfat.iter()
+            .find(|(p, _)| file_path.starts_with(p.as_str()))
+            .map(|(_, fs)| fs)
+            .ok_or(FsError::IoError)?;
+        let bytes_read = exfat.read_file(file_inode, file_position, &mut buf[..to_read])?;
+        let file = state.open_files.get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        file.position += bytes_read as u32;
+        return Ok(bytes_read);
+    }
+
+    // --- OverlayFS file (RAM + ISO 9660) ---
+    if file.fs_id == 7 {
+        if file.position >= file.size {
+            return Ok(0);
+        }
+        let remaining = (file.size - file.position) as usize;
+        let to_read = buf.len().min(remaining);
+        let file_inode = file.inode;
+        let file_position = file.position;
+        let file_size = file.size;
+        let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
+        let overlay = state.overlay_fs.as_ref().ok_or(FsError::IoError)?;
+        let bytes_read = overlay.read_file(iso, file_inode, file_position, &mut buf[..to_read], file_size)?;
+        let file = state.open_files.get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        file.position += bytes_read as u32;
+        return Ok(bytes_read);
     }
 
     // --- ISO 9660 file ---
@@ -932,6 +1108,49 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
     // --- NTFS is read-only ---
     if file.fs_id == 4 {
         return Err(FsError::PermissionDenied);
+    }
+
+    // --- OverlayFS file (copy-on-write to RAM) ---
+    if file.fs_id == 7 {
+        let old_inode = file.inode;
+        let old_size = file.size;
+        let position = file.position;
+        let file_path = file.path.clone();
+        let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
+        let overlay = state.overlay_fs.as_mut().ok_or(FsError::IoError)?;
+        let (new_inode, new_size) = overlay.write_file(iso, old_inode, position, buf, old_size, &file_path)?;
+        let file = state.open_files.get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        file.inode = new_inode;
+        file.size = new_size;
+        file.position = position + buf.len() as u32;
+        return Ok(buf.len());
+    }
+
+    // --- Mounted exFAT file ---
+    if file.fs_id == 6 {
+        let old_inode = file.inode;
+        let old_size = file.size;
+        let position = file.position;
+        let parent_cluster = file.parent_cluster;
+        let file_path = file.path.clone();
+        let filename = file_path.rsplit('/').next().unwrap_or("");
+        let exfat = state.mounted_exfat.iter_mut()
+            .find(|(p, _)| file_path.starts_with(p.as_str()))
+            .map(|(_, fs)| fs)
+            .ok_or(FsError::IoError)?;
+        let (new_cluster, new_size) = exfat.write_file(old_inode, position, buf, old_size)?;
+        if new_cluster != old_inode || new_size != old_size {
+            exfat.update_entry(parent_cluster, filename, new_size, new_cluster)?;
+        }
+        let file = state.open_files.get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        file.inode = new_cluster;
+        file.size = new_size;
+        file.position = position + buf.len() as u32;
+        return Ok(buf.len());
     }
 
     // --- SMB file (network) ---
@@ -1050,6 +1269,19 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
                 }
                 return Err(FsError::NotFound);
             }
+            FsType::ExFat => {
+                let mount_path_owned = String::from(mount_path);
+                let exfat = state.mounted_exfat.iter()
+                    .find(|(p, _)| *p == mount_path_owned)
+                    .map(|(_, fs)| fs)
+                    .ok_or(FsError::IoError)?;
+                let (inode, file_type, _size) = exfat.lookup(relative_path)?;
+                if file_type != FileType::Directory {
+                    return Err(FsError::NotADirectory);
+                }
+                let (cluster, _) = crate::fs::exfat::decode_inode(inode);
+                return exfat.read_dir(cluster);
+            }
             FsType::Smb => {
                 let mount_path_owned = String::from(mount_path);
                 let smb = state.smbfs.iter_mut()
@@ -1074,8 +1306,10 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
         if r.file_type != FileType::Directory {
             return Err(FsError::NotADirectory);
         }
-        let (cluster, _) = crate::fs::exfat::decode_inode(r.inode);
+        let (cluster, _contiguous) = crate::fs::exfat::decode_inode(r.inode);
+        crate::serial_println!("[VFS] read_dir '{}': cluster={} contiguous={}", path, cluster, _contiguous);
         let mut entries = exfat.read_dir(cluster)?;
+        crate::serial_println!("[VFS] read_dir '{}': got {} entries", path, entries.len());
 
         // Resolve symlink target types so file_type is transparent
         let dir_path = if path.ends_with('/') || path == "/" {
@@ -1130,7 +1364,18 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
         return Ok(entries);
     }
 
-    // --- ISO 9660 root fallback (CD-ROM boot, no FAT16 disk) ---
+    // --- OverlayFS root (CD-ROM boot with writable RAM overlay) ---
+    if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
+        let iso = state.iso9660_fs.as_ref().unwrap();
+        let overlay = state.overlay_fs.as_ref().unwrap();
+        let mut entries = overlay.read_dir(iso, path)?;
+        if path == "/" {
+            add_virtual_root_entries(state, &mut entries);
+        }
+        return Ok(entries);
+    }
+
+    // --- ISO 9660 root fallback (CD-ROM boot without overlay, read-only) ---
     if let Some(ref iso) = state.iso9660_fs {
         let (lba, file_type, size) = iso.lookup(path)?;
         if file_type != FileType::Directory {
@@ -1204,6 +1449,21 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
                         return iso.read_file_to_vec(relative_path);
                     }
                     return Err(FsError::NotFound);
+                }
+                FsType::ExFat => {
+                    let mount_path_owned = String::from(mount_path);
+                    let exfat = state.mounted_exfat.iter()
+                        .find(|(p, _)| *p == mount_path_owned)
+                        .map(|(_, fs)| fs)
+                        .ok_or(FsError::IoError)?;
+                    let (inode, file_type, size) = exfat.lookup(relative_path)?;
+                    if file_type == FileType::Directory {
+                        return Err(FsError::IsADirectory);
+                    }
+                    let mut buf = alloc::vec![0u8; size as usize];
+                    let n = exfat.read_file(inode, 0, &mut buf)?;
+                    buf.truncate(n);
+                    return Ok(buf);
                 }
                 FsType::Smb => {
                     let mount_path_owned = String::from(mount_path);
@@ -1296,6 +1556,13 @@ pub fn delete(path: &str) -> Result<(), FsError> {
         return Err(FsError::PermissionDenied);
     }
 
+    // --- OverlayFS delete (whiteout for ISO files) ---
+    if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
+        let iso = state.iso9660_fs.as_ref().unwrap();
+        let overlay = state.overlay_fs.as_mut().unwrap();
+        return overlay.delete(iso, path);
+    }
+
     let (parent_path, filename) = split_parent_name(path)?;
     if let Some(ref mut exfat) = state.exfat_fs {
         // Resolve parent with symlink following, but the filename itself is not followed
@@ -1315,6 +1582,13 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
     }
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+    // --- OverlayFS rename ---
+    if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
+        let iso = state.iso9660_fs.as_ref().unwrap();
+        let overlay = state.overlay_fs.as_mut().unwrap();
+        return overlay.rename(iso, old_path, new_path);
+    }
 
     let (old_parent, old_name) = split_parent_name(old_path)?;
     let (new_parent, new_name) = split_parent_name(new_path)?;
@@ -1337,6 +1611,32 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) { return Err(FsError::PermissionDenied); }
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+    // --- Mount point path (e.g. /mnt/target/...) ---
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+        if mnt_fs_type == FsType::ExFat {
+            let mount_path_owned = String::from(mount_path);
+            let (parent_rel, dirname) = split_parent_name(relative_path)?;
+            let exfat = state.mounted_exfat.iter_mut()
+                .find(|(p, _)| *p == mount_path_owned)
+                .map(|(_, fs)| fs)
+                .ok_or(FsError::IoError)?;
+            let (pr_inode, pr_type, _) = exfat.lookup(parent_rel)?;
+            if pr_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            let (pc, _) = crate::fs::exfat::decode_inode(pr_inode);
+            exfat.create_dir(pc, dirname)?;
+            return Ok(());
+        }
+        return Err(FsError::PermissionDenied); // read-only mount points
+    }
+
+    // --- OverlayFS mkdir (writable RAM overlay) ---
+    if state.overlay_fs.is_some() {
+        let overlay = state.overlay_fs.as_mut().unwrap();
+        return overlay.mkdir(path);
+    }
 
     let (parent_path, dirname) = split_parent_name(path)?;
     if let Some(ref mut exfat) = state.exfat_fs {
@@ -1467,6 +1767,15 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
                 }
                 return Err(FsError::NotFound);
             }
+            FsType::ExFat => {
+                let mount_path_owned = String::from(mount_path);
+                let exfat = state.mounted_exfat.iter()
+                    .find(|(p, _)| *p == mount_path_owned)
+                    .map(|(_, fs)| fs)
+                    .ok_or(FsError::IoError)?;
+                let (_inode, file_type, size) = exfat.lookup(relative_path)?;
+                return Ok(default_stat(file_type, size, false));
+            }
             FsType::Smb => {
                 let mount_path_owned = String::from(mount_path);
                 let smb = state.smbfs.iter_mut()
@@ -1505,6 +1814,26 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
         return Ok(StatResult {
             file_type, size, is_symlink: false,
             uid: 0, gid: 0, mode: 0xFFF, mtime,
+        });
+    }
+
+    // --- OverlayFS root (CD-ROM boot with writable RAM overlay) ---
+    if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
+        let iso = state.iso9660_fs.as_ref().unwrap();
+        let overlay = state.overlay_fs.as_ref().unwrap();
+        let (file_type, size) = overlay.stat(iso, path)?;
+        return Ok(StatResult {
+            file_type, size, is_symlink: false,
+            uid: 0, gid: 0, mode: 0xFFF, mtime: 0,
+        });
+    }
+
+    // --- ISO 9660 root fallback (CD-ROM boot without overlay, read-only) ---
+    if let Some(ref iso) = state.iso9660_fs {
+        let (_inode, file_type, size) = iso.lookup(path)?;
+        return Ok(StatResult {
+            file_type, size, is_symlink: false,
+            uid: 0, gid: 0, mode: 0o555, mtime: 0,
         });
     }
 
@@ -1556,6 +1885,13 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
+    // --- OverlayFS truncate ---
+    if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
+        let iso = state.iso9660_fs.as_ref().unwrap();
+        let overlay = state.overlay_fs.as_mut().unwrap();
+        return overlay.truncate(iso, path);
+    }
+
     let (parent_path, filename) = split_parent_name(path)?;
     if let Some(ref mut exfat) = state.exfat_fs {
         let pr = resolve_exfat_path(exfat, parent_path, true)?;
@@ -1586,9 +1922,39 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
     }
 
     match fs_type_id {
-        0 => {
-            // FAT mount — not supported as additional mount yet
-            return Err(FsError::PermissionDenied);
+        0 | 7 => {
+            // exFAT/FAT mount by device ID
+            // device string = decimal device_id (from SYS_DISK_LIST)
+            let dev_id: u8 = device.parse::<u8>().map_err(|_| {
+                crate::serial_verbose_println!("  mount_fs: invalid device '{}' (expected numeric device_id)", device);
+                FsError::InvalidPath
+            })?;
+            let bdev = crate::drivers::storage::blockdev::get_device(dev_id)
+                .ok_or_else(|| {
+                    crate::serial_verbose_println!("  mount_fs: device {} not found", dev_id);
+                    FsError::NotFound
+                })?;
+            let start_lba = bdev.start_lba as u32;
+            crate::serial_verbose_println!(
+                "  mount_fs: exFAT device={} disk={} start_lba={}",
+                dev_id, bdev.disk_id, start_lba
+            );
+            match ExFatFs::new(bdev.disk_id as u32, start_lba) {
+                Ok(exfat) => {
+                    state.mounted_exfat.push((String::from(mount_path), exfat));
+                    state.mount_points.push(MountPoint {
+                        path: String::from(mount_path),
+                        fs_type: FsType::ExFat,
+                        device_id: dev_id as u32,
+                    });
+                    crate::serial_verbose_println!("  Mounted exFAT at '{}'", mount_path);
+                    Ok(())
+                }
+                Err(e) => {
+                    crate::serial_verbose_println!("  mount_fs: ExFatFs::new() failed: {:?}", e);
+                    Err(e)
+                }
+            }
         }
         1 => {
             // ISO 9660 (CD-ROM)
@@ -1660,6 +2026,24 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
 }
 
 /// Unmount a filesystem at the given path.
+/// Flush all dirty filesystem metadata and storage write caches.
+pub fn sync_all() {
+    let mut vfs = VFS.lock();
+    if let Some(state) = vfs.as_mut() {
+        // Flush root exFAT
+        if let Some(ref mut exfat) = state.exfat_fs {
+            let _ = exfat.flush_metadata();
+        }
+        // Flush all mounted exFAT filesystems
+        for (_path, exfat) in &mut state.mounted_exfat {
+            let _ = exfat.flush_metadata();
+        }
+    }
+    drop(vfs);
+    // Flush storage write cache to persistent media
+    crate::drivers::storage::flush();
+}
+
 pub fn umount_fs(mount_path: &str) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
@@ -1679,6 +2063,15 @@ pub fn umount_fs(mount_path: &str) -> Result<(), FsError> {
             let has_other_iso = state.mount_points.iter().any(|m| m.fs_type == FsType::Iso9660);
             if !has_other_iso {
                 state.iso9660_fs = None;
+            }
+        }
+
+        // If it was mounted exFAT, flush metadata and remove the fs instance
+        if mp.fs_type == FsType::ExFat {
+            if let Some(idx) = state.mounted_exfat.iter().position(|(p, _)| p == mount_path) {
+                // Flush any pending metadata before dropping
+                let _ = state.mounted_exfat[idx].1.flush_metadata();
+                state.mounted_exfat.remove(idx);
             }
         }
 
@@ -1780,6 +2173,82 @@ pub fn set_owner(path: &str, uid: u16, gid: u16) -> Result<(), FsError> {
     Err(FsError::PermissionDenied)
 }
 
+/// Returns `true` if the root filesystem is ISO 9660 (live-CD / read-only boot).
+/// Used by the permission system to skip persisted-permission checks.
+pub fn root_is_iso9660() -> bool {
+    let vfs = VFS.lock();
+    if let Some(ref state) = *vfs {
+        state.mount_points.iter().any(|mp| mp.path == "/" && mp.fs_type == FsType::Iso9660)
+    } else {
+        false
+    }
+}
+
+/// Filesystem statistics for a mount point.
+pub struct StatFs {
+    /// Total size in bytes.
+    pub total_bytes: u64,
+    /// Used bytes.
+    pub used_bytes: u64,
+    /// Free bytes.
+    pub free_bytes: u64,
+}
+
+/// Get filesystem statistics for a mount point path.
+/// Returns `None` if the path is not a valid mount point or no stats available.
+pub fn statfs(path: &str) -> Option<StatFs> {
+    let vfs = VFS.lock();
+    let state = vfs.as_ref()?;
+
+    // Try all mount points matching the path (there can be multiple, e.g.
+    // a failed disk mount + a successful ISO mount both at "/").
+    for mp in state.mount_points.iter().filter(|mp| mp.path == path) {
+        let result = match mp.fs_type {
+            FsType::ExFat => {
+                if path == "/" || path.is_empty() {
+                    if let Some(ref fs) = state.exfat_fs {
+                        let (total, free) = fs.fs_stats();
+                        Some(StatFs { total_bytes: total, used_bytes: total - free, free_bytes: free })
+                    } else {
+                        None
+                    }
+                } else {
+                    state.mounted_exfat.iter()
+                        .find(|(mnt_path, _)| mnt_path == path)
+                        .map(|(_, fs)| {
+                            let (total, free) = fs.fs_stats();
+                            StatFs { total_bytes: total, used_bytes: total - free, free_bytes: free }
+                        })
+                }
+            }
+            FsType::Iso9660 => {
+                state.iso9660_fs.as_ref().map(|iso| {
+                    let total = iso.total_blocks as u64 * 2048;
+                    StatFs { total_bytes: total, used_bytes: total, free_bytes: 0 }
+                })
+            }
+            FsType::Ntfs => {
+                state.ntfs_fs.as_ref().map(|ntfs| {
+                    let total = ntfs.total_sectors as u64 * 512;
+                    StatFs { total_bytes: total, used_bytes: total, free_bytes: 0 }
+                })
+            }
+            FsType::Fat => {
+                state.fat_fs.as_ref().map(|fat| {
+                    let cluster_bytes = fat.sectors_per_cluster as u64 * fat.bytes_per_sector as u64;
+                    let total = fat.total_clusters as u64 * cluster_bytes;
+                    StatFs { total_bytes: total, used_bytes: total, free_bytes: 0 }
+                })
+            }
+            FsType::DevFs | FsType::Smb | FsType::Overlay => None,
+        };
+        if result.is_some() {
+            return result;
+        }
+    }
+    None
+}
+
 /// List all current mount points. Returns Vec of (mount_path, fs_type_name, device_id).
 pub fn list_mounts() -> Vec<(String, &'static str, u32)> {
     let vfs = VFS.lock();
@@ -1792,6 +2261,7 @@ pub fn list_mounts() -> Vec<(String, &'static str, u32)> {
                 FsType::Ntfs => "ntfs",
                 FsType::DevFs => "devfs",
                 FsType::Smb => "smb",
+                FsType::Overlay => "overlay",
             };
             (mp.path.clone(), fs_name, mp.device_id)
         }).collect()

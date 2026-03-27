@@ -175,17 +175,26 @@ pub fn read_line_interactive(prompt: &str, cwd: &str) -> String {
             }
 
             // ── Printable character ───────────────────────────────────────────
-            ch if ch >= 0x20 && ch < 0x7F => {
-                if line_len < line.len() - 1 {
-                    for i in (cursor..line_len).rev() { line[i + 1] = line[i]; }
-                    line[cursor] = ch as u8;
-                    line_len += 1;
-                    cursor   += 1;
-                    let b = [ch as u8];
-                    sys::con_write(core::str::from_utf8(&b).unwrap_or(""));
-                    if cursor < line_len {
-                        // Mid-line insert: redraw the tail.
-                        redraw_from_cursor(&line, line_len, cursor);
+            ch if ch >= 0x20 => {
+                if let Some(c) = char::from_u32(ch) {
+                    if !c.is_control() {
+                        let mut utf8_buf = [0u8; 4];
+                        let encoded = c.encode_utf8(&mut utf8_buf);
+                        let enc_len = encoded.len();
+                        if line_len + enc_len <= line.len() - 1 {
+                            // Shift existing content right by enc_len bytes
+                            for i in (cursor..line_len).rev() {
+                                line[i + enc_len] = line[i];
+                            }
+                            line[cursor..cursor + enc_len]
+                                .copy_from_slice(encoded.as_bytes());
+                            line_len += enc_len;
+                            cursor   += enc_len;
+                            sys::con_write(encoded);
+                            if cursor < line_len {
+                                redraw_from_cursor(&line, line_len, cursor);
+                            }
+                        }
                     }
                 }
             }

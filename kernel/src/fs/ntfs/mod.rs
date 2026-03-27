@@ -48,7 +48,7 @@ pub struct NtfsFs {
     mft_cluster: u64,
     mft_record_size: u32,
     index_record_size: u32,
-    total_sectors: u64,
+    pub total_sectors: u64,
     /// Data runs for the $MFT file itself (decoded from MFT record 0).
     mft_runs: Vec<DataRun>,
 }

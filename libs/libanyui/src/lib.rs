@@ -2292,8 +2292,83 @@ pub extern "C" fn anyui_message_box(
         _ => (b"!" as &[u8], 0xFFFFD60Au32, b"Warning" as &[u8]),
     };
 
-    let dlg_w = 320u32;
-    let dlg_h = 160u32;
+    // Measure button text to determine button width (with 24px padding).
+    // Use scaled font size so measurement matches what gets rendered.
+    let scaled_fs = draw::scale_font(13);
+    let (btn_tw, _) = draw::text_size_at(btn_slice, scaled_fs);
+    let btn_w = (btn_tw + 24).max(80);
+
+    // Measure message text to determine dialog width.
+    // For single-line messages, expand the dialog so the text fits.
+    let (msg_tw, _) = draw::text_size_at(text_slice, scaled_fs);
+    let text_area_w = msg_tw + 20; // some breathing room
+    let min_content = if text_area_w > btn_w { text_area_w } else { btn_w };
+    // 72 = icon area (52) + right margin (20), scale limits for HiDPI
+    let min_dlg = theme::scale(320);
+    let max_dlg = theme::scale(520);
+    let icon_margin = theme::scale(72);
+    let dlg_w = (min_content + icon_margin).max(min_dlg).min(max_dlg);
+    let msg_label_w = dlg_w - icon_margin;
+
+    // Word-wrap: insert '\n' when the message text exceeds the label width.
+    let mut wrapped = alloc::vec::Vec::new();
+    {
+        let max_w = msg_label_w - 8; // subtract a bit of padding
+        let mut start = 0;
+        while start < text_slice.len() {
+            // Find explicit newline
+            let chunk_end = text_slice[start..].iter()
+                .position(|&b| b == b'\n')
+                .map(|p| start + p)
+                .unwrap_or(text_slice.len());
+            let chunk = &text_slice[start..chunk_end];
+
+            // Check if this chunk fits
+            let (cw, _) = draw::text_size_at(chunk, scaled_fs);
+            if cw <= max_w || chunk.len() <= 1 {
+                // Fits — append as-is
+                if !wrapped.is_empty() { wrapped.push(b'\n'); }
+                wrapped.extend_from_slice(chunk);
+            } else {
+                // Too wide — break at word boundaries
+                let mut line_start = 0;
+                while line_start < chunk.len() {
+                    // Try progressively longer prefixes, break at last space
+                    let mut best_end = chunk.len().min(line_start + 1); // at least 1 char
+                    for i in (line_start + 1)..=chunk.len() {
+                        let (pw, _) = draw::text_size_at(&chunk[line_start..i], scaled_fs);
+                        if pw > max_w { break; }
+                        best_end = i;
+                    }
+                    // Try to break at a space
+                    if best_end < chunk.len() {
+                        if let Some(sp) = chunk[line_start..best_end].iter().rposition(|&b| b == b' ') {
+                            if sp > 0 { best_end = line_start + sp + 1; }
+                        }
+                    }
+                    if !wrapped.is_empty() { wrapped.push(b'\n'); }
+                    wrapped.extend_from_slice(&chunk[line_start..best_end]);
+                    line_start = best_end;
+                    // Skip leading space on next line
+                    if line_start < chunk.len() && chunk[line_start] == b' ' {
+                        line_start += 1;
+                    }
+                }
+            }
+
+            if chunk_end >= text_slice.len() { break; }
+            start = chunk_end + 1; // skip '\n'
+        }
+    }
+    let wrapped_slice = &wrapped;
+
+    // Count lines for height calculation (scale line height)
+    let line_count = wrapped_slice.iter().filter(|&&b| b == b'\n').count() + 1;
+    let line_h = theme::scale(18);
+    let msg_h = ((line_count as u32) * line_h).max(theme::scale(40));
+    let btn_h = theme::scale(32);
+    let btn_margin = theme::scale(48);
+    let dlg_h = (msg_h + theme::scale(80)).max(theme::scale(160));
 
     // Compute center position relative to the owner window
     let (dlg_x, dlg_y) = center_on_owner(owner_win_id, dlg_w, dlg_h);
@@ -2310,6 +2385,12 @@ pub extern "C" fn anyui_message_box(
     // Make it modal to the owner window
     anyui_set_modal(dlg_win_id, owner_win_id);
 
+    // Scaled positions for child controls
+    let icon_x = theme::scale_i32(20);
+    let icon_y = theme::scale_i32(16);
+    let icon_sz = theme::scale(24);
+    let msg_x = theme::scale_i32(52);
+
     // Allocate child IDs
     let st = state();
     let icon_id = st.next_id; st.next_id += 1;
@@ -2318,7 +2399,7 @@ pub extern "C" fn anyui_message_box(
 
     // Icon label
     let mut icon = controls::create_control(
-        ControlKind::Label, icon_id, dlg_win_id, 20, 16, 24, 24, icon_char,
+        ControlKind::Label, icon_id, dlg_win_id, icon_x, icon_y, icon_sz, icon_sz, icon_char,
     );
     icon.set_color(icon_color);
     st.controls.push(icon);
@@ -2326,19 +2407,19 @@ pub extern "C" fn anyui_message_box(
         w.add_child(icon_id);
     }
 
-    // Message label
+    // Message label (word-wrapped text)
     let msg = controls::create_control(
-        ControlKind::Label, msg_id, dlg_win_id, 52, 16, dlg_w - 72, 80, text_slice,
+        ControlKind::Label, msg_id, dlg_win_id, msg_x, icon_y, msg_label_w, msg_h, wrapped_slice,
     );
     st.controls.push(msg);
     if let Some(w) = st.controls.iter_mut().find(|c| c.id() == dlg_win_id) {
         w.add_child(msg_id);
     }
 
-    // OK button
+    // OK button (auto-sized)
     let btn = controls::create_control(
         ControlKind::Button, btn_id, dlg_win_id,
-        ((dlg_w as i32) - 80) / 2, (dlg_h as i32) - 48, 80, 32,
+        ((dlg_w as i32) - btn_w as i32) / 2, (dlg_h as i32) - btn_margin as i32, btn_w, btn_h,
         btn_slice,
     );
     st.controls.push(btn);

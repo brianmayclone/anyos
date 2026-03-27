@@ -28,10 +28,12 @@ use super::ir::{Inst, Program, Reg};
 ///
 /// `is_vertex`: true for vertex shader, false for fragment shader.
 /// `num_samplers`: number of sampler uniforms (for SAMP declarations).
+/// `const_base`: slot offset added to all CONST[] references (used to give FS its
+///   correct position in the shared combined constant buffer; 0 for VS).
 ///
 /// Returns the TGSI text as a String.
-pub fn compile(program: &Program, is_vertex: bool, num_samplers: u32) -> String {
-    let mut ctx = TgsiCtx::new(program, is_vertex, num_samplers);
+pub fn compile(program: &Program, is_vertex: bool, num_samplers: u32, const_base: u32) -> String {
+    let mut ctx = TgsiCtx::new(program, is_vertex, num_samplers, const_base);
     ctx.emit_header();
     ctx.emit_declarations();
     ctx.emit_immediates();
@@ -53,14 +55,17 @@ struct TgsiCtx<'a> {
     imm_map: Vec<Option<u32>>,
     /// Number of TEMP registers needed.
     num_temps: u32,
-    /// Number of CONST registers (uniform slots).
+    /// Number of CONST registers (uniform slots) used by this shader.
     num_consts: u32,
+    /// Slot offset into the shared combined constant buffer.
+    /// 0 for VS; = number of VS vec4 slots for FS.
+    const_base: u32,
     /// Maps IR register → sampler unit index for TexSample.
     sampler_map: Vec<u32>,
 }
 
 impl<'a> TgsiCtx<'a> {
-    fn new(prog: &'a Program, is_vertex: bool, num_samplers: u32) -> Self {
+    fn new(prog: &'a Program, is_vertex: bool, num_samplers: u32, const_base: u32) -> Self {
         // Collect immediates from LoadConst instructions
         let mut immediates = Vec::new();
         let mut imm_map = Vec::new();
@@ -125,6 +130,7 @@ impl<'a> TgsiCtx<'a> {
             imm_map,
             num_temps: prog.num_regs,
             num_consts,
+            const_base,
             sampler_map,
         }
     }
@@ -158,11 +164,14 @@ impl<'a> TgsiCtx<'a> {
         }
 
         // Constant buffer (uniforms) — 2D syntax: CONST[buffer][range]
+        // Declare the full range including the base offset so FS can access its
+        // uniforms at const_base + local_slot within the shared combined buffer.
         if self.num_consts > 0 {
-            if self.num_consts == 1 {
+            let last_slot = self.const_base + self.num_consts - 1;
+            if last_slot == 0 {
                 let _ = write!(self.out, "DCL CONST[0][0]\n");
             } else {
-                let _ = write!(self.out, "DCL CONST[0][0..{}]\n", self.num_consts - 1);
+                let _ = write!(self.out, "DCL CONST[0][0..{}]\n", last_slot);
             }
         }
 
@@ -393,25 +402,31 @@ impl<'a> TgsiCtx<'a> {
             }
 
             Inst::MatMul4(d, mat, vec) => {
-                // DP4 for each row: dst.x = dp4(mat_col0, vec), etc.
+                // Column-major mat4 * vec4:
+                //   result = col0*v.x + col1*v.y + col2*v.z + col3*v.w
+                // Matches JIT backend's emit_matmul4 convention.
                 let dst = self.dst(*d);
-                for i in 0..4u32 {
-                    let comp = ["x", "y", "z", "w"][i as usize];
-                    let mat_col = format!("TEMP[{}]", mat + i);
-                    let mut line = String::new();
-                    let _ = write!(line, "DP4 {}.{}, {}, {}", dst, comp, mat_col, self.src(*vec));
-                    self.emit(&line);
-                }
+                let sv = self.src(*vec);
+                let col0 = format!("TEMP[{}]", mat);
+                let col1 = format!("TEMP[{}]", mat + 1);
+                let col2 = format!("TEMP[{}]", mat + 2);
+                let col3 = format!("TEMP[{}]", mat + 3);
+                self.emit(&fmt3("MUL", &dst, &col0, &swz(&sv, "xxxx")));
+                self.emit(&fmt4("MAD", &dst, &col1, &swz(&sv, "yyyy"), &dst));
+                self.emit(&fmt4("MAD", &dst, &col2, &swz(&sv, "zzzz"), &dst));
+                self.emit(&fmt4("MAD", &dst, &col3, &swz(&sv, "wwww"), &dst));
             }
             Inst::MatMul3(d, mat, vec) => {
+                // Column-major mat3 * vec3:
+                //   result.xyz = col0*v.x + col1*v.y + col2*v.z
                 let dst = self.dst(*d);
-                for i in 0..3u32 {
-                    let comp = ["x", "y", "z"][i as usize];
-                    let mat_col = format!("TEMP[{}]", mat + i);
-                    let mut line = String::new();
-                    let _ = write!(line, "DP3 {}.{}, {}, {}", dst, comp, mat_col, self.src(*vec));
-                    self.emit(&line);
-                }
+                let sv = self.src(*vec);
+                let col0 = format!("TEMP[{}]", mat);
+                let col1 = format!("TEMP[{}]", mat + 1);
+                let col2 = format!("TEMP[{}]", mat + 2);
+                self.emit(&fmt3("MUL", &dst, &col0, &swz(&sv, "xxxx")));
+                self.emit(&fmt4("MAD", &dst, &col1, &swz(&sv, "yyyy"), &dst));
+                self.emit(&fmt4("MAD", &dst, &col2, &swz(&sv, "zzzz"), &dst));
             }
 
             Inst::Swizzle(d, s, indices, _count) => {
@@ -497,7 +512,8 @@ impl<'a> TgsiCtx<'a> {
 
             Inst::LoadUniform(d, idx) => {
                 let mut line = String::new();
-                let _ = write!(line, "MOV {}, CONST[0][{}]", self.dst(*d), idx);
+                let abs_slot = self.const_base + idx;
+                let _ = write!(line, "MOV {}, CONST[0][{}]", self.dst(*d), abs_slot);
                 self.emit(&line);
             }
 

@@ -617,6 +617,12 @@ pub fn sys_set_hostname(name_ptr: u32, name_len: u32) -> u32 {
 /// killed user processes before invoking this syscall. The kernel's job is:
 /// 1. Kill any remaining user threads (safety net).
 /// 2. Halt all other CPUs via IPI.
+/// SYS_SYNC — Flush all dirty filesystem metadata and storage write caches.
+pub fn sys_sync() -> u32 {
+    crate::fs::vfs::sync_all();
+    0
+}
+
 /// 3. Power off (ACPI) or reboot (keyboard controller reset).
 ///
 /// This function does not return.

@@ -145,7 +145,18 @@ pub fn scan_all() {
         }
     }
 
-    crate::serial_verbose_println!("[OK] PCI scan: {} device(s) found", devices.len());
+    crate::serial_println!("[OK] PCI scan: {} device(s) found", devices.len());
+    // Debug: print all devices with BARs for storage controller diagnosis
+    for dev in devices.iter() {
+        crate::serial_println!(
+            "  PCI {:02x}:{:02x}.{} {:04x}:{:04x} class={:02x}:{:02x} IRQ={} BARs=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
+            dev.bus, dev.device, dev.function,
+            dev.vendor_id, dev.device_id,
+            dev.class_code, dev.subclass,
+            dev.interrupt_line,
+            dev.bars[0], dev.bars[1], dev.bars[2], dev.bars[3], dev.bars[4], dev.bars[5]
+        );
+    }
 }
 
 /// Human-readable name for a PCI class/subclass

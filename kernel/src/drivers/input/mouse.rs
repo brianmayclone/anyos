@@ -349,14 +349,24 @@ pub fn inject_position(x: i32, y: i32) {
 
 /// PS/2 mouse IRQ handler (IRQ 12). Reads byte from port 0x60.
 /// When the VMware backdoor (vmmouse) is active, delegates to vmmouse instead.
+/// If vmmouse has no data (e.g. QEMU in grab mode), falls through to PS/2.
 pub fn irq_handler(_irq: u8) {
-    // If vmmouse is active, the backdoor intercepts PS/2 data — read from backdoor instead.
-    // Wake the compositor after draining all vmmouse packets so it can pick them up
-    // via input_poll() — without this, the management thread sleeps until its timeout.
+    // Debug: count IRQ12 invocations
+    static IRQ12_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let cnt = IRQ12_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if cnt == 0 {
+        crate::serial_println!("[mouse] first IRQ12, vmmouse_active={}", super::vmmouse::is_active());
+    }
+
+    // Try vmmouse first — if the backdoor has data, it handles the IRQ and
+    // consumes the PS/2 byte. If the backdoor is empty (returns false),
+    // fall through to standard PS/2 processing.
     if super::vmmouse::is_active() {
-        super::vmmouse::handle_irq();
-        crate::syscall::handlers::wake_compositor_if_blocked();
-        return;
+        if super::vmmouse::handle_irq() {
+            crate::syscall::handlers::wake_compositor_if_blocked();
+            return;
+        }
+        // Vmmouse backdoor empty — process as normal PS/2 mouse packet
     }
 
     let status = unsafe { crate::arch::x86::port::inb(0x64) };

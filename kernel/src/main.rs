@@ -316,7 +316,7 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             arch::x86::apic::calibrate_timer(1000);
         }
 
-        // HAL driver binding
+        // HAL driver binding (after timer calibration so IRQ-driven devices work)
         drivers::hal::probe_and_bind_all();
         drivers::hal::register_legacy_devices();
         drivers::hal::print_devices();
@@ -339,8 +339,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             use drivers::storage::blockdev;
             use fs::partition::PartitionType;
 
+            let disk_sectors = drivers::storage::ahci::disk_total_sectors();
             blockdev::register_device(blockdev::BlockDevice {
-                id: 0, disk_id: 0, partition: None, start_lba: 0, size_sectors: 0,
+                id: 0, disk_id: 0, partition: None, start_lba: 0, size_sectors: disk_sectors,
             });
             blockdev::scan_and_register_partitions(0);
 
@@ -364,12 +365,19 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
         fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
         fs::vfs::mount_devfs();
 
-        if drivers::storage::atapi::is_present() && drivers::storage::atapi::capacity_lba() > 0 {
+        let ide_cd = drivers::storage::atapi::is_present() && drivers::storage::atapi::capacity_lba() > 0;
+        let ahci_cd = drivers::storage::ahci::atapi_is_present();
+        serial_println!("  CD-ROM: IDE={} AHCI={}", ide_cd, ahci_cd);
+        if ide_cd || ahci_cd {
             if fs::vfs::has_root_fs() {
                 fs::vfs::mount("/mnt/cdrom0", fs::vfs::FsType::Iso9660, 0);
             } else {
                 serial_println!("  No disk filesystem detected, using ISO 9660 as root filesystem");
+                // Remove the failed disk mount before mounting ISO as root
+                fs::vfs::remove_mount("/");
                 fs::vfs::mount("/", fs::vfs::FsType::Iso9660, 0);
+                // Enable OverlayFS: writable RAM layer over the read-only ISO
+                fs::vfs::enable_overlay();
             }
         }
 

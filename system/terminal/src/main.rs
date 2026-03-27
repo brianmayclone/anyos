@@ -2893,11 +2893,25 @@ impl Shell {
         format!("{}> ", self.cwd)
     }
 
+    /// Convert character-index cursor to byte-index in the UTF-8 string.
+    fn cursor_byte_pos(&self) -> usize {
+        self.input.char_indices()
+            .nth(self.cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(self.input.len())
+    }
+
+    /// Number of characters (not bytes) in the input string.
+    fn char_count(&self) -> usize {
+        self.input.chars().count()
+    }
+
     fn insert_char(&mut self, c: char) {
-        if self.cursor >= self.input.len() {
+        let byte_pos = self.cursor_byte_pos();
+        if byte_pos >= self.input.len() {
             self.input.push(c);
         } else {
-            self.input.insert(self.cursor, c);
+            self.input.insert(byte_pos, c);
         }
         self.cursor += 1;
         self.history_index = None;
@@ -2906,7 +2920,8 @@ impl Shell {
     fn backspace(&mut self) {
         if self.cursor > 0 {
             self.cursor -= 1;
-            self.input.remove(self.cursor);
+            let byte_pos = self.cursor_byte_pos();
+            self.input.remove(byte_pos);
         }
     }
 
@@ -2921,7 +2936,7 @@ impl Shell {
         };
         self.history_index = Some(idx);
         self.input = self.history[idx].clone();
-        self.cursor = self.input.len();
+        self.cursor = self.char_count();
     }
 
     fn history_down(&mut self) {
@@ -2935,7 +2950,7 @@ impl Shell {
                 } else {
                     self.history_index = Some(i + 1);
                     self.input = self.history[i + 1].clone();
-                    self.cursor = self.input.len();
+                    self.cursor = self.char_count();
                 }
             }
         }
@@ -2948,7 +2963,7 @@ impl Shell {
     }
 
     fn cursor_right(&mut self) {
-        if self.cursor < self.input.len() {
+        if self.cursor < self.char_count() {
             self.cursor += 1;
         }
     }
@@ -2958,12 +2973,14 @@ impl Shell {
     }
 
     fn cursor_end(&mut self) {
-        self.cursor = self.input.len();
+        self.cursor = self.input.chars().count();
     }
 
     fn delete_at_cursor(&mut self) {
-        if self.cursor < self.input.len() {
-            self.input.remove(self.cursor);
+        let char_count = self.input.chars().count();
+        if self.cursor < char_count {
+            let byte_pos = self.cursor_byte_pos();
+            self.input.remove(byte_pos);
         }
     }
 
@@ -3005,7 +3022,7 @@ impl Shell {
                 // Execute each sub-command via recursive submit
                 let saved_input = core::mem::replace(&mut self.input, cmd_str);
                 let saved_cursor = self.cursor;
-                self.cursor = self.input.len();
+                self.cursor = self.char_count();
                 let (cont, fg, su) = self.submit(buf);
                 self.input = saved_input;
                 self.cursor = saved_cursor;
@@ -3091,7 +3108,7 @@ impl Shell {
                     buf.capture = None;
                     let saved_input = core::mem::replace(&mut self.input, eval_line);
                     let saved_cursor = self.cursor;
-                    self.cursor = self.input.len();
+                    self.cursor = self.char_count();
                     let (cont, fg, su) = self.submit(buf);
                     self.input = saved_input;
                     self.cursor = saved_cursor;
@@ -3958,7 +3975,8 @@ fn complete_path(word: &str, cwd: &str) -> Vec<String> {
 
 /// Handle Tab key for autocompletion.
 fn handle_tab(shell: &mut Shell, buf: &mut TerminalBuffer) {
-    let before_cursor = &shell.input[..shell.cursor];
+    let byte_pos = shell.cursor_byte_pos();
+    let before_cursor = &shell.input[..byte_pos];
     let word_start = before_cursor.rfind(' ').map(|i| i + 1).unwrap_or(0);
     let word = String::from(&before_cursor[word_start..]);
     let is_command = !before_cursor[..word_start].contains(|c: char| c != ' ');
@@ -4965,7 +4983,7 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                     }
                 } else if sess.su_pending_user.is_none() {
                     for c in text.chars() {
-                        if c >= ' ' && (c as u32) < 128 { sess.shell.insert_char(c); }
+                        if !c.is_control() { sess.shell.insert_char(c); }
                     }
                     redraw_input_line(&mut sess.buf, &sess.shell);
                     sess.dirty = true;
@@ -5088,12 +5106,13 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                 }
             }
             _ => {
-                if char_val > 0 && char_val < 128 && (mods & MOD_CTRL) == 0 {
-                    let c = char_val as u8 as char;
-                    if c >= ' ' {
-                        sess.su_password.push(c);
-                        sess.buf.write_char('*');
-                        sess.dirty = true;
+                if char_val > 0 && (mods & MOD_CTRL) == 0 {
+                    if let Some(c) = char::from_u32(char_val) {
+                        if !c.is_control() {
+                            sess.su_password.push(c);
+                            sess.buf.write_char('*');
+                            sess.dirty = true;
+                        }
                     }
                 }
             }
@@ -5171,7 +5190,7 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                 }
             }
             KEY_RIGHT => {
-                if sess.shell.cursor < sess.shell.input.len() {
+                if sess.shell.cursor < sess.shell.char_count() {
                     sess.shell.cursor_right();
                     sess.buf.cursor_col += 1;
                     sess.dirty = true;
@@ -5185,14 +5204,15 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                 }
             }
             KEY_END => {
-                if sess.shell.cursor < sess.shell.input.len() {
-                    sess.buf.cursor_col += sess.shell.input.len() - sess.shell.cursor;
+                let char_count = sess.shell.input.chars().count();
+                if sess.shell.cursor < char_count {
+                    sess.buf.cursor_col += char_count - sess.shell.cursor;
                     sess.shell.cursor_end();
                     sess.dirty = true;
                 }
             }
             KEY_DELETE => {
-                if sess.shell.cursor < sess.shell.input.len() {
+                if sess.shell.cursor < sess.shell.char_count() {
                     sess.shell.delete_at_cursor();
                     let row = sess.buf.cursor_row;
                     let col = sess.buf.cursor_col;
@@ -5207,22 +5227,24 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                 sess.dirty = true;
             }
             _ => {
-                if char_val > 0 && char_val < 128 && (mods & MOD_CTRL) == 0 {
-                    let c = char_val as u8 as char;
-                    if c >= ' ' {
-                        let at_end = sess.shell.cursor >= sess.shell.input.len();
-                        sess.shell.insert_char(c);
-                        if at_end {
-                            sess.buf.write_char(c);
-                        } else {
-                            sess.buf.ensure_line(sess.buf.cursor_row);
-                            let row = sess.buf.cursor_row;
-                            let col = sess.buf.cursor_col;
-                            let color = sess.buf.current_fg;
-                            sess.buf.lines[row].insert(col, Cell { ch: c, fg: color, bg: 0, attr: 0, width: 1, combining: '\0', link_id: 0 });
-                            sess.buf.cursor_col += 1;
+                if char_val > 0 && (mods & MOD_CTRL) == 0 {
+                    if let Some(c) = char::from_u32(char_val) {
+                        if !c.is_control() {
+                            let at_end = sess.shell.cursor >= sess.shell.char_count();
+                            sess.shell.insert_char(c);
+                            if at_end {
+                                sess.buf.write_char(c);
+                            } else {
+                                sess.buf.ensure_line(sess.buf.cursor_row);
+                                let row = sess.buf.cursor_row;
+                                let col = sess.buf.cursor_col;
+                                let color = sess.buf.current_fg;
+                                let w = char_width(c);
+                                sess.buf.lines[row].insert(col, Cell { ch: c, fg: color, bg: 0, attr: 0, width: w as u8, combining: '\0', link_id: 0 });
+                                sess.buf.cursor_col += 1;
+                            }
+                            sess.dirty = true;
                         }
-                        sess.dirty = true;
                     }
                 }
             }
@@ -5246,15 +5268,19 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                     KEY_PAGE_UP => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[5~"); }
                     KEY_PAGE_DOWN => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[6~"); }
                     _ => {
-                        if char_val > 0 && char_val < 128 {
-                            let c = char_val as u8;
-                            if (mods & MOD_CTRL) != 0 {
+                        if char_val > 0 {
+                            if (mods & MOD_CTRL) != 0 && char_val < 128 {
+                                let c = char_val as u8;
                                 let ctrl_code = if c >= b'a' && c <= b'z' { c - b'a' + 1 }
                                     else if c >= b'A' && c <= b'Z' { c - b'A' + 1 }
                                     else { 0 };
                                 if ctrl_code > 0 { ipc::pipe_write(fp.stdin_pipe, &[ctrl_code]); }
-                            } else if c >= b' ' {
-                                ipc::pipe_write(fp.stdin_pipe, &[c]);
+                            } else if let Some(c) = char::from_u32(char_val) {
+                                if !c.is_control() {
+                                    let mut utf8_buf = [0u8; 4];
+                                    let encoded = c.encode_utf8(&mut utf8_buf);
+                                    ipc::pipe_write(fp.stdin_pipe, encoded.as_bytes());
+                                }
                             }
                         }
                     }
@@ -6896,7 +6922,7 @@ fn main() {
                         a.reverse_search.query.clear();
                         if let Some(sess) = a.active_session_mut() {
                             sess.shell.input = result;
-                            sess.shell.cursor = sess.shell.input.len();
+                            sess.shell.cursor = sess.shell.char_count();
                             redraw_input_line(&mut sess.buf, &sess.shell);
                             sess.dirty = true;
                         }

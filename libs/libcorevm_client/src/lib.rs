@@ -210,6 +210,7 @@ struct CoreVmLib {
     handle_io_exit: extern "C" fn(u64, u16, u8, u8, *mut u8) -> i32,
     handle_mmio_exit: extern "C" fn(u64, u64, u8, u8, *mut u8, u8, u8) -> i32,
     handle_string_io_exit: extern "C" fn(u64, u16, u8, u8, *mut u8, u32) -> i32,
+    drain_coalesced_mmio: extern "C" fn(u64) -> u32,
 
     // Device setup
     setup_standard_devices: extern "C" fn(u64) -> i32,
@@ -220,6 +221,9 @@ struct CoreVmLib {
     fw_cfg_add_file: extern "C" fn(u64, *const u8, u32, *const u8, u32) -> i32,
     ahci_attach_disk: extern "C" fn(u64, u32, i32, u64) -> i32,
     ahci_attach_cdrom: extern "C" fn(u64, u32, i32, u64) -> i32,
+
+    // CMOS boot order
+    cmos_set_boot_order: extern "C" fn(u64, u8, u8) -> i32,
 
     // Timer & IRQ polling
     pit_advance: extern "C" fn(u64, u32) -> u32,
@@ -312,6 +316,7 @@ pub fn init() -> bool {
             handle_io_exit: resolve(&handle, "corevm_handle_io_exit"),
             handle_mmio_exit: resolve(&handle, "corevm_handle_mmio_exit"),
             handle_string_io_exit: resolve(&handle, "corevm_handle_string_io_exit"),
+            drain_coalesced_mmio: resolve(&handle, "corevm_drain_coalesced_mmio"),
             // Device setup
             setup_standard_devices: resolve(&handle, "corevm_setup_standard_devices"),
             setup_e1000: resolve(&handle, "corevm_setup_e1000"),
@@ -321,6 +326,8 @@ pub fn init() -> bool {
             fw_cfg_add_file: resolve(&handle, "corevm_fw_cfg_add_file"),
             ahci_attach_disk: resolve(&handle, "corevm_ahci_attach_disk"),
             ahci_attach_cdrom: resolve(&handle, "corevm_ahci_attach_cdrom"),
+            // CMOS boot order
+            cmos_set_boot_order: resolve(&handle, "corevm_cmos_set_boot_order"),
             // Timer & IRQ polling
             pit_advance: resolve(&handle, "corevm_pit_advance"),
             cmos_advance: resolve(&handle, "corevm_cmos_advance"),
@@ -526,6 +533,13 @@ impl VmHandle {
         (lib().handle_mmio_exit)(self.handle, addr, direction, size, data.as_mut_ptr(), dest_reg, instr_len)
     }
 
+    /// Drain coalesced MMIO writes batched by KVM during the last run_vcpu.
+    /// Must be called after run_vcpu returns and before dispatching MMIO exits,
+    /// so that writes preceding a read are applied before the read is processed.
+    pub fn drain_coalesced_mmio(&self) -> u32 {
+        (lib().drain_coalesced_mmio)(self.handle)
+    }
+
     /// Dispatch a string I/O (REP INS/OUTS) exit to device handlers.
     pub fn handle_string_io_exit(&self, port: u16, direction: u8, size: u8, data: &mut [u8], count: u32) -> i32 {
         (lib().handle_string_io_exit)(self.handle, port, direction, size, data.as_mut_ptr(), count)
@@ -571,6 +585,15 @@ impl VmHandle {
     /// Attach a CD-ROM image to an AHCI port (fd-backed).
     pub fn ahci_attach_cdrom(&self, port: u32, fd: i32, size: u64) -> i32 {
         (lib().ahci_attach_cdrom)(self.handle, port, fd, size)
+    }
+
+    // ── CMOS boot order ────────────────────────────────────────
+
+    /// Set CMOS boot device priority.
+    /// `first` and `second`: 0=none, 1=floppy, 2=HDD, 3=CD-ROM, 4=BEV/network.
+    /// Call after `setup_standard_devices()` and before starting the VM.
+    pub fn cmos_set_boot_order(&self, first: u8, second: u8) -> i32 {
+        (lib().cmos_set_boot_order)(self.handle, first, second)
     }
 
     // ── Timer & IRQ polling ─────────────────────────────────────

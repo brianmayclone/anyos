@@ -91,6 +91,7 @@ pub const SYS_TRUNCATE: u32 = 92;
 pub const SYS_MOUNT: u32 = 93;
 pub const SYS_UMOUNT: u32 = 94;
 pub const SYS_LIST_MOUNTS: u32 = 95;
+pub const SYS_STATFS: u32 = 109;
 
 // Symlinks
 pub const SYS_SYMLINK: u32 = 96;
@@ -281,6 +282,9 @@ pub const SYS_SET_HOSTNAME: u32 = 281;
 
 // Power management
 pub const SYS_SHUTDOWN: u32 = 282;
+
+// Filesystem sync
+pub const SYS_SYNC: u32 = 284;
 
 // Kernel debug settings
 pub const SYS_SET_SERIAL_VERBOSE: u32 = 283;
@@ -473,6 +477,7 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         SYS_MOUNT => handlers::sys_mount(arg1, arg2, arg3),
         SYS_UMOUNT => handlers::sys_umount(arg1),
         SYS_LIST_MOUNTS => handlers::sys_list_mounts(arg1, arg2),
+        SYS_STATFS => handlers::sys_statfs(arg1, arg2, arg3),
         SYS_RENAME => handlers::sys_rename(arg1, arg2),
         SYS_LSEEK => handlers::sys_lseek(arg1, arg2, arg3),
         SYS_FSTAT => handlers::sys_fstat(arg1, arg2),
@@ -673,6 +678,7 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
 
         // Power management
         SYS_SHUTDOWN => handlers::sys_shutdown(arg1),
+        SYS_SYNC => handlers::sys_sync(),
 
         // Kernel debug settings
         SYS_SET_SERIAL_VERBOSE => handlers::sys_set_serial_verbose(arg1),

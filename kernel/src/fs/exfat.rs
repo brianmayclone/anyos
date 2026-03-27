@@ -12,27 +12,37 @@ use alloc::vec::Vec;
 // Storage I/O helpers (cfg-gated for ARM64 compilation)
 // =============================================================================
 
-/// Arch-abstracted storage read. Returns `false` on ARM64 (no storage driver yet).
+/// Disk-aware storage read: routes through BlockDevice I/O overrides for the
+/// correct physical disk, falling back to the default storage backend for disk 0.
 #[cfg(target_arch = "x86_64")]
-fn storage_read_sectors(abs_lba: u32, count: u32, buf: &mut [u8]) -> bool {
+fn disk_read_sectors(disk_id: u32, abs_lba: u32, count: u32, buf: &mut [u8]) -> bool {
+    // Try blockdev override first (handles secondary disks, USB, etc.)
+    if let Some(dev) = crate::drivers::storage::blockdev::find_device(disk_id as u8, None) {
+        return dev.read_sectors(abs_lba, count, buf);
+    }
+    // Fallback: default storage backend (primary disk)
     crate::drivers::storage::read_sectors(abs_lba, count, buf)
 }
 
 #[cfg(target_arch = "aarch64")]
-fn storage_read_sectors(abs_lba: u32, count: u32, buf: &mut [u8]) -> bool {
+fn disk_read_sectors(_disk_id: u32, abs_lba: u32, count: u32, buf: &mut [u8]) -> bool {
     crate::drivers::arm::storage::read_sectors(abs_lba, count, buf)
 }
 
-/// Arch-abstracted storage write.
+/// Disk-aware storage write.
 #[cfg(target_arch = "x86_64")]
-fn storage_write_sectors(abs_lba: u32, count: u32, buf: &[u8]) -> bool {
+fn disk_write_sectors(disk_id: u32, abs_lba: u32, count: u32, buf: &[u8]) -> bool {
+    if let Some(dev) = crate::drivers::storage::blockdev::find_device(disk_id as u8, None) {
+        return dev.write_sectors(abs_lba, count, buf);
+    }
     crate::drivers::storage::write_sectors(abs_lba, count, buf)
 }
 
 #[cfg(target_arch = "aarch64")]
-fn storage_write_sectors(abs_lba: u32, count: u32, buf: &[u8]) -> bool {
+fn disk_write_sectors(_disk_id: u32, abs_lba: u32, count: u32, buf: &[u8]) -> bool {
     crate::drivers::arm::storage::write_sectors(abs_lba, count, buf)
 }
+
 
 // =============================================================================
 // Cluster read cache
@@ -232,12 +242,18 @@ pub struct ExFatFs {
     root_cluster: u32,
     /// Cached FAT table (4 bytes per cluster entry).
     fat_cache: Vec<u8>,
+    /// Bitset of dirty FAT sectors (1 bit per 512-byte sector).
+    fat_dirty: Vec<u8>,
     /// Cached allocation bitmap.
     bitmap: Vec<u8>,
+    /// Bitset of dirty bitmap sectors (1 bit per 512-byte sector).
+    bitmap_dirty: Vec<u8>,
     /// Cluster where the bitmap starts.
     bitmap_cluster: u32,
     /// Whether bitmap is stored contiguously.
     bitmap_contiguous: bool,
+    /// Next cluster to start searching for free space (allocation hint).
+    alloc_hint: u32,
     /// LRU cluster data cache.
     ///
     /// `UnsafeCell` allows `read_cluster(&self, …)` to update the cache without
@@ -253,6 +269,8 @@ pub struct ExFatReadPlan {
     pub runs: Vec<(u32, u32)>,
     /// Actual file size in bytes.
     pub file_size: u64,
+    /// Physical disk ID for disk-aware I/O.
+    pub disk_id: u32,
 }
 
 impl ExFatReadPlan {
@@ -269,8 +287,8 @@ impl ExFatReadPlan {
 
         for &(abs_lba, sector_count) in &self.runs {
             let bytes = sector_count as usize * 512;
-            if !storage_read_sectors(
-                abs_lba, sector_count, &mut buf[offset..offset + bytes],
+            if !disk_read_sectors(
+                self.disk_id, abs_lba, sector_count, &mut buf[offset..offset + bytes],
             ) {
                 return Err(FsError::IoError);
             }
@@ -283,6 +301,21 @@ impl ExFatReadPlan {
 }
 
 impl ExFatFs {
+    /// Returns (total_bytes, free_bytes) for this filesystem.
+    pub fn fs_stats(&self) -> (u64, u64) {
+        let cluster_size = 1u64 << (self.bytes_per_sector_shift + self.sectors_per_cluster_shift);
+        let total = self.cluster_count as u64 * cluster_size;
+        let mut free_clusters = 0u64;
+        for i in 0..self.cluster_count as usize {
+            let byte_idx = i / 8;
+            let bit_idx = i % 8;
+            if byte_idx < self.bitmap.len() && self.bitmap[byte_idx] & (1 << bit_idx) == 0 {
+                free_clusters += 1;
+            }
+        }
+        (total, free_clusters * cluster_size)
+    }
+
     // =================================================================
     // Construction
     // =================================================================
@@ -290,8 +323,8 @@ impl ExFatFs {
     /// Mount an exFAT filesystem by reading the VBR from the storage device.
     pub fn new(device_id: u32, partition_start_lba: u32) -> Result<Self, FsError> {
         let mut buf = [0u8; 512];
-        if !storage_read_sectors(partition_start_lba, 1, &mut buf) {
-            crate::serial_verbose_println!("  exFAT: Failed to read VBR at LBA {}", partition_start_lba);
+        if !disk_read_sectors(device_id, partition_start_lba, 1, &mut buf) {
+            crate::serial_verbose_println!("  exFAT: Failed to read VBR at LBA {} (disk {})", partition_start_lba, device_id);
             return Err(FsError::IoError);
         }
 
@@ -341,13 +374,14 @@ impl ExFatFs {
         let abs_fat_lba = partition_start_lba + fat_offset;
         crate::debug_println!("  [exFAT] new: caching FAT table abs_lba={} sectors={} ({} KB)",
             abs_fat_lba, fat_length, fat_cache_bytes / 1024);
-        if !storage_read_sectors(abs_fat_lba, fat_length, &mut fat_cache) {
+        if !disk_read_sectors(device_id, abs_fat_lba, fat_length, &mut fat_cache) {
             crate::serial_verbose_println!("  exFAT: Failed to cache FAT table");
             return Err(FsError::IoError);
         }
         crate::serial_verbose_println!("  exFAT: cached {} KB FAT table", fat_cache_bytes / 1024);
         crate::debug_println!("  [exFAT] new: FAT cache complete, calling load_bitmap()");
 
+        let fat_dirty_bytes = (fat_length as usize + 7) / 8;
         let mut fs = ExFatFs {
             device_id,
             partition_start_lba,
@@ -359,14 +393,20 @@ impl ExFatFs {
             cluster_count,
             root_cluster,
             fat_cache,
+            fat_dirty: vec![0u8; fat_dirty_bytes],
             bitmap: Vec::new(),
+            bitmap_dirty: Vec::new(),
             bitmap_cluster: 0,
             bitmap_contiguous: true,
+            alloc_hint: 0,
             cluster_cache: core::cell::UnsafeCell::new(ClusterCache::new()),
         };
 
         // Scan root directory for the allocation bitmap entry
         fs.load_bitmap()?;
+        // Initialize bitmap dirty tracking now that bitmap is loaded
+        let bm_sectors = (fs.bitmap.len() + 511) / 512;
+        fs.bitmap_dirty = vec![0u8; (bm_sectors + 7) / 8];
         Ok(fs)
     }
 
@@ -399,22 +439,106 @@ impl ExFatFs {
     }
 
     // =================================================================
+    // Metadata flush — batched write of dirty FAT and bitmap sectors
+    // =================================================================
+
+    /// Flush all dirty FAT sectors and bitmap sectors to disk.
+    /// Call this after a batch of writes (e.g. after write_file, after create_entry).
+    pub fn flush_metadata(&mut self) -> Result<(), FsError> {
+        // Flush dirty FAT sectors — coalesce runs of consecutive dirty sectors
+        let fat_sectors = self.fat_length as usize;
+        let mut i = 0;
+        while i < fat_sectors {
+            let byte = i / 8;
+            let bit = i % 8;
+            if byte < self.fat_dirty.len() && self.fat_dirty[byte] & (1 << bit) != 0 {
+                // Find run of consecutive dirty sectors
+                let run_start = i;
+                while i < fat_sectors {
+                    let b = i / 8;
+                    let bi = i % 8;
+                    if b >= self.fat_dirty.len() || self.fat_dirty[b] & (1 << bi) == 0 {
+                        break;
+                    }
+                    i += 1;
+                }
+                let run_len = i - run_start;
+                let src_start = run_start * 512;
+                let src_end = (src_start + run_len * 512).min(self.fat_cache.len());
+                let abs_lba = self.partition_start_lba + self.fat_offset + run_start as u32;
+                self.write_sectors(abs_lba, run_len as u32, &self.fat_cache[src_start..src_end])?;
+            } else {
+                i += 1;
+            }
+        }
+        // Clear FAT dirty bits
+        for b in &mut self.fat_dirty { *b = 0; }
+
+        // Flush dirty bitmap sectors
+        let bm_sectors = (self.bitmap.len() + 511) / 512;
+        let cs = self.cluster_size() as usize;
+        let mut j = 0;
+        while j < bm_sectors {
+            let byte = j / 8;
+            let bit = j % 8;
+            if byte < self.bitmap_dirty.len() && self.bitmap_dirty[byte] & (1 << bit) != 0 {
+                // Find run of consecutive dirty bitmap sectors
+                let run_start = j;
+                while j < bm_sectors {
+                    let b = j / 8;
+                    let bi = j % 8;
+                    if b >= self.bitmap_dirty.len() || self.bitmap_dirty[b] & (1 << bi) == 0 {
+                        break;
+                    }
+                    j += 1;
+                }
+                let run_len = j - run_start;
+                // Calculate LBA: bitmap starts at bitmap_cluster, sectors are within clusters
+                let global_sector = run_start;
+                let cluster_idx = global_sector / (cs / 512);
+                let sector_in_cluster = global_sector % (cs / 512);
+                let target_cluster = self.bitmap_cluster + cluster_idx as u32;
+                let lba = self.cluster_to_lba(target_cluster) + sector_in_cluster as u32;
+                let src_start = run_start * 512;
+                let src_end = (src_start + run_len * 512).min(self.bitmap.len());
+                // Pad last sector if needed
+                if src_end - src_start < run_len * 512 {
+                    let mut padded = vec![0u8; run_len * 512];
+                    padded[..src_end - src_start].copy_from_slice(&self.bitmap[src_start..src_end]);
+                    self.write_sectors(lba, run_len as u32, &padded)?;
+                } else {
+                    self.write_sectors(lba, run_len as u32, &self.bitmap[src_start..src_end])?;
+                }
+            } else {
+                j += 1;
+            }
+        }
+        // Clear bitmap dirty bits
+        for b in &mut self.bitmap_dirty { *b = 0; }
+
+        // Flush drive write cache to ensure metadata is on persistent storage
+        crate::drivers::storage::flush();
+
+        Ok(())
+    }
+
+    // =================================================================
     // Low-level I/O
     // =================================================================
 
     fn read_sectors(&self, abs_lba: u32, count: u32, buf: &mut [u8]) -> Result<(), FsError> {
-        crate::debug_println!("  [exFAT] read_sectors: lba={} count={} buf_len={}", abs_lba, count, buf.len());
-        if !storage_read_sectors(abs_lba, count, buf) {
-            crate::debug_println!("  [exFAT] read_sectors: FAILED lba={} count={}", abs_lba, count);
+        crate::debug_println!("  [exFAT] read_sectors: disk={} lba={} count={} buf_len={}", self.device_id, abs_lba, count, buf.len());
+        if !disk_read_sectors(self.device_id, abs_lba, count, buf) {
+            crate::debug_println!("  [exFAT] read_sectors: FAILED disk={} lba={} count={}", self.device_id, abs_lba, count);
             Err(FsError::IoError)
         } else {
-            crate::debug_println!("  [exFAT] read_sectors: OK lba={} count={}", abs_lba, count);
+            crate::debug_println!("  [exFAT] read_sectors: OK disk={} lba={} count={}", self.device_id, abs_lba, count);
             Ok(())
         }
     }
 
     fn write_sectors(&self, abs_lba: u32, count: u32, buf: &[u8]) -> Result<(), FsError> {
-        if !storage_write_sectors(abs_lba, count, buf) {
+        if !disk_write_sectors(self.device_id, abs_lba, count, buf) {
             Err(FsError::IoError)
         } else {
             Ok(())
@@ -476,7 +600,8 @@ impl ExFatFs {
         }
     }
 
-    /// Write an entry to the in-memory FAT cache and flush that sector to disk.
+    /// Write an entry to the in-memory FAT cache and mark the sector dirty.
+    /// The actual disk write is deferred until `flush_metadata()` is called.
     fn write_fat_entry(&mut self, cluster: u32, value: u32) -> Result<(), FsError> {
         let off = (cluster as usize) * 4;
         if off + 3 >= self.fat_cache.len() {
@@ -485,13 +610,12 @@ impl ExFatFs {
         let bytes = value.to_le_bytes();
         self.fat_cache[off..off + 4].copy_from_slice(&bytes);
 
-        // Write-through: flush the containing 512-byte sector
+        // Mark FAT sector as dirty (deferred write)
         let sector_idx = off / 512;
-        let sector_start = sector_idx * 512;
-        let mut sector_buf = [0u8; 512];
-        sector_buf.copy_from_slice(&self.fat_cache[sector_start..sector_start + 512]);
-        let abs_lba = self.partition_start_lba + self.fat_offset + sector_idx as u32;
-        self.write_sectors(abs_lba, 1, &sector_buf)
+        if sector_idx / 8 < self.fat_dirty.len() {
+            self.fat_dirty[sector_idx / 8] |= 1 << (sector_idx % 8);
+        }
+        Ok(())
     }
 
     // =================================================================
@@ -572,39 +696,81 @@ impl ExFatFs {
         Err(FsError::IoError)
     }
 
-    /// Flush a single modified byte of the bitmap back to disk.
-    fn flush_bitmap_byte(&self, byte_idx: usize) -> Result<(), FsError> {
-        let cs = self.cluster_size() as usize;
-        let cluster_idx = byte_idx / cs;
-        let offset_in_cluster = byte_idx % cs;
-        let target_cluster = self.bitmap_cluster + cluster_idx as u32;
-
-        let sector_in_cluster = offset_in_cluster / 512;
-        let lba = self.cluster_to_lba(target_cluster) + sector_in_cluster as u32;
-
-        let mut sector_buf = [0u8; 512];
-        self.read_sectors(lba, 1, &mut sector_buf)?;
-        sector_buf[offset_in_cluster % 512] = self.bitmap[byte_idx];
-        self.write_sectors(lba, 1, &sector_buf)
+    /// Mark a bitmap byte's sector as dirty. Actual flush is deferred to `flush_metadata()`.
+    fn mark_bitmap_dirty(&mut self, byte_idx: usize) {
+        let sector_idx = byte_idx / 512;
+        if sector_idx / 8 < self.bitmap_dirty.len() {
+            self.bitmap_dirty[sector_idx / 8] |= 1 << (sector_idx % 8);
+        }
     }
 
-    /// Allocate a single cluster. Marks bitmap + writes EOC to FAT.
+    /// Allocate a single cluster. Marks bitmap + writes EOC to FAT (deferred flush).
     fn alloc_cluster(&mut self) -> Result<u32, FsError> {
-        for i in 0..self.cluster_count {
+        let count = self.cluster_count;
+        let hint = self.alloc_hint;
+        for j in 0..count {
+            let i = (hint + j) % count;
             let byte_idx = i as usize / 8;
             let bit_idx = i as usize % 8;
             if byte_idx >= self.bitmap.len() {
-                break;
+                continue;
             }
             if self.bitmap[byte_idx] & (1 << bit_idx) == 0 {
                 self.bitmap[byte_idx] |= 1 << bit_idx;
-                self.flush_bitmap_byte(byte_idx)?;
+                self.mark_bitmap_dirty(byte_idx);
                 let cluster = i + 2;
                 self.write_fat_entry(cluster, EXFAT_EOC)?;
+                self.alloc_hint = (i + 1) % count;
                 return Ok(cluster);
             }
         }
         Err(FsError::NoSpace)
+    }
+
+    /// Allocate `n` contiguous clusters if possible, otherwise allocate `n` clusters
+    /// linked via FAT chain. Returns the first cluster.
+    fn alloc_clusters(&mut self, n: u32) -> Result<u32, FsError> {
+        if n == 0 { return Err(FsError::IoError); }
+        if n == 1 { return self.alloc_cluster(); }
+
+        // Try contiguous allocation first
+        let count = self.cluster_count;
+        let hint = self.alloc_hint;
+        'outer: for start in 0..count {
+            let base = (hint + start) % count;
+            if base + n > count { continue; }
+            for k in 0..n {
+                let i = base + k;
+                let byte_idx = i as usize / 8;
+                let bit_idx = i as usize % 8;
+                if byte_idx >= self.bitmap.len() || self.bitmap[byte_idx] & (1 << bit_idx) != 0 {
+                    continue 'outer;
+                }
+            }
+            // Found contiguous run — allocate all at once
+            for k in 0..n {
+                let i = base + k;
+                let byte_idx = i as usize / 8;
+                let bit_idx = i as usize % 8;
+                self.bitmap[byte_idx] |= 1 << bit_idx;
+                self.mark_bitmap_dirty(byte_idx);
+                let cluster = i + 2;
+                let next = if k + 1 < n { cluster + 1 } else { EXFAT_EOC };
+                self.write_fat_entry(cluster, next)?;
+            }
+            self.alloc_hint = (base + n) % count;
+            return Ok(base + 2);
+        }
+
+        // Fallback: non-contiguous chain
+        let first = self.alloc_cluster()?;
+        let mut prev = first;
+        for _ in 1..n {
+            let c = self.alloc_cluster()?;
+            self.write_fat_entry(prev, c)?;
+            prev = c;
+        }
+        Ok(first)
     }
 
     /// Free a cluster chain (FAT-chained or contiguous).
@@ -626,7 +792,7 @@ impl ExFatFs {
                 let bit = idx % 8;
                 if byte < self.bitmap.len() {
                     self.bitmap[byte] &= !(1 << bit);
-                    self.flush_bitmap_byte(byte)?;
+                    self.mark_bitmap_dirty(byte);
                 }
             }
         } else {
@@ -638,7 +804,7 @@ impl ExFatFs {
                 let bit = idx % 8;
                 if byte < self.bitmap.len() {
                     self.bitmap[byte] &= !(1 << bit);
-                    self.flush_bitmap_byte(byte)?;
+                    self.mark_bitmap_dirty(byte);
                 }
                 self.write_fat_entry(c, EXFAT_FREE)?;
                 match next {
@@ -689,10 +855,25 @@ impl ExFatFs {
         let cs = self.cluster_size() as usize;
         let mut result = Vec::new();
         let mut cur = cluster;
+        let mut chain_len = 0u32;
         loop {
             let mut cbuf = vec![0u8; cs];
             self.read_cluster(cur, &mut cbuf)?;
             result.extend_from_slice(&cbuf);
+            chain_len += 1;
+            let fat_off = (cur as usize) * 4;
+            let fat_raw = if fat_off + 3 < self.fat_cache.len() {
+                u32::from_le_bytes([
+                    self.fat_cache[fat_off],
+                    self.fat_cache[fat_off + 1],
+                    self.fat_cache[fat_off + 2],
+                    self.fat_cache[fat_off + 3],
+                ])
+            } else {
+                0xDEAD_BEEF
+            };
+            crate::serial_println!("  [exFAT] read_dir_raw: cluster={} fat_raw={:#010x} chain_pos={}",
+                cur, fat_raw, chain_len);
             match self.next_cluster(cur) {
                 Some(next) => {
                     cur = next;
@@ -700,6 +881,8 @@ impl ExFatFs {
                 None => break,
             }
         }
+        crate::serial_println!("  [exFAT] read_dir_raw: start={} chain={} total_bytes={}",
+            cluster, chain_len, result.len());
         Ok(result)
     }
 
@@ -1063,6 +1246,8 @@ impl ExFatFs {
         let mut entries = Vec::new();
         let raw = self.read_dir_raw(cluster)?;
         self.parse_dir_entries(&raw, &mut entries);
+        crate::serial_println!("  [exFAT] read_dir: cluster={} raw_bytes={} entries={}",
+            cluster, raw.len(), entries.len());
         Ok(entries)
     }
 
@@ -1229,7 +1414,7 @@ impl ExFatFs {
         let file_size_u64 = file_size as u64;
 
         if file_size == 0 || start_cluster < 2 {
-            return ExFatReadPlan { runs, file_size: file_size_u64 };
+            return ExFatReadPlan { runs, file_size: file_size_u64, disk_id: self.device_id };
         }
 
         if contiguous {
@@ -1237,7 +1422,7 @@ impl ExFatFs {
             let n = ((file_size_u64 + cs - 1) / cs) as u32;
             let lba = self.cluster_to_lba(start_cluster);
             runs.push((lba, n * spc));
-            return ExFatReadPlan { runs, file_size: file_size_u64 };
+            return ExFatReadPlan { runs, file_size: file_size_u64, disk_id: self.device_id };
         }
 
         // Follow FAT chain, coalesce contiguous runs
@@ -1261,7 +1446,7 @@ impl ExFatFs {
             }
         }
 
-        ExFatReadPlan { runs, file_size: file_size_u64 }
+        ExFatReadPlan { runs, file_size: file_size_u64, disk_id: self.device_id }
     }
 
     // =================================================================
@@ -1301,8 +1486,6 @@ impl ExFatFs {
                 None => {
                     let new = self.alloc_cluster()?;
                     self.write_fat_entry(cluster, new)?;
-                    let zeros = vec![0u8; cs as usize];
-                    self.write_cluster(new, &zeros)?;
                     cluster = new;
                 }
             }
@@ -1310,6 +1493,7 @@ impl ExFatFs {
 
         let mut written = 0usize;
         let mut cur = cluster;
+        let spc = self.sectors_per_cluster();
 
         loop {
             let start_in = if cluster_offset < offset {
@@ -1320,14 +1504,56 @@ impl ExFatFs {
             let space = cs as usize - start_in;
             let to_write = space.min(data.len() - written);
 
-            let mut cbuf = vec![0u8; cs as usize];
-            self.read_cluster(cur, &mut cbuf)?;
-            cbuf[start_in..start_in + to_write]
-                .copy_from_slice(&data[written..written + to_write]);
-            self.write_cluster(cur, &cbuf)?;
+            // Check if we can do a multi-cluster sequential write
+            if start_in == 0 && to_write == cs as usize && data.len() - written >= cs as usize {
+                // Count how many consecutive full clusters we can write
+                let mut run_clusters = 1u32;
+                let mut probe = cur;
+                let remaining_full = (data.len() - written) / cs as usize;
+                while run_clusters < remaining_full as u32 {
+                    match self.next_cluster(probe) {
+                        Some(next) if next == probe + 1 => {
+                            run_clusters += 1;
+                            probe = next;
+                        }
+                        _ => break,
+                    }
+                }
 
-            written += to_write;
-            cluster_offset += cs;
+                if run_clusters > 1 {
+                    // Multi-cluster DMA write — single I/O for all consecutive clusters
+                    let lba = self.cluster_to_lba(cur);
+                    let total_sectors = run_clusters * spc;
+                    let total_bytes = run_clusters as usize * cs as usize;
+                    self.write_sectors(lba, total_sectors, &data[written..written + total_bytes])?;
+                    // Invalidate cache for all written clusters
+                    let cache = unsafe { &mut *self.cluster_cache.get() };
+                    for k in 0..run_clusters {
+                        cache.invalidate(cur + k);
+                    }
+                    written += total_bytes;
+                    cluster_offset += run_clusters * cs;
+                    cur = probe;
+                } else {
+                    // Single full cluster write
+                    self.write_cluster(cur, &data[written..written + cs as usize])?;
+                    written += cs as usize;
+                    cluster_offset += cs;
+                }
+            } else {
+                if start_in == 0 && to_write == cs as usize {
+                    self.write_cluster(cur, &data[written..written + to_write])?;
+                } else {
+                    // Partial cluster — read-modify-write
+                    let mut cbuf = vec![0u8; cs as usize];
+                    self.read_cluster(cur, &mut cbuf)?;
+                    cbuf[start_in..start_in + to_write]
+                        .copy_from_slice(&data[written..written + to_write]);
+                    self.write_cluster(cur, &cbuf)?;
+                }
+                written += to_write;
+                cluster_offset += cs;
+            }
 
             if written >= data.len() {
                 break;
@@ -1336,14 +1562,24 @@ impl ExFatFs {
             match self.next_cluster(cur) {
                 Some(next) => cur = next,
                 None => {
-                    let new = self.alloc_cluster()?;
-                    self.write_fat_entry(cur, new)?;
-                    let zeros = vec![0u8; cs as usize];
-                    self.write_cluster(new, &zeros)?;
-                    cur = new;
+                    // Pre-allocate remaining clusters in bulk
+                    let remaining_bytes = data.len() - written;
+                    let needed = ((remaining_bytes as u32) + cs - 1) / cs;
+                    if needed > 1 {
+                        let bulk_first = self.alloc_clusters(needed)?;
+                        self.write_fat_entry(cur, bulk_first)?;
+                        cur = bulk_first;
+                    } else {
+                        let new = self.alloc_cluster()?;
+                        self.write_fat_entry(cur, new)?;
+                        cur = new;
+                    }
                 }
             }
         }
+
+        // Flush deferred FAT + bitmap writes
+        self.flush_metadata()?;
 
         let new_size = (offset + data.len() as u32).max(old_size);
         Ok((first, new_size))
@@ -1477,6 +1713,7 @@ impl ExFatFs {
             if let Some(off) = Self::find_free_entries(&cbuf, num) {
                 cbuf[off..off + entry_set.len()].copy_from_slice(&entry_set);
                 self.write_cluster(cur, &cbuf)?;
+                self.flush_metadata()?;
                 return Ok(());
             }
 
@@ -1485,6 +1722,7 @@ impl ExFatFs {
                 None => {
                     let new = self.alloc_cluster()?;
                     self.write_fat_entry(cur, new)?;
+                    self.flush_metadata()?;
                     let mut new_buf = vec![0u8; cs];
                     new_buf[..entry_set.len()].copy_from_slice(&entry_set);
                     self.write_cluster(new, &new_buf)?;
@@ -1577,6 +1815,7 @@ impl ExFatFs {
                 if found.first_cluster >= 2 {
                     self.free_chain(found.first_cluster, found.contiguous, found.data_length)?;
                 }
+                self.flush_metadata()?;
                 return Ok(());
             }
 
@@ -1640,6 +1879,7 @@ impl ExFatFs {
         let found = self.find_entry_in_buf(&raw, name).ok_or(FsError::NotFound)?;
         if found.first_cluster >= 2 {
             self.free_chain(found.first_cluster, found.contiguous, found.data_length)?;
+            self.flush_metadata()?;
         }
         self.update_entry(parent_cluster, name, 0, 0)
     }
@@ -1723,6 +1963,7 @@ impl ExFatFs {
             if let Some(off) = Self::find_free_entries(&cbuf, num) {
                 cbuf[off..off + entry_set.len()].copy_from_slice(&entry_set);
                 self.write_cluster(cur, &cbuf)?;
+                self.flush_metadata()?;
                 return Ok(());
             }
 
@@ -1731,6 +1972,7 @@ impl ExFatFs {
                 None => {
                     let new = self.alloc_cluster()?;
                     self.write_fat_entry(cur, new)?;
+                    self.flush_metadata()?;
                     let mut new_buf = vec![0u8; cs];
                     new_buf[..entry_set.len()].copy_from_slice(&entry_set);
                     self.write_cluster(new, &new_buf)?;

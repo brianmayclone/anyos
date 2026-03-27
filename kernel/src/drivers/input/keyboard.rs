@@ -290,6 +290,13 @@ pub fn tick() {
 
 /// PS/2 keyboard IRQ handler (IRQ 1). Reads scancode from port 0x60.
 pub fn irq_handler(_irq: u8) {
+    // Debug: log first IRQ1
+    static IRQ1_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let cnt = IRQ1_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if cnt == 0 {
+        crate::serial_println!("[kbd] first IRQ1");
+    }
+
     let scancode = unsafe { crate::arch::x86::port::inb(0x60) };
     handle_scancode(scancode);
 }

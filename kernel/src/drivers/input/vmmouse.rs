@@ -143,22 +143,37 @@ pub fn is_active() -> bool {
 }
 
 /// Called from IRQ12 handler when vmmouse is active.
-/// Reads the PS/2 byte to acknowledge the interrupt, then reads mouse data from backdoor.
-pub fn handle_irq() {
-    // Read and discard PS/2 byte to clear the IRQ (port 0x60 has garbage when vmmouse active)
+/// Returns `true` if backdoor data was available and processed, `false` if the
+/// backdoor was empty (caller should fall through to normal PS/2 processing).
+pub fn handle_irq() -> bool {
+    // Check if the backdoor has pending data BEFORE reading port 0x60.
+    // If the backdoor is empty (e.g. QEMU in grab mode routes events via PS/2
+    // instead of the VMware backdoor), we must NOT consume the PS/2 byte —
+    // the caller needs it for standard PS/2 mouse processing.
+    let status = backdoor(CMD_ABSPOINTER_STATUS, 0);
+    if (status.eax & 0xFFFF) < 4 {
+        return false; // No vmmouse data — let PS/2 handle this IRQ
+    }
+
+    // Vmmouse has data — read and discard PS/2 byte to clear the IRQ
+    // (port 0x60 contains garbage when vmmouse is active)
     unsafe { crate::arch::x86::port::inb(0x60); }
 
+    // First packet is guaranteed (checked above). Drain all pending packets.
+    let mut pkt_count = 0u32;
     loop {
-        // Check how many 4-byte packets are pending
-        let status = backdoor(CMD_ABSPOINTER_STATUS, 0);
-        let words_available = status.eax & 0xFFFF;
-
-        if words_available < 4 {
-            break; // No complete packet
-        }
 
         // Read the mouse data packet (4 words)
         let data = backdoor(CMD_ABSPOINTER_DATA, 4);
+
+        // Debug: log first few packets
+        static VMM_DBG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        let dbg_cnt = VMM_DBG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if dbg_cnt < 5 {
+            let is_rel = (data.eax & 0x0001_0000) != 0;
+            crate::serial_println!("[vmmouse] pkt#{} flags={:#x} x={} y={} rel={}",
+                dbg_cnt, data.eax & 0xFFFF, data.ebx, data.ecx, is_rel);
+        }
 
         // data.eax bits [15:0] = button flags:
         //   bit 5 (0x20) = left button
@@ -229,7 +244,14 @@ pub fn handle_irq() {
             // Always inject position/button event
             super::mouse::inject_absolute(x, y, buttons);
         }
+
+        // Check if more packets are pending
+        let next = backdoor(CMD_ABSPOINTER_STATUS, 0);
+        if (next.eax & 0xFFFF) < 4 {
+            break;
+        }
     }
+    true
 }
 
 /// Get cached screen dimensions for coordinate scaling.
@@ -237,6 +259,12 @@ pub fn handle_irq() {
 #[inline]
 fn get_screen_size() -> (u32, u32) {
     (SCREEN_W.load(Ordering::Relaxed), SCREEN_H.load(Ordering::Relaxed))
+}
+
+/// Public version — used by USB tablet driver for coordinate scaling.
+#[inline]
+pub fn get_screen_size_pub() -> (u32, u32) {
+    get_screen_size()
 }
 
 /// Update cached screen dimensions. Call from non-IRQ context when resolution changes.

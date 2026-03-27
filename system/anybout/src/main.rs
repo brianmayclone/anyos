@@ -9,23 +9,24 @@ anyos_std::entry!(main);
 const WIN_W: u32 = 380;
 const WIN_H: u32 = 440;
 
-/// Query CPU count via sysinfo(2).
+/// Query CPU count via sysinfo(2) — returned as the syscall return value.
 fn cpu_count() -> u32 {
     let mut buf = [0u8; 4];
-    anyos_std::sys::sysinfo(2, &mut buf);
-    u32::from_le_bytes(buf)
+    anyos_std::sys::sysinfo(2, &mut buf)
 }
 
 /// Query total memory in bytes via sysinfo(0).
-fn memory_bytes() -> u32 {
-    let mut buf = [0u8; 4];
+/// sysinfo(0) writes [total_frames:u32, free_frames:u32, ...] — each frame is 4 KB.
+fn memory_bytes() -> u64 {
+    let mut buf = [0u8; 16];
     anyos_std::sys::sysinfo(0, &mut buf);
-    u32::from_le_bytes(buf)
+    let total_frames = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    total_frames as u64 * 4096
 }
 
 /// Format bytes as a human-readable string (e.g. "128 MB").
-fn format_memory(bytes: u32) -> alloc::string::String {
-    let mb = bytes / (1024 * 1024);
+fn format_memory(bytes: u64) -> alloc::string::String {
+    let mb = (bytes / (1024 * 1024)) as u32;
     if mb >= 1024 {
         let gb = mb / 1024;
         let remainder = (mb % 1024) / 100;

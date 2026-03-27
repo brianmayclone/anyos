@@ -76,14 +76,21 @@ const PIPE_PRIM_TRIANGLES: u32      = 4;
 const PIPE_PRIM_TRIANGLE_STRIP: u32 = 5;
 const PIPE_PRIM_TRIANGLE_FAN: u32   = 6;
 
-const PIPE_CLEAR_COLOR: u32   = 1;
-const PIPE_CLEAR_DEPTH: u32   = 2;
-const PIPE_CLEAR_STENCIL: u32 = 4;
+// Gallium pipe/p_defines.h PIPE_CLEAR_* flags (bit positions):
+//   bit 0 = PIPE_CLEAR_DEPTH    = 1
+//   bit 1 = PIPE_CLEAR_STENCIL  = 2
+//   bit 2 = PIPE_CLEAR_COLOR0   = 4  (used for single render target)
+const PIPE_CLEAR_DEPTH: u32    = 1;
+const PIPE_CLEAR_STENCIL: u32  = 2;
+const PIPE_CLEAR_COLOR: u32    = 4;  // = PIPE_CLEAR_COLOR0
 
 // Pipe formats (subset)
 const PIPE_FORMAT_B8G8R8A8_UNORM: u32 = 1;
 const PIPE_FORMAT_S8_UINT_Z24_UNORM: u32 = 20;
 const PIPE_FORMAT_R32G32B32A32_FLOAT: u32 = 31;
+const PIPE_FORMAT_R32_FLOAT: u32       = 47;
+const PIPE_FORMAT_R32G32_FLOAT: u32    = 48;
+const PIPE_FORMAT_R32G32B32_FLOAT: u32 = 49;
 const PIPE_FORMAT_R8_UNORM: u32 = 64;
 
 // Virgl bind flags (VIRGL_BIND_*, NOT Gallium PIPE_BIND_*)
@@ -173,6 +180,22 @@ struct VirglState {
     // Current shader bindings
     current_vs: u32,
     current_fs: u32,
+
+    // CPU-side constant buffer mirror: indexed by location*4 (vec4 slots).
+    // Uploaded in one shot before each draw to avoid per-uniform overwrite.
+    const_buf: Vec<f32>,
+    const_buf_dirty: bool,
+
+    // Texture resource cache: maps GL texture ID → virgl resource ID.
+    tex_cache: Vec<(u32, u32)>,
+
+    // Default sampler state object handle (LINEAR filter, REPEAT wrap).
+    sampler_state_handle: u32,
+
+    // Per-slot cached sampler view handles (VIRGL_OBJECT_SAMPLER_VIEW).
+    sampler_views: [u32; 8],
+    // Per-slot cached virgl resource ID (to detect when rebind is needed).
+    sampler_view_res: [u32; 8],
 }
 
 static mut STATE: Option<VirglState> = None;
@@ -272,6 +295,24 @@ pub extern "C" fn drv_init(width: u32, height: u32) -> u32 {
     cmd.push(0x3F800000); // line_width = 1.0f
     cmd.push(0); cmd.push(0); cmd.push(0); // offset
 
+    // ── Create default sampler state (LINEAR filter, REPEAT wrap) ──
+    let samp_state_h = alloc_h();
+    // Sampler state payload: handle + s0 + lod_bias + min_lod + max_lod + border[4] = 9 words
+    cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SAMPLER_STATE, 9);
+    cmd.push(samp_state_h);
+    // S0 bits: wrap_s[2:0]=0(REPEAT), wrap_t[5:3]=0, wrap_r[8:6]=0,
+    //          min_img_filter[10:9]=1(LINEAR), min_mip_filter[12:11]=2(NONE),
+    //          mag_img_filter[14:13]=1(LINEAR)
+    let s0 = (1u32 << 9) | (2u32 << 11) | (1u32 << 13);
+    cmd.push(s0);
+    cmd.push_f32(0.0);      // lod_bias
+    cmd.push_f32(-1000.0);  // min_lod
+    cmd.push_f32(1000.0);   // max_lod
+    cmd.push_f32(0.0);      // border_color[0]
+    cmd.push_f32(0.0);      // border_color[1]
+    cmd.push_f32(0.0);      // border_color[2]
+    cmd.push_f32(0.0);      // border_color[3]
+
     // ── Bind state objects ──
     cmd.push_cmd(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_BLEND, 1);
     cmd.push(blend_handle);
@@ -316,6 +357,12 @@ pub extern "C" fn drv_init(width: u32, height: u32) -> u32 {
             ibo_size: 0,
             current_vs: 0,
             current_fs: 0,
+            const_buf: Vec::new(),
+            const_buf_dirty: false,
+            tex_cache: Vec::new(),
+            sampler_state_handle: samp_state_h,
+            sampler_views: [0u32; 8],
+            sampler_view_res: [0u32; 8],
         });
     }
 
@@ -337,6 +384,105 @@ pub extern "C" fn drv_deinit() {
         }
         STATE = None;
     }
+}
+
+/// Resize the virgl render target to new dimensions.
+///
+/// Destroys the old color+depth resources/surfaces and creates new ones.
+/// Called when the GL canvas is resized so readback dimensions stay consistent.
+#[unsafe(no_mangle)]
+pub extern "C" fn drv_resize(width: u32, height: u32) -> u32 {
+    if width == 0 || height == 0 { return 0; }
+    let s = state();
+    if s.width == width && s.height == height { return 1; }
+
+    libsyscall::serial_println!("[virgl] drv_resize: {}x{} -> {}x{}", s.width, s.height, width, height);
+
+    // Destroy old surface objects
+    s.cmd.push_cmd(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_SURFACE, 1);
+    s.cmd.push(s.color_surface_handle);
+    s.cmd.push_cmd(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_SURFACE, 1);
+    s.cmd.push(s.depth_surface_handle);
+    s.cmd.submit();
+
+    // Destroy old GPU resources
+    libsyscall::gpu_3d_resource_destroy(s.color_res_id);
+    libsyscall::gpu_3d_resource_destroy(s.depth_res_id);
+    s.color_res_id = 0;
+    s.depth_res_id = 0;
+
+    // Create new color buffer resource
+    let color_res = libsyscall::gpu_3d_resource_create(
+        PIPE_TEXTURE_2D, PIPE_FORMAT_B8G8R8A8_UNORM,
+        VIRGL_BIND_RENDER_TARGET | VIRGL_BIND_SAMPLER_VIEW,
+        width, height,
+    );
+    if color_res == u32::MAX {
+        libsyscall::serial_println!("[virgl] drv_resize: color_res failed");
+        return 0;
+    }
+
+    // Create new depth/stencil resource
+    let depth_res = libsyscall::gpu_3d_resource_create(
+        PIPE_TEXTURE_2D, PIPE_FORMAT_S8_UINT_Z24_UNORM,
+        VIRGL_BIND_DEPTH_STENCIL,
+        width, height,
+    );
+    if depth_res == u32::MAX {
+        libsyscall::serial_println!("[virgl] drv_resize: depth_res failed");
+        libsyscall::gpu_3d_resource_destroy(color_res);
+        return 0;
+    }
+
+    // Create new surface objects
+    let color_surf_h = alloc_handle();
+    s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SURFACE, 5);
+    s.cmd.push(color_surf_h);
+    s.cmd.push(color_res);
+    s.cmd.push(PIPE_FORMAT_B8G8R8A8_UNORM);
+    s.cmd.push(0);
+    s.cmd.push(0);
+
+    let depth_surf_h = alloc_handle();
+    s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SURFACE, 5);
+    s.cmd.push(depth_surf_h);
+    s.cmd.push(depth_res);
+    s.cmd.push(PIPE_FORMAT_S8_UINT_Z24_UNORM);
+    s.cmd.push(0);
+    s.cmd.push(0);
+
+    // Rebind framebuffer
+    s.cmd.push_cmd(VIRGL_CCMD_SET_FRAMEBUFFER_STATE, 0, 3);
+    s.cmd.push(1);               // nr_cbufs = 1
+    s.cmd.push(depth_surf_h);
+    s.cmd.push(color_surf_h);
+
+    // Update viewport to new dimensions
+    let half_w = width as f32 / 2.0;
+    let half_h = height as f32 / 2.0;
+    s.cmd.push_cmd(VIRGL_CCMD_SET_VIEWPORT_STATE, 0, 7);
+    s.cmd.push(0);
+    s.cmd.push_f32(half_w);
+    s.cmd.push_f32(-half_h);
+    s.cmd.push_f32(0.5);
+    s.cmd.push_f32(half_w);
+    s.cmd.push_f32(half_h);
+    s.cmd.push_f32(0.5);
+
+    let r = s.cmd.submit();
+    if r != 0 {
+        libsyscall::serial_println!("[virgl] drv_resize: submit failed: {}", r);
+        return 0;
+    }
+
+    s.color_res_id = color_res;
+    s.depth_res_id = depth_res;
+    s.color_surface_handle = color_surf_h;
+    s.depth_surface_handle = depth_surf_h;
+    s.width = width;
+    s.height = height;
+
+    1
 }
 
 #[unsafe(no_mangle)]
@@ -541,10 +687,14 @@ pub extern "C" fn drv_set_depth_test(enable: u32, func: u32) {
 pub extern "C" fn drv_clear(flags: u32, r: f32, g: f32, b: f32, a: f32, depth: f32) {
     let s = state();
 
+    // `flags` is the raw GL clear bitfield:
+    // GL_DEPTH_BUFFER_BIT   = 0x0100
+    // GL_STENCIL_BUFFER_BIT = 0x0400
+    // GL_COLOR_BUFFER_BIT   = 0x4000
     let mut pipe_flags = 0u32;
-    if flags & 1 != 0 { pipe_flags |= PIPE_CLEAR_COLOR; }
-    if flags & 2 != 0 { pipe_flags |= PIPE_CLEAR_DEPTH; }
-    if flags & 4 != 0 { pipe_flags |= PIPE_CLEAR_STENCIL; }
+    if flags & 0x4000 != 0 { pipe_flags |= PIPE_CLEAR_COLOR; }
+    if flags & 0x0100 != 0 { pipe_flags |= PIPE_CLEAR_DEPTH; }
+    if flags & 0x0400 != 0 { pipe_flags |= PIPE_CLEAR_STENCIL; }
 
     // CLEAR: buffers, color[4], depth, stencil
     s.cmd.push_cmd(VIRGL_CCMD_CLEAR, 0, 8);
@@ -553,8 +703,10 @@ pub extern "C" fn drv_clear(flags: u32, r: f32, g: f32, b: f32, a: f32, depth: f
     s.cmd.push_f32(g);
     s.cmd.push_f32(b);
     s.cmd.push_f32(a);
-    s.cmd.push_f32(depth); // depth (as float bits in u64, but virgl uses f64... use f32 approx)
-    s.cmd.push(0);         // depth high bits
+    // Virgl CLEAR expects depth as f64 (two u32 words, little-endian)
+    let depth_bits = (depth as f64).to_bits();
+    s.cmd.push((depth_bits & 0xFFFF_FFFF) as u32);       // depth lo
+    s.cmd.push(((depth_bits >> 32) & 0xFFFF_FFFF) as u32); // depth hi
     s.cmd.push(0);         // stencil
     s.cmd.submit();
 }
@@ -564,18 +716,15 @@ pub extern "C" fn drv_set_uniform_f32(location: i32, count: u32, values: *const 
     let s = state();
     let vals = unsafe { slice::from_raw_parts(values, (count * 4) as usize) };
 
-    // SET_CONSTANT_BUFFER: shader_type, index, [data...]
-    // Send to both VS and FS (both use CONST[0][...])
-    let data_len = vals.len() as u32;
-    for &shader_type in &[PIPE_SHADER_VERTEX, PIPE_SHADER_FRAGMENT] {
-        s.cmd.push_cmd(VIRGL_CCMD_SET_CONSTANT_BUFFER, 0, 2 + data_len);
-        s.cmd.push(shader_type);
-        s.cmd.push(0); // constant buffer index 0
-        for &v in vals {
-            s.cmd.push_f32(v);
-        }
+    // Write into the CPU-side mirror at the correct location offset.
+    // The full buffer is uploaded once before the draw call.
+    let start = (location as usize) * 4;
+    let end = start + vals.len();
+    if s.const_buf.len() < end {
+        s.const_buf.resize(end, 0.0);
     }
-    s.cmd.submit();
+    s.const_buf[start..end].copy_from_slice(vals);
+    s.const_buf_dirty = true;
 }
 
 #[unsafe(no_mangle)]
@@ -643,6 +792,23 @@ fn inline_write(cmd: &mut CmdBuf, res_handle: u32, data: &[u8]) {
     }
 }
 
+/// Upload the CPU-side constant buffer mirror to both VS and FS if dirty.
+fn flush_const_buf(s: &mut VirglState) {
+    if !s.const_buf_dirty || s.const_buf.is_empty() {
+        return;
+    }
+    let data_len = s.const_buf.len() as u32;
+    for &shader_type in &[PIPE_SHADER_VERTEX, PIPE_SHADER_FRAGMENT] {
+        s.cmd.push_cmd(VIRGL_CCMD_SET_CONSTANT_BUFFER, 0, 2 + data_len);
+        s.cmd.push(shader_type);
+        s.cmd.push(0); // ubuf index 0
+        for &v in &s.const_buf {
+            s.cmd.push_f32(v);
+        }
+    }
+    s.const_buf_dirty = false;
+}
+
 /// Create/update vertex elements object from attrib descriptors.
 fn setup_vertex_elements(s: &mut VirglState, attribs: &[DrvAttrib]) {
     let n = attribs.len() as u32;
@@ -659,10 +825,16 @@ fn setup_vertex_elements(s: &mut VirglState, attribs: &[DrvAttrib]) {
     s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_VERTEX_ELEMENTS, 1 + n * 4);
     s.cmd.push(handle);
     for attr in attribs {
-        s.cmd.push(attr.offset);              // src_offset
-        s.cmd.push(0);                        // instance_divisor
-        s.cmd.push(0);                        // vertex_buffer_index
-        s.cmd.push(PIPE_FORMAT_R32G32B32A32_FLOAT); // src_format (all attribs are vec4)
+        let fmt = match attr.components {
+            1 => PIPE_FORMAT_R32_FLOAT,
+            2 => PIPE_FORMAT_R32G32_FLOAT,
+            3 => PIPE_FORMAT_R32G32B32_FLOAT,
+            _ => PIPE_FORMAT_R32G32B32A32_FLOAT,
+        };
+        s.cmd.push(attr.offset);  // src_offset
+        s.cmd.push(0);            // instance_divisor
+        s.cmd.push(0);            // vertex_buffer_index
+        s.cmd.push(fmt);          // src_format based on component count
     }
     s.ve_handle = handle;
     s.ve_num_attribs = n;
@@ -681,6 +853,9 @@ pub extern "C" fn drv_draw_arrays(
     let vdata = unsafe { slice::from_raw_parts(vertex_data, vdata_len) };
     let attrs = unsafe { slice::from_raw_parts(attribs, num_attribs as usize) };
     let s = state();
+
+    // 0. Upload uniforms (const buffer mirror) if dirty
+    flush_const_buf(s);
 
     // 1. Create/reuse VBO resource and upload vertex data
     ensure_vbo(s, vdata_len as u32);
@@ -729,6 +904,9 @@ pub extern "C" fn drv_draw_elements(
     }
     let attrs = unsafe { slice::from_raw_parts(attribs, num_attribs as usize) };
     let s = state();
+
+    // 0. Upload uniforms (const buffer mirror) if dirty
+    flush_const_buf(s);
 
     // Index element size from GL type
     let index_size = match index_type {
@@ -827,6 +1005,108 @@ pub extern "C" fn drv_readback(buf: *mut u8, buf_len: u32) -> u32 {
     }
     let out = unsafe { slice::from_raw_parts_mut(buf, buf_len as usize) };
     libsyscall::gpu_3d_surface_dma_read(s.color_res_id, out, s.width, s.height)
+}
+
+/// Upload a GL texture to a virgl resource and cache it.
+/// Returns the virgl resource ID, or 0 on failure.
+/// Subsequent calls with the same gl_tex_id return the cached resource ID.
+#[unsafe(no_mangle)]
+pub extern "C" fn drv_upload_texture(
+    gl_tex_id: u32,
+    data: *const u8,
+    len: u32,
+    width: u32,
+    height: u32,
+) -> u32 {
+    if gl_tex_id == 0 || data.is_null() || len == 0 || width == 0 || height == 0 {
+        return 0;
+    }
+    let s = state();
+
+    // Return cached resource if already uploaded
+    if let Some(&(_, res_id)) = s.tex_cache.iter().find(|&&(id, _)| id == gl_tex_id) {
+        return res_id;
+    }
+
+    // Create a PIPE_TEXTURE_2D resource for sampling
+    let res = libsyscall::gpu_3d_resource_create(
+        PIPE_TEXTURE_2D, PIPE_FORMAT_B8G8R8A8_UNORM,
+        VIRGL_BIND_SAMPLER_VIEW,
+        width, height,
+    );
+    if res == u32::MAX {
+        libsyscall::serial_println!("[virgl] drv_upload_texture: resource_create failed");
+        return 0;
+    }
+
+    // Upload texture data via DMA transfer
+    let tex_data = unsafe { slice::from_raw_parts(data, len as usize) };
+    let r = libsyscall::gpu_3d_surface_dma(res, tex_data, width, height);
+    if r != 0 {
+        libsyscall::serial_println!("[virgl] drv_upload_texture: DMA failed: {}", r);
+        libsyscall::gpu_3d_resource_destroy(res);
+        return 0;
+    }
+
+    libsyscall::serial_println!("[virgl] drv_upload_texture: gl_id={} -> res={} ({}x{})", gl_tex_id, res, width, height);
+    s.tex_cache.push((gl_tex_id, res));
+    res
+}
+
+/// Bind a virgl texture resource to a fragment shader sampler slot.
+///
+/// Creates a VIRGL_OBJECT_SAMPLER_VIEW for the resource (cached per slot),
+/// then issues SET_SAMPLER_VIEWS + BIND_SAMPLER_STATES for the FS stage.
+#[unsafe(no_mangle)]
+pub extern "C" fn drv_bind_sampler_view(slot: u32, virgl_res_id: u32) {
+    if virgl_res_id == 0 || slot >= 8 { return; }
+    let s = state();
+
+    // If the same resource is already bound to this slot, just re-issue the bind commands
+    // (SET_SAMPLER_VIEWS must be re-issued before every draw in virgl).
+    let sv_handle = if s.sampler_view_res[slot as usize] == virgl_res_id
+        && s.sampler_views[slot as usize] != 0
+    {
+        s.sampler_views[slot as usize]
+    } else {
+        // Destroy old sampler view for this slot if any
+        let old_sv = s.sampler_views[slot as usize];
+        if old_sv != 0 {
+            s.cmd.push_cmd(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_SAMPLER_VIEW, 1);
+            s.cmd.push(old_sv);
+        }
+
+        // Create new VIRGL_OBJECT_SAMPLER_VIEW (6 payload words)
+        let sv = alloc_handle();
+        s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SAMPLER_VIEW, 6);
+        s.cmd.push(sv);                            // handle
+        s.cmd.push(virgl_res_id);                  // resource handle
+        s.cmd.push(PIPE_FORMAT_B8G8R8A8_UNORM);    // format
+        s.cmd.push(0);                             // val0: first_level=0 | first_layer=0
+        s.cmd.push(0);                             // val1: last_level=0 | last_layer=0
+        // swizzle: R=0, G=1, B=2, A=3 packed into bits [11:0]; tex_target at bits [31:24]
+        let swizzle = 0u32 | (1 << 3) | (2 << 6) | (3 << 9);
+        s.cmd.push(swizzle | (PIPE_TEXTURE_2D << 24));
+
+        s.sampler_views[slot as usize] = sv;
+        s.sampler_view_res[slot as usize] = virgl_res_id;
+        sv
+    };
+
+    // SET_SAMPLER_VIEWS: shader, start_slot, handle[...]
+    s.cmd.push_cmd(VIRGL_CCMD_SET_SAMPLER_VIEWS, 0, 3);
+    s.cmd.push(PIPE_SHADER_FRAGMENT);
+    s.cmd.push(slot);
+    s.cmd.push(sv_handle);
+
+    // BIND_SAMPLER_STATES: shader, start_slot, state_handle[...]
+    s.cmd.push_cmd(VIRGL_CCMD_BIND_SAMPLER_STATES, 0, 3);
+    s.cmd.push(PIPE_SHADER_FRAGMENT);
+    s.cmd.push(slot);
+    s.cmd.push(s.sampler_state_handle);
+
+    s.cmd.submit();
+    libsyscall::serial_println!("[virgl] drv_bind_sampler_view: slot={} res={} sv={}", slot, virgl_res_id, sv_handle);
 }
 
 // ── Panic handler ────────────────────────────────────────────────────────

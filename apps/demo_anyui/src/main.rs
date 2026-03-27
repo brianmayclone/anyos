@@ -72,17 +72,14 @@ fn main() {
     row_btns.set_padding(4, 4, 4, 4);
     exp_buttons.add(&row_btns);
 
-    let tooltip_btn = ui::Tooltip::new(i18n::t("Click to show a MessageBox"));
-    tooltip_btn.set_size(100, 32);
-    tooltip_btn.set_margin(0, 0, 6, 0);
-    row_btns.add(&tooltip_btn);
-
     let btn = ui::Button::new(i18n::t("Primary"));
     btn.set_size(100, 32);
+    btn.set_margin(0, 0, 6, 0);
+    btn.set_tooltip(i18n::t("Show MessageBox"));
     btn.on_click(|_e| {
         ui::MessageBox::show(ui::MessageBoxType::Info, i18n::t("Button clicked!"), None);
     });
-    tooltip_btn.add(&btn);
+    row_btns.add(&btn);
 
     let icon_btn = ui::IconButton::new("*");
     icon_btn.set_size(32, 32);
@@ -163,15 +160,12 @@ fn main() {
     text_row.set_margin(0, 0, 0, 6);
     inp_stack.add(&text_row);
 
-    let tooltip_tf = ui::Tooltip::new(i18n::t("Type your name here"));
-    tooltip_tf.set_position(0, 0);
-    tooltip_tf.set_size(200, 28);
-    text_row.add(&tooltip_tf);
-
     let tf = ui::TextField::new();
+    tf.set_position(0, 0);
     tf.set_size(200, 28);
     tf.set_text("Hello World");
-    tooltip_tf.add(&tf);
+    tf.set_tooltip(i18n::t("Type your name here"));
+    text_row.add(&tf);
 
     let search = ui::SearchField::new();
     search.set_position(208, 0);
@@ -181,8 +175,8 @@ fn main() {
 
     // TextArea
     let ta = ui::TextArea::new();
-    ta.set_size(412, 60);
-    ta.set_text("Multi-line text area.\nType here...");
+    ta.set_size(412, 80);
+    ta.set_text("This is a very long line that should wrap automatically when it exceeds the width of the text area widget boundary.\nSecond line here.\nThird line with normal length.");
     inp_stack.add(&ta);
 
     // ════════════════════════════════════════════════════════════════
@@ -315,11 +309,13 @@ fn main() {
 
     let card_title = ui::Label::new(i18n::t("Card Widget"));
     card_title.set_position(12, 8);
-    card_title.set_color(0xFF007AFF);
+    card_title.set_size(176, 16);
+    card_title.set_text_color(0xFF007AFF);
     card.add(&card_title);
 
     let card_text = ui::Label::new(i18n::t("With nested content."));
     card_text.set_position(12, 30);
+    card_text.set_size(176, 16);
     card.add(&card_text);
 
     // GroupBox

@@ -337,19 +337,21 @@ impl ShaderStore {
             None => return 0,
         };
 
-        // Count sampler uniforms
-        let num_samplers = uniforms.iter()
-            .filter(|u| u.name.starts_with("u") || u.size == 1) // heuristic
-            .count();
-        // Actually, count TexSample instructions in FS to determine sampler count
+        // Count sampler uniforms in FS
         let fs_samplers = fs_ir.instructions.iter().filter(|i| {
             matches!(i, compiler::ir::Inst::TexSample(_, _, _))
         }).count() as u32;
         let num_samplers = fs_samplers.max(1).min(8);
 
+        // Compute VS constant buffer slot count (mat4=4, others=1) so FS TGSI can
+        // reference its uniforms at the correct offset in the shared combined buffer.
+        let vs_const_slots: u32 = vs_ir.uniforms.iter().map(|u| {
+            if u.components == 16 { 4 } else { 1 }
+        }).sum();
+
         // Compile to TGSI text
-        let vs_tgsi = compiler::backend_tgsi::compile(vs_ir, true, 0);
-        let fs_tgsi = compiler::backend_tgsi::compile(fs_ir, false, num_samplers);
+        let vs_tgsi = compiler::backend_tgsi::compile(vs_ir, true, 0, 0);
+        let fs_tgsi = compiler::backend_tgsi::compile(fs_ir, false, num_samplers, vs_const_slots);
 
         crate::serial_println!("[libgl] TGSI VS ({} bytes):\n{}", vs_tgsi.len(), &vs_tgsi);
         crate::serial_println!("[libgl] TGSI FS ({} bytes):\n{}", fs_tgsi.len(), &fs_tgsi);

@@ -457,6 +457,11 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
     }
 
     // ── Runtime permission check for .app bundles ──
+    // On ISO 9660 (live-CD) boot the root filesystem is read-only, so permission
+    // files cannot be persisted.  Skip the dialog and auto-grant all declared
+    // capabilities — the user already chose to boot the live image.
+    let live_cd = crate::fs::vfs::root_is_iso9660();
+
     if path.ends_with(".app") {
         if let Some(config) = crate::task::app_config::parse_info_conf(path) {
             let declared = if let Some(ref cap_str) = config.capabilities {
@@ -467,7 +472,7 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
             let sensitive_requested = declared & crate::task::capabilities::CAP_SENSITIVE;
 
             // System apps (capabilities=all) bypass the dialog entirely
-            if declared != crate::task::capabilities::CAP_ALL && sensitive_requested != 0 {
+            if declared != crate::task::capabilities::CAP_ALL && sensitive_requested != 0 && !live_cd {
                 let uid = crate::task::scheduler::current_thread_uid();
                 let app_id = config.id.as_deref().unwrap_or(name);
 
@@ -487,7 +492,7 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
                     );
                     return PERM_NEEDED;
                 }
-            } else if declared != crate::task::capabilities::CAP_ALL && sensitive_requested == 0 {
+            } else if declared != crate::task::capabilities::CAP_ALL && sensitive_requested == 0 && !live_cd {
                 // Only auto-granted caps — auto-create empty permission file
                 let uid = crate::task::scheduler::current_thread_uid();
                 let app_id = config.id.as_deref().unwrap_or(name);
@@ -527,7 +532,7 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
             tid
         }
         Err(e) => {
-            crate::serial_verbose_println!("sys_spawn: FAILED: {}", e);
+            crate::serial_println!("sys_spawn: FAILED path='{}': {}", path, e);
             u32::MAX
         }
     }

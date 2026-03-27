@@ -52,8 +52,10 @@ const CMD_BYTE_DATA:u8 = 0x02 << 2; // Byte Data
 const CMD_WORD_DATA:u8 = 0x03 << 2; // Word Data
 const CMD_BLOCK:    u8 = 0x05 << 2; // Block Data
 
-// Polling timeout in loop iterations (~25 ms at typical CPU speeds)
-const POLL_TIMEOUT: u32 = 250_000;
+// Polling timeout in loop iterations.
+// Keep short (~1 ms) — in VMs the SMBus may not be fully emulated,
+// and 250k iterations per probe causes 14+ second boot stalls.
+const POLL_TIMEOUT: u32 = 10_000;
 
 // ── Public Types ─────────────────────────────────────────────────────────────
 

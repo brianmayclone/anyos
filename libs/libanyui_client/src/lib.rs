@@ -1174,6 +1174,7 @@ pub const KEY_ENTER: u32     = 0x100;
 pub const KEY_BACKSPACE: u32 = 0x101;
 pub const KEY_TAB: u32       = 0x102;
 pub const KEY_ESCAPE: u32    = 0x103;
+pub const KEY_SPACE: u32     = 0x104;
 pub const KEY_UP: u32        = 0x105;
 pub const KEY_DOWN: u32      = 0x106;
 pub const KEY_LEFT: u32      = 0x107;

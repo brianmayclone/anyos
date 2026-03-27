@@ -19,12 +19,8 @@
 #define MAX_ISO_DIRS  256
 #define MAX_ISO_FILES 1024
 
-/* El Torito boot image starts at CD sector 22, occupies 16 sectors (32 KiB). */
-#define BOOT_IMAGE_LBA     22
+/* El Torito boot image occupies 16 sectors (32 KiB). */
 #define BOOT_IMAGE_SECTORS 16
-
-/* First directory extent LBA = boot_image_lba + boot_image_sectors */
-#define DIR_LBA_START      (BOOT_IMAGE_LBA + BOOT_IMAGE_SECTORS)  /* 38 */
 
 /* Kernel physical base address (1 MiB) */
 #define KERNEL_LMA  0x00100000ULL
@@ -388,7 +384,8 @@ static void make_pvd(uint8_t *pvd,
                      uint32_t total_blocks,
                      uint32_t root_dir_lba,
                      uint32_t root_dir_size,
-                     uint32_t path_table_lba,
+                     uint32_t path_table_l_lba,
+                     uint32_t path_table_m_lba,
                      uint32_t path_table_size)
 {
     memset(pvd, 0, ISO_BLOCK_SIZE);
@@ -425,11 +422,11 @@ static void make_pvd(uint8_t *pvd,
     both_endian_u32(pvd + 132, path_table_size);
 
     /* Type L Path Table Location (bytes 140-143, u32 LE) */
-    write_le32(pvd + 140, path_table_lba);
+    write_le32(pvd + 140, path_table_l_lba);
     /* Optional Type L (bytes 144-147): 0 */
 
     /* Type M Path Table Location (bytes 148-151, u32 BE) */
-    write_be32(pvd + 148, path_table_lba + 1);
+    write_be32(pvd + 148, path_table_m_lba);
     /* Optional Type M (bytes 152-155): 0 */
 
     /* Root Directory Record (bytes 156-189, 34 bytes) */
@@ -539,6 +536,31 @@ void create_iso_image(const Args *args)
         collect_sysroot(args->sysroot, "/", dirs, &ndirs, files, &nfiles);
     }
 
+    /* ── Add kernel flat binary as /System/krnl64 so the installer can copy it ── */
+    {
+        int sys_idx = find_or_add_dir(dirs, &ndirs, "/System");
+        /* Add "krnl64" to the directory's file list */
+        if (dirs[sys_idx].nfiles < 128) {
+            strncpy(dirs[sys_idx].files[dirs[sys_idx].nfiles], "krnl64", 63);
+            dirs[sys_idx].nfiles++;
+        }
+        /* Add to global file list (use a copy of kernel_flat so free() works) */
+        if (nfiles < MAX_ISO_FILES) {
+            uint8_t *kcopy = (uint8_t *)malloc(kernel_flat_size);
+            if (kcopy) {
+                memcpy(kcopy, kernel_flat, kernel_flat_size);
+                strncpy(files[nfiles].path, "/System/krnl64",
+                        sizeof(files[nfiles].path) - 1);
+                files[nfiles].data = kcopy;
+                files[nfiles].size = kernel_flat_size;
+                files[nfiles].lba  = 0;
+                nfiles++;
+                printf("  Added /System/krnl64 (%zu bytes) to ISO filesystem\n",
+                       kernel_flat_size);
+            }
+        }
+    }
+
     /* ── Sort directory list (mirrors Python's sorted(self.dirs.keys())) ── */
     /*
      * We need a sorted array of directory paths for stable LBA assignment
@@ -563,13 +585,44 @@ void create_iso_image(const Args *args)
     _d; \
 })
 
-    /* ── Assign LBAs to directories ──────────────────────────────────────── */
+    /* ── Pre-compute path table size to calculate dynamic LBAs ─────────── */
     /*
-     * Directories start at sector DIR_LBA_START (38).
-     * Allocate 1 sector per directory initially; expand if needed during
-     * extent construction (Python comment: "for simplicity, just allocate more").
+     * ISO layout (sectors):
+     *   0-15:  System area (stage1 + stage2)
+     *   16:    PVD
+     *   17:    BRVD (El Torito Boot Record)
+     *   18:    VD Set Terminator
+     *   19:    Boot Catalog
+     *   20+:   Path Table L  (pt_sectors sectors)
+     *   20+pt: Path Table M  (pt_sectors sectors)
+     *   boot:  Boot Image    (BOOT_IMAGE_SECTORS sectors)
+     *   dir:   Directory extents, kernel, file data
      */
-    uint32_t next_lba = DIR_LBA_START;
+    uint32_t est_pt_size = 0;
+    {
+        int i;
+        for (i = 0; i < nsorted; i++) {
+            const char *dpath = sorted_dirs[i];
+            int name_len;
+            if (strcmp(dpath, "/") == 0) {
+                name_len = 1;  /* root identifier */
+            } else {
+                name_len = (int)strlen(iso_basename(dpath));
+                if (name_len > 63) name_len = 63;
+            }
+            est_pt_size += 8 + (uint32_t)name_len;
+            if (name_len & 1) est_pt_size++;  /* padding */
+        }
+    }
+    uint32_t pt_sectors       = (est_pt_size + ISO_BLOCK_SIZE - 1) / ISO_BLOCK_SIZE;
+    if (pt_sectors < 1) pt_sectors = 1;
+    uint32_t path_table_l_lba = 20;
+    uint32_t path_table_m_lba = 20 + pt_sectors;
+    uint32_t boot_image_lba   = path_table_m_lba + pt_sectors;
+    uint32_t dir_lba_start    = boot_image_lba + BOOT_IMAGE_SECTORS;
+
+    /* ── Assign LBAs to directories ──────────────────────────────────────── */
+    uint32_t next_lba = dir_lba_start;
     {
         int i;
         for (i = 0; i < nsorted; i++) {
@@ -868,7 +921,7 @@ void create_iso_image(const Args *args)
 
     uint8_t pvd[ISO_BLOCK_SIZE];
     make_pvd(pvd, total_sectors, root_dir_lba, root_dir_size,
-             20 /* path_table_lba */, path_table_size);
+             path_table_l_lba, path_table_m_lba, path_table_size);
 
     /* ── Build El Torito Boot Record Volume Descriptor (sector 17) ──────── */
     uint8_t brvd[ISO_BLOCK_SIZE];
@@ -936,7 +989,7 @@ void create_iso_image(const Args *args)
     boot_cat[36] = 0x00;   /* System Type */
     boot_cat[37] = 0x00;   /* Unused */
     write_le16(boot_cat + 38, 64);       /* Sector Count: 64 x 512-byte sectors */
-    write_le32(boot_cat + 40, BOOT_IMAGE_LBA);  /* Load RBA */
+    write_le32(boot_cat + 40, boot_image_lba);  /* Load RBA */
 
     /* ── Patch stage2 with kernel location ───────────────────────────────── */
     /*
@@ -976,9 +1029,9 @@ void create_iso_image(const Args *args)
     memcpy(image, stage1, stage1_size);
     memcpy(image + SECTOR_SIZE, stage2_patched, stage2_size);
 
-    /* ── El Torito boot image (sectors 22-37): same boot code for CD boot ── */
+    /* ── El Torito boot image: same boot code for CD boot ────────────────── */
     {
-        size_t bi_off = (size_t)BOOT_IMAGE_LBA * ISO_BLOCK_SIZE;
+        size_t bi_off = (size_t)boot_image_lba * ISO_BLOCK_SIZE;
         memcpy(image + bi_off, stage1, stage1_size);
         memcpy(image + bi_off + SECTOR_SIZE, stage2_patched, stage2_size);
     }
@@ -995,11 +1048,11 @@ void create_iso_image(const Args *args)
     /* ── Boot Catalog at sector 19 ───────────────────────────────────────── */
     memcpy(image + 19 * ISO_BLOCK_SIZE, boot_cat, ISO_BLOCK_SIZE);
 
-    /* ── Path Table L at sector 20 ───────────────────────────────────────── */
-    memcpy(image + 20 * ISO_BLOCK_SIZE, path_table_l, pt_l_len);
+    /* ── Path Table L ──────────────────────────────────────────────────────── */
+    memcpy(image + (size_t)path_table_l_lba * ISO_BLOCK_SIZE, path_table_l, pt_l_len);
 
-    /* ── Path Table M at sector 21 ───────────────────────────────────────── */
-    memcpy(image + 21 * ISO_BLOCK_SIZE, path_table_m, pt_m_len);
+    /* ── Path Table M ──────────────────────────────────────────────────────── */
+    memcpy(image + (size_t)path_table_m_lba * ISO_BLOCK_SIZE, path_table_m, pt_m_len);
 
     /* ── Directory extents ───────────────────────────────────────────────── */
     {

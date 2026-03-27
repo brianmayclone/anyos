@@ -321,9 +321,14 @@ fn send_dirty_update(
 // ── KeySym → PS/2 scancode (set 1) ───────────────────────────────────────────
 // Maps X11 keysyms (from RFB KeyEvent) to PS/2 set-1 scancodes.
 // Only the make code is given; release = make | 0x80.
+//
+// Layout-aware: uses Swiss German (de-CH) physical key positions so that
+// host-side keysyms (ö, ä, ü, Shift+1='+', etc.) map to the correct
+// PS/2 scancodes for a de-CH guest.  VNC clients send modifier events
+// (Shift, AltGr) separately, so we only need the base scancode here.
 
 fn keysym_to_ps2(ks: u32) -> Option<u8> {
-    // ASCII letters
+    // ASCII letters (physical position, same on QWERTY and QWERTZ)
     if ks >= 0x61 && ks <= 0x7A {
         return Some(match ks as u8 - b'a' {
             0 => 0x1E, 1 => 0x30, 2 => 0x2E, 3 => 0x20, 4 => 0x12,
@@ -339,11 +344,12 @@ fn keysym_to_ps2(ks: u32) -> Option<u8> {
         return keysym_to_ps2(ks + 0x20);
     }
     Some(match ks {
-        // Digits
+        // ── Digits (same physical position on all layouts) ──────────────
         0x30 => 0x0B, 0x31 => 0x02, 0x32 => 0x03, 0x33 => 0x04,
         0x34 => 0x05, 0x35 => 0x06, 0x36 => 0x07, 0x37 => 0x08,
         0x38 => 0x09, 0x39 => 0x0A,
-        // Space / punctuation
+
+        // ── Special keys ────────────────────────────────────────────────
         0x20 => 0x39,                    // Space
         0x0D | 0xFF0D | 0xFF8D => 0x1C,  // Return
         0x09 | 0xFF09 => 0x0F,           // Tab
@@ -363,20 +369,71 @@ fn keysym_to_ps2(ks: u32) -> Option<u8> {
         // Modifiers
         0xFFE1 | 0xFFE2 => 0x2A,        // Shift (left/right → left shift code)
         0xFFE3 | 0xFFE4 => 0x1D,        // Ctrl
-        0xFFE9 | 0xFFEA => 0x38,        // Alt
+        0xFFE9 | 0xFFEA => 0x38,        // Alt / AltGr
         0xFFE5 => 0x3A,                 // Caps Lock
-        // Punctuation (unshifted)
-        0x2D => 0x0C, // -
-        0x3D => 0x0D, // =
-        0x5B => 0x1A, // [
-        0x5D => 0x1B, // ]
-        0x5C => 0x2B, // backslash
-        0x3B => 0x27, // ;
-        0x27 => 0x28, // '
-        0x60 => 0x29, // `
-        0x2C => 0x33, // ,
-        0x2E => 0x34, // .
-        0x2F => 0x35, // /
+
+        // ── de-CH number row (normal layer) ─────────────────────────────
+        // These keys sit right of '0' on a Swiss keyboard
+        0x27   => 0x0C, // ' (apostrophe, key right of 0)
+        0x5E   => 0x0D, // ^ (circumflex dead key)
+
+        // ── de-CH number row (shift layer) ──────────────────────────────
+        // VNC client sends these as keysyms when Shift is held
+        0x2B   => 0x02, // + = Shift+1
+        0x22   => 0x03, // " = Shift+2
+        0x2A   => 0x04, // * = Shift+3
+        0x25   => 0x06, // % = Shift+5
+        0x26   => 0x07, // & = Shift+6
+        0x2F   => 0x08, // / = Shift+7
+        0x28   => 0x09, // ( = Shift+8
+        0x29   => 0x0A, // ) = Shift+9
+        0x3D   => 0x0B, // = = Shift+0
+        0x3F   => 0x0C, // ? = Shift+'
+        0x60   => 0x0D, // ` = Shift+^
+
+        // ── de-CH letter-row punctuation ────────────────────────────────
+        // Keys after P, L, and on the bottom row
+        0x5B   => 0x1A, // [ (AltGr+ü on de-CH, but also physical key)
+        0x5D   => 0x1B, // ] (AltGr+¨ on de-CH)
+        0x7B   => 0x28, // { (AltGr+ä on de-CH)
+        0x7D   => 0x2B, // } (AltGr+$ on de-CH)
+        0x5C   => 0x56, // \ (AltGr+< on de-CH, ISO key)
+        0x7C   => 0x08, // | (AltGr+7 on de-CH)
+        0x40   => 0x03, // @ (AltGr+2 on de-CH)
+        0x23   => 0x04, // # (AltGr+3 on de-CH)
+        0x7E   => 0x0D, // ~ (AltGr+^ on de-CH)
+        0x24   => 0x2B, // $ (key after ä on de-CH, normal layer)
+        0x21   => 0x1B, // ! (Shift+¨ on de-CH)
+        0x2C   => 0x33, // ,
+        0x2E   => 0x34, // .
+        0x2D   => 0x35, // - (key after . on de-CH)
+        0x3B   => 0x33, // ; = Shift+, on de-CH
+        0x3A   => 0x34, // : = Shift+. on de-CH
+        0x5F   => 0x35, // _ = Shift+- on de-CH
+        0x3C   => 0x56, // < (ISO key, normal)
+        0x3E   => 0x56, // > (ISO key, Shift)
+
+        // ── Latin-1 keysyms (de-CH specific characters) ─────────────────
+        0x00FC => 0x1A, // ü (key after P)
+        0x00F6 => 0x27, // ö (key after L)
+        0x00E4 => 0x28, // ä (key after ö)
+        0x00DC => 0x1A, // Ü (Shift+ü → same key, VNC sends Shift separately)
+        0x00D6 => 0x27, // Ö (Shift+ö)
+        0x00C4 => 0x28, // Ä (Shift+ä)
+        0x00E8 => 0x1A, // è (Shift+ü on de-CH)
+        0x00E9 => 0x27, // é (Shift+ö on de-CH)
+        0x00E0 => 0x28, // à (Shift+ä on de-CH)
+        0x00E7 => 0x05, // ç (Shift+4 on de-CH)
+        0x00C7 => 0x05, // Ç
+        0x00A7 => 0x29, // § (key left of 1 on de-CH)
+        0x00B0 => 0x29, // ° (Shift+§)
+        0x00A8 => 0x1B, // ¨ (diaeresis dead key, key after ü)
+        0x00A3 => 0x2B, // £ (Shift+$ on de-CH)
+        0x00B4 => 0x0C, // ´ (AltGr+' on de-CH)
+        0x00A6 => 0x02, // ¦ (AltGr+1 on de-CH)
+        0x00A2 => 0x09, // ¢ (AltGr+8 on de-CH)
+        0x20AC => 0x12, // € (AltGr+E on de-CH)
+
         _ => return None,
     })
 }

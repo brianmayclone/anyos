@@ -1560,87 +1560,75 @@ fn render_graphics_mode(canvas: &anyui::Canvas, fb: &[u8], width: u32, height: u
 
 // ── Keyboard scancode mapping ──────────────────────────────────────────
 
-/// Map an anyui virtual keycode to a PS/2 scancode set 1 make code.
+/// Map an anyui keycode to a PS/2 scancode set 1 make code.
+///
+/// The compositor sends raw PS/2 scancodes as keycodes for regular keys,
+/// and KEY_* constants (>= 0x100) for special keys.  For regular keys
+/// the scancode can be forwarded directly; for special keys we map back
+/// to the original PS/2 scancode.  Modifier scancodes (Shift, Ctrl, Alt)
+/// are forwarded as-is so that the guest sees proper key-down / key-up.
 ///
 /// Returns 0 for unmapped keys.
 fn keycode_to_scancode(keycode: u32) -> u8 {
+    // Special keys (KEY_* constants from compositor, >= 0x100)
     match keycode {
-        0x1B => 0x01, // Escape
-        0x31 => 0x02, // '1'
-        0x32 => 0x03, // '2'
-        0x33 => 0x04, // '3'
-        0x34 => 0x05, // '4'
-        0x35 => 0x06, // '5'
-        0x36 => 0x07, // '6'
-        0x37 => 0x08, // '7'
-        0x38 => 0x09, // '8'
-        0x39 => 0x0A, // '9'
-        0x30 => 0x0B, // '0'
-        0x2D => 0x0C, // '-'
-        0x3D => 0x0D, // '='
-        anyui::KEY_BACKSPACE => 0x0E,
-        anyui::KEY_TAB => 0x0F,
-        0x71 | 0x51 => 0x10, // q/Q
-        0x77 | 0x57 => 0x11, // w/W
-        0x65 | 0x45 => 0x12, // e/E
-        0x72 | 0x52 => 0x13, // r/R
-        0x74 | 0x54 => 0x14, // t/T
-        0x79 | 0x59 => 0x15, // y/Y
-        0x75 | 0x55 => 0x16, // u/U
-        0x69 | 0x49 => 0x17, // i/I
-        0x6F | 0x4F => 0x18, // o/O
-        0x70 | 0x50 => 0x19, // p/P
-        0x5B => 0x1A, // '['
-        0x5D => 0x1B, // ']'
-        anyui::KEY_ENTER => 0x1C,
-        0x61 | 0x41 => 0x1E, // a/A
-        0x73 | 0x53 => 0x1F, // s/S
-        0x64 | 0x44 => 0x20, // d/D
-        0x66 | 0x46 => 0x21, // f/F
-        0x67 | 0x47 => 0x22, // g/G
-        0x68 | 0x48 => 0x23, // h/H
-        0x6A | 0x4A => 0x24, // j/J
-        0x6B | 0x4B => 0x25, // k/K
-        0x6C | 0x4C => 0x26, // l/L
-        0x3B => 0x27, // ';'
-        0x27 => 0x28, // '\''
-        0x60 => 0x29, // '`'
-        0x5C => 0x2B, // '\\'
-        0x7A | 0x5A => 0x2C, // z/Z
-        0x78 | 0x58 => 0x2D, // x/X
-        0x63 | 0x43 => 0x2E, // c/C
-        0x76 | 0x56 => 0x2F, // v/V
-        0x62 | 0x42 => 0x30, // b/B
-        0x6E | 0x4E => 0x31, // n/N
-        0x6D | 0x4D => 0x32, // m/M
-        0x2C => 0x33, // ','
-        0x2E => 0x34, // '.'
-        0x2F => 0x35, // '/'
-        0x20 => 0x39, // ' '
-        anyui::KEY_F1 => 0x3B,
-        anyui::KEY_F2 => 0x3C,
-        anyui::KEY_F3 => 0x3D,
-        anyui::KEY_F4 => 0x3E,
-        anyui::KEY_F5 => 0x3F,
-        anyui::KEY_F6 => 0x40,
-        anyui::KEY_F7 => 0x41,
-        anyui::KEY_F8 => 0x42,
-        anyui::KEY_F9 => 0x43,
-        anyui::KEY_F10 => 0x44,
-        anyui::KEY_F11 => 0x57,
-        anyui::KEY_F12 => 0x58,
-        anyui::KEY_UP => 0x48,
-        anyui::KEY_DOWN => 0x50,
-        anyui::KEY_LEFT => 0x4B,
-        anyui::KEY_RIGHT => 0x4D,
-        anyui::KEY_HOME => 0x47,
-        anyui::KEY_END => 0x4F,
-        anyui::KEY_PAGE_UP => 0x49,
-        anyui::KEY_PAGE_DOWN => 0x51,
-        anyui::KEY_DELETE => 0x53,
-        anyui::KEY_ESCAPE => 0x01,
-        _ => 0,
+        anyui::KEY_ENTER     => return 0x1C,
+        anyui::KEY_BACKSPACE => return 0x0E,
+        anyui::KEY_TAB       => return 0x0F,
+        anyui::KEY_ESCAPE    => return 0x01,
+        anyui::KEY_SPACE     => return 0x39,
+        anyui::KEY_UP        => return 0x48,
+        anyui::KEY_DOWN      => return 0x50,
+        anyui::KEY_LEFT      => return 0x4B,
+        anyui::KEY_RIGHT     => return 0x4D,
+        anyui::KEY_DELETE    => return 0x53,
+        anyui::KEY_HOME      => return 0x47,
+        anyui::KEY_END       => return 0x4F,
+        anyui::KEY_PAGE_UP   => return 0x49,
+        anyui::KEY_PAGE_DOWN => return 0x51,
+        anyui::KEY_F1  => return 0x3B,
+        anyui::KEY_F2  => return 0x3C,
+        anyui::KEY_F3  => return 0x3D,
+        anyui::KEY_F4  => return 0x3E,
+        anyui::KEY_F5  => return 0x3F,
+        anyui::KEY_F6  => return 0x40,
+        anyui::KEY_F7  => return 0x41,
+        anyui::KEY_F8  => return 0x42,
+        anyui::KEY_F9  => return 0x43,
+        anyui::KEY_F10 => return 0x44,
+        anyui::KEY_F11 => return 0x57,
+        anyui::KEY_F12 => return 0x58,
+        _ => {}
     }
+
+    // Regular keys: the compositor passes raw PS/2 scancodes (< 0x80)
+    // through encode_scancode() unchanged.  Forward them directly.
+    // This includes letter keys, digit keys, punctuation, and modifier
+    // scancodes (Shift=0x2A/0x36, Ctrl=0x1D, Alt=0x38, CapsLock=0x3A).
+    if keycode < 0x80 {
+        return keycode as u8;
+    }
+
+    0
+}
+
+/// Send a key-down or key-up event to the selected VM (if running).
+/// Returns `true` if the event was forwarded, `false` otherwise.
+fn send_key_to_vm(keycode: u32, is_down: bool) -> bool {
+    let a = app();
+    if a.selected_vm < a.vms.len() {
+        let entry = &a.vms[a.selected_vm];
+        if entry.state == VmState::Running && entry.cmd_pipe != 0 {
+            let scancode = keycode_to_scancode(keycode);
+            if scancode != 0 {
+                let dir = if is_down { "keydown" } else { "keyup" };
+                let cmd = format!("{} {}", dir, scancode);
+                ipc::pipe_write(entry.cmd_pipe, cmd.as_bytes());
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // ── Create Disk Image dialog ────────────────────────────────────────────
@@ -2692,27 +2680,19 @@ fn main() {
         delete_selected_vm();
     });
 
-    // Window keyboard handler: forward keys to the VM when running.
+    // Window keyboard handlers: forward key events to the VM when running.
     app().win.on_key_down(|ke| {
-        let a = app();
-
-        // Forward to running VM via IPC.
-        if a.selected_vm < a.vms.len() {
-            let entry = &a.vms[a.selected_vm];
-            if entry.state == VmState::Running && entry.cmd_pipe != 0 {
-                let scancode = keycode_to_scancode(ke.keycode);
-                if scancode != 0 {
-                    let cmd = format!("key {}", scancode);
-                    ipc::pipe_write(entry.cmd_pipe, cmd.as_bytes());
-                    return;
-                }
-            }
+        if send_key_to_vm(ke.keycode, true) {
+            return;
         }
-
         // App-level keyboard shortcut: Escape quits.
         if ke.keycode == anyui::KEY_ESCAPE {
             anyui::quit();
         }
+    });
+
+    app().win.on_key_up(|ke| {
+        send_key_to_vm(ke.keycode, false);
     });
 
     // Canvas mouse handlers: forward to VM when running.

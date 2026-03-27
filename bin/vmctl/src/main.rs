@@ -203,6 +203,9 @@ fn read_vm_config(uuid: &str) -> Option<VmConfig> {
 fn run_vm_step(handle: &VmHandle) -> (bool, Vec<u8>) {
     let exit = handle.run_vcpu(0);
 
+    // Drain coalesced MMIO writes batched by KVM before dispatching the exit.
+    handle.drain_coalesced_mmio();
+
     match exit {
         VmExitReason::IoIn { port, size } => {
             let mut data = [0u8; 4];
@@ -412,6 +415,17 @@ fn cmd_run(config: VmConfig, timeout_secs: u32, show_screen: bool, show_regs: bo
 
     handle.create_vcpu(0);
     handle.setup_standard_devices();
+
+    // Set boot order: if ISO provided but no disk, boot CD first
+    if !config.iso_image.is_empty() && config.disk_image.is_empty() {
+        handle.cmos_set_boot_order(3, 2); // CD first, HDD second
+    } else if !config.iso_image.is_empty() {
+        // Both disk and ISO: CD first (user explicitly provided ISO)
+        handle.cmos_set_boot_order(3, 2);
+    } else {
+        handle.cmos_set_boot_order(2, 3); // HDD first, CD second
+    }
+
     handle.setup_ahci(2);
 
     // Set up network if enabled
@@ -696,6 +710,14 @@ fn cmd_serial(config: VmConfig) {
 
     handle.create_vcpu(0);
     handle.setup_standard_devices();
+
+    // Boot from CD if ISO provided
+    if !config.iso_image.is_empty() {
+        handle.cmos_set_boot_order(3, 2); // CD first, HDD second
+    } else {
+        handle.cmos_set_boot_order(2, 3); // HDD first, CD second
+    }
+
     handle.setup_ahci(2);
 
     // Attach storage
@@ -1014,6 +1036,14 @@ fn run_with_typing(config: VmConfig, timeout_secs: u32, show_screen: bool,
 
     handle.create_vcpu(0);
     handle.setup_standard_devices();
+
+    // Boot from CD if ISO provided
+    if !config.iso_image.is_empty() {
+        handle.cmos_set_boot_order(3, 2); // CD first, HDD second
+    } else {
+        handle.cmos_set_boot_order(2, 3); // HDD first, CD second
+    }
+
     handle.setup_ahci(2);
 
     if config.net_enabled {

@@ -49,6 +49,7 @@ pub(crate) const SYS_TRUNCATE: u32 = 92;
 pub(crate) const SYS_MOUNT: u32 = 93;
 pub(crate) const SYS_UMOUNT: u32 = 94;
 pub(crate) const SYS_LIST_MOUNTS: u32 = 95;
+pub(crate) const SYS_STATFS: u32 = 109;
 pub(crate) const SYS_SYMLINK: u32 = 96;
 pub(crate) const SYS_READLINK: u32 = 97;
 pub(crate) const SYS_LSTAT: u32 = 98;
@@ -231,6 +232,7 @@ pub(crate) const SYS_SET_HOSTNAME: u32 = 281;
 
 // Power management
 pub(crate) const SYS_SHUTDOWN: u32 = 282;
+pub(crate) const SYS_SYNC: u32 = 284;
 
 // Kernel debug settings
 pub(crate) const SYS_SET_SERIAL_VERBOSE: u32 = 283;

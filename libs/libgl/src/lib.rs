@@ -145,6 +145,15 @@ pub extern "C" fn gl_deinit() {
 pub extern "C" fn gl_resize(width: u32, height: u32) {
     let c = ctx();
     c.default_fb.resize(width, height);
+
+    // Also resize the HW render target so readback dimensions stay consistent.
+    if unsafe { USE_HW_BACKEND } {
+        if let Some(drv) = drv_loader::drv() {
+            if let Some(resize_fn) = drv.drv_resize {
+                resize_fn(width, height);
+            }
+        }
+    }
 }
 
 /// Swap buffers — returns a pointer to the ARGB color buffer.
@@ -321,12 +330,25 @@ pub extern "C" fn glGetString(name: GLenum) -> *const u8 {
     }
 }
 
+/// Convert GL depth/alpha func (0x0200..0x0207) to Gallium PIPE_FUNC (0..7).
+#[inline]
+fn gl_func_to_pipe(gl_func: GLenum) -> u32 {
+    (gl_func as u32).wrapping_sub(0x0200) & 0x7
+}
+
 /// Enable a capability.
 #[no_mangle]
 pub extern "C" fn glEnable(cap: GLenum) {
     let c = ctx();
     match cap {
-        GL_DEPTH_TEST => c.depth_test = true,
+        GL_DEPTH_TEST => {
+            c.depth_test = true;
+            if unsafe { USE_HW_BACKEND } {
+                if let Some(drv) = drv_loader::drv() {
+                    (drv.drv_set_depth_test)(1, gl_func_to_pipe(c.depth_func));
+                }
+            }
+        }
         GL_BLEND => c.blend = true,
         GL_CULL_FACE_CAP => c.cull_face = true,
         GL_SCISSOR_TEST => c.scissor_test = true,
@@ -339,7 +361,14 @@ pub extern "C" fn glEnable(cap: GLenum) {
 pub extern "C" fn glDisable(cap: GLenum) {
     let c = ctx();
     match cap {
-        GL_DEPTH_TEST => c.depth_test = false,
+        GL_DEPTH_TEST => {
+            c.depth_test = false;
+            if unsafe { USE_HW_BACKEND } {
+                if let Some(drv) = drv_loader::drv() {
+                    (drv.drv_set_depth_test)(0, 0);
+                }
+            }
+        }
         GL_BLEND => c.blend = false,
         GL_CULL_FACE_CAP => c.cull_face = false,
         GL_SCISSOR_TEST => c.scissor_test = false,
@@ -373,7 +402,13 @@ pub extern "C" fn glBlendFuncSeparate(
 /// Set the depth comparison function.
 #[no_mangle]
 pub extern "C" fn glDepthFunc(func: GLenum) {
-    ctx().depth_func = func;
+    let c = ctx();
+    c.depth_func = func;
+    if c.depth_test && unsafe { USE_HW_BACKEND } {
+        if let Some(drv) = drv_loader::drv() {
+            (drv.drv_set_depth_test)(1, gl_func_to_pipe(func));
+        }
+    }
 }
 
 /// Enable/disable writing to the depth buffer.

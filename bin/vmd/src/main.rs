@@ -78,6 +78,8 @@ struct VmInstance {
     name: String,
     /// BIOS type from config ("corevm" or "seabios").
     bios_type: String,
+    /// Boot order from config ("disk", "cd", or "floppy").
+    boot_order: String,
     /// Exit counter for periodic tasks.
     exit_count: u64,
 }
@@ -284,9 +286,13 @@ struct VmConfigInfo {
     name: String,
     ram_mb: u32,
     disk_image: String,
+    /// Additional disk images (disk2=, disk3=, ...).
+    extra_disks: Vec<String>,
     iso_image: String,
     /// BIOS type: "corevm" (default) or "seabios".
     bios_type: String,
+    /// Boot order: "disk" (default), "cd", or "floppy".
+    boot_order: String,
     /// Whether network adapter is enabled.
     net_enabled: bool,
     /// Network mode: "nat" (default) or "bridge".
@@ -337,8 +343,10 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
     let mut name = String::new();
     let mut ram_mb: u32 = 64;
     let mut disk_image = String::new();
+    let mut extra_disks: Vec<String> = Vec::new();
     let mut iso_image = String::new();
     let mut bios_type = String::from("corevm");
+    let mut boot_order = String::from("disk");
     let mut net_enabled = false;
     let mut net_mode = String::from("nat");
     let mut mac_mode = String::from("dynamic");
@@ -358,10 +366,21 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
             }
         } else if let Some(val) = line.strip_prefix("disk=") {
             disk_image = String::from(val);
+        } else if line.starts_with("disk") && line.contains('=') {
+            // Parse disk2=, disk3=, ... for additional disks
+            if let Some(eq_pos) = line.find('=') {
+                let key = &line[..eq_pos];
+                let val = &line[eq_pos + 1..];
+                if key.len() > 4 && key[4..].chars().all(|c| c.is_ascii_digit()) && !val.is_empty() {
+                    extra_disks.push(String::from(val));
+                }
+            }
         } else if let Some(val) = line.strip_prefix("iso=") {
             iso_image = String::from(val);
         } else if let Some(val) = line.strip_prefix("bios=") {
             bios_type = String::from(val);
+        } else if let Some(val) = line.strip_prefix("boot=") {
+            boot_order = String::from(val);
         } else if let Some(val) = line.strip_prefix("net_enabled=") {
             net_enabled = val == "1";
         } else if let Some(val) = line.strip_prefix("net_mode=") {
@@ -381,8 +400,10 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
         name,
         ram_mb,
         disk_image,
+        extra_disks,
         iso_image,
         bios_type,
+        boot_order,
         net_enabled,
         net_mode,
         mac_mode,
@@ -437,8 +458,26 @@ fn cmd_create(uuid: &str) {
     // Set up standard PC devices (PIC, PIT, PS/2, CMOS, serial, VGA).
     handle.setup_standard_devices();
 
-    // Set up AHCI controller with 2 ports (disk + cdrom).
-    handle.setup_ahci(2);
+    // Set CMOS boot order based on VM configuration.
+    // Values: 0=none, 1=floppy, 2=HDD, 3=CD-ROM, 4=network.
+    match config.boot_order.as_str() {
+        "cd" => {
+            handle.cmos_set_boot_order(3, 2); // CD first, HDD second
+            anyos_std::println!("[vmd] boot order: CD first, HDD second");
+        }
+        "floppy" => {
+            handle.cmos_set_boot_order(1, 2); // floppy first, HDD second
+            anyos_std::println!("[vmd] boot order: floppy first, HDD second");
+        }
+        _ => {
+            handle.cmos_set_boot_order(2, 3); // HDD first, CD second
+            anyos_std::println!("[vmd] boot order: HDD first, CD second");
+        }
+    }
+
+    // Set up AHCI controller: 1 disk + 1 cdrom + extra disks
+    let ahci_ports = 2 + config.extra_disks.len().min(6) as u8;
+    handle.setup_ahci(ahci_ports);
 
     // Create shared memory for VGA framebuffer.
     let shm_id = ipc::shm_create(SHM_SIZE);
@@ -473,6 +512,7 @@ fn cmd_create(uuid: &str) {
         running: false,
         name: config.name.clone(),
         bios_type: config.bios_type.clone(),
+        boot_order: config.boot_order.clone(),
         exit_count: 0,
     };
 
@@ -519,6 +559,25 @@ fn cmd_create(uuid: &str) {
                     inst.handle.ahci_attach_cdrom(1, fd as i32, size);
                 }
                 anyos_std::println!("[vmd] attached ISO on AHCI port 1 (fd={}): {} ({} bytes)", fd, config.iso_image, size);
+            } else {
+                fs::close(fd);
+            }
+        }
+    }
+
+    // Attach extra disk images as AHCI port 2, 3, ... (HDD).
+    for (i, disk_path) in config.extra_disks.iter().enumerate() {
+        if disk_path.is_empty() { continue; }
+        let port = (2 + i) as u32;
+        let fd = fs::open(disk_path, 0);
+        if fd != u32::MAX {
+            let size = fs::lseek(fd, 0, 2) as u64;
+            fs::lseek(fd, 0, 0);
+            if size > 0 {
+                if let Some(ref inst) = d.vm {
+                    inst.handle.ahci_attach_disk(port, fd as i32, size);
+                }
+                anyos_std::println!("[vmd] attached disk on AHCI port {} (fd={}): {} ({} bytes)", port, fd, disk_path, size);
             } else {
                 fs::close(fd);
             }
@@ -642,12 +701,32 @@ fn cmd_stop() {
     }
 }
 
-/// Handle `key <scancode>` command.
+/// Handle `key <scancode>` command (atomic press+release).
 fn cmd_key(scancode: u8) {
     let d = daemon();
     if let Some(ref inst) = d.vm {
         if inst.running {
             inst.handle.ps2_key_press(scancode);
+            inst.handle.ps2_key_release(scancode);
+        }
+    }
+}
+
+/// Handle `keydown <scancode>` command (key press only).
+fn cmd_keydown(scancode: u8) {
+    let d = daemon();
+    if let Some(ref inst) = d.vm {
+        if inst.running {
+            inst.handle.ps2_key_press(scancode);
+        }
+    }
+}
+
+/// Handle `keyup <scancode>` command (key release only).
+fn cmd_keyup(scancode: u8) {
+    let d = daemon();
+    if let Some(ref inst) = d.vm {
+        if inst.running {
             inst.handle.ps2_key_release(scancode);
         }
     }
@@ -697,6 +776,18 @@ fn dispatch_command(line: &str) {
                 cmd_key(sc);
             }
         }
+        "keydown" => {
+            if parts.len() >= 2 {
+                let sc = parse_u32(parts[1]) as u8;
+                cmd_keydown(sc);
+            }
+        }
+        "keyup" => {
+            if parts.len() >= 2 {
+                let sc = parse_u32(parts[1]) as u8;
+                cmd_keyup(sc);
+            }
+        }
         "mouse" => {
             if parts.len() >= 4 {
                 let dx = parse_i16(parts[1]);
@@ -735,6 +826,10 @@ fn run_vm_step() -> bool {
     };
 
     let exit = inst.handle.run_vcpu(0);
+
+    // Drain coalesced MMIO writes batched by KVM during this exit.
+    // Must happen before dispatching the exit so preceding writes are visible to reads.
+    inst.handle.drain_coalesced_mmio();
 
     match exit {
         VmExitReason::IoIn { port, size } => {
