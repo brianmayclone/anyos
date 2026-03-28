@@ -532,7 +532,7 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
             tid
         }
         Err(e) => {
-            crate::serial_println!("sys_spawn: FAILED path='{}': {}", path, e);
+            crate::serial_verbose_println!("sys_spawn: FAILED path='{}': {}", path, e);
             u32::MAX
         }
     }

@@ -26,6 +26,8 @@ pub struct RenderState<'a> {
     /// Magnification progress 0..1000 (animated ramp-in/out).
     pub mag_progress: i32,
     pub settings: &'a DockSettings,
+    /// Whether the dock is in keyboard focus mode (draws focus ring on hover_idx).
+    pub kb_focus: bool,
 }
 
 /// Compute bounce Y-offset for an icon being launched.
@@ -268,6 +270,11 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
                 fb.fill_circle(dot_x, dot_y, 2, COLOR_WHITE);
             }
 
+            // Keyboard focus highlight
+            if rs.kb_focus && rs.hover_idx == Some(slot) {
+                fb.fill_rounded_rect(ix - 4, icon_y - 4, icon_size + 8, icon_size + 8, 10, FOCUS_HIGHLIGHT);
+            }
+
             ix += base_stride;
             slot += 1;
         }
@@ -310,6 +317,11 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
                 let dot_x = ix + draw_size as i32 / 2;
                 let dot_y = icon_baseline_y + 5;
                 fb.fill_circle(dot_x, dot_y, 2, COLOR_WHITE);
+            }
+
+            // Keyboard focus highlight
+            if rs.kb_focus && rs.hover_idx == Some(i) {
+                fb.fill_rounded_rect(icon_x - 4, icon_y - 4, draw_size + 8, draw_size + 8, 10, FOCUS_HIGHLIGHT);
             }
 
             // Advance by THIS icon's magnified width + spacing
@@ -440,6 +452,11 @@ fn render_vertical(fb: &mut Framebuffer, items: &[DockItem], _screen_w: u32, scr
                 let dot_x = dock_x + 3;
                 fb.fill_circle(dot_x, dot_y, 2, COLOR_WHITE);
             }
+        }
+
+        // Keyboard focus highlight
+        if rs.kb_focus && rs.hover_idx == Some(i) {
+            fb.fill_rounded_rect(icon_x_final - 4, icon_y - 4, draw_size + 8, draw_size + 8, 10, FOCUS_HIGHLIGHT);
         }
 
         // Advance by THIS icon's magnified height + spacing

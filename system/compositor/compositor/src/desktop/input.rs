@@ -3,8 +3,10 @@
 use crate::compositor::Rect;
 use crate::keys::{
     encode_scancode,
-    KEY_ENTER, KEY_DELETE, KEY_F4, KEY_ESCAPE,
+    KEY_ENTER, KEY_DELETE, KEY_F4, KEY_F10, KEY_ESCAPE, KEY_TAB,
+    KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
     KEY_VOLUME_UP, KEY_VOLUME_DOWN, KEY_VOLUME_MUTE,
+    KEY_LEFT_SUPER, KEY_RIGHT_SUPER,
 };
 use crate::menu::MenuBarHit;
 
@@ -705,6 +707,43 @@ impl Desktop {
         let ctrl = mods & 2 != 0;
         let alt = mods & 4 != 0;
 
+        // ── Super key tap detection ─────────────────────────────────────────
+        if key_code == KEY_LEFT_SUPER || key_code == KEY_RIGHT_SUPER {
+            self.super_held = down;
+            if down {
+                self.super_key_solo = true;
+            } else if self.super_key_solo {
+                // Super released without pressing any other key → toggle system menu
+                self.super_key_solo = false;
+                if self.menu_bar.is_dropdown_open() {
+                    self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+                } else {
+                    self.menu_bar.open_system_menu(&mut self.compositor);
+                    // Set hover to first non-separator item for keyboard nav
+                    if let Some(ref mut dd) = self.menu_bar.open_dropdown {
+                        dd.hover_idx = Some(0);
+                    }
+                    self.menu_bar.rerender_system_dropdown(&mut self.compositor);
+                }
+                self.draw_menubar();
+                self.compositor.add_damage(Rect::new(
+                    0, 0, self.screen_width, menubar_height() + 1,
+                ));
+                // Also broadcast for apps that want to react
+                if self.tray_ipc_events.len() < 256 {
+                    self.tray_ipc_events.push((
+                        None,
+                        [crate::ipc_protocol::EVT_SUPER_KEY, 0, 0, 0, 0],
+                    ));
+                }
+            }
+            return;
+        }
+        // Any other key pressed while Super is held cancels the solo-tap
+        if down {
+            self.super_key_solo = false;
+        }
+
         // ── System hotkeys (intercepted before apps) ──────────────────────
 
         if down {
@@ -760,6 +799,86 @@ impl Desktop {
                 }
                 return;
             }
+
+            // Alt+Tab / Alt+Shift+Tab: Cycle windows (MRU order)
+            if alt && key_code == KEY_TAB {
+                let shift = mods & 1 != 0;
+                self.cycle_window_focus(shift);
+                return;
+            }
+
+            // Escape: Exit fullscreen, close open menus
+            if key_code == KEY_ESCAPE {
+                if self.fullscreen_window.is_some() {
+                    let fs_win = self.fullscreen_window.unwrap();
+                    self.push_event(fs_win, [EVENT_FULLSCREEN_EXIT, 0, 0, 0, 0]);
+                    self.exit_fullscreen();
+                    return;
+                }
+                if self.menu_bar.is_dropdown_open() {
+                    self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+                    self.draw_menubar();
+                    self.compositor.add_damage(Rect::new(
+                        0, 0, self.screen_width, menubar_height() + 1,
+                    ));
+                    return;
+                }
+                // If the dock has focus, release focus on Escape
+                if let Some(fid) = self.focused_window {
+                    let is_dock = self.windows.iter()
+                        .find(|w| w.id == fid)
+                        .map(|w| w.is_always_on_top() && w.is_borderless() && w.title == "Dock")
+                        .unwrap_or(false);
+                    if is_dock {
+                        // Send Escape to dock first (so it exits keyboard mode)
+                        self.push_event(fid, [EVENT_KEY_DOWN, key_code, chr, mods, 0]);
+                        // Then defocus the dock
+                        if let Some(idx) = self.windows.iter().position(|w| w.id == fid) {
+                            self.windows[idx].focused = false;
+                            self.render_titlebar(fid);
+                            self.push_event(fid, [EVENT_FOCUS_LOST, 0, 0, 0, 0]);
+                        }
+                        self.focused_window = None;
+                        self.compositor.set_focused_layer(None);
+                        self.emit_focus_changed(0, 0);
+                        return;
+                    }
+                }
+                // Forward Escape to focused app (for dialog/popup dismiss)
+            }
+
+            // F10: Activate menubar keyboard navigation
+            if key_code == KEY_F10 && !alt && !ctrl {
+                self.activate_menubar_keyboard();
+                return;
+            }
+
+            // Keyboard navigation for open dropdown menus
+            if self.menu_bar.is_dropdown_open() {
+                match key_code {
+                    KEY_DOWN => {
+                        self.menu_navigate_down();
+                        return;
+                    }
+                    KEY_UP => {
+                        self.menu_navigate_up();
+                        return;
+                    }
+                    KEY_LEFT => {
+                        self.menu_navigate_left();
+                        return;
+                    }
+                    KEY_RIGHT => {
+                        self.menu_navigate_right();
+                        return;
+                    }
+                    KEY_ENTER => {
+                        self.menu_activate_item();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
         }
 
         // Volume keys: intercept globally, don't forward to apps
@@ -801,6 +920,69 @@ impl Desktop {
                     return;
                 }
                 _ => {}
+            }
+        }
+
+        // ── Configurable shortcuts (from [shortcuts] in compositor.conf) ───
+        if down {
+            let shift = mods & 1 != 0;
+            let super_held = self.super_held;
+            // Build modifier mask matching the config format:
+            // bit 0 = Shift, bit 1 = Ctrl, bit 2 = Alt, bit 3 = Super
+            let effective_mods: u8 =
+                (shift as u8)
+                | ((ctrl as u8) << 1)
+                | ((alt as u8) << 2)
+                | ((super_held as u8) << 3);
+
+            for i in 0..self.shortcuts.len() {
+                if self.shortcuts[i].key_code == key_code && self.shortcuts[i].modifiers == effective_mods {
+                    match &self.shortcuts[i].action {
+                        crate::config::ShortcutAction::Launch(path) => {
+                            anyos_std::process::spawn(path, "");
+                        }
+                        crate::config::ShortcutAction::ShowDesktop => {
+                            self.toggle_show_desktop();
+                        }
+                        crate::config::ShortcutAction::TileWindows => {
+                            self.tile_all_windows();
+                        }
+                        crate::config::ShortcutAction::LockScreen => {
+                            // TODO: implement lock screen
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Focus the dock via keyboard:
+        // - Tab when no app window is focused (empty desktop or dock already focused)
+        // - Ctrl+D always (even with an app focused)
+        if down {
+            let focus_dock = if key_code == KEY_TAB && !alt {
+                // Tab: only if no normal app window is focused
+                match self.focused_window {
+                    None => true,
+                    Some(fid) => self.windows.iter()
+                        .find(|w| w.id == fid)
+                        .map(|w| w.is_borderless() && w.is_always_on_top())
+                        .unwrap_or(true),
+                }
+            } else if ctrl && !alt && key_code == 0x20 {
+                // Ctrl+D (scancode 0x20 = 'D' on QWERTY)
+                true
+            } else {
+                false
+            };
+            if focus_dock {
+                if let Some(dock_id) = self.find_dock_window() {
+                    if self.focused_window != Some(dock_id) {
+                        self.focus_window(dock_id);
+                    }
+                    self.push_event(dock_id, [EVENT_KEY_DOWN, KEY_TAB, chr, mods, 0]);
+                    return;
+                }
             }
         }
 
@@ -967,5 +1149,247 @@ impl Desktop {
         }
 
         self.vnc_buttons = buttons;
+    }
+
+    // ── Keyboard Accessibility ──────────────────────────────────────────
+
+    /// Find the dock window (always-on-top borderless window named "Dock").
+    fn find_dock_window(&self) -> Option<u32> {
+        self.windows.iter()
+            .find(|w| w.is_always_on_top() && w.is_borderless() && w.owner_tid != 0 && w.title == "Dock")
+            .map(|w| w.id)
+    }
+
+    /// Cycle window focus in MRU order.
+    /// The `windows` vec is MRU-ordered: last element = currently focused.
+    /// Alt+Tab focuses the second-to-last visible window.
+    /// Alt+Shift+Tab goes in reverse (forward in the vec).
+    fn cycle_window_focus(&mut self, reverse: bool) {
+        // Collect visible (not minimized/hidden) windows with owner_tid != 0 (IPC windows only)
+        let visible: alloc::vec::Vec<u32> = self.windows.iter()
+            .filter(|w| w.owner_tid != 0 && w.x >= -9000)
+            .map(|w| w.id)
+            .collect();
+
+        if visible.is_empty() {
+            return;
+        }
+
+        if visible.len() == 1 {
+            // Only one window (e.g. dock) — focus it
+            self.focus_window(visible[0]);
+            return;
+        }
+
+        let target = if reverse {
+            // Alt+Shift+Tab: go forward (first visible window in MRU order)
+            visible[0]
+        } else {
+            // Alt+Tab: second-to-last (previous window in MRU order)
+            visible[visible.len() - 2]
+        };
+
+        self.focus_window(target);
+    }
+
+    /// Activate menubar keyboard navigation: open the first app menu.
+    fn activate_menubar_keyboard(&mut self) {
+        if self.menu_bar.is_dropdown_open() {
+            self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+            self.draw_menubar();
+            self.compositor.add_damage(Rect::new(
+                0, 0, self.screen_width, menubar_height() + 1,
+            ));
+            return;
+        }
+        // Open the first menu (index 0 = app name menu)
+        if !self.menu_bar.title_layouts.is_empty() {
+            let owner_wid = self.focused_window.unwrap_or(0);
+            self.menu_bar.open_menu(0, owner_wid, &mut self.compositor);
+            // Set hover to first non-separator item
+            if let Some(ref mut dd) = self.menu_bar.open_dropdown {
+                dd.hover_idx = Some(0);
+            }
+            self.menu_bar.render_dropdown(&mut self.compositor);
+            self.draw_menubar();
+            self.compositor.add_damage(Rect::new(
+                0, 0, self.screen_width, menubar_height() + 1,
+            ));
+        }
+    }
+
+    /// Navigate down in the open dropdown menu.
+    fn menu_navigate_down(&mut self) {
+        let item_count = self.menu_dropdown_item_count();
+        if item_count == 0 { return; }
+        let cur = self.menu_bar.open_dropdown.as_ref()
+            .and_then(|dd| dd.hover_idx)
+            .unwrap_or(item_count.wrapping_sub(1));
+        let mut next = (cur + 1) % item_count;
+        for _ in 0..item_count {
+            if !self.menu_item_is_separator(next) { break; }
+            next = (next + 1) % item_count;
+        }
+        if let Some(ref mut dd) = self.menu_bar.open_dropdown {
+            dd.hover_idx = Some(next);
+        }
+        self.menu_bar.render_dropdown(&mut self.compositor);
+    }
+
+    /// Navigate up in the open dropdown menu.
+    fn menu_navigate_up(&mut self) {
+        let item_count = self.menu_dropdown_item_count();
+        if item_count == 0 { return; }
+        let cur = self.menu_bar.open_dropdown.as_ref()
+            .and_then(|dd| dd.hover_idx)
+            .unwrap_or(0);
+        let mut prev = if cur == 0 { item_count - 1 } else { cur - 1 };
+        for _ in 0..item_count {
+            if !self.menu_item_is_separator(prev) { break; }
+            prev = if prev == 0 { item_count - 1 } else { prev - 1 };
+        }
+        if let Some(ref mut dd) = self.menu_bar.open_dropdown {
+            dd.hover_idx = Some(prev);
+        }
+        self.menu_bar.render_dropdown(&mut self.compositor);
+    }
+
+    /// Navigate left to previous menu.
+    fn menu_navigate_left(&mut self) {
+        let menu_idx = match self.menu_bar.open_dropdown {
+            Some(ref dd) => dd.menu_idx,
+            None => return,
+        };
+        let menu_count = self.menu_bar.title_layouts.len();
+        if menu_count == 0 { return; }
+        let prev = if menu_idx == 0 { menu_count - 1 } else { menu_idx - 1 };
+
+        let owner_wid = self.focused_window.unwrap_or(0);
+        self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+        self.menu_bar.open_menu(prev, owner_wid, &mut self.compositor);
+        if let Some(ref mut dd) = self.menu_bar.open_dropdown {
+            dd.hover_idx = Some(0);
+        }
+        self.menu_bar.render_dropdown(&mut self.compositor);
+        self.draw_menubar();
+        self.compositor.add_damage(Rect::new(
+            0, 0, self.screen_width, menubar_height() + 1,
+        ));
+    }
+
+    /// Navigate right to next menu.
+    fn menu_navigate_right(&mut self) {
+        let menu_idx = match self.menu_bar.open_dropdown {
+            Some(ref dd) => dd.menu_idx,
+            None => return,
+        };
+        let menu_count = self.menu_bar.title_layouts.len();
+        if menu_count == 0 { return; }
+        let next = (menu_idx + 1) % menu_count;
+
+        let owner_wid = self.focused_window.unwrap_or(0);
+        self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+        self.menu_bar.open_menu(next, owner_wid, &mut self.compositor);
+        if let Some(ref mut dd) = self.menu_bar.open_dropdown {
+            dd.hover_idx = Some(0);
+        }
+        self.menu_bar.render_dropdown(&mut self.compositor);
+        self.draw_menubar();
+        self.compositor.add_damage(Rect::new(
+            0, 0, self.screen_width, menubar_height() + 1,
+        ));
+    }
+
+    /// Activate the currently hovered menu item.
+    fn menu_activate_item(&mut self) {
+        let (hover_idx, menu_idx, is_system) = match self.menu_bar.open_dropdown {
+            Some(ref dd) => (dd.hover_idx, dd.menu_idx, self.menu_bar.system_menu_open),
+            None => return,
+        };
+        let hover_idx = match hover_idx {
+            Some(i) => i,
+            None => return,
+        };
+
+        if is_system {
+            if let Some(item_id) = self.menu_bar.get_system_menu_item_id(hover_idx) {
+                self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+                self.draw_menubar();
+                self.compositor.add_damage(Rect::new(
+                    0, 0, self.screen_width, menubar_height() + 1,
+                ));
+                self.handle_system_menu_action(item_id);
+            }
+        } else if let Some(item_id) = self.menu_bar.get_menu_item_id(menu_idx, hover_idx) {
+            if let Some(win_id) = self.focused_window {
+                match item_id {
+                    crate::menu::APP_MENU_QUIT => {
+                        self.push_event(win_id, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
+                    }
+                    crate::menu::APP_MENU_HIDE => {
+                        if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                            let layer_id = self.windows[idx].layer_id;
+                            self.windows[idx].saved_bounds = Some((
+                                self.windows[idx].x,
+                                self.windows[idx].y,
+                                self.windows[idx].content_width,
+                                self.windows[idx].full_height(),
+                            ));
+                            self.compositor.move_layer(layer_id, -10000, -10000);
+                        }
+                        let next = self.windows.iter().rev()
+                            .find(|w| w.id != win_id && w.x >= 0)
+                            .map(|w| w.id);
+                        if let Some(nid) = next {
+                            self.focus_window(nid);
+                        }
+                    }
+                    _ => {
+                        self.push_event(win_id, [EVENT_MENU_ITEM, menu_idx as u32, item_id, 0, 0]);
+                    }
+                }
+            }
+            self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+            self.draw_menubar();
+            self.compositor.add_damage(Rect::new(
+                0, 0, self.screen_width, menubar_height() + 1,
+            ));
+        }
+    }
+
+    /// Get the number of items in the currently open dropdown.
+    fn menu_dropdown_item_count(&self) -> usize {
+        if self.menu_bar.system_menu_open {
+            return 11; // system menu has 11 items (incl. separators)
+        }
+        let dd = match &self.menu_bar.open_dropdown {
+            Some(d) => d,
+            None => return 0,
+        };
+        let def = match self.menu_bar.active_def() {
+            Some(d) => d,
+            None => return 0,
+        };
+        def.menus.get(dd.menu_idx).map(|m| m.items.len()).unwrap_or(0)
+    }
+
+    /// Check if a menu item at the given index is a separator.
+    fn menu_item_is_separator(&self, idx: usize) -> bool {
+        if self.menu_bar.system_menu_open {
+            // System menu separator positions: 1, 5, 7
+            return idx == 1 || idx == 5 || idx == 7;
+        }
+        let dd = match &self.menu_bar.open_dropdown {
+            Some(d) => d,
+            None => return false,
+        };
+        let def = match self.menu_bar.active_def() {
+            Some(d) => d,
+            None => return false,
+        };
+        def.menus.get(dd.menu_idx)
+            .and_then(|m| m.items.get(idx))
+            .map(|item| item.is_separator())
+            .unwrap_or(false)
     }
 }

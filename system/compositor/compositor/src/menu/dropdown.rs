@@ -202,6 +202,37 @@ impl MenuBar {
         self.open_dropdown.is_some()
     }
 
+    /// Get the item_id of a menu item by its index in the currently open dropdown.
+    pub fn get_menu_item_id(&self, menu_idx: usize, item_idx: usize) -> Option<u32> {
+        let def = self.active_def()?;
+        let menu = def.menus.get(menu_idx)?;
+        let item = menu.items.get(item_idx)?;
+        if item.is_separator() || item.is_disabled() {
+            return None;
+        }
+        Some(item.item_id)
+    }
+
+    /// Get the item_id of a system menu item by its index.
+    pub fn get_system_menu_item_id(&self, item_idx: usize) -> Option<u32> {
+        // System menu items in order (matching open_system_menu)
+        const SYS_ITEMS: &[(u32, bool)] = &[
+            (SYS_MENU_ABOUT, false),
+            (0, true), // separator
+            (SYS_MENU_SETTINGS, false),
+            (SYS_MENU_NOTIFICATIONS, false),
+            (SYS_MENU_TILE_WINDOWS, false),
+            (0, true), // separator
+            (SYS_MENU_LOGOUT, false),
+            (0, true), // separator
+            (SYS_MENU_SLEEP, false),
+            (SYS_MENU_RESTART, false),
+            (SYS_MENU_SHUTDOWN, false),
+        ];
+        let (id, is_sep) = SYS_ITEMS.get(item_idx)?;
+        if *is_sep { None } else { Some(*id) }
+    }
+
     /// Open the system menu (logo dropdown) — "About anyOS", "Settings...", etc.
     pub fn open_system_menu(&mut self, compositor: &mut Compositor) -> Option<u32> {
         use alloc::string::String;

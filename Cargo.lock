@@ -1282,6 +1282,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "updater"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libhttp_client",
+ "libzip_client",
+]
+
+[[package]]
 name = "uptime"
 version = "0.1.0"
 dependencies = [

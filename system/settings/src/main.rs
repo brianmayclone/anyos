@@ -16,6 +16,7 @@ mod page_display;
 mod page_dock;
 mod page_apps;
 mod page_devices;
+mod page_keyboard;
 mod page_network;
 mod page_update;
 
@@ -282,6 +283,7 @@ fn build_page(idx: usize) {
         BuiltinId::Dock => page_dock::build(scroll),
         BuiltinId::Apps => page_apps::build(scroll),
         BuiltinId::Devices => page_devices::build(scroll),
+        BuiltinId::Keyboard => page_keyboard::build(scroll),
         BuiltinId::Network => page_network::build(scroll),
         BuiltinId::Update => page_update::build(scroll),
     };

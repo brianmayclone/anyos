@@ -712,6 +712,7 @@ add_app(anyzilla    ${CMAKE_SOURCE_DIR}/apps/anyzilla      "anyzilla")
 add_app(notifications ${CMAKE_SOURCE_DIR}/apps/notifications "Notifications")
 add_app(installer    ${CMAKE_SOURCE_DIR}/apps/installer     "Installer")
 add_app(keyboard     ${CMAKE_SOURCE_DIR}/apps/keyboard      "Keyboard")
+add_app(updater      ${CMAKE_SOURCE_DIR}/apps/updater       "Software Update")
 
 # ============================================================
 # Session host, Desktop shell, Crash dialog

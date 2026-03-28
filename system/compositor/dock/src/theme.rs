@@ -78,6 +78,8 @@ pub fn dock_bg() -> u32 {
 pub const COLOR_WHITE: u32 = 0xFFFFFFFF;
 pub const COLOR_TRANSPARENT: u32 = 0x00000000;
 pub const COLOR_HIGHLIGHT: u32 = 0x19FFFFFF;
+/// Semi-transparent accent color for keyboard focus indicator on dock items.
+pub const FOCUS_HIGHLIGHT: u32 = 0x400A84FF;
 
 #[inline(always)]
 pub fn tooltip_bg() -> u32 {

@@ -926,9 +926,10 @@ pub fn run_once() -> u32 {
                     }
 
                     if !handled {
-                        // Tab: cycle focus to next focusable control
+                        // Tab / Shift+Tab: cycle focus forward / backward
                         if keycode == control::KEY_TAB {
-                            cycle_focus(st, win_id, &mut pending_cbs);
+                            let reverse = modifiers & control::MOD_SHIFT != 0;
+                            cycle_focus(st, win_id, &mut pending_cbs, reverse);
                         }
                         // Always bubble unhandled key events to the window
                         fire_event_callback(&st.controls, win_id, control::EVENT_KEY, &mut pending_cbs);
@@ -1407,6 +1408,7 @@ fn cycle_focus(
     st: &mut crate::AnyuiState,
     win_id: ControlId,
     pending: &mut Vec<PendingCallback>,
+    reverse: bool,
 ) {
     // Collect all focusable controls that belong to this window (with insertion index for stable sort)
     let mut focusable: Vec<(ControlId, usize)> = Vec::new();
@@ -1445,7 +1447,11 @@ fn cycle_focus(
         .and_then(|fid| ids.iter().position(|&id| id == fid))
         .unwrap_or(0);
 
-    let next_idx = (cur_idx + 1) % ids.len();
+    let next_idx = if reverse {
+        if cur_idx == 0 { ids.len() - 1 } else { cur_idx - 1 }
+    } else {
+        (cur_idx + 1) % ids.len()
+    };
     let next_id = ids[next_idx];
 
     // Blur old

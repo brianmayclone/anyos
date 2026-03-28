@@ -83,17 +83,27 @@ fn detect() -> bool {
 
 /// Enable the vmmouse in absolute mode.
 ///
-/// Minimal two-step sequence that works on both QEMU TCG/KVM and VMware:
-///   1. ENABLE  — activates the vmmouse channel
-///   2. ABSOLUTE — switches the pointer to absolute coordinate mode
+/// Three-step sequence:
+///   1. ENABLE   — activates the vmmouse channel
+///   2. Drain    — read the VMMOUSE_VERSION word that QEMU pushes to the queue
+///   3. ABSOLUTE — switches the pointer to absolute coordinate mode
 ///
-/// STATUS and DATA calls are intentionally omitted:
-///   - CMD_ABSPOINTER_DATA causes the `in eax, dx` instruction to block
-///     indefinitely on QEMU TCG when the queue has 0 pending words.
-///   - CMD_ABSPOINTER_STATUS is not needed to activate absolute mode.
-///   - Command 86 (RESTRICT) is VMware-only and stalls on QEMU.
+/// Step 2 is critical: QEMU's vmmouse_read_id() pushes a VERSION word into
+/// the data queue on ENABLE. If we don't drain it, the first DATA read gets
+/// [VERSION, buttons, x, y] instead of [buttons, x, y, z], shifting all
+/// register mappings by one word (EBX=buttons instead of X → cursor stuck at x=0).
 fn enable() -> bool {
     backdoor(CMD_ABSPOINTER_COMMAND, ABSPOINTER_ENABLE);
+
+    // Drain the VERSION word from the queue.
+    // After ENABLE, queue has exactly 1 item (VMMOUSE_VERSION).
+    // Read it with STATUS check to avoid blocking if queue is unexpectedly empty.
+    let status = backdoor(CMD_ABSPOINTER_STATUS, 0);
+    let pending = status.eax & 0xFFFF;
+    if pending > 0 {
+        let _ = backdoor(CMD_ABSPOINTER_DATA, pending);
+    }
+
     backdoor(CMD_ABSPOINTER_COMMAND, ABSPOINTER_ABSOLUTE);
     true
 }
@@ -169,10 +179,9 @@ pub fn handle_irq() -> bool {
         // Debug: log first few packets
         static VMM_DBG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
         let dbg_cnt = VMM_DBG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if dbg_cnt < 5 {
-            let is_rel = (data.eax & 0x0001_0000) != 0;
-            crate::serial_println!("[vmmouse] pkt#{} flags={:#x} x={} y={} rel={}",
-                dbg_cnt, data.eax & 0xFFFF, data.ebx, data.ecx, is_rel);
+        if dbg_cnt < 3 {
+            crate::serial_println!("[vmmouse] pkt#{} flags={:#x} x={} y={} z={}",
+                dbg_cnt, data.eax & 0xFFFF, data.ebx, data.ecx, data.edx);
         }
 
         // data.eax bits [15:0] = button flags:

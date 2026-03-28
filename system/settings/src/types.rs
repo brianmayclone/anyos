@@ -12,6 +12,7 @@ pub enum BuiltinId {
     Dock,
     Apps,
     Devices,
+    Keyboard,
     Network,
     Update,
 }

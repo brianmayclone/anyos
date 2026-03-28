@@ -83,6 +83,24 @@ add_custom_target(bootloader DEPENDS
 
 add_custom_target(kernel DEPENDS ${KERNEL_ELF})
 
+# ============================================================
+# System Manifest (for delta updates)
+# ============================================================
+set(SYSTEM_MANIFEST "${CMAKE_BINARY_DIR}/system-manifest.json")
+add_custom_command(
+  OUTPUT ${SYSTEM_MANIFEST}
+  COMMAND ${MKMANIFEST_EXECUTABLE}
+    --sysroot ${SYSROOT_DIR}
+    --version ${ANYOS_VERSION}
+    -o ${SYSTEM_MANIFEST}
+  DEPENDS
+    ${MKMANIFEST_EXECUTABLE}
+    programs
+  COMMENT "Generating system-manifest.json for update system"
+)
+
+add_custom_target(manifest DEPENDS ${SYSTEM_MANIFEST})
+
 add_custom_target(image ALL DEPENDS ${DISK_IMAGE} programs)
 
 add_custom_target(run

@@ -38,6 +38,9 @@ pub const KEY_VOLUME_UP: u32   = 0x160;
 pub const KEY_VOLUME_DOWN: u32 = 0x161;
 pub const KEY_VOLUME_MUTE: u32 = 0x162;
 
+pub const KEY_LEFT_SUPER: u32  = 0x170;
+pub const KEY_RIGHT_SUPER: u32 = 0x171;
+
 // ── Scancode Translation ─────────────────────────────────────────────────────
 
 /// Translate a raw PS/2 scancode into a `KEY_*` code.
@@ -77,6 +80,9 @@ pub fn encode_scancode(scancode: u32) -> u32 {
         0x130 => KEY_VOLUME_UP,
         0x12E => KEY_VOLUME_DOWN,
         0x120 => KEY_VOLUME_MUTE,
+        // Super/Win keys (E0-prefixed)
+        0x15B => KEY_LEFT_SUPER,
+        0x15C => KEY_RIGHT_SUPER,
         // All other scancodes pass through (apps use chr value)
         other => other,
     }

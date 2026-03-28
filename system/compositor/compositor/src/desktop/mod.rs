@@ -173,6 +173,16 @@ pub struct Desktop {
     /// so we can synthesise press/release pairs for changed bits only.
     pub(crate) vnc_buttons: u8,
 
+    /// Super key tap detection: true while Super is held and no other key was pressed.
+    /// On Super key-up, if still true, broadcast EVT_SUPER_KEY (app launcher toggle).
+    pub(crate) super_key_solo: bool,
+
+    /// Configurable keyboard shortcuts loaded from compositor.conf `[shortcuts]` section.
+    pub(crate) shortcuts: Vec<crate::config::KeyboardShortcut>,
+
+    /// Whether a Super/Win key is currently held down (for shortcut matching).
+    pub(crate) super_held: bool,
+
     /// Window ID of the currently fullscreen window, or None.
     pub(crate) fullscreen_window: Option<u32>,
 
@@ -240,6 +250,9 @@ impl Desktop {
             last_click_x: 0,
             last_click_y: 0,
             vnc_buttons: 0,
+            super_key_solo: false,
+            shortcuts: crate::config::read_shortcuts(),
+            super_held: false,
             fullscreen_window: None,
         };
 

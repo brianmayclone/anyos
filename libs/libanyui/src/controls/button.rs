@@ -99,4 +99,12 @@ impl Control for Button {
     fn handle_click(&mut self, _lx: i32, _ly: i32, _button: u32) -> EventResponse {
         EventResponse::CLICK
     }
+
+    fn handle_key_down(&mut self, keycode: u32, _char_code: u32, _modifiers: u32) -> EventResponse {
+        if keycode == crate::control::KEY_SPACE || keycode == crate::control::KEY_ENTER {
+            EventResponse::CLICK
+        } else {
+            EventResponse::IGNORED
+        }
+    }
 }

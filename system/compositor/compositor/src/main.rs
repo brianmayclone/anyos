@@ -679,6 +679,14 @@ fn handle_ipc_commands(
                 }
                 i += 1;
             }
+            // CMD_RELOAD_SHORTCUTS: re-read [shortcuts] from compositor.conf
+            ipc_protocol::CMD_RELOAD_SHORTCUTS => {
+                acquire_lock();
+                let desktop = unsafe { desktop_ref() };
+                desktop.shortcuts = config::read_shortcuts();
+                release_lock();
+                i += 1;
+            }
             // All other fast commands: batch under a single lock hold.
             // This prevents the render thread from firing between consecutive
             // CMD_PRESENTs during rapid scrolling (eliminates partial-update flicker).

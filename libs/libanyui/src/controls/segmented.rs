@@ -118,4 +118,28 @@ impl Control for SegmentedControl {
         }
         EventResponse::CONSUMED
     }
+
+    fn handle_key_down(&mut self, keycode: u32, _char_code: u32, _modifiers: u32) -> EventResponse {
+        let n = self.segment_count();
+        if n == 0 { return EventResponse::IGNORED; }
+        match keycode {
+            crate::control::KEY_LEFT => {
+                if self.text_base.base.state > 0 {
+                    self.text_base.base.state -= 1;
+                    EventResponse::CHANGED
+                } else {
+                    EventResponse::CONSUMED
+                }
+            }
+            crate::control::KEY_RIGHT => {
+                if self.text_base.base.state + 1 < n as u32 {
+                    self.text_base.base.state += 1;
+                    EventResponse::CHANGED
+                } else {
+                    EventResponse::CONSUMED
+                }
+            }
+            _ => EventResponse::IGNORED,
+        }
+    }
 }

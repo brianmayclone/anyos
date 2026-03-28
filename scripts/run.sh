@@ -616,13 +616,13 @@ fi
 
 # VGA device flags
 VGA_FLAGS="-vga $VGA"
-DISPLAY_FLAGS="-display gtk,grab-on-hover=on"
+DISPLAY_FLAGS="-display gtk"
 RES_LABEL=""
 if [ "$VGA" = "virgl" ]; then
     RES_W="${RESOLUTION%%x*}"
     RES_H="${RESOLUTION#*x}"
     VGA_FLAGS="-vga none -device virtio-vga-gl,edid=on,xres=$RES_W,yres=$RES_H"
-    DISPLAY_FLAGS="-display gtk,gl=on,grab-on-hover=on"
+    DISPLAY_FLAGS="-display gtk,gl=on"
     VGA_LABEL="Virtio GPU + virgl (${RES_W}x${RES_H}, 3D)"
     RES_LABEL=", res: ${RESOLUTION}"
 elif [ "$VGA" = "virtio" ]; then
@@ -634,7 +634,7 @@ elif [ "$VGA" = "virtio" ]; then
 elif [ -n "$RESOLUTION" ]; then
     RES_W="${RESOLUTION%%x*}"
     RES_H="${RESOLUTION#*x}"
-    DISPLAY_FLAGS="-display gtk,grab-on-hover=on,window-size=${RES_W}x${RES_H}"
+    DISPLAY_FLAGS="-display gtk,window-size=${RES_W}x${RES_H}"
     RES_LABEL=", res: ${RESOLUTION}"
 fi
 

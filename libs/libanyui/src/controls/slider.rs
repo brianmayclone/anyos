@@ -93,4 +93,19 @@ impl Control for Slider {
             EventResponse::CONSUMED
         }
     }
+
+    fn handle_key_down(&mut self, keycode: u32, _char_code: u32, _modifiers: u32) -> EventResponse {
+        let step = 5u32;
+        match keycode {
+            crate::control::KEY_LEFT | crate::control::KEY_DOWN => {
+                self.base.state = self.base.state.saturating_sub(step);
+                EventResponse::CHANGED
+            }
+            crate::control::KEY_RIGHT | crate::control::KEY_UP => {
+                self.base.state = (self.base.state + step).min(100);
+                EventResponse::CHANGED
+            }
+            _ => EventResponse::IGNORED,
+        }
+    }
 }

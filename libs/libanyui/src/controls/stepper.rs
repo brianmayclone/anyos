@@ -84,4 +84,18 @@ impl Control for Stepper {
         }
         EventResponse::CHANGED
     }
+
+    fn handle_key_down(&mut self, keycode: u32, _char_code: u32, _modifiers: u32) -> EventResponse {
+        match keycode {
+            crate::control::KEY_UP | crate::control::KEY_RIGHT => {
+                self.text_base.base.state += 1;
+                EventResponse::CHANGED
+            }
+            crate::control::KEY_DOWN | crate::control::KEY_LEFT => {
+                if self.text_base.base.state > 0 { self.text_base.base.state -= 1; }
+                EventResponse::CHANGED
+            }
+            _ => EventResponse::IGNORED,
+        }
+    }
 }

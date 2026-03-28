@@ -992,6 +992,41 @@ impl Desktop {
         self.compositor.damage_all();
     }
 
+    /// Toggle "show desktop": minimize all windows, or restore them.
+    pub(crate) fn toggle_show_desktop(&mut self) {
+        // Check if any visible framed window exists
+        let has_visible = self.windows.iter()
+            .any(|w| w.x >= 0 && !w.is_borderless() && w.owner_tid != 0);
+
+        if has_visible {
+            // Minimize all visible framed windows
+            let ids: Vec<u32> = self.windows.iter()
+                .filter(|w| w.x >= 0 && !w.is_borderless() && w.owner_tid != 0)
+                .map(|w| w.id)
+                .collect();
+            for id in ids {
+                self.minimize_window(id);
+            }
+        } else {
+            // Restore: un-minimize all windows that have saved bounds
+            let ids: Vec<u32> = self.windows.iter()
+                .filter(|w| w.x < -9000 && w.saved_bounds.is_some() && w.owner_tid != 0)
+                .map(|w| w.id)
+                .collect();
+            for id in ids {
+                if let Some(idx) = self.windows.iter().position(|w| w.id == id) {
+                    if let Some((sx, sy, sw, sh)) = self.windows[idx].saved_bounds.take() {
+                        self.windows[idx].x = sx;
+                        self.windows[idx].y = sy;
+                        let layer_id = self.windows[idx].layer_id;
+                        self.compositor.move_layer(layer_id, sx, sy);
+                    }
+                }
+            }
+            self.compositor.damage_all();
+        }
+    }
+
     /// Snap a window to the left or right half of the screen.
     /// `edge`: 0 = left, 1 = right, 2 = top (full width top half), 3 = bottom (full width bottom half).
     pub(crate) fn snap_window_to_half(&mut self, win_id: u32, edge: u32) {

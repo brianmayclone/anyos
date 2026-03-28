@@ -213,6 +213,10 @@ pub const CMD_SET_SCALE: u32 = 0x1017;
 /// cursor_shape: 0=Arrow, 1=ResizeEW, 2=ResizeNS, 3=ResizeNWSE, 4=ResizeNESW, 5=Move
 pub const CMD_SET_CURSOR: u32 = 0x1018;
 
+/// Reload keyboard shortcuts from compositor.conf: [CMD, 0, 0, 0, 0]
+/// Sent by the Settings app after editing the [shortcuts] section.
+pub const CMD_RELOAD_SHORTCUTS: u32 = 0x1019;
+
 /// Inject a synthetic key event into the focused window.
 /// [CMD, scancode, char_val, is_down (1=down/0=up), modifiers]
 /// vncd maps RFB KeySyms → (scancode, char_val) before emitting this command.
@@ -318,6 +322,11 @@ pub const EVT_WINDOW_CLOSED: u32 = 0x0061;
 /// Focus changed (broadcast): [EVT, focused_tid, focused_win_id, 0, 0]
 /// Emitted when the focused window changes. Used by Shell to update the menu bar.
 pub const EVT_FOCUS_CHANGED: u32 = 0x0062;
+
+/// Super key pressed (broadcast): [EVT, 0, 0, 0, 0]
+/// Emitted when the Super/Win key is pressed and released (without combining with other keys).
+/// Used by Shell/Dock to toggle the app launcher.
+pub const EVT_SUPER_KEY: u32 = 0x0063;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

@@ -62,4 +62,13 @@ impl Control for Toggle {
         self.text_base.base.state = if self.text_base.base.state != 0 { 0 } else { 1 };
         EventResponse::CHANGED
     }
+
+    fn handle_key_down(&mut self, keycode: u32, _char_code: u32, _modifiers: u32) -> EventResponse {
+        if keycode == crate::control::KEY_SPACE {
+            self.text_base.base.state = if self.text_base.base.state != 0 { 0 } else { 1 };
+            EventResponse::CHANGED
+        } else {
+            EventResponse::IGNORED
+        }
+    }
 }

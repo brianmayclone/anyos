@@ -523,6 +523,8 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
                     crate::drivers::input::keyboard::Key::VolumeUp => 0x130u32,
                     crate::drivers::input::keyboard::Key::VolumeDown => 0x12E,
                     crate::drivers::input::keyboard::Key::VolumeMute => 0x120,
+                    crate::drivers::input::keyboard::Key::LeftSuper => 0x15B,
+                    crate::drivers::input::keyboard::Key::RightSuper => 0x15C,
                     _ => key_evt.scancode as u32,
                 };
                 events[count] = [event_type, scancode_out, char_val, mods, 0];

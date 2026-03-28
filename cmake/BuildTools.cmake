@@ -96,10 +96,22 @@ add_custom_command(
   COMMENT "Building buildsystem tool: apkg-index"
 )
 
+# mkmanifest — system manifest generator (for delta updates)
+set(MKMANIFEST_EXECUTABLE "${CMAKE_BINARY_DIR}/buildsystem/mkmanifest${CMAKE_EXECUTABLE_SUFFIX}")
+file(GLOB MKMANIFEST_SRCS "${BUILDSYSTEM_DIR}/mkmanifest/src/*.c" "${BUILDSYSTEM_DIR}/mkmanifest/src/*.h")
+add_custom_command(
+  OUTPUT ${MKMANIFEST_EXECUTABLE}
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/buildsystem"
+  COMMAND cc -w -O2 -std=c99 ${POSIX_FLAG} -o ${MKMANIFEST_EXECUTABLE}
+    ${BUILDSYSTEM_DIR}/mkmanifest/src/mkmanifest.c
+  DEPENDS ${MKMANIFEST_SRCS}
+  COMMENT "Building buildsystem tool: mkmanifest"
+)
+
 # Target to build all buildsystem tools
 add_custom_target(buildsystem-tools
   DEPENDS ${ANYELF_EXECUTABLE} ${MKIMAGE_EXECUTABLE} ${ANYLD_EXECUTABLE} ${MKAPPBUNDLE_EXECUTABLE}
-          ${APKG_BUILD_EXECUTABLE} ${APKG_INDEX_EXECUTABLE}
+          ${APKG_BUILD_EXECUTABLE} ${APKG_INDEX_EXECUTABLE} ${MKMANIFEST_EXECUTABLE}
 )
 
 # ============================================================

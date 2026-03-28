@@ -48,6 +48,8 @@ pub enum Key {
     VolumeUp,
     VolumeDown,
     VolumeMute,
+    LeftSuper,
+    RightSuper,
     Unknown,
 }
 
@@ -112,6 +114,8 @@ fn scancode_to_key(scancode: u8, is_e0: bool, mods: &Modifiers) -> Key {
             0x30 => Key::VolumeUp,
             0x2E => Key::VolumeDown,
             0x20 => Key::VolumeMute,
+            0x5B => Key::LeftSuper,
+            0x5C => Key::RightSuper,
             _ => Key::Unknown,
         };
     }
@@ -227,6 +231,7 @@ pub fn handle_scancode(scancode: u8) {
                 Key::LeftShift | Key::RightShift |
                 Key::LeftCtrl  | Key::RightCtrl  |
                 Key::LeftAlt   | Key::RightAlt   |
+                Key::LeftSuper | Key::RightSuper |
                 Key::CapsLock
             );
             if !is_modifier {

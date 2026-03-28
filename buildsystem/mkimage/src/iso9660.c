@@ -34,6 +34,7 @@ typedef struct {
     char files[128][64];    /* file names in this dir */
     int  nfiles;
     uint32_t lba;           /* assigned LBA */
+    uint32_t extent_size;   /* actual directory extent size in bytes (set after building extents) */
 } IsoDir;
 
 typedef struct {
@@ -621,7 +622,10 @@ void create_iso_image(const Args *args)
     uint32_t boot_image_lba   = path_table_m_lba + pt_sectors;
     uint32_t dir_lba_start    = boot_image_lba + BOOT_IMAGE_SECTORS;
 
-    /* ── Assign LBAs to directories ──────────────────────────────────────── */
+    /* ── Assign LBAs to directories ──────────────────────────────────────── *
+     * Each directory extent may span multiple CD sectors.  Pre-compute the
+     * number of sectors each directory needs so that extents don't overlap.
+     */
     uint32_t next_lba = dir_lba_start;
     {
         int i;
@@ -632,7 +636,19 @@ void create_iso_image(const Args *args)
                 if (strcmp(dirs[j].path, sorted_dirs[i]) == 0) { d = &dirs[j]; break; }
             if (!d) continue;
             d->lba = next_lba;
-            next_lba++;
+
+            /* Estimate extent size: "." + ".." + children + files.
+             * Each ISO 9660 record = 33 + name_len, rounded up to even.
+             * File names get ";1" suffix and uppercase conversion.
+             * Use 42 bytes as conservative average per record.
+             * A record cannot span a sector boundary, so we lose some space
+             * at each boundary — add ~10% overhead. */
+            int n_entries = 2 + d->nchildren + d->nfiles;
+            uint32_t est_bytes = (uint32_t)n_entries * 42;
+            est_bytes = est_bytes + est_bytes / 10;  /* +10% for boundary padding */
+            uint32_t n_sectors = (est_bytes + ISO_BLOCK_SIZE - 1) / ISO_BLOCK_SIZE;
+            if (n_sectors < 1) n_sectors = 1;
+            next_lba += n_sectors;
         }
     }
 
@@ -703,10 +719,28 @@ void create_iso_image(const Args *args)
             if (!ext)
                 fatal("create_iso_image: out of memory for dir extent");
 
+/* Append a directory record, respecting ISO 9660 sector boundaries:
+ * a record must not span a 2048-byte sector boundary.  If it would,
+ * zero-pad to the next sector first. */
 #define APPEND_REC(lba_, dlen_, flags_, namep_, namelen_) do { \
-    int _rlen = make_dir_record(ext + pos, (lba_), (dlen_), \
-                                (flags_), (namep_), (namelen_)); \
-    pos += (size_t)_rlen; \
+    int _nlen = (namelen_); \
+    int _rlen = 33 + _nlen; \
+    if (_rlen & 1) _rlen++; \
+    /* Check if this record would cross a sector boundary */ \
+    size_t _sec_off = pos % ISO_BLOCK_SIZE; \
+    if (_sec_off + (size_t)_rlen > ISO_BLOCK_SIZE) { \
+        /* Zero-pad to next sector boundary */ \
+        while (pos % ISO_BLOCK_SIZE != 0) \
+            ext[pos++] = 0x00; \
+    } \
+    if (pos + (size_t)_rlen > cap) { \
+        cap *= 2; \
+        ext = (uint8_t *)realloc(ext, cap); \
+        if (!ext) fatal("APPEND_REC: realloc failed"); \
+    } \
+    int _actual = make_dir_record(ext + pos, (lba_), (dlen_), \
+                                  (flags_), (namep_), (namelen_)); \
+    pos += (size_t)_actual; \
 } while (0)
 
             /* "." entry */
@@ -811,6 +845,92 @@ void create_iso_image(const Args *args)
 
             dir_extents[i]      = ext;
             dir_extent_sizes[i] = pos;
+
+            /* Store extent size in IsoDir for child-record patching */
+            if (d)
+                d->extent_size = (uint32_t)pos;
+        }
+    }
+
+    /* ── Patch child directory records with correct extent sizes ───────────
+     *
+     * During the first pass above, child directory data-lengths were set to
+     * ISO_BLOCK_SIZE (2048) because the child extent hadn't been built yet.
+     * Now that all extents are known, walk every directory extent and fix up
+     * directory records whose data_length != actual child extent_size.
+     */
+    {
+        int i;
+        for (i = 0; i < nsorted; i++) {
+            if (!dir_extents[i]) continue;
+            uint8_t *ext = dir_extents[i];
+            size_t   esize = dir_extent_sizes[i];
+            size_t   p = 0;
+            while (p < esize) {
+                uint8_t rec_len = ext[p];
+                if (rec_len == 0) {
+                    /* Skip to next sector boundary */
+                    size_t next = ((p / ISO_BLOCK_SIZE) + 1) * ISO_BLOCK_SIZE;
+                    if (next >= esize) break;
+                    p = next;
+                    continue;
+                }
+                uint8_t flags = ext[p + 25];
+                if (flags & 0x02) {
+                    /* This is a directory record — check if we need to patch */
+                    uint8_t name_len = ext[p + 32];
+                    if (name_len == 1 && ext[p + 33] == 0x00) {
+                        /* "." entry — patch with own extent size */
+                        const char *own_path = sorted_dirs[i];
+                        int k;
+                        for (k = 0; k < ndirs; k++) {
+                            if (strcmp(dirs[k].path, own_path) == 0 && dirs[k].extent_size > 0) {
+                                both_endian_u32(ext + p + 10, dirs[k].extent_size);
+                                break;
+                            }
+                        }
+                    } else if (name_len >= 1 && ext[p + 33] != 0x01) {
+                        /* Extract the uppercase name */
+                        char rname[256];
+                        memcpy(rname, ext + p + 33, name_len);
+                        rname[name_len] = '\0';
+
+                        /* Find the child IsoDir by building its ISO path */
+                        const char *parent_path = sorted_dirs[i];
+                        char child_path[512];
+                        {
+                            /* Convert uppercase ISO name back to original case
+                             * by searching the dirs array. */
+                            size_t pplen = strlen(parent_path);
+                            int k;
+                            for (k = 0; k < ndirs; k++) {
+                                /* Check if dirs[k].path starts with parent_path
+                                 * and the remaining component matches rname (case-insensitive) */
+                                if (strncmp(dirs[k].path, parent_path, pplen) != 0)
+                                    continue;
+                                const char *tail = dirs[k].path + pplen;
+                                if (*tail == '/') tail++;
+                                if (*tail == '\0') continue;
+                                /* tail should be just the directory name, no further slashes */
+                                if (strchr(tail, '/') != NULL) continue;
+                                /* Case-insensitive compare */
+                                char utail[256];
+                                size_t tl = strlen(tail);
+                                size_t m;
+                                for (m = 0; m < tl && m < 255; m++)
+                                    utail[m] = (char)toupper((unsigned char)tail[m]);
+                                utail[tl < 255 ? tl : 255] = '\0';
+                                if (strcmp(utail, rname) == 0 && dirs[k].extent_size > 0) {
+                                    /* Patch the data_length fields (both-endian at offset 10) */
+                                    both_endian_u32(ext + p + 10, dirs[k].extent_size);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                p += rec_len;
+            }
         }
     }
 

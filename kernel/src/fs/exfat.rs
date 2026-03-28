@@ -872,8 +872,8 @@ impl ExFatFs {
             } else {
                 0xDEAD_BEEF
             };
-            crate::serial_println!("  [exFAT] read_dir_raw: cluster={} fat_raw={:#010x} chain_pos={}",
-                cur, fat_raw, chain_len);
+            // crate::serial_println!("  [exFAT] read_dir_raw: cluster={} fat_raw={:#010x} chain_pos={}",
+            //     cur, fat_raw, chain_len);
             match self.next_cluster(cur) {
                 Some(next) => {
                     cur = next;
@@ -881,8 +881,8 @@ impl ExFatFs {
                 None => break,
             }
         }
-        crate::serial_println!("  [exFAT] read_dir_raw: start={} chain={} total_bytes={}",
-            cluster, chain_len, result.len());
+        // crate::serial_println!("  [exFAT] read_dir_raw: start={} chain={} total_bytes={}",
+        //     cluster, chain_len, result.len());
         Ok(result)
     }
 

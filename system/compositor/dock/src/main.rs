@@ -91,6 +91,9 @@ struct DockApp {
     mag_start_val: i32,
     mag_target: i32,
     mag_start_time: u32,
+    // Keyboard navigation
+    kb_focus: bool,
+    kb_selected: usize,
 }
 
 anyos_std::global_app_state!(DockApp);
@@ -240,6 +243,8 @@ fn main() {
             mag_start_val: 0,
             mag_target: 0,
             mag_start_time: 0,
+            kb_focus: false,
+            kb_selected: 0,
         });
     }
 
@@ -254,6 +259,7 @@ fn main() {
             mouse_along: 0,
             mag_progress: 0,
             settings: &a.settings,
+            kb_focus: a.kb_focus,
         };
         render_dock(&mut a.fb, &a.items, a.screen_width, a.screen_height, &rs);
         a.canvas.copy_pixels_from(&a.fb.pixels);
@@ -263,6 +269,11 @@ fn main() {
     // Mouse move — immediate magnification render for smooth swiping
     app().canvas.on_mouse_move(|mx, my| {
         let a = app();
+        // Mouse movement exits keyboard navigation mode
+        if a.kb_focus {
+            a.kb_focus = false;
+            a.needs_redraw = true;
+        }
         // Only do immediate render when magnification is active
         if !a.settings.magnification || a.mag_progress <= 0 || a.drag_active {
             return;
@@ -292,6 +303,7 @@ fn main() {
             mouse_along,
             mag_progress: a.mag_progress,
             settings: &a.settings,
+            kb_focus: a.kb_focus,
         };
         render_dock(&mut a.fb, &a.items, a.screen_width, a.screen_height, &rs);
         a.canvas.copy_pixels_from(&a.fb.pixels);
@@ -333,6 +345,11 @@ fn main() {
         a.drag_mouse_down = false;
         a.drag_active = false;
         a.needs_redraw = true;
+    });
+
+    // Keyboard navigation — activated when dock window receives focus (e.g. via Tab from desktop)
+    app().win.on_key_down(|e| {
+        handle_dock_key(e.keycode);
     });
 
     // Window lifecycle: add transient items only when a window is actually opened
@@ -481,6 +498,7 @@ fn tick() {
             mouse_along,
             mag_progress: a.mag_progress,
             settings: &a.settings,
+            kb_focus: a.kb_focus,
         };
         render_dock(&mut a.fb, &a.items, a.screen_width, a.screen_height, &rs);
         a.canvas.copy_pixels_from(&a.fb.pixels);
@@ -523,6 +541,102 @@ fn update_context_menu() {
     if !core::ptr::eq(new_text, a.last_menu_text) {
         a.last_menu_text = new_text;
         anyui::Control::from_id(a.ctx_menu_id).set_text(new_text);
+    }
+}
+
+/// Handle keyboard navigation in the dock.
+fn handle_dock_key(keycode: u32) {
+    let a = app();
+    let count = a.items.len();
+    if count == 0 { return; }
+
+    match keycode {
+        anyui::KEY_RIGHT | anyui::KEY_DOWN => {
+            // Activate keyboard mode or move to next item
+            if !a.kb_focus {
+                a.kb_focus = true;
+                a.kb_selected = 0;
+            } else {
+                a.kb_selected = (a.kb_selected + 1) % count;
+            }
+            a.hovered_idx = Some(a.kb_selected);
+            a.needs_redraw = true;
+            ensure_fast_timer();
+        }
+        anyui::KEY_LEFT | anyui::KEY_UP => {
+            if !a.kb_focus {
+                a.kb_focus = true;
+                a.kb_selected = count.saturating_sub(1);
+            } else {
+                a.kb_selected = if a.kb_selected == 0 { count - 1 } else { a.kb_selected - 1 };
+            }
+            a.hovered_idx = Some(a.kb_selected);
+            a.needs_redraw = true;
+            ensure_fast_timer();
+        }
+        anyui::KEY_ENTER => {
+            if a.kb_focus {
+                let idx = a.kb_selected;
+                activate_dock_item(idx);
+                a.kb_focus = false;
+                a.hovered_idx = None;
+                a.needs_redraw = true;
+            }
+        }
+        anyui::KEY_ESCAPE => {
+            if a.kb_focus {
+                a.kb_focus = false;
+                a.hovered_idx = None;
+                a.needs_redraw = true;
+            }
+        }
+        anyui::KEY_TAB => {
+            // Tab enters keyboard mode if not yet active, otherwise exit
+            if !a.kb_focus {
+                a.kb_focus = true;
+                a.kb_selected = 0;
+                a.hovered_idx = Some(0);
+                a.needs_redraw = true;
+                ensure_fast_timer();
+            } else {
+                a.kb_focus = false;
+                a.hovered_idx = None;
+                a.needs_redraw = true;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Activate a dock item by index — launch if not running, focus if running.
+fn activate_dock_item(idx: usize) {
+    let a = app();
+    let item = match a.items.get_mut(idx) {
+        Some(i) => i,
+        None => return,
+    };
+
+    if item.tid != 0 {
+        let status = process::try_waitpid(item.tid);
+        if status == STILL_RUNNING {
+            // App running — focus its window
+            let cmd: [u32; 5] = [0x100A, item.tid, 0, 0, 0]; // CMD_FOCUS_BY_TID
+            anyos_std::ipc::evt_chan_emit(anyui::get_compositor_channel(), &cmd);
+            return;
+        }
+        item.running = false;
+        item.tid = 0;
+    }
+
+    let tid = process::launch_app(&item.bin_path, "");
+    if tid != 0 && tid != u32::MAX {
+        item.tid = tid;
+        item.running = true;
+        if a.has_gpu {
+            a.bounce_items.push((idx, anyos_std::sys::uptime()));
+            ensure_fast_timer();
+        }
+        a.needs_redraw = true;
     }
 }
 

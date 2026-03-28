@@ -519,3 +519,203 @@ pub fn save_resolution(width: u32, height: u32) {
         println!("compositor: FAILED to save compositor.conf");
     }
 }
+
+// ── Keyboard Shortcuts ────────────────────────────────────────────────────
+
+/// Maximum number of configurable keyboard shortcuts.
+const MAX_SHORTCUTS: usize = 32;
+
+/// A single keyboard shortcut binding.
+#[derive(Clone)]
+pub struct KeyboardShortcut {
+    /// Modifier mask: bit 0 = Shift, bit 1 = Ctrl, bit 2 = Alt, bit 3 = Super.
+    pub modifiers: u8,
+    /// Key code (KEY_* constant from keys.rs).
+    pub key_code: u32,
+    /// Action to perform.
+    pub action: ShortcutAction,
+}
+
+/// What a shortcut does when triggered.
+#[derive(Clone)]
+pub enum ShortcutAction {
+    /// Launch an application (path string).
+    Launch(alloc::string::String),
+    /// Built-in action by name.
+    ShowDesktop,
+    TileWindows,
+    LockScreen,
+}
+
+/// Read the `[shortcuts]` section from compositor.conf.
+///
+/// Format: `Modifier+Key=action`
+/// - Modifiers: `Ctrl`, `Alt`, `Shift`, `Super` (combinable with `+`)
+/// - Key: `A`-`Z`, `0`-`9`, `F1`-`F12`, `D`, `E`, `T`, etc.
+/// - Action: app path (e.g. `/Applications/Terminal.app`) or built-in name
+///   (`show_desktop`, `tile_windows`, `lock_screen`)
+///
+/// Example:
+/// ```text
+/// [shortcuts]
+/// Ctrl+T=/Applications/Terminal.app
+/// Super+D=show_desktop
+/// Super+E=/Applications/Finder.app
+/// Ctrl+Alt+T=/Applications/Terminal.app
+/// ```
+pub fn read_shortcuts() -> alloc::vec::Vec<KeyboardShortcut> {
+    let text = match read_conf() {
+        Some(t) => t,
+        None => return alloc::vec::Vec::new(),
+    };
+
+    let mut shortcuts = alloc::vec::Vec::with_capacity(8);
+    let mut in_shortcuts = false;
+
+    for line in text.split('\n') {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_shortcuts = line == "[shortcuts]";
+            continue;
+        }
+        if !in_shortcuts {
+            continue;
+        }
+        if shortcuts.len() >= MAX_SHORTCUTS {
+            break;
+        }
+
+        // Parse "Modifier+Key=action"
+        if let Some(eq_pos) = line.find('=') {
+            let combo = line[..eq_pos].trim();
+            let action_str = line[eq_pos + 1..].trim();
+            if combo.is_empty() || action_str.is_empty() {
+                continue;
+            }
+
+            if let Some(sc) = parse_shortcut(combo, action_str) {
+                shortcuts.push(sc);
+            }
+        }
+    }
+
+    shortcuts
+}
+
+/// Parse a key combination string like "Ctrl+Alt+T" into modifiers + key_code.
+fn parse_shortcut(combo: &str, action_str: &str) -> Option<KeyboardShortcut> {
+    let mut mods: u8 = 0;
+    let mut key_code: Option<u32> = None;
+
+    for part in combo.split('+') {
+        let part = part.trim();
+        match part {
+            "Shift" => mods |= 1,
+            "Ctrl" | "Control" => mods |= 2,
+            "Alt" => mods |= 4,
+            "Super" | "Win" | "Meta" => mods |= 8,
+            _ => {
+                // This is the key part
+                key_code = parse_key_name(part);
+            }
+        }
+    }
+
+    let kc = key_code?;
+
+    let action = match action_str {
+        "show_desktop" => ShortcutAction::ShowDesktop,
+        "tile_windows" => ShortcutAction::TileWindows,
+        "lock_screen" => ShortcutAction::LockScreen,
+        path => ShortcutAction::Launch(alloc::string::String::from(path)),
+    };
+
+    Some(KeyboardShortcut {
+        modifiers: mods,
+        key_code: kc,
+        action,
+    })
+}
+
+/// Map a key name (from the config) to a KEY_* constant.
+fn parse_key_name(name: &str) -> Option<u32> {
+    use crate::keys::*;
+
+    // Single character A-Z → scancode that the compositor uses
+    if name.len() == 1 {
+        let ch = name.as_bytes()[0];
+        match ch {
+            b'A'..=b'Z' | b'a'..=b'z' => {
+                // Map letter to PS/2 scancode (the raw scancode passes through encode_scancode)
+                let upper = ch.to_ascii_uppercase();
+                let sc = letter_to_scancode(upper)?;
+                return Some(sc as u32);
+            }
+            b'0'..=b'9' => {
+                let sc = digit_to_scancode(ch)?;
+                return Some(sc as u32);
+            }
+            _ => return None,
+        }
+    }
+
+    // Named keys
+    match name {
+        "Enter" | "Return" => Some(KEY_ENTER),
+        "Space" => Some(KEY_SPACE),
+        "Tab" => Some(KEY_TAB),
+        "Escape" | "Esc" => Some(KEY_ESCAPE),
+        "Delete" | "Del" => Some(KEY_DELETE),
+        "Backspace" => Some(KEY_BACKSPACE),
+        "Home" => Some(KEY_HOME),
+        "End" => Some(KEY_END),
+        "PageUp" => Some(KEY_PAGE_UP),
+        "PageDown" => Some(KEY_PAGE_DOWN),
+        "Up" => Some(KEY_UP),
+        "Down" => Some(KEY_DOWN),
+        "Left" => Some(KEY_LEFT),
+        "Right" => Some(KEY_RIGHT),
+        "F1" => Some(KEY_F1),
+        "F2" => Some(KEY_F2),
+        "F3" => Some(KEY_F3),
+        "F4" => Some(KEY_F4),
+        "F5" => Some(KEY_F5),
+        "F6" => Some(KEY_F6),
+        "F7" => Some(KEY_F7),
+        "F8" => Some(KEY_F8),
+        "F9" => Some(KEY_F9),
+        "F10" => Some(KEY_F10),
+        "F11" => Some(KEY_F11),
+        "F12" => Some(KEY_F12),
+        _ => None,
+    }
+}
+
+/// Map an uppercase ASCII letter to its PS/2 Set 1 scancode.
+fn letter_to_scancode(ch: u8) -> Option<u8> {
+    // PS/2 Set 1 scancodes for QWERTY layout
+    match ch {
+        b'Q' => Some(0x10), b'W' => Some(0x11), b'E' => Some(0x12), b'R' => Some(0x13),
+        b'T' => Some(0x14), b'Y' => Some(0x15), b'U' => Some(0x16), b'I' => Some(0x17),
+        b'O' => Some(0x18), b'P' => Some(0x19),
+        b'A' => Some(0x1E), b'S' => Some(0x1F), b'D' => Some(0x20), b'F' => Some(0x21),
+        b'G' => Some(0x22), b'H' => Some(0x23), b'J' => Some(0x24), b'K' => Some(0x25),
+        b'L' => Some(0x26),
+        b'Z' => Some(0x2C), b'X' => Some(0x2D), b'C' => Some(0x2E), b'V' => Some(0x2F),
+        b'B' => Some(0x30), b'N' => Some(0x31), b'M' => Some(0x32),
+        _ => None,
+    }
+}
+
+/// Map a digit character to its PS/2 Set 1 scancode.
+fn digit_to_scancode(ch: u8) -> Option<u8> {
+    match ch {
+        b'1' => Some(0x02), b'2' => Some(0x03), b'3' => Some(0x04), b'4' => Some(0x05),
+        b'5' => Some(0x06), b'6' => Some(0x07), b'7' => Some(0x08), b'8' => Some(0x09),
+        b'9' => Some(0x0A), b'0' => Some(0x0B),
+        _ => None,
+    }
+}
