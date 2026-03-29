@@ -45,26 +45,40 @@ impl Control for Label {
         let text_w = w as i32 - pad_left - pad_right;
         // Vertical centering for single-line centered labels (e.g. icon badges)
         let line_count = text.iter().filter(|&&c| c == b'\n').count() + 1;
-        let line_h_val = fs as i32 + crate::theme::scale_i32(2);
+        let line_h = fs as i32 + crate::theme::scale_i32(2);
+        // For centered single-line: measure once and reuse for both vcenter and hcenter
+        let single_line_measure = if line_count == 1 && (align == 1 || align == 2) {
+            Some(crate::draw::measure_text_ex(text, fid, fs))
+        } else {
+            None
+        };
         let mut line_y = if align == 1 && line_count == 1 && pad_top == 0 {
-            let (_, th) = crate::draw::measure_text_ex(text, fid, fs);
+            let (_, th) = single_line_measure.unwrap();
             y + (h as i32 - th as i32) / 2
         } else {
             y + pad_top
         };
-        let line_h = fs as i32 + crate::theme::scale_i32(2);
         let mut start = 0;
+        let mut line_idx = 0;
         loop {
             let end = text[start..].iter().position(|&b| b == b'\n').map(|p| start + p).unwrap_or(text.len());
             let line = &text[start..end];
 
             let tx = if align == 1 {
-                // Center
-                let (tw, _) = crate::draw::measure_text_ex(line, fid, fs);
+                // Center — reuse cached measurement for single-line labels
+                let tw = if line_count == 1 && line_idx == 0 {
+                    single_line_measure.unwrap().0
+                } else {
+                    crate::draw::measure_text_ex(line, fid, fs).0
+                };
                 text_x + (text_w - tw as i32) / 2
             } else if align == 2 {
-                // Right
-                let (tw, _) = crate::draw::measure_text_ex(line, fid, fs);
+                // Right — reuse cached measurement for single-line labels
+                let tw = if line_count == 1 && line_idx == 0 {
+                    single_line_measure.unwrap().0
+                } else {
+                    crate::draw::measure_text_ex(line, fid, fs).0
+                };
                 text_x + text_w - tw as i32
             } else {
                 text_x
@@ -72,6 +86,7 @@ impl Control for Label {
 
             crate::draw::draw_text_ex(surface, tx, line_y, text_color, line, fid, fs);
             line_y += line_h;
+            line_idx += 1;
 
             if end >= text.len() { break; }
             start = end + 1;

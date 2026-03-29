@@ -168,13 +168,25 @@ pub fn perform_layout(controls: &mut Vec<Box<dyn Control>>, id: ControlId) {
 
     // After recursion, auto-size children now have their correct heights.
     // Re-run dock layout so that subsequent siblings are positioned using
-    // the real heights (pass 2). Only needed for standard dock layout.
+    // the real heights (pass 2). Only needed for standard dock layout AND
+    // only if at least one child has auto_size / is a StackPanel/FlowPanel.
     if used_standard_layout {
         let idx = match find_idx(controls, id) {
             Some(i) => i,
             None => return,
         };
-        dock_layout(controls, idx, &children);
+        // Check if any child needs auto-sizing (if not, skip expensive 2nd pass)
+        let has_auto_size_child = children.iter().any(|&cid| {
+            find_idx(controls, cid).map(|ci| {
+                let kind = controls[ci].kind();
+                kind == ControlKind::StackPanel
+                    || kind == ControlKind::FlowPanel
+                    || controls[ci].base().auto_size
+            }).unwrap_or(false)
+        });
+        if has_auto_size_child {
+            dock_layout(controls, idx, &children);
+        }
     }
 
     // Auto-size this control's own height if needed (StackPanel always, or

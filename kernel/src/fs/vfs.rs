@@ -56,23 +56,35 @@ struct VfsState {
     mounted_exfat: Vec<(String, ExFatFs)>,
     /// OverlayFS: writable RAM layer over ISO 9660 (active when booting from CD).
     overlay_fs: Option<OverlayFs>,
+    /// Free slot stack for O(1) open file slot allocation.
+    /// Contains indices of free (None) entries in open_files.
+    free_slots: Vec<u32>,
 }
 
 impl VfsState {
-    /// Allocate a free slot in the global open_files table.
+    /// Allocate a free slot in the global open_files table. O(1) via free stack.
     /// Returns the slot index (global_id), or None if the table is full.
     fn alloc_slot(&mut self) -> Option<u32> {
-        for (i, entry) in self.open_files.iter().enumerate() {
-            if entry.is_none() {
-                return Some(i as u32);
-            }
+        // Fast path: pop from free stack (O(1))
+        if let Some(idx) = self.free_slots.pop() {
+            return Some(idx);
         }
+        // Slow path: extend table if below limit
         if self.open_files.len() < MAX_OPEN_FILES {
             let idx = self.open_files.len() as u32;
             self.open_files.push(None);
             return Some(idx);
         }
         None
+    }
+
+    /// Return a slot to the free stack when a file is closed.
+    fn free_slot(&mut self, idx: u32) {
+        let i = idx as usize;
+        if i < self.open_files.len() {
+            self.open_files[i] = None;
+            self.free_slots.push(idx);
+        }
     }
 }
 
@@ -367,6 +379,7 @@ pub fn init() {
         smbfs: Vec::new(),
         mounted_exfat: Vec::new(),
         overlay_fs: None,
+        free_slots: Vec::new(),
     });
 
     // Reserve fd 0, 1, 2
@@ -921,6 +934,7 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
             file.refcount -= 1;
         } else {
             *entry = None;
+            state.free_slots.push(slot_id as u32);
         }
         Ok(())
     } else {
@@ -949,6 +963,7 @@ pub fn decref(slot_id: u32) {
                     file.refcount -= 1;
                 } else {
                     *entry = None;
+                    state.free_slots.push(slot_id);
                 }
             }
         }

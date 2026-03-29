@@ -62,16 +62,25 @@ impl RunQueue {
         Some(tid)
     }
 
-    /// Remove a specific TID from all priority levels.
+    /// Remove a specific TID from the run queue.
+    /// Uses the bitmap to skip empty priority levels — O(popcount) instead of O(128).
     pub(super) fn remove(&mut self, tid: u32) {
-        for p in 0..NUM_PRIORITIES {
-            if let Some(pos) = self.levels[p].iter().position(|&t| t == tid) {
-                self.levels[p].remove(pos);
-                if self.levels[p].is_empty() {
-                    self.bits[p / 64] &= !(1u64 << (p % 64));
+        // Only scan non-empty levels (bitmap-guided)
+        let mut remaining = self.bits;
+        for word_idx in 0..2 {
+            let mut word = remaining[word_idx];
+            while word != 0 {
+                let bit = word.trailing_zeros() as usize;
+                let p = word_idx * 64 + bit;
+                word &= word - 1; // clear lowest set bit
+                if let Some(pos) = self.levels[p].iter().position(|&t| t == tid) {
+                    self.levels[p].remove(pos);
+                    if self.levels[p].is_empty() {
+                        self.bits[p / 64] &= !(1u64 << (p % 64));
+                    }
+                    self.count -= 1;
+                    return;
                 }
-                self.count -= 1;
-                return;
             }
         }
     }

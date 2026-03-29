@@ -81,7 +81,7 @@ static NEXT_SUB_ID: AtomicU32 = AtomicU32::new(1);
 /// Collects blocked waiter TIDs under the lock, wakes them outside
 /// to avoid holding SYSTEM_BUS while acquiring SCHEDULER lock.
 pub fn system_emit(event: EventData) {
-    let mut tids_to_wake = [0u32; 8];
+    let mut tids_to_wake = [0u32; 32];
     let mut wake_count = 0usize;
     {
         let mut bus = SYSTEM_BUS.lock();
@@ -92,7 +92,7 @@ pub fn system_emit(event: EventData) {
                 }
                 sub.queue.push_back(event);
                 if let Some(tid) = sub.waiter_tid.take() {
-                    if wake_count < 8 {
+                    if wake_count < 32 {
                         tids_to_wake[wake_count] = tid;
                         wake_count += 1;
                     }
@@ -188,7 +188,7 @@ pub fn channel_subscribe(channel_id: u32, filter: u32) -> u32 {
 /// Collects blocked waiter TIDs under the lock, wakes them outside
 /// to avoid holding MODULE_BUS while acquiring SCHEDULER lock.
 pub fn channel_emit(channel_id: u32, event: EventData) {
-    let mut tids_to_wake = [0u32; 8];
+    let mut tids_to_wake = [0u32; 32];
     let mut wake_count = 0usize;
     {
         let mut bus = MODULE_BUS.lock();
@@ -200,7 +200,7 @@ pub fn channel_emit(channel_id: u32, event: EventData) {
                     }
                     sub.queue.push_back(event);
                     if let Some(tid) = sub.waiter_tid.take() {
-                        if wake_count < 8 {
+                        if wake_count < 32 {
                             tids_to_wake[wake_count] = tid;
                             wake_count += 1;
                         }

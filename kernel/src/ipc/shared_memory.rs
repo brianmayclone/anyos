@@ -136,6 +136,10 @@ pub fn map_into_current(region_id: u32) -> u64 {
     }
 
     regions[idx].mappings.push(ShmMapping { tid, vaddr });
+
+    // Update per-TID high-watermark for O(1) next allocation
+    advance_shm_watermark(tid, vaddr + (pages * FRAME_SIZE) as u64);
+
     vaddr
 }
 
@@ -332,11 +336,24 @@ pub fn is_shm_locked() -> bool {
     SHARED_REGIONS.is_locked()
 }
 
+/// Per-TID SHM high-watermark cache for O(1) address allocation.
+/// Avoids scanning all regions/mappings on every map call.
+/// Key: TID, Value: next free SHM virtual address for that TID.
+static SHM_WATERMARKS: Spinlock<Vec<(u32, u64)>> = Spinlock::new(Vec::new());
+
 /// Find a free virtual address for a new SHM mapping for the given TID.
 ///
-/// Scans all existing mappings for this TID and returns the next page-aligned
-/// address above the highest existing mapping.
+/// Uses a per-TID high-watermark cache for O(1) lookup in the common case.
+/// Falls back to scanning all mappings only on first call per TID.
 fn find_free_shm_addr(tid: u32, regions: &[SharedRegion]) -> u64 {
+    // Fast path: check cached watermark
+    let mut wm = SHM_WATERMARKS.lock();
+    if let Some(entry) = wm.iter().find(|e| e.0 == tid) {
+        return entry.1;
+    }
+    drop(wm);
+
+    // Slow path (first time for this TID): scan all mappings
     let mut next = SHM_BASE;
     for region in regions {
         for mapping in &region.mappings {
@@ -348,6 +365,28 @@ fn find_free_shm_addr(tid: u32, regions: &[SharedRegion]) -> u64 {
             }
         }
     }
-    // Ensure page alignment (should already be, but safety)
-    (next + 0xFFF) & !0xFFF
+    let addr = (next + 0xFFF) & !0xFFF;
+    // Cache for next time
+    let mut wm = SHM_WATERMARKS.lock();
+    wm.push((tid, addr));
+    addr
+}
+
+/// Advance the per-TID watermark after a successful mapping.
+fn advance_shm_watermark(tid: u32, new_end: u64) {
+    let aligned = (new_end + 0xFFF) & !0xFFF;
+    let mut wm = SHM_WATERMARKS.lock();
+    if let Some(entry) = wm.iter_mut().find(|e| e.0 == tid) {
+        if aligned > entry.1 {
+            entry.1 = aligned;
+        }
+    } else {
+        wm.push((tid, aligned));
+    }
+}
+
+/// Remove the per-TID watermark when a process exits.
+pub fn clear_shm_watermark(tid: u32) {
+    let mut wm = SHM_WATERMARKS.lock();
+    wm.retain(|e| e.0 != tid);
 }

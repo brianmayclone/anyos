@@ -473,12 +473,21 @@ impl<'a> Renderer<'a> {
     }
 
     pub fn fill_gradient_h(&mut self, rect: Rect, left: Color, right: Color) {
+        let w = rect.width.max(1) as u32;
+        // Fixed-point interpolation: compute r/g/b increments scaled by 16 bits,
+        // avoiding per-pixel division entirely.
+        let r0 = (left.r as u32) << 16;
+        let g0 = (left.g as u32) << 16;
+        let b0 = (left.b as u32) << 16;
+        let r_step = (((right.r as i32 - left.r as i32) << 16) / w as i32) as u32;
+        let g_step = (((right.g as i32 - left.g as i32) << 16) / w as i32) as u32;
+        let b_step = (((right.b as i32 - left.b as i32) << 16) / w as i32) as u32;
+
         for x in 0..rect.width {
-            let t = x as u32 * 255 / rect.width.max(1);
             let color = Color::new(
-                ((left.r as u32 * (255 - t) + right.r as u32 * t) / 255) as u8,
-                ((left.g as u32 * (255 - t) + right.g as u32 * t) / 255) as u8,
-                ((left.b as u32 * (255 - t) + right.b as u32 * t) / 255) as u8,
+                (r0.wrapping_add(r_step.wrapping_mul(x as u32)) >> 16) as u8,
+                (g0.wrapping_add(g_step.wrapping_mul(x as u32)) >> 16) as u8,
+                (b0.wrapping_add(b_step.wrapping_mul(x as u32)) >> 16) as u8,
             );
             self.surface.fill_rect(
                 Rect::new(rect.x + x as i32, rect.y, 1, rect.height),
@@ -488,12 +497,20 @@ impl<'a> Renderer<'a> {
     }
 
     pub fn fill_gradient_v(&mut self, rect: Rect, top: Color, bottom: Color) {
+        let h = rect.height.max(1) as u32;
+        // Fixed-point interpolation: single division outside loop.
+        let r0 = (top.r as u32) << 16;
+        let g0 = (top.g as u32) << 16;
+        let b0 = (top.b as u32) << 16;
+        let r_step = (((bottom.r as i32 - top.r as i32) << 16) / h as i32) as u32;
+        let g_step = (((bottom.g as i32 - top.g as i32) << 16) / h as i32) as u32;
+        let b_step = (((bottom.b as i32 - top.b as i32) << 16) / h as i32) as u32;
+
         for y in 0..rect.height {
-            let t = y as u32 * 255 / rect.height.max(1);
             let color = Color::new(
-                ((top.r as u32 * (255 - t) + bottom.r as u32 * t) / 255) as u8,
-                ((top.g as u32 * (255 - t) + bottom.g as u32 * t) / 255) as u8,
-                ((top.b as u32 * (255 - t) + bottom.b as u32 * t) / 255) as u8,
+                (r0.wrapping_add(r_step.wrapping_mul(y as u32)) >> 16) as u8,
+                (g0.wrapping_add(g_step.wrapping_mul(y as u32)) >> 16) as u8,
+                (b0.wrapping_add(b_step.wrapping_mul(y as u32)) >> 16) as u8,
             );
             self.surface.fill_rect(
                 Rect::new(rect.x, rect.y + y as i32, rect.width, 1),

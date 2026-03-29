@@ -29,8 +29,39 @@ impl Compositor {
     }
 
     /// Merge damage rects if there are too many (prevents performance explosion).
+    /// Uses a smarter two-pass strategy: first coalesce overlapping/adjacent rects,
+    /// then fall back to full merge only if count still exceeds threshold.
     fn merge_damage_if_needed(&mut self) {
-        if self.damage.len() > 128 {
+        if self.damage.len() <= 512 {
+            return;
+        }
+        // Pass 1: Coalesce overlapping and nearby rects (within 32px gap).
+        // Sort by Y then X for better spatial locality.
+        self.damage.sort_unstable_by(|a, b| {
+            a.y.cmp(&b.y).then(a.x.cmp(&b.x))
+        });
+        let mut merged = alloc::vec::Vec::with_capacity(self.damage.len() / 2);
+        if let Some(&first) = self.damage.first() {
+            merged.push(first);
+        }
+        for i in 1..self.damage.len() {
+            let r = self.damage[i];
+            let last = merged.last_mut().unwrap();
+            // Merge if rects overlap or are within 32px of each other
+            if r.x <= last.x + last.width as i32 + 32
+                && r.y <= last.y + last.height as i32 + 32
+                && r.x + r.width as i32 >= last.x - 32
+                && r.y >= last.y - 32
+            {
+                *last = last.union(&r);
+            } else {
+                merged.push(r);
+            }
+        }
+        self.damage = merged;
+
+        // Pass 2: If still too many, fall back to full union (rare)
+        if self.damage.len() > 512 {
             let merged = self.damage.iter().copied().reduce(|a, b| a.union(&b));
             self.damage.clear();
             if let Some(r) = merged {

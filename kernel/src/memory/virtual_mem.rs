@@ -1263,12 +1263,16 @@ pub fn handle_heap_demand_page(vaddr: u64) -> bool {
     // Map the page (Present + Writable, kernel-only)
     map_page(page_addr, phys, 0x03);
 
+    // Release lock BEFORE zeroing — the page is mapped and won't be faulted again
+    // by another CPU (is_page_mapped check at top catches this). Zeroing under the
+    // lock was the main bottleneck: 4 KiB memset blocked all other demand faults.
+    DEMAND_PAGE_LOCK.store(false, Ordering::Release);
+
     // Zero the page (demand-paged pages must be zeroed for security/correctness)
     unsafe {
         core::ptr::write_bytes(page_addr.as_u64() as *mut u8, 0, FRAME_SIZE);
     }
 
-    DEMAND_PAGE_LOCK.store(false, Ordering::Release);
     true
 }
 

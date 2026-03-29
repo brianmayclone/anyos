@@ -77,28 +77,25 @@ pub(crate) fn accept_data_deferred(tcb: &mut Tcb, seg: &TcpSegment) -> Option<De
 }
 
 /// Insert a segment into the OOO buffer, merging overlaps.
+/// Keeps the buffer sorted by sequence number for efficient drain_ooo.
 fn insert_ooo(tcb: &mut Tcb, seq: u32, data: &[u8]) {
     if data.is_empty() {
         return;
     }
 
-    // Check for overlap with existing entries and avoid duplicates
     let end = seq.wrapping_add(data.len() as u32);
+
+    // Check for complete containment within an existing segment (skip duplicates)
     for existing in tcb.ooo_buf.iter() {
         let ex_end = existing.seq.wrapping_add(existing.data.len() as u32);
-        // If this segment is entirely contained within an existing one, skip
-        if !is_seq_gt(seq, existing.seq.wrapping_sub(1))
-            || is_seq_gt(seq, ex_end.wrapping_sub(1))
-        {
-            // Not contained, continue checking
-        } else if !is_seq_gt(end, existing.seq) || is_seq_gt(existing.seq, end) {
-            // Not overlapping
+        // New segment entirely within existing → skip
+        if !is_seq_gt(seq, existing.seq.wrapping_sub(1)) && !is_seq_gt(end, ex_end) {
+            return;
         }
     }
 
-    // Simple approach: just insert if under limit, sorted by seq
+    // Drop oldest if buffer full
     if tcb.ooo_buf.len() >= MAX_OOO_SEGMENTS {
-        // Drop oldest (lowest seq) to make room — remote will retransmit if needed
         return;
     }
 
@@ -110,6 +107,29 @@ fn insert_ooo(tcb: &mut Tcb, seq: u32, data: &[u8]) {
         seq,
         data: data.to_vec(),
     });
+
+    // Merge adjacent/overlapping segments (single pass since buffer is sorted)
+    let mut i = 0;
+    while i + 1 < tcb.ooo_buf.len() {
+        let a_end = tcb.ooo_buf[i].seq.wrapping_add(tcb.ooo_buf[i].data.len() as u32);
+        let b_seq = tcb.ooo_buf[i + 1].seq;
+
+        // If segment i reaches into or past segment i+1, merge them
+        if !is_seq_gt(b_seq, a_end) {
+            let b_end = b_seq.wrapping_add(tcb.ooo_buf[i + 1].data.len() as u32);
+            if is_seq_gt(b_end, a_end) {
+                // Extend segment i with the non-overlapping tail of segment i+1
+                let overlap = a_end.wrapping_sub(b_seq) as usize;
+                if overlap < tcb.ooo_buf[i + 1].data.len() {
+                    let tail = tcb.ooo_buf[i + 1].data[overlap..].to_vec();
+                    tcb.ooo_buf[i].data.extend_from_slice(&tail);
+                }
+            }
+            tcb.ooo_buf.remove(i + 1);
+        } else {
+            i += 1;
+        }
+    }
 }
 
 /// Drain contiguous segments from the OOO buffer into recv_buf.

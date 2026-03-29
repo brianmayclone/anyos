@@ -49,8 +49,12 @@ fn disk_write_sectors(_disk_id: u32, abs_lba: u32, count: u32, buf: &[u8]) -> bo
 // =============================================================================
 
 /// Number of cluster slots in the LRU cache.
-/// 16 slots × cluster_size (typically 4 KiB) = 64 KiB of cached directory data.
-const CLUSTER_CACHE_SLOTS: usize = 16;
+/// 128 slots × cluster_size (typically 4 KiB) = 512 KiB of cached data.
+/// Increased from 16 for better hit rates on directory-heavy workloads.
+const CLUSTER_CACHE_SLOTS: usize = 128;
+
+/// Hash table size for O(1) cluster lookup. Must be power of two.
+const CACHE_HASH_SIZE: usize = 256;
 
 struct CacheEntry {
     /// Cluster number (0 = empty; valid exFAT clusters start at 2).
@@ -61,7 +65,11 @@ struct CacheEntry {
     data: Vec<u8>,
 }
 
-/// Simple LRU cluster cache.
+/// LRU cluster cache with hash-accelerated lookup.
+///
+/// A simple hash table maps cluster numbers to slot indices for O(1) lookup
+/// instead of linear scan. The hash table uses open addressing with linear
+/// probing (max 4 probes before falling back to linear scan).
 ///
 /// Stored inside `ExFatFs` via `UnsafeCell` so that `read_cluster` can update
 /// it while keeping a `&self` receiver (all callers already hold the VFS mutex
@@ -69,15 +77,45 @@ struct CacheEntry {
 struct ClusterCache {
     slots: Vec<CacheEntry>,
     tick: u32,
+    /// Hash table: maps (cluster % CACHE_HASH_SIZE) → slot index.
+    /// Value 0xFFFF = empty. Only valid when slots[idx].cluster matches.
+    hash_table: [u16; CACHE_HASH_SIZE],
 }
 
 impl ClusterCache {
     fn new() -> Self {
-        ClusterCache { slots: Vec::new(), tick: 0 }
+        ClusterCache {
+            slots: Vec::new(),
+            tick: 0,
+            hash_table: [0xFFFF; CACHE_HASH_SIZE],
+        }
+    }
+
+    /// Hash a cluster number to a hash table index.
+    #[inline(always)]
+    fn hash(cluster: u32) -> usize {
+        // Multiplicative hash for better distribution
+        ((cluster.wrapping_mul(2654435761)) as usize) & (CACHE_HASH_SIZE - 1)
     }
 
     /// Copy cached data into `buf`. Returns `true` on hit.
     fn lookup(&mut self, cluster: u32, buf: &mut [u8]) -> bool {
+        // Fast path: check hash table (up to 4 probes)
+        let h = Self::hash(cluster);
+        for probe in 0..4 {
+            let idx = (h + probe) & (CACHE_HASH_SIZE - 1);
+            let slot_idx = self.hash_table[idx];
+            if slot_idx == 0xFFFF { break; } // empty → miss
+            let si = slot_idx as usize;
+            if si < self.slots.len() && self.slots[si].cluster == cluster {
+                let n = buf.len().min(self.slots[si].data.len());
+                buf[..n].copy_from_slice(&self.slots[si].data[..n]);
+                self.tick = self.tick.wrapping_add(1);
+                self.slots[si].tick = self.tick;
+                return true;
+            }
+        }
+        // Slow fallback: linear scan (handles hash collisions beyond 4 probes)
         for slot in &mut self.slots {
             if slot.cluster == cluster {
                 let n = buf.len().min(slot.data.len());
@@ -90,40 +128,76 @@ impl ClusterCache {
         false
     }
 
+    /// Insert `cluster` into the hash table at the given slot index.
+    fn hash_insert(&mut self, cluster: u32, slot_idx: usize) {
+        let h = Self::hash(cluster);
+        for probe in 0..4 {
+            let idx = (h + probe) & (CACHE_HASH_SIZE - 1);
+            if self.hash_table[idx] == 0xFFFF || self.hash_table[idx] == slot_idx as u16 {
+                self.hash_table[idx] = slot_idx as u16;
+                return;
+            }
+        }
+        // All 4 probe slots taken — overwrite first
+        self.hash_table[h] = slot_idx as u16;
+    }
+
+    /// Remove a cluster from the hash table.
+    fn hash_remove(&mut self, cluster: u32, slot_idx: usize) {
+        let h = Self::hash(cluster);
+        for probe in 0..4 {
+            let idx = (h + probe) & (CACHE_HASH_SIZE - 1);
+            if self.hash_table[idx] == slot_idx as u16 {
+                self.hash_table[idx] = 0xFFFF;
+                return;
+            }
+        }
+    }
+
     /// Store `data` for `cluster`, evicting the LRU slot if the cache is full.
     fn insert(&mut self, cluster: u32, data: &[u8]) {
         self.tick = self.tick.wrapping_add(1);
         // Update in-place if already present.
-        for slot in &mut self.slots {
-            if slot.cluster == cluster {
-                slot.data.clear();
-                slot.data.extend_from_slice(data);
-                slot.tick = self.tick;
+        for i in 0..self.slots.len() {
+            if self.slots[i].cluster == cluster {
+                self.slots[i].data.clear();
+                self.slots[i].data.extend_from_slice(data);
+                self.slots[i].tick = self.tick;
                 return;
             }
         }
         if self.slots.len() < CLUSTER_CACHE_SLOTS {
+            let idx = self.slots.len();
             self.slots.push(CacheEntry { cluster, tick: self.tick, data: data.to_vec() });
+            self.hash_insert(cluster, idx);
         } else {
             // Evict the slot with the smallest (oldest) tick.
             let lru = self.slots.iter().enumerate()
                 .min_by_key(|(_, s)| s.tick)
                 .map(|(i, _)| i)
                 .unwrap_or(0);
+            let old_cluster = self.slots[lru].cluster;
+            self.hash_remove(old_cluster, lru);
             self.slots[lru].cluster = cluster;
             self.slots[lru].tick = self.tick;
             self.slots[lru].data.clear();
             self.slots[lru].data.extend_from_slice(data);
+            self.hash_insert(cluster, lru);
         }
     }
 
     /// Mark a cluster's slot as empty so the next read goes to disk.
     fn invalidate(&mut self, cluster: u32) {
-        for slot in &mut self.slots {
+        let mut found_idx = None;
+        for (i, slot) in self.slots.iter_mut().enumerate() {
             if slot.cluster == cluster {
                 slot.cluster = 0; // 0 is never a valid exFAT cluster
-                return;
+                found_idx = Some(i);
+                break;
             }
+        }
+        if let Some(idx) = found_idx {
+            self.hash_remove(cluster, idx);
         }
     }
 }

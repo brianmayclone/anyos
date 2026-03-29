@@ -107,9 +107,11 @@ fn clamp_priority(priority: u8, context: &str) -> u8 {
 
 static SCHEDULER: Spinlock<Option<Scheduler>> = Spinlock::new(None);
 
-/// TID → index hash cache. 256 slots, open-addressing with modulo hash.
+/// TID → index hash cache. 1024 slots with multiplicative hash + linear probing.
+/// Larger table (4x) reduces collisions; linear probing (up to 4 probes)
+/// catches collisions that the old 256-slot table missed entirely.
 /// Only accessed under the SCHEDULER lock — no synchronization needed.
-const TID_CACHE_SIZE: usize = 256;
+const TID_CACHE_SIZE: usize = 1024;
 static mut TID_INDEX_CACHE: [(u32, usize); TID_CACHE_SIZE] = [(0, 0); TID_CACHE_SIZE];
 
 // =============================================================================
@@ -217,17 +219,21 @@ static mut SCRATCH_FPU: [AlignedFpuBuf; MAX_CPUS] = {
 // the SCHEDULER lock.  This avoids blocking `SCHEDULER.lock()` in IRQ context,
 // which can cause RSP corruption when the IRQ handler stalls on a contended lock.
 
-/// Up to 16 deferred-wake TIDs (0 = empty slot).
-/// 4 slots were insufficient under heavy IRQ load (keyboard + mouse + network
-/// + timer can all fire within one tick), causing lost wakes.
-static DEFERRED_WAKE_TIDS: [AtomicU32; 16] = {
+/// Up to 64 deferred-wake TIDs (0 = empty slot).
+/// 16 slots were still insufficient under heavy IRQ load with many concurrent
+/// devices (keyboard + mouse + network + timer + disk + multiple pipes).
+/// 64 slots provide headroom for worst-case interrupt storms.
+static DEFERRED_WAKE_TIDS: [AtomicU32; 64] = {
     const INIT: AtomicU32 = AtomicU32::new(0);
-    [INIT; 16]
+    [INIT; 64]
 };
 
+/// Circular write index for deferred wakes — distributes overwrites evenly
+/// instead of always clobbering slot 0.
+static DEFERRED_WAKE_NEXT: AtomicU32 = AtomicU32::new(0);
+
 /// Enqueue a TID for deferred wake (called from IRQ context, lock-free).
-/// Overwrites the oldest slot if all slots are occupied.  Missing a wake
-/// is acceptable — the compositor's 16ms timeout provides a safety net.
+/// Uses circular overwrite when all slots are occupied for fairer eviction.
 pub fn deferred_wake(tid: u32) {
     for slot in &DEFERRED_WAKE_TIDS {
         // Try to claim an empty slot (0 → tid).
@@ -239,8 +245,9 @@ pub fn deferred_wake(tid: u32) {
             return;
         }
     }
-    // All slots full — overwrite slot 0 (best-effort; timeout covers misses).
-    DEFERRED_WAKE_TIDS[0].store(tid, Ordering::Release);
+    // All slots full — circular overwrite for fair eviction.
+    let idx = DEFERRED_WAKE_NEXT.fetch_add(1, Ordering::Relaxed) as usize % 64;
+    DEFERRED_WAKE_TIDS[idx].store(tid, Ordering::Release);
 }
 
 // --- Tick counters ---
@@ -406,20 +413,35 @@ impl Scheduler {
     }
 
     /// Find a thread's index in the threads Vec by TID.
-    /// O(1) via hash cache, O(n) fallback on miss/collision.
+    /// O(1) via hash cache with linear probing (up to 4 probes), O(n) fallback.
     #[inline]
     fn find_idx(&self, tid: u32) -> Option<usize> {
-        // Fast path: check hash cache (safe: only accessed under SCHEDULER lock)
-        let slot = (tid as usize) % TID_CACHE_SIZE;
-        let (cached_tid, cached_idx) = unsafe { TID_INDEX_CACHE[slot] };
-        if cached_tid == tid && cached_idx < self.threads.len()
-            && self.threads[cached_idx].tid == tid
-        {
-            return Some(cached_idx);
+        // Multiplicative hash for better distribution across 1024 slots
+        let base_slot = (tid.wrapping_mul(2654435761) as usize) & (TID_CACHE_SIZE - 1);
+
+        // Fast path: check hash cache with linear probing (up to 4 probes)
+        for probe in 0..4 {
+            let slot = (base_slot + probe) & (TID_CACHE_SIZE - 1);
+            let (cached_tid, cached_idx) = unsafe { TID_INDEX_CACHE[slot] };
+            if cached_tid == tid && cached_idx < self.threads.len()
+                && self.threads[cached_idx].tid == tid
+            {
+                return Some(cached_idx);
+            }
+            if cached_tid == 0 {
+                break; // Empty slot → no point probing further
+            }
         }
         // Slow path: linear scan + populate cache
         if let Some(idx) = self.threads.iter().position(|t| t.tid == tid) {
-            unsafe { TID_INDEX_CACHE[slot] = (tid, idx); }
+            // Insert into first available probe slot
+            for probe in 0..4 {
+                let slot = (base_slot + probe) & (TID_CACHE_SIZE - 1);
+                if unsafe { TID_INDEX_CACHE[slot] }.0 == 0 || probe == 3 {
+                    unsafe { TID_INDEX_CACHE[slot] = (tid, idx); }
+                    break;
+                }
+            }
             return Some(idx);
         }
         None

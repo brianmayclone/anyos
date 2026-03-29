@@ -168,11 +168,20 @@ pub fn read(pipe_id: u32, buf: &mut [u8]) -> u32 {
             };
 
             if !pipe.buffer.is_empty() {
-                // Data available — drain up to buf.len()
+                // Data available — drain up to buf.len() using batch slice copy
                 let n = buf.len().min(pipe.buffer.len());
-                for i in 0..n {
-                    buf[i] = pipe.buffer.pop_front().unwrap();
+                // VecDeque stores data in up to two contiguous slices (ring buffer).
+                // Copy from each slice directly instead of byte-by-byte pop_front().
+                let (front, back) = pipe.buffer.as_slices();
+                let from_front = n.min(front.len());
+                buf[..from_front].copy_from_slice(&front[..from_front]);
+                if from_front < n {
+                    let from_back = n - from_front;
+                    buf[from_front..n].copy_from_slice(&back[..from_back]);
                 }
+                drop(front);
+                drop(back);
+                pipe.buffer.drain(..n);
                 // Wake any blocked writers since we freed buffer space
                 w_wake = pipe.blocked_writer_count;
                 writers_to_wake[..w_wake].copy_from_slice(&pipe.blocked_writers[..w_wake]);
@@ -239,14 +248,12 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
                 return u32::MAX;
             }
 
-            // Write as much as we can fit
+            // Write as much as we can fit — batch extend instead of byte-by-byte
             let space = PIPE_BUF_SIZE.saturating_sub(pipe.buffer.len());
             if space > 0 {
                 let remaining = &data[written..];
                 let n = remaining.len().min(space);
-                for i in 0..n {
-                    pipe.buffer.push_back(remaining[i]);
-                }
+                pipe.buffer.extend(&remaining[..n]);
                 written += n;
 
                 // Wake blocked readers since we added data
