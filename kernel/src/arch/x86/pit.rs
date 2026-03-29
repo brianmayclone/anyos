@@ -175,9 +175,19 @@ unsafe fn calibrate_tsc_pit() -> u64 {
 }
 
 /// Update the PIT IRQ tick counter. Called from the PIT IRQ handler.
-/// Only meaningful during boot (before TSC calibration).
+/// Also updates the cached millisecond counter from TSC (avoids per-syscall division).
 pub fn tick() {
     TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Update cached ms from TSC (only after calibration)
+    let tsc_hz = TSC_HZ.load(Ordering::Relaxed);
+    if tsc_hz > 0 {
+        let boot = TSC_BOOT.load(Ordering::Relaxed);
+        let now = rdtsc();
+        let delta = now.wrapping_sub(boot);
+        let ms = delta * 1000 / tsc_hz;
+        CACHED_MS.store(ms, Ordering::Relaxed);
+    }
 }
 
 /// Return the current tick count since boot.
@@ -235,10 +245,21 @@ pub fn irq_handler_with_schedule(_irq: u8) {
     crate::task::scheduler::schedule_tick();
 }
 
+/// Cached millisecond value, updated every timer tick (1000 Hz).
+/// Avoids expensive TSC read + division on every uptime_ms() syscall.
+/// The timer IRQ handler calls `tick()` which increments this atomically.
+static CACHED_MS: AtomicU64 = AtomicU64::new(0);
+
 /// Return real elapsed milliseconds since boot, computed from TSC.
-/// Independent calculation from `get_ticks()` — useful for cross-checking.
+/// Uses cached value when TSC is calibrated (updated every tick = 1ms precision).
+/// Falls back to TSC computation for sub-ms precision when needed.
 #[inline]
 pub fn real_ms_since_boot() -> u64 {
+    let cached = CACHED_MS.load(Ordering::Relaxed);
+    if cached > 0 {
+        return cached;
+    }
+    // Fallback for before tick counter is running
     let tsc_hz = TSC_HZ.load(Ordering::Acquire);
     if tsc_hz > 0 {
         let boot = TSC_BOOT.load(Ordering::Relaxed);

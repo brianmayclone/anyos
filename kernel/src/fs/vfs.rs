@@ -568,6 +568,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             inode: idx as u32,
             parent_cluster: 0,
             refcount: 1,
+            seek_cache_offset: 0,
+            seek_cache_cluster: 0,
         };
 
         state.open_files[slot_id as usize] = Some(file);
@@ -592,6 +594,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                         inode,
                         parent_cluster: 0,
                         refcount: 1,
+                        seek_cache_offset: 0,
+                        seek_cache_cluster: 0,
                     };
                     state.open_files[slot_id as usize] = Some(file);
                     return Ok(slot_id);
@@ -616,6 +620,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                         inode,
                         parent_cluster: 0,
                         refcount: 1,
+                        seek_cache_offset: 0,
+                        seek_cache_cluster: 0,
                     };
                     state.open_files[slot_id as usize] = Some(file);
                     return Ok(slot_id);
@@ -672,6 +678,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     inode,
                     parent_cluster,
                     refcount: 1,
+                    seek_cache_offset: 0,
+                    seek_cache_cluster: 0,
                 };
                 state.open_files[slot_id as usize] = Some(file);
                 return Ok(slot_id);
@@ -712,6 +720,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     inode,
                     parent_cluster: 0,
                     refcount: 1,
+                    seek_cache_offset: 0,
+                    seek_cache_cluster: 0,
                 };
                 state.open_files[slot_id as usize] = Some(file);
                 return Ok(slot_id);
@@ -773,6 +783,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             inode,
             parent_cluster,
             refcount: 1,
+            seek_cache_offset: 0,
+            seek_cache_cluster: 0,
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);
@@ -827,6 +839,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             inode,
             parent_cluster,
             refcount: 1,
+            seek_cache_offset: 0,
+            seek_cache_cluster: 0,
         };
 
         state.open_files[slot_id as usize] = Some(file);
@@ -851,6 +865,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             inode,
             parent_cluster: 0,
             refcount: 1,
+            seek_cache_offset: 0,
+            seek_cache_cluster: 0,
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);
@@ -892,6 +908,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             inode,
             parent_cluster: 0,
             refcount: 1,
+            seek_cache_offset: 0,
+            seek_cache_cluster: 0,
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);
@@ -915,6 +933,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             inode,
             parent_cluster: 0,
             refcount: 1,
+            seek_cache_offset: 0,
+            seek_cache_cluster: 0,
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);

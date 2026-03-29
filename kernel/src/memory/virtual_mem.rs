@@ -753,10 +753,16 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
     Some(new_pml4_phys)
 }
 
-/// Lock protecting the temp page addresses (0xBFF03000/0xBFF04000) used by
-/// clone_user_page_directory for page-content copying. Prevents SMP races
-/// when two CPUs fork concurrently.
-static CLONE_TEMP_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Per-CPU temp page addresses for clone_user_page_directory.
+/// Each CPU gets its own pair of temp VAs, eliminating contention on fork.
+/// Layout: CPU 0 = 0xBFF03000/BFF04000, CPU 1 = 0xBFF05000/BFF06000, etc.
+/// Up to 8 CPUs supported (16 pages = 64 KiB of reserved VA space).
+const MAX_CLONE_CPUS: usize = 8;
+/// Per-CPU lock (one bool per CPU, no cross-CPU contention).
+static CLONE_TEMP_LOCKS: [core::sync::atomic::AtomicBool; MAX_CLONE_CPUS] = {
+    const INIT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    [INIT; MAX_CLONE_CPUS]
+};
 
 /// Clone a user process's entire address space for fork().
 ///
@@ -772,12 +778,14 @@ pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
     // Step 1: Create a fresh PML4 with kernel mappings + identity-map
     let child_pd = create_user_page_directory()?;
 
-    // Temp addresses for page content copy (in kernel space, safe from any CR3)
-    let temp_src = VirtAddr::new(0xFFFF_FFFF_BFF0_3000);
-    let temp_dst = VirtAddr::new(0xFFFF_FFFF_BFF0_4000);
+    // Per-CPU temp addresses for page content copy (no cross-CPU contention)
+    let cpu = crate::arch::hal::cpu_id().min(MAX_CLONE_CPUS - 1);
+    let base = 0xFFFF_FFFF_BFF0_3000u64 + (cpu as u64 * 2 * 0x1000);
+    let temp_src = VirtAddr::new(base);
+    let temp_dst = VirtAddr::new(base + 0x1000);
 
-    // Acquire clone temp lock (spin, interrupts may be enabled here)
-    while CLONE_TEMP_LOCK.compare_exchange_weak(
+    // Acquire per-CPU clone temp lock
+    while CLONE_TEMP_LOCKS[cpu].compare_exchange_weak(
         false, true, Ordering::Acquire, Ordering::Relaxed
     ).is_err() {
         core::hint::spin_loop();
@@ -901,7 +909,7 @@ pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
                 Some(f) => f,
                 None => {
                     // OOM — clean up child PD and release lock
-                    CLONE_TEMP_LOCK.store(false, Ordering::Release);
+                    CLONE_TEMP_LOCKS[cpu].store(false, Ordering::Release);
                     destroy_user_page_directory(child_pd);
                     return None;
                 }
@@ -925,7 +933,7 @@ pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
         }
     }
 
-    CLONE_TEMP_LOCK.store(false, Ordering::Release);
+    CLONE_TEMP_LOCKS[cpu].store(false, Ordering::Release);
     Some(child_pd)
 }
 

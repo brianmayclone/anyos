@@ -66,6 +66,10 @@ pub struct OpenFile {
     /// Reference count: how many per-process FD table entries point to this slot.
     /// Slot is freed when refcount drops to 0.
     pub refcount: u32,
+    /// FAT chain seek cache: (byte_offset, cluster) — avoids re-walking
+    /// the FAT chain from the start on sequential reads. Updated on every read.
+    pub seek_cache_offset: u32,
+    pub seek_cache_cluster: u32,
 }
 
 #[derive(Debug, Clone)]

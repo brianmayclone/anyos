@@ -26,6 +26,9 @@ mod gl3d_lighting;
 mod gl3d_depth;
 mod gl3d_drawcalls;
 
+// Disk I/O workloads
+mod disk_io;
+
 pub use prime_sieve::bench_prime_sieve;
 pub use mandelbrot::bench_mandelbrot;
 pub use memory_copy::bench_memory_copy;
@@ -45,6 +48,8 @@ pub use gl3d_lighting::bench_gl3d_lighting;
 pub use gl3d_depth::bench_gl3d_depth;
 pub use gl3d_drawcalls::bench_gl3d_drawcalls;
 
+pub use disk_io::{bench_seq_read, bench_seq_write, bench_random_read, bench_file_create};
+
 use libanyui_client as anyui;
 
 /// Duration for each CPU benchmark in milliseconds.
@@ -59,9 +64,13 @@ pub const GPU_TEST_MS: u32 = 5000;
 /// Same as GPU — long enough for stable results through the full GL pipeline.
 pub const GL3D_TEST_MS: u32 = 5000;
 
+/// Duration for each Disk I/O benchmark in milliseconds.
+pub const DISK_TEST_MS: u32 = 3000;
+
 pub const NUM_CPU_TESTS: usize = 6;
 pub const NUM_GPU_TESTS: usize = 5;
 pub const NUM_GL3D_TESTS: usize = 5;
+pub const NUM_DISK_TESTS: usize = 4;
 
 /// Baseline raw scores (calibrated for ~1000 pts on a single-core 2 GHz QEMU VM, 3 s runs).
 pub const CPU_BASELINES: [u64; NUM_CPU_TESTS] = [
@@ -91,6 +100,14 @@ pub const GL3D_BASELINES: [u64; NUM_GL3D_TESTS] = [
     10_000,      // draw calls
 ];
 
+/// Baseline raw scores for Disk I/O tests (calibrated for ~1000 pts, 3 s runs).
+pub const DISK_BASELINES: [u64; NUM_DISK_TESTS] = [
+    8_000_000,   // bytes read sequentially (seq read)
+    4_000_000,   // bytes written sequentially (seq write)
+    2_000,       // random read operations
+    500,         // file create/delete operations
+];
+
 pub const CPU_TEST_NAMES: [&str; NUM_CPU_TESTS] = [
     "Integer Math",
     "Floating-Point",
@@ -114,6 +131,13 @@ pub const GL3D_TEST_NAMES: [&str; NUM_GL3D_TESTS] = [
     "Phong Lighting",
     "Depth Testing",
     "Draw Calls",
+];
+
+pub const DISK_TEST_NAMES: [&str; NUM_DISK_TESTS] = [
+    "Sequential Read",
+    "Sequential Write",
+    "Random Read",
+    "File Create/Delete",
 ];
 
 /// Dispatches a CPU benchmark by 1-based ID. Returns the raw score.
@@ -149,6 +173,17 @@ pub fn run_gl3d_test(index: usize, canvas: &anyui::Canvas) -> u64 {
         2 => bench_gl3d_lighting(canvas),
         3 => bench_gl3d_depth(canvas),
         4 => bench_gl3d_drawcalls(canvas),
+        _ => 0,
+    }
+}
+
+/// Dispatches a Disk I/O benchmark by 1-based ID. Returns the raw score.
+pub fn run_disk_bench(bench_id: u32) -> u64 {
+    match bench_id {
+        1 => bench_seq_read(),
+        2 => bench_seq_write(),
+        3 => bench_random_read(),
+        4 => bench_file_create(),
         _ => 0,
     }
 }

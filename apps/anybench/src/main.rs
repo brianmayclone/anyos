@@ -35,10 +35,10 @@ use libanyui_client as anyui;
 use anyui::Widget;
 
 use workloads::{
-    NUM_CPU_TESTS, NUM_GPU_TESTS, NUM_GL3D_TESTS,
-    CPU_BASELINES, GPU_BASELINES, GL3D_BASELINES,
-    CPU_TEST_NAMES, GPU_TEST_NAMES, GL3D_TEST_NAMES,
-    run_cpu_bench, run_gpu_test, run_gl3d_test,
+    NUM_CPU_TESTS, NUM_GPU_TESTS, NUM_GL3D_TESTS, NUM_DISK_TESTS,
+    CPU_BASELINES, GPU_BASELINES, GL3D_BASELINES, DISK_BASELINES,
+    CPU_TEST_NAMES, GPU_TEST_NAMES, GL3D_TEST_NAMES, DISK_TEST_NAMES,
+    run_cpu_bench, run_gpu_test, run_gl3d_test, run_disk_bench,
 };
 
 anyos_std::entry!(main);
@@ -90,6 +90,7 @@ struct AppState {
     btn_run_cpu: anyui::Button,
     btn_run_gpu: anyui::Button,
     btn_run_3d: anyui::Button,
+    btn_run_io: anyui::Button,
 
     // CPU panel
     panel_cpu: anyui::View,
@@ -117,6 +118,13 @@ struct AppState {
     gl3d_scores: [anyui::Label; NUM_GL3D_TESTS],
     canvas_3d: anyui::Canvas,
 
+    // I/O panel
+    panel_io: anyui::View,
+    lbl_disk_score: anyui::Label,
+    disk_labels: [anyui::Label; NUM_DISK_TESTS],
+    disk_scores: [anyui::Label; NUM_DISK_TESTS],
+    disk_throughput: [anyui::Label; NUM_DISK_TESTS],
+
     // Benchmark state
     running: bool,
     phase: BenchPhase,
@@ -129,6 +137,7 @@ struct AppState {
     gpu_on_raw: [u64; NUM_GPU_TESTS],
     gpu_off_raw: [u64; NUM_GPU_TESTS],
     gl3d_raw: [u64; NUM_GL3D_TESTS],
+    disk_raw: [u64; NUM_DISK_TESTS],
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -139,6 +148,7 @@ enum BenchPhase {
     GpuOnScreen,
     GpuOffScreen,
     Gl3D,
+    DiskIO,
 }
 
 static mut APP: Option<AppState> = None;
@@ -297,7 +307,7 @@ fn build_ui() {
     let num_cpus = if num_cpus == 0 { 1 } else { num_cpus };
 
     // ── Tab bar ──
-    let tabs_str = format!("{}|{}|{}|3D", i18n::t("Overview"), i18n::t("CPU"), i18n::t("GPU"));
+    let tabs_str = format!("{}|{}|{}|3D|I/O", i18n::t("Overview"), i18n::t("CPU"), i18n::t("GPU"));
     let tabs = anyui::SegmentedControl::new(&tabs_str);
     tabs.set_dock(anyui::DOCK_TOP);
     tabs.set_size(640, 36);
@@ -341,22 +351,28 @@ fn build_ui() {
     panel_overview.add(&btn_run_all);
 
     let btn_run_cpu = anyui::Button::new(i18n::t("CPU Only"));
-    btn_run_cpu.set_position(110, 165);
-    btn_run_cpu.set_size(130, 34);
+    btn_run_cpu.set_position(70, 165);
+    btn_run_cpu.set_size(110, 34);
     btn_run_cpu.set_font_size(13);
     panel_overview.add(&btn_run_cpu);
 
     let btn_run_gpu = anyui::Button::new(i18n::t("GPU Only"));
-    btn_run_gpu.set_position(255, 165);
-    btn_run_gpu.set_size(130, 34);
+    btn_run_gpu.set_position(190, 165);
+    btn_run_gpu.set_size(110, 34);
     btn_run_gpu.set_font_size(13);
     panel_overview.add(&btn_run_gpu);
 
     let btn_run_3d = anyui::Button::new("3D Only");
-    btn_run_3d.set_position(400, 165);
-    btn_run_3d.set_size(130, 34);
+    btn_run_3d.set_position(310, 165);
+    btn_run_3d.set_size(110, 34);
     btn_run_3d.set_font_size(13);
     panel_overview.add(&btn_run_3d);
+
+    let btn_run_io = anyui::Button::new("I/O Only");
+    btn_run_io.set_position(430, 165);
+    btn_run_io.set_size(110, 34);
+    btn_run_io.set_font_size(13);
+    panel_overview.add(&btn_run_io);
 
     let progress = anyui::ProgressBar::new(0);
     progress.set_position(40, 225);
@@ -372,23 +388,23 @@ fn build_ui() {
     panel_overview.add(&lbl_status);
 
     // Score summary cards
-    let card_labels = [i18n::t("CPU Single-Core"), i18n::t("CPU Multi-Core"), i18n::t("GPU OnScreen"), i18n::t("GPU OffScreen"), "3D"];
-    let card_x: [i32; 5] = [16, 138, 260, 382, 504];
-    let _lbl_summary_titles: Vec<anyui::Label> = (0..5).map(|i| {
+    let card_labels = [i18n::t("CPU Single-Core"), i18n::t("CPU Multi-Core"), i18n::t("GPU OnScreen"), i18n::t("GPU OffScreen"), "3D", "Disk I/O"];
+    let card_x: [i32; 6] = [8, 112, 216, 320, 424, 528];
+    let _lbl_summary_titles: Vec<anyui::Label> = (0..6).map(|i| {
         let l = anyui::Label::new(card_labels[i]);
         l.set_position(card_x[i], 285);
-        l.set_size(112, 16);
-        l.set_font_size(11);
+        l.set_size(100, 16);
+        l.set_font_size(10);
         l.set_text_color(colors.text_secondary);
         l.set_state(TEXT_ALIGN_CENTER);
         panel_overview.add(&l);
         l
     }).collect();
 
-    let lbl_summary_scores: Vec<anyui::Label> = (0..5).map(|i| {
+    let lbl_summary_scores: Vec<anyui::Label> = (0..6).map(|i| {
         let l = anyui::Label::new("-");
         l.set_position(card_x[i], 305);
-        l.set_size(112, 28);
+        l.set_size(100, 28);
         l.set_font_size(22);
         l.set_font(1);
         l.set_text_color(colors.warning);
@@ -402,7 +418,7 @@ fn build_ui() {
     div.set_size(576, 1);
     panel_overview.add(&div);
 
-    let lbl_info = anyui::Label::new(i18n::t("anyBench measures CPU, GPU, and 3D performance with standardized workloads."));
+    let lbl_info = anyui::Label::new(i18n::t("anyBench measures CPU, GPU, 3D, and Disk I/O performance with standardized workloads."));
     lbl_info.set_position(0, 370);
     lbl_info.set_size(640, 16);
     lbl_info.set_font_size(11);
@@ -634,8 +650,108 @@ fn build_ui() {
     lbl_3d_info3.set_text_color(colors.text_secondary);
     panel_3d.add(&lbl_3d_info3);
 
+    // ════════════════════════════════════════════════════════════════
+    //  I/O Panel
+    // ════════════════════════════════════════════════════════════════
+
+    let panel_io = anyui::View::new();
+    panel_io.set_dock(anyui::DOCK_FILL);
+    panel_io.set_color(colors.window_bg);
+    panel_io.set_visible(false);
+    win.add(&panel_io);
+
+    let lbl_io_title = anyui::Label::new("Disk I/O");
+    lbl_io_title.set_position(16, 12);
+    lbl_io_title.set_size(200, 24);
+    lbl_io_title.set_font_size(18);
+    lbl_io_title.set_font(1);
+    lbl_io_title.set_text_color(colors.text);
+    panel_io.add(&lbl_io_title);
+
+    let lbl_disk_score = anyui::Label::new("Score: -");
+    lbl_disk_score.set_position(400, 12);
+    lbl_disk_score.set_size(200, 24);
+    lbl_disk_score.set_font_size(18);
+    lbl_disk_score.set_font(1);
+    lbl_disk_score.set_text_color(colors.warning);
+    lbl_disk_score.set_state(TEXT_ALIGN_RIGHT);
+    panel_io.add(&lbl_disk_score);
+
+    // Column headers
+    let hdr_test = anyui::Label::new("Test");
+    hdr_test.set_position(16, 50);
+    hdr_test.set_size(200, 18);
+    hdr_test.set_font_size(11);
+    hdr_test.set_font(1);
+    hdr_test.set_text_color(colors.text_secondary);
+    panel_io.add(&hdr_test);
+
+    let hdr_score = anyui::Label::new("Score");
+    hdr_score.set_position(230, 50);
+    hdr_score.set_size(80, 18);
+    hdr_score.set_font_size(11);
+    hdr_score.set_font(1);
+    hdr_score.set_text_color(colors.text_secondary);
+    hdr_score.set_state(TEXT_ALIGN_CENTER);
+    panel_io.add(&hdr_score);
+
+    let hdr_throughput = anyui::Label::new("Throughput");
+    hdr_throughput.set_position(340, 50);
+    hdr_throughput.set_size(140, 18);
+    hdr_throughput.set_font_size(11);
+    hdr_throughput.set_font(1);
+    hdr_throughput.set_text_color(colors.text_secondary);
+    hdr_throughput.set_state(TEXT_ALIGN_RIGHT);
+    panel_io.add(&hdr_throughput);
+
+    let disk_labels: [anyui::Label; NUM_DISK_TESTS] = core::array::from_fn(|i| {
+        let l = anyui::Label::new(DISK_TEST_NAMES[i]);
+        l.set_position(16, 74 + i as i32 * 28);
+        l.set_size(200, 20);
+        l.set_text_color(colors.text);
+        l.set_font_size(13);
+        panel_io.add(&l);
+        l
+    });
+    let disk_scores: [anyui::Label; NUM_DISK_TESTS] = core::array::from_fn(|i| {
+        let s = anyui::Label::new("-");
+        s.set_position(230, 74 + i as i32 * 28);
+        s.set_size(80, 20);
+        s.set_text_color(colors.text_secondary);
+        s.set_font_size(13);
+        s.set_state(TEXT_ALIGN_CENTER);
+        panel_io.add(&s);
+        s
+    });
+    // Throughput column (MB/s or ops/s)
+    let disk_throughput: [anyui::Label; NUM_DISK_TESTS] = core::array::from_fn(|i| {
+        let t = anyui::Label::new("-");
+        t.set_position(340, 74 + i as i32 * 28);
+        t.set_size(140, 20);
+        t.set_text_color(colors.text_secondary);
+        t.set_font_size(13);
+        t.set_state(TEXT_ALIGN_RIGHT);
+        panel_io.add(&t);
+        t
+    });
+
+    // Info text
+    let lbl_io_info = anyui::Label::new("Measures filesystem throughput:");
+    lbl_io_info.set_position(16, 200);
+    lbl_io_info.set_size(400, 16);
+    lbl_io_info.set_font_size(11);
+    lbl_io_info.set_text_color(colors.text_secondary);
+    panel_io.add(&lbl_io_info);
+
+    let lbl_io_info2 = anyui::Label::new("sequential read/write, random access, file create/delete");
+    lbl_io_info2.set_position(16, 218);
+    lbl_io_info2.set_size(400, 16);
+    lbl_io_info2.set_font_size(11);
+    lbl_io_info2.set_text_color(colors.text_secondary);
+    panel_io.add(&lbl_io_info2);
+
     // ── Tab switching ──
-    tabs.connect_panels(&[&panel_overview, &panel_cpu, &panel_gpu, &panel_3d]);
+    tabs.connect_panels(&[&panel_overview, &panel_cpu, &panel_gpu, &panel_3d, &panel_io]);
 
     unsafe {
         SUMMARY_SCORE_IDS = [
@@ -644,6 +760,7 @@ fn build_ui() {
             lbl_summary_scores[2].id(),
             lbl_summary_scores[3].id(),
             lbl_summary_scores[4].id(),
+            lbl_summary_scores[5].id(),
         ];
     }
 
@@ -661,6 +778,7 @@ fn build_ui() {
             btn_run_cpu,
             btn_run_gpu,
             btn_run_3d,
+            btn_run_io,
             panel_cpu,
             lbl_cpu_single_score,
             lbl_cpu_multi_score,
@@ -681,6 +799,11 @@ fn build_ui() {
             gl3d_labels,
             gl3d_scores,
             canvas_3d,
+            panel_io,
+            lbl_disk_score,
+            disk_labels,
+            disk_scores,
+            disk_throughput,
             running: false,
             phase: BenchPhase::Idle,
             current_test: 0,
@@ -690,6 +813,7 @@ fn build_ui() {
             gpu_on_raw: [0; NUM_GPU_TESTS],
             gpu_off_raw: [0; NUM_GPU_TESTS],
             gl3d_raw: [0; NUM_GL3D_TESTS],
+            disk_raw: [0; NUM_DISK_TESTS],
         });
     }
 
@@ -698,11 +822,12 @@ fn build_ui() {
     btn_run_cpu.on_click(|_| start_benchmark(BenchMode::CpuOnly));
     btn_run_gpu.on_click(|_| start_benchmark(BenchMode::GpuOnly));
     btn_run_3d.on_click(|_| start_benchmark(BenchMode::Gl3dOnly));
+    btn_run_io.on_click(|_| start_benchmark(BenchMode::DiskOnly));
 
     win.on_close(|_| anyui::quit());
 }
 
-static mut SUMMARY_SCORE_IDS: [u32; 5] = [0; 5];
+static mut SUMMARY_SCORE_IDS: [u32; 6] = [0; 6];
 static mut BENCH_MODE: BenchMode = BenchMode::All;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -711,6 +836,7 @@ enum BenchMode {
     CpuOnly,
     GpuOnly,
     Gl3dOnly,
+    DiskOnly,
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -742,16 +868,21 @@ fn start_benchmark(mode: BenchMode) {
     for i in 0..NUM_GL3D_TESTS {
         a.gl3d_scores[i].set_text("-");
     }
+    for i in 0..NUM_DISK_TESTS {
+        a.disk_scores[i].set_text("-");
+    }
     a.lbl_cpu_single_score.set_text("Score: -");
     a.lbl_cpu_multi_score.set_text("Score: -");
     a.lbl_gpu_onscreen_score.set_text("Score: -");
     a.lbl_gpu_offscreen_score.set_text("Score: -");
     a.lbl_gl3d_score.set_text("Score: -");
+    a.lbl_disk_score.set_text("Score: -");
 
     a.btn_run_all.set_enabled(false);
     a.btn_run_cpu.set_enabled(false);
     a.btn_run_gpu.set_enabled(false);
     a.btn_run_3d.set_enabled(false);
+    a.btn_run_io.set_enabled(false);
 
     match mode {
         BenchMode::All | BenchMode::CpuOnly => {
@@ -772,6 +903,12 @@ fn start_benchmark(mode: BenchMode) {
             a.progress.set_state(0);
             a.lbl_status.set_text("Starting 3D tests...");
         }
+        BenchMode::DiskOnly => {
+            a.phase = BenchPhase::DiskIO;
+            a.current_test = 0;
+            a.progress.set_state(0);
+            a.lbl_status.set_text("Starting Disk I/O tests...");
+        }
     }
 
     a.timer_id = anyui::set_timer(50, tick_benchmark);
@@ -780,10 +917,11 @@ fn start_benchmark(mode: BenchMode) {
 fn total_steps() -> u32 {
     let mode = unsafe { BENCH_MODE };
     match mode {
-        BenchMode::All => (NUM_CPU_TESTS * 2 + NUM_GPU_TESTS * 2 + NUM_GL3D_TESTS) as u32,
+        BenchMode::All => (NUM_CPU_TESTS * 2 + NUM_GPU_TESTS * 2 + NUM_GL3D_TESTS + NUM_DISK_TESTS) as u32,
         BenchMode::CpuOnly => (NUM_CPU_TESTS * 2) as u32,
         BenchMode::GpuOnly => (NUM_GPU_TESTS * 2) as u32,
         BenchMode::Gl3dOnly => NUM_GL3D_TESTS as u32,
+        BenchMode::DiskOnly => NUM_DISK_TESTS as u32,
     }
 }
 
@@ -804,6 +942,11 @@ fn current_step() -> u32 {
         BenchPhase::Gl3D => {
             if mode == BenchMode::Gl3dOnly { 0 }
             else { (NUM_CPU_TESTS * 2 + NUM_GPU_TESTS * 2) as u32 }
+        }
+        BenchPhase::DiskIO => {
+            let mode = unsafe { BENCH_MODE };
+            if mode == BenchMode::DiskOnly { 0 }
+            else { (NUM_CPU_TESTS * 2 + NUM_GPU_TESTS * 2 + NUM_GL3D_TESTS) as u32 }
         }
         BenchPhase::Idle => return total_steps(),
     };
@@ -940,7 +1083,14 @@ fn tick_benchmark() {
             BenchPhase::Gl3D => {
                 if a.current_test >= NUM_GL3D_TESTS {
                     update_gl3d_summary();
-                    finish_benchmark();
+                    let mode = unsafe { BENCH_MODE };
+                    if mode == BenchMode::Gl3dOnly {
+                        finish_benchmark();
+                        return;
+                    }
+                    a.phase = BenchPhase::DiskIO;
+                    a.current_test = 0;
+                    a.lbl_status.set_text("Starting Disk I/O tests...");
                     return;
                 }
                 let name = GL3D_TEST_NAMES[a.current_test];
@@ -955,6 +1105,43 @@ fn tick_benchmark() {
                 let score = compute_score(result, GL3D_BASELINES[a.current_test]);
                 a.gl3d_scores[a.current_test].set_text(&format!("{}", score));
                 a.gl3d_scores[a.current_test].set_text_color(score_color(score));
+                a.current_test += 1;
+                BENCH_STATE.store(0, Ordering::SeqCst);
+            }
+            BenchPhase::DiskIO => {
+                if a.current_test >= NUM_DISK_TESTS {
+                    update_disk_summary();
+                    finish_benchmark();
+                    return;
+                }
+                let name = DISK_TEST_NAMES[a.current_test];
+                a.lbl_status.set_text(&format!("Disk I/O: {}...", name));
+                a.disk_scores[a.current_test].set_text("...");
+                a.disk_scores[a.current_test].set_text_color(tc().accent);
+                a.disk_throughput[a.current_test].set_text("...");
+                BENCH_STATE.store(1, Ordering::SeqCst);
+
+                let result = run_disk_bench((a.current_test + 1) as u32);
+                a.disk_raw[a.current_test] = result;
+                let score = compute_score(result, DISK_BASELINES[a.current_test]);
+                a.disk_scores[a.current_test].set_text(&format!("{}", score));
+                a.disk_scores[a.current_test].set_text_color(score_color(score));
+
+                // Throughput: tests 0,1 = bytes (show MB/s), tests 2,3 = ops (show ops/s)
+                let test_secs = workloads::DISK_TEST_MS as u64;
+                let tp_text = if a.current_test < 2 {
+                    // Bytes-based: compute MB/s (result = total bytes in test_secs ms)
+                    let mb_s = result * 1000 / test_secs / (1024 * 1024);
+                    let mb_frac = (result * 1000 / test_secs * 10 / (1024 * 1024)) % 10;
+                    format!("{}.{} MB/s", mb_s, mb_frac)
+                } else {
+                    // Ops-based: compute ops/s
+                    let ops_s = result * 1000 / test_secs;
+                    format!("{} ops/s", ops_s)
+                };
+                a.disk_throughput[a.current_test].set_text(&tp_text);
+                a.disk_throughput[a.current_test].set_text_color(tc().text);
+
                 a.current_test += 1;
                 BENCH_STATE.store(0, Ordering::SeqCst);
             }
@@ -1097,6 +1284,24 @@ fn update_gl3d_summary() {
     }
 }
 
+fn update_disk_summary() {
+    let a = app();
+    let scores: Vec<u32> = (0..NUM_DISK_TESTS)
+        .map(|i| {
+            let score = compute_score(a.disk_raw[i], DISK_BASELINES[i]);
+            a.disk_scores[i].set_text(&format!("{}", score));
+            a.disk_scores[i].set_text_color(score_color(score));
+            score
+        })
+        .collect();
+    let overall = geometric_mean(&scores);
+    a.lbl_disk_score.set_text(&format!("Score: {}", overall));
+    unsafe {
+        let id = SUMMARY_SCORE_IDS[5];
+        anyui::Control::from_id(id).set_text(&format!("{}", overall));
+    }
+}
+
 fn finish_benchmark() {
     let a = app();
     a.running = false;
@@ -1109,6 +1314,7 @@ fn finish_benchmark() {
     a.btn_run_cpu.set_enabled(true);
     a.btn_run_gpu.set_enabled(true);
     a.btn_run_3d.set_enabled(true);
+    a.btn_run_io.set_enabled(true);
 
     if a.timer_id != 0 {
         anyui::kill_timer(a.timer_id);

@@ -628,9 +628,49 @@ impl ExFatFs {
             return Ok(());
         }
         let lba = self.cluster_to_lba(cluster);
+        let spc = self.sectors_per_cluster();
+        let cs = self.cluster_size() as usize;
         crate::debug_println!("  [exFAT] read_cluster: cluster={} -> lba={} (disk read)", cluster, lba);
-        self.read_sectors(lba, self.sectors_per_cluster(), buf)?;
-        cache.insert(cluster, buf);
+
+        // Read-ahead: if the next few clusters are sequential, read them all
+        // in one I/O and cache each one. This dramatically improves sequential
+        // read performance (directory scans, file loads).
+        let mut readahead_count: u32 = 1;
+        const MAX_READAHEAD: u32 = 8; // up to 8 clusters = 32 KiB at 4K clusters
+        {
+            let mut check = cluster;
+            while readahead_count < MAX_READAHEAD {
+                if let Some(next) = self.next_cluster(check) {
+                    if next == check + 1 {
+                        readahead_count += 1;
+                        check = next;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+
+        if readahead_count > 1 {
+            // Batch read: read all sequential clusters in one I/O
+            let total_bytes = readahead_count as usize * cs;
+            let mut big_buf = vec![0u8; total_bytes];
+            self.read_sectors(lba, readahead_count * spc, &mut big_buf)?;
+            // Cache each cluster individually
+            for i in 0..readahead_count as usize {
+                let offset = i * cs;
+                cache.insert(cluster + i as u32, &big_buf[offset..offset + cs]);
+            }
+            // Copy requested cluster to caller
+            let n = cs.min(buf.len());
+            buf[..n].copy_from_slice(&big_buf[..n]);
+        } else {
+            // Single cluster read (no sequential neighbors)
+            self.read_sectors(lba, spc, buf)?;
+            cache.insert(cluster, buf);
+        }
         Ok(())
     }
 

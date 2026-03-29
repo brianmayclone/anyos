@@ -52,10 +52,11 @@ const SATA_SIG_ATA: u32 = 0x00000101;
 const SATA_SIG_ATAPI: u32 = 0xEB140101;
 const ATA_CMD_PACKET: u8 = 0xA0;
 
-// ── Bounce buffer: 128 KiB = 256 sectors ────────────
-const BOUNCE_BUF_SECTORS: u32 = 256;
+// ── Bounce buffer: 512 KiB = 1024 sectors ────────────
+// Enlarged from 128 KiB to amortize DMA setup overhead for large sequential I/O.
+const BOUNCE_BUF_SECTORS: u32 = 1024;
 const BOUNCE_BUF_SIZE: usize = BOUNCE_BUF_SECTORS as usize * 512;
-const BOUNCE_BUF_FRAMES: usize = BOUNCE_BUF_SIZE / 4096; // 32
+const BOUNCE_BUF_FRAMES: usize = BOUNCE_BUF_SIZE / 4096; // 128
 
 const MAX_PRDT: usize = 8;
 
