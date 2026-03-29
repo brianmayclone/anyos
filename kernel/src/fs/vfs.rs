@@ -244,6 +244,62 @@ fn normalize_path(path: &str) -> String {
     }
 }
 
+// ── VFS directory inode cache ────────────────────────────────────────
+// Caches (path_hash → parent_cluster) for directory lookups to avoid
+// re-walking the exFAT directory tree from root for every open().
+// Only caches directory inodes (not files, as files can change size).
+
+const DIR_CACHE_SIZE: usize = 64;
+struct DirCacheEntry {
+    path_hash: u32,
+    cluster: u32,
+    tick: u32,
+}
+static mut DIR_CACHE: [DirCacheEntry; DIR_CACHE_SIZE] = {
+    const EMPTY: DirCacheEntry = DirCacheEntry { path_hash: 0, cluster: 0, tick: 0 };
+    [EMPTY; DIR_CACHE_SIZE]
+};
+static mut DIR_CACHE_TICK: u32 = 0;
+
+/// Simple DJB2 hash for path strings.
+fn path_hash(path: &str) -> u32 {
+    let mut h: u32 = 5381;
+    for &b in path.as_bytes() {
+        h = h.wrapping_mul(33).wrapping_add(b as u32);
+    }
+    h
+}
+
+/// Look up a cached directory cluster for a path.
+fn dir_cache_lookup(hash: u32) -> Option<u32> {
+    let idx = (hash as usize) & (DIR_CACHE_SIZE - 1);
+    let entry = unsafe { &DIR_CACHE[idx] };
+    if entry.path_hash == hash && entry.cluster != 0 {
+        Some(entry.cluster)
+    } else {
+        None
+    }
+}
+
+/// Cache a directory cluster for a path.
+fn dir_cache_insert(hash: u32, cluster: u32) {
+    let idx = (hash as usize) & (DIR_CACHE_SIZE - 1);
+    unsafe {
+        DIR_CACHE_TICK += 1;
+        DIR_CACHE[idx] = DirCacheEntry { path_hash: hash, cluster, tick: DIR_CACHE_TICK };
+    }
+}
+
+/// Invalidate all directory cache entries (called on mkdir/rmdir/rename).
+pub fn dir_cache_invalidate() {
+    unsafe {
+        for entry in DIR_CACHE.iter_mut() {
+            entry.path_hash = 0;
+            entry.cluster = 0;
+        }
+    }
+}
+
 /// Result of resolving an exFAT path with symlink handling.
 struct ResolvedEntry {
     inode: u32,

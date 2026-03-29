@@ -428,6 +428,14 @@ pub fn tlb_shootdown(va: u64) {
     }
 }
 
+/// Batch TLB shootdown: invalidates ALL TLB entries on remote CPUs.
+/// More efficient than N individual shootdowns when unmapping many pages.
+/// Use `tlb_shootdown(u64::MAX)` which triggers a full CR3 reload on receivers.
+#[inline]
+pub fn tlb_shootdown_full() {
+    tlb_shootdown(u64::MAX);
+}
+
 /// Register the halt IPI handler (IRQ 21 = INT 53).
 /// Must be called after IDT is initialized.
 pub fn register_halt_ipi() {

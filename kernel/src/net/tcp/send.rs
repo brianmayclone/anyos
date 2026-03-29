@@ -262,7 +262,7 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
                 let chunk = &data[send_offset..chunk_end];
                 let chunk_len = chunk.len();
                 if tcb.send_buf.len() + chunk_len <= MAX_SEND_BUF {
-                    tcb.send_buf.extend(chunk.iter());
+                    tcb.send_buf.extend(chunk);
                 }
 
                 // Update TCB for this segment

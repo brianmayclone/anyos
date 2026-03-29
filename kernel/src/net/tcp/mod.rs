@@ -38,6 +38,35 @@ pub use util::{cleanup_for_thread, list_connections, TcpConnInfo};
 
 pub(crate) static TCP_CONNECTIONS: Spinlock<Option<Vec<Option<Tcb>>>> = Spinlock::new(None);
 
+// ── Connection hash index for O(1) lookup ──────────────────────────
+// Maps 4-tuple hash → slot index. Avoids O(n) linear scan per packet.
+const CONN_HASH_SIZE: usize = 128; // Must be power of 2
+pub(crate) static mut CONN_HASH: [u8; CONN_HASH_SIZE] = [0xFF; CONN_HASH_SIZE];
+
+/// Hash a TCP 4-tuple to a hash table index.
+#[inline]
+pub(crate) fn conn_hash_4tuple(local_port: u16, remote_port: u16, remote_ip: &crate::net::types::Ipv4Addr) -> usize {
+    let mut h = local_port as u32;
+    h = h.wrapping_mul(2654435761).wrapping_add(remote_port as u32);
+    h = h.wrapping_mul(2654435761).wrapping_add(
+        ((remote_ip.0[0] as u32) << 24) | ((remote_ip.0[1] as u32) << 16)
+        | ((remote_ip.0[2] as u32) << 8) | (remote_ip.0[3] as u32)
+    );
+    (h as usize) & (CONN_HASH_SIZE - 1)
+}
+
+/// Update the hash index when a connection is created or changes slot.
+pub(crate) fn conn_hash_insert(local_port: u16, remote_port: u16, remote_ip: &crate::net::types::Ipv4Addr, slot: usize) {
+    let h = conn_hash_4tuple(local_port, remote_port, remote_ip);
+    unsafe { CONN_HASH[h] = slot as u8; }
+}
+
+/// Remove a connection from the hash index.
+pub(crate) fn conn_hash_remove(local_port: u16, remote_port: u16, remote_ip: &crate::net::types::Ipv4Addr) {
+    let h = conn_hash_4tuple(local_port, remote_port, remote_ip);
+    unsafe { CONN_HASH[h] = 0xFF; }
+}
+
 // ── Global TCP statistics ───────────────────────────────────────────
 
 pub(crate) static TCP_ACTIVE_OPENS: AtomicU64 = AtomicU64::new(0);

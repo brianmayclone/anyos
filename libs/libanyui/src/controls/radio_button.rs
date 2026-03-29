@@ -87,7 +87,7 @@ impl Control for RadioButton {
     }
 
     fn handle_key_down(&mut self, keycode: u32, _char_code: u32, _modifiers: u32) -> EventResponse {
-        if keycode == crate::control::KEY_SPACE {
+        if keycode == crate::control::KEY_SPACE || keycode == crate::control::KEY_ENTER {
             self.text_base.base.state = 1;
             if self.group != 0 {
                 crate::controls::radio_group::post_deselect(self.group, self.text_base.base.id);

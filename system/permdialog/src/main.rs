@@ -226,6 +226,9 @@ fn main() {
         }
     });
 
+    // Default focus on Allow button — Enter confirms immediately
+    allow.focus();
+
     anyos_std::println!("[permdialog] entering event loop");
     ui::run();
 

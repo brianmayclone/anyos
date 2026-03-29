@@ -5,9 +5,23 @@ use alloc::vec::Vec;
 
 /// Normalize a path by resolving `.` and `..` components.
 /// Returns an absolute path if the input was absolute, otherwise relative.
+///
+/// Fast path: if the path contains no `.` or `..`, avoids Vec allocation entirely.
 pub fn normalize(path: &str) -> String {
-    let mut components: Vec<&str> = Vec::new();
     let absolute = path.starts_with('/');
+
+    // Fast path: simple paths without . or .. (common case ~90% of opens)
+    if !path.contains("/.") && !path.contains("//") {
+        // No normalization needed — just trim trailing slash
+        let trimmed = path.trim_end_matches('/');
+        if trimmed.is_empty() {
+            return String::from("/");
+        }
+        return String::from(trimmed);
+    }
+
+    // Slow path: resolve . and .. with Vec
+    let mut components: Vec<&str> = Vec::new();
 
     for part in path.split('/') {
         match part {

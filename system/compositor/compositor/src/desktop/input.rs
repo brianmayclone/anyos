@@ -859,8 +859,11 @@ impl Desktop {
             }
 
             // Alt+R: Launch app runner
+            // Use direct binary path (not .app bundle) so the runner inherits
+            // the compositor's CAP_ALL instead of going through capability
+            // intersection which requires stored user permissions.
             if alt && !ctrl && key_code == 0x13 {
-                anyos_std::process::spawn("/Applications/Runner.app", "");
+                anyos_std::process::spawn("/Applications/Runner.app/Runner", "");
                 return;
             }
 

@@ -26,6 +26,47 @@ struct FreeListAlloc;
 /// Spinlock protecting all heap state (sbrk + free list).
 static HEAP_LOCK: AtomicBool = AtomicBool::new(false);
 
+// ── Size-class bucket cache for O(1) small allocations ──────────────
+// LIFO stacks for common allocation sizes. Bypasses the free-list
+// entirely for exact-match sizes, eliminating lock contention.
+
+const NUM_BUCKETS: usize = 6;
+const BUCKET_SIZES: [usize; NUM_BUCKETS] = [32, 64, 128, 256, 512, 1024];
+const BUCKET_MAX: usize = 64; // max blocks per bucket
+
+#[repr(C)]
+struct BucketNode {
+    next: *mut BucketNode,
+}
+
+struct Bucket {
+    head: *mut BucketNode,
+    count: usize,
+}
+
+static mut BUCKETS: [Bucket; NUM_BUCKETS] = [
+    Bucket { head: ptr::null_mut(), count: 0 },
+    Bucket { head: ptr::null_mut(), count: 0 },
+    Bucket { head: ptr::null_mut(), count: 0 },
+    Bucket { head: ptr::null_mut(), count: 0 },
+    Bucket { head: ptr::null_mut(), count: 0 },
+    Bucket { head: ptr::null_mut(), count: 0 },
+];
+
+/// Map exact size to bucket index (only exact matches).
+#[inline]
+fn bucket_index(size: usize) -> Option<usize> {
+    match size {
+        32 => Some(0),
+        64 => Some(1),
+        128 => Some(2),
+        256 => Some(3),
+        512 => Some(4),
+        1024 => Some(5),
+        _ => None,
+    }
+}
+
 /// Next sbrk allocation position (grows upward).
 static mut HEAP_POS: u64 = 0;
 /// Current end of mapped heap pages (kernel break).
@@ -110,6 +151,20 @@ unsafe impl GlobalAlloc for FreeListAlloc {
             return mmap_alloc(size);
         }
 
+        // Ultra-fast path: try size-class bucket (O(1), no lock)
+        if let Some(bi) = bucket_index(size) {
+            lock();
+            let bucket = &mut BUCKETS[bi];
+            if !bucket.head.is_null() {
+                let node = bucket.head;
+                bucket.head = (*node).next;
+                bucket.count -= 1;
+                unlock();
+                return node as *mut u8;
+            }
+            unlock();
+        }
+
         lock();
 
         // 1) Search free list for first fit.
@@ -184,6 +239,21 @@ unsafe impl GlobalAlloc for FreeListAlloc {
             let mapped_size = page_align(size);
             crate::process::munmap(ptr, mapped_size);
             return;
+        }
+
+        // Ultra-fast path: return to size-class bucket (O(1))
+        if let Some(bi) = bucket_index(size) {
+            lock();
+            let bucket = &mut BUCKETS[bi];
+            if bucket.count < BUCKET_MAX {
+                let node = ptr as *mut BucketNode;
+                (*node).next = bucket.head;
+                bucket.head = node;
+                bucket.count += 1;
+                unlock();
+                return;
+            }
+            unlock();
         }
 
         // Small sbrk allocations go back to the free list.

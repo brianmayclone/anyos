@@ -29,16 +29,38 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
             None => return,
         };
 
-        // Find matching connection (exact match on 4-tuple)
-        let slot_idx = table.iter().position(|slot| {
-            if let Some(tcb) = slot {
-                tcb.local_port == seg.dst_port
-                    && tcb.remote_port == seg.src_port
-                    && tcb.remote_ip == seg.src_ip
-                    && tcb.state != TcpState::Listen
-            } else {
-                false
-            }
+        // Find matching connection: O(1) via hash index, O(n) fallback on collision
+        let slot_idx = {
+            let h = super::conn_hash_4tuple(seg.dst_port, seg.src_port, &seg.src_ip);
+            let hint = unsafe { super::CONN_HASH[h] };
+            if hint != 0xFF {
+                let hi = hint as usize;
+                if hi < table.len() {
+                    if let Some(tcb) = &table[hi] {
+                        if tcb.local_port == seg.dst_port
+                            && tcb.remote_port == seg.src_port
+                            && tcb.remote_ip == seg.src_ip
+                            && tcb.state != TcpState::Listen
+                        {
+                            Some(hi)
+                        } else {
+                            None // Hash collision → fallback
+                        }
+                    } else { None }
+                } else { None }
+            } else { None }
+        }.or_else(|| {
+            // Fallback: linear scan (handles hash collisions)
+            table.iter().position(|slot| {
+                if let Some(tcb) = slot {
+                    tcb.local_port == seg.dst_port
+                        && tcb.remote_port == seg.src_port
+                        && tcb.remote_ip == seg.src_ip
+                        && tcb.state != TcpState::Listen
+                } else {
+                    false
+                }
+            })
         });
 
         let idx = match slot_idx {

@@ -32,18 +32,18 @@ pub fn parse(data: &[u8]) -> Option<EthFrame<'_>> {
     Some(EthFrame { dst, src, ethertype, payload })
 }
 
-/// Build an Ethernet frame: dst + src + ethertype + payload
+/// Build an Ethernet frame: dst + src + ethertype + payload.
+/// Uses a pre-sized Vec with direct header writes to avoid per-byte pushes.
 pub fn build_frame(dst: MacAddr, src: MacAddr, ethertype: u16, payload: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(ETH_HEADER_LEN + payload.len());
-    frame.extend_from_slice(&dst.0);
-    frame.extend_from_slice(&src.0);
-    frame.push((ethertype >> 8) as u8);
-    frame.push((ethertype & 0xFF) as u8);
-    frame.extend_from_slice(payload);
-    // Pad to minimum Ethernet frame size (60 bytes without FCS)
-    while frame.len() < 60 {
-        frame.push(0);
-    }
+    let total = (ETH_HEADER_LEN + payload.len()).max(60);
+    let mut frame = alloc::vec![0u8; total];
+    // Write header directly (14 bytes) — no push/extend overhead
+    frame[0..6].copy_from_slice(&dst.0);
+    frame[6..12].copy_from_slice(&src.0);
+    frame[12] = (ethertype >> 8) as u8;
+    frame[13] = (ethertype & 0xFF) as u8;
+    // Copy payload after header (remaining bytes already zero = padding)
+    frame[ETH_HEADER_LEN..ETH_HEADER_LEN + payload.len()].copy_from_slice(payload);
     frame
 }
 
