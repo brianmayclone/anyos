@@ -18,6 +18,41 @@ fn char_from_u32(v: u32) -> char {
     if let Some(c) = core::char::from_u32(v) { c } else { '.' }
 }
 
+/// Map a compositor KEY_* code back to a PS/2 scancode for the on-screen keyboard.
+/// The compositor's encode_scancode() translates raw PS/2 scancodes into KEY_* constants
+/// (e.g. 0x01→0x103 for Escape). This function reverses that mapping.
+fn key_code_to_scancode(kc: u32) -> u32 {
+    match kc {
+        0x100 => 0x1C, // KEY_ENTER
+        0x101 => 0x0E, // KEY_BACKSPACE
+        0x102 => 0x0F, // KEY_TAB
+        0x103 => 0x01, // KEY_ESCAPE
+        0x104 => 0x39, // KEY_SPACE
+        0x105 => 0x48, // KEY_UP
+        0x106 => 0x50, // KEY_DOWN
+        0x107 => 0x4B, // KEY_LEFT
+        0x108 => 0x4D, // KEY_RIGHT
+        0x120 => 0x53, // KEY_DELETE
+        0x121 => 0x47, // KEY_HOME
+        0x122 => 0x4F, // KEY_END
+        0x123 => 0x49, // KEY_PAGE_UP
+        0x124 => 0x51, // KEY_PAGE_DOWN
+        0x140 => 0x3B, // KEY_F1
+        0x141 => 0x3C, // KEY_F2
+        0x142 => 0x3D, // KEY_F3
+        0x143 => 0x3E, // KEY_F4
+        0x144 => 0x3F, // KEY_F5
+        0x145 => 0x40, // KEY_F6
+        0x146 => 0x41, // KEY_F7
+        0x147 => 0x42, // KEY_F8
+        0x148 => 0x43, // KEY_F9
+        0x149 => 0x44, // KEY_F10
+        0x14A => 0x57, // KEY_F11
+        0x14B => 0x58, // KEY_F12
+        other => other, // Already a raw PS/2 scancode
+    }
+}
+
 // ── Layout ──────────────────────────────────────────────────────────────────
 
 const WIN_W: u32 = 780;
@@ -286,7 +321,7 @@ fn main() {
 
     // ── Key event handler (on window) ──
     app().win.on_key_down(|e| {
-        let sc = e.keycode as usize;
+        let sc = key_code_to_scancode(e.keycode) as usize;
         if sc < 256 {
             let a = app();
             a.pressed[sc] = true;
@@ -310,7 +345,7 @@ fn main() {
     });
 
     app().win.on_key_up(|e| {
-        let sc = e.keycode as usize;
+        let sc = key_code_to_scancode(e.keycode) as usize;
         if sc < 256 {
             let a = app();
             a.pressed[sc] = false;

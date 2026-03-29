@@ -9,5 +9,6 @@ crate-type = ["staticlib"]
 [dependencies]
 libheap = { path = "../libheap" }
 libsyscall = { path = "../libsyscall" }
+libimage_client = { path = "../libimage_client" }
 
 [workspace]

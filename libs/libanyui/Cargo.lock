@@ -7,11 +7,16 @@ name = "libanyui"
 version = "0.1.0"
 dependencies = [
  "libheap",
+ "libimage_client",
  "libsyscall",
 ]
 
 [[package]]
 name = "libheap"
+version = "0.1.0"
+
+[[package]]
+name = "libimage_client"
 version = "0.1.0"
 
 [[package]]

@@ -4,6 +4,8 @@ use crate::compositor::Rect;
 use crate::keys::{
     encode_scancode,
     KEY_ENTER, KEY_DELETE, KEY_F4, KEY_F10, KEY_ESCAPE, KEY_TAB,
+    KEY_F1, KEY_F2, KEY_F3, KEY_F5, KEY_F6, KEY_F7, KEY_F8, KEY_F9,
+    KEY_F11, KEY_F12,
     KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
     KEY_VOLUME_UP, KEY_VOLUME_DOWN, KEY_VOLUME_MUTE,
     KEY_LEFT_SUPER, KEY_RIGHT_SUPER,
@@ -362,6 +364,49 @@ impl Desktop {
         if down {
             self.mouse_buttons = buttons;
 
+            // Check if clicking within the shortcut overlay
+            if self.shortcut_overlay_visible {
+                let is_inside = self.is_point_in_shortcut_overlay(self.mouse_x, self.mouse_y);
+                if is_inside {
+                    // Check close button (X) first
+                    if let Some(slot) = self.hit_test_shortcut_overlay_close(self.mouse_x, self.mouse_y) {
+                        let win_id = self.fkey_slots[slot];
+                        if win_id != 0 {
+                            // Send close event to the window
+                            self.push_event(win_id, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
+                        }
+                        // Re-render overlay after a short delay (window will be removed by app)
+                        // For now, just re-render — the slot will update on next open
+                        return;
+                    }
+                    if let Some(slot) = self.hit_test_shortcut_overlay(self.mouse_x, self.mouse_y) {
+                        // Clicked on a slot card — focus that window
+                        let win_id = self.fkey_slots[slot];
+                        self.close_shortcut_overlay();
+                        if win_id != 0 {
+                            // Un-minimize if needed
+                            if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                                if self.windows[idx].x < -9000 {
+                                    if let Some((sx, sy, _sw, _sh)) = self.windows[idx].saved_bounds.take() {
+                                        self.windows[idx].x = sx;
+                                        self.windows[idx].y = sy;
+                                        let layer_id = self.windows[idx].layer_id;
+                                        self.compositor.move_layer(layer_id, sx, sy);
+                                    }
+                                }
+                            }
+                            self.focus_window(win_id);
+                        }
+                    }
+                    // Clicked inside overlay but not on a card — absorb click
+                    return;
+                } else {
+                    // Clicked outside overlay — close it
+                    self.close_shortcut_overlay();
+                    return;
+                }
+            }
+
             // Check if clicking within open dropdown
             if self.menu_bar.is_dropdown_open() {
                 if self.menu_bar.is_in_dropdown(self.mouse_x, self.mouse_y) {
@@ -530,6 +575,9 @@ impl Desktop {
                             }
                             self.toggle_maximize(win_id);
                         }
+                    }
+                    HitTest::ShortcutButton => {
+                        self.toggle_shortcut_overlay();
                     }
                     HitTest::Content => {
                         if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
@@ -802,13 +850,136 @@ impl Desktop {
 
             // Alt+Tab / Alt+Shift+Tab: Cycle windows (MRU order)
             if alt && key_code == KEY_TAB {
+                if self.shortcut_overlay_visible {
+                    self.close_shortcut_overlay();
+                }
                 let shift = mods & 1 != 0;
                 self.cycle_window_focus(shift);
                 return;
             }
 
-            // Escape: Exit fullscreen, close open menus
+            // Alt+R: Launch app runner
+            if alt && !ctrl && key_code == 0x13 {
+                anyos_std::process::spawn("/Applications/Runner.app", "");
+                return;
+            }
+
+            // Ctrl+F1..F12: Focus window assigned to that shortcut slot
+            if ctrl && !alt {
+                let fkey_table: [u32; 12] = [
+                    KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6,
+                    KEY_F7, KEY_F8, KEY_F9, KEY_F10, KEY_F11, KEY_F12,
+                ];
+                for (slot, &fk) in fkey_table.iter().enumerate() {
+                    if key_code == fk {
+                        if self.shortcut_overlay_visible {
+                            self.close_shortcut_overlay();
+                        }
+                        let win_id = self.fkey_slots[slot];
+                        if win_id != 0 {
+                            // Un-minimize if needed
+                            if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                                if self.windows[idx].x < -9000 {
+                                    if let Some((sx, sy, _sw, _sh)) = self.windows[idx].saved_bounds.take() {
+                                        self.windows[idx].x = sx;
+                                        self.windows[idx].y = sy;
+                                        let layer_id = self.windows[idx].layer_id;
+                                        self.compositor.move_layer(layer_id, sx, sy);
+                                    }
+                                }
+                            }
+                            self.focus_window(win_id);
+                        }
+                        return;
+                    }
+                }
+            }
+
+            // Ctrl+Escape: Toggle shortcut overlay
+            if ctrl && key_code == KEY_ESCAPE {
+                self.toggle_shortcut_overlay();
+                return;
+            }
+
+            // Keyboard navigation in shortcut overlay
+            if self.shortcut_overlay_visible {
+                match key_code {
+                    KEY_TAB | KEY_RIGHT => {
+                        let shift = mods & 1 != 0;
+                        if shift {
+                            self.shortcut_overlay_select_prev();
+                        } else {
+                            self.shortcut_overlay_select_next();
+                        }
+                        return;
+                    }
+                    KEY_LEFT => {
+                        self.shortcut_overlay_select_prev();
+                        return;
+                    }
+                    KEY_DOWN => {
+                        // Move down one row (4 columns)
+                        let sel = self.shortcut_overlay_selection;
+                        let next = sel + 4;
+                        if next < 12 {
+                            self.shortcut_overlay_selection = next;
+                            self.render_shortcut_overlay();
+                        }
+                        return;
+                    }
+                    KEY_UP => {
+                        // Move up one row (4 columns)
+                        let sel = self.shortcut_overlay_selection;
+                        let next = sel - 4;
+                        if next >= 0 {
+                            self.shortcut_overlay_selection = next;
+                            self.render_shortcut_overlay();
+                        }
+                        return;
+                    }
+                    // 'X' key (scancode 0x2D) — close selected window
+                    0x2D => {
+                        let sel = self.shortcut_overlay_selection;
+                        if sel >= 0 && sel < 12 {
+                            let win_id = self.fkey_slots[sel as usize];
+                            if win_id != 0 {
+                                self.push_event(win_id, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
+                            }
+                        }
+                        return;
+                    }
+                    KEY_ENTER => {
+                        let sel = self.shortcut_overlay_selection;
+                        if sel >= 0 && sel < 12 {
+                            let win_id = self.fkey_slots[sel as usize];
+                            self.close_shortcut_overlay();
+                            if win_id != 0 {
+                                // Un-minimize if needed
+                                if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                                    if self.windows[idx].x < -9000 {
+                                        if let Some((sx, sy, _sw, _sh)) = self.windows[idx].saved_bounds.take() {
+                                            self.windows[idx].x = sx;
+                                            self.windows[idx].y = sy;
+                                            let layer_id = self.windows[idx].layer_id;
+                                            self.compositor.move_layer(layer_id, sx, sy);
+                                        }
+                                    }
+                                }
+                                self.focus_window(win_id);
+                            }
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Escape: Close shortcut overlay, exit fullscreen, close open menus
             if key_code == KEY_ESCAPE {
+                if self.shortcut_overlay_visible {
+                    self.close_shortcut_overlay();
+                    return;
+                }
                 if self.fullscreen_window.is_some() {
                     let fs_win = self.fullscreen_window.unwrap();
                     self.push_event(fs_win, [EVENT_FULLSCREEN_EXIT, 0, 0, 0, 0]);

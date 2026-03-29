@@ -188,6 +188,7 @@ fn load_crontabs() -> Vec<CronEntry> {
 fn day_of_week(year: u16, month: u8, day: u8) -> u8 {
     let t = [0u16, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
     let mut y = year as u16;
+    if month < 1 || month > 12 { return 0; }
     if month < 3 {
         y = y.wrapping_sub(1);
     }

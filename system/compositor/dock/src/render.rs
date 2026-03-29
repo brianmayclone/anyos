@@ -153,6 +153,36 @@ fn pick_icon<'a>(item: &'a DockItem, draw_size: u32, base_size: u32) -> Option<&
     }
 }
 
+/// Compute effective icon size so that all items fit within `available` pixels.
+/// Returns (effective_icon_size, effective_spacing). If everything fits at the
+/// configured size, returns the original values unchanged.
+fn fit_icon_size(item_count: u32, icon_size: u32, spacing: u32, h_padding: u32, available: u32) -> (u32, u32) {
+    if item_count == 0 {
+        return (icon_size, spacing);
+    }
+    let needed = item_count * icon_size
+        + (if item_count > 1 { (item_count - 1) * spacing } else { 0 })
+        + h_padding * 2;
+    if needed <= available {
+        return (icon_size, spacing);
+    }
+    // Shrink icon_size until it fits (spacing is recalculated from icon_size)
+    let min_icon: u32 = 20;
+    let mut is = icon_size;
+    while is > min_icon {
+        is -= 1;
+        let sp = (is / 5).clamp(6, 14);
+        let total = item_count * is
+            + (if item_count > 1 { (item_count - 1) * sp } else { 0 })
+            + h_padding * 2;
+        if total <= available {
+            return (is, sp);
+        }
+    }
+    let sp = (min_icon / 5).clamp(6, 14);
+    (min_icon, sp)
+}
+
 // ── Bottom dock rendering ───────────────────────────────────────────────────
 
 pub fn render_dock(fb: &mut Framebuffer, items: &[DockItem], screen_w: u32, screen_h: u32, rs: &RenderState) {
@@ -175,11 +205,15 @@ pub fn render_dock(fb: &mut Framebuffer, items: &[DockItem], screen_w: u32, scre
 fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32, rs: &RenderState) {
     let geom = geometry();
     let item_count = items.len();
-    let icon_size = geom.icon_size;
-    let spacing = geom.icon_spacing;
 
-    // Pill height is CONSTANT — never changes with magnification
-    let pill_h = geom.dock_height; // icon_size + 16
+    // Auto-shrink icons if they don't fit within the screen width (20px margin each side)
+    let max_w = screen_width.saturating_sub(40);
+    let (icon_size, spacing) = fit_icon_size(
+        item_count as u32, geom.icon_size, geom.icon_spacing, geom.h_padding, max_w,
+    );
+
+    // Pill height based on effective icon size
+    let pill_h = icon_size + 16;
 
     // Compute magnified sizes for layout
     let base_total_w = item_count as u32 * icon_size
@@ -187,7 +221,9 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
         + geom.h_padding * 2;
     let base_dock_x = (screen_width as i32 - base_total_w as i32) / 2;
 
-    let sizes = if rs.drag.is_some() {
+    // Disable magnification when icons were auto-shrunk (wouldn't fit otherwise)
+    let auto_shrunk = icon_size != geom.icon_size;
+    let sizes = if rs.drag.is_some() || auto_shrunk {
         vec![icon_size; item_count]
     } else {
         compute_magnified_sizes(item_count, geom, rs.settings, rs.mouse_along, rs.mag_progress, base_dock_x)
@@ -202,15 +238,18 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
     let dock_x = (screen_width as i32 - total_w as i32) / 2;
     let dock_y = geom.margin as i32;
 
+    // Border radius based on effective icon size
+    let border_radius = ((icon_size / 3) as i32).clamp(8, 24);
+
     // Shadow + pill background (constant height)
-    draw_shadow(fb, dock_x, dock_y, total_w, pill_h, geom.border_radius, 4, 12, 40);
-    fb.fill_rounded_rect(dock_x, dock_y, total_w, pill_h, geom.border_radius, dock_bg());
+    draw_shadow(fb, dock_x, dock_y, total_w, pill_h, border_radius, 4, 12, 40);
+    fb.fill_rounded_rect(dock_x, dock_y, total_w, pill_h, border_radius, dock_bg());
 
     // Top highlight line
-    let hl_inset = geom.border_radius as u32;
+    let hl_inset = border_radius as u32;
     if total_w > hl_inset * 2 {
         fb.fill_rect(
-            dock_x + geom.border_radius,
+            dock_x + border_radius,
             dock_y,
             total_w - hl_inset * 2,
             1,
@@ -363,11 +402,15 @@ fn render_horizontal(fb: &mut Framebuffer, items: &[DockItem], screen_width: u32
 fn render_vertical(fb: &mut Framebuffer, items: &[DockItem], _screen_w: u32, screen_h: u32, rs: &RenderState, is_left: bool) {
     let geom = geometry();
     let item_count = items.len();
-    let icon_size = geom.icon_size;
-    let spacing = geom.icon_spacing;
 
-    // Pill width is CONSTANT — never changes with magnification
-    let pill_w = geom.dock_height; // icon_size + 16
+    // Auto-shrink icons if they don't fit within the screen height (40px margin)
+    let max_h = screen_h.saturating_sub(40);
+    let (icon_size, spacing) = fit_icon_size(
+        item_count as u32, geom.icon_size, geom.icon_spacing, geom.h_padding, max_h,
+    );
+
+    // Pill width based on effective icon size
+    let pill_w = icon_size + 16;
 
     // Compute magnified sizes
     let base_total_h = item_count as u32 * icon_size
@@ -375,7 +418,9 @@ fn render_vertical(fb: &mut Framebuffer, items: &[DockItem], _screen_w: u32, scr
         + geom.h_padding * 2;
     let base_dock_y = (screen_h as i32 - base_total_h as i32) / 2;
 
-    let sizes = if rs.drag.is_some() {
+    // Disable magnification when icons were auto-shrunk
+    let auto_shrunk = icon_size != geom.icon_size;
+    let sizes = if rs.drag.is_some() || auto_shrunk {
         vec![icon_size; item_count]
     } else {
         compute_magnified_sizes(item_count, geom, rs.settings, rs.mouse_along, rs.mag_progress, base_dock_y)
@@ -395,17 +440,20 @@ fn render_vertical(fb: &mut Framebuffer, items: &[DockItem], _screen_w: u32, scr
         fb.width as i32 - pill_w as i32
     };
 
+    // Border radius based on effective icon size
+    let border_radius = ((icon_size / 3) as i32).clamp(8, 24);
+
     // Shadow + pill background (constant width)
-    draw_shadow(fb, dock_x, dock_y, pill_w, total_h, geom.border_radius, 0, 12, 40);
-    fb.fill_rounded_rect(dock_x, dock_y, pill_w, total_h, geom.border_radius, dock_bg());
+    draw_shadow(fb, dock_x, dock_y, pill_w, total_h, border_radius, 0, 12, 40);
+    fb.fill_rounded_rect(dock_x, dock_y, pill_w, total_h, border_radius, dock_bg());
 
     // Side highlight line
-    let hl_inset = geom.border_radius as u32;
+    let hl_inset = border_radius as u32;
     if total_h > hl_inset * 2 {
         if is_left {
-            fb.fill_rect(dock_x + pill_w as i32 - 1, dock_y + geom.border_radius, 1, total_h - hl_inset * 2, COLOR_HIGHLIGHT);
+            fb.fill_rect(dock_x + pill_w as i32 - 1, dock_y + border_radius, 1, total_h - hl_inset * 2, COLOR_HIGHLIGHT);
         } else {
-            fb.fill_rect(dock_x, dock_y + geom.border_radius, 1, total_h - hl_inset * 2, COLOR_HIGHLIGHT);
+            fb.fill_rect(dock_x, dock_y + border_radius, 1, total_h - hl_inset * 2, COLOR_HIGHLIGHT);
         }
     }
 
@@ -518,8 +566,12 @@ pub fn dock_hit_test(x: i32, y: i32, screen_w: u32, screen_h: u32, items: &[Dock
 
 fn hit_test_horizontal(x: i32, y: i32, screen_width: u32, items: &[DockItem], geom: &DockGeometry) -> Option<usize> {
     let item_count = items.len() as u32;
-    let total_width = item_count * geom.icon_size
-        + (item_count - 1) * geom.icon_spacing
+    let max_w = screen_width.saturating_sub(40);
+    let (icon_size, spacing) = fit_icon_size(item_count, geom.icon_size, geom.icon_spacing, geom.h_padding, max_w);
+    let pill_h = icon_size + 16;
+
+    let total_width = item_count * icon_size
+        + (item_count - 1) * spacing
         + geom.h_padding * 2;
 
     let dock_x = (screen_width as i32 - total_width as i32) / 2;
@@ -528,7 +580,7 @@ fn hit_test_horizontal(x: i32, y: i32, screen_width: u32, items: &[DockItem], ge
     if x < dock_x || x >= dock_x + total_width as i32 {
         return None;
     }
-    if y < dock_y || y >= dock_y + geom.dock_height as i32 {
+    if y < dock_y || y >= dock_y + pill_h as i32 {
         return None;
     }
 
@@ -537,7 +589,7 @@ fn hit_test_horizontal(x: i32, y: i32, screen_width: u32, items: &[DockItem], ge
         return None;
     }
 
-    let item_stride = geom.icon_size + geom.icon_spacing;
+    let item_stride = icon_size + spacing;
     let idx = local_x as u32 / item_stride;
     if idx < item_count {
         Some(idx as usize)
@@ -548,10 +600,13 @@ fn hit_test_horizontal(x: i32, y: i32, screen_width: u32, items: &[DockItem], ge
 
 fn hit_test_vertical(x: i32, y: i32, screen_height: u32, items: &[DockItem], geom: &DockGeometry, is_left: bool) -> Option<usize> {
     let item_count = items.len() as u32;
-    let total_h = item_count * geom.icon_size
-        + (item_count - 1) * geom.icon_spacing
+    let max_h = screen_height.saturating_sub(40);
+    let (icon_size, spacing) = fit_icon_size(item_count, geom.icon_size, geom.icon_spacing, geom.h_padding, max_h);
+    let pill_w = icon_size + 16;
+
+    let total_h = item_count * icon_size
+        + (item_count - 1) * spacing
         + geom.h_padding * 2;
-    let pill_w = geom.icon_size + 16;
 
     let dock_y = (screen_height as i32 - total_h as i32) / 2;
     // Pill flush with screen edge
@@ -575,7 +630,7 @@ fn hit_test_vertical(x: i32, y: i32, screen_height: u32, items: &[DockItem], geo
         return None;
     }
 
-    let item_stride = geom.icon_size + geom.icon_spacing;
+    let item_stride = icon_size + spacing;
     let idx = local_y as u32 / item_stride;
     if idx < item_count {
         Some(idx as usize)
@@ -610,15 +665,22 @@ pub fn drag_drop_index(mouse_x: i32, mouse_y: i32, screen_w: u32, screen_h: u32,
         POS_LEFT | 2 /* POS_RIGHT */ => {
             let item_count = items.len() as u32;
             if item_count == 0 { return 0; }
-            let total_h = item_count * geom.icon_size + (item_count - 1) * geom.icon_spacing + geom.h_padding * 2;
+            let max_h = screen_h.saturating_sub(40);
+            let (icon_size, spacing) = fit_icon_size(item_count, geom.icon_size, geom.icon_spacing, geom.h_padding, max_h);
+            let total_h = item_count * icon_size + (item_count - 1) * spacing + geom.h_padding * 2;
             let dock_y = (screen_h as i32 - total_h as i32) / 2;
             let local_y = mouse_y - dock_y - geom.h_padding as i32;
             if local_y < 0 { return 0; }
-            let stride = (geom.icon_size + geom.icon_spacing) as i32;
+            let stride = (icon_size + spacing) as i32;
             let slot = (local_y + stride / 2) / stride;
             (slot as usize).min(items.len())
         }
-        _ => compute_drop_index_h(mouse_x, screen_w, items, source_idx, geom.icon_size, geom.icon_spacing, geom.h_padding),
+        _ => {
+            let item_count = items.len() as u32;
+            let max_w = screen_w.saturating_sub(40);
+            let (icon_size, spacing) = fit_icon_size(item_count, geom.icon_size, geom.icon_spacing, geom.h_padding, max_w);
+            compute_drop_index_h(mouse_x, screen_w, items, source_idx, icon_size, spacing, geom.h_padding)
+        }
     }
 }
 

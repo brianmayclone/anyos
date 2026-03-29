@@ -138,6 +138,18 @@ syscall_fast_entry:
     ;      guaranteeing correct segment selectors on every hypervisor.
     ;   4. The performance difference (SYSRET vs IRETQ) is negligible — a few
     ;      nanoseconds per syscall, irrelevant for a desktop/hobby OS.
+
+    ; Restore DS/ES to user data segment (0x23) before IRETQ.
+    ; Phase 2 set DS/ES=0x10 (kernel data) for the syscall handler.
+    ; IRETQ does NOT restore DS/ES; the CPU nullifies them on CPL 0→3
+    ; if DPL < new CPL, leaving DS/ES=0. While null segments work in
+    ; 64-bit mode, explicit 0x23 is required for 32-bit compat processes
+    ; and avoids subtle segment-state issues across context switches.
+    push rbx
+    mov bx, 0x23
+    mov ds, bx
+    mov es, bx
+    pop rbx
     iretq
 
 ; =============================================================================
@@ -254,4 +266,13 @@ syscall_fast_entry:
     mov qword [rsp + 8], 0x2B      ; CS  (user code64, RPL=3)
     mov [rsp], rcx                  ; RIP
     mov rax, -11                    ; return -EAGAIN
+
+    ; Restore DS/ES to user data segment before IRETQ.
+    ; IRETQ does NOT restore DS/ES; the CPU nullifies them on CPL 0→3
+    ; transition if DPL < new CPL, causing #GP on first user memory access.
+    push rbx
+    mov bx, 0x23
+    mov ds, bx
+    mov es, bx
+    pop rbx
     iretq

@@ -54,7 +54,8 @@ fn build_hero_section(panel: &ui::View) {
     card.add(&name_lbl);
 
     // OS version subtitle
-    let os_lbl = ui::Label::new("anyOS 1.0");
+    let os_ver = anyos_std::format!("anyOS {}", env!("ANYOS_VERSION"));
+    let os_lbl = ui::Label::new(&os_ver);
     os_lbl.set_dock(ui::DOCK_TOP);
     os_lbl.set_size(200, 18);
     os_lbl.set_font_size(12);

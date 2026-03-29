@@ -1035,6 +1035,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "runner"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
 name = "scp"
 version = "0.1.0"
 

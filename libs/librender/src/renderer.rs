@@ -18,6 +18,33 @@ fn isqrt(n: i32) -> i32 {
     x
 }
 
+/// Integer square root (64-bit) using Newton's method.
+fn isqrt64(n: i64) -> i64 {
+    if n <= 0 { return 0; }
+    let mut x = 1i64 << ((64 - n.leading_zeros()) / 2);
+    loop {
+        let nx = (x + n / x) / 2;
+        if nx >= x { return x; }
+        x = nx;
+    }
+}
+
+/// Signed distance from pixel center to circle boundary.
+/// dx, dy: sub-pixel coords (2x resolution, centered on circle origin).
+/// r: radius in sub-pixel units (2x pixel radius).
+/// Returns signed distance scaled so that 128 = 1 pixel (positive = outside).
+fn circle_signed_dist_128(dx: i32, dy: i32, r: i32) -> i32 {
+    // dist_sq and r_sq in sub-pixel^2 units
+    let dist_sq = dx as i64 * dx as i64 + dy as i64 * dy as i64;
+    let r_sq = r as i64 * r as i64;
+    // Use (dist_sq - r_sq) / (2*r) as linear approximation of (dist - r)
+    // This avoids sqrt entirely and is accurate near the circle boundary.
+    // Scale by 128 (1 pixel = 2 sub-pixels, so 128/2 = 64 per sub-pixel unit)
+    let diff = dist_sq - r_sq;
+    let denom = (2 * r as i64).max(1);
+    (diff * 128 / denom) as i32
+}
+
 /// 2D renderer that draws primitives onto a surface.
 pub struct Renderer<'a> {
     surface: &'a mut RenderSurface,
@@ -178,80 +205,50 @@ impl<'a> Renderer<'a> {
             return;
         }
         let ru = r as u32;
+        // Sub-pixel coords: multiply by 2 for center-of-pixel sampling
+        let r2 = r * 2;
 
+        // Central rectangle (full opacity)
         if rect.height > ru * 2 {
             self.surface.fill_rect(
-                Rect::new(rect.x, rect.y + r, rect.width, rect.height - ru * 2),
-                color,
+                Rect::new(rect.x, rect.y + r, rect.width, rect.height - ru * 2), color,
             );
         }
         if rect.width > ru * 2 {
-            self.surface.fill_rect(
-                Rect::new(rect.x + r, rect.y, rect.width - ru * 2, ru),
-                color,
-            );
-            self.surface.fill_rect(
-                Rect::new(rect.x + r, rect.bottom() - r, rect.width - ru * 2, ru),
-                color,
-            );
+            self.surface.fill_rect(Rect::new(rect.x + r, rect.y, rect.width - ru * 2, ru), color);
+            self.surface.fill_rect(Rect::new(rect.x + r, rect.bottom() - r, rect.width - ru * 2, ru), color);
         }
 
-        let r2x4 = (2 * r) * (2 * r);
-        let transition = 3 * r;
+        // Corner quadrants with sub-pixel AA
         for dy in 0..r {
-            let cy = 2 * dy + 1 - 2 * r;
+            let cy = 2 * dy + 1 - r2; // sub-pixel center Y
             let cy2 = cy * cy;
 
             let mut fill_start = r;
             for dx in 0..r {
-                let cx = 2 * dx + 1 - 2 * r;
-                let dist_sq = cx * cx + cy2;
-                if dist_sq <= r2x4 - transition {
-                    fill_start = dx;
-                    break;
-                }
+                let cx = 2 * dx + 1 - r2;
+                let sd = circle_signed_dist_128(cx, cy, r2);
+                if sd <= -128 { fill_start = dx; break; }
             }
 
             let fill_width = (r - fill_start) as u32;
             if fill_width > 0 {
-                self.surface.fill_rect(
-                    Rect::new(rect.x + fill_start, rect.y + dy, fill_width, 1),
-                    color,
-                );
-                self.surface.fill_rect(
-                    Rect::new(rect.right() - r, rect.y + dy, fill_width, 1),
-                    color,
-                );
-                self.surface.fill_rect(
-                    Rect::new(rect.x + fill_start, rect.bottom() - 1 - dy, fill_width, 1),
-                    color,
-                );
-                self.surface.fill_rect(
-                    Rect::new(rect.right() - r, rect.bottom() - 1 - dy, fill_width, 1),
-                    color,
-                );
+                self.surface.fill_rect(Rect::new(rect.x + fill_start, rect.y + dy, fill_width, 1), color);
+                self.surface.fill_rect(Rect::new(rect.right() - r, rect.y + dy, fill_width, 1), color);
+                self.surface.fill_rect(Rect::new(rect.x + fill_start, rect.bottom() - 1 - dy, fill_width, 1), color);
+                self.surface.fill_rect(Rect::new(rect.right() - r, rect.bottom() - 1 - dy, fill_width, 1), color);
             }
 
             for dx in 0..fill_start {
-                let cx = 2 * dx + 1 - 2 * r;
-                let dist_sq = cx * cx + cy2;
-
-                if dist_sq >= r2x4 + transition {
-                    continue;
-                }
-
-                let alpha = if dist_sq <= r2x4 - transition {
-                    255i32
-                } else {
-                    255 * (r2x4 + transition - dist_sq) / (2 * transition)
-                };
-
-                if alpha <= 0 {
-                    continue;
-                }
-                let a = (alpha.min(255) as u32 * color.a as u32 / 255) as u8;
+                let cx = 2 * dx + 1 - r2;
+                let sd = circle_signed_dist_128(cx, cy, r2);
+                if sd >= 128 { continue; }
+                let coverage = 128 - sd; // 0..256
+                let alpha = coverage.min(255);
+                if alpha <= 0 { continue; }
+                let a = (alpha as u32 * color.a as u32 / 255) as u8;
+                if a == 0 { continue; }
                 let aa_color = Color::with_alpha(a, color.r, color.g, color.b);
-
                 self.surface.put_pixel(rect.x + dx, rect.y + dy, aa_color);
                 self.surface.put_pixel(rect.right() - 1 - dx, rect.y + dy, aa_color);
                 self.surface.put_pixel(rect.x + dx, rect.bottom() - 1 - dy, aa_color);
@@ -293,19 +290,17 @@ impl<'a> Renderer<'a> {
             ), color);
         }
 
-        let r2x4 = (2 * r) * (2 * r);
-        let transition = 3 * r;
+        let r2 = r * 2;
         for dy in 0..r {
             let yt = rect.y + dy;
             let yb = rect.bottom() - 1 - dy;
-            let cy = 2 * dy + 1 - 2 * r;
-            let cy2 = cy * cy;
+            let cy = 2 * dy + 1 - r2;
 
             let mut fill_start = r;
             for dx in 0..r {
-                let cx = 2 * dx + 1 - 2 * r;
-                let dist_sq = cx * cx + cy2;
-                if dist_sq <= r2x4 - transition { fill_start = dx; break; }
+                let cx = 2 * dx + 1 - r2;
+                let sd = circle_signed_dist_128(cx, cy, r2);
+                if sd <= -128 { fill_start = dx; break; }
             }
 
             let fill_width = (r - fill_start) as u32;
@@ -325,16 +320,14 @@ impl<'a> Renderer<'a> {
             }
 
             for dx in 0..fill_start {
-                let cx = 2 * dx + 1 - 2 * r;
-                let dist_sq = cx * cx + cy2;
-                if dist_sq >= r2x4 + transition { continue; }
-                let alpha = if dist_sq <= r2x4 - transition {
-                    255i32
-                } else {
-                    255 * (r2x4 + transition - dist_sq) / (2 * transition)
-                };
+                let cx = 2 * dx + 1 - r2;
+                let sd = circle_signed_dist_128(cx, cy, r2);
+                if sd >= 128 { continue; }
+                let coverage = 128 - sd;
+                let alpha = coverage.min(255);
                 if alpha <= 0 { continue; }
-                let a = (alpha.min(255) as u32 * color.a as u32 / 255) as u8;
+                let a = (alpha as u32 * color.a as u32 / 255) as u8;
+                if a == 0 { continue; }
                 let aa_color = Color::with_alpha(a, color.r, color.g, color.b);
                 let xt = rect.x + dx;
                 let xr = rect.right() - 1 - dx;
@@ -442,6 +435,7 @@ impl<'a> Renderer<'a> {
         let h = rect.height as i32;
         if w <= 0 || h <= 0 { return; }
         let r = radius.min(w / 2).min(h / 2).max(0);
+        // Straight edges (between corners)
         for px in (rect.x + r)..(rect.x + w - r) {
             self.surface.put_pixel(px, rect.y, color);
         }
@@ -455,27 +449,19 @@ impl<'a> Renderer<'a> {
             self.surface.put_pixel(rect.x + w - 1, py, color);
         }
         if r <= 0 { return; }
-        let r2x4 = (2 * r) * (2 * r);
-        let fill_transition = 3 * r;
-        let half_width = 2 * r;
+        // Corner arcs with integer-based sub-pixel AA
+        let r2 = r * 2;
         for dy in 0..r {
-            let cy = 2 * dy + 1 - 2 * r;
-            let cy2 = cy * cy;
+            let cy = 2 * dy + 1 - r2;
             for dx in 0..r {
-                let cx = 2 * dx + 1 - 2 * r;
-                let dist_sq = cx * cx + cy2;
-
-                if dist_sq >= r2x4 + fill_transition {
-                    continue;
-                }
-                if dist_sq <= r2x4 - half_width * 2 {
-                    continue;
-                }
-
-                let err = dist_sq - r2x4;
-                let alpha = 255 - (err.abs() * 255 / (half_width * 2)).min(255);
+                let cx = 2 * dx + 1 - r2;
+                let sd = circle_signed_dist_128(cx, cy, r2);
+                // Only draw pixels near the outline (within ±256 = ±1 pixel)
+                if sd < -128 || sd > 128 { continue; }
+                let alpha = 255 - (sd.abs() * 255 / 128).min(255);
                 if alpha <= 0 { continue; }
-                let a = (alpha.min(255) as u32 * color.a as u32 / 255) as u8;
+                let a = (alpha as u32 * color.a as u32 / 255) as u8;
+                if a == 0 { continue; }
                 let aa_color = Color::with_alpha(a, color.r, color.g, color.b);
 
                 self.surface.put_pixel(rect.x + dx, rect.y + dy, aa_color);

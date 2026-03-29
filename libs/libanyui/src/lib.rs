@@ -2397,11 +2397,16 @@ pub extern "C" fn anyui_message_box(
     let msg_id = st.next_id; st.next_id += 1;
     let btn_id = st.next_id; st.next_id += 1;
 
-    // Icon label
+    // Icon label (round colored circle with centered letter)
     let mut icon = controls::create_control(
         ControlKind::Label, icon_id, dlg_win_id, icon_x, icon_y, icon_sz, icon_sz, icon_char,
     );
     icon.set_color(icon_color);
+    icon.base_mut().state = 1; // center text
+    if let Some(tb) = icon.text_base_mut() {
+        tb.text_style.text_color = 0xFFFFFFFF;
+        tb.text_style.font_size = 14;
+    }
     st.controls.push(icon);
     if let Some(w) = st.controls.iter_mut().find(|c| c.id() == dlg_win_id) {
         w.add_child(icon_id);

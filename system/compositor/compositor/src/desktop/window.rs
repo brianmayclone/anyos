@@ -47,6 +47,72 @@ fn title_buttons_right() -> i32 {
     crate::desktop::theme::scale_i32(8) + 2 * title_btn_spacing() as i32 + title_btn_size() as i32
 }
 
+/// X position of shortcut button left edge (after traffic light buttons, DPI-scaled).
+#[inline(always)]
+fn shortcut_btn_x() -> i32 {
+    title_buttons_right() + crate::desktop::theme::scale_i32(6)
+}
+
+/// Width of the shortcut button in physical pixels (DPI-scaled).
+#[inline(always)]
+fn shortcut_btn_w() -> u32 {
+    crate::desktop::theme::scale(32)
+}
+
+/// Height of the shortcut button in physical pixels (DPI-scaled).
+#[inline(always)]
+fn shortcut_btn_h() -> u32 {
+    crate::desktop::theme::scale(16)
+}
+
+/// Y position of the shortcut button (vertically centered in title bar, DPI-scaled).
+#[inline(always)]
+fn shortcut_btn_y() -> i32 {
+    (title_bar_height() as i32 - shortcut_btn_h() as i32) / 2
+}
+
+/// Right edge of shortcut button (used as left_bound for title text).
+#[inline(always)]
+fn shortcut_btn_right() -> i32 {
+    shortcut_btn_x() + shortcut_btn_w() as i32
+}
+
+/// Render the shortcut button ("F1".."F12") into a pixel buffer at the title bar.
+fn render_shortcut_btn(pixels: &mut [u32], stride: u32, full_h: u32, slot: u8, focused: bool) {
+    if slot == 0 { return; }
+    let x = shortcut_btn_x();
+    let y = shortcut_btn_y();
+    let w = shortcut_btn_w();
+    let h = shortcut_btn_h();
+    // Background: subtle rounded rect
+    let bg = if focused {
+        if super::theme::is_light() { 0x30000000 } else { 0x30FFFFFF }
+    } else {
+        if super::theme::is_light() { 0x18000000 } else { 0x18FFFFFF }
+    };
+    let r = crate::desktop::theme::scale(4);
+    fill_rounded_rect(pixels, stride, full_h, x, y, w, h, r, bg);
+    // Label text
+    let mut label_buf = [0u8; 4];
+    let label = match slot {
+        1..=9 => {
+            label_buf[0] = b'F';
+            label_buf[1] = b'0' + slot;
+            core::str::from_utf8(&label_buf[..2]).unwrap_or("")
+        }
+        10 => { label_buf[0] = b'F'; label_buf[1] = b'1'; label_buf[2] = b'0'; core::str::from_utf8(&label_buf[..3]).unwrap_or("") }
+        11 => { label_buf[0] = b'F'; label_buf[1] = b'1'; label_buf[2] = b'1'; core::str::from_utf8(&label_buf[..3]).unwrap_or("") }
+        12 => { label_buf[0] = b'F'; label_buf[1] = b'1'; label_buf[2] = b'2'; core::str::from_utf8(&label_buf[..3]).unwrap_or("") }
+        _ => return,
+    };
+    let fs = crate::desktop::theme::scale_font(10);
+    let text_color = color_titlebar_text();
+    let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, fs, label);
+    let tx = x + (w as i32 - tw as i32) / 2;
+    let ty = y + (h as i32 - th as i32) / 2;
+    anyos_std::ui::window::font_render_buf(FONT_ID, fs, pixels, stride, full_h, tx, ty, text_color, label);
+}
+
 /// Truncate a title string so that it fits within `max_width` pixels.
 /// If the full title fits, returns it unchanged.
 /// Otherwise appends "..." and shortens until it fits.
@@ -100,6 +166,7 @@ pub enum HitTest {
     CloseButton,
     MinButton,
     MaxButton,
+    ShortcutButton,
     Content,
     ResizeTop,
     ResizeBottom,
@@ -189,6 +256,8 @@ pub struct WindowInfo {
     pub saved_bounds_fs: Option<(i32, i32, u32, u32)>,
     /// Original flags before fullscreen (to restore borderless state etc.).
     pub saved_flags_fs: u32,
+    /// Assigned F-key shortcut slot (0 = none, 1–12 = F1–F12).
+    pub shortcut_slot: u8,
 }
 
 impl WindowInfo {
@@ -289,6 +358,16 @@ impl WindowInfo {
                 let cx = crate::desktop::theme::scale_i32(8) + 2 * btn_sp + btn_r;
                 if (wx - cx).abs() <= btn_r && (wy - btn_y_pos - btn_r).abs() <= btn_r {
                     return HitTest::MaxButton;
+                }
+            }
+            // Shortcut button (only if this window has a slot assigned)
+            if self.shortcut_slot > 0 {
+                let sbx = shortcut_btn_x();
+                let sby = shortcut_btn_y();
+                let sbw = shortcut_btn_w() as i32;
+                let sbh = shortcut_btn_h() as i32;
+                if wx >= sbx && wx < sbx + sbw && wy >= sby && wy < sby + sbh {
+                    return HitTest::ShortcutButton;
                 }
             }
             return HitTest::TitleBar;
@@ -423,16 +502,86 @@ impl Desktop {
             fullscreen_capable: false,
             saved_bounds_fs: None,
             saved_flags_fs: 0,
+            shortcut_slot: 0,
         };
 
         self.windows.push(win);
+        self.assign_fkey_slot(id);
         self.focus_window(id);
 
         id
     }
 
+    // ── F-Key Shortcut Slot Management ──────────────────────────────
+
+    /// Assign the next free F-key shortcut slot (F1..F12) to a window.
+    /// Only non-borderless IPC windows (owner_tid != 0) get a slot.
+    pub(crate) fn assign_fkey_slot(&mut self, win_id: u32) {
+        let idx = match self.windows.iter().position(|w| w.id == win_id) {
+            Some(i) => i,
+            None => return,
+        };
+        // Only decorated (non-borderless) IPC windows get shortcuts.
+        // Skip modal windows (dialogs) — they belong to their owner.
+        if self.windows[idx].is_borderless() || self.windows[idx].owner_tid == 0 {
+            return;
+        }
+        if self.windows[idx].modal_owner != 0 {
+            return;
+        }
+        // Skip dialog-like windows (not resizable + no minimize + no maximize)
+        let f = self.windows[idx].flags;
+        if f & WIN_FLAG_NOT_RESIZABLE != 0
+            && f & WIN_FLAG_NO_MINIMIZE != 0
+            && f & WIN_FLAG_NO_MAXIMIZE != 0
+        {
+            return;
+        }
+        // Find first free slot
+        for slot in 0..12u8 {
+            if self.fkey_slots[slot as usize] == 0 {
+                self.fkey_slots[slot as usize] = win_id;
+                self.windows[idx].shortcut_slot = slot + 1; // 1-based
+                return;
+            }
+        }
+        // All 12 slots occupied — no shortcut assigned
+    }
+
+    /// Release the F-key slot for a window and reassign it to a window without one.
+    pub(crate) fn release_fkey_slot(&mut self, win_id: u32) {
+        // Find and clear the slot
+        let mut freed_slot: Option<u8> = None;
+        for slot in 0..12u8 {
+            if self.fkey_slots[slot as usize] == win_id {
+                self.fkey_slots[slot as usize] = 0;
+                freed_slot = Some(slot);
+                break;
+            }
+        }
+        // Clear on the window itself (in case it's still in the list)
+        if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+            self.windows[idx].shortcut_slot = 0;
+        }
+        // Reassign the freed slot to the first unassigned non-borderless window
+        // (exclude the window being destroyed — it's still in the list at this point)
+        if let Some(slot) = freed_slot {
+            let candidate = self.windows.iter()
+                .find(|w| w.id != win_id && w.shortcut_slot == 0 && !w.is_borderless() && w.owner_tid != 0)
+                .map(|w| w.id);
+            if let Some(cand_id) = candidate {
+                self.fkey_slots[slot as usize] = cand_id;
+                if let Some(idx) = self.windows.iter().position(|w| w.id == cand_id) {
+                    self.windows[idx].shortcut_slot = slot + 1;
+                    self.render_titlebar(cand_id);
+                }
+            }
+        }
+    }
+
     /// Destroy a window.
     pub fn destroy_window(&mut self, id: u32) {
+        self.release_fkey_slot(id);
         if let Some(idx) = self.windows.iter().position(|w| w.id == id) {
             // Clear modal_owner on any windows that reference the destroyed window.
             for w in &mut self.windows {
@@ -460,6 +609,10 @@ impl Desktop {
                         ));
                     }
                 }
+            }
+            // Refresh shortcut overlay if it's open
+            if self.shortcut_overlay_visible {
+                self.render_shortcut_overlay();
             }
         }
     }
@@ -643,6 +796,7 @@ impl Desktop {
         let borderless = self.windows[win_idx].is_borderless();
         let focused = self.windows[win_idx].focused;
         let full_h = self.windows[win_idx].full_height();
+        let shortcut_slot = self.windows[win_idx].shortcut_slot;
         // Stack-copy title to avoid heap allocation (title.clone())
         let mut title_buf = [0u8; 256];
         let title_len = self.windows[win_idx].title.len().min(256);
@@ -728,8 +882,15 @@ impl Desktop {
                     fill_circle(pixels, stride, full_h, cx, cy, (btn_sz / 2) as i32, color);
                 }
 
+                // Shortcut button (F1..F12 badge)
+                render_shortcut_btn(pixels, stride, full_h, shortcut_slot, focused);
+
                 // Available width for title: between buttons (left) and window edge (right), with padding
-                let left_bound = title_buttons_right() + title_padding();
+                let left_bound = if shortcut_slot > 0 {
+                    shortcut_btn_right() + title_padding()
+                } else {
+                    title_buttons_right() + title_padding()
+                };
                 let max_title_w = if (cw as i32) > left_bound + title_padding() {
                     (cw as i32 - left_bound - title_padding()) as u32
                 } else {
@@ -786,6 +947,7 @@ impl Desktop {
         let cw = self.windows[win_idx].content_width;
         let focused = self.windows[win_idx].focused;
         let full_h = self.windows[win_idx].full_height();
+        let shortcut_slot = self.windows[win_idx].shortcut_slot;
         // Stack-copy title to avoid heap allocation (title.clone())
         let mut title_buf = [0u8; 256];
         let title_len = self.windows[win_idx].title.len().min(256);
@@ -843,7 +1005,14 @@ impl Desktop {
                 fill_circle(pixels, stride, full_h, cx, cy, (btn_sz / 2) as i32, color);
             }
 
-            let left_bound = title_buttons_right() + title_padding();
+            // Shortcut button (F1..F12 badge)
+            render_shortcut_btn(pixels, stride, full_h, shortcut_slot, focused);
+
+            let left_bound = if shortcut_slot > 0 {
+                shortcut_btn_right() + title_padding()
+            } else {
+                title_buttons_right() + title_padding()
+            };
             let max_title_w = if (cw as i32) > left_bound + title_padding() {
                 (cw as i32 - left_bound - title_padding()) as u32
             } else {
@@ -1202,9 +1371,11 @@ impl Desktop {
             fullscreen_capable: false,
             saved_bounds_fs: None,
             saved_flags_fs: 0,
+            shortcut_slot: 0,
         };
 
         self.windows.push(win);
+        self.assign_fkey_slot(id);
         self.focus_window(id);
 
         id
@@ -1288,9 +1459,11 @@ impl Desktop {
             fullscreen_capable: false,
             saved_bounds_fs: None,
             saved_flags_fs: 0,
+            shortcut_slot: 0,
         };
 
         self.windows.push(win);
+        self.assign_fkey_slot(id);
         self.focus_window(id);
 
         Some([
@@ -1383,9 +1556,11 @@ impl Desktop {
             fullscreen_capable: false,
             saved_bounds_fs: None,
             saved_flags_fs: 0,
+            shortcut_slot: 0,
         };
 
         self.windows.push(win);
+        self.assign_fkey_slot(id);
         self.focus_window_no_render(id);
 
         id
@@ -1510,6 +1685,404 @@ impl Desktop {
                 self.compositor.add_damage(screen_rect);
             }
         } else if let Some(layer) = self.compositor.get_layer(layer_id) {
+            let bounds = layer.damage_bounds();
+            self.compositor.add_damage(bounds);
+        }
+    }
+
+    // ── Shortcut Manager Overlay ──────────────────────────────────────
+
+    /// Toggle the shortcut manager overlay on/off.
+    pub(crate) fn toggle_shortcut_overlay(&mut self) {
+        if self.shortcut_overlay_visible {
+            self.close_shortcut_overlay();
+        } else {
+            self.open_shortcut_overlay();
+        }
+    }
+
+    /// Open the shortcut manager overlay (centered on screen).
+    fn open_shortcut_overlay(&mut self) {
+        if self.shortcut_overlay_visible {
+            return;
+        }
+
+        // Overlay size: 4 columns × 3 rows of shortcut cards
+        let card_w = crate::desktop::theme::scale(160);
+        let card_h = crate::desktop::theme::scale(100);
+        let gap = crate::desktop::theme::scale(12);
+        let padding = crate::desktop::theme::scale(20);
+        let title_h = crate::desktop::theme::scale(36);
+        let cols = 4u32;
+        let rows = 3u32;
+        let overlay_w = padding * 2 + cols * card_w + (cols - 1) * gap;
+        let overlay_h = padding + title_h + rows * card_h + (rows - 1) * gap + padding;
+
+        let ox = (self.screen_width as i32 - overlay_w as i32) / 2;
+        let oy = (self.screen_height as i32 - overlay_h as i32) / 2;
+
+        // Create or reuse the overlay layer
+        if self.shortcut_overlay_layer != 0 {
+            self.compositor.remove_layer(self.shortcut_overlay_layer);
+        }
+        let layer_id = self.compositor.add_layer(ox, oy, overlay_w, overlay_h, false);
+        self.shortcut_overlay_layer = layer_id;
+        self.shortcut_overlay_visible = true;
+
+        // Select first occupied slot
+        self.shortcut_overlay_selection = -1;
+        for i in 0..12 {
+            if self.fkey_slots[i] != 0 {
+                self.shortcut_overlay_selection = i as i32;
+                break;
+            }
+        }
+
+        // Raise above everything
+        self.compositor.raise_layer(layer_id);
+        self.compositor.raise_layer(self.menubar_layer_id);
+
+        self.render_shortcut_overlay();
+    }
+
+    /// Select next slot in the overlay (Tab).
+    pub(crate) fn shortcut_overlay_select_next(&mut self) {
+        if !self.shortcut_overlay_visible { return; }
+        let mut sel = self.shortcut_overlay_selection;
+        // Find next occupied slot (wrap around)
+        for _ in 0..12 {
+            sel = (sel + 1) % 12;
+            if self.fkey_slots[sel as usize] != 0 {
+                self.shortcut_overlay_selection = sel;
+                self.render_shortcut_overlay();
+                return;
+            }
+        }
+        // No occupied slots — select first anyway
+        self.shortcut_overlay_selection = 0;
+        self.render_shortcut_overlay();
+    }
+
+    /// Select previous slot in the overlay (Shift+Tab).
+    pub(crate) fn shortcut_overlay_select_prev(&mut self) {
+        if !self.shortcut_overlay_visible { return; }
+        let mut sel = self.shortcut_overlay_selection;
+        for _ in 0..12 {
+            sel = if sel <= 0 { 11 } else { sel - 1 };
+            if self.fkey_slots[sel as usize] != 0 {
+                self.shortcut_overlay_selection = sel;
+                self.render_shortcut_overlay();
+                return;
+            }
+        }
+        self.shortcut_overlay_selection = 0;
+        self.render_shortcut_overlay();
+    }
+
+    /// Close the shortcut manager overlay.
+    pub(crate) fn close_shortcut_overlay(&mut self) {
+        if !self.shortcut_overlay_visible {
+            return;
+        }
+        if self.shortcut_overlay_layer != 0 {
+            let lid = self.shortcut_overlay_layer;
+            if let Some(layer) = self.compositor.get_layer(lid) {
+                let bounds = layer.damage_bounds();
+                self.compositor.add_damage(bounds);
+            }
+            self.compositor.remove_layer(lid);
+            self.shortcut_overlay_layer = 0;
+        }
+        self.shortcut_overlay_visible = false;
+    }
+
+    /// Check if a screen point is inside the shortcut overlay bounds.
+    pub(crate) fn is_point_in_shortcut_overlay(&self, mx: i32, my: i32) -> bool {
+        let layer_id = self.shortcut_overlay_layer;
+        if layer_id == 0 { return false; }
+        if let Some(layer) = self.compositor.get_layer(layer_id) {
+            let lx = mx - layer.x;
+            let ly = my - layer.y;
+            lx >= 0 && ly >= 0 && (lx as u32) < layer.width && (ly as u32) < layer.height
+        } else {
+            false
+        }
+    }
+
+    /// Hit test the close button on a card. Returns Some(slot_index) if an X button was clicked.
+    pub(crate) fn hit_test_shortcut_overlay_close(&self, mx: i32, my: i32) -> Option<usize> {
+        let layer_id = self.shortcut_overlay_layer;
+        if layer_id == 0 { return None; }
+        let layer = self.compositor.get_layer(layer_id)?;
+        let lx = mx - layer.x;
+        let ly = my - layer.y;
+
+        let card_w = crate::desktop::theme::scale(160);
+        let card_h = crate::desktop::theme::scale(100);
+        let gap = crate::desktop::theme::scale(12);
+        let padding = crate::desktop::theme::scale(20);
+        let title_h = crate::desktop::theme::scale(36);
+        let cols = 4u32;
+        let xbtn_sz = crate::desktop::theme::scale(18) as i32;
+
+        for slot in 0..12usize {
+            if self.fkey_slots[slot] == 0 { continue; }
+            let col = (slot as u32) % cols;
+            let row = (slot as u32) / cols;
+            let cx = padding as i32 + (col * (card_w + gap)) as i32;
+            let cy = (padding + title_h) as i32 + (row * (card_h + gap)) as i32;
+            let xbtn_x = cx + card_w as i32 - xbtn_sz - crate::desktop::theme::scale_i32(4);
+            let xbtn_y = cy + crate::desktop::theme::scale_i32(4);
+            if lx >= xbtn_x && lx < xbtn_x + xbtn_sz && ly >= xbtn_y && ly < xbtn_y + xbtn_sz {
+                return Some(slot);
+            }
+        }
+        None
+    }
+
+    /// Hit test the shortcut overlay. Returns Some(slot_index) if a card was clicked.
+    pub(crate) fn hit_test_shortcut_overlay(&self, mx: i32, my: i32) -> Option<usize> {
+        let layer_id = self.shortcut_overlay_layer;
+        if layer_id == 0 { return None; }
+        let layer = self.compositor.get_layer(layer_id)?;
+        let ox = layer.x;
+        let oy = layer.y;
+        let lx = mx - ox;
+        let ly = my - oy;
+        if lx < 0 || ly < 0 { return None; }
+
+        let card_w = crate::desktop::theme::scale(160);
+        let card_h = crate::desktop::theme::scale(100);
+        let gap = crate::desktop::theme::scale(12);
+        let padding = crate::desktop::theme::scale(20);
+        let title_h = crate::desktop::theme::scale(36);
+        let cols = 4u32;
+
+        let overlay_w = padding * 2 + cols * card_w + (cols - 1) * gap;
+        let rows = 3u32;
+        let overlay_h = padding + title_h + rows * card_h + (rows - 1) * gap + padding;
+        if lx as u32 >= overlay_w || ly as u32 >= overlay_h {
+            return None;
+        }
+
+        // Check each card
+        for slot in 0..12usize {
+            let col = (slot as u32) % cols;
+            let row = (slot as u32) / cols;
+            let cx = padding as i32 + (col * (card_w + gap)) as i32;
+            let cy = (padding + title_h) as i32 + (row * (card_h + gap)) as i32;
+            if lx >= cx && lx < cx + card_w as i32 && ly >= cy && ly < cy + card_h as i32 {
+                return Some(slot);
+            }
+        }
+        // Clicked inside overlay but not on a card — still inside overlay
+        // Return None to indicate "not a slot" but the caller should check bounds separately
+        None
+    }
+
+    /// Render the shortcut overlay contents.
+    pub(crate) fn render_shortcut_overlay(&mut self) {
+        let layer_id = self.shortcut_overlay_layer;
+        if layer_id == 0 { return; }
+
+        let card_w = crate::desktop::theme::scale(160);
+        let card_h = crate::desktop::theme::scale(100);
+        let gap = crate::desktop::theme::scale(12);
+        let padding = crate::desktop::theme::scale(20);
+        let title_h = crate::desktop::theme::scale(36);
+        let cols = 4u32;
+        let rows = 3u32;
+        let overlay_w = padding * 2 + cols * card_w + (cols - 1) * gap;
+        let overlay_h = padding + title_h + rows * card_h + (rows - 1) * gap + padding;
+
+        if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
+            let stride = overlay_w;
+
+            // Background: dark semi-transparent rounded rect
+            for p in pixels.iter_mut() { *p = 0x00000000; }
+            let bg_color = if super::theme::is_light() { 0xE8F0F0F5 } else { 0xE8202025 };
+            let border_color = if super::theme::is_light() { 0xFFD1D1D6 } else { 0xFF4A4A4E };
+            fill_rounded_rect(pixels, stride, overlay_h, 0, 0, overlay_w, overlay_h, 12, bg_color);
+            draw_rounded_rect_outline(pixels, stride, overlay_h, 0, 0, overlay_w, overlay_h, 12, border_color);
+
+            // Title
+            let title_text = "Fenster-Shortcuts (Strg+F1..F12)";
+            let fs = scaled_font_size();
+            let text_color = color_titlebar_text();
+            let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, fs, title_text);
+            let tx = (overlay_w as i32 - tw as i32) / 2;
+            let ty = (padding as i32 + (title_h as i32 - th as i32) / 2).max(padding as i32);
+            anyos_std::ui::window::font_render_buf(
+                FONT_ID, fs, pixels, stride, overlay_h, tx, ty, text_color, title_text,
+            );
+
+            // Collect window titles for each slot (stack-copy to avoid borrow issues)
+            let mut slot_titles: [[u8; 64]; 12] = [[0u8; 64]; 12];
+            let mut slot_title_lens: [usize; 12] = [0; 12];
+            let mut slot_has_window: [bool; 12] = [false; 12];
+
+            // We need to read SHM pointers for thumbnails
+            let mut slot_shm_info: [(u32, u32, *const u32); 12] = [(0, 0, core::ptr::null()); 12];
+
+            for slot in 0..12usize {
+                let wid = self.fkey_slots[slot];
+                if wid == 0 { continue; }
+                if let Some(win) = self.windows.iter().find(|w| w.id == wid) {
+                    slot_has_window[slot] = true;
+                    let tlen = win.title.len().min(63);
+                    slot_titles[slot][..tlen].copy_from_slice(&win.title.as_bytes()[..tlen]);
+                    slot_title_lens[slot] = tlen;
+                    if !win.shm_ptr.is_null() && win.shm_width > 0 && win.shm_height > 0 {
+                        slot_shm_info[slot] = (win.shm_width, win.shm_height, win.shm_ptr as *const u32);
+                    }
+                }
+            }
+
+            // Draw 12 cards in 4×3 grid
+            let card_bg = if super::theme::is_light() { 0xFFE8E8EC } else { 0xFF2C2C30 };
+            let card_active_bg = if super::theme::is_light() { 0xFFD0D0D8 } else { 0xFF383840 };
+            let card_selected_bg = if super::theme::is_light() { 0xFFC0D0F0 } else { 0xFF2A3A60 };
+            let card_selected_border = if super::theme::is_light() { 0xFF007AFF } else { 0xFF0A84FF };
+            let selection = self.shortcut_overlay_selection;
+            let card_border = if super::theme::is_light() { 0xFFC0C0C8 } else { 0xFF505058 };
+            let label_fs = crate::desktop::theme::scale_font(10);
+            let title_fs = crate::desktop::theme::scale_font(9);
+            let badge_h = crate::desktop::theme::scale(20);
+            let thumb_top = badge_h + crate::desktop::theme::scale(4);
+            let thumb_area_h = card_h.saturating_sub(thumb_top + crate::desktop::theme::scale(4));
+
+            for slot in 0..12usize {
+                let col = (slot as u32) % cols;
+                let row = (slot as u32) / cols;
+                let cx = padding as i32 + (col * (card_w + gap)) as i32;
+                let cy = (padding + title_h) as i32 + (row * (card_h + gap)) as i32;
+
+                let is_selected = selection == slot as i32;
+                let bg = if is_selected {
+                    card_selected_bg
+                } else if slot_has_window[slot] {
+                    card_active_bg
+                } else {
+                    card_bg
+                };
+                let border = if is_selected { card_selected_border } else { card_border };
+                fill_rounded_rect(pixels, stride, overlay_h, cx, cy, card_w, card_h, 6, bg);
+                draw_rounded_rect_outline(pixels, stride, overlay_h, cx, cy, card_w, card_h, 6, border);
+                // Double border for selected card
+                if is_selected {
+                    draw_rounded_rect_outline(pixels, stride, overlay_h, cx + 1, cy + 1, card_w - 2, card_h - 2, 5, border);
+                }
+
+                // F-key label badge
+                let mut lbl = [0u8; 4];
+                let lbl_str = if slot < 9 {
+                    lbl[0] = b'F';
+                    lbl[1] = b'1' + slot as u8;
+                    core::str::from_utf8(&lbl[..2]).unwrap_or("")
+                } else {
+                    lbl[0] = b'F';
+                    lbl[1] = b'1';
+                    lbl[2] = b'0' + (slot as u8 - 9);
+                    core::str::from_utf8(&lbl[..3]).unwrap_or("")
+                };
+                let badge_color = if super::theme::is_light() { 0xFF007AFF } else { 0xFF0A84FF };
+                let badge_w = crate::desktop::theme::scale(32);
+                let bx = cx + crate::desktop::theme::scale_i32(6);
+                let by = cy + crate::desktop::theme::scale_i32(4);
+                fill_rounded_rect(pixels, stride, overlay_h, bx, by, badge_w, badge_h, 4, badge_color);
+                let (lw, lh) = anyos_std::ui::window::font_measure(FONT_ID, label_fs, lbl_str);
+                let ltx = bx + (badge_w as i32 - lw as i32) / 2;
+                let lty = by + (badge_h as i32 - lh as i32) / 2;
+                anyos_std::ui::window::font_render_buf(
+                    FONT_ID, label_fs, pixels, stride, overlay_h, ltx, lty, 0xFFFFFFFF, lbl_str,
+                );
+
+                // Close button (X) — top-right of card, only for occupied slots
+                if slot_has_window[slot] {
+                    let xbtn_sz = crate::desktop::theme::scale(18);
+                    let xbtn_x = cx + card_w as i32 - xbtn_sz as i32 - crate::desktop::theme::scale_i32(4);
+                    let xbtn_y = cy + crate::desktop::theme::scale_i32(4);
+                    let xbtn_bg = if super::theme::is_light() { 0x40000000 } else { 0x40FFFFFF };
+                    fill_rounded_rect(pixels, stride, overlay_h, xbtn_x, xbtn_y, xbtn_sz, xbtn_sz, 4, xbtn_bg);
+                    // Draw "×" character
+                    let xfs = crate::desktop::theme::scale_font(11);
+                    let xstr = "\u{00D7}"; // ×
+                    let (xw, xh) = anyos_std::ui::window::font_measure(FONT_ID, xfs, xstr);
+                    let xtx = xbtn_x + (xbtn_sz as i32 - xw as i32) / 2;
+                    let xty = xbtn_y + (xbtn_sz as i32 - xh as i32) / 2;
+                    let xcolor = if super::theme::is_light() { 0xFF666666 } else { 0xFFAAAAAA };
+                    anyos_std::ui::window::font_render_buf(
+                        FONT_ID, xfs, pixels, stride, overlay_h, xtx, xty, xcolor, xstr,
+                    );
+                }
+
+                // Window title (next to badge)
+                if slot_has_window[slot] {
+                    let tstr = core::str::from_utf8(&slot_titles[slot][..slot_title_lens[slot]]).unwrap_or("");
+                    let max_tw = card_w.saturating_sub(badge_w + crate::desktop::theme::scale(18));
+                    let tlen = title_display_len(tstr, max_tw);
+                    let display = if tlen < tstr.len() && tlen > 0 {
+                        &tstr[..tlen]
+                    } else {
+                        tstr
+                    };
+                    if !display.is_empty() {
+                        let ttx = bx + badge_w as i32 + crate::desktop::theme::scale_i32(6);
+                        let (_, tth) = anyos_std::ui::window::font_measure(FONT_ID, title_fs, display);
+                        let tty = by + (badge_h as i32 - tth as i32) / 2;
+                        anyos_std::ui::window::font_render_buf(
+                            FONT_ID, title_fs, pixels, stride, overlay_h, ttx, tty, text_color, display,
+                        );
+                    }
+
+                    // Thumbnail: scale down the SHM content
+                    let (sw, sh, sptr) = slot_shm_info[slot];
+                    if !sptr.is_null() && sw > 0 && sh > 0 {
+                        let thumb_w = card_w.saturating_sub(crate::desktop::theme::scale(12));
+                        // Maintain aspect ratio
+                        let scale_x = (thumb_w * 1000) / sw.max(1);
+                        let scale_y = (thumb_area_h * 1000) / sh.max(1);
+                        let s = scale_x.min(scale_y);
+                        let tw_px = (sw * s / 1000).min(thumb_w);
+                        let th_px = (sh * s / 1000).min(thumb_area_h);
+                        if tw_px > 0 && th_px > 0 {
+                            let tx = cx + (card_w as i32 - tw_px as i32) / 2;
+                            let ty = cy + thumb_top as i32;
+                            // Simple nearest-neighbor scale blit
+                            let src = unsafe { core::slice::from_raw_parts(sptr, (sw * sh) as usize) };
+                            for dy in 0..th_px {
+                                let src_y = (dy * sh / th_px).min(sh - 1);
+                                for dx in 0..tw_px {
+                                    let src_x = (dx * sw / tw_px).min(sw - 1);
+                                    let px_x = tx + dx as i32;
+                                    let px_y = ty + dy as i32;
+                                    if px_x >= 0 && px_y >= 0 {
+                                        let di = px_y as u32 * stride + px_x as u32;
+                                        let si = src_y * sw + src_x;
+                                        if (di as usize) < pixels.len() && (si as usize) < src.len() {
+                                            pixels[di as usize] = src[si as usize] | 0xFF000000;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Empty slot: show "—"
+                    let empty = "\u{2014}"; // em dash
+                    let (ew, eh) = anyos_std::ui::window::font_measure(FONT_ID, fs, empty);
+                    let ex = cx + (card_w as i32 - ew as i32) / 2;
+                    let ey = cy + (card_h as i32 - eh as i32) / 2 + badge_h as i32 / 2;
+                    let dim_color = if super::theme::is_light() { 0xFF999999 } else { 0xFF666666 };
+                    anyos_std::ui::window::font_render_buf(
+                        FONT_ID, fs, pixels, stride, overlay_h, ex, ey, dim_color, empty,
+                    );
+                }
+            }
+        }
+
+        self.compositor.mark_layer_dirty(layer_id);
+        if let Some(layer) = self.compositor.get_layer(layer_id) {
             let bounds = layer.damage_bounds();
             self.compositor.add_damage(bounds);
         }

@@ -186,6 +186,18 @@ pub struct Desktop {
     /// Window ID of the currently fullscreen window, or None.
     pub(crate) fullscreen_window: Option<u32>,
 
+    /// Keyboard shortcut slots: Ctrl+F1..F12 → window_id.
+    /// Index 0 = F1, index 11 = F12. 0 = slot free.
+    pub(crate) fkey_slots: [u32; 12],
+
+    /// Whether the shortcut manager overlay is visible.
+    pub(crate) shortcut_overlay_visible: bool,
+    /// Compositor layer ID for the shortcut manager overlay.
+    pub(crate) shortcut_overlay_layer: u32,
+    /// Currently selected slot in the shortcut overlay (0..11), or -1 for none.
+    pub(crate) shortcut_overlay_selection: i32,
+
+
 }
 
 impl Desktop {
@@ -254,6 +266,10 @@ impl Desktop {
             shortcuts: crate::config::read_shortcuts(),
             super_held: false,
             fullscreen_window: None,
+            fkey_slots: [0u32; 12],
+            shortcut_overlay_visible: false,
+            shortcut_overlay_layer: 0,
+            shortcut_overlay_selection: -1,
         };
 
         if desktop.has_gpu_accel {

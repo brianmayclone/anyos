@@ -277,47 +277,11 @@ pub fn draw_rounded_border(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, 
         draw_border(s, x, y, w, h, color);
         return;
     }
-    // Top edge (between corners)
-    if w > r * 2 {
-        fill_rect(s, x + r as i32, y, w - r * 2, 1, color);
-        fill_rect(s, x + r as i32, y + h as i32 - 1, w - r * 2, 1, color);
-    }
-    // Left edge (between corners)
-    if h > r * 2 {
-        fill_rect(s, x, y + r as i32, 1, h - r * 2, color);
-        fill_rect(s, x + w as i32 - 1, y + r as i32, 1, h - r * 2, color);
-    }
-    // Corner arcs — draw outermost pixels, connecting to adjacent rows
-    // to avoid gaps where fill_start jumps by >1 between scanlines.
-    let r2x4 = (2 * r as i32) * (2 * r as i32);
-    let mut prev_fs = r as i32; // previous row's fill_start (r = "no row yet")
-    for dy in 0..r {
-        let cy = 2 * dy as i32 + 1 - 2 * r as i32;
-        let cy2 = cy * cy;
-        let mut fill_start = r;
-        for dx in 0..r {
-            let cx = 2 * dx as i32 + 1 - 2 * r as i32;
-            if cx * cx + cy2 <= r2x4 {
-                fill_start = dx;
-                break;
-            }
-        }
-        if fill_start < r {
-            let fs = fill_start as i32;
-            // Draw from fill_start to prev_fill_start-1 to close gaps
-            let end_x = if prev_fs > fs { prev_fs - 1 } else { fs };
-            let strip_w = (end_x - fs + 1) as u32;
-            // Top-left corner
-            fill_rect(s, x + fs, y + dy as i32, strip_w, 1, color);
-            // Top-right corner (mirrored x)
-            fill_rect(s, x + w as i32 - 1 - end_x, y + dy as i32, strip_w, 1, color);
-            // Bottom-left corner (mirrored y)
-            fill_rect(s, x + fs, y + (h - 1 - dy) as i32, strip_w, 1, color);
-            // Bottom-right corner (mirrored x+y)
-            fill_rect(s, x + w as i32 - 1 - end_x, y + (h - 1 - dy) as i32, strip_w, 1, color);
-            prev_fs = fs;
-        }
-    }
+    // Use librender's anti-aliased rounded rect outline for smooth corners
+    (librender().draw_rounded_rect_aa)(
+        s.pixels, s.width, s.height,
+        x, y, w, h, r as i32, color,
+    );
 }
 
 // ── Text rendering ─────────────────────────────────────────────────

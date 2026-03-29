@@ -22,7 +22,8 @@ impl Control for Label {
 
         // Background (only if set_color() was called with a non-zero color)
         if b.color != 0 {
-            crate::draw::fill_rect(surface, x, y, w, h, b.color);
+            let corner = w.min(h) / 2;
+            crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, b.color);
         }
 
         // Text color: set_text_color() > theme default
@@ -42,7 +43,15 @@ impl Control for Label {
         let text = &self.text_base.text;
         let text_x = x + pad_left;
         let text_w = w as i32 - pad_left - pad_right;
-        let mut line_y = y + pad_top;
+        // Vertical centering for single-line centered labels (e.g. icon badges)
+        let line_count = text.iter().filter(|&&c| c == b'\n').count() + 1;
+        let line_h_val = fs as i32 + crate::theme::scale_i32(2);
+        let mut line_y = if align == 1 && line_count == 1 && pad_top == 0 {
+            let (_, th) = crate::draw::measure_text_ex(text, fid, fs);
+            y + (h as i32 - th as i32) / 2
+        } else {
+            y + pad_top
+        };
         let line_h = fs as i32 + crate::theme::scale_i32(2);
         let mut start = 0;
         loop {

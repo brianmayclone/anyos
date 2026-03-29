@@ -304,6 +304,12 @@ pub fn get_window_position(channel_id: u32, sub_id: u32, window_id: u32) -> (i32
     (x, y)
 }
 
+/// Request the compositor to focus our main window (by TID).
+pub fn focus_by_tid(channel_id: u32, tid: u32) {
+    let cmd: [u32; 5] = [0x100A, tid, 0, 0, 0]; // CMD_FOCUS_BY_TID
+    libsyscall::evt_chan_emit(channel_id, &cmd);
+}
+
 /// Copy text to the system clipboard.
 pub fn clipboard_set(text: &[u8]) {
     let st = crate::state();

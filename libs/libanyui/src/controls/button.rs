@@ -51,17 +51,18 @@ impl Control for Button {
             tc.control_bg
         };
 
-        // Bottom shadow line (1px below — cheap depth effect)
-        if !disabled && !self.pressed {
-            crate::draw::draw_bottom_shadow(surface, x, y, w, h, corner, crate::theme::darken(bg, 30));
-        }
+        // Border: draw a filled rounded rect in border color, then the body 1px inset
+        let border_color = if disabled {
+            crate::theme::darken(bg, 10)
+        } else {
+            crate::theme::darken(bg, 25)
+        };
+        crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, border_color);
 
-        // Main button body
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, bg);
-
-        // Top highlight (1px lighter line at top — subtle raised effect)
-        if !disabled && !self.pressed {
-            crate::draw::draw_top_highlight(surface, x, y, w, corner, crate::theme::lighten(bg, 15));
+        // Main button body (1px inset)
+        if w > 2 && h > 2 {
+            let inner_corner = if corner > 1 { corner - 1 } else { 0 };
+            crate::draw::fill_rounded_rect(surface, x + 1, y + 1, w - 2, h - 2, inner_corner, bg);
         }
 
         // Focus ring

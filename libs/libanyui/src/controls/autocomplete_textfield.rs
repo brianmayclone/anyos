@@ -6,7 +6,7 @@
 
 use alloc::vec::Vec;
 use crate::control::{Control, ControlBase, TextControlBase, ControlKind, EventResponse};
-use crate::control::{KEY_UP, KEY_DOWN, KEY_ENTER, KEY_ESCAPE, KEY_BACKSPACE, KEY_LEFT, KEY_RIGHT, KEY_HOME, KEY_END, MOD_SHIFT, MOD_CTRL};
+use crate::control::{KEY_UP, KEY_DOWN, KEY_ENTER, KEY_ESCAPE, KEY_BACKSPACE, KEY_LEFT, KEY_RIGHT, KEY_HOME, KEY_END, KEY_TAB, MOD_SHIFT, MOD_CTRL};
 
 pub struct AutoCompleteTextField {
     pub(crate) text_base: TextControlBase,
@@ -17,13 +17,18 @@ pub struct AutoCompleteTextField {
     /// Horizontal scroll offset for long text
     scroll_x: i32,
     /// Selection anchor (byte offset)
-    sel_anchor: usize,
+    pub(crate) sel_anchor: usize,
     /// Whether a mouse drag selection is in progress
     dragging: bool,
     /// Placeholder text shown when empty
     pub(crate) placeholder: Vec<u8>,
     /// Set to true when text.len() >= 2; event loop opens popup and clears flag
     pub(crate) suggest: bool,
+    /// Popup navigation request: +1 = down, -1 = up, 0 = none.
+    /// Set by key handler, consumed by event loop.
+    pub(crate) popup_nav: i32,
+    /// Set to true when Enter is pressed while popup is open → accept hovered item.
+    pub(crate) popup_accept: bool,
 }
 
 impl AutoCompleteTextField {
@@ -37,6 +42,8 @@ impl AutoCompleteTextField {
             dragging: false,
             placeholder: Vec::new(),
             suggest: false,
+            popup_nav: 0,
+            popup_accept: false,
         }
     }
 
@@ -60,7 +67,7 @@ impl AutoCompleteTextField {
             return Vec::new();
         }
 
-        if query.len() < 2 {
+        if query.is_empty() {
             return Vec::new();
         }
 
@@ -74,14 +81,19 @@ impl AutoCompleteTextField {
         for i in 0..=self.suggestions.len() {
             if i == self.suggestions.len() || self.suggestions[i] == b'|' {
                 let item = &self.suggestions[start..i];
-                let item_lower = to_lower_u8(item);
+                // Extract the label part (after \x1F if present) for matching
+                let label = if let Some(sep) = item.iter().position(|&b| b == 0x1F) {
+                    &item[sep + 1..]
+                } else {
+                    item
+                };
+                let label_lower = to_lower_u8(label);
 
-                // Match anywhere in name or email (case-insensitive substring search)
-                // This allows matching "John" or "john@example.com" by typing "jo", "ohn", "exa", etc.
+                // Case-insensitive substring search on label only
                 let mut found = false;
-                for j in 0..item_lower.len() {
-                    if j + query_lower.len() <= item_lower.len() {
-                        if &item_lower[j..j + query_lower.len()] == query_lower.as_slice() {
+                for j in 0..label_lower.len() {
+                    if j + query_lower.len() <= label_lower.len() {
+                        if &label_lower[j..j + query_lower.len()] == query_lower.as_slice() {
                             found = true;
                             break;
                         }
@@ -124,10 +136,21 @@ impl AutoCompleteTextField {
     fn ensure_cursor_visible(&mut self) {
         if self.cursor_pos == 0 {
             self.scroll_x = 0;
+            return;
         }
-        // Simple scroll - just keep cursor roughly centered
-        if self.cursor_pos > 20 {
-            self.scroll_x = (self.cursor_pos as i32 - 10) * 8;
+        let font_size = crate::draw::scale_font(if self.text_base.text_style.font_size > 0 {
+            self.text_base.text_style.font_size
+        } else {
+            13
+        });
+        let pos = self.cursor_pos.min(self.text_base.text.len());
+        let (cursor_px, _) = crate::draw::measure_text_ex(&self.text_base.text[..pos], 0, font_size);
+        let field_w = crate::theme::scale(self.text_base.base.w).saturating_sub(crate::theme::scale(24));
+        let cursor_x = cursor_px as i32 - self.scroll_x;
+        if cursor_x < 0 {
+            self.scroll_x = cursor_px as i32;
+        } else if cursor_x > field_w as i32 {
+            self.scroll_x = cursor_px as i32 - field_w as i32;
         }
     }
 
@@ -200,9 +223,13 @@ impl Control for AutoCompleteTextField {
 
         // ── Cursor (when focused) ────────────────────────────────────
         if focused && !disabled {
-            // Simple cursor: just a vertical line
-            let cursor_offset = (self.cursor_pos as i32 * 8) - self.scroll_x;
-            let cursor_x = text_x + crate::theme::scale_i32(cursor_offset);
+            let cursor_px = if self.cursor_pos > 0 && self.cursor_pos <= display.len() {
+                let (tw, _) = crate::draw::measure_text_ex(&display[..self.cursor_pos], 0, font_size);
+                tw as i32
+            } else {
+                0
+            };
+            let cursor_x = text_x + cursor_px - crate::theme::scale_i32(self.scroll_x);
             crate::draw::fill_rect(surface, cursor_x, ty, 2, font_size as u32, text_color);
         }
 
@@ -264,7 +291,7 @@ impl Control for AutoCompleteTextField {
                     self.cursor_pos = pos + filtered.len();
                     self.sel_anchor = self.cursor_pos;
                     self.ensure_cursor_visible();
-                    self.suggest = self.text_base.text.len() >= 2;
+                    self.suggest = !self.text_base.text.is_empty();
                     self.text_base.base.mark_dirty();
                     return EventResponse::CHANGED;
                 }
@@ -281,7 +308,7 @@ impl Control for AutoCompleteTextField {
             self.cursor_pos = pos + 1;
             self.sel_anchor = self.cursor_pos;
             self.ensure_cursor_visible();
-            self.suggest = self.text_base.text.len() >= 2;
+            self.suggest = !self.text_base.text.is_empty();
             self.text_base.base.mark_dirty();
             return EventResponse::CHANGED;
         }
@@ -337,7 +364,7 @@ impl Control for AutoCompleteTextField {
                     self.sel_anchor = self.cursor_pos;
                 }
                 self.ensure_cursor_visible();
-                self.suggest = self.text_base.text.len() >= 2;
+                self.suggest = !self.text_base.text.is_empty();
                 self.text_base.base.mark_dirty();
                 if self.has_selection() || self.cursor_pos > 0 {
                     EventResponse::CHANGED
@@ -345,10 +372,50 @@ impl Control for AutoCompleteTextField {
                     EventResponse::CONSUMED
                 }
             }
+            KEY_UP => {
+                self.popup_nav = -1;
+                EventResponse::CONSUMED
+            }
+            KEY_DOWN => {
+                self.popup_nav = 1;
+                EventResponse::CONSUMED
+            }
             KEY_ESCAPE => {
                 self.suggest = false;
                 self.text_base.base.mark_dirty();
                 EventResponse::CONSUMED
+            }
+            KEY_ENTER => {
+                // Signal popup accept — event loop checks if popup is open.
+                // If no popup, this becomes SUBMIT.
+                self.popup_accept = true;
+                EventResponse::SUBMIT
+            }
+            KEY_TAB => {
+                // Tab: accept the first matching suggestion
+                let matches = self.filtered_items();
+                if !matches.is_empty() {
+                    // Extract first suggestion (up to first pipe)
+                    let end = matches.iter().position(|&b| b == b'|').unwrap_or(matches.len());
+                    let first = &matches[..end];
+                    // Extract label part (after \x1F if present)
+                    let label = if let Some(sep) = first.iter().position(|&b| b == 0x1F) {
+                        &first[sep + 1..]
+                    } else {
+                        first
+                    };
+                    // Replace text with the label
+                    self.text_base.text.clear();
+                    self.text_base.text.extend_from_slice(label);
+                    self.cursor_pos = self.text_base.text.len();
+                    self.sel_anchor = self.cursor_pos;
+                    self.suggest = false;
+                    self.ensure_cursor_visible();
+                    self.text_base.base.mark_dirty();
+                    EventResponse::CHANGED
+                } else {
+                    EventResponse::CONSUMED
+                }
             }
             KEY_ENTER => {
                 EventResponse::SUBMIT
