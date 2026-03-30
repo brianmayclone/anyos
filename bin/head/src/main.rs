@@ -38,6 +38,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"nc");
 
+    if raw.contains("--help") {
+        anyos_std::println!("head - Print first lines of files\n\nUsage: head [FILE]\n\nOptions:\n  -n NUM         Number of lines (default: 10)\n  -c NUM         Number of bytes");
+        return;
+    }
+
     let max_lines = args.opt_u32(b'n', 10);
     let byte_mode = args.opt(b'c');
 

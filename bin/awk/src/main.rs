@@ -2012,6 +2012,11 @@ fn main() {
     let mut args_buf = [0u8; 256];
     let args_str = anyos_std::process::args(&mut args_buf);
 
+    if args_str.contains("--help") {
+        anyos_std::println!("awk - Pattern scanning and processing\n\nUsage: awk 'PATTERN {{ACTION}}' [FILE...]");
+        return;
+    }
+
     // Parse arguments: awk [-F fs] [-v var=val] 'program' [file ...]
     // or: awk [-F fs] [-v var=val] -f progfile [file ...]
     let mut fs_opt: Option<String> = None;

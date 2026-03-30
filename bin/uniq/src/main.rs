@@ -37,6 +37,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("uniq - Filter duplicate lines\n\nUsage: uniq [FILE]\n\nOptions:\n  -c             Prefix lines with occurrence count\n  -d             Only show duplicate lines\n  -i             Case-insensitive comparison");
+        return;
+    }
+
     let count_mode = args.has(b'c');
     let dups_only = args.has(b'd');
     let ignore_case = args.has(b'i');

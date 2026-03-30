@@ -9,8 +9,16 @@ const FS_TYPE_ISO9660: u32 = 1;
 const FS_TYPE_SMB: u32 = 5;
 
 fn main() {
+
+
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf);
+
+    if args.contains("--help") {
+        anyos_std::println!("mount - Mount a filesystem\n\nUsage: mount [DEVICE MOUNTPOINT]\n\nOptions:\n  -t TYPE        Filesystem type (fat, iso9660, smb)");
+        return;
+    }
+
 
     if args.is_empty() {
         // No arguments: list all mount points

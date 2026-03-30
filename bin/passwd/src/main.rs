@@ -57,6 +57,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"po");
 
+    if raw.contains("--help") {
+        anyos_std::println!("passwd - Change user password\n\nUsage: passwd [USERNAME]\n\nOptions:\n  -p PASS        New password\n  -o PASS        Old password");
+        return;
+    }
+
     let caller_uid = anyos_std::process::getuid();
     let is_root = caller_uid == 0;
 

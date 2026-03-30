@@ -105,6 +105,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("grep - Search text for pattern matches\n\nUsage: grep PATTERN [FILE...]\n\nOptions:\n  -i             Case-insensitive matching\n  -v             Invert match (show non-matching lines)\n  -n             Show line numbers\n  -c             Show match count only\n  -l             Show filenames only\n  -w             Match whole words only");
+        return;
+    }
+
     let ignore_case = args.has(b'i');
     let invert = args.has(b'v');
     let show_num = args.has(b'n');

@@ -742,12 +742,20 @@ impl ToLowercase for String {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
+
+
     let mut editor = Editor::new();
     let mut input = InputReader::new();
 
     // Parse arguments
     let mut args_buf = [0u8; 256];
     let args_str = anyos_std::process::args(&mut args_buf);
+
+    if args_str.contains("--help") {
+        anyos_std::println!("nano - Text editor\n\nUsage: nano [FILE]");
+        return;
+    }
+
     let arg = args_str.trim();
     if !arg.is_empty() {
         editor.load_file(arg);

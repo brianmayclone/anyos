@@ -500,6 +500,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"ef");
 
+    if raw.contains("--help") {
+        anyos_std::println!("sed - Stream editor\n\nUsage: sed [-e SCRIPT] [-f FILE] [FILE...]\n\nOptions:\n  -n             Suppress automatic printing\n  -e SCRIPT      Add script command\n  -f FILE        Read script from file");
+        return;
+    }
+
     if args.has(b'h') || (args.pos_count == 0 && args.opt(b'e').is_none() && args.opt(b'f').is_none()) {
         anyos_std::println!("Usage: sed [-n] [-e script] [-f file] [script] [input...]");
         anyos_std::println!("Commands:");

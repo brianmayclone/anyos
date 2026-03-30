@@ -12,6 +12,11 @@ fn main() -> u32 {
     let raw = process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("sudo - Execute command as root\n\nUsage: sudo COMMAND [ARGS...]");
+        return 0;
+    }
+
     if args.pos_count == 0 {
         sys::con_write("usage: sudo <command> [args...]\n");
         return 1;

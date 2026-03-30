@@ -17,6 +17,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("ps - List running processes\n\nUsage: ps [vax]\n\nOptions:\n  -v             Verbose output\n  -a             Show all users' processes\n  -x             Include system threads");
+        return;
+    }
+
     let mut flag_v = false; // verbose (memory, CPU%, I/O)
     let mut flag_a = false; // all users
     let mut flag_x = false; // include system/kernel threads

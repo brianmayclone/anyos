@@ -4,8 +4,16 @@
 anyos_std::entry!(main);
 
 fn main() {
+
+
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf);
+
+    if args.contains("--help") {
+        anyos_std::println!("set - Set environment variables\n\nUsage: set [KEY=VALUE | KEY]");
+        return;
+    }
+
     let args = args.trim();
 
     if args.is_empty() {

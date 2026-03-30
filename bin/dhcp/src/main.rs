@@ -9,6 +9,13 @@ anyos_std::entry!(main);
 /// Read interface configs from the kernel and configure the network accordingly.
 /// For each interface: DHCP runs discovery, static applies the saved addresses.
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("dhcp - Run DHCP configuration\n\nUsage: dhcp");
+        return;
+    }
+
     let mut iface_buf = [0u8; 512];
     let count = net::get_interfaces(&mut iface_buf);
 

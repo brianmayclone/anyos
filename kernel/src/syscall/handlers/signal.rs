@@ -48,44 +48,32 @@ pub fn sys_sigprocmask(how: u32, set: u32) -> u32 {
 /// Reads the signal frame from the user stack and restores the saved registers
 /// into the IRET frame so the thread resumes where it was before the signal.
 ///
-/// User stack layout at this point (ESP = frame + 4, after handler did `ret`):
-///   [ESP + 12] = saved_eflags
-///   [ESP + 8]  = saved_eip
-///   [ESP + 4]  = saved_eax (syscall result before signal)
-///   [ESP + 0]  = sigreturn code bytes (trampoline)
-///   [ESP - 4]  = signum
-///   original ESP = ESP + 16 (past the frame)
-///
-/// Wait — let me recalculate based on the actual layout.
-/// After handler's `ret`: ESP = new_esp + 4 (popped return addr).
-/// The sigreturn code is at new_esp + 8, but the int 0x80 fires with ESP = new_esp + 4.
-///
-/// Signal frame (from new_esp):
-///   +0:  return addr (points to trampoline at +8)
+/// Signal frame (from new_esp, set up by deliver_pending_signal_32):
+///   +0:  return addr → SIGRETURN_TRAMPOLINE_ADDR
 ///   +4:  signum
-///   +8:  trampoline code (8 bytes)
-///   +16: saved_eax
-///   +20: saved_eip
-///   +24: saved_eflags
-///   +28: [original ESP was here]
+///   +8:  saved_eax
+///   +12: saved_eip
+///   +16: saved_eflags
 ///
-/// At int 0x80: user ESP = new_esp + 4.
-///   saved_eax    at user_esp + 12
-///   saved_eip    at user_esp + 16
-///   saved_eflags at user_esp + 20
-///   restore_esp  = user_esp + 24
+/// After handler `ret`: ESP = new_esp + 4 (popped return addr).
+/// Trampoline executes `mov eax, SYS_SIGRETURN; int 0x80` with ESP = new_esp + 4.
+///
+///   saved_eax    at user_esp + 4
+///   saved_eip    at user_esp + 8
+///   saved_eflags at user_esp + 12
+///   restore_esp  = user_esp + 16
 pub fn sys_sigreturn_32(regs: &mut super::super::SyscallRegs) -> u32 {
     let user_esp = regs.rsp as u32;
 
     // Read saved context from user stack
-    let saved_eax = unsafe { *((user_esp + 12) as *const u32) };
-    let saved_eip = unsafe { *((user_esp + 16) as *const u32) };
-    let saved_eflags = unsafe { *((user_esp + 20) as *const u32) };
+    let saved_eax = unsafe { *((user_esp + 4) as *const u32) };
+    let saved_eip = unsafe { *((user_esp + 8) as *const u32) };
+    let saved_eflags = unsafe { *((user_esp + 12) as *const u32) };
 
     // Restore the IRET frame
     regs.rip = saved_eip as u64;
     regs.rflags = saved_eflags as u64;
-    regs.rsp = (user_esp + 24) as u64; // restore original ESP
+    regs.rsp = (user_esp + 16) as u64; // restore original ESP
 
     // Return the saved syscall result (goes into RAX via asm stub)
     saved_eax
@@ -141,48 +129,34 @@ pub fn deliver_pending_signal_32(regs: &mut super::super::SyscallRegs, syscall_r
         return;
     }
 
-    // User handler — set up signal trampoline on the user stack.
-    // Build a signal frame so the handler can execute and then sigreturn
-    // restores the original context.
+    // User handler — set up signal frame on the user stack.
+    // The sigreturn trampoline lives in a dedicated executable page
+    // (SIGRETURN_TRAMPOLINE_ADDR) mapped during process creation, so we
+    // don't need to write executable code on the NX-protected stack.
     //
-    // Frame layout (32 bytes, pushing onto user stack):
-    //   +0:  return addr → &trampoline (at new_esp + 8)
+    // Frame layout (20 bytes, pushing onto user stack):
+    //   +0:  return addr → SIGRETURN_TRAMPOLINE_ADDR (fixed executable page)
     //   +4:  signum (argument to handler)
-    //   +8:  trampoline code: mov eax, SYS_SIGRETURN(246); int 0x80; nop  (8 bytes)
-    //   +16: saved_eax (syscall result)
-    //   +20: saved_eip (original return address)
-    //   +24: saved_eflags
-    //   +28: [original ESP]
+    //   +8:  saved_eax (syscall result)
+    //   +12: saved_eip (original return address)
+    //   +16: saved_eflags
 
     let old_esp = regs.rsp as u32;
-    let new_esp = old_esp - 28; // 28 bytes of frame
+    let new_esp = old_esp - 20; // 20 bytes of frame
 
     // Write the signal frame onto the user stack
     let frame = new_esp as *mut u32;
     unsafe {
-        // +0: return address → points to trampoline at new_esp + 8
-        *frame.offset(0) = new_esp + 8;
+        // +0: return address → fixed trampoline page (executable, not on stack)
+        *frame.offset(0) = crate::task::loader::SIGRETURN_TRAMPOLINE_ADDR as u32;
         // +4: signal number (handler argument)
         *frame.offset(1) = sig;
-        // +8: sigreturn trampoline code (8 bytes):
-        //   B8 F6 00 00 00    mov eax, 246 (SYS_SIGRETURN)
-        //   CD 80             int 0x80
-        //   90                nop (pad)
-        let trampoline = (new_esp + 8) as *mut u8;
-        *trampoline.offset(0) = 0xB8; // mov eax, imm32
-        *trampoline.offset(1) = 246;  // SYS_SIGRETURN = 246
-        *trampoline.offset(2) = 0x00;
-        *trampoline.offset(3) = 0x00;
-        *trampoline.offset(4) = 0x00;
-        *trampoline.offset(5) = 0xCD; // int
-        *trampoline.offset(6) = 0x80; // 0x80
-        *trampoline.offset(7) = 0x90; // nop
-        // +16: saved syscall result (EAX)
-        *frame.offset(4) = syscall_result;
-        // +20: saved EIP (where the process would have returned to)
-        *frame.offset(5) = regs.rip as u32;
-        // +24: saved EFLAGS
-        *frame.offset(6) = regs.rflags as u32;
+        // +8: saved syscall result (EAX)
+        *frame.offset(2) = syscall_result;
+        // +12: saved EIP (where the process would have returned to)
+        *frame.offset(3) = regs.rip as u32;
+        // +16: saved EFLAGS
+        *frame.offset(4) = regs.rflags as u32;
     }
 
     // Redirect IRET to the signal handler

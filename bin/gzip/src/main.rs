@@ -33,6 +33,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("gzip - Compress or decompress files\n\nUsage: gzip [FILE...]\n\nOptions:\n  -d             Decompress\n  -k             Keep original file");
+        return;
+    }
+
     if args.pos_count < 1 {
         usage();
         return;

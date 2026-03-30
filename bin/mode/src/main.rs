@@ -21,6 +21,13 @@ const MODES: [(u32, u32); 3] = [
 ];
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("mode - Switch console resolution\n\nUsage: mode [1|2|3]");
+        return;
+    }
+
     let mut buf = [0u8; 256];
     let arg = anyos_std::process::args(&mut buf).trim();
 

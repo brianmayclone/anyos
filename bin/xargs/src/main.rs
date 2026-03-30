@@ -95,9 +95,17 @@ fn split_items(input: &str) -> Vec<&str> {
 }
 
 fn main() {
+
+
     let mut args_buf = [0u8; 256];
     let args_str = anyos_std::process::args(&mut args_buf);
     let parsed = anyos_std::args::parse(args_str, b"ndIPs");
+
+    if args_str.contains("--help") {
+        anyos_std::println!("xargs - Build commands from stdin\n\nUsage: xargs COMMAND [ARGS...]\n\nOptions:\n  -n NUM         Max arguments per command\n  -d DELIM       Input delimiter\n  -I STR         Replace string\n  -P NUM         Max parallel processes\n  -0             Null-delimited input");
+        return;
+    }
+
 
     // Options:
     // -n N  max args per command invocation

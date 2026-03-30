@@ -6,6 +6,11 @@ anyos_std::entry!(main);
 fn main() {
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf);
+
+    if args.contains("--help") {
+        anyos_std::println!("stat - Display file information\n\nUsage: stat FILE");
+        return;
+    }
     let path = args.trim();
 
     if path.is_empty() {

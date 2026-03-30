@@ -998,6 +998,13 @@ fn parse_i16(s: &str) -> i16 {
 // ── Entry point ────────────────────────────────────────────────────────
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("vmd - Virtual machine daemon\n\nUsage: vmd");
+        return;
+    }
+
     anyos_std::println!("[vmd] starting... (VM-exit run loop)");
 
     // Initialize libcorevm.

@@ -18,6 +18,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("sdel - Delete session store key\n\nUsage: sdel KEY\n\nOptions:\n  --all          Delete all keys");
+        return;
+    }
+
     if args.pos_count == 0 {
         anyos_std::println!("Usage: sdel <key>");
         anyos_std::println!("       sdel --all   (clear entire store)");

@@ -163,6 +163,13 @@ fn sort_by_cpu_desc(tasks: &mut [TaskEntry], n: usize) {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("top - Display running processes\n\nUsage: top");
+        return;
+    }
+
     anyos_std::i18n::init();
     let tr = anyos_std::i18n::t;
     let mut raw_buf = [0u8; THREAD_ENTRY_SIZE * MAX_TASKS];

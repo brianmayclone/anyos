@@ -16,9 +16,9 @@ fn main() -> u32 {
         return 1;
     }
 
-    if args.pos_count == 0 {
+    if args.pos_count == 0 || raw.contains("--help") {
         print_usage();
-        return 1;
+        return if raw.contains("--help") { 0 } else { 1 };
     }
 
     match args.positional[0] {

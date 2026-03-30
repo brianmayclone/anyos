@@ -4,6 +4,13 @@
 anyos_std::entry!(main);
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("pipes - List open named pipes\n\nUsage: pipes");
+        return;
+    }
+
     let mut buf = [0u8; 80 * 64]; // up to 64 pipes
     let count = anyos_std::sys::pipe_list(&mut buf);
 

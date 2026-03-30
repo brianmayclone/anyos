@@ -10,6 +10,7 @@ use anyos_std::ipc;
 use alloc::string::ToString;
 use alloc::boxed::Box;
 use libanyui_client as anyui;
+use libshellcommon;
 use anyui::{Widget, Control, MOD_CTRL, MOD_SHIFT, MOD_ALT,
     KEY_ENTER, KEY_BACKSPACE, KEY_TAB, KEY_ESCAPE,
     KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
@@ -2641,128 +2642,13 @@ impl TerminalApp {
 
 /// Read a file into a buffer. Returns the number of bytes read.
 fn read_file_to_buf(path: &str, buf: &mut [u8]) -> usize {
-    let fd = fs::open(path, 0);
-    if fd == u32::MAX {
-        return 0;
-    }
-    let mut total = 0usize;
-    loop {
-        let n = fs::read(fd, &mut buf[total..]);
-        if n == 0 || n == u32::MAX {
-            break;
-        }
-        total += n as usize;
-        if total >= buf.len() {
-            break;
-        }
-    }
-    fs::close(fd);
-    total
+    libshellcommon::read_file_to_buf(path, buf)
 }
 
-/// Source an env file — supports:
-///   KEY=VALUE
-///   export KEY=VALUE
-///   alias NAME=VALUE
-///   source /path/to/file
-///   # comments
-/// `depth` prevents infinite recursion.
-/// `aliases` collects alias definitions if provided.
-fn source_env_file(path: &str, depth: u32, aliases: &mut Vec<(String, String)>) {
-    if depth > 4 {
-        return; // prevent infinite source loops
-    }
-    let mut data = [0u8; 4096];
-    let total = read_file_to_buf(path, &mut data);
-    if total == 0 {
-        return;
-    }
-
-    let text = match core::str::from_utf8(&data[..total]) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    for line in text.split('\n') {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        // Handle 'source /path/to/file'
-        if line.starts_with("source ") {
-            let target = line[7..].trim();
-            if !target.is_empty() {
-                source_env_file(target, depth + 1, aliases);
-            }
-            continue;
-        }
-
-        // Handle 'alias NAME=VALUE' or "alias NAME='VALUE'"
-        if line.starts_with("alias ") {
-            let alias_def = line[6..].trim();
-            if let Some(eq) = alias_def.find('=') {
-                let name = alias_def[..eq].trim();
-                let mut val = alias_def[eq + 1..].trim();
-                // Strip surrounding quotes
-                if (val.starts_with('\'') && val.ends_with('\''))
-                    || (val.starts_with('"') && val.ends_with('"'))
-                {
-                    val = &val[1..val.len() - 1];
-                }
-                if !name.is_empty() {
-                    // Update existing or add new
-                    if let Some(existing) = aliases.iter_mut().find(|(n, _)| n == name) {
-                        existing.1 = String::from(val);
-                    } else {
-                        aliases.push((String::from(name), String::from(val)));
-                    }
-                }
-            }
-            continue;
-        }
-
-        // Strip optional 'export ' prefix
-        let assignment = if line.starts_with("export ") {
-            line[7..].trim()
-        } else {
-            line
-        };
-
-        if let Some(eq) = assignment.find('=') {
-            let key = assignment[..eq].trim();
-            let val = assignment[eq + 1..].trim();
-            if !key.is_empty() {
-                anyos_std::env::set(key, val);
-            }
-        }
-    }
-}
-
-/// Load system and user env files. Returns collected aliases.
+/// Load system and user env files. Returns collected aliases as (name, value) tuples.
 fn load_dotenv() -> Vec<(String, String)> {
-    let mut aliases = Vec::new();
-
-    // 1. System environment
-    source_env_file("/System/env", 0, &mut aliases);
-
-    // 2. User environment — determine username from uid
-    let uid = anyos_std::process::getuid();
-    let mut name_buf = [0u8; 32];
-    let nlen = anyos_std::process::getusername(uid, &mut name_buf);
-    if nlen != u32::MAX && nlen > 0 {
-        if let Ok(username) = core::str::from_utf8(&name_buf[..nlen as usize]) {
-            if username != "root" {
-                let user_env = format!("/Users/{}/env", username);
-                source_env_file(&user_env, 0, &mut aliases);
-                // Update HOME and USER based on actual identity
-                let home = format!("/Users/{}", username);
-                anyos_std::env::set("HOME", &home);
-                anyos_std::env::set("USER", username);
-            }
-        }
-    }
-
-    aliases
+    let alias_defs = libshellcommon::load_dotenv();
+    alias_defs.into_iter().map(|a| (a.name, a.value)).collect()
 }
 
 /// Resolve a bare command name via PATH — delegates to anyos_std::shell.
@@ -2862,10 +2748,8 @@ struct BackgroundJob {
 // ─── Shell ──────────────────────────────────────────────────────────────────
 
 struct Shell {
-    input: String,
-    cursor: usize,
-    history: Vec<String>,
-    history_index: Option<usize>,
+    line: libshellcommon::InputLine,
+    history: libshellcommon::History,
     cwd: String,
     aliases: Vec<(String, String)>,
     bg_jobs: Vec<BackgroundJob>,
@@ -2877,10 +2761,8 @@ struct Shell {
 impl Shell {
     fn new() -> Self {
         Shell {
-            input: String::new(),
-            cursor: 0,
-            history: Vec::new(),
-            history_index: None,
+            line: libshellcommon::InputLine::new(),
+            history: libshellcommon::History::new(),
             cwd: String::from("/"),
             aliases: Vec::new(),
             bg_jobs: Vec::new(),
@@ -2890,117 +2772,76 @@ impl Shell {
     }
 
     fn prompt(&self) -> String {
-        format!("{}> ", self.cwd)
+        libshellcommon::make_prompt(&self.cwd)
     }
 
-    /// Convert character-index cursor to byte-index in the UTF-8 string.
     fn cursor_byte_pos(&self) -> usize {
-        self.input.char_indices()
-            .nth(self.cursor)
-            .map(|(i, _)| i)
-            .unwrap_or(self.input.len())
+        self.line.cursor_byte_pos()
     }
 
-    /// Number of characters (not bytes) in the input string.
     fn char_count(&self) -> usize {
-        self.input.chars().count()
+        self.line.char_count()
     }
 
     fn insert_char(&mut self, c: char) {
-        let byte_pos = self.cursor_byte_pos();
-        if byte_pos >= self.input.len() {
-            self.input.push(c);
-        } else {
-            self.input.insert(byte_pos, c);
-        }
-        self.cursor += 1;
-        self.history_index = None;
+        self.line.insert_char(c);
+        self.history.reset_index();
     }
 
     fn backspace(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-            let byte_pos = self.cursor_byte_pos();
-            self.input.remove(byte_pos);
-        }
+        self.line.backspace();
     }
 
     fn history_up(&mut self) {
-        if self.history.is_empty() {
-            return;
+        if let Some(entry) = self.history.up() {
+            let s = String::from(entry);
+            self.line.set_text(&s);
         }
-        let idx = match self.history_index {
-            None => self.history.len() - 1,
-            Some(0) => return,
-            Some(i) => i - 1,
-        };
-        self.history_index = Some(idx);
-        self.input = self.history[idx].clone();
-        self.cursor = self.char_count();
     }
 
     fn history_down(&mut self) {
-        match self.history_index {
-            None => return,
-            Some(i) => {
-                if i + 1 >= self.history.len() {
-                    self.history_index = None;
-                    self.input.clear();
-                    self.cursor = 0;
-                } else {
-                    self.history_index = Some(i + 1);
-                    self.input = self.history[i + 1].clone();
-                    self.cursor = self.char_count();
-                }
+        match self.history.down() {
+            Some(entry) => {
+                let s = String::from(entry);
+                self.line.set_text(&s);
+            }
+            None => {
+                self.line.clear();
             }
         }
     }
 
     fn cursor_left(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-        }
+        self.line.cursor_left();
     }
 
     fn cursor_right(&mut self) {
-        if self.cursor < self.char_count() {
-            self.cursor += 1;
-        }
+        self.line.cursor_right();
     }
 
     fn cursor_home(&mut self) {
-        self.cursor = 0;
+        self.line.cursor_home();
     }
 
     fn cursor_end(&mut self) {
-        self.cursor = self.input.chars().count();
+        self.line.cursor_end();
     }
 
     fn delete_at_cursor(&mut self) {
-        let char_count = self.input.chars().count();
-        if self.cursor < char_count {
-            let byte_pos = self.cursor_byte_pos();
-            self.input.remove(byte_pos);
-        }
+        self.line.delete();
     }
 
     /// Execute command. Returns (should_continue, optional foreground process, optional pending su username).
     fn submit(&mut self, buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>, Option<String>) {
-        let raw_line = self.input.trim_matches(|c: char| c == ' ').to_string();
+        let raw_line = self.line.text.trim_matches(|c: char| c == ' ').to_string();
         buf.write_char('\n');
 
         if !raw_line.is_empty() {
-            if self.history.last().map_or(true, |last| *last != raw_line) {
-                self.history.push(raw_line.clone());
-                if self.history.len() > 64 {
-                    self.history.remove(0);
-                }
-            }
+            self.history.push(&raw_line);
         }
 
-        self.input.clear();
-        self.cursor = 0;
-        self.history_index = None;
+        self.line.clear();
+        self.history.reset_index();
 
         if raw_line.is_empty() {
             return (true, None, None);
@@ -3020,12 +2861,12 @@ impl Shell {
                 let cmd_str = cmd_str.trim().to_string();
                 if cmd_str.is_empty() { continue; }
                 // Execute each sub-command via recursive submit
-                let saved_input = core::mem::replace(&mut self.input, cmd_str);
-                let saved_cursor = self.cursor;
-                self.cursor = self.char_count();
+                let saved_input = core::mem::replace(&mut self.line.text, cmd_str);
+                let saved_cursor = self.line.cursor;
+                self.line.cursor_end();
                 let (cont, fg, su) = self.submit(buf);
-                self.input = saved_input;
-                self.cursor = saved_cursor;
+                self.line.text = saved_input;
+                self.line.cursor = saved_cursor;
                 // For now, assume builtins succeed. External commands we can't chain.
                 if fg.is_some() || su.is_some() {
                     // External process — can't chain further, return it
@@ -3106,12 +2947,12 @@ impl Shell {
                 if !eval_line.is_empty() {
                     // Disable capture temporarily — eval will set up its own
                     buf.capture = None;
-                    let saved_input = core::mem::replace(&mut self.input, eval_line);
-                    let saved_cursor = self.cursor;
-                    self.cursor = self.char_count();
+                    let saved_input = core::mem::replace(&mut self.line.text, eval_line);
+                    let saved_cursor = self.line.cursor;
+                    self.line.cursor_end();
                     let (cont, fg, su) = self.submit(buf);
-                    self.input = saved_input;
-                    self.cursor = saved_cursor;
+                    self.line.text = saved_input;
+                    self.line.cursor = saved_cursor;
                     if !cont {
                         return (false, None, None);
                     }
@@ -3847,10 +3688,12 @@ impl Shell {
 
 // ─── Builtins & Completion ───────────────────────────────────────────────────
 
-const BUILTINS: &[&str] = &[
-    "help", "echo", "clear", "uname", "cd", "pwd",
-    "set", "export", "unset", "source", "su", "exit", "reboot",
-    "shutdown", "poweroff", "profile", "theme", "opacity",
+/// All builtins supported by the Terminal's embedded shell.
+const TERMINAL_BUILTINS: &[&str] = &[
+    "alias", "bg", "cd", "clear", "echo", "exit", "export", "fg",
+    "help", "jobs", "kill", "poweroff", "profile", "pwd", "reboot",
+    "set", "shutdown", "source", "su", "theme", "opacity", "uname",
+    "unalias", "unset",
 ];
 
 /// Erase the input portion of the current display line and rewrite it.
@@ -3861,189 +3704,55 @@ fn redraw_input_line(buf: &mut TerminalBuffer, shell: &Shell) {
     }
     buf.cursor_col = prompt_len;
     buf.current_fg = COLOR_FG;
-    buf.write_str(&shell.input);
-    buf.cursor_col = prompt_len + shell.cursor;
+    buf.write_str(&shell.line.text);
+    buf.cursor_col = prompt_len + shell.line.cursor;
 }
 
-/// List directory entries as (name, is_directory) pairs.
-fn list_dir_entries(path: &str) -> Vec<(String, bool)> {
-    let mut entries = Vec::new();
-    let mut dir_buf = [0u8; 64 * 256]; // 256 entries max (covers /System/bin/ etc.)
-    let count = fs::readdir(path, &mut dir_buf);
-    if count == u32::MAX {
-        return entries;
-    }
-    let max = (count as usize).min(dir_buf.len() / 64);
-    for i in 0..max {
-        let off = i * 64;
-        let entry_type = dir_buf[off];
-        let name_len = dir_buf[off + 1] as usize;
-        let name_bytes = &dir_buf[off + 8..off + 8 + name_len.min(56)];
-        if let Ok(name) = core::str::from_utf8(name_bytes) {
-            entries.push((String::from(name), entry_type == 1));
-        }
-    }
-    entries
-}
 
-/// Find the longest common prefix among a set of strings.
-fn common_prefix(items: &[String]) -> String {
-    if items.is_empty() {
-        return String::new();
-    }
-    let first = &items[0];
-    let mut len = first.len();
-    for item in &items[1..] {
-        len = len.min(item.len());
-        for (i, (a, b)) in first.bytes().zip(item.bytes()).enumerate() {
-            if i >= len { break; }
-            if a != b {
-                len = i;
-                break;
-            }
-        }
-    }
-    String::from(&first[..len])
-}
-
-/// Complete a command name (first word on the line).
-fn complete_command(prefix: &str) -> Vec<String> {
-    let mut matches = Vec::new();
-    for &b in BUILTINS {
-        if b.starts_with(prefix) {
-            matches.push(String::from(b));
-        }
-    }
-    let mut path_buf = [0u8; 256];
-    let plen = anyos_std::env::get("PATH", &mut path_buf);
-    if plen != u32::MAX {
-        if let Ok(path_str) = core::str::from_utf8(&path_buf[..plen as usize]) {
-            for dir in path_str.split(':') {
-                let dir = dir.trim();
-                if dir.is_empty() { continue; }
-                for (name, _) in list_dir_entries(dir) {
-                    if name.starts_with(prefix) && !matches.iter().any(|m| *m == name) {
-                        matches.push(name);
-                    }
-                }
-            }
-        }
-    }
-    for (name, _) in list_dir_entries("/System/bin") {
-        if name.starts_with(prefix) && !matches.iter().any(|m| *m == name) {
-            matches.push(name);
-        }
-    }
-    matches.sort();
-    matches
-}
-
-/// Complete a file or directory path (argument position).
-fn complete_path(word: &str, cwd: &str) -> Vec<String> {
-    let (dir_prefix, file_prefix) = if let Some(slash_pos) = word.rfind('/') {
-        (&word[..slash_pos + 1], &word[slash_pos + 1..])
-    } else {
-        ("", word)
-    };
-    let search_dir = if dir_prefix.is_empty() {
-        String::from(cwd)
-    } else if dir_prefix.starts_with('/') {
-        let p = dir_prefix.trim_end_matches('/');
-        if p.is_empty() { String::from("/") } else { String::from(p) }
-    } else {
-        if cwd == "/" {
-            format!("/{}", dir_prefix.trim_end_matches('/'))
-        } else {
-            format!("{}/{}", cwd, dir_prefix.trim_end_matches('/'))
-        }
-    };
-    let entries = list_dir_entries(&search_dir);
-    let mut matches = Vec::new();
-    for (name, is_dir) in entries {
-        if name.starts_with(file_prefix) {
-            let completion = if is_dir {
-                format!("{}{}/", dir_prefix, name)
-            } else {
-                format!("{}{}", dir_prefix, name)
-            };
-            matches.push(completion);
-        }
-    }
-    matches.sort();
-    matches
-}
-
-/// Handle Tab key for autocompletion.
+/// Handle Tab key for autocompletion — delegates to libshellcommon::complete().
 fn handle_tab(shell: &mut Shell, buf: &mut TerminalBuffer) {
     let byte_pos = shell.cursor_byte_pos();
-    let before_cursor = &shell.input[..byte_pos];
-    let word_start = before_cursor.rfind(' ').map(|i| i + 1).unwrap_or(0);
-    let word = String::from(&before_cursor[word_start..]);
-    let is_command = !before_cursor[..word_start].contains(|c: char| c != ' ');
+    let before_cursor = &shell.line.text[..byte_pos];
 
-    // Strip redirect operators from the word so "< file" and "> file" complete paths
-    let stripped = word.trim_start_matches(|c: char| c == '<' || c == '>');
-    let prefix_len = word.len() - stripped.len(); // number of chars stripped
-
-    let completions = if is_command {
-        complete_command(&word)
-    } else if prefix_len > 0 {
-        // After redirect operator: always complete paths, using stripped word
-        complete_path(stripped, &shell.cwd)
-    } else {
-        complete_path(&word, &shell.cwd)
-    };
-
-    if completions.is_empty() {
-        return;
-    }
-
-    // When a redirect prefix was stripped, completions match against `stripped`
-    let match_len = if prefix_len > 0 { stripped.len() } else { word.len() };
-
-    if completions.len() == 1 {
-        let completion = &completions[0];
-        if completion.len() > match_len {
-            let remaining = String::from(&completion[match_len..]);
+    match libshellcommon::complete(before_cursor, &shell.cwd, TERMINAL_BUILTINS) {
+        libshellcommon::CompletionResult::None => {}
+        libshellcommon::CompletionResult::Single(remaining, is_dir) => {
             for ch in remaining.chars() {
                 shell.insert_char(ch);
             }
+            if !is_dir {
+                shell.insert_char(' ');
+            }
+            redraw_input_line(buf, shell);
         }
-        if !completion.ends_with('/') {
-            shell.insert_char(' ');
-        }
-        redraw_input_line(buf, shell);
-    } else {
-        let common = common_prefix(&completions);
-        if common.len() > match_len {
-            let remaining = String::from(&common[match_len..]);
-            for ch in remaining.chars() {
+        libshellcommon::CompletionResult::Multiple(to_insert, completions) => {
+            for ch in to_insert.chars() {
                 shell.insert_char(ch);
             }
-        }
-        buf.write_char('\n');
-        let fg = app().active_profile.color_fg;
-        for c in &completions {
-            let is_dir = c.ends_with('/');
-            let display = c.rsplit('/').nth(if is_dir { 1 } else { 0 }).unwrap_or(c);
-            if is_dir {
-                buf.current_fg = COLOR_TITLE; // blue for directories
-                buf.write_str(display);
-                buf.write_str("/  ");
-            } else {
-                buf.current_fg = fg;
-                buf.write_str(display);
-                buf.write_str("  ");
+            buf.write_char('\n');
+            let fg = app().active_profile.color_fg;
+            for c in &completions {
+                let is_dir = c.ends_with('/');
+                let display = c.rsplit('/').nth(if is_dir { 1 } else { 0 }).unwrap_or(c);
+                if is_dir {
+                    buf.current_fg = COLOR_TITLE; // blue for directories
+                    buf.write_str(display);
+                    buf.write_str("/  ");
+                } else {
+                    buf.current_fg = fg;
+                    buf.write_str(display);
+                    buf.write_str("  ");
+                }
             }
+            buf.write_char('\n');
+            buf.current_fg = COLOR_PROMPT;
+            let prompt = shell.prompt();
+            buf.write_str(&prompt);
+            buf.current_fg = COLOR_FG;
+            buf.write_str(&shell.line.text);
+            let prompt_len = prompt.len();
+            buf.cursor_col = prompt_len + shell.line.cursor;
         }
-        buf.write_char('\n');
-        buf.current_fg = COLOR_PROMPT;
-        let prompt = shell.prompt();
-        buf.write_str(&prompt);
-        buf.current_fg = COLOR_FG;
-        buf.write_str(&shell.input);
-        let prompt_len = prompt.len();
-        buf.cursor_col = prompt_len + shell.cursor;
     }
 }
 
@@ -4929,8 +4638,8 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
         sess.su_pending_user = None;
         sess.su_password.clear();
         sess.buf.write_str("^C\n");
-        sess.shell.input.clear();
-        sess.shell.cursor = 0;
+        sess.shell.line.clear();
+        sess.shell.line.cursor = 0;
         sess.show_prompt();
         sess.dirty = true;
         return true;
@@ -4997,10 +4706,10 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
     if sess.heredoc.is_some() {
         match key_code {
             KEY_ENTER => {
-                let input_line = sess.shell.input.clone();
+                let input_line = sess.shell.line.text.clone();
                 sess.buf.write_char('\n');
-                sess.shell.input.clear();
-                sess.shell.cursor = 0;
+                sess.shell.line.clear();
+                sess.shell.line.cursor = 0;
 
                 let finished = {
                     let hd = sess.heredoc.as_mut().unwrap();
@@ -5124,7 +4833,7 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
         match key_code {
             KEY_ENTER => {
                 // Check for here-document before submit
-                let trimmed_input = sess.shell.input.trim_matches(|c: char| c == ' ').to_string();
+                let trimmed_input = sess.shell.line.text.trim_matches(|c: char| c == ' ').to_string();
                 if let Some(heredoc_pos) = trimmed_input.find("<<") {
                     let after = trimmed_input[heredoc_pos + 2..].trim();
                     let delimiter = after.split_whitespace().next().unwrap_or("")
@@ -5142,11 +4851,9 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                             lines: Vec::new(),
                         });
                         // Add to history
-                        if sess.shell.history.last().map_or(true, |last| *last != trimmed_input) {
-                            sess.shell.history.push(trimmed_input);
-                        }
-                        sess.shell.input.clear();
-                        sess.shell.cursor = 0;
+                        sess.shell.history.push(&trimmed_input);
+                        sess.shell.line.clear();
+                        sess.shell.line.cursor = 0;
                         sess.dirty = true;
                         return true;
                     }
@@ -5166,7 +4873,7 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                 sess.dirty = true;
             }
             KEY_BACKSPACE => {
-                if sess.shell.cursor > 0 {
+                if sess.shell.line.cursor > 0 {
                     sess.shell.backspace();
                     sess.buf.backspace();
                     sess.dirty = true;
@@ -5183,36 +4890,36 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                 sess.dirty = true;
             }
             KEY_LEFT => {
-                if sess.shell.cursor > 0 {
+                if sess.shell.line.cursor > 0 {
                     sess.shell.cursor_left();
                     sess.buf.cursor_col -= 1;
                     sess.dirty = true;
                 }
             }
             KEY_RIGHT => {
-                if sess.shell.cursor < sess.shell.char_count() {
+                if sess.shell.line.cursor < sess.shell.char_count() {
                     sess.shell.cursor_right();
                     sess.buf.cursor_col += 1;
                     sess.dirty = true;
                 }
             }
             KEY_HOME => {
-                if sess.shell.cursor > 0 {
-                    sess.buf.cursor_col -= sess.shell.cursor;
+                if sess.shell.line.cursor > 0 {
+                    sess.buf.cursor_col -= sess.shell.line.cursor;
                     sess.shell.cursor_home();
                     sess.dirty = true;
                 }
             }
             KEY_END => {
-                let char_count = sess.shell.input.chars().count();
-                if sess.shell.cursor < char_count {
-                    sess.buf.cursor_col += char_count - sess.shell.cursor;
+                let char_count = sess.shell.line.char_count();
+                if sess.shell.line.cursor < char_count {
+                    sess.buf.cursor_col += char_count - sess.shell.line.cursor;
                     sess.shell.cursor_end();
                     sess.dirty = true;
                 }
             }
             KEY_DELETE => {
-                if sess.shell.cursor < sess.shell.char_count() {
+                if sess.shell.line.cursor < sess.shell.char_count() {
                     sess.shell.delete_at_cursor();
                     let row = sess.buf.cursor_row;
                     let col = sess.buf.cursor_col;
@@ -5230,7 +4937,7 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                 if char_val > 0 && (mods & MOD_CTRL) == 0 {
                     if let Some(c) = char::from_u32(char_val) {
                         if !c.is_control() {
-                            let at_end = sess.shell.cursor >= sess.shell.char_count();
+                            let at_end = sess.shell.line.cursor >= sess.shell.char_count();
                             sess.shell.insert_char(c);
                             if at_end {
                                 sess.buf.write_char(c);
@@ -5359,7 +5066,7 @@ fn do_reverse_search_in_active_session() {
     let pane_id = a.tabs[a.active_tab].active_pane_id;
     if let Some(sess) = a.tabs[a.active_tab].root.find_session(pane_id) {
         let q_lower: String = query.chars().map(|c| if c >= 'A' && c <= 'Z' { (c as u8 + 32) as char } else { c }).collect();
-        for (i, entry) in sess.shell.history.iter().enumerate().rev() {
+        for (i, entry) in sess.shell.history.entries().iter().enumerate().rev() {
             let entry_lower: String = entry.chars().map(|c| if c >= 'A' && c <= 'Z' { (c as u8 + 32) as char } else { c }).collect();
             if entry_lower.contains(q_lower.as_str()) {
                 let a = app();
@@ -6921,8 +6628,8 @@ fn main() {
                         a.reverse_search.active = false;
                         a.reverse_search.query.clear();
                         if let Some(sess) = a.active_session_mut() {
-                            sess.shell.input = result;
-                            sess.shell.cursor = sess.shell.char_count();
+                            sess.shell.line.text = result;
+                            sess.shell.line.cursor = sess.shell.char_count();
                             redraw_input_line(&mut sess.buf, &sess.shell);
                             sess.dirty = true;
                         }

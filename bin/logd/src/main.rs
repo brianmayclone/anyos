@@ -327,6 +327,13 @@ fn format_kernel_line(line: &[u8], out: &mut Vec<u8>) {
 // ─── Main Loop ──────────────────────────────────────────────────────────────
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("logd - System logging daemon\n\nUsage: logd");
+        return;
+    }
+
     let cfg = Config::load();
 
     anyos_std::println!("logd: starting (log_dir={}, max_size={}, max_files={}, flush={}ms)",

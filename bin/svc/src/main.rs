@@ -258,6 +258,13 @@ fn cmd_restart(name: &str, extra_args: &str) {
 }
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("svc - Service manager\n\nUsage: svc COMMAND [SERVICE]");
+        return;
+    }
+
     let mut arg_buf = [0u8; 256];
     let args_str = anyos_std::process::args(&mut arg_buf);
     let parts: alloc::vec::Vec<&str> = args_str.split_whitespace().collect();

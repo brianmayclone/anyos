@@ -8,6 +8,17 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"sf");
 
+    if raw.contains("--help") {
+        anyos_std::println!("ln - Create links between files");
+        anyos_std::println!("");
+        anyos_std::println!("Usage: ln [-sf] TARGET LINK_NAME");
+        anyos_std::println!("");
+        anyos_std::println!("Options:");
+        anyos_std::println!("  -s             Create symbolic link");
+        anyos_std::println!("  -f             Remove existing destination files");
+        return;
+    }
+
     let symbolic = args.has(b's');
     let force = args.has(b'f');
 

@@ -4,6 +4,14 @@
 anyos_std::entry!(main);
 
 fn main() {
+    let mut _help_buf = [0u8; 256];
+    let _help_raw = anyos_std::process::args(&mut _help_buf);
+    if _help_raw.contains("--help") {
+        anyos_std::println!("cp - Copy files\n\nUsage: cp SOURCE DEST");
+        return;
+    }
+
+
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf).trim();
     let mut parts = args.splitn(2, ' ');

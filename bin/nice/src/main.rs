@@ -13,6 +13,13 @@ fn parse_u32(s: &str) -> Option<u32> {
 }
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("nice - Set thread priority\n\nUsage: nice PRIORITY TID");
+        return;
+    }
+
     let mut buf = [0u8; 256];
     let args = anyos_std::process::args(&mut buf);
 

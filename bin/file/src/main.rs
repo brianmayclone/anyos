@@ -295,6 +295,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("file - Identify file type\n\nUsage: file FILE...");
+        return;
+    }
+
     if args.pos_count == 0 {
         anyos_std::print!("Usage: file <file> [file ...]\n");
         return;

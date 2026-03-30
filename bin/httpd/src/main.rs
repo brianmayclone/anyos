@@ -572,10 +572,15 @@ fn main() {
 
     // Check for --help
     if args.contains("--help") || args.contains("-h") {
-        println!("Usage: httpd [--foreground]");
-        println!("  HTTP web server daemon for anyOS.");
-        println!("  Reads config from {}", CONFIG_DIR);
-        println!("  Manage via: svc start httpd / svc stop httpd");
+        println!("httpd - HTTP web server daemon");
+        println!("");
+        println!("Usage: httpd [OPTIONS]");
+        println!("");
+        println!("Options:");
+        println!("  --foreground   Run in foreground (don't daemonize)");
+        println!("");
+        println!("Config: {}", CONFIG_DIR);
+        println!("Manage: svc start httpd / svc stop httpd");
         return;
     }
 

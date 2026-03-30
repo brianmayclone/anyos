@@ -282,6 +282,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"whsc");
 
+    if raw.contains("--help") {
+        anyos_std::println!("jp2a - Convert JPEG to ASCII art\n\nUsage: jp2a IMAGE\n\nOptions:\n  -s WxH         Output size (e.g. 80x24)\n  -c             Enable color output");
+        return;
+    }
+
     // Parse dimensions
     let mut out_w: u32 = 78;
     let mut out_h_opt: Option<u32> = None;

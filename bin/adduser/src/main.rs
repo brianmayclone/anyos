@@ -8,6 +8,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"pcd");
 
+    if raw.contains("--help") {
+        anyos_std::println!("adduser - Create a user account\n\nUsage: adduser USERNAME\n\nOptions:\n  -p PASS        Set password\n  -c NAME        Set full name\n  -d DIR         Set home directory");
+        return;
+    }
+
     if args.pos_count == 0 {
         anyos_std::println!("Usage: adduser <username> [-p password] [-c fullname] [-d homedir]");
         return;

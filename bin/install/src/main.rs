@@ -503,9 +503,17 @@ fn copy_file(src: &str, dst: &str) -> bool {
 // ── Main ───────────────────────────────────────────────────────────────────
 
 fn main() {
+    let mut _help_buf = [0u8; 256];
+    let _help_raw = anyos_std::process::args(&mut _help_buf);
+    if _help_raw.contains("--help") {
+        anyos_std::println!("install - Install anyOS to disk\n\nUsage: install [DISK_ID]\n\nOptions:\n  -l             List available disks");
+        return;
+    }
+
     let mut args_buf = [0u8; 256];
     let raw = process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"l");
+
 
     if args.has(b'l') {
         cmd_list();

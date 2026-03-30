@@ -755,6 +755,11 @@ impl Desktop {
         let ctrl = mods & 2 != 0;
         let alt = mods & 4 != 0;
 
+        // Debug: log Escape key events
+        if key_code == KEY_ESCAPE && down {
+            anyos_std::println!("[compositor] ESC down: scancode=0x{:x} mods=0x{:x} ctrl={} alt={}", scancode, mods, ctrl, alt);
+        }
+
         // ── Super key tap detection ─────────────────────────────────────────
         if key_code == KEY_LEFT_SUPER || key_code == KEY_RIGHT_SUPER {
             self.super_held = down;
@@ -859,11 +864,8 @@ impl Desktop {
             }
 
             // Alt+R: Launch app runner
-            // Use direct binary path (not .app bundle) so the runner inherits
-            // the compositor's CAP_ALL instead of going through capability
-            // intersection which requires stored user permissions.
             if alt && !ctrl && key_code == 0x13 {
-                anyos_std::process::spawn("/Applications/Runner.app/Runner", "");
+                anyos_std::process::spawn("/Applications/Runner.app", "");
                 return;
             }
 
@@ -900,6 +902,7 @@ impl Desktop {
 
             // Ctrl+Escape: Toggle shortcut overlay
             if ctrl && key_code == KEY_ESCAPE {
+                anyos_std::println!("[compositor] Ctrl+Esc: toggle shortcut overlay (visible={})", self.shortcut_overlay_visible);
                 self.toggle_shortcut_overlay();
                 return;
             }

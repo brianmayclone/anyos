@@ -24,6 +24,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("chmod - Change file permissions\n\nUsage: chmod MODE PATH");
+        return;
+    }
+
     if args.pos_count < 2 {
         anyos_std::println!("Usage: chmod <mode> <path>");
         anyos_std::println!("  mode: decimal or hex (0x...) permission value");

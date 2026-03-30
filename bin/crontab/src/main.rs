@@ -105,6 +105,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("crontab - Manage cron jobs\n\nUsage: crontab [-l|-r|-e|FILE]\n\nOptions:\n  -l             List current crontab\n  -r             Remove crontab\n  -e             Edit crontab");
+        return;
+    }
+
     if args.has(b'h') {
         usage();
         return;

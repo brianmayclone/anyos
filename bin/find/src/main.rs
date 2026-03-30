@@ -112,6 +112,11 @@ fn main() {
     let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
 
+    if raw.contains("--help") {
+        anyos_std::println!("find - Search for files by name\n\nUsage: find [PATH] [-name PAT] [-type f|d]\n\nOptions:\n  -name          Match filename pattern (case-sensitive)\n  -iname         Match filename pattern (case-insensitive)\n  -type          Filter by type: f (file), d (directory)");
+        return;
+    }
+
     // Manual parsing for find's long-flag style: find [PATH] [-name PAT] [-iname PAT] [-type f/d]
     let mut path = ".";
     let mut pattern = "*";

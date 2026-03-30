@@ -4,8 +4,16 @@
 anyos_std::entry!(main);
 
 fn main() {
+
+
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf);
+
+    if args.contains("--help") {
+        anyos_std::println!("strings - Extract printable strings from files\n\nUsage: strings FILE\n\nOptions:\n  -n LEN         Minimum string length (default: 4)");
+        return;
+    }
+
 
     let mut min_len: usize = 4;
     let mut path = "";

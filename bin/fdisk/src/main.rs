@@ -567,6 +567,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"l");
 
+    if raw.contains("--help") {
+        anyos_std::println!("fdisk - Disk partition manager\n\nUsage: fdisk [DISK_ID]\n\nOptions:\n  -l             List available disks");
+        return;
+    }
+
     // fdisk -l : list all disks and partitions
     if args.has(b'l') {
         list_all();

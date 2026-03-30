@@ -47,6 +47,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("sstore - Set session store value\n\nUsage: sstore [KEY VALUE]");
+        return;
+    }
+
     // No args: list all entries
     if args.pos_count == 0 {
         let mut store = [0u8; MAX_STORE];

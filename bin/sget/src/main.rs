@@ -23,6 +23,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("sget - Get session store value\n\nUsage: sget KEY");
+        return;
+    }
+
     if args.pos_count == 0 {
         anyos_std::println!("Usage: sget <key>");
         return;

@@ -24,8 +24,16 @@ const STATUS_PATH: &str = "/System/etc/ntp/ntpd.status";
 const PIPE_NAME: &str = "ntpd";
 
 fn main() {
+
+
     let mut args_buf = [0u8; 256];
     let args_raw = anyos_std::process::args(&mut args_buf);
+
+    if args_raw.contains("--help") {
+        anyos_std::println!("ntp - NTP time sync client\n\nUsage: ntp [status|sync|reload|stop|query HOST]");
+        return;
+    }
+
     let args = args_raw.trim();
 
     if args.is_empty() || args == "status" {

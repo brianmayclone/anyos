@@ -428,6 +428,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"wf");
 
+    if raw.contains("--help") {
+        anyos_std::println!("banner - Print large ASCII text\n\nUsage: banner TEXT...\n\nOptions:\n  -w NUM         Banner width\n  -f             Use filled characters");
+        return;
+    }
+
     let width = args.opt_u32(b'w', 80);
     let fill = match args.opt(b'f') {
         Some(s) if !s.is_empty() => s.as_bytes()[0],

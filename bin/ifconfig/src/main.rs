@@ -4,6 +4,13 @@
 anyos_std::entry!(main);
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("ifconfig - Display network interfaces\n\nUsage: ifconfig");
+        return;
+    }
+
     // Read interface configs (up to 8 interfaces, 64 bytes each)
     let mut iface_buf = [0u8; 512];
     let iface_count = anyos_std::net::get_interfaces(&mut iface_buf);

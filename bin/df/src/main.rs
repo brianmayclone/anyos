@@ -59,6 +59,11 @@ fn main() {
     let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"h");
+
+    if raw.contains("--help") {
+        anyos_std::println!("df - Show filesystem disk usage\n\nUsage: df\n\nOptions:\n  -h             Human-readable sizes");
+        return;
+    }
     let human = args.has(b'h');
 
     // Read mount list

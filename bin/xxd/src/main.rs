@@ -8,6 +8,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"ls");
 
+    if raw.contains("--help") {
+        anyos_std::println!("xxd - Hexadecimal dump\n\nUsage: xxd [FILE]\n\nOptions:\n  -l LEN         Number of bytes to dump\n  -s OFF         Start offset");
+        return;
+    }
+
     let limit = args.opt_u32(b'l', 0);
     let skip = args.opt_u32(b's', 0);
 

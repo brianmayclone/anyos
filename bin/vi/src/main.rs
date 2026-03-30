@@ -1721,12 +1721,20 @@ impl InputReader {
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 fn main() {
+
+
     let mut editor = Editor::new();
     let mut input = InputReader::new();
 
     // Parse arguments
     let mut args_buf = [0u8; 256];
     let args_str = anyos_std::process::args(&mut args_buf);
+
+    if args_str.contains("--help") {
+        anyos_std::println!("vi - Text editor\n\nUsage: vi [FILE]");
+        return;
+    }
+
 
     // Open file if argument provided
     let arg = args_str.trim();

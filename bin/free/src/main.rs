@@ -4,6 +4,13 @@
 anyos_std::entry!(main);
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("free - Display memory usage\n\nUsage: free");
+        return;
+    }
+
     anyos_std::i18n::init();
     let t = anyos_std::i18n::t;
     // Memory info (cmd=0): [total_frames:u32, free_frames:u32, heap_used:u32, heap_total:u32]

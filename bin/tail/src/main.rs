@@ -35,6 +35,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"nc");
 
+    if raw.contains("--help") {
+        anyos_std::println!("tail - Print last lines of files\n\nUsage: tail [FILE]\n\nOptions:\n  -n NUM         Number of lines (default: 10)\n  -c NUM         Number of bytes\n  -f             Follow file growth");
+        return;
+    }
+
     let max_lines = args.opt_u32(b'n', 10);
     let byte_mode = args.opt(b'c');
     let follow = args.has(b'f');

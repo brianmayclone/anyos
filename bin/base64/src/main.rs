@@ -121,6 +121,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("base64 - Encode or decode base64\n\nUsage: base64 [FILE]\n\nOptions:\n  -d             Decode instead of encode");
+        return;
+    }
+
     let decode = args.has(b'd');
 
     let fd = if args.pos_count > 0 {

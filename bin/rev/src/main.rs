@@ -23,6 +23,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("rev - Reverse lines of text\n\nUsage: rev [FILE]");
+        return;
+    }
+
     let fd = if args.pos_count > 0 {
         let path = args.positional[0];
         let f = anyos_std::fs::open(path, 0);

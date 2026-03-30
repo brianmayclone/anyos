@@ -25,6 +25,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("mkdir - Create directories\n\nUsage: mkdir DIR...\n\nOptions:\n  -p             Create parent directories as needed");
+        return;
+    }
+
     let parents = args.has(b'p');
 
     if args.pos_count == 0 {

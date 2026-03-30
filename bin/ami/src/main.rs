@@ -53,6 +53,23 @@ fn main() {
     // process::args() already strips argv[0], returns just the arguments
     let mut args_buf = [0u8; 256];
     let args_str = anyos_std::process::args(&mut args_buf);
+    if args_str.contains("--help") {
+        anyos_std::println!("ami - Anywhere Management Interface client");
+        anyos_std::println!("");
+        anyos_std::println!("Usage: ami [QUERY]");
+        anyos_std::println!("");
+        anyos_std::println!("Without arguments, starts an interactive REPL.");
+        anyos_std::println!("With a QUERY argument, executes it and exits.");
+        anyos_std::println!("");
+        anyos_std::println!("REPL commands:");
+        anyos_std::println!("  SELECT ...     Execute a SQL query");
+        anyos_std::println!("  list tables    List available tables");
+        anyos_std::println!("  help           Show help");
+        anyos_std::println!("  exit           Quit");
+        anyos_std::ipc::pipe_close(reply_pipe);
+        return;
+    }
+
     let query_from_args = strip_quotes(args_str);
 
     if !query_from_args.is_empty() {

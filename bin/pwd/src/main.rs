@@ -4,6 +4,13 @@
 anyos_std::entry!(main);
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("pwd - Print current working directory\n\nUsage: pwd");
+        return;
+    }
+
     let mut buf = [0u8; 256];
     let len = anyos_std::fs::getcwd(&mut buf);
     if len > 0 {

@@ -4,6 +4,13 @@
 anyos_std::entry!(main);
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("sysinfo - Display system information\n\nUsage: sysinfo");
+        return;
+    }
+
     anyos_std::i18n::init();
     let t = anyos_std::i18n::t;
     anyos_std::println!("{}", t(".anyOS System Information"));

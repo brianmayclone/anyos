@@ -30,6 +30,13 @@ fn thread_name(buf: &[u8], entry_off: usize) -> &str {
 }
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("killall - Kill processes by name\n\nUsage: killall NAME\n\nOptions:\n  -v             Verbose output");
+        return;
+    }
+
     let mut arg_buf = [0u8; 256];
     let raw_args = anyos_std::process::args(&mut arg_buf);
 

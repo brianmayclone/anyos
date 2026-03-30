@@ -65,6 +65,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("zip - Create ZIP archives\n\nUsage: zip ARCHIVE FILE...\n\nOptions:\n  -0             Store only (no compression)\n  -r             Recurse into directories");
+        return;
+    }
+
     if args.pos_count < 2 {
         usage();
         return;

@@ -102,6 +102,13 @@ fn get_env<'a>(key: &str, buf: &'a mut [u8]) -> &'a [u8] {
 }
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("neofetch - Display system info with logo\n\nUsage: neofetch");
+        return;
+    }
+
     anyos_std::i18n::init();
     let t = anyos_std::i18n::t;
     // ── Gather system info ──────────────────────────

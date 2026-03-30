@@ -1,11 +1,10 @@
 [package]
-name = "shell"
+name = "libshellcommon"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyos_std = { path = "../../libs/stdlib" }
-libshellcommon = { path = "../../libs/libshellcommon" }
+anyos_std = { path = "../stdlib" }
 
 [profile.dev]
 panic = "abort"

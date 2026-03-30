@@ -8,6 +8,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"ns");
 
+    if raw.contains("--help") {
+        anyos_std::println!("hexdump - Display file in hexadecimal\n\nUsage: hexdump FILE\n\nOptions:\n  -n LEN         Number of bytes to dump\n  -s OFF         Start offset");
+        return;
+    }
+
     // -C is accepted but already default format
     let limit = args.opt_u32(b'n', 0);
     let skip = args.opt_u32(b's', 0);

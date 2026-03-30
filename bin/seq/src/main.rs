@@ -20,8 +20,16 @@ fn parse_i32(s: &str) -> Option<i32> {
 }
 
 fn main() {
+
+
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf);
+
+    if args.contains("--help") {
+        anyos_std::println!("seq - Print a sequence of numbers\n\nUsage: seq [FIRST [INCREMENT]] LAST");
+        return;
+    }
+
 
     let parts: alloc::vec::Vec<&str> = args.split_ascii_whitespace().collect();
 

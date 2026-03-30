@@ -4,8 +4,16 @@
 anyos_std::entry!(main);
 
 fn main() {
+
+
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf);
+
+    if args.contains("--help") {
+        anyos_std::println!("dns - Resolve hostname to IP\n\nUsage: dns HOSTNAME");
+        return;
+    }
+
 
     if args.is_empty() {
         anyos_std::println!("Usage: dns <hostname>");

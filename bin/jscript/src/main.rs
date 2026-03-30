@@ -71,6 +71,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"ep");
 
+    if raw.contains("--help") {
+        anyos_std::println!("jscript - JavaScript interpreter\n\nUsage: jscript [FILE.js]\n\nOptions:\n  -e CODE        Execute inline code\n  -p             Print result of expression");
+        return;
+    }
+
     let eval_code = args.opt(b'e');
     let print_code = args.opt(b'p');
 

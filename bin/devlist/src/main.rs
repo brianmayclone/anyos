@@ -19,6 +19,13 @@ fn driver_type_str(t: u8) -> &'static str {
 }
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("devlist - List system devices\n\nUsage: devlist");
+        return;
+    }
+
     let mut buf = [0u8; 64 * 32]; // up to 32 devices
     let count = anyos_std::sys::devlist(&mut buf);
 

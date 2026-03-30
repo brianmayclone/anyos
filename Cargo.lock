@@ -196,6 +196,8 @@ name = "calc"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "dynlink",
+ "libanyui_client",
 ]
 
 [[package]]
@@ -452,6 +454,9 @@ name = "fontviewer"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libfont_client",
 ]
 
 [[package]]
@@ -734,6 +739,13 @@ dependencies = [
 [[package]]
 name = "librender_client"
 version = "0.1.0"
+
+[[package]]
+name = "libshellcommon"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
 
 [[package]]
 name = "libsvg_client"
@@ -1104,6 +1116,7 @@ name = "shell"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libshellcommon",
 ]
 
 [[package]]
@@ -1230,6 +1243,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libshellcommon",
 ]
 
 [[package]]

@@ -254,6 +254,13 @@ fn ensure_dir_exists(path: &str) {
 }
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("ntpd - NTP time sync daemon\n\nUsage: ntpd");
+        return;
+    }
+
     println!("ntpd: starting");
 
     let mut cfg = config::load();

@@ -81,6 +81,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"f");
 
+    if raw.contains("--help") {
+        anyos_std::println!("tar - Archive files\n\nUsage: tar -c|-x|-t [-z] -f ARCHIVE [FILE...]\n\nOptions:\n  -c             Create archive\n  -x             Extract archive\n  -t             List archive contents\n  -z             Use gzip compression\n  -f FILE        Archive filename");
+        return;
+    }
+
     let create = args.has(b'c');
     let extract = args.has(b'x');
     let list = args.has(b't');

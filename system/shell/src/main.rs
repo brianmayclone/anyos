@@ -6,9 +6,8 @@ use anyos_std::Vec;
 use anyos_std::format;
 use anyos_std::process;
 use anyos_std::ipc;
-use anyos_std::fs;
 use anyos_std::ui::window;
-use alloc::string::ToString;
+use libshellcommon;
 
 anyos_std::entry!(main);
 
@@ -505,53 +504,6 @@ impl FontMetrics {
     }
 }
 
-// ─── Shell Process ───────────────────────────────────────────────────────────
-
-struct ShellProcess {
-    tid: u32,
-    stdout_pipe: u32,
-    stdin_pipe: u32,
-}
-
-impl ShellProcess {
-    fn spawn() -> Option<Self> {
-        let stdout_name = format!("shell:stdout:{}", process::getpid());
-        let stdin_name = format!("shell:stdin:{}", process::getpid());
-        let stdout_pipe = ipc::pipe_create(&stdout_name);
-        let stdin_pipe = ipc::pipe_create(&stdin_name);
-
-        let tid = process::spawn_piped_full("/System/bin/sh", "sh -i", stdout_pipe, stdin_pipe);
-        if tid == u32::MAX {
-            ipc::pipe_close(stdout_pipe);
-            ipc::pipe_close(stdin_pipe);
-            None
-        } else {
-            Some(ShellProcess { tid, stdout_pipe, stdin_pipe })
-        }
-    }
-
-    fn write(&self, data: &[u8]) {
-        ipc::pipe_write(self.stdin_pipe, data);
-    }
-
-    fn read(&self, buf: &mut [u8]) -> u32 {
-        ipc::pipe_read(self.stdout_pipe, buf)
-    }
-
-    fn is_alive(&self) -> bool {
-        process::try_waitpid(self.tid) == process::STILL_RUNNING
-    }
-
-    fn kill(&self) {
-        process::kill(self.tid);
-    }
-
-    fn close_pipes(&self) {
-        ipc::pipe_close(self.stdout_pipe);
-        ipc::pipe_close(self.stdin_pipe);
-    }
-}
-
 // ─── Rendering ───────────────────────────────────────────────────────────────
 
 fn render(win_id: u32, buf: &TerminalBuffer, font: &FontMetrics, win_w: u32, win_h: u32) {
@@ -615,202 +567,135 @@ fn render(win_id: u32, buf: &TerminalBuffer, font: &FontMetrics, win_w: u32, win
     window::present(win_id);
 }
 
-// ─── Environment Setup ───────────────────────────────────────────────────────
+// ─── ShellOutput adapter for TerminalBuffer ──────────────────────────────────
 
-fn read_file_to_buf(path: &str, buf: &mut [u8]) -> usize {
-    let fd = fs::open(path, 0);
-    if fd == u32::MAX {
-        return 0;
-    }
-    let mut total = 0usize;
-    loop {
-        let n = fs::read(fd, &mut buf[total..]);
-        if n == 0 || n == u32::MAX {
-            break;
-        }
-        total += n as usize;
-        if total >= buf.len() {
-            break;
-        }
-    }
-    fs::close(fd);
-    total
+struct BufOutput<'a> {
+    buf: &'a mut TerminalBuffer,
 }
 
-fn source_env_file(path: &str, depth: u32) {
-    if depth > 4 {
-        return;
-    }
-    let mut data = [0u8; 2048];
-    let total = read_file_to_buf(path, &mut data);
-    if total == 0 {
-        return;
-    }
-    let text = match core::str::from_utf8(&data[..total]) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    for line in text.split('\n') {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
+impl<'a> libshellcommon::interpreter::ShellOutput for BufOutput<'a> {
+    fn write_str(&mut self, s: &str) {
+        for ch in s.chars() {
+            self.write_char(ch);
         }
-        if line.starts_with("source ") {
-            let target = line[7..].trim();
-            if !target.is_empty() {
-                source_env_file(target, depth + 1);
-            }
-            continue;
-        }
-        let assignment = if line.starts_with("export ") {
-            line[7..].trim()
+    }
+
+    fn write_char(&mut self, ch: char) {
+        if ch == '\n' {
+            self.buf.newline();
         } else {
-            line
-        };
-        if let Some(eq) = assignment.find('=') {
-            let key = assignment[..eq].trim();
-            let val = assignment[eq + 1..].trim();
-            if !key.is_empty() {
-                anyos_std::env::set(key, val);
-            }
+            self.buf.put_char(ch);
         }
     }
 }
 
-fn load_dotenv() {
-    source_env_file("/System/env", 0);
-    let uid = process::getuid();
-    let mut name_buf = [0u8; 32];
-    let nlen = process::getusername(uid, &mut name_buf);
-    if nlen != u32::MAX && nlen > 0 {
-        if let Ok(username) = core::str::from_utf8(&name_buf[..nlen as usize]) {
-            if username != "root" {
-                let user_env = format!("/Users/{}/env", username);
-                source_env_file(&user_env, 0);
-                let home = format!("/Users/{}", username);
-                anyos_std::env::set("HOME", &home);
-                anyos_std::env::set("USER", username);
+// ─── AppBuiltins for Shell app ───────────────────────────────────────────────
+
+struct ShellAppBuiltins {
+    clear_flag: bool,
+}
+
+impl ShellAppBuiltins {
+    fn new() -> Self {
+        ShellAppBuiltins { clear_flag: false }
+    }
+}
+
+impl libshellcommon::interpreter::AppBuiltins for ShellAppBuiltins {
+    fn handle(&mut self, cmd: &str, _args: &str, _shell: &mut libshellcommon::interpreter::ShellState, out: &mut dyn libshellcommon::interpreter::ShellOutput) -> bool {
+        match cmd {
+            "help" => {
+                out.write_line("anyOS Shell");
+                out.write_line("Built-in commands:");
+                out.write_line("  alias, bg, cd, clear, echo, eval, exit, export, fg");
+                out.write_line("  help, jobs, pwd, reboot, set, shutdown, source, su");
+                out.write_line("  uname, unalias, unset");
+                true
             }
+            _ => false,
+        }
+    }
+
+    fn on_cd(&mut self, _new_cwd: &str) {
+        // Nothing extra needed
+    }
+
+    fn clear_screen(&mut self) {
+        self.clear_flag = true;
+    }
+}
+
+// ─── Foreground process state ────────────────────────────────────────────────
+
+struct ForegroundProcess {
+    tid: u32,
+    stdout_pipe: u32,
+    stdin_pipe: u32,
+    command: String,
+    extra_pipes: Vec<u32>,
+}
+
+impl ForegroundProcess {
+    fn close_pipes(&self) {
+        if self.stdout_pipe != 0 {
+            ipc::pipe_close(self.stdout_pipe);
+        }
+        if self.stdin_pipe != 0 {
+            ipc::pipe_close(self.stdin_pipe);
+        }
+        for &p in &self.extra_pipes {
+            ipc::pipe_close(p);
         }
     }
 }
 
-// ─── Tab Completion ──────────────────────────────────────────────────────
+// ─── Builtin commands list for tab completion ────────────────────────────────
 
-const BUILTIN_COMMANDS: &[&str] = &[
-    ".", "alias", "bg", "break", "cd", "command", "continue",
-    "echo", "eval", "exec", "exit", "export", "false",
-    "fg", "getopts", "hash", "jobs", "kill", "local",
-    "printf", "pwd", "read", "readonly", "return", "set",
-    "shift", "source", "test", "times", "trap", "true", "type",
-    "ulimit", "umask", "unalias", "unset", "wait",
+const SHELL_BUILTINS: &[&str] = &[
+    "alias", "bg", "cd", "clear", "echo", "eval", "exit", "export",
+    "fg", "help", "jobs", "pwd", "reboot", "set", "shutdown", "source",
+    "su", "uname", "unalias", "unset",
 ];
 
-fn find_file_completions(partial: &str) -> Vec<String> {
-    let (dir_path, prefix) = match partial.rfind('/') {
-        Some(pos) => {
-            let d = if pos == 0 { "/" } else { &partial[..pos] };
-            (d, &partial[pos + 1..])
-        }
-        None => (".", partial),
-    };
+// ─── Helper: draw prompt + current input on terminal buffer ──────────────────
 
-    let mut entry_buf = [0u8; 64 * 64];
-    let count = fs::readdir(dir_path, &mut entry_buf);
-    if count == u32::MAX {
-        return Vec::new();
-    }
-
-    let mut results = Vec::new();
-    for i in 0..count as usize {
-        let base = i * 64;
-        let entry_type = entry_buf[base];
-        let name_len = (entry_buf[base + 1] as usize).min(56);
-        if let Ok(name) = core::str::from_utf8(&entry_buf[base + 8..base + 8 + name_len]) {
-            if name == "." || name == ".." { continue; }
-            if name.starts_with(prefix) {
-                let mut s = String::from(name);
-                if entry_type == 1 { s.push('/'); }
-                results.push(s);
-            }
-        }
-    }
-    results
-}
-
-fn scan_dir_for_commands(dir: &str, partial: &str, results: &mut Vec<String>) {
-    let mut entry_buf = [0u8; 64 * 256];
-    let count = fs::readdir(dir, &mut entry_buf);
-    if count == u32::MAX { return; }
-    for i in 0..count as usize {
-        let base = i * 64;
-        let entry_type = entry_buf[base];
-        let name_len = (entry_buf[base + 1] as usize).min(56);
-        if entry_type != 0 { continue; } // Only regular files
-        if let Ok(name) = core::str::from_utf8(&entry_buf[base + 8..base + 8 + name_len]) {
-            if name.starts_with(partial) && !results.iter().any(|r: &String| r.as_str() == name) {
-                results.push(String::from(name));
-            }
+/// Write a str to the terminal buffer character by character (Unicode-safe).
+fn buf_write_str(buf: &mut TerminalBuffer, s: &str) {
+    for ch in s.chars() {
+        if ch == '\n' {
+            buf.newline();
+        } else {
+            buf.put_char(ch);
         }
     }
 }
 
-fn find_command_completions(partial: &str) -> Vec<String> {
-    let mut results = Vec::new();
+fn redraw_prompt_line(buf: &mut TerminalBuffer, shell: &libshellcommon::interpreter::ShellState) {
+    // Erase current line content
+    buf.ensure_line(buf.cursor_row);
+    buf.lines[buf.cursor_row].clear();
+    buf.cursor_col = 0;
 
-    // Builtins
-    for &cmd in BUILTIN_COMMANDS {
-        if cmd.starts_with(partial) {
-            results.push(String::from(cmd));
-        }
-    }
+    // Draw prompt
+    let prompt = shell.prompt();
+    buf.fg_color = COLOR_DIM;
+    buf_write_str(buf, &prompt);
 
-    // Scan PATH directories
-    let mut path_buf = [0u8; 512];
-    let path_len = anyos_std::env::get("PATH", &mut path_buf);
-    if path_len != u32::MAX && (path_len as usize) <= path_buf.len() {
-        if let Ok(path_str) = core::str::from_utf8(&path_buf[..path_len as usize]) {
-            for dir in path_str.split(':') {
-                if dir.is_empty() { continue; }
-                scan_dir_for_commands(dir, partial, &mut results);
-            }
-        }
-    }
+    // Draw input text
+    buf.fg_color = COLOR_FG;
+    buf_write_str(buf, &shell.line.text);
 
-    // Always scan /System/bin and /System/sbin even if not in PATH
-    // (PATH may not be set in GUI sessions)
-    scan_dir_for_commands("/System/bin", partial, &mut results);
-    scan_dir_for_commands("/System/sbin", partial, &mut results);
-
-    results
-}
-
-fn longest_common_prefix(strings: &[String]) -> String {
-    if strings.is_empty() { return String::new(); }
-    let first = strings[0].as_bytes();
-    let mut len = first.len();
-    for s in &strings[1..] {
-        let b = s.as_bytes();
-        len = len.min(b.len());
-        for i in 0..len {
-            if first[i] != b[i] {
-                len = i;
-                break;
-            }
-        }
-    }
-    if let Ok(s) = core::str::from_utf8(&first[..len]) {
-        String::from(s)
-    } else {
-        String::new()
-    }
+    // Position cursor at correct location (prompt len + cursor char pos)
+    let prompt_chars = prompt.chars().count();
+    let cursor_chars = shell.line.cursor;
+    buf.cursor_col = prompt_chars + cursor_chars;
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    // Load environment from /System/env (same as Terminal)
-    load_dotenv();
+    // Load environment from /System/env and collect aliases
+    let alias_defs = libshellcommon::load_dotenv();
 
     // Create window
     let win_id = window::create("Shell", 80, 80, 720, 450);
@@ -847,45 +732,51 @@ fn main() {
 
     let mut buf = TerminalBuffer::new(cols.max(1), rows.max(1));
 
-    // Spawn shell process
-    let shell_proc = match ShellProcess::spawn() {
-        Some(sp) => sp,
-        None => {
-            buf.fg_color = 0xFFFF5555;
-            buf.feed(b"Error: Could not start /System/bin/sh\n");
-            buf.feed(b"Make sure dash is installed.\n");
-            render(win_id, &buf, &font, win_w, win_h);
-            // Wait for close
-            let mut event = [0u32; 5];
-            loop {
-                let got = window::get_event(win_id, &mut event);
-                if got == 1 && event[0] == EVENT_WINDOW_CLOSE {
-                    window::destroy(win_id);
-                    return;
-                }
-                process::sleep(50);
-            }
+    // Create shell interpreter state
+    let mut shell = libshellcommon::interpreter::ShellState::new();
+
+    // Load aliases from dotenv into shell state
+    for ad in &alias_defs {
+        shell.aliases.push((String::from(ad.name.as_str()), String::from(ad.value.as_str())));
+    }
+
+    // Set initial cwd
+    let mut cwd_buf = [0u8; 256];
+    let cwd_len = anyos_std::env::get("PWD", &mut cwd_buf);
+    if cwd_len != u32::MAX && cwd_len > 0 {
+        if let Ok(cwd_str) = core::str::from_utf8(&cwd_buf[..cwd_len as usize]) {
+            shell.cwd = String::from(cwd_str);
         }
-    };
+    }
+
+    let mut app_builtins = ShellAppBuiltins::new();
+
+    // Foreground process tracking
+    let mut fg_proc: Option<ForegroundProcess> = None;
+
+    // Display initial prompt
+    let prompt = shell.prompt();
+    buf.fg_color = COLOR_DIM;
+    buf.feed(prompt.as_bytes());
+    buf.fg_color = COLOR_FG;
 
     // Initial render
     render(win_id, &buf, &font, win_w, win_h);
 
     let mut dirty = false;
     let mut event = [0u32; 5];
-    let mut shell_exited = false;
 
-    // Tab completion state
-    let mut input_line: Vec<u8> = Vec::new();
-    let mut tab_count: u32 = 0;
+    // Password prompt state (for su command)
+    let mut password_mode: Option<String> = None; // Some(username) when prompting
+    let mut password_buf = String::new();
 
     loop {
-        // Poll shell stdout for output
-        if !shell_exited {
+        // Poll foreground process stdout if one is running
+        if let Some(ref fg) = fg_proc {
             let mut read_buf = [0u8; 1024];
             let mut got_output = false;
             loop {
-                let n = shell_proc.read(&mut read_buf);
+                let n = ipc::pipe_read(fg.stdout_pipe, &mut read_buf);
                 if n == 0 || n == u32::MAX {
                     break;
                 }
@@ -896,19 +787,37 @@ fn main() {
                 dirty = true;
             }
 
-            // Check if shell exited
-            if !shell_proc.is_alive() {
+            // Check if foreground process exited
+            let status = process::try_waitpid(fg.tid);
+            if status != process::STILL_RUNNING {
                 // Drain remaining output
                 loop {
-                    let n = shell_proc.read(&mut read_buf);
+                    let n = ipc::pipe_read(fg.stdout_pipe, &mut read_buf);
                     if n == 0 || n == u32::MAX { break; }
                     buf.feed(&read_buf[..n as usize]);
                 }
-                shell_proc.close_pipes();
-                shell_exited = true;
 
-                buf.fg_color = COLOR_DIM;
-                buf.feed(b"\n[Shell exited]\n");
+                let was_stopped = status == process::STOPPED;
+                let finished_fg = fg_proc.take().unwrap();
+
+                if was_stopped {
+                    // Ctrl+Z: add to background jobs as stopped
+                    shell.add_stopped_job(
+                        finished_fg.tid,
+                        &finished_fg.command,
+                        finished_fg.stdout_pipe,
+                        finished_fg.stdin_pipe,
+                        finished_fg.extra_pipes,
+                    );
+                    let job_id = shell.next_job_id - 1;
+                    let msg = format!("\n[{}]+  Stopped  {}\n", job_id, finished_fg.command);
+                    buf.feed(msg.as_bytes());
+                } else {
+                    finished_fg.close_pipes();
+                }
+
+                // Show prompt again
+                redraw_prompt_line(&mut buf, &shell);
                 dirty = true;
             }
         }
@@ -918,9 +827,9 @@ fn main() {
         if got == 1 {
             match event[0] {
                 EVENT_WINDOW_CLOSE => {
-                    if !shell_exited {
-                        shell_proc.kill();
-                        shell_proc.close_pipes();
+                    if let Some(ref fg) = fg_proc {
+                        process::kill(fg.tid);
+                        fg.close_pipes();
                     }
                     window::destroy(win_id);
                     return;
@@ -930,13 +839,14 @@ fn main() {
                         1 => {
                             // Clear
                             buf.clear();
+                            redraw_prompt_line(&mut buf, &shell);
                             dirty = true;
                         }
                         2 => {
                             // Close
-                            if !shell_exited {
-                                shell_proc.kill();
-                                shell_proc.close_pipes();
+                            if let Some(ref fg) = fg_proc {
+                                process::kill(fg.tid);
+                                fg.close_pipes();
                             }
                             window::destroy(win_id);
                             return;
@@ -993,9 +903,8 @@ fn main() {
                     let char_val = event[2];
                     let mods = event[3];
 
-                    // Ctrl+Plus/Minus: font size (local only)
+                    // Ctrl+Plus/Minus: font size (local only, always active)
                     if (mods & MOD_CTRL) != 0 && char_val == '+' as u32 {
-                        // Ctrl+Plus: increase font
                         if font_size_idx + 1 < FONT_SIZES.len() {
                             font_size_idx += 1;
                             font = FontMetrics::measure(mono_font_id, FONT_SIZES[font_size_idx]);
@@ -1004,7 +913,6 @@ fn main() {
                             dirty = true;
                         }
                     } else if (mods & MOD_CTRL) != 0 && char_val == '-' as u32 {
-                        // Ctrl+Minus: decrease font
                         if font_size_idx > 0 {
                             font_size_idx -= 1;
                             font = FontMetrics::measure(mono_font_id, FONT_SIZES[font_size_idx]);
@@ -1012,118 +920,25 @@ fn main() {
                             buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_h as u32).max(1) as usize;
                             dirty = true;
                         }
-                    } else if !shell_exited {
-                        // Forward keystrokes to child process
+                    } else if fg_proc.is_some() {
+                        // Foreground process is running — forward input to its stdin pipe
+                        let fg = fg_proc.as_ref().unwrap();
                         match key_code {
-                            KEY_ENTER => {
-                                shell_proc.write(b"\n");
-                                buf.feed(b"\n");
-                                input_line.clear();
-                                tab_count = 0;
-                            }
-                            KEY_BACKSPACE => {
-                                shell_proc.write(&[0x7f]);
-                                // Erase last character on screen
-                                if buf.cursor_col > 0 {
-                                    buf.cursor_col -= 1;
-                                    buf.ensure_line(buf.cursor_row);
-                                    if buf.cursor_col < buf.lines[buf.cursor_row].len() {
-                                        buf.lines[buf.cursor_row].truncate(buf.cursor_col);
-                                    }
-                                }
-                                input_line.pop();
-                                tab_count = 0;
-                            }
-                            KEY_TAB => {
-                                // Tab completion
-                                let word_start = input_line.iter().rposition(|&b| b == b' ')
-                                    .map(|p| p + 1).unwrap_or(0);
-                                let partial = &input_line[word_start..];
-
-                                if partial.is_empty() {
-                                    // No partial word, just insert tab
-                                    shell_proc.write(b"\t");
-                                    buf.feed(b"\t");
-                                } else {
-                                    let is_first_word = word_start == 0;
-                                    let partial_str = core::str::from_utf8(partial).unwrap_or("");
-
-                                    let matches = if is_first_word && !partial_str.contains('/') {
-                                        find_command_completions(partial_str)
-                                    } else {
-                                        find_file_completions(partial_str)
-                                    };
-
-                                    tab_count += 1;
-
-                                    if matches.len() == 1 {
-                                        // Single match: complete it
-                                        let m = &matches[0];
-                                        let file_prefix_len = match partial_str.rfind('/') {
-                                            Some(pos) => partial_str.len() - pos - 1,
-                                            None => partial_str.len(),
-                                        };
-                                        let insert = &m[file_prefix_len..];
-                                        if !insert.is_empty() {
-                                            shell_proc.write(insert.as_bytes());
-                                            buf.feed(insert.as_bytes());
-                                            input_line.extend_from_slice(insert.as_bytes());
-                                        }
-                                        // Add trailing space if not a directory
-                                        if !m.ends_with('/') {
-                                            shell_proc.write(b" ");
-                                            buf.feed(b" ");
-                                            input_line.push(b' ');
-                                        }
-                                        tab_count = 0;
-                                    } else if matches.len() > 1 {
-                                        // Multiple matches: insert common prefix
-                                        let lcp = longest_common_prefix(&matches);
-                                        let file_prefix_len = match partial_str.rfind('/') {
-                                            Some(pos) => partial_str.len() - pos - 1,
-                                            None => partial_str.len(),
-                                        };
-                                        if lcp.len() > file_prefix_len {
-                                            let insert = &lcp[file_prefix_len..];
-                                            shell_proc.write(insert.as_bytes());
-                                            buf.feed(insert.as_bytes());
-                                            input_line.extend_from_slice(insert.as_bytes());
-                                        }
-                                        // On double-tab, show all matches
-                                        if tab_count >= 2 {
-                                            buf.feed(b"\r\n");
-                                            let show_count = matches.len();
-                                            for i in 0..show_count {
-                                                buf.feed(matches[i].as_bytes());
-                                                buf.feed(b"  ");
-                                            }
-                                            if matches.len() > 200 {
-                                                let msg = format!("... ({} total)", matches.len());
-                                                buf.feed(msg.as_bytes());
-                                            }
-                                            buf.feed(b"\r\n$ ");
-                                            buf.feed(&input_line);
-                                            tab_count = 0;
-                                        }
-                                    }
-                                    // No matches: do nothing
-                                }
-                            }
-                            KEY_ESCAPE => shell_proc.write(b"\x1b"),
-                            KEY_UP => shell_proc.write(b"\x1b[A"),
-                            KEY_DOWN => shell_proc.write(b"\x1b[B"),
-                            KEY_RIGHT => shell_proc.write(b"\x1b[C"),
-                            KEY_LEFT => shell_proc.write(b"\x1b[D"),
-                            KEY_HOME => shell_proc.write(b"\x1b[H"),
-                            KEY_END => shell_proc.write(b"\x1b[F"),
-                            KEY_DELETE => shell_proc.write(b"\x1b[3~"),
-                            KEY_PAGE_UP => shell_proc.write(b"\x1b[5~"),
-                            KEY_PAGE_DOWN => shell_proc.write(b"\x1b[6~"),
+                            KEY_ENTER => { ipc::pipe_write(fg.stdin_pipe, b"\n"); }
+                            KEY_BACKSPACE => { ipc::pipe_write(fg.stdin_pipe, &[0x7f]); }
+                            KEY_ESCAPE => { ipc::pipe_write(fg.stdin_pipe, b"\x1b"); }
+                            KEY_UP => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[A"); }
+                            KEY_DOWN => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[B"); }
+                            KEY_RIGHT => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[C"); }
+                            KEY_LEFT => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[D"); }
+                            KEY_HOME => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[H"); }
+                            KEY_END => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[F"); }
+                            KEY_DELETE => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[3~"); }
+                            KEY_PAGE_UP => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[5~"); }
+                            KEY_PAGE_DOWN => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[6~"); }
                             _ => {
                                 if char_val > 0 {
                                     if (mods & MOD_CTRL) != 0 && char_val < 128 {
-                                        // Forward Ctrl combinations as control codes
-                                        // Ctrl+A=1, Ctrl+B=2, ..., Ctrl+Z=26
                                         let c = char_val as u8;
                                         let ctrl_code = if c >= b'a' && c <= b'z' {
                                             c - b'a' + 1
@@ -1133,31 +948,344 @@ fn main() {
                                             0
                                         };
                                         if ctrl_code > 0 {
-                                            shell_proc.write(&[ctrl_code]);
-                                            // Ctrl+C or Ctrl+U: clear input line
-                                            if ctrl_code == 3 || ctrl_code == 21 {
-                                                input_line.clear();
+                                            ipc::pipe_write(fg.stdin_pipe, &[ctrl_code]);
+                                            // Ctrl+C: also kill the process
+                                            if ctrl_code == 3 {
+                                                process::kill(fg.tid);
+                                            }
+                                            // Ctrl+Z: send SIGTSTP
+                                            if ctrl_code == 26 {
+                                                process::send_signal(fg.tid, process::SIGTSTP);
                                             }
                                         }
                                     } else if let Some(ch) = char::from_u32(char_val) {
                                         if !ch.is_control() {
                                             let mut utf8_buf = [0u8; 4];
                                             let encoded = ch.encode_utf8(&mut utf8_buf);
-                                            shell_proc.write(encoded.as_bytes());
-                                            // Local echo
-                                            buf.feed(encoded.as_bytes());
-                                            if char_val < 128 {
-                                                input_line.push(char_val as u8);
+                                            ipc::pipe_write(fg.stdin_pipe, encoded.as_bytes());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        buf.scroll_to_bottom();
+                        dirty = true;
+                    } else if let Some(ref username) = password_mode.clone() {
+                        // Password input mode (for su command)
+                        match key_code {
+                            KEY_ENTER => {
+                                buf.newline();
+                                {
+                                    let mut out = BufOutput { buf: &mut buf };
+                                    libshellcommon::interpreter::ShellState::do_su(username, &password_buf, &mut out);
+                                }
+                                password_buf.clear();
+                                password_mode = None;
+                                // Show prompt
+                                buf.newline();
+                                redraw_prompt_line(&mut buf, &shell);
+                                dirty = true;
+                            }
+                            KEY_BACKSPACE => {
+                                if !password_buf.is_empty() {
+                                    password_buf.pop();
+                                }
+                            }
+                            _ => {
+                                if char_val > 0 {
+                                    if let Some(ch) = char::from_u32(char_val) {
+                                        if !ch.is_control() {
+                                            password_buf.push(ch);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        buf.scroll_to_bottom();
+                        dirty = true;
+                    } else {
+                        // No foreground process — handle input locally with ShellState
+                        match key_code {
+                            KEY_ENTER => {
+                                // Display the current text on the line before executing
+                                let actions = {
+                                    let mut out = BufOutput { buf: &mut buf };
+                                    shell.execute(&mut out, &mut app_builtins)
+                                };
+
+                                // Handle clear_screen flag from builtins
+                                if app_builtins.clear_flag {
+                                    buf.clear();
+                                    app_builtins.clear_flag = false;
+                                }
+
+                                // Process actions
+                                let mut show_prompt = true;
+                                for action in actions {
+                                    match action {
+                                        libshellcommon::interpreter::ShellAction::Done => {}
+                                        libshellcommon::interpreter::ShellAction::Exit => {
+                                            window::destroy(win_id);
+                                            return;
+                                        }
+                                        libshellcommon::interpreter::ShellAction::Reboot => {
+                                            process::reboot();
+                                        }
+                                        libshellcommon::interpreter::ShellAction::Shutdown => {
+                                            process::shutdown();
+                                        }
+                                        libshellcommon::interpreter::ShellAction::PromptPassword { username } => {
+                                            password_mode = Some(username);
+                                            show_prompt = false;
+                                        }
+                                        libshellcommon::interpreter::ShellAction::RunForeground { path, args, command, redirect, input_data } => {
+                                            show_prompt = false;
+                                            // Already-running process (from fg command) — path is empty
+                                            if path.is_empty() {
+                                                // fg resumed a background job: wait for it
+                                                // The bg job's pipes were transferred; nothing more to set up here
+                                            } else {
+                                                // Spawn new foreground process with pipes
+                                                let pipe_name = format!("shell:fg:{}:{}", process::getpid(), shell.pipe_counter);
+                                                shell.pipe_counter += 1;
+                                                let stdout_pipe = ipc::pipe_create(&pipe_name);
+                                                let stdin_name = format!("shell:fgin:{}:{}", process::getpid(), shell.pipe_counter);
+                                                shell.pipe_counter += 1;
+                                                let stdin_pipe = ipc::pipe_create(&stdin_name);
+
+                                                // Write input data to stdin pipe if present
+                                                if let Some(ref input) = input_data {
+                                                    ipc::pipe_write(stdin_pipe, input.as_bytes());
+                                                }
+
+                                                let tid = process::spawn_piped_full(&path, &args, stdout_pipe, stdin_pipe);
+                                                if tid == u32::MAX {
+                                                    let msg = format!("shell: {}: command not found\n", command);
+                                                    buf.feed(msg.as_bytes());
+                                                    ipc::pipe_close(stdout_pipe);
+                                                    ipc::pipe_close(stdin_pipe);
+                                                    show_prompt = true;
+                                                } else {
+                                                    // Handle output redirect: if redirect is set,
+                                                    // we need to capture output and write to file
+                                                    // For now, treat as normal pipe output
+                                                    if let Some(redir) = redirect {
+                                                        // Wait for process, capture output, write redirect
+                                                        process::waitpid(tid);
+                                                        let mut out_buf = [0u8; 4096];
+                                                        let mut captured = String::new();
+                                                        loop {
+                                                            let n = ipc::pipe_read(stdout_pipe, &mut out_buf);
+                                                            if n == 0 || n == u32::MAX { break; }
+                                                            if let Ok(s) = core::str::from_utf8(&out_buf[..n as usize]) {
+                                                                captured.push_str(s);
+                                                            }
+                                                        }
+                                                        ipc::pipe_close(stdout_pipe);
+                                                        ipc::pipe_close(stdin_pipe);
+                                                        let mut redir = redir;
+                                                        anyos_std::shell::write_redirect(&mut redir, &captured);
+                                                        show_prompt = true;
+                                                    } else {
+                                                        fg_proc = Some(ForegroundProcess {
+                                                            tid,
+                                                            stdout_pipe,
+                                                            stdin_pipe,
+                                                            command: String::from(command.as_str()),
+                                                            extra_pipes: Vec::new(),
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        libshellcommon::interpreter::ShellAction::RunBackground { path, args, command } => {
+                                            let pipe_name = format!("shell:bg:{}:{}", process::getpid(), shell.pipe_counter);
+                                            shell.pipe_counter += 1;
+                                            let stdout_pipe = ipc::pipe_create(&pipe_name);
+                                            let stdin_name = format!("shell:bgin:{}:{}", process::getpid(), shell.pipe_counter);
+                                            shell.pipe_counter += 1;
+                                            let stdin_pipe = ipc::pipe_create(&stdin_name);
+
+                                            let tid = process::spawn_piped_full(&path, &args, stdout_pipe, stdin_pipe);
+                                            if tid == u32::MAX {
+                                                let msg = format!("shell: {}: command not found\n", command);
+                                                buf.feed(msg.as_bytes());
+                                                ipc::pipe_close(stdout_pipe);
+                                                ipc::pipe_close(stdin_pipe);
+                                            } else {
+                                                shell.add_bg_job(tid, &command);
+                                                let job_id = shell.next_job_id - 1;
+                                                let msg = format!("[{}] {}\n", job_id, tid);
+                                                buf.feed(msg.as_bytes());
+                                            }
+                                        }
+                                        libshellcommon::interpreter::ShellAction::RunPipeline { line, redirect } => {
+                                            show_prompt = false;
+                                            if let Some(result) = anyos_std::shell::run_pipeline(&line, &shell.cwd, &mut shell.pipe_counter) {
+                                                let tid = result.last_tid;
+                                                if let Some(redir) = redirect {
+                                                    // Capture pipeline output to redirect
+                                                    process::waitpid(tid);
+                                                    let mut out_buf = [0u8; 4096];
+                                                    let mut captured = String::new();
+                                                    loop {
+                                                        let n = ipc::pipe_read(result.display_pipe, &mut out_buf);
+                                                        if n == 0 || n == u32::MAX { break; }
+                                                        if let Ok(s) = core::str::from_utf8(&out_buf[..n as usize]) {
+                                                            captured.push_str(s);
+                                                        }
+                                                    }
+                                                    ipc::pipe_close(result.display_pipe);
+                                                    for &p in &result.extra_pipes {
+                                                        ipc::pipe_close(p);
+                                                    }
+                                                    let mut redir = redir;
+                                                    anyos_std::shell::write_redirect(&mut redir, &captured);
+                                                    show_prompt = true;
+                                                } else {
+                                                    fg_proc = Some(ForegroundProcess {
+                                                        tid,
+                                                        stdout_pipe: result.display_pipe,
+                                                        stdin_pipe: 0,
+                                                        command: String::from(line.as_str()),
+                                                        extra_pipes: result.extra_pipes,
+                                                    });
+                                                }
+                                            } else {
+                                                buf.feed(b"shell: pipeline failed\n");
+                                                show_prompt = true;
                                             }
                                         }
                                     }
                                 }
-                                tab_count = 0;
+
+                                if show_prompt && fg_proc.is_none() && password_mode.is_none() {
+                                    redraw_prompt_line(&mut buf, &shell);
+                                }
+                                buf.scroll_to_bottom();
+                                dirty = true;
+                            }
+                            KEY_BACKSPACE => {
+                                shell.backspace();
+                                redraw_prompt_line(&mut buf, &shell);
+                                buf.scroll_to_bottom();
+                                dirty = true;
+                            }
+                            KEY_TAB => {
+                                let before = shell.line.before_cursor();
+                                let before_owned = String::from(before);
+                                match libshellcommon::complete(&before_owned, &shell.cwd, SHELL_BUILTINS) {
+                                    libshellcommon::CompletionResult::None => {
+                                        // No matches — do nothing
+                                    }
+                                    libshellcommon::CompletionResult::Single(remaining, is_dir) => {
+                                        if !remaining.is_empty() {
+                                            shell.line.insert_str(&remaining);
+                                        }
+                                        if !is_dir {
+                                            shell.line.insert_char(' ');
+                                        }
+                                        redraw_prompt_line(&mut buf, &shell);
+                                    }
+                                    libshellcommon::CompletionResult::Multiple(to_insert, completions) => {
+                                        if !to_insert.is_empty() {
+                                            shell.line.insert_str(&to_insert);
+                                        }
+                                        // Show all matches
+                                        buf.newline();
+                                        for m in &completions {
+                                            buf.feed(m.as_bytes());
+                                            buf.feed(b"  ");
+                                        }
+                                        if completions.len() > 200 {
+                                            let msg = format!("... ({} total)", completions.len());
+                                            buf.feed(msg.as_bytes());
+                                        }
+                                        buf.newline();
+                                        redraw_prompt_line(&mut buf, &shell);
+                                    }
+                                }
+                                buf.scroll_to_bottom();
+                                dirty = true;
+                            }
+                            KEY_UP => {
+                                shell.history_up();
+                                redraw_prompt_line(&mut buf, &shell);
+                                buf.scroll_to_bottom();
+                                dirty = true;
+                            }
+                            KEY_DOWN => {
+                                shell.history_down();
+                                redraw_prompt_line(&mut buf, &shell);
+                                buf.scroll_to_bottom();
+                                dirty = true;
+                            }
+                            KEY_LEFT => {
+                                shell.cursor_left();
+                                redraw_prompt_line(&mut buf, &shell);
+                                dirty = true;
+                            }
+                            KEY_RIGHT => {
+                                shell.cursor_right();
+                                redraw_prompt_line(&mut buf, &shell);
+                                dirty = true;
+                            }
+                            KEY_HOME => {
+                                shell.cursor_home();
+                                redraw_prompt_line(&mut buf, &shell);
+                                dirty = true;
+                            }
+                            KEY_END => {
+                                shell.cursor_end();
+                                redraw_prompt_line(&mut buf, &shell);
+                                dirty = true;
+                            }
+                            KEY_DELETE => {
+                                shell.delete_at_cursor();
+                                redraw_prompt_line(&mut buf, &shell);
+                                dirty = true;
+                            }
+                            _ => {
+                                if char_val > 0 {
+                                    if (mods & MOD_CTRL) != 0 && char_val < 128 {
+                                        let c = char_val as u8;
+                                        let ctrl_code = if c >= b'a' && c <= b'z' {
+                                            c - b'a' + 1
+                                        } else if c >= b'A' && c <= b'Z' {
+                                            c - b'A' + 1
+                                        } else {
+                                            0
+                                        };
+                                        if ctrl_code == 3 {
+                                            // Ctrl+C: cancel current input
+                                            buf.feed(b"^C");
+                                            buf.newline();
+                                            shell.line.clear();
+                                            shell.history.reset_index();
+                                            redraw_prompt_line(&mut buf, &shell);
+                                            dirty = true;
+                                        } else if ctrl_code == 12 {
+                                            // Ctrl+L: clear screen
+                                            buf.clear();
+                                            redraw_prompt_line(&mut buf, &shell);
+                                            dirty = true;
+                                        } else if ctrl_code == 21 {
+                                            // Ctrl+U: clear line
+                                            shell.line.clear();
+                                            redraw_prompt_line(&mut buf, &shell);
+                                            dirty = true;
+                                        }
+                                    } else if let Some(ch) = char::from_u32(char_val) {
+                                        if !ch.is_control() {
+                                            shell.insert_char(ch);
+                                            redraw_prompt_line(&mut buf, &shell);
+                                            buf.scroll_to_bottom();
+                                            dirty = true;
+                                        }
+                                    }
+                                }
                             }
                         }
-                        // Scroll to bottom on any key input
-                        buf.scroll_to_bottom();
-                        dirty = true;
                     }
                 }
                 _ => {}

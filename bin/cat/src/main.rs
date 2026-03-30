@@ -41,6 +41,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("cat - Concatenate and print files\n\nUsage: cat [FILE...]\n\nOptions:\n  -n             Number all output lines\n  -b             Number non-blank output lines\n  -E             Show $ at end of each line");
+        return;
+    }
+
     let number = args.has(b'n');
     let number_nonblank = args.has(b'b');
     let show_ends = args.has(b'E');

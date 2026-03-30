@@ -22,6 +22,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("chown - Change file owner and group\n\nUsage: chown UID[:GID] PATH");
+        return;
+    }
+
     if args.pos_count < 2 {
         anyos_std::println!("Usage: chown <uid>[:<gid>] <path>");
         anyos_std::println!("  If gid is omitted, it defaults to uid");

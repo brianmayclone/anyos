@@ -238,6 +238,13 @@ fn execute_command(cmd: &str) {
 // ─── Main Loop ──────────────────────────────────────────────────────────────
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("crond - Cron scheduler daemon\n\nUsage: crond");
+        return;
+    }
+
     anyos_std::println!("crond: starting (crontab_dir={})", CRONTAB_DIR);
 
     // Ensure crontab directory exists

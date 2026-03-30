@@ -4,6 +4,13 @@
 anyos_std::entry!(main);
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("date - Print current date and time\n\nUsage: date");
+        return;
+    }
+
     let mut buf = [0u8; 8];
     anyos_std::sys::time(&mut buf);
     let year = u16::from_le_bytes([buf[0], buf[1]]) as u32;

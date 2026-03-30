@@ -11,6 +11,11 @@ fn main() -> u32 {
     let raw = process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("su - Switch user\n\nUsage: su [USERNAME]");
+        return 0;
+    }
+
     // su [username]  — default target is root
     let username = if args.pos_count > 0 {
         args.positional[0]

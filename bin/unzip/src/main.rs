@@ -42,6 +42,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"d");
 
+    if raw.contains("--help") {
+        anyos_std::println!("unzip - Extract ZIP archives\n\nUsage: unzip ARCHIVE\n\nOptions:\n  -l             List archive contents\n  -d DIR         Extract to directory");
+        return;
+    }
+
     if args.pos_count < 1 {
         usage();
         return;

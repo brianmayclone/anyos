@@ -39,6 +39,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("sort - Sort lines of text\n\nUsage: sort [FILE]\n\nOptions:\n  -r             Reverse sort order\n  -n             Numeric sort\n  -u             Remove duplicate lines\n  -f             Case-insensitive sort");
+        return;
+    }
+
     let reverse = args.has(b'r');
     let numeric = args.has(b'n');
     let unique = args.has(b'u');

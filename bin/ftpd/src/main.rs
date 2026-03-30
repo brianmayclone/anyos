@@ -76,6 +76,13 @@ fn ensure_dir_exists(path: &str) {
 }
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("ftpd - FTP server daemon\n\nUsage: ftpd");
+        return;
+    }
+
     println!("ftpd: starting");
 
     let mut cfg = config::load(); // Box<FtpdConfig> — lives on heap

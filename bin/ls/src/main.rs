@@ -422,6 +422,11 @@ fn main() {
     let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
 
+    if raw.contains("--help") {
+        anyos_std::println!("ls - List directory contents\n\nUsage: ls [PATH...]\n\nOptions:\n  -l             Long listing format\n  -a             Show hidden files (starting with .)\n  -1             One entry per line\n  -h             Human-readable sizes\n  -S             Sort by file size\n  -r             Reverse sort order\n  -d             List directories themselves, not contents\n  -R             Recursive listing\n  --color        Colorize output");
+        return;
+    }
+
     // Enable color if --color is passed explicitly, or if $TERM is set (auto-detect terminal).
     let mut term_buf = [0u8; 32];
     let term_len = anyos_std::env::get("TERM", &mut term_buf);

@@ -4,6 +4,13 @@
 anyos_std::entry!(main);
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("uptime - Show system uptime\n\nUsage: uptime");
+        return;
+    }
+
     anyos_std::i18n::init();
     let t = anyos_std::i18n::t;
     let ticks = anyos_std::sys::uptime();

@@ -4,6 +4,13 @@
 anyos_std::entry!(main);
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("arp - Show ARP table\n\nUsage: arp");
+        return;
+    }
+
     // Each ARP entry is 12 bytes: [ip:4, mac:6, pad:2]
     let mut buf = [0u8; 12 * 32]; // max 32 entries
     let count = anyos_std::net::arp(&mut buf);

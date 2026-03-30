@@ -4,6 +4,13 @@
 anyos_std::entry!(main);
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("uname - Print system information\n\nUsage: uname\n\nOptions:\n  -a             Print all information");
+        return;
+    }
+
     let mut buf = [0u8; 256];
     let args = anyos_std::process::args(&mut buf);
 

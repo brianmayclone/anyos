@@ -46,6 +46,13 @@ const MONTH_NAMES: [&str; 12] = [
 ];
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("cal - Display a calendar\n\nUsage: cal");
+        return;
+    }
+
     let mut time_buf = [0u8; 8];
     anyos_std::sys::time(&mut time_buf);
     let year = (time_buf[0] as u32) | ((time_buf[1] as u32) << 8);

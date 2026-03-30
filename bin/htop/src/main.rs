@@ -35,6 +35,13 @@ fn parse_uint(bytes: &[u8]) -> Option<usize> {
 }
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("htop - Interactive process monitor\n\nUsage: htop");
+        return;
+    }
+
     use data::*;
     use render::*;
 

@@ -106,6 +106,13 @@ impl AppState {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
+    let mut args_buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut args_buf);
+    if raw.contains("--help") {
+        anyos_std::println!("ac - Two-panel file manager\n\nUsage: ac");
+        return;
+    }
+
     term::enter_tui_mode();
 
     let mut state = AppState::new();

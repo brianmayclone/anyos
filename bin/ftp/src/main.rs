@@ -1075,8 +1075,16 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
 }
 
 fn main() {
+
+
     let mut args_buf = [0u8; 256];
     let args_raw = anyos_std::process::args(&mut args_buf);
+
+    if args_raw.contains("--help") {
+        anyos_std::println!("ftp - FTP client\n\nUsage: ftp URL");
+        return;
+    }
+
     let args = args_raw.trim();
 
     if args.is_empty() {

@@ -34,6 +34,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"");
 
+    if raw.contains("--help") {
+        anyos_std::println!("wc - Count lines, words, and bytes\n\nUsage: wc [FILE...]\n\nOptions:\n  -l             Count lines only\n  -w             Count words only\n  -c             Count bytes only");
+        return;
+    }
+
     let flag_l = args.has(b'l');
     let flag_w = args.has(b'w');
     let flag_c = args.has(b'c');
