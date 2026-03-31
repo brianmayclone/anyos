@@ -1213,6 +1213,24 @@ HTML
 
 **Wichtig**: surf-host rendert identisch zu anyOS Surf (gleicher Code-Pfad). Wenn es in surf-host korrekt aussieht, wird es auch in anyOS korrekt sein. Ausnahmen: Formular-Controls (Stubs im Host-Modus) und Subpixel-Font-Rendering (Greyscale statt LCD).
 
+### W3C-Konformitaet
+
+Bei Aenderungen an der Rendering-Engine (libwebview) muessen die W3C-Spezifikationen als verbindliche Referenz verwendet werden. Nicht nach dem Verhalten anderer Browser implementieren, sondern nach den Standards:
+
+- **HTML-Parsing**: [HTML Living Standard](https://html.spec.whatwg.org/) — insbesondere der Parsing-Algorithmus (Tokenizer, Tree Construction, Error Handling). Fehlerhafte Dokumente muessen gemaess der Spec behandelt werden (z.B. implizite Tag-Schliessung, optional endende Tags wie `<p>`, `<li>`).
+- **CSS-Parsing & Cascade**: [CSS Syntax Module](https://www.w3.org/TR/css-syntax-3/), [CSS Cascading and Inheritance](https://www.w3.org/TR/css-cascade-4/) — Selector-Matching, Specificity-Berechnung, Cascade-Reihenfolge (User-Agent → Author → Inline), `!important`, Vererbung.
+- **Box Model & Layout**: [CSS Box Model](https://www.w3.org/TR/css-box-4/), [CSS Display](https://www.w3.org/TR/css-display-3/) — Margin-Collapsing, Padding, Border, Content-Box vs Border-Box.
+- **Flexbox**: [CSS Flexible Box Layout](https://www.w3.org/TR/css-flexbox-1/) — Achsen, `flex-grow`/`flex-shrink`/`flex-basis`, Alignment, Wrapping, `order`, `gap`.
+- **Grid**: [CSS Grid Layout](https://www.w3.org/TR/css-grid-1/) — Track-Sizing (fr, auto, minmax), Placement, Named Lines/Areas, Implicit Grid.
+- **Inline Layout**: [CSS Inline Layout](https://www.w3.org/TR/css-inline-3/) — Line-Boxes, Baseline-Alignment, `vertical-align`, `line-height`.
+- **Positioning**: [CSS Positioned Layout](https://www.w3.org/TR/css-position-3/) — `static`, `relative`, `absolute`, `fixed`, `sticky`, Containing Block, Stacking Context, `z-index`.
+- **Text**: [CSS Text](https://www.w3.org/TR/css-text-3/) — `white-space`, `word-break`, `overflow-wrap`, `text-align`, `text-indent`, `text-transform`.
+- **Farben & Einheiten**: [CSS Values and Units](https://www.w3.org/TR/css-values-4/) — `px`, `em`, `rem`, `%`, `vw`/`vh`, `calc()`, Farb-Syntax (`#rgb`, `rgb()`, `hsl()`, named colors).
+- **Selektoren**: [Selectors Level 4](https://www.w3.org/TR/selectors-4/) — Combinators, Pseudo-Klassen (`:hover`, `:nth-child()`, `:not()`), Pseudo-Elemente (`::before`, `::after`).
+- **JavaScript DOM API**: [DOM Living Standard](https://dom.spec.whatwg.org/) — `document.getElementById()`, `querySelector()`, `createElement()`, Event-Modell.
+
+**Leitlinie**: Im Zweifelsfall immer die Spec lesen, nicht raten. Wenn die Spec ein bestimmtes Verhalten definiert, muss die Implementierung diesem folgen — auch wenn das Ergebnis sich von der Erwartung unterscheidet.
+
 ### TODO — Noch nicht implementiert
 
 #### Prio 1: Rendering-Paritaet mit anyOS Surf
