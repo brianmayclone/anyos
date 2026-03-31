@@ -1157,6 +1157,62 @@ Betroffene Crates: `anyos_std`, `libheap`, `dynlink`, `libfont`, `libfont_client
 - `libfont` hat `crate-type = ["staticlib", "lib"]` — beide noetig (staticlib fuer anyOS-Linking, lib fuer surf-host)
 - `tools/surf-host` ist in `Cargo.toml` (Root) unter `exclude` eingetragen um Workspace-Konflikte zu vermeiden
 
+### Rendering-Aenderungen testen (ohne anyOS zu starten)
+
+Nach Aenderungen an `libwebview`, `libs/libfont`, `libs/libjs` oder der CSS/Layout-Pipeline kann das Rendering direkt auf dem Host getestet werden, ohne anyOS booten zu muessen.
+
+**Workflow:**
+
+1. **Referenz-Screenshot erstellen** — Der User erstellt mit Firefox oder Chrome einen Screenshot der Zielseite als Vergleichsbasis (z.B. `referenz.png`).
+
+2. **surf-host bauen und Screenshot erstellen:**
+   ```bash
+   cd tools/surf-host
+   ./build.sh screenshot https://www.example.com ergebnis.png 1280x960
+   ```
+
+3. **Visuell vergleichen** — `referenz.png` und `ergebnis.png` nebeneinander oeffnen. Unterschiede zeigen Rendering-Probleme in libwebview.
+
+4. **Gezielten Bereich pruefen** — Bei bekannten Problembereichen einen Y-Range-Screenshot machen:
+   ```bash
+   ./build.sh screenshot https://www.example.com 400-900 detail.png 1280x960
+   ```
+
+5. **Nach dem Fix erneut testen** — Code aendern, `./build.sh screenshot ...` wiederholen, neues Ergebnis mit Referenz vergleichen.
+
+**Beispiel: CSS-Flexbox-Fix testen**
+```bash
+# 1. Referenz: User macht Screenshot von wikipedia.de in Chrome (referenz_wiki.png)
+# 2. Vorher-Zustand:
+./build.sh screenshot https://www.wikipedia.de vorher.png 1280x960
+# 3. Fix in libs/libwebview/src/layout/flex.rs implementieren
+# 4. Nachher-Zustand:
+./build.sh screenshot https://www.wikipedia.de nachher.png 1280x960
+# 5. Vergleich: nachher.png sollte naeher an referenz_wiki.png sein als vorher.png
+```
+
+**Lokale Test-HTML fuer isolierte Tests:**
+```bash
+# Eigene Test-Datei mit dem spezifischen CSS-Feature erstellen
+cat > /tmp/flex-test.html << 'HTML'
+<!DOCTYPE html>
+<html><head><style>
+.container { display: flex; gap: 20px; background: #eee; padding: 20px; }
+.box { flex: 1; background: #4a90d9; color: white; padding: 40px; text-align: center; }
+</style></head><body>
+<div class="container">
+  <div class="box">Box 1</div>
+  <div class="box">Box 2</div>
+  <div class="box">Box 3</div>
+</div>
+</body></html>
+HTML
+
+./build.sh screenshot file:///tmp/flex-test.html flex-test.png
+```
+
+**Wichtig**: surf-host rendert identisch zu anyOS Surf (gleicher Code-Pfad). Wenn es in surf-host korrekt aussieht, wird es auch in anyOS korrekt sein. Ausnahmen: Formular-Controls (Stubs im Host-Modus) und Subpixel-Font-Rendering (Greyscale statt LCD).
+
 ### TODO — Noch nicht implementiert
 
 #### Prio 1: Rendering-Paritaet mit anyOS Surf
