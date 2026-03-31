@@ -39,6 +39,8 @@ pub mod vmmdev;
 #[cfg(target_arch = "x86_64")]
 pub mod virtio;
 #[cfg(target_arch = "x86_64")]
+pub mod watchdog;
+#[cfg(target_arch = "x86_64")]
 pub mod smbus;
 #[cfg(target_arch = "x86_64")]
 pub mod i2c;

@@ -9,6 +9,7 @@
 
 pub mod e1000;
 pub mod rtl8188eu;
+pub mod virtio_net;
 
 use alloc::boxed::Box;
 use crate::sync::spinlock::Spinlock;

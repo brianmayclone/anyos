@@ -13,6 +13,10 @@ use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use crate::sync::mutex::Mutex;
 
+/// Poisoned flag: set after force_unlock_gpu() to prevent use of potentially
+/// corrupted GPU driver state. Cleared only by a full GPU re-init.
+static GPU_POISONED: AtomicBool = AtomicBool::new(false);
+
 /// Validate a `&dyn GpuDriver` trait object's vtable pointer.
 /// Returns false if data or vtable pointer is outside kernel higher-half,
 /// indicating heap corruption of the `Box<dyn GpuDriver>`.
@@ -219,8 +223,10 @@ pub trait GpuDriver: Send {
 static GPU: Mutex<Option<Box<dyn GpuDriver>>> = Mutex::new(None);
 
 /// Register a GPU driver (called from HAL driver factory during PCI probe).
+/// Clears the poison flag if set from a previous crash.
 pub fn register(driver: Box<dyn GpuDriver>) {
     crate::serial_verbose_println!("  GPU: registered '{}'", driver.name());
+    GPU_POISONED.store(false, Ordering::Release);
     let mut gpu = GPU.lock();
     *gpu = Some(driver);
 }
@@ -229,11 +235,17 @@ pub fn register(driver: Box<dyn GpuDriver>) {
 ///
 /// Acquires the GPU [`Mutex`] with interrupts **enabled** — safe to hold
 /// across long operations (DMA, FIFO sync, VirtIO polling). Returns `None`
-/// if no driver is registered or the vtable appears corrupted.
+/// if no driver is registered, poisoned after a crash, or the vtable appears
+/// corrupted.
 pub fn with_gpu<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut dyn GpuDriver) -> R,
 {
+    // Fast-path reject: if the GPU was force-unlocked after a crash, the driver
+    // state is potentially corrupt. All further calls are blocked until re-init.
+    if GPU_POISONED.load(Ordering::Relaxed) {
+        return None;
+    }
     let mut gpu = GPU.lock();
     let boxed = gpu.as_mut()?;
     let driver: &mut dyn GpuDriver = boxed.as_mut();
@@ -243,9 +255,15 @@ where
     Some(f(driver))
 }
 
-/// Check if a GPU driver is registered.
+/// Check if a GPU driver is registered and not poisoned.
 pub fn is_available() -> bool {
-    GPU.lock().is_some()
+    !GPU_POISONED.load(Ordering::Relaxed) && GPU.lock().is_some()
+}
+
+/// Check if the GPU was poisoned after a crash (force-unlock).
+/// The compositor can use this to detect that a GPU re-init is needed.
+pub fn is_gpu_poisoned() -> bool {
+    GPU_POISONED.load(Ordering::Relaxed)
 }
 
 /// Check if the GPU mutex is currently held (by any thread).
@@ -255,18 +273,27 @@ pub fn is_gpu_locked() -> bool {
 
 /// Force-release the GPU mutex from a crash/fault handler.
 ///
+/// Poisons the GPU: all subsequent `with_gpu()` calls return `None` until
+/// the GPU driver is re-registered. This prevents use of potentially corrupt
+/// driver state (partially modified DMA buffers, inconsistent virtqueue, etc.)
+/// that caused the original crash.
+///
 /// # Safety
 /// Only call when the current thread is known to hold the GPU mutex and is
-/// about to be terminated. The GPU driver state may be partially modified.
+/// about to be terminated.
 pub unsafe fn force_unlock_gpu() {
+    GPU_POISONED.store(true, Ordering::Release);
     GPU.force_unlock();
 }
 
 /// Non-blocking GPU access (for use during panic/RSOD where yielding is not safe).
 ///
-/// Returns `Some(guard)` only if the mutex is currently free.
+/// Returns `Some(guard)` only if the mutex is currently free and not poisoned.
 /// Callers **must** handle `None` gracefully — the GPU may be in use by another thread.
 pub fn try_lock_gpu() -> Option<crate::sync::mutex::MutexGuard<'static, Option<Box<dyn GpuDriver>>>> {
+    if GPU_POISONED.load(Ordering::Relaxed) {
+        return None;
+    }
     GPU.try_lock()
 }
 

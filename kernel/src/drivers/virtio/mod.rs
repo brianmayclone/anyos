@@ -3,6 +3,8 @@
 //! Provides PCI capability discovery, BAR mapping, device initialization,
 //! and notification for VirtIO devices over PCI modern transport (capabilities-based).
 
+pub mod balloon;
+pub mod rng;
 pub mod serial;
 pub mod virtqueue;
 

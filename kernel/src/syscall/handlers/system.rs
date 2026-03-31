@@ -389,12 +389,22 @@ pub fn sys_random(buf_ptr: u32, len: u32) -> u32 {
     }
 
     let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+
+    // Try VirtIO RNG first (best entropy source from hypervisor).
+    #[cfg(target_arch = "x86_64")]
+    let mut filled = crate::drivers::virtio::rng::fill_random(dst);
+    #[cfg(target_arch = "aarch64")]
+    let mut filled = 0usize;
+
+    if filled >= len {
+        return filled as u32;
+    }
+
     #[cfg(target_arch = "x86_64")]
     let has_rdrand = crate::arch::x86::cpuid::features().rdrand;
     #[cfg(target_arch = "aarch64")]
     let has_rdrand = true; // ARM64: try RNDR (falls back to counter if fails)
 
-    let mut filled = 0usize;
     if has_rdrand {
         // Use RDRAND: generates 64 bits of hardware random per call
         while filled + 8 <= len {

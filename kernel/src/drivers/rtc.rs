@@ -128,6 +128,65 @@ pub fn set_time(year: u16, month: u8, day: u8, hour: u8, min: u8, sec: u8) {
     write_cmos(0x0B, reg_b & !0x80);
 }
 
+// ── CMOS NVRAM (registers 0x10–0x7F) ────────────────────────────────────────
+
+/// NVRAM usable range: registers 0x10–0x7F (112 bytes).
+/// Registers 0x00–0x0F are reserved for RTC time/alarm/status.
+const NVRAM_START: u8 = 0x10;
+const NVRAM_END: u8 = 0x7F;
+
+/// Read a single byte from CMOS NVRAM.
+/// `addr` is the CMOS register (0x10–0x7F). Returns 0 if out of range.
+pub fn nvram_read(addr: u8) -> u8 {
+    if addr < NVRAM_START || addr > NVRAM_END {
+        return 0;
+    }
+    read_cmos(addr)
+}
+
+/// Write a single byte to CMOS NVRAM.
+/// `addr` is the CMOS register (0x10–0x7F). Ignored if out of range.
+pub fn nvram_write(addr: u8, val: u8) {
+    if addr < NVRAM_START || addr > NVRAM_END {
+        return;
+    }
+    write_cmos(addr, val);
+}
+
+/// Read a block of bytes from CMOS NVRAM starting at `start_addr`.
+/// Returns the number of bytes read.
+pub fn nvram_read_block(start_addr: u8, buf: &mut [u8]) -> usize {
+    let mut count = 0;
+    let mut addr = start_addr;
+    for byte in buf.iter_mut() {
+        if addr < NVRAM_START || addr > NVRAM_END {
+            break;
+        }
+        *byte = read_cmos(addr);
+        addr = addr.wrapping_add(1);
+        count += 1;
+    }
+    count
+}
+
+/// Write a block of bytes to CMOS NVRAM starting at `start_addr`.
+/// Returns the number of bytes written.
+pub fn nvram_write_block(start_addr: u8, data: &[u8]) -> usize {
+    let mut count = 0;
+    let mut addr = start_addr;
+    for &byte in data {
+        if addr < NVRAM_START || addr > NVRAM_END {
+            break;
+        }
+        write_cmos(addr, byte);
+        addr = addr.wrapping_add(1);
+        count += 1;
+    }
+    count
+}
+
+// ── Initialization ──────────────────────────────────────────────────────────
+
 /// Initialize the RTC driver and log the current date/time.
 pub fn init() {
     let time = read_time();

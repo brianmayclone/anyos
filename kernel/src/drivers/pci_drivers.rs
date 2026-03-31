@@ -62,6 +62,13 @@ pub(super) fn matches_pci(rule: &PciMatch, dev: &PciDevice) -> bool {
 // │ VendorDevice │ 1000:0030│ LSI Logic Fusion-MPT SCSI (Storage)           │
 // │ VendorDevice │ 80EE:4E56│ VirtualBox NVMe (Storage)                     │
 // │ VendorDevice │ 80EE:CAFE│ VirtualBox VMMDev (Guest Integration)         │
+// │ VendorDevice │ 1AF4:1005│ VirtIO RNG (transitional)                    │
+// │ VendorDevice │ 1AF4:1044│ VirtIO RNG (modern)                          │
+// │ VendorDevice │ 1AF4:1000│ VirtIO Net (transitional)                    │
+// │ VendorDevice │ 1AF4:1041│ VirtIO Net (modern)                          │
+// │ VendorDevice │ 1AF4:1002│ VirtIO Balloon (transitional)                │
+// │ VendorDevice │ 1AF4:1045│ VirtIO Balloon (modern)                      │
+// │ VendorDevice │ 8086:25AB│ Intel i6300ESB Watchdog Timer                │
 // ├──────────────┼──────────┼────────────────────────────────────────────────┤
 // │ Class        │ 01:01    │ IDE Controller (Storage)                       │
 // │ Class        │ 01:06    │ AHCI SATA Controller (Storage)                │
@@ -132,6 +139,45 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
     PciDriverEntry {
         match_rule: PciMatch::VendorDevice { vendor: 0x80EE, device: 0xCAFE },
         factory: |pci| crate::drivers::vmmdev::probe(pci),
+        specificity: 2,
+    },
+    // VirtIO RNG (transitional + modern)
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1005 },
+        factory: |pci| crate::drivers::virtio::rng::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1044 },
+        factory: |pci| crate::drivers::virtio::rng::probe(pci),
+        specificity: 2,
+    },
+    // VirtIO Net (transitional + modern)
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1000 },
+        factory: |pci| crate::drivers::network::virtio_net::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1041 },
+        factory: |pci| crate::drivers::network::virtio_net::probe(pci),
+        specificity: 2,
+    },
+    // VirtIO Balloon (transitional + modern)
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1002 },
+        factory: |pci| crate::drivers::virtio::balloon::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1045 },
+        factory: |pci| crate::drivers::virtio::balloon::probe(pci),
+        specificity: 2,
+    },
+    // Intel i6300ESB Watchdog Timer
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x25AB },
+        factory: |pci| crate::drivers::watchdog::probe(pci),
         specificity: 2,
     },
 
