@@ -1252,7 +1252,77 @@ Bei Aenderungen an der Rendering-Engine (libwebview) muessen die W3C-Spezifikati
 - [ ] **Fenster-Resize** — Viewport-Groesse anpassen wenn das Fenster vergroessert wird, relayout triggern
 - [ ] **Zurueck/Vorwaerts** — Navigation-History
 
-#### Prio 4: Erweiterte Features
+#### Prio 4: CSS Grid Verbesserungen (Wikipedia-Artikel-Layout)
+
+Die Wikipedia-Artikel-Seiten (de.wikipedia.org) verwenden CSS Grid mit `grid-template-areas` fuer das Seitenlayout. Aktueller Stand:
+
+**Bereits implementiert:**
+- [x] `grid-template` Shorthand (rows / columns Splitting)
+- [x] `grid-template-areas` Parsing (quoted Strings → GridArea Structs)
+- [x] `GridLine::Named` Variante fuer benannte Grid-Areas
+- [x] Named Area Resolution in `layout_grid()` (Case-sensitive per W3C CSS Grid §7.3)
+- [x] `rem`/`em` Units in Grid Track Sizing
+- [x] `minmax()` in Track-Listen (nutzt max-Wert)
+- [x] `min-content`/`max-content` Keywords (behandelt als `auto`)
+- [x] Whitespace-Splitting das Klammern respektiert (`split_whitespace_respecting_parens`)
+
+**Noch zu fixen (Wikipedia de.wikipedia.org/wiki/* Artikel):**
+- [ ] **Leerer Header-Bereich** — ~3500px leerer Raum ueber dem Artikel. Ursache: `.vector-column-start` (Sidebar/TOC) und `.vector-header` erzeugen grosse leere Boxen obwohl sie per CSS unsichtbar sein sollten. Grid-Areas werden korrekt geparst, aber Items die `grid-area: columnStart` haben werden moeglicherweise nicht korrekt in Spalte 1 platziert
+- [ ] **`visibility: hidden` Elemente** — Elemente mit `visibility: hidden` oder `display: none` via MediaWiki JS nehmen Platz ein. Pruefen ob `@media` Queries und JS-gesteuerte Klassen korrekt angewandt werden
+- [ ] **Grid Item Auto-Placement mit Named Areas** — Items ohne `grid-area` muessen korrekt in freie Zellen platziert werden (nicht ueberlappend mit benannten Items)
+- [ ] **Infobox-Tabelle Breite** — Die Infobox (float: right) ist zu breit/schmal relativ zum Content
+
+**Test-Workflow:**
+```bash
+cd tools/surf-host
+# Artikel-Seite rendern:
+./build.sh screenshot https://de.wikipedia.org/wiki/AC/DC acdc.png 1280x960 0-960
+# Content-Bereich (y-Offset ueberspringt leeren Header):
+./build.sh screenshot https://de.wikipedia.org/wiki/AC/DC acdc_content.png 1280x960 4000-4960
+# Full-page Screenshot:
+./build.sh screenshot https://de.wikipedia.org/wiki/AC/DC acdc_full.png full 1280x960
+```
+
+#### Prio 5: CSS Rendering Engine Verbesserungen
+
+**Flexbox (CSS Flexbox Level 1):**
+- [x] Flex base size = max-content (§9.2 Case E)
+- [x] `margin: auto` auf Cross-Axis vor `align-self` (§8.1)
+- [x] `flex-grow`/`flex-shrink` Free-Space mit Gaps
+- [x] Anonymous Flex Items fuer Text-Nodes (§4)
+- [x] `<input type="hidden">` → `display: none` (HTML UA Spec)
+- [x] `font` Shorthand Parsing
+- [ ] **§9.7 Freeze/Unfreeze Loop** — Grow/Shrink ist Single-Pass statt iterativem Freeze-Algorithmus
+- [ ] **§4.5 Automatic Minimum Size** — `min-width: auto` fuer Flex-Items (min-content als Untergrenze)
+- [ ] **Nested Flex** — Flex-Items die selbst Flex-Container sind: korrekte Shrink-to-Fit Messung
+
+**Rendering:**
+- [x] Border-Radius (per-pixel Distanz-Check gegen Kreis-Ecken)
+- [x] Border-Style Varianten (dashed, dotted, double, groove, ridge, inset, outset)
+- [x] Box-Shadow (multi-pass Blur, inset)
+- [x] Text-Shadow (multi-layer)
+- [x] Linear Gradients (beliebige Winkel, Farbinterpolation)
+- [x] Background-Image `url()` Rendering
+- [x] Text-Decoration Sub-Properties (color, style, thickness, underline-offset)
+- [x] Z-Index Stacking (Display-Liste nach z_index+y sortiert)
+- [ ] **Border-Radius Clipping** — Ecken werden gezeichnet aber Kinder-Content wird nicht geclippt
+- [ ] **CSS filter** — Werte geparst (blur, grayscale, etc.) aber nicht im Renderer angewandt
+- [ ] **clip-path** — Werte geparst aber nicht im Renderer angewandt
+- [ ] **Overflow: scroll/auto** — Clipping funktioniert, aber keine Scrollbars
+
+**Selektoren:**
+- [x] `:is()`, `:where()`, `:has()` (shallow), `:focus-visible`, `:placeholder-shown`
+- [x] `@supports` Rules (Property-Existenz-Check)
+- [ ] **`:not()` mit Selektor-Listen** — Aktuell nur single SimpleSelector
+- [ ] **`::before`/`::after` mit `content: counter()`** — CSS Counters nicht in Content aufgeloest
+
+**Properties (geparst aber noch nicht angewandt):**
+- [ ] `animation` / `transition` — Parsing vorhanden, keine Laufzeit-Animation
+- [ ] `transform: rotate()/scale()` — Nur `translate()` implementiert
+- [ ] `cursor` — Geparst aber nicht an Compositor weitergereicht
+- [ ] `table-layout: fixed` — Geparst aber Table-Layout immer `auto`
+
+#### Prio 6: Erweiterte Features
 - [ ] **HTTP/2** — ureq unterstuetzt nur HTTP/1.1. Fuer moderne Seiten (multiplexing, server push) waere reqwest oder hyper noetig
 - [ ] **Cookie-Persistenz** — Cookies zwischen Seitenladungen speichern
 - [ ] **JavaScript-Netzwerk-APIs** — fetch(), XMLHttpRequest Responses an libwebview zurueckliefern (aktuell werden JS-HTTP-Requests ignoriert)

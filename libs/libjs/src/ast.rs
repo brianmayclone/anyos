@@ -97,6 +97,7 @@ pub enum Stmt {
         params: Vec<Param>,
         body: Vec<Stmt>,
         is_async: bool,
+        is_generator: bool,
     },
 
     /// Class declaration
@@ -117,6 +118,46 @@ pub enum Stmt {
 
     /// Debugger: `debugger;`
     Debugger,
+
+    /// Import declaration: `import { a, b } from 'module'`
+    Import {
+        specifiers: Vec<ImportSpecifier>,
+        source: String,
+    },
+
+    /// Export declaration: `export { a, b }`, `export default expr`, `export function ...`
+    Export(ExportDecl),
+}
+
+/// Import specifier.
+#[derive(Debug, Clone)]
+pub enum ImportSpecifier {
+    /// `import name from 'mod'`  (default import)
+    Default(String),
+    /// `import { name }` or `import { name as alias }`
+    Named { imported: String, local: String },
+    /// `import * as name from 'mod'`
+    Namespace(String),
+}
+
+/// Export declaration.
+#[derive(Debug, Clone)]
+pub enum ExportDecl {
+    /// `export default expr`
+    Default(Expr),
+    /// `export { name1, name2 as alias2 }`
+    Named(Vec<ExportSpecifier>),
+    /// `export function name() {}`, `export class name {}`, `export const x = ...`
+    Decl(Box<Stmt>),
+    /// `export { ... } from 'module'` (re-export)
+    ReExport { specifiers: Vec<ExportSpecifier>, source: String },
+}
+
+/// Export specifier: `name` or `name as alias`.
+#[derive(Debug, Clone)]
+pub struct ExportSpecifier {
+    pub local: String,
+    pub exported: String,
 }
 
 /// Expression nodes.
@@ -228,6 +269,7 @@ pub enum Expr {
         params: Vec<Param>,
         body: Vec<Stmt>,
         is_async: bool,
+        is_generator: bool,
     },
 
     /// Arrow function: `(params) => body`
@@ -252,6 +294,9 @@ pub enum Expr {
     /// Yield: `yield expr`
     Yield(Option<Box<Expr>>),
 
+    /// Yield delegate: `yield* expr`
+    YieldDelegate(Box<Expr>),
+
     /// Await: `await expr`
     Await(Box<Expr>),
 
@@ -272,6 +317,12 @@ pub enum Expr {
     TaggedTemplate {
         tag: Box<Expr>,
         template: String,
+    },
+
+    /// Regular expression literal: `/pattern/flags`
+    RegExp {
+        pattern: String,
+        flags: String,
     },
 }
 

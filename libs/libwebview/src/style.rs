@@ -1629,6 +1629,14 @@ pub fn resolve_styles(
                                 apply_declaration(
                                     &mut style, &resolved, parent_fs, root_font_size,
                                 );
+                            } else if has_nested_var(decl) {
+                                let resolved = resolve_nested_var_decl(
+                                    decl, dom, id, node_cp, ancestors_cp,
+                                );
+                                set_flags |= decl_set_flag(&resolved.property);
+                                apply_declaration(
+                                    &mut style, &resolved, parent_fs, root_font_size,
+                                );
                             } else {
                                 set_flags |= decl_set_flag(&decl.property);
                                 apply_declaration(
@@ -1809,6 +1817,10 @@ fn apply_author_rules(
                     let resolved = resolve_var_in_decl(decl, dom, node_id, node_cp, ancestors_cp);
                     set_flags |= decl_set_flag(&resolved.property);
                     apply_declaration(style, &resolved, parent_fs, root_fs);
+                } else if has_nested_var(decl) {
+                    let resolved = resolve_nested_var_decl(decl, dom, node_id, node_cp, ancestors_cp);
+                    set_flags |= decl_set_flag(&resolved.property);
+                    apply_declaration(style, &resolved, parent_fs, root_fs);
                 } else {
                     set_flags |= decl_set_flag(&decl.property);
                     apply_declaration(style, decl, parent_fs, root_fs);
@@ -1828,6 +1840,10 @@ fn apply_author_rules(
                     }
                 } else if let CssValue::Var(_, _) = &decl.value {
                     let resolved = resolve_var_in_decl(decl, dom, node_id, node_cp, ancestors_cp);
+                    set_flags |= decl_set_flag(&resolved.property);
+                    apply_declaration(style, &resolved, parent_fs, root_fs);
+                } else if has_nested_var(decl) {
+                    let resolved = resolve_nested_var_decl(decl, dom, node_id, node_cp, ancestors_cp);
                     set_flags |= decl_set_flag(&resolved.property);
                     apply_declaration(style, &resolved, parent_fs, root_fs);
                 } else {
@@ -1912,6 +1928,86 @@ fn resolve_var_in_decl(
         return decl.clone();
     }
     decl.clone()
+}
+
+/// Check if a declaration has nested var() inside a function value (e.g. rgb(R G B/var(--x,1))).
+fn has_nested_var(decl: &Declaration) -> bool {
+    if let CssValue::Keyword(ref s) = decl.value {
+        s.contains("var(")
+    } else {
+        false
+    }
+}
+
+/// Resolve nested var() references within a value string, e.g.
+/// "rgb(31 30 28/var(--tw-bg-opacity,1))" → "rgb(31 30 28/1)"
+fn resolve_nested_vars(
+    value: &str,
+    dom: &Dom,
+    node_id: NodeId,
+    node_cp: &[(String, String)],
+    ancestors_cp: &[Vec<(String, String)>],
+) -> String {
+    let mut result = String::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 4 <= bytes.len() && &bytes[i..i + 4] == b"var(" {
+            // Find matching closing paren, respecting nesting
+            let start = i + 4;
+            let mut depth: u32 = 1;
+            let mut end = start;
+            while end < bytes.len() && depth > 0 {
+                if bytes[end] == b'(' { depth += 1; }
+                if bytes[end] == b')' { depth -= 1; }
+                if depth > 0 { end += 1; }
+            }
+            let inner = &value[start..end]; // content between var( and )
+            // Split on first comma for fallback
+            let (var_name, fallback) = if let Some(comma) = inner.find(',') {
+                (inner[..comma].trim(), Some(inner[comma + 1..].trim()))
+            } else {
+                (inner.trim(), None)
+            };
+            // Look up the variable
+            if let Some(val) = lookup_custom_property(var_name, node_cp, dom, node_id, ancestors_cp) {
+                result.push_str(val);
+            } else if let Some(fb) = fallback {
+                // Recursively resolve vars in fallback too
+                let resolved_fb = resolve_nested_vars(fb, dom, node_id, node_cp, ancestors_cp);
+                result.push_str(&resolved_fb);
+            } else {
+                // No value, no fallback — keep original
+                result.push_str(&value[i..end + 1]);
+            }
+            i = end + 1; // skip past closing )
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    result
+}
+
+/// Resolve a declaration that has nested var() in its Keyword value.
+fn resolve_nested_var_decl(
+    decl: &Declaration,
+    dom: &Dom,
+    node_id: NodeId,
+    node_cp: &[(String, String)],
+    ancestors_cp: &[Vec<(String, String)>],
+) -> Declaration {
+    if let CssValue::Keyword(ref s) = decl.value {
+        let resolved_str = resolve_nested_vars(s, dom, node_id, node_cp, ancestors_cp);
+        let resolved = crate::css::parse_value(&decl.property, &resolved_str);
+        Declaration {
+            property: decl.property.clone(),
+            value: resolved,
+            important: decl.important,
+        }
+    } else {
+        decl.clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3197,14 +3293,23 @@ pub fn apply_declaration(
             }
         }
         Property::GridArea => {
-            // `grid-area: row-start / col-start / row-end / col-end`
+            // CSS Grid §8.2: `grid-area: row-start / col-start / row-end / col-end`
+            // If fewer than 4 values:
+            //   1 value:  all four set to that value
+            //   2 values: row-end = row-start, col-end = col-start
+            //   3 values: col-end = col-start
             if let CssValue::Keyword(ref kw) = decl.value {
                 let parts: Vec<&str> = kw.splitn(4, '/').collect();
                 let trimmed: Vec<&str> = parts.iter().map(|s| s.trim()).collect();
-                if trimmed.len() >= 1 { style.grid_row_start = parse_grid_line(trimmed[0]); }
-                if trimmed.len() >= 2 { style.grid_column_start = parse_grid_line(trimmed[1]); }
-                if trimmed.len() >= 3 { style.grid_row_end = parse_grid_line(trimmed[2]); }
-                if trimmed.len() >= 4 { style.grid_column_end = parse_grid_line(trimmed[3]); }
+                let n = trimmed.len();
+                let row_s = parse_grid_line(trimmed[0]);
+                let col_s = if n >= 2 { parse_grid_line(trimmed[1]) } else { row_s.clone() };
+                let row_e = if n >= 3 { parse_grid_line(trimmed[2]) } else { row_s.clone() };
+                let col_e = if n >= 4 { parse_grid_line(trimmed[3]) } else { col_s.clone() };
+                style.grid_row_start = row_s;
+                style.grid_column_start = col_s;
+                style.grid_row_end = row_e;
+                style.grid_column_end = col_e;
             }
         }
         Property::CustomProperty(_) => {

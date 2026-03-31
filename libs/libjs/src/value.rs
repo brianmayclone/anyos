@@ -72,13 +72,22 @@ pub struct JsObject {
     pub set_hook_data: *mut u8,
 }
 
-/// A property descriptor (simplified).
+/// A property descriptor.
+///
+/// Can be either a *data* descriptor (has `value` + `writable`) or an
+/// *accessor* descriptor (has `getter` and/or `setter`).  When `getter`
+/// or `setter` is `Some`, the property is an accessor — `value` and
+/// `writable` are ignored.
 #[derive(Clone, Debug)]
 pub struct Property {
     pub value: JsValue,
     pub writable: bool,
     pub enumerable: bool,
     pub configurable: bool,
+    /// Getter function (accessor descriptor).
+    pub getter: Option<JsValue>,
+    /// Setter function (accessor descriptor).
+    pub setter: Option<JsValue>,
 }
 
 impl Property {
@@ -88,6 +97,8 @@ impl Property {
             writable: true,
             enumerable: true,
             configurable: true,
+            getter: None,
+            setter: None,
         }
     }
 
@@ -97,6 +108,8 @@ impl Property {
             writable: false,
             enumerable: true,
             configurable: false,
+            getter: None,
+            setter: None,
         }
     }
 
@@ -106,7 +119,26 @@ impl Property {
             writable: true,
             enumerable: false,
             configurable: true,
+            getter: None,
+            setter: None,
         }
+    }
+
+    /// Create an accessor property with a getter and/or setter.
+    pub fn accessor(getter: Option<JsValue>, setter: Option<JsValue>) -> Self {
+        Property {
+            value: JsValue::Undefined,
+            writable: false,
+            enumerable: true,
+            configurable: true,
+            getter,
+            setter,
+        }
+    }
+
+    /// True if this is an accessor descriptor (has getter or setter).
+    pub fn is_accessor(&self) -> bool {
+        self.getter.is_some() || self.setter.is_some()
     }
 }
 
@@ -135,12 +167,40 @@ impl JsObject {
 
     pub fn get(&self, key: &str) -> JsValue {
         if let Some(prop) = self.properties.get(key) {
+            // Accessor descriptors: getter must be invoked by the VM (not here)
+            // because calling a JsFunction requires the VM. We return a sentinel.
+            // The VM's get_property_with_proto handles getter invocation.
+            if prop.is_accessor() {
+                // Return Undefined for accessor without getter
+                if prop.getter.is_none() {
+                    return JsValue::Undefined;
+                }
+            }
             return prop.value.clone();
         }
         if let Some(ref proto) = self.prototype {
             return proto.borrow().get(key);
         }
         JsValue::Undefined
+    }
+
+    /// Get the raw property descriptor (for getter/setter detection by the VM).
+    pub fn get_property_descriptor(&self, key: &str) -> Option<&Property> {
+        if let Some(prop) = self.properties.get(key) {
+            return Some(prop);
+        }
+        None
+    }
+
+    /// Walk the prototype chain looking for a property descriptor.
+    pub fn find_property_descriptor(&self, key: &str) -> Option<Property> {
+        if let Some(prop) = self.properties.get(key) {
+            return Some(prop.clone());
+        }
+        if let Some(ref proto) = self.prototype {
+            return proto.borrow().find_property_descriptor(key);
+        }
+        None
     }
 
     pub fn set(&mut self, key: String, value: JsValue) {

@@ -35,6 +35,7 @@ pub mod bytecode;
 pub mod compiler;
 pub mod vm;
 pub mod value;
+pub mod regexp;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -62,6 +63,13 @@ impl JsEngine {
         // Parse
         let mut parser = parser::Parser::new(tokens);
         let program = parser.parse_program();
+
+        // If there were parse errors, store a SyntaxError as last_exception
+        if !parser.errors.is_empty() {
+            let err = self.vm.make_syntax_error(&parser.errors[0]);
+            self.vm.last_exception = Some(err);
+            return JsValue::Undefined;
+        }
 
         // Compile
         let mut compiler = compiler::Compiler::new();
@@ -104,6 +112,11 @@ impl JsEngine {
     /// Access the underlying VM directly.
     pub fn vm(&mut self) -> &mut Vm {
         &mut self.vm
+    }
+
+    /// Returns the last unhandled exception, if any (set during the most recent eval()).
+    pub fn last_exception(&self) -> Option<&JsValue> {
+        self.vm.last_exception.as_ref()
     }
 
     /// Compile JavaScript source without executing it.

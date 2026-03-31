@@ -19,23 +19,36 @@ use super::Vm;
 /// `vm.current_this`) and return it so `new_object` uses it.
 pub fn ctor_error(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let message = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    // ES2022: second argument can be { cause: value }
+    let cause = args.get(1).and_then(|opts| {
+        if let JsValue::Object(obj) = opts {
+            let c = obj.borrow().get("cause");
+            if c.is_undefined() { None } else { Some(c) }
+        } else {
+            None
+        }
+    });
+
     if let JsValue::Object(obj_rc) = &vm.current_this.clone() {
-        // Called as a constructor or super() — set properties on the existing object.
         let mut o = obj_rc.borrow_mut();
         o.set(String::from("message"), JsValue::String(message));
         o.set(String::from("name"), JsValue::String(String::from("Error")));
-        // Ensure the prototype is error_proto if not already set to something useful.
+        if let Some(cause_val) = cause {
+            o.set(String::from("cause"), cause_val);
+        }
         if o.prototype.is_none() {
             o.prototype = Some(vm.error_proto.clone());
         }
         drop(o);
         return vm.current_this.clone();
     }
-    // Called as a plain function (rare) — create a new error object.
     let mut obj = JsObject::new();
     obj.prototype = Some(vm.error_proto.clone());
     obj.set(String::from("message"), JsValue::String(message));
     obj.set(String::from("name"), JsValue::String(String::from("Error")));
+    if let Some(cause_val) = cause {
+        obj.set(String::from("cause"), cause_val);
+    }
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 

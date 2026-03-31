@@ -21,6 +21,11 @@ use super::native_date;
 use super::native_timer;
 use super::native_symbol;
 use super::native_proxy;
+use super::native_regexp;
+use super::native_generator;
+use super::native_typed_array;
+use super::native_weakref;
+use super::native_es2024;
 
 impl Vm {
     /// Populate all built-in prototypes with their methods.
@@ -72,6 +77,13 @@ impl Vm {
             p.set(String::from("values"), native_fn("values", native_array::array_values));
             p.set(String::from("at"), native_fn("at", native_array::array_at));
             p.set(String::from("toString"), native_fn("toString", native_array::array_to_string));
+            // ES2023+
+            p.set(String::from("findLast"), native_fn("findLast", native_es2024::array_find_last));
+            p.set(String::from("findLastIndex"), native_fn("findLastIndex", native_es2024::array_find_last_index));
+            p.set(String::from("toReversed"), native_fn("toReversed", native_es2024::array_to_reversed));
+            p.set(String::from("toSorted"), native_fn("toSorted", native_es2024::array_to_sorted));
+            p.set(String::from("toSpliced"), native_fn("toSpliced", native_es2024::array_to_spliced));
+            p.set(String::from("with"), native_fn("with", native_es2024::array_with));
         }
 
         // ── String.prototype ──
@@ -103,6 +115,12 @@ impl Vm {
             p.set(String::from("concat"), native_fn("concat", native_string::string_concat));
             p.set(String::from("toString"), native_fn("toString", native_string::string_to_string));
             p.set(String::from("valueOf"), native_fn("valueOf", native_string::string_to_string));
+            p.set(String::from("match"), native_fn("match", native_regexp::string_match));
+            p.set(String::from("matchAll"), native_fn("matchAll", native_regexp::string_match_all));
+            p.set(String::from("search"), native_fn("search", native_regexp::string_search));
+            // ES2024
+            p.set(String::from("isWellFormed"), native_fn("isWellFormed", native_es2024::string_is_well_formed));
+            p.set(String::from("toWellFormed"), native_fn("toWellFormed", native_es2024::string_to_well_formed));
         }
 
         // ── Number.prototype ──
@@ -143,6 +161,36 @@ impl Vm {
             p.set(String::from("name"), JsValue::String(String::from("Error")));
             p.set(String::from("message"), JsValue::String(String::new()));
             p.set(String::from("toString"), native_fn("toString", native_error::error_to_string));
+        }
+
+        // ── RegExp.prototype ──
+        {
+            let mut p = self.regexp_proto.borrow_mut();
+            p.prototype = Some(self.object_proto.clone());
+            p.set(String::from("test"), native_fn("test", native_regexp::regexp_test));
+            p.set(String::from("exec"), native_fn("exec", native_regexp::regexp_exec));
+            p.set(String::from("toString"), native_fn("toString", native_regexp::regexp_to_string));
+        }
+
+        // ── Generator.prototype ──
+        {
+            let mut p = self.generator_proto.borrow_mut();
+            p.prototype = Some(self.object_proto.clone());
+            p.set(String::from("next"), native_fn("next", native_generator::generator_next));
+            p.set(String::from("return"), native_fn("return", native_generator::generator_return));
+            p.set(String::from("throw"), native_fn("throw", native_generator::generator_throw));
+        }
+
+        // ── TypedArray.prototype ──
+        {
+            let mut p = self.typed_array_proto.borrow_mut();
+            p.prototype = Some(self.object_proto.clone());
+            p.set(String::from("set"), native_fn("set", native_typed_array::typed_array_set));
+            p.set(String::from("subarray"), native_fn("subarray", native_typed_array::typed_array_subarray));
+            p.set(String::from("slice"), native_fn("slice", native_typed_array::typed_array_slice));
+            p.set(String::from("fill"), native_fn("fill", native_typed_array::typed_array_fill));
+            p.set(String::from("indexOf"), native_fn("indexOf", native_typed_array::typed_array_index_of));
+            p.set(String::from("forEach"), native_fn("forEach", native_typed_array::typed_array_for_each));
         }
     }
 
@@ -228,6 +276,75 @@ impl Vm {
         let proxy_ctor = native_fn("Proxy", native_proxy::ctor_proxy);
         proxy_ctor.set_property(String::from("revocable"), native_fn("revocable", native_proxy::proxy_revocable));
         self.set_global("Proxy", proxy_ctor);
+
+        // ── Reflect ──
+        native_proxy::install_reflect(self);
+
+        // ── WeakMap ──
+        {
+            let wm = native_fn("WeakMap", native_weakref::ctor_weakmap);
+            let proto = JsValue::new_object();
+            proto.set_property(String::from("set"), native_fn("set", native_weakref::weakmap_set));
+            proto.set_property(String::from("get"), native_fn("get", native_weakref::weakmap_get));
+            proto.set_property(String::from("has"), native_fn("has", native_weakref::weakmap_has));
+            proto.set_property(String::from("delete"), native_fn("delete", native_weakref::weakmap_delete));
+            wm.set_property(String::from("prototype"), proto);
+            self.set_global("WeakMap", wm);
+        }
+        // ── WeakSet ──
+        {
+            let ws = native_fn("WeakSet", native_weakref::ctor_weakset);
+            let proto = JsValue::new_object();
+            proto.set_property(String::from("add"), native_fn("add", native_weakref::weakset_add));
+            proto.set_property(String::from("has"), native_fn("has", native_weakref::weakset_has));
+            proto.set_property(String::from("delete"), native_fn("delete", native_weakref::weakset_delete));
+            ws.set_property(String::from("prototype"), proto);
+            self.set_global("WeakSet", ws);
+        }
+        // ── WeakRef ──
+        {
+            let wr = native_fn("WeakRef", native_weakref::ctor_weakref);
+            let proto = JsValue::new_object();
+            proto.set_property(String::from("deref"), native_fn("deref", native_weakref::weakref_deref));
+            wr.set_property(String::from("prototype"), proto);
+            self.set_global("WeakRef", wr);
+        }
+        // ── FinalizationRegistry ──
+        {
+            let fr = native_fn("FinalizationRegistry", native_weakref::ctor_finalization_registry);
+            let proto = JsValue::new_object();
+            proto.set_property(String::from("register"), native_fn("register", native_weakref::fr_register));
+            proto.set_property(String::from("unregister"), native_fn("unregister", native_weakref::fr_unregister));
+            fr.set_property(String::from("prototype"), proto);
+            self.set_global("FinalizationRegistry", fr);
+        }
+        // ── structuredClone ──
+        self.set_global("structuredClone", native_fn("structuredClone", native_es2024::structured_clone));
+
+        // ── RegExp ──
+        let regexp_ctor = native_fn("RegExp", native_regexp::regexp_constructor);
+        regexp_ctor.set_property(String::from("prototype"), JsValue::Object(self.regexp_proto.clone()));
+        self.set_global("RegExp", regexp_ctor);
+
+        // ── ArrayBuffer ──
+        self.set_global("ArrayBuffer", native_fn("ArrayBuffer", native_typed_array::ctor_arraybuffer));
+
+        // ── DataView ──
+        self.set_global("DataView", native_fn("DataView", native_typed_array::ctor_dataview));
+
+        // ── TypedArrays ──
+        self.set_global("Int8Array", native_fn("Int8Array", native_typed_array::ctor_int8array));
+        self.set_global("Uint8Array", native_fn("Uint8Array", native_typed_array::ctor_uint8array));
+        self.set_global("Uint8ClampedArray", native_fn("Uint8ClampedArray", native_typed_array::ctor_uint8clampedarray));
+        self.set_global("Int16Array", native_fn("Int16Array", native_typed_array::ctor_int16array));
+        self.set_global("Uint16Array", native_fn("Uint16Array", native_typed_array::ctor_uint16array));
+        self.set_global("Int32Array", native_fn("Int32Array", native_typed_array::ctor_int32array));
+        self.set_global("Uint32Array", native_fn("Uint32Array", native_typed_array::ctor_uint32array));
+        self.set_global("Float32Array", native_fn("Float32Array", native_typed_array::ctor_float32array));
+        self.set_global("Float64Array", native_fn("Float64Array", native_typed_array::ctor_float64array));
+
+        // ── queueMicrotask ──
+        self.set_global("queueMicrotask", native_fn("queueMicrotask", queue_microtask_fn));
 
         // ── Number constants ──
         self.set_global("Infinity", JsValue::Number(f64::INFINITY));
@@ -322,6 +439,9 @@ impl Vm {
             obj_ctor.set_property(String::from("create"), native_fn("create", native_object::object_create));
             obj_ctor.set_property(String::from("defineProperty"), native_fn("defineProperty", native_object::object_define_property));
             obj_ctor.set_property(String::from("getPrototypeOf"), native_fn("getPrototypeOf", native_object::object_get_prototype_of));
+            // ES2022+
+            obj_ctor.set_property(String::from("hasOwn"), native_fn("hasOwn", native_es2024::object_has_own));
+            obj_ctor.set_property(String::from("groupBy"), native_fn("groupBy", native_es2024::object_group_by));
             // Expose object_proto as Object.prototype own_prop so that
             // `Object.hasOwnProperty("prototype")` is true and
             // `Object.prototype.isPrototypeOf(x)` resolves correctly.
@@ -411,4 +531,14 @@ impl Vm {
             self.function_proto.borrow_mut().set(String::from("constructor"), ctor);
         }
     }
+}
+
+/// `queueMicrotask(callback)`
+fn queue_microtask_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if let Some(callback) = args.first() {
+        if callback.is_function() {
+            vm.enqueue_microtask(callback.clone(), alloc::vec::Vec::new());
+        }
+    }
+    JsValue::Undefined
 }

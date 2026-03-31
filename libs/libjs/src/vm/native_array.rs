@@ -182,7 +182,7 @@ pub fn array_copy_within(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let target = resolve_index(args.first().map(|v| v.to_number()).unwrap_or(0.0), len);
         let start = resolve_index(args.get(1).map(|v| v.to_number()).unwrap_or(0.0), len);
         let end = resolve_index(args.get(2).map(|v| v.to_number()).unwrap_or(len as f64), len);
-        let count = (end - start).min(len - target);
+        let count = end.saturating_sub(start).min(len.saturating_sub(target));
         let copy: Vec<JsValue> = a.elements[start..start + count].to_vec();
         for (i, v) in copy.into_iter().enumerate() {
             a.elements[target + i] = v;

@@ -92,12 +92,15 @@ pub struct Compiler {
     /// `bind_ident` and `compile_pattern_binding` emit StoreGlobal instead
     /// of StoreLocal.  Mirrors JavaScript's var-hoisting-to-global behaviour.
     binding_is_global: bool,
+    /// True if the current compilation is in strict mode (`"use strict"` directive).
+    pub is_strict: bool,
 }
 
 impl Compiler {
     pub fn new() -> Self {
         Compiler {
             scopes: Vec::new(),
+            is_strict: false,
             binding_is_global: false,
         }
     }
@@ -127,13 +130,23 @@ impl Compiler {
     /// Compile a program into a top-level chunk.
     pub fn compile(&mut self, program: &Program) -> Chunk {
         self.scopes.push(Scope::new());
+
+        // Detect "use strict" directive at the beginning of the program
+        if let Some(Stmt::Expr(Expr::String(ref s))) = program.body.first() {
+            if s == "use strict" {
+                self.is_strict = true;
+            }
+        }
+
         for stmt in &program.body {
             self.compile_stmt(stmt);
         }
         // Implicit return undefined
         self.emit(Op::LoadUndefined);
         self.emit(Op::Return);
-        self.scopes.pop().unwrap().chunk
+        let mut chunk = self.scopes.pop().unwrap().chunk;
+        chunk.strict = self.is_strict;
+        chunk
     }
 
     fn scope(&self) -> &Scope {
@@ -459,8 +472,8 @@ impl Compiler {
             Stmt::Try { block, catch, finally } => {
                 self.compile_try(block, catch, finally);
             }
-            Stmt::FunctionDecl { name, params, body, is_async } => {
-                self.compile_function(Some(name), params, body, *is_async);
+            Stmt::FunctionDecl { name, params, body, is_async, is_generator } => {
+                self.compile_function_gen(Some(name), params, body, *is_async, *is_generator);
                 // At the global scope function declarations are global bindings.
                 if self.is_global_scope() {
                     let ci = self.add_const(Constant::String(name.clone()));
@@ -489,6 +502,80 @@ impl Compiler {
             }
             Stmt::Empty | Stmt::Debugger => {
                 self.emit(Op::Nop);
+            }
+            Stmt::Import { specifiers, source } => {
+                // Import: load module from registry, bind specifiers as globals.
+                // We compile as: __import__('source') → module namespace object,
+                // then extract each specifier and bind to a global.
+                let src_ci = self.add_const(Constant::String(source.clone()));
+                let import_ci = self.add_const(Constant::String(String::from("__import__")));
+                self.emit(Op::LoadGlobal(import_ci));
+                self.emit(Op::LoadConst(src_ci));
+                self.emit(Op::Call(1));
+                // Stack: [module_ns]
+                for spec in specifiers {
+                    match spec {
+                        ImportSpecifier::Default(local) => {
+                            self.emit(Op::Dup);
+                            let key = self.add_const(Constant::String(String::from("default")));
+                            self.emit(Op::GetPropNamed(key));
+                            let ci = self.add_const(Constant::String(local.clone()));
+                            self.emit(Op::StoreGlobal(ci));
+                            self.emit(Op::Pop);
+                        }
+                        ImportSpecifier::Named { imported, local } => {
+                            self.emit(Op::Dup);
+                            let key = self.add_const(Constant::String(imported.clone()));
+                            self.emit(Op::GetPropNamed(key));
+                            let ci = self.add_const(Constant::String(local.clone()));
+                            self.emit(Op::StoreGlobal(ci));
+                            self.emit(Op::Pop);
+                        }
+                        ImportSpecifier::Namespace(local) => {
+                            self.emit(Op::Dup);
+                            let ci = self.add_const(Constant::String(local.clone()));
+                            self.emit(Op::StoreGlobal(ci));
+                            self.emit(Op::Pop);
+                        }
+                    }
+                }
+                self.emit(Op::Pop); // pop module_ns
+            }
+            Stmt::Export(decl) => {
+                match decl {
+                    ExportDecl::Default(expr) => {
+                        // export default expr → __exports__.default = expr
+                        let exports_ci = self.add_const(Constant::String(String::from("__exports__")));
+                        self.emit(Op::LoadGlobal(exports_ci));
+                        self.compile_expr(expr);
+                        let default_ci = self.add_const(Constant::String(String::from("default")));
+                        self.emit(Op::SetPropNamed(default_ci));
+                        self.emit(Op::Pop); // pop assigned value
+                        self.emit(Op::Pop); // pop exports obj
+                    }
+                    ExportDecl::Decl(stmt) => {
+                        // export function/class/var — compile the declaration normally.
+                        // The exported names become available via the global scope.
+                        self.compile_stmt(stmt);
+                    }
+                    ExportDecl::Named(specifiers) => {
+                        // export { a, b as c } — alias existing globals into __exports__
+                        for spec in specifiers {
+                            let exports_ci = self.add_const(Constant::String(String::from("__exports__")));
+                            self.emit(Op::LoadGlobal(exports_ci));
+                            let local_ci = self.add_const(Constant::String(spec.local.clone()));
+                            self.emit(Op::LoadGlobal(local_ci));
+                            let exported_ci = self.add_const(Constant::String(spec.exported.clone()));
+                            self.emit(Op::SetPropNamed(exported_ci));
+                            self.emit(Op::Pop);
+                            self.emit(Op::Pop);
+                        }
+                    }
+                    ExportDecl::ReExport { specifiers: _, source: _ } => {
+                        // Re-exports are resolved at module-linking time, not compilation.
+                        self.emit(Op::Nop);
+                    }
+                }
             }
         }
     }
@@ -859,7 +946,18 @@ impl Compiler {
         body: &[Stmt],
         is_async: bool,
     ) {
-        self.compile_function_impl(name, params, body, is_async, false);
+        self.compile_function_full(name, params, body, is_async, false, false);
+    }
+
+    fn compile_function_gen(
+        &mut self,
+        name: Option<&String>,
+        params: &[Param],
+        body: &[Stmt],
+        is_async: bool,
+        is_generator: bool,
+    ) {
+        self.compile_function_full(name, params, body, is_async, false, is_generator);
     }
 
     fn compile_function_named_expr(
@@ -869,19 +967,32 @@ impl Compiler {
         body: &[Stmt],
         is_async: bool,
     ) {
-        self.compile_function_impl(name, params, body, is_async, true);
+        self.compile_function_full(name, params, body, is_async, true, false);
     }
 
-    fn compile_function_impl(
+    fn compile_function_named_expr_gen(
+        &mut self,
+        name: Option<&String>,
+        params: &[Param],
+        body: &[Stmt],
+        is_async: bool,
+        is_generator: bool,
+    ) {
+        self.compile_function_full(name, params, body, is_async, true, is_generator);
+    }
+
+    fn compile_function_full(
         &mut self,
         name: Option<&String>,
         params: &[Param],
         body: &[Stmt],
         is_async: bool,
         named_expr: bool,
+        is_generator: bool,
     ) {
         let mut func_scope = Scope::new();
         func_scope.chunk.name = name.cloned();
+        func_scope.chunk.is_generator = is_generator;
         func_scope.chunk.param_count = params.len() as u16;
 
         // Find the rest parameter (last param with is_rest=true), if any.
@@ -958,9 +1069,20 @@ impl Compiler {
             let _ = named_param_count; // silence unused warning
         }
 
+        // Detect "use strict" at the beginning of function body
+        let prev_strict = self.is_strict;
+        if let Some(Stmt::Expr(Expr::String(ref s))) = body.first() {
+            if s == "use strict" {
+                self.is_strict = true;
+            }
+        }
+
         for s in body {
             self.compile_stmt(s);
         }
+
+        // Restore strict mode state
+        self.is_strict = prev_strict;
 
         if is_async {
             // Async functions: wrap implicit return undefined in Promise.resolve().
@@ -975,6 +1097,7 @@ impl Compiler {
 
         let func_scope = self.scopes.pop().unwrap();
         let mut func_chunk = func_scope.chunk;
+        func_chunk.strict = self.is_strict;
         // Copy upvalue descriptors into the chunk so the VM knows how to capture them.
         func_chunk.upvalues = func_scope.upvalues.iter().map(|uv| UpvalueRef {
             is_local: uv.is_local,
@@ -1251,6 +1374,22 @@ impl Compiler {
                             continue;
                         }
                     }
+
+                    // Getter/Setter: { get prop() { }, set prop(v) { } }
+                    if prop.kind == PropKind::Get || prop.kind == PropKind::Set {
+                        if let PropKey::Ident(name) | PropKey::String(name) = &prop.key {
+                            self.emit(Op::Dup);              // [obj, obj]
+                            self.compile_expr(&prop.value);  // [obj, obj, fn]
+                            let ci = self.add_const(Constant::String(name.clone()));
+                            if prop.kind == PropKind::Get {
+                                self.emit(Op::DefineGetter(ci)); // [obj]
+                            } else {
+                                self.emit(Op::DefineSetter(ci)); // [obj]
+                            }
+                        }
+                        continue;
+                    }
+
                     match &prop.key {
                         PropKey::Ident(name) | PropKey::String(name) => {
                             self.emit(Op::Dup);           // [obj, obj]
@@ -1451,12 +1590,11 @@ impl Compiler {
                     }
                 }
             }
-            Expr::FunctionExpr { name, params, body, is_async } => {
+            Expr::FunctionExpr { name, params, body, is_async, is_generator } => {
                 if name.is_some() {
-                    // Named function expression: the name is bound inside the body.
-                    self.compile_function_named_expr(name.as_ref(), params, body, *is_async);
+                    self.compile_function_named_expr_gen(name.as_ref(), params, body, *is_async, *is_generator);
                 } else {
-                    self.compile_function(name.as_ref(), params, body, *is_async);
+                    self.compile_function_gen(name.as_ref(), params, body, *is_async, *is_generator);
                 }
             }
             Expr::Arrow { params, body, is_async } => {
@@ -1507,8 +1645,11 @@ impl Compiler {
                 } else {
                     self.emit(Op::LoadUndefined);
                 }
-                // Simplified: yield acts like return for now
-                self.emit(Op::Return);
+                self.emit(Op::Yield);
+            }
+            Expr::YieldDelegate(inner) => {
+                self.compile_expr(inner);
+                self.emit(Op::YieldDelegate);
             }
             Expr::Await(inner) => {
                 self.compile_expr(inner);
@@ -1536,6 +1677,11 @@ impl Compiler {
                 self.emit(Op::LoadConst(ci));
                 self.emit(Op::NewArray(1));
                 self.emit(Op::Call(1));
+            }
+            Expr::RegExp { pattern, flags } => {
+                let pi = self.add_const(Constant::String(pattern.clone()));
+                let fi = self.add_const(Constant::String(flags.clone()));
+                self.emit(Op::NewRegExp(pi, fi));
             }
         }
     }

@@ -372,14 +372,40 @@ fn layout_cell(
     bx
 }
 
-/// Estimate the content width of a laid-out cell.
+/// Estimate the intrinsic content width of a laid-out cell.
+///
+/// Block children fill available width, so we recursively find the actual
+/// content extent (text widths, image widths) instead of using the filled
+/// box widths.  This prevents all columns from getting equal preferred
+/// widths when the table is laid out at a generous test width.
 fn cell_content_width(bx: &LayoutBox) -> i32 {
-    let mut max_w = 0i32;
-    for child in &bx.children {
-        let cw = child.x + child.width;
-        if cw > max_w { max_w = cw; }
+    intrinsic_content_width(bx)
+}
+
+/// Recursively compute the intrinsic content width of a layout box.
+/// Bottoms out at text nodes and images (which have intrinsic widths).
+/// For block containers without explicit width, takes the max of children.
+/// For inline/flex children placed side by side, uses their x positions.
+fn intrinsic_content_width(bx: &LayoutBox) -> i32 {
+    // Text and images have intrinsic widths.
+    if bx.text.is_some() || bx.image_src.is_some() {
+        return bx.width;
     }
-    max_w
+    if bx.children.is_empty() {
+        return bx.padding.left + bx.padding.right + bx.border_width * 2;
+    }
+    // Skip out-of-flow children; use x position for side-by-side layout.
+    let right_edge = bx.children.iter()
+        .filter(|c| !c.is_out_of_flow)
+        .map(|c| {
+            let cw = intrinsic_content_width(c);
+            c.x - bx.x + cw + c.margin.right
+        })
+        .max()
+        .unwrap_or(0);
+    // Include the box's own padding/border.
+    let own_extra = bx.padding.left + bx.padding.right + bx.border_width * 2;
+    right_edge.max(own_extra)
 }
 
 /// Parse an integer attribute from the DOM (e.g., cellpadding="5", width="200").

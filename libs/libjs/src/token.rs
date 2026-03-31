@@ -31,6 +31,8 @@ pub enum TokenKind {
 
     // Identifiers and keywords
     Ident(String),
+    /// Private identifier: `#name`
+    PrivateIdent(String),
 
     // Keywords
     Var,

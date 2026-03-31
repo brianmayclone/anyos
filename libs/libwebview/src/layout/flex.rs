@@ -34,6 +34,91 @@ fn resolve_align(container_align: AlignItems, child_style: &ComputedStyle) -> Al
     child_style.align_self.unwrap_or(container_align)
 }
 
+/// Compute the max-content width of a DOM node by recursively measuring
+/// its content without building a full layout.
+///
+/// For flex items without explicit width (Case E), `build_block` fills
+/// available width for block children, so we can't use the built layout
+/// box widths.  Instead, measure the natural content extent directly.
+fn measure_max_content(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    node_id: NodeId,
+    images: &ImageCache,
+    viewport_w: i32,
+) -> i32 {
+    let st = &styles[node_id];
+
+    // Explicit width → use it.
+    if let Some(w) = st.width { if w > 0 { return w; } }
+
+    // Absolute/fixed → 0 (out of flow).
+    if matches!(st.position, Position::Absolute | Position::Fixed) { return 0; }
+    if st.display == Display::None { return 0; }
+
+    let pad_border = st.padding_left + st.padding_right
+        + st.border_width * 2 + st.border_left.width + st.border_right.width;
+
+    // Text node → measure text width.
+    if let crate::dom::NodeType::Text(ref text) = dom.nodes[node_id].node_type {
+        let trimmed = text.trim();
+        if trimmed.is_empty() { return 0; }
+        let fs = st.font_size.max(1);
+        let bold = matches!(st.font_weight, crate::style::FontWeight::Bold);
+        let (tw, _) = super::measure_text(trimmed, fs, bold);
+        return tw;
+    }
+
+    // Image → use image dimensions or CSS width.
+    if dom.tag(node_id) == Some(Tag::Img) {
+        if let Some(src) = dom.attr(node_id, "src") {
+            if let Some(info) = images.get_ref(src) {
+                let w = dom.attr(node_id, "width")
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .unwrap_or(info.width as i32);
+                return w + pad_border;
+            }
+        }
+        return pad_border;
+    }
+
+    // Flex container → sum of children's max-content widths + gaps.
+    let children: Vec<usize> = dom.get(node_id).children.iter().copied().collect();
+    let is_flex = matches!(st.display, Display::Flex | Display::InlineFlex);
+    let is_row = is_flex && matches!(st.flex_direction, crate::style::FlexDirection::Row | crate::style::FlexDirection::RowReverse);
+
+    if is_row {
+        let gap = st.column_gap;
+        let mut total = 0i32;
+        let mut count = 0;
+        for &cid in &children {
+            let cst = &styles[cid];
+            if cst.display == Display::None { continue; }
+            if matches!(cst.position, Position::Absolute | Position::Fixed) { continue; }
+            let cw = measure_max_content(dom, styles, pseudo, cid, images, viewport_w);
+            if cw > 0 {
+                if count > 0 { total += gap; }
+                total += cw + cst.margin_left + cst.margin_right;
+                count += 1;
+            }
+        }
+        return total + pad_border;
+    }
+
+    // Block/column container → max of children's max-content widths.
+    let mut max_w = 0i32;
+    for &cid in &children {
+        let cst = &styles[cid];
+        if cst.display == Display::None { continue; }
+        if matches!(cst.position, Position::Absolute | Position::Fixed) { continue; }
+        let cw = measure_max_content(dom, styles, pseudo, cid, images, viewport_w)
+            + cst.margin_left + cst.margin_right;
+        if cw > max_w { max_w = cw; }
+    }
+    max_w + pad_border
+}
+
 /// Lay out children as a flex container and return the total height consumed.
 pub fn layout_flex(
     dom: &Dom,
@@ -158,20 +243,15 @@ pub fn layout_flex(
                 item.main_base = px100 / 100 + (available_width as i64 * pct100 as i64 / 10000) as i32;
             } else {
                 // Case E: flex-basis:auto + width:auto → max-content size.
-                // Lay out with a large width to get the natural (max-content) size.
-                let max_content_w = available_width * 4; // generous upper bound
+                // Measure the natural content width by recursively walking the
+                // DOM (not via build_block, which fills available_width for
+                // block children).
+                let mc_w = measure_max_content(dom, styles, pseudo, item.node_id, images, viewport_w);
+                let base_w = mc_w.max(1).min(available_width);
+                item.main_base = base_w + st.margin_left + st.margin_right;
+                // Cross size: build at the resolved width to get the height.
                 let child_box = build_block(dom, styles, pseudo, item.node_id,
-                    max_content_w, images, viewport_w);
-                // max-content = actual content extent (how wide the content wants to be).
-                let content_w = child_box.children.iter()
-                    .map(|c| c.x + c.width + c.margin.right)
-                    .max()
-                    .unwrap_or(0);
-                let max_w = content_w + child_box.padding.left + child_box.padding.right
-                    + child_box.border_width * 2;
-                // Use max-content but cap at the container width (can't exceed parent).
-                let base_w = max_w.max(1).min(available_width);
-                item.main_base = base_w + child_box.margin.left + child_box.margin.right;
+                    base_w, images, viewport_w);
                 item.cross_base = child_box.height + child_box.margin.top + child_box.margin.bottom;
                 // Don't cache the layout — it was done at max-content width,
                 // Phase 3 will re-layout at the resolved width.

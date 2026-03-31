@@ -206,17 +206,39 @@ pub fn object_define_property(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let JsValue::Object(target_obj) = &target {
         if let JsValue::Object(desc_obj) = &descriptor {
             let desc = desc_obj.borrow();
-            let value = desc.get("value");
-            let writable = desc.get("writable").to_boolean();
-            let enumerable = desc.get("enumerable").to_boolean();
-            let configurable = desc.get("configurable").to_boolean();
-            let prop = Property {
-                value,
-                writable,
-                enumerable,
-                configurable,
-            };
-            target_obj.borrow_mut().properties.insert(key, prop);
+            // Check if it's an accessor descriptor (has get or set)
+            let has_get = desc.has_own("get");
+            let has_set = desc.has_own("set");
+            if has_get || has_set {
+                let getter = {
+                    let v = desc.get("get");
+                    if v.is_function() { Some(v) } else { None }
+                };
+                let setter = {
+                    let v = desc.get("set");
+                    if v.is_function() { Some(v) } else { None }
+                };
+                let enumerable = if desc.has_own("enumerable") { desc.get("enumerable").to_boolean() } else { false };
+                let configurable = if desc.has_own("configurable") { desc.get("configurable").to_boolean() } else { false };
+                let mut prop = Property::accessor(getter, setter);
+                prop.enumerable = enumerable;
+                prop.configurable = configurable;
+                target_obj.borrow_mut().properties.insert(key, prop);
+            } else {
+                let value = desc.get("value");
+                let writable = if desc.has_own("writable") { desc.get("writable").to_boolean() } else { false };
+                let enumerable = if desc.has_own("enumerable") { desc.get("enumerable").to_boolean() } else { false };
+                let configurable = if desc.has_own("configurable") { desc.get("configurable").to_boolean() } else { false };
+                let prop = Property {
+                    value,
+                    writable,
+                    enumerable,
+                    configurable,
+                    getter: None,
+                    setter: None,
+                };
+                target_obj.borrow_mut().properties.insert(key, prop);
+            }
         }
     }
     target

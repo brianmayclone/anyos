@@ -33,6 +33,12 @@ pub mod native_date;
 pub mod native_timer;
 pub mod native_symbol;
 pub mod native_proxy;
+pub mod native_regexp;
+pub mod native_generator;
+pub mod native_typed_array;
+pub mod event_loop;
+pub mod native_weakref;
+pub mod native_es2024;
 pub mod iter;
 
 // ── Internal structures ──
@@ -81,6 +87,9 @@ pub struct Vm {
     pub number_proto: Rc<RefCell<JsObject>>,
     pub boolean_proto: Rc<RefCell<JsObject>>,
     pub error_proto: Rc<RefCell<JsObject>>,
+    pub regexp_proto: Rc<RefCell<JsObject>>,
+    pub generator_proto: Rc<RefCell<JsObject>>,
+    pub typed_array_proto: Rc<RefCell<JsObject>>,
     pub step_limit: u64,
     pub steps: u64,
     pub userdata: *mut u8,
@@ -91,6 +100,14 @@ pub struct Vm {
     /// Pending exception set by native functions via `throw_native()`.
     /// Checked after every native call and turned into a VM-level throw.
     pub pending_exception: Option<JsValue>,
+    /// Last unhandled exception (no try/catch caught it).
+    /// Set by `handle_exception` when there is no handler.
+    pub last_exception: Option<JsValue>,
+    /// Pending generator yield: (value, ip, locals, stack_snapshot).
+    /// Set by `Op::Yield` handler, consumed by `run_generator_step`.
+    pub pending_generator_yield: Option<(JsValue, usize, Vec<Rc<RefCell<JsValue>>>, Vec<JsValue>)>,
+    /// Event loop for microtask queue and timers.
+    pub event_loop: event_loop::EventLoop,
 }
 
 impl Vm {
@@ -109,12 +126,18 @@ impl Vm {
             number_proto: Rc::new(RefCell::new(JsObject::new())),
             boolean_proto: Rc::new(RefCell::new(JsObject::new())),
             error_proto: Rc::new(RefCell::new(JsObject::new())),
+            regexp_proto: Rc::new(RefCell::new(JsObject::new())),
+            generator_proto: Rc::new(RefCell::new(JsObject::new())),
+            typed_array_proto: Rc::new(RefCell::new(JsObject::new())),
             step_limit: 10_000_000,
             steps: 0,
             userdata: core::ptr::null_mut(),
             current_this: JsValue::Undefined,
             run_target_depth: 0,
             pending_exception: None,
+            last_exception: None,
+            pending_generator_yield: None,
+            event_loop: event_loop::EventLoop::new(),
         };
         vm.init_prototypes();
         vm.init_globals();
@@ -135,6 +158,14 @@ impl Vm {
     }
 
     /// Create a `TypeError` object (for use in native function throws).
+    pub fn make_syntax_error(&self, message: &str) -> JsValue {
+        let mut obj = JsObject::new();
+        obj.prototype = Some(self.error_proto.clone());
+        obj.set(String::from("name"), JsValue::String(String::from("SyntaxError")));
+        obj.set(String::from("message"), JsValue::String(String::from(message)));
+        JsValue::Object(Rc::new(RefCell::new(obj)))
+    }
+
     pub fn make_type_error(&self, message: &str) -> JsValue {
         let mut obj = JsObject::new();
         obj.prototype = Some(self.error_proto.clone());
@@ -143,8 +174,18 @@ impl Vm {
         JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 
+    /// Create a `ReferenceError` object (for strict mode undeclared variable access).
+    pub fn make_reference_error(&self, message: &str) -> JsValue {
+        let mut obj = JsObject::new();
+        obj.prototype = Some(self.error_proto.clone());
+        obj.set(String::from("name"), JsValue::String(String::from("ReferenceError")));
+        obj.set(String::from("message"), JsValue::String(String::from(message)));
+        JsValue::Object(Rc::new(RefCell::new(obj)))
+    }
+
     pub fn execute(&mut self, chunk: Chunk) -> JsValue {
         self.steps = 0;
+        self.last_exception = None;
         let local_count = chunk.local_count as usize;
         let frame = CallFrame {
             chunk,
@@ -158,7 +199,27 @@ impl Vm {
             self_ref: JsValue::Undefined,
         };
         self.frames.push(frame);
-        self.run()
+        let result = self.run();
+        // Drain microtask queue after script execution
+        self.drain_microtasks();
+        result
+    }
+
+    /// Drain all pending microtasks (Promise callbacks, queueMicrotask).
+    pub fn drain_microtasks(&mut self) {
+        let mut safety = 0u32;
+        while let Some(task) = self.event_loop.pop_microtask() {
+            self.invoke_function(&task.callback, &task.args, JsValue::Undefined);
+            // invoke_function pushes result on stack — pop it
+            self.stack.pop();
+            safety += 1;
+            if safety > 10000 { break; } // prevent infinite microtask loop
+        }
+    }
+
+    /// Enqueue a microtask (called by Promise .then resolution).
+    pub fn enqueue_microtask(&mut self, callback: JsValue, args: Vec<JsValue>) {
+        self.event_loop.enqueue_microtask(callback, args);
     }
 
     pub fn set_global(&mut self, name: &str, value: JsValue) {
@@ -256,7 +317,16 @@ impl Vm {
                 Op::StoreGlobal(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
                     let val = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
-                    self.globals.set(name, val);
+                    // In strict mode, assignment to undeclared variable is a ReferenceError
+                    if self.frames[frame_idx].chunk.strict && !self.globals.has(&name) {
+                        let msg = format!("{} is not defined", name);
+                        let err = self.make_reference_error(&msg);
+                        if !self.handle_exception(err) {
+                            return JsValue::Undefined;
+                        }
+                    } else {
+                        self.globals.set(name, val);
+                    }
                 }
                 Op::LoadUpvalue(idx) => {
                     let val = self.frames[frame_idx].upvalue_cells
@@ -457,8 +527,14 @@ impl Vm {
                 Op::GetPropNamed(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    let val = self.get_property_with_proto(&obj, &name);
-                    self.stack.push(val);
+                    // Check for getter
+                    if let Some(getter) = self.find_getter(&obj, &name) {
+                        // Invoke getter with this=obj
+                        self.invoke_function(&getter, &[], obj.clone());
+                    } else {
+                        let val = self.get_property_with_proto(&obj, &name);
+                        self.stack.push(val);
+                    }
                 }
                 Op::SetPropNamed(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
@@ -474,11 +550,13 @@ impl Vm {
                             }
                         }
                     } else {
-                        obj.set_property(name, val.clone());
+                        // Check for setter
+                        if let Some(setter) = self.find_setter(&obj, &name) {
+                            self.invoke_function(&setter, &[val.clone()], obj.clone());
+                        } else {
+                            obj.set_property(name, val.clone());
+                        }
                     }
-                    // Push the assigned value (ECMAScript: assignment evaluates
-                    // to the right-hand side). The compiler always emits a Pop
-                    // or uses this value directly — both cases are correct.
                     self.stack.push(val);
                 }
                 Op::NewObject => {
@@ -710,6 +788,36 @@ impl Vm {
                     }
                 }
 
+                Op::Yield => {
+                    let value = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let yield_ip = self.frames[frame_idx].ip;
+                    let yield_locals = self.frames[frame_idx].locals.clone();
+                    let stack_base = self.frames[frame_idx].stack_base;
+                    let yield_stack: Vec<JsValue> = self.stack[stack_base..].to_vec();
+                    // Pop the generator frame
+                    self.frames.pop();
+                    self.stack.truncate(stack_base);
+                    // Store pending yield for run_generator_step to consume
+                    self.pending_generator_yield = Some((value.clone(), yield_ip, yield_locals, yield_stack));
+                    // Push the yield value as the return value of run()
+                    self.stack.push(value);
+                    return self.stack.pop().unwrap_or(JsValue::Undefined);
+                }
+
+                Op::YieldDelegate => {
+                    // Simplified: yield* iterable — treat as single yield for now
+                    let value = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let yield_ip = self.frames[frame_idx].ip;
+                    let yield_locals = self.frames[frame_idx].locals.clone();
+                    let stack_base = self.frames[frame_idx].stack_base;
+                    let yield_stack: Vec<JsValue> = self.stack[stack_base..].to_vec();
+                    self.frames.pop();
+                    self.stack.truncate(stack_base);
+                    self.pending_generator_yield = Some((value.clone(), yield_ip, yield_locals, yield_stack));
+                    self.stack.push(value);
+                    return self.stack.pop().unwrap_or(JsValue::Undefined);
+                }
+
                 Op::Debugger | Op::Nop => {}
 
                 Op::ObjectRest(count) => {
@@ -750,6 +858,36 @@ impl Vm {
                     }
                     frame.locals[slot] = new_cell;
                 }
+                Op::NewRegExp(pattern_idx, flags_idx) => {
+                    let pattern = self.get_const_string(frame_idx, pattern_idx);
+                    let flags = self.get_const_string(frame_idx, flags_idx);
+                    let regexp = native_regexp::create_regexp_object(self, &pattern, &flags);
+                    self.stack.push(regexp);
+                }
+                Op::DefineGetter(name_idx) => {
+                    let name = self.get_const_string(frame_idx, name_idx);
+                    let getter_fn = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let obj = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    if let JsValue::Object(obj_rc) = &obj {
+                        let mut o = obj_rc.borrow_mut();
+                        // Merge with existing accessor if there's already a setter
+                        let existing_setter = o.properties.get(&name)
+                            .and_then(|p| p.setter.clone());
+                        o.properties.insert(name, Property::accessor(Some(getter_fn), existing_setter));
+                    }
+                }
+                Op::DefineSetter(name_idx) => {
+                    let name = self.get_const_string(frame_idx, name_idx);
+                    let setter_fn = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let obj = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    if let JsValue::Object(obj_rc) = &obj {
+                        let mut o = obj_rc.borrow_mut();
+                        // Merge with existing accessor if there's already a getter
+                        let existing_getter = o.properties.get(&name)
+                            .and_then(|p| p.getter.clone());
+                        o.properties.insert(name, Property::accessor(existing_getter, Some(setter_fn)));
+                    }
+                }
             }
         }
     }
@@ -786,11 +924,56 @@ impl Vm {
     }
 
     /// Get property with prototype chain lookup.
+    /// Check for a getter in an object's property and return it (without invoking).
+    /// Returns `Some(getter_fn)` if found, `None` if it's a data property or not found.
+    pub fn find_getter(&self, val: &JsValue, key: &str) -> Option<JsValue> {
+        if let JsValue::Object(obj) = val {
+            let o = obj.borrow();
+            if let Some(prop) = o.properties.get(key) {
+                if prop.is_accessor() {
+                    return prop.getter.clone();
+                }
+                return None; // data property found, no getter
+            }
+            // Walk prototype chain
+            if let Some(ref proto) = o.prototype {
+                let proto_val = JsValue::Object(proto.clone());
+                drop(o);
+                return self.find_getter(&proto_val, key);
+            }
+        }
+        None
+    }
+
+    /// Check for a setter in an object's property chain.
+    pub fn find_setter(&self, val: &JsValue, key: &str) -> Option<JsValue> {
+        if let JsValue::Object(obj) = val {
+            let o = obj.borrow();
+            if let Some(prop) = o.properties.get(key) {
+                if prop.is_accessor() {
+                    return prop.setter.clone();
+                }
+                return None; // data property found, no setter
+            }
+            if let Some(ref proto) = o.prototype {
+                let proto_val = JsValue::Object(proto.clone());
+                drop(o);
+                return self.find_setter(&proto_val, key);
+            }
+        }
+        None
+    }
+
     pub fn get_property_with_proto(&self, val: &JsValue, key: &str) -> JsValue {
         match val {
             JsValue::Object(obj) => {
                 let o = obj.borrow();
                 if let Some(prop) = o.properties.get(key) {
+                    if prop.is_accessor() {
+                        // Getter needs to be invoked by caller (VM run loop)
+                        // Return undefined here; the VM will detect and call the getter
+                        return prop.getter.as_ref().cloned().unwrap_or(JsValue::Undefined);
+                    }
                     return prop.value.clone();
                 }
                 if let Some(ref proto) = o.prototype {
@@ -915,8 +1098,66 @@ impl Vm {
             true
         } else {
             self.log_engine("[libjs] WARN: unhandled exception");
+            self.last_exception = Some(val);
             false
         }
+    }
+
+    /// Run a generator function's bytecode from a saved state until Yield or Return.
+    /// Uses the main `run()` loop by pushing a frame and using `run_target_depth`.
+    pub fn run_generator_step(
+        &mut self,
+        chunk: Chunk,
+        start_ip: usize,
+        locals: Vec<Rc<RefCell<JsValue>>>,
+        upvalue_cells: Vec<Rc<RefCell<JsValue>>>,
+        this_val: JsValue,
+        stack_snapshot: Vec<JsValue>,
+        send_value: JsValue,
+    ) -> native_generator::GeneratorResult {
+        // Push the send_value onto the snapshot stack (result of `yield` expression)
+        let stack_base = self.stack.len();
+        for v in &stack_snapshot {
+            self.stack.push(v.clone());
+        }
+        if start_ip > 0 {
+            // Not the first call — push the sent value as the yield expression result
+            self.stack.push(send_value);
+        }
+
+        let frame = CallFrame {
+            chunk,
+            ip: start_ip,
+            stack_base,
+            locals,
+            upvalue_cells,
+            this_val,
+            is_constructor: false,
+            all_args: Vec::new(),
+            self_ref: JsValue::Undefined,
+        };
+        let frame_depth = self.frames.len();
+        self.frames.push(frame);
+
+        // Use the main run loop
+        let saved_target = self.run_target_depth;
+        self.run_target_depth = frame_depth;
+        let result = self.run();
+        self.run_target_depth = saved_target;
+
+        // Check if we suspended on a Yield (indicated by the generator_yield_* fields)
+        if let Some((yield_val, yield_ip, yield_locals, yield_stack)) = self.pending_generator_yield.take() {
+            return native_generator::GeneratorResult::Yielded {
+                value: yield_val,
+                ip: yield_ip,
+                locals: yield_locals,
+                stack: yield_stack,
+            };
+        }
+
+        // Normal return or exception
+        self.stack.truncate(stack_base);
+        native_generator::GeneratorResult::Returned(result)
     }
 }
 

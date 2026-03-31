@@ -142,6 +142,11 @@ impl<'a> Lexer<'a> {
             return self.read_number();
         }
 
+        // Private field identifier: #name
+        if ch == b'#' && self.pos + 1 < self.src.len() && is_ident_start(self.src[self.pos + 1]) {
+            return self.read_private_ident();
+        }
+
         // Identifiers and keywords
         if is_ident_start(ch) {
             return self.read_ident();
@@ -718,6 +723,21 @@ impl<'a> Lexer<'a> {
         let ch = s.chars().next().unwrap_or('\u{FFFD}');
         self.pos = end;
         ch
+    }
+
+    fn read_private_ident(&mut self) -> Token {
+        let start = self.pos as u32;
+        let line = self.line;
+        self.pos += 1; // skip #
+        let mut name = String::from("#");
+        while self.pos < self.src.len() && is_ident_continue(self.src[self.pos]) {
+            name.push(self.src[self.pos] as char);
+            self.pos += 1;
+        }
+        Token {
+            kind: TokenKind::PrivateIdent(name),
+            span: Span { start, end: self.pos as u32, line },
+        }
     }
 }
 

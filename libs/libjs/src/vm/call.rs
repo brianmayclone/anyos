@@ -78,6 +78,20 @@ impl Vm {
                                 *locals[i].borrow_mut() = arg.clone();
                             }
                         }
+
+                        // Generator function: return a GeneratorObject instead of executing
+                        if chunk.is_generator {
+                            let gen_obj = super::native_generator::create_generator_object(
+                                self,
+                                chunk,
+                                locals,
+                                captured_upvalues,
+                                effective_this,
+                            );
+                            self.stack.push(gen_obj);
+                            return;
+                        }
+
                         let frame = CallFrame {
                             chunk,
                             ip: 0,

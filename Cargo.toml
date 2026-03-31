@@ -27,6 +27,7 @@ exclude = [
   "system/compositor",
   # Host-native tools (built with cargo +stable, not part of anyOS image)
   "tools/surf-host",
+  "tools/test262-runner",
 ]
 resolver = "2"
 

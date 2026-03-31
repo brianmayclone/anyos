@@ -493,17 +493,48 @@ impl<'a> Parser<'a> {
     }
 
     fn read_ident(&mut self) -> String {
-        let start = self.pos;
+        let mut result = String::new();
         while !self.eof() {
             let ch = self.peek();
-            if ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_' {
+            if ch == b'\\' && self.pos + 1 < self.input.len() {
+                // CSS escape: \X → literal X (simplified; full spec supports \HHHHHH)
+                self.pos += 1;
+                let escaped = self.peek();
+                if escaped.is_ascii_hexdigit() {
+                    // Hex escape: \XX or \XXXXXX — read up to 6 hex digits
+                    let hex_start = self.pos;
+                    let mut count = 0;
+                    while !self.eof() && self.peek().is_ascii_hexdigit() && count < 6 {
+                        self.pos += 1;
+                        count += 1;
+                    }
+                    // Optional trailing space consumed per CSS spec
+                    if !self.eof() && self.peek() == b' ' {
+                        self.pos += 1;
+                    }
+                    let hex_str = &self.input[hex_start..hex_start + count];
+                    if let Ok(s) = core::str::from_utf8(hex_str) {
+                        if let Ok(cp) = u32::from_str_radix(s, 16) {
+                            if let Some(c) = char::from_u32(cp) {
+                                result.push(c);
+                                continue;
+                            }
+                        }
+                    }
+                    // Fallback: skip
+                } else {
+                    // Simple escape: \: \. \/ etc → literal character
+                    result.push(escaped as char);
+                    self.pos += 1;
+                }
+            } else if ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_' {
+                result.push(ch as char);
                 self.pos += 1;
             } else {
                 break;
             }
         }
-        let bytes = &self.input[start..self.pos];
-        String::from_utf8_lossy(bytes).into_owned()
+        result
     }
 
     /// Read until `stop` byte or EOF. Does NOT consume the stop byte.
@@ -870,8 +901,10 @@ pub fn evaluate_media_query(query: &MediaQuery, viewport_width: i32, viewport_he
             MediaCondition::MinHeight(h) => viewport_height >= *h,
             MediaCondition::MaxHeight(h) => viewport_height <= *h,
             MediaCondition::PrefersColorScheme(scheme) => {
-                // anyOS uses dark theme.
-                scheme == "dark"
+                // Report light theme — most sites default to dark-on-light text,
+                // and dark-mode CSS often uses modern syntax (rgb() with /alpha,
+                // Tailwind utilities) that we don't fully support yet.
+                scheme == "light"
             }
         };
         if !ok { return false; }
@@ -1863,8 +1896,20 @@ pub fn parse_value(property: &Property, value_str: &str) -> CssValue {
         return v;
     }
 
-    // Fall back to keyword
-    CssValue::Keyword(lower)
+    // Fall back to keyword.
+    // Grid placement properties use <custom-ident> which is case-sensitive per spec (§7.3).
+    // Preserve original case for these properties.
+    let is_case_sensitive = matches!(property,
+        Property::GridColumn | Property::GridColumnStart | Property::GridColumnEnd
+        | Property::GridRow | Property::GridRowStart | Property::GridRowEnd
+        | Property::GridArea | Property::GridTemplateAreas
+        | Property::FontFamily | Property::Content
+    );
+    if is_case_sensitive {
+        CssValue::Keyword(String::from(s))
+    } else {
+        CssValue::Keyword(lower)
+    }
 }
 
 /// Parse `var(--name)` or `var(--name, fallback)`.
@@ -2848,34 +2893,92 @@ fn parse_hex_u32(hex: &str) -> Option<u32> {
 }
 
 fn parse_rgb_func(args: &str) -> Option<u32> {
-    let parts = split_args(args);
+    // Modern CSS: rgb(R G B) or rgb(R G B / alpha)
+    // Tailwind: rgb(R G B/var(--tw-bg-opacity,1))
+    let (color_part, alpha_part) = split_color_alpha(args);
+    let parts = split_args(color_part);
     if parts.len() < 3 {
         return Option::None;
     }
     let r = parse_color_component(parts[0])?.min(255);
     let g = parse_color_component(parts[1])?.min(255);
     let b = parse_color_component(parts[2])?.min(255);
-    Some(0xFF000000 | (r << 16) | (g << 8) | b)
+    if let Some(alpha_str) = alpha_part {
+        let a = parse_alpha_value(alpha_str);
+        Some((a << 24) | (r << 16) | (g << 8) | b)
+    } else if parts.len() >= 4 {
+        // Legacy: rgb(R, G, B, A) with comma syntax
+        let a = parse_alpha_value(parts[3]);
+        Some((a << 24) | (r << 16) | (g << 8) | b)
+    } else {
+        Some(0xFF000000 | (r << 16) | (g << 8) | b)
+    }
 }
 
 fn parse_rgba_func(args: &str) -> Option<u32> {
-    let parts = split_args(args);
-    if parts.len() < 4 {
+    // rgba() is identical to rgb() in modern CSS
+    let (color_part, alpha_part) = split_color_alpha(args);
+    let parts = split_args(color_part);
+    if parts.len() < 3 {
         return Option::None;
     }
     let r = parse_color_component(parts[0])?.min(255);
     let g = parse_color_component(parts[1])?.min(255);
     let b = parse_color_component(parts[2])?.min(255);
-    // Alpha: could be 0.0-1.0 or 0-255
-    let a_str = parts[3].trim();
-    let a = if a_str.contains('.') {
-        // Fractional: multiply by 255
-        let fp = parse_fixed_point(a_str)?;
-        ((fp * 255) / 100).max(0).min(255) as u32
+    let a = if let Some(alpha_str) = alpha_part {
+        parse_alpha_value(alpha_str)
+    } else if parts.len() >= 4 {
+        parse_alpha_value(parts[3])
     } else {
-        parse_int(a_str)?.max(0).min(255) as u32
+        255u32
     };
     Some((a << 24) | (r << 16) | (g << 8) | b)
+}
+
+/// Split "R G B / alpha" or "R G B/alpha" into color part and optional alpha.
+/// Handles var() references by not splitting on / inside parentheses.
+fn split_color_alpha(args: &str) -> (&str, Option<&str>) {
+    // Find the `/` that separates color from alpha, respecting parentheses
+    let mut depth: u32 = 0;
+    let bytes = args.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'(' { depth += 1; }
+        else if b == b')' { depth = depth.saturating_sub(1); }
+        else if b == b'/' && depth == 0 {
+            let color = args[..i].trim();
+            let alpha = args[i + 1..].trim();
+            return (color, Some(alpha));
+        }
+    }
+    (args, Option::None)
+}
+
+/// Parse an alpha value string. Handles fractional (0.0-1.0), integer (0-255),
+/// var() references (default to 1.0), and percentage.
+fn parse_alpha_value(s: &str) -> u32 {
+    let t = s.trim();
+    // If it's a var() or other unresolvable expression, default to fully opaque
+    if t.starts_with("var(") || t.contains("var(") {
+        return 255;
+    }
+    if t.ends_with('%') {
+        if let Some(pct) = parse_int(&t[..t.len() - 1]) {
+            return ((pct.max(0).min(100) as u32) * 255) / 100;
+        }
+        return 255;
+    }
+    if t.contains('.') {
+        if let Some(fp) = parse_fixed_point(t) {
+            return ((fp * 255) / 100).max(0).min(255) as u32;
+        }
+        return 255;
+    }
+    // Integer alpha: if <= 1, treat as 0 or 1 (fraction)
+    if let Some(v) = parse_int(t) {
+        if v <= 1 { return (v.max(0) as u32) * 255; }
+        return v.max(0).min(255) as u32;
+    }
+    255 // default: fully opaque
 }
 
 fn parse_color_component(s: &str) -> Option<u32> {
@@ -2898,32 +3001,41 @@ fn split_args(s: &str) -> Vec<&str> {
 }
 
 fn parse_hsl_func(args: &str) -> Option<u32> {
-    let parts = split_args(args);
+    // Modern CSS: hsl(H S L) or hsl(H S L / alpha)
+    let (color_part, alpha_part) = split_color_alpha(args);
+    let parts = split_args(color_part);
     if parts.len() < 3 { return Option::None; }
     let h = parse_hue(parts[0])?;
     let s = parse_percent_val(parts[1])?;
     let l = parse_percent_val(parts[2])?;
     let (r, g, b) = hsl_to_rgb(h, s, l);
-    Some(0xFF000000 | (r << 16) | (g << 8) | b)
+    if let Some(alpha_str) = alpha_part {
+        let a = parse_alpha_value(alpha_str);
+        Some((a << 24) | (r << 16) | (g << 8) | b)
+    } else if parts.len() >= 4 {
+        let a = parse_alpha_value(parts[3]);
+        Some((a << 24) | (r << 16) | (g << 8) | b)
+    } else {
+        Some(0xFF000000 | (r << 16) | (g << 8) | b)
+    }
 }
 
 fn parse_hsla_func(args: &str) -> Option<u32> {
-    let parts = split_args(args);
-    if parts.len() < 4 { return Option::None; }
+    // hsla() is identical to hsl() in modern CSS
+    let (color_part, alpha_part) = split_color_alpha(args);
+    let parts = split_args(color_part);
+    if parts.len() < 3 { return Option::None; }
     let h = parse_hue(parts[0])?;
     let s = parse_percent_val(parts[1])?;
     let l = parse_percent_val(parts[2])?;
-    let a_str = parts[3].trim();
-    let a = if a_str.contains('.') {
-        let fp = parse_fixed_point(a_str)?;
-        ((fp * 255) / 100).max(0).min(255) as u32
-    } else if a_str.ends_with('%') {
-        let pct = parse_int(&a_str[..a_str.len() - 1])?;
-        ((pct.max(0).min(100) as u32) * 255) / 100
-    } else {
-        parse_int(a_str)?.max(0).min(255) as u32
-    };
     let (r, g, b) = hsl_to_rgb(h, s, l);
+    let a = if let Some(alpha_str) = alpha_part {
+        parse_alpha_value(alpha_str)
+    } else if parts.len() >= 4 {
+        parse_alpha_value(parts[3])
+    } else {
+        255u32
+    };
     Some((a << 24) | (r << 16) | (g << 8) | b)
 }
 

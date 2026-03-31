@@ -225,20 +225,17 @@ impl DisplayList {
         tile_y_start: i32,
         tile_y_end: i32,
     ) {
-        // Search for the first command that could overlap the tile.
-        // A command at y with height h overlaps if y + h > tile_y_start,
-        // i.e. y > tile_y_start - h.  We use max_h as conservative upper bound.
-        let search_y = tile_y_start - self.max_h;
-        let start = self.search_start(search_y);
+        // NOTE: The display list is sorted by (z_index, y), not purely by Y.
+        // Because Y can reset at z-index boundaries, we must scan from the start.
+        // TODO: For better perf, split into per-z-index sublists with binary search.
+        let start = 0;
 
         for i in start..self.cmds.len() {
             let cmd = &self.cmds[i];
-            // Past the tile — all remaining commands are below (sorted by Y).
-            if cmd.y >= tile_y_end {
-                break;
-            }
-            // Check overlap: command bottom > tile top.
-            if cmd.y + cmd.h <= tile_y_start {
+            // Skip commands that don't overlap the tile vertically.
+            // NOTE: cannot `break` here because the display list is sorted by
+            // (z_index, y) — Y can decrease at z-index boundaries.
+            if cmd.y >= tile_y_end || cmd.y + cmd.h <= tile_y_start {
                 continue;
             }
 

@@ -75,12 +75,19 @@ pub fn layout_grid(
     let auto_col = &parent_style.grid_auto_columns;
 
     // ── 2. Collect visible, non-absolutely-positioned children ────────────
+    // Per CSS Grid §4: whitespace-only text nodes do not generate grid items.
     let mut items: Vec<GridItem> = child_ids
         .iter()
         .filter_map(|&cid| {
             let st = &styles[cid];
             if st.display == Display::None { return None; }
             if matches!(st.position, Position::Absolute | Position::Fixed) { return None; }
+            // Skip whitespace-only text nodes (CSS Grid §4).
+            if let crate::dom::NodeType::Text(ref t) = dom.get(cid).node_type {
+                if t.bytes().all(|b| b == b' ' || b == b'\n' || b == b'\r' || b == b'\t') {
+                    return None;
+                }
+            }
             Some(GridItem {
                 node_id: cid,
                 col_start: st.grid_column_start.clone(),
@@ -104,17 +111,8 @@ pub fn layout_grid(
     // If the parent has `grid-template-areas`, resolve `GridLine::Named` and
     // `grid-area: areaName` to explicit line indices.
     let template_areas = &parent_style.grid_template_areas;
-    anyos_std::println!("[grid] parent={} cols={} rows={} areas={} items={}",
-        parent_idx, col_templates.len(), parent_style.grid_template_rows.len(),
-        template_areas.len(), items.len());
-    for area in template_areas {
-        anyos_std::println!("[grid]   area '{}' r={}-{} c={}-{}", area.name,
-            area.row_start, area.row_end, area.col_start, area.col_end);
-    }
     if !template_areas.is_empty() {
         for item in &mut items {
-            let st = &styles[item.node_id];
-            // Check if grid-area was set as a single named value (all four lines Named).
             resolve_named_area(&mut item.col_start, &mut item.col_end,
                                &mut item.row_start, &mut item.row_end,
                                template_areas);
@@ -200,10 +198,12 @@ pub fn layout_grid(
             // Vertical alignment (align-items).
             let y_offset = align_offset(container_align, item_h, cell_h);
 
-            // Translate the subtree so that (bx.x, bx.y) lands at (x + x_offset, y + y_offset).
-            let dx = parent.x + x + x_offset - bx.x;
-            let dy = parent.y + y + y_offset - bx.y;
-            translate_box(&mut bx, dx, dy);
+            // Position the item box at its grid cell offset.
+            // Do NOT use translate_box (recursive) — flatten() accumulates
+            // parent offsets naturally, so only the item's own x/y needs to
+            // be set.  translate_box would shift descendants twice.
+            bx.x = x + x_offset;
+            bx.y = y + y_offset;
 
             parent.children.push(bx);
         }
@@ -256,7 +256,7 @@ fn resolve_named_area(
     areas: &[GridArea],
 ) {
     // Case 1: grid-area: areaName → all four are Named("areaName")
-    // (The CSS parser sets row_start = Named, col_start = Named, etc.)
+    // Per CSS Grid spec §7.3: <custom-ident> values are case-sensitive.
     if let GridLine::Named(ref name) = row_start {
         if let Some(area) = areas.iter().find(|a| a.name == *name) {
             *row_start = GridLine::Index(area.row_start);
@@ -271,8 +271,7 @@ fn resolve_named_area(
             return;
         }
     }
-    // Case 2: Individual named lines (grid-column-start: areaName-start etc.)
-    // For simplicity, resolve col/row start/end individually.
+    // Case 2: Individual named lines — case-sensitive per CSS Grid §7.3.
     if let GridLine::Named(ref name) = col_start {
         if let Some(area) = areas.iter().find(|a| a.name == *name) {
             *col_start = GridLine::Index(area.col_start);
@@ -602,6 +601,7 @@ fn align_offset(align: AlignItems, item_size: i32, cell_size: i32) -> i32 {
 }
 
 /// Recursively translate a `LayoutBox` and all its children by (dx, dy).
+#[allow(dead_code)]
 fn translate_box(bx: &mut LayoutBox, dx: i32, dy: i32) {
     bx.x += dx;
     bx.y += dy;

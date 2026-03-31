@@ -187,6 +187,15 @@ pub enum Op {
     /// If it's a non-Promise value, push it back unchanged.
     Await,
 
+    /// Yield a value from a generator function.
+    /// Suspends execution and returns `{ value, done: false }` to the caller.
+    /// When resumed via `.next(v)`, `v` replaces the yield expression result.
+    Yield,
+
+    /// Yield delegate: `yield* iterable`.
+    /// Delegates to another iterable/generator.
+    YieldDelegate,
+
     // ── No-op ──
     Nop,
 
@@ -195,6 +204,21 @@ pub enum Op {
     /// Stack before: [..., source_obj, key1, ..., keyN]
     /// Stack after:  [..., rest_object]
     ObjectRest(u8),
+
+    /// Create a RegExp object from pattern (const index) and flags (const index).
+    /// Stack before: [...]
+    /// Stack after:  [..., regexp_object]
+    NewRegExp(u16, u16),
+
+    /// Define a getter on an object.
+    /// Stack before: [..., object, getter_fn]
+    /// Stack after:  [..., object]
+    DefineGetter(u16),  // name constant index
+
+    /// Define a setter on an object.
+    /// Stack before: [..., object, setter_fn]
+    /// Stack after:  [..., object]
+    DefineSetter(u16),  // name constant index
 
     /// Replace local slot `slot` with a fresh `Rc<RefCell<JsValue>>` cell containing
     /// the same value.  Used for per-iteration `let` binding in `for` loops so that
@@ -227,6 +251,10 @@ pub struct Chunk {
     pub name: Option<String>,
     /// Upvalue capture descriptors — one entry per upvalue the function closes over.
     pub upvalues: Vec<UpvalueRef>,
+    /// True if this chunk was compiled under `"use strict"` mode.
+    pub strict: bool,
+    /// True if this is a generator function (`function*`).
+    pub is_generator: bool,
 }
 
 impl Chunk {
@@ -238,6 +266,8 @@ impl Chunk {
             param_count: 0,
             name: None,
             upvalues: Vec::new(),
+            strict: false,
+            is_generator: false,
         }
     }
 

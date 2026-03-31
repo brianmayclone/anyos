@@ -233,6 +233,18 @@ pub fn string_trim_end(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // Check if separator is a RegExp
+    if let Some(sep) = args.first() {
+        if let JsValue::Object(obj) = sep {
+            if obj.borrow().internal_tag.as_deref() == Some(super::native_regexp::REGEXP_TAG) {
+                let result = super::native_regexp::string_split_regexp(vm, args);
+                if !result.is_undefined() {
+                    return result;
+                }
+            }
+        }
+    }
+
     let s = this_string(vm);
     let sep = args.first().map(|v| v.to_js_string());
     let limit = args.get(1).map(|v| v.to_number() as usize).unwrap_or(usize::MAX);
@@ -274,6 +286,18 @@ pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_replace(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // Check if search is a RegExp
+    if let Some(search_val) = args.first() {
+        if let JsValue::Object(obj) = search_val {
+            if obj.borrow().internal_tag.as_deref() == Some(super::native_regexp::REGEXP_TAG) {
+                let result = super::native_regexp::string_replace_regexp(vm, args);
+                if !result.is_undefined() {
+                    return result;
+                }
+            }
+        }
+    }
+
     let s = this_string(vm);
     let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
     let replacement = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
@@ -291,6 +315,18 @@ pub fn string_replace(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_replace_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // Check if search is a RegExp (must have global flag)
+    if let Some(search_val) = args.first() {
+        if let JsValue::Object(obj) = search_val {
+            if obj.borrow().internal_tag.as_deref() == Some(super::native_regexp::REGEXP_TAG) {
+                let result = super::native_regexp::string_replace_regexp(vm, args);
+                if !result.is_undefined() {
+                    return result;
+                }
+            }
+        }
+    }
+
     let s = this_string(vm);
     let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
     let replacement = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();

@@ -7,6 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::vec;
 use alloc::string::ToString;
+use alloc::format;
 
 use crate::token::{Token, TokenKind};
 use crate::ast::*;
@@ -14,11 +15,16 @@ use crate::ast::*;
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    pub errors: Vec<String>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0 }
+        Parser { tokens, pos: 0, errors: Vec::new() }
+    }
+
+    fn syntax_error(&mut self, msg: &str) {
+        self.errors.push(String::from(msg));
     }
 
     /// Parse a complete JavaScript program.
@@ -176,6 +182,8 @@ impl Parser {
                 self.eat_semicolon();
                 Some(Stmt::Debugger)
             }
+            TokenKind::Import => Some(self.parse_import()),
+            TokenKind::Export => Some(self.parse_export()),
             TokenKind::Eof => None,
             // Check for labeled statement
             TokenKind::Ident(_) => {
@@ -253,12 +261,21 @@ impl Parser {
                 elements.push(None);
                 continue;
             }
-            // Rest element: `...binding` — must be last
+            // Rest element: `...binding` — must be last, no initializer
             if self.eat(&TokenKind::DotDotDot) {
                 let inner = self.parse_binding_pattern();
+                // Rest element cannot have a default initializer: [...x = val] is a SyntaxError
+                if matches!(self.peek(), TokenKind::Eq) {
+                    self.syntax_error("Rest element may not have a default initializer");
+                }
                 elements.push(Some(Pattern::Rest(Box::new(inner))));
-                self.eat(&TokenKind::Comma); // optional trailing comma
-                break; // rest must be the last element
+                // Rest must be last — if there are more elements, that's a SyntaxError
+                if self.eat(&TokenKind::Comma) {
+                    if !matches!(self.peek(), TokenKind::RBracket) {
+                        self.syntax_error("Rest element must be last element");
+                    }
+                }
+                break;
             }
             let pat = self.parse_binding_pattern();
             let pat = if self.eat(&TokenKind::Eq) {
@@ -557,14 +574,183 @@ impl Parser {
         Stmt::Try { block, catch, finally }
     }
 
+    fn parse_import(&mut self) -> Stmt {
+        self.expect(&TokenKind::Import);
+        let mut specifiers = Vec::new();
+
+        // import 'module'  (side-effect only)
+        if let TokenKind::String(ref s) = self.peek().clone() {
+            let source = s.clone();
+            self.pos += 1;
+            self.eat_semicolon();
+            return Stmt::Import { specifiers, source };
+        }
+
+        // import * as name from 'module'
+        if self.eat(&TokenKind::Star) {
+            self.expect(&TokenKind::As);
+            let local = self.ident_str();
+            specifiers.push(ImportSpecifier::Namespace(local));
+        }
+        // import { ... } from 'module'
+        else if matches!(self.peek(), TokenKind::LBrace) {
+            self.pos += 1;
+            while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
+                let imported = self.ident_str();
+                let local = if self.eat(&TokenKind::As) {
+                    self.ident_str()
+                } else {
+                    imported.clone()
+                };
+                specifiers.push(ImportSpecifier::Named { imported, local });
+                if !self.eat(&TokenKind::Comma) { break; }
+            }
+            self.expect(&TokenKind::RBrace);
+        }
+        // import name from 'module'  or  import name, { ... } from 'module'
+        else if let TokenKind::Ident(_) = self.peek() {
+            let default_name = self.ident_str();
+            specifiers.push(ImportSpecifier::Default(default_name));
+            // import name, { ... }
+            if self.eat(&TokenKind::Comma) {
+                if self.eat(&TokenKind::LBrace) {
+                    while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
+                        let imported = self.ident_str();
+                        let local = if self.eat(&TokenKind::As) {
+                            self.ident_str()
+                        } else {
+                            imported.clone()
+                        };
+                        specifiers.push(ImportSpecifier::Named { imported, local });
+                        if !self.eat(&TokenKind::Comma) { break; }
+                    }
+                    self.expect(&TokenKind::RBrace);
+                } else if self.eat(&TokenKind::Star) {
+                    self.expect(&TokenKind::As);
+                    let local = self.ident_str();
+                    specifiers.push(ImportSpecifier::Namespace(local));
+                }
+            }
+        }
+
+        // from 'module'
+        self.expect(&TokenKind::From);
+        let source = if let TokenKind::String(ref s) = self.peek().clone() {
+            let src = s.clone();
+            self.pos += 1;
+            src
+        } else {
+            self.pos += 1;
+            String::from("")
+        };
+        self.eat_semicolon();
+        Stmt::Import { specifiers, source }
+    }
+
+    fn parse_export(&mut self) -> Stmt {
+        self.expect(&TokenKind::Export);
+
+        // export default expr
+        if self.eat(&TokenKind::Default) {
+            let expr = if matches!(self.peek(), TokenKind::Function) {
+                // export default function name() {}
+                let stmt = self.parse_function_decl(false);
+                match stmt {
+                    Stmt::FunctionDecl { name, params, body, is_async, is_generator } => {
+                        Expr::FunctionExpr { name: Some(name), params, body, is_async, is_generator }
+                    }
+                    _ => Expr::Undefined,
+                }
+            } else if matches!(self.peek(), TokenKind::Class) {
+                let stmt = self.parse_class_decl();
+                match stmt {
+                    Stmt::ClassDecl { name, super_class, body } => {
+                        Expr::ClassExpr { name: Some(name), super_class: super_class.map(Box::new), body }
+                    }
+                    _ => Expr::Undefined,
+                }
+            } else {
+                let expr = self.parse_assignment_expr();
+                self.eat_semicolon();
+                expr
+            };
+            return Stmt::Export(ExportDecl::Default(expr));
+        }
+
+        // export { name1, name2 as alias }
+        if matches!(self.peek(), TokenKind::LBrace) {
+            self.pos += 1;
+            let mut specifiers = Vec::new();
+            while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
+                let local = self.ident_str();
+                let exported = if self.eat(&TokenKind::As) {
+                    self.ident_str()
+                } else {
+                    local.clone()
+                };
+                specifiers.push(ExportSpecifier { local, exported });
+                if !self.eat(&TokenKind::Comma) { break; }
+            }
+            self.expect(&TokenKind::RBrace);
+            // Re-export: export { ... } from 'module'
+            if self.eat(&TokenKind::From) {
+                let source = if let TokenKind::String(ref s) = self.peek().clone() {
+                    let src = s.clone();
+                    self.pos += 1;
+                    src
+                } else {
+                    self.pos += 1;
+                    String::from("")
+                };
+                self.eat_semicolon();
+                return Stmt::Export(ExportDecl::ReExport { specifiers, source });
+            }
+            self.eat_semicolon();
+            return Stmt::Export(ExportDecl::Named(specifiers));
+        }
+
+        // export function/class/var/let/const
+        let decl = match self.peek() {
+            TokenKind::Function => self.parse_function_decl(false),
+            TokenKind::Async => {
+                self.pos += 1;
+                self.parse_function_decl(true)
+            }
+            TokenKind::Class => self.parse_class_decl(),
+            TokenKind::Var | TokenKind::Let | TokenKind::Const => self.parse_var_decl(),
+            _ => {
+                // export *
+                if self.eat(&TokenKind::Star) {
+                    self.expect(&TokenKind::From);
+                    let source = if let TokenKind::String(ref s) = self.peek().clone() {
+                        let src = s.clone();
+                        self.pos += 1;
+                        src
+                    } else {
+                        self.pos += 1;
+                        String::from("")
+                    };
+                    self.eat_semicolon();
+                    return Stmt::Export(ExportDecl::ReExport {
+                        specifiers: Vec::new(),
+                        source,
+                    });
+                }
+                self.parse_expr_stmt()
+            }
+        };
+        Stmt::Export(ExportDecl::Decl(Box::new(decl)))
+    }
+
     fn parse_function_decl(&mut self, is_async: bool) -> Stmt {
         self.expect(&TokenKind::Function);
+        let is_generator = self.eat(&TokenKind::Star);
         let name = self.ident_str();
         let params = self.parse_params();
         self.expect(&TokenKind::LBrace);
         let body = self.parse_block_body();
         self.expect(&TokenKind::RBrace);
-        Stmt::FunctionDecl { name, params, body, is_async }
+        Stmt::FunctionDecl { name, params, body, is_async, is_generator }
     }
 
     fn parse_class_decl(&mut self) -> Stmt {
@@ -596,6 +782,67 @@ impl Parser {
             } else {
                 false
             };
+
+            // Private field/method: #name or #name = value
+            if let TokenKind::PrivateIdent(ref name) = self.peek().clone() {
+                let priv_name = name.clone(); // e.g. "#count"
+                self.pos += 1;
+                if matches!(self.peek(), TokenKind::LParen) {
+                    // Private method: #method() { }
+                    let params = self.parse_params();
+                    self.expect(&TokenKind::LBrace);
+                    let body = self.parse_block_body();
+                    self.expect(&TokenKind::RBrace);
+                    members.push(ClassMember {
+                        key: PropKey::Ident(priv_name),
+                        kind: ClassMemberKind::Method { params, body },
+                        is_static,
+                    });
+                } else {
+                    // Private field: #name = value
+                    let value = if self.eat(&TokenKind::Eq) {
+                        Some(self.parse_assignment_expr())
+                    } else {
+                        None
+                    };
+                    self.eat_semicolon();
+                    members.push(ClassMember {
+                        key: PropKey::Ident(priv_name),
+                        kind: ClassMemberKind::Property { value },
+                        is_static,
+                    });
+                }
+                continue;
+            }
+
+            // Check for get/set accessor in class body
+            let is_get = matches!(self.peek(), TokenKind::Ident(ref s) if s == "get");
+            let is_set = matches!(self.peek(), TokenKind::Ident(ref s) if s == "set");
+            if (is_get || is_set) && !matches!(self.peek2(), TokenKind::LParen | TokenKind::Eq | TokenKind::Semicolon) {
+                let _accessor = if is_get { "get" } else { "set" };
+                self.pos += 1; // skip 'get'/'set'
+                let key = self.parse_prop_key();
+                let params = self.parse_params();
+                self.expect(&TokenKind::LBrace);
+                let body = self.parse_block_body();
+                self.expect(&TokenKind::RBrace);
+                // Store as a Method but with a special key prefix so the compiler can detect it
+                members.push(ClassMember {
+                    key: match key {
+                        PropKey::Ident(ref name) => {
+                            if is_get {
+                                PropKey::Ident(alloc::format!("__get_{}", name))
+                            } else {
+                                PropKey::Ident(alloc::format!("__set_{}", name))
+                            }
+                        }
+                        _ => key,
+                    },
+                    kind: ClassMemberKind::Method { params, body },
+                    is_static,
+                });
+                continue;
+            }
 
             let key = self.parse_prop_key();
 
@@ -1143,7 +1390,14 @@ impl Parser {
                 }
                 TokenKind::Dot => {
                     self.pos += 1;
-                    let prop = self.ident_str();
+                    // Handle private field access: obj.#field
+                    let prop = if let TokenKind::PrivateIdent(ref name) = self.peek().clone() {
+                        let n = name.clone();
+                        self.pos += 1;
+                        n
+                    } else {
+                        self.ident_str()
+                    };
                     expr = Expr::Member {
                         object: Box::new(expr),
                         property: prop,
@@ -1222,6 +1476,10 @@ impl Parser {
                 self.pos += 1;
                 Expr::Template(s)
             }
+            TokenKind::RegExp(pattern, flags) => {
+                self.pos += 1;
+                Expr::RegExp { pattern, flags }
+            }
             TokenKind::Bool(b) => {
                 self.pos += 1;
                 Expr::Bool(b)
@@ -1267,7 +1525,11 @@ impl Parser {
             }
             TokenKind::Yield => {
                 self.pos += 1;
-                if matches!(self.peek(), TokenKind::Semicolon | TokenKind::RBrace | TokenKind::RParen | TokenKind::RBracket | TokenKind::Comma | TokenKind::Colon | TokenKind::Eof) {
+                // yield* expr  (delegate)
+                if self.eat(&TokenKind::Star) {
+                    let arg = self.parse_assignment_expr();
+                    Expr::YieldDelegate(Box::new(arg))
+                } else if matches!(self.peek(), TokenKind::Semicolon | TokenKind::RBrace | TokenKind::RParen | TokenKind::RBracket | TokenKind::Comma | TokenKind::Colon | TokenKind::Eof) {
                     Expr::Yield(None)
                 } else {
                     let arg = self.parse_assignment_expr();
@@ -1322,6 +1584,35 @@ impl Parser {
                 continue;
             }
 
+            // Check for get/set accessor
+            let is_get = matches!(self.peek(), TokenKind::Ident(ref s) if s == "get");
+            let is_set = matches!(self.peek(), TokenKind::Ident(ref s) if s == "set");
+            if (is_get || is_set) && !matches!(self.peek2(), TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace | TokenKind::LParen) {
+                let accessor_kind = if is_get { PropKind::Get } else { PropKind::Set };
+                self.pos += 1; // skip 'get' or 'set'
+                let key = self.parse_prop_key();
+                let params = self.parse_params();
+                self.expect(&TokenKind::LBrace);
+                let body = self.parse_block_body();
+                self.expect(&TokenKind::RBrace);
+                props.push(ObjProp {
+                    key,
+                    value: Expr::FunctionExpr {
+                        name: None,
+                        params,
+                        body,
+                        is_async: false,
+                        is_generator: false,
+                    },
+                    kind: accessor_kind,
+                    shorthand: false,
+                });
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+                continue;
+            }
+
             let key = self.parse_prop_key();
 
             // Shorthand property: { x } → { x: x }
@@ -1351,6 +1642,7 @@ impl Parser {
                         params,
                         body,
                         is_async: false,
+                        is_generator: false,
                     },
                     kind: PropKind::Method,
                     shorthand: false,
@@ -1379,6 +1671,7 @@ impl Parser {
 
     fn parse_function_expr(&mut self, is_async: bool) -> Expr {
         self.expect(&TokenKind::Function);
+        let is_generator = self.eat(&TokenKind::Star);
         let name = if let TokenKind::Ident(s) = self.peek().clone() {
             self.pos += 1;
             Some(s)
@@ -1389,7 +1682,7 @@ impl Parser {
         self.expect(&TokenKind::LBrace);
         let body = self.parse_block_body();
         self.expect(&TokenKind::RBrace);
-        Expr::FunctionExpr { name, params, body, is_async }
+        Expr::FunctionExpr { name, params, body, is_async, is_generator }
     }
 
     fn parse_class_expr(&mut self) -> Expr {

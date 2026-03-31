@@ -298,6 +298,21 @@ impl WebView {
         #[cfg(feature = "debug_surf")]
         anyos_std::println!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
 
+        // Simulate browser JS availability: replace "client-nojs" with "client-js"
+        // on the <html> element.  All modern sites (Wikipedia, etc.) include an
+        // inline script that does this, but it may fail in our minimal JS engine.
+        for i in 0..parsed_dom.nodes.len().min(5) {
+            if parsed_dom.tag(i) == Some(dom::Tag::Html) {
+                if let Some(cls) = parsed_dom.attr(i, "class") {
+                    if cls.contains("client-nojs") {
+                        let new_cls = cls.replace("client-nojs", "client-js");
+                        parsed_dom.set_attr(i, "class", &new_cls);
+                    }
+                }
+                break;
+            }
+        }
+
         // New page — inline <style> blocks and style attribute cache need re-parsing.
         self.inline_sheets.clear();
         self.inline_sheets_dirty = true;

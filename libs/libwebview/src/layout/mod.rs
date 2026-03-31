@@ -80,6 +80,9 @@ pub struct LayoutBox {
     /// If true, this box is `position:fixed` and its x/y are viewport-relative.
     /// The renderer will ignore accumulated parent offsets and use x/y directly.
     pub is_fixed: bool,
+    /// If true, this box is `position:absolute` or `position:fixed` — out of
+    /// normal flow.  Used by `intrinsic_width()` to skip these children.
+    pub is_out_of_flow: bool,
     /// Per-side border widths (litehtml-style).
     pub border_top_width: i32,
     pub border_right_width: i32,
@@ -215,6 +218,7 @@ impl LayoutBox {
             visibility_hidden: false,
             opacity: 255,
             is_fixed: false,
+            is_out_of_flow: false,
             // Per-side borders
             border_top_width: 0, border_right_width: 0,
             border_bottom_width: 0, border_left_width: 0,
@@ -732,6 +736,7 @@ pub(super) fn layout_children(
             // Leave y as-is when only bottom: is set (element appears at top of viewport).
 
             abs_box.is_fixed = true;
+            abs_box.is_out_of_flow = true;
         } else {
             // position:absolute — coordinates relative to the direct containing block (parent box).
             let t = abs_style.top.unwrap_or(0);
@@ -752,6 +757,7 @@ pub(super) fn layout_children(
             }
         }
 
+        abs_box.is_out_of_flow = true;
         parent.children.push(abs_box);
     }
 

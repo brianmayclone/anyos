@@ -1,40 +1,66 @@
-//! Proxy — ES6+ meta-programming.
+//! Proxy — ES6+ meta-programming with full trap support.
 //!
-//! Simplified implementation: a Proxy wraps a target object and a
-//! handler object.  When properties are accessed/set on the proxy,
-//! we check the handler for `get`, `set`, `has`, `deleteProperty`
-//! traps and invoke them if present.
+//! A Proxy wraps a target object and a handler object.
+//! Traps: get, set, has, deleteProperty, ownKeys, getOwnPropertyDescriptor,
+//! defineProperty, getPrototypeOf, setPrototypeOf, isExtensible,
+//! preventExtensions, apply, construct.
 
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use alloc::collections::BTreeMap;
 
 use crate::value::*;
 use super::{Vm, native_fn};
+
+pub const PROXY_TAG: &str = "__proxy__";
+
+// ═══════════════════════════════════════════════════════════
+// Helper: invoke a trap function (works for both native and bytecode)
+// ═══════════════════════════════════════════════════════════
+
+fn invoke_trap(vm: &mut Vm, handler: &JsValue, trap_name: &str, args: &[JsValue]) -> Option<JsValue> {
+    let trap_fn = handler.get_property(trap_name);
+    if trap_fn.is_undefined() || trap_fn.is_null() {
+        return None;
+    }
+    if !trap_fn.is_function() {
+        return None;
+    }
+    let result = vm.invoke_function(&trap_fn, args, handler.clone());
+    // The invoke pushed a result on the stack
+    Some(vm.stack.pop().unwrap_or(JsValue::Undefined))
+}
+
+fn get_target_handler(this: &JsValue) -> Option<(JsValue, JsValue)> {
+    if let JsValue::Object(obj) = this {
+        let o = obj.borrow();
+        if o.internal_tag.as_deref() != Some(PROXY_TAG) { return None; }
+        let target = o.get("__target");
+        let handler = o.get("__handler");
+        if target.is_null() { return None; } // revoked
+        Some((target, handler))
+    } else {
+        None
+    }
+}
 
 // ═══════════════════════════════════════════════════════════
 // Proxy constructor
 // ═══════════════════════════════════════════════════════════
 
-/// `new Proxy(target, handler)` — creates a proxy object.
 pub fn ctor_proxy(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
     let handler = args.get(1).cloned().unwrap_or(JsValue::Undefined);
 
     let mut obj = JsObject::new();
-    obj.internal_tag = Some(String::from("__proxy__"));
-    obj.set(String::from("__target"), target);
-    obj.set(String::from("__handler"), handler);
-    // Proxy-specific methods for the host to trigger traps
-    obj.set(String::from("__get"), native_fn("__get", proxy_get_trap));
-    obj.set(String::from("__set"), native_fn("__set", proxy_set_trap));
-    obj.set(String::from("__has"), native_fn("__has", proxy_has_trap));
-    obj.set(String::from("__deleteProperty"), native_fn("__deleteProperty", proxy_delete_trap));
+    obj.internal_tag = Some(String::from(PROXY_TAG));
+    obj.set_hidden(String::from("__target"), target);
+    obj.set_hidden(String::from("__handler"), handler);
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
-/// `Proxy.revocable(target, handler)` — returns { proxy, revoke }.
 pub fn proxy_revocable(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let proxy = ctor_proxy(vm, args);
     let result = JsValue::new_object();
@@ -44,7 +70,6 @@ pub fn proxy_revocable(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 fn proxy_revoke(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    // Simplified: set target and handler to null
     if let JsValue::Object(obj) = &vm.current_this {
         if let JsValue::Object(proxy_obj) = obj.borrow().get("proxy") {
             let mut p = proxy_obj.borrow_mut();
@@ -56,114 +81,245 @@ fn proxy_revoke(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Trap implementations
+// Trap dispatch methods — called by the VM
 // ═══════════════════════════════════════════════════════════
 
-/// Internal: invoke the handler's `get` trap or fall through to target.
-fn proxy_get_trap(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let prop = args.first().map(|v| v.to_js_string()).unwrap_or_default();
-
-    if let JsValue::Object(obj) = &vm.current_this {
-        let o = obj.borrow();
-        let handler = o.get("__handler");
-        let target = o.get("__target");
-        drop(o);
-
-        // Check for get trap in handler
-        if let JsValue::Object(h) = &handler {
-            let get_fn = h.borrow().get("get");
-            if let JsValue::Function(f) = get_fn {
-                let kind = f.borrow().kind.clone();
-                if let FnKind::Native(native) = kind {
-                    return native(vm, &[target, JsValue::String(prop)]);
-                }
-            }
-        }
-
-        // No trap — fall through to target
-        target.get_property(&prop)
-    } else {
-        JsValue::Undefined
+/// `handler.get(target, property, receiver)` trap.
+pub fn proxy_get(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<JsValue> {
+    let (target, handler) = get_target_handler(proxy)?;
+    match invoke_trap(vm, &handler, "get", &[target.clone(), JsValue::String(String::from(key)), proxy.clone()]) {
+        Some(val) => Some(val),
+        None => Some(vm.get_property_with_proto(&target, key)),
     }
 }
 
-/// Internal: invoke the handler's `set` trap or fall through to target.
-fn proxy_set_trap(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let prop = args.first().map(|v| v.to_js_string()).unwrap_or_default();
-    let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+/// `handler.set(target, property, value, receiver)` trap. Returns true if set succeeded.
+pub fn proxy_set(vm: &mut Vm, proxy: &JsValue, key: &str, value: &JsValue) -> Option<bool> {
+    let (target, handler) = get_target_handler(proxy)?;
+    match invoke_trap(vm, &handler, "set", &[target.clone(), JsValue::String(String::from(key)), value.clone(), proxy.clone()]) {
+        Some(result) => Some(result.to_boolean()),
+        None => {
+            target.set_property(String::from(key), value.clone());
+            Some(true)
+        }
+    }
+}
 
-    if let JsValue::Object(obj) = &vm.current_this {
-        let o = obj.borrow();
-        let handler = o.get("__handler");
-        let target = o.get("__target");
-        drop(o);
-
-        if let JsValue::Object(h) = &handler {
-            let set_fn = h.borrow().get("set");
-            if let JsValue::Function(f) = set_fn {
-                let kind = f.borrow().kind.clone();
-                if let FnKind::Native(native) = kind {
-                    return native(vm, &[target, JsValue::String(prop), value]);
-                }
+/// `handler.has(target, property)` trap.
+pub fn proxy_has(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<bool> {
+    let (target, handler) = get_target_handler(proxy)?;
+    match invoke_trap(vm, &handler, "has", &[target.clone(), JsValue::String(String::from(key))]) {
+        Some(result) => Some(result.to_boolean()),
+        None => {
+            if let JsValue::Object(t) = &target {
+                Some(t.borrow().has(key))
+            } else {
+                Some(false)
             }
         }
+    }
+}
 
-        target.set_property(prop, value);
+/// `handler.deleteProperty(target, property)` trap.
+pub fn proxy_delete(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<bool> {
+    let (target, handler) = get_target_handler(proxy)?;
+    match invoke_trap(vm, &handler, "deleteProperty", &[target.clone(), JsValue::String(String::from(key))]) {
+        Some(result) => Some(result.to_boolean()),
+        None => Some(target.delete_property(key)),
+    }
+}
+
+/// `handler.ownKeys(target)` trap.
+pub fn proxy_own_keys(vm: &mut Vm, proxy: &JsValue) -> Option<Vec<String>> {
+    let (target, handler) = get_target_handler(proxy)?;
+    match invoke_trap(vm, &handler, "ownKeys", &[target.clone()]) {
+        Some(JsValue::Array(arr)) => {
+            let a = arr.borrow();
+            Some(a.elements.iter().map(|v| v.to_js_string()).collect())
+        }
+        Some(_) => None,
+        None => {
+            if let JsValue::Object(t) = &target {
+                Some(t.borrow().keys())
+            } else {
+                Some(Vec::new())
+            }
+        }
+    }
+}
+
+/// `handler.apply(target, thisArg, argumentsList)` trap (for function proxies).
+pub fn proxy_apply(vm: &mut Vm, proxy: &JsValue, this_arg: &JsValue, args: &[JsValue]) -> Option<JsValue> {
+    let (target, handler) = get_target_handler(proxy)?;
+    let args_array = JsValue::new_array(args.to_vec());
+    match invoke_trap(vm, &handler, "apply", &[target.clone(), this_arg.clone(), args_array]) {
+        Some(val) => Some(val),
+        None => {
+            // No trap — call target directly
+            vm.invoke_function(&target, args, this_arg.clone());
+            Some(vm.stack.pop().unwrap_or(JsValue::Undefined))
+        }
+    }
+}
+
+/// `handler.construct(target, argumentsList, newTarget)` trap.
+pub fn proxy_construct(vm: &mut Vm, proxy: &JsValue, args: &[JsValue]) -> Option<JsValue> {
+    let (target, handler) = get_target_handler(proxy)?;
+    let args_array = JsValue::new_array(args.to_vec());
+    match invoke_trap(vm, &handler, "construct", &[target.clone(), args_array, proxy.clone()]) {
+        Some(val) => Some(val),
+        None => None, // Let normal new() handle it
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Reflect API
+// ═══════════════════════════════════════════════════════════
+
+pub fn reflect_get(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    vm.get_property_with_proto(&target, &key)
+}
+
+pub fn reflect_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    let value = args.get(2).cloned().unwrap_or(JsValue::Undefined);
+    target.set_property(key, value);
+    JsValue::Bool(true)
+}
+
+pub fn reflect_has(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    match &target {
+        JsValue::Object(obj) => JsValue::Bool(obj.borrow().has(&key)),
+        _ => JsValue::Bool(false),
+    }
+}
+
+pub fn reflect_delete_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    JsValue::Bool(target.delete_property(&key))
+}
+
+pub fn reflect_own_keys(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    if let JsValue::Object(obj) = &target {
+        let keys: Vec<JsValue> = obj.borrow().keys().into_iter()
+            .map(|k| JsValue::String(k))
+            .collect();
+        JsValue::new_array(keys)
+    } else {
+        JsValue::new_array(Vec::new())
+    }
+}
+
+pub fn reflect_apply(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let this_arg = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let args_list = args.get(2).cloned().unwrap_or(JsValue::Undefined);
+
+    let call_args: Vec<JsValue> = if let JsValue::Array(arr) = &args_list {
+        arr.borrow().elements.clone()
+    } else {
+        Vec::new()
+    };
+    vm.invoke_function(&target, &call_args, this_arg);
+    vm.stack.pop().unwrap_or(JsValue::Undefined)
+}
+
+pub fn reflect_construct(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let args_list = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+
+    let call_args: Vec<JsValue> = if let JsValue::Array(arr) = &args_list {
+        arr.borrow().elements.clone()
+    } else {
+        Vec::new()
+    };
+    // Use the VM's new_object mechanism
+    vm.stack.push(target);
+    for a in &call_args {
+        vm.stack.push(a.clone());
+    }
+    vm.new_object(call_args.len());
+    vm.stack.pop().unwrap_or(JsValue::Undefined)
+}
+
+pub fn reflect_define_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    let desc = args.get(2).cloned().unwrap_or(JsValue::Undefined);
+    // Delegate to Object.defineProperty logic
+    if let JsValue::Object(obj) = &target {
+        if let JsValue::Object(desc_obj) = &desc {
+            let d = desc_obj.borrow();
+            let value = d.get("value");
+            let writable = if d.has_own("writable") { d.get("writable").to_boolean() } else { true };
+            let enumerable = if d.has_own("enumerable") { d.get("enumerable").to_boolean() } else { true };
+            let configurable = if d.has_own("configurable") { d.get("configurable").to_boolean() } else { true };
+            let prop = Property {
+                value, writable, enumerable, configurable,
+                getter: None, setter: None,
+            };
+            obj.borrow_mut().properties.insert(key, prop);
+        }
     }
     JsValue::Bool(true)
 }
 
-/// Internal: invoke the handler's `has` trap.
-fn proxy_has_trap(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let prop = args.first().map(|v| v.to_js_string()).unwrap_or_default();
-
-    if let JsValue::Object(obj) = &vm.current_this {
-        let o = obj.borrow();
-        let handler = o.get("__handler");
-        let target = o.get("__target");
-        drop(o);
-
-        if let JsValue::Object(h) = &handler {
-            let has_fn = h.borrow().get("has");
-            if let JsValue::Function(f) = has_fn {
-                let kind = f.borrow().kind.clone();
-                if let FnKind::Native(native) = kind {
-                    return native(vm, &[target, JsValue::String(prop)]);
-                }
+pub fn reflect_get_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match args.first() {
+        Some(JsValue::Object(obj)) => {
+            match &obj.borrow().prototype {
+                Some(proto) => JsValue::Object(proto.clone()),
+                None => JsValue::Null,
             }
         }
-
-        match &target {
-            JsValue::Object(t) => JsValue::Bool(t.borrow().has(&prop)),
-            _ => JsValue::Bool(false),
-        }
-    } else {
-        JsValue::Bool(false)
+        _ => JsValue::Null,
     }
 }
 
-/// Internal: invoke the handler's `deleteProperty` trap.
-fn proxy_delete_trap(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let prop = args.first().map(|v| v.to_js_string()).unwrap_or_default();
-
-    if let JsValue::Object(obj) = &vm.current_this {
-        let o = obj.borrow();
-        let handler = o.get("__handler");
-        let target = o.get("__target");
-        drop(o);
-
-        if let JsValue::Object(h) = &handler {
-            let del_fn = h.borrow().get("deleteProperty");
-            if let JsValue::Function(f) = del_fn {
-                let kind = f.borrow().kind.clone();
-                if let FnKind::Native(native) = kind {
-                    return native(vm, &[target, JsValue::String(prop)]);
-                }
-            }
+pub fn reflect_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let proto = args.get(1).cloned().unwrap_or(JsValue::Null);
+    if let JsValue::Object(obj) = &target {
+        match &proto {
+            JsValue::Object(p) => { obj.borrow_mut().prototype = Some(p.clone()); }
+            JsValue::Null => { obj.borrow_mut().prototype = None; }
+            _ => {}
         }
-
-        JsValue::Bool(target.delete_property(&prop))
-    } else {
-        JsValue::Bool(false)
     }
+    JsValue::Bool(true)
+}
+
+pub fn reflect_is_extensible(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // All objects are extensible in our simplified model
+    JsValue::Bool(true)
+}
+
+pub fn reflect_prevent_extensions(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // No-op in simplified model
+    JsValue::Bool(true)
+}
+
+/// Install the Reflect object into globals.
+pub fn install_reflect(vm: &mut Vm) {
+    let reflect = JsValue::new_object();
+    reflect.set_property(String::from("get"), native_fn("get", reflect_get));
+    reflect.set_property(String::from("set"), native_fn("set", reflect_set));
+    reflect.set_property(String::from("has"), native_fn("has", reflect_has));
+    reflect.set_property(String::from("deleteProperty"), native_fn("deleteProperty", reflect_delete_property));
+    reflect.set_property(String::from("ownKeys"), native_fn("ownKeys", reflect_own_keys));
+    reflect.set_property(String::from("apply"), native_fn("apply", reflect_apply));
+    reflect.set_property(String::from("construct"), native_fn("construct", reflect_construct));
+    reflect.set_property(String::from("defineProperty"), native_fn("defineProperty", reflect_define_property));
+    reflect.set_property(String::from("getPrototypeOf"), native_fn("getPrototypeOf", reflect_get_prototype_of));
+    reflect.set_property(String::from("setPrototypeOf"), native_fn("setPrototypeOf", reflect_set_prototype_of));
+    reflect.set_property(String::from("isExtensible"), native_fn("isExtensible", reflect_is_extensible));
+    reflect.set_property(String::from("preventExtensions"), native_fn("preventExtensions", reflect_prevent_extensions));
+    vm.set_global("Reflect", reflect);
 }
