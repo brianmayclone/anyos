@@ -3,5 +3,8 @@ name = "anyos_std"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+host = ["libheap/host"]
+
 [dependencies]
 libheap = { path = "../libheap" }

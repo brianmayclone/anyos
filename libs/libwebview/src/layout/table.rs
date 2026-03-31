@@ -16,7 +16,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
-use crate::style::{ComputedStyle, Display, TextAlignVal};
+use crate::style::{ComputedStyle, Display, TextAlignVal, PseudoStyles};
 use crate::ImageCache;
 
 use super::{
@@ -30,6 +30,7 @@ use super::block::build_block;
 pub fn layout_table(
     dom: &Dom,
     styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
     node_id: NodeId,
     available_width: i32,
     images: &ImageCache,
@@ -55,8 +56,16 @@ pub fn layout_table(
         style.padding_bottom, style.padding_left,
     );
 
-    // Parse table attributes.
-    let cellspacing = parse_int_attr(dom, node_id, "cellspacing").unwrap_or(2);
+    // Parse table attributes, respecting CSS border-collapse / border-spacing.
+    let css_spacing = style.border_spacing;
+    let is_collapsed = style.border_collapse;
+    let cellspacing = if is_collapsed {
+        0 // border-collapse: collapse → no spacing between cells
+    } else if css_spacing > 0 {
+        css_spacing // CSS border-spacing overrides HTML attribute
+    } else {
+        parse_int_attr(dom, node_id, "cellspacing").unwrap_or(2)
+    };
     let cellpadding = parse_int_attr(dom, node_id, "cellpadding").unwrap_or(1);
     let table_border = parse_int_attr(dom, node_id, "border").unwrap_or(0);
 
@@ -170,7 +179,7 @@ pub fn layout_table(
 
             // Try laying out with generous width to get preferred width.
             let test_w = content_width;
-            let cell_box = layout_cell(dom, styles, cell_id, test_w, cellpadding, table_border, images, viewport_w);
+            let cell_box = layout_cell(dom, styles, pseudo, cell_id, test_w, cellpadding, table_border, images, viewport_w);
             let pref_w = cell_content_width(&cell_box) + cell_overhead;
 
             if colspan == 1 {
@@ -246,7 +255,7 @@ pub fn layout_table(
 
     // Layout caption if present.
     if let Some(cap_id) = caption_id {
-        let cap_box = build_block(dom, styles, cap_id, table_width - bx.padding.left - bx.padding.right, images, viewport_w);
+        let cap_box = build_block(dom, styles, pseudo, cap_id, table_width - bx.padding.left - bx.padding.right, images, viewport_w);
         let mut placed = cap_box;
         placed.x = bx.padding.left;
         placed.y = cursor_y;
@@ -282,7 +291,7 @@ pub fn layout_table(
             }
 
             // Layout cell content.
-            let cell_box = layout_cell(dom, styles, cell_id, cell_w, cellpadding, table_border, images, viewport_w);
+            let cell_box = layout_cell(dom, styles, pseudo, cell_id, cell_w, cellpadding, table_border, images, viewport_w);
             let ch = cell_box.height;
             if ch > row_height { row_height = ch; }
 
@@ -322,6 +331,7 @@ pub fn layout_table(
 fn layout_cell(
     dom: &Dom,
     styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
     cell_id: NodeId,
     cell_width: i32,
     cellpadding: i32,
@@ -356,7 +366,7 @@ fn layout_cell(
     let inner_w = inner_w.max(0);
 
     let child_ids: Vec<NodeId> = dom.get(cell_id).children.iter().copied().collect();
-    let height = layout_children(dom, styles, &child_ids, inner_w, &mut bx, cell_id, images, viewport_w);
+    let height = layout_children(dom, styles, pseudo, &child_ids, inner_w, &mut bx, cell_id, images, viewport_w);
 
     bx.height = height + bx.padding.top + bx.padding.bottom + cell_border * 2;
     bx

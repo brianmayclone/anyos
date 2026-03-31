@@ -20,7 +20,8 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId};
 use crate::style::{
-    AlignItems, ComputedStyle, Display, GridLine, GridTrackSize, Position,
+    AlignItems, ComputedStyle, Display, GridLine, GridArea, GridTrackSize, Position,
+    PseudoStyles,
 };
 use crate::ImageCache;
 
@@ -36,6 +37,7 @@ use super::block::build_block;
 pub fn layout_grid(
     dom: &Dom,
     styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
     child_ids: &[NodeId],
     available_width: i32,
     parent: &mut LayoutBox,
@@ -81,10 +83,10 @@ pub fn layout_grid(
             if matches!(st.position, Position::Absolute | Position::Fixed) { return None; }
             Some(GridItem {
                 node_id: cid,
-                col_start: st.grid_column_start,
-                col_end: st.grid_column_end,
-                row_start: st.grid_row_start,
-                row_end: st.grid_row_end,
+                col_start: st.grid_column_start.clone(),
+                col_end: st.grid_column_end.clone(),
+                row_start: st.grid_row_start.clone(),
+                row_end: st.grid_row_end.clone(),
                 placed_col: 0,
                 placed_row: 0,
                 span_cols: 1,
@@ -98,12 +100,35 @@ pub fn layout_grid(
         return 0;
     }
 
-    // ── 3. Determine number of explicit columns ──────────────────────────
+    // ── 3. Resolve named grid areas ───────────────────────────────────────
+    // If the parent has `grid-template-areas`, resolve `GridLine::Named` and
+    // `grid-area: areaName` to explicit line indices.
+    let template_areas = &parent_style.grid_template_areas;
+    anyos_std::println!("[grid] parent={} cols={} rows={} areas={} items={}",
+        parent_idx, col_templates.len(), parent_style.grid_template_rows.len(),
+        template_areas.len(), items.len());
+    for area in template_areas {
+        anyos_std::println!("[grid]   area '{}' r={}-{} c={}-{}", area.name,
+            area.row_start, area.row_end, area.col_start, area.col_end);
+    }
+    if !template_areas.is_empty() {
+        for item in &mut items {
+            let st = &styles[item.node_id];
+            // Check if grid-area was set as a single named value (all four lines Named).
+            resolve_named_area(&mut item.col_start, &mut item.col_end,
+                               &mut item.row_start, &mut item.row_end,
+                               template_areas);
+        }
+    }
+
+    // ── 4. Determine number of explicit columns ──────────────────────────
     // The explicit grid has as many columns as `grid-template-columns` defines
     // (minimum 1).  Items that exceed the explicit grid extend it implicitly.
-    let explicit_cols = col_templates.len().max(1);
+    // If grid-template-areas defines more columns, use that.
+    let areas_max_col = template_areas.iter().map(|a| a.col_end).max().unwrap_or(0) as usize;
+    let explicit_cols = col_templates.len().max(1).max(areas_max_col.saturating_sub(1));
 
-    // ── 4. Auto-place all items ──────────────────────────────────────────
+    // ── 5. Auto-place all items ──────────────────────────────────────────
     auto_place(&mut items, explicit_cols);
 
     // Total column count needed (explicit + implicit).
@@ -127,7 +152,7 @@ pub fn layout_grid(
     // ── 7. Measure each item at its column span width ─────────────────────
     for item in &mut items {
         let col_w = span_width(&col_widths, item.placed_col, item.span_cols, col_gap);
-        let bx = build_block(dom, styles, item.node_id, col_w, images, viewport_w);
+        let bx = build_block(dom, styles, pseudo, item.node_id, col_w, images, viewport_w);
         item.layout = Some(bx);
     }
 
@@ -192,37 +217,84 @@ pub fn layout_grid(
 // ────────────────────────────────────────────────────────────
 
 /// Resolve span size from a pair of GridLine values relative to the explicit
-/// grid width.  Returns (span_size, start_or_none).
-fn resolve_span(start: GridLine, end: GridLine, _explicit: usize) -> (Option<usize>, usize) {
+/// grid width.  Returns (start_or_none, span_size).
+fn resolve_span(start: &GridLine, end: &GridLine, _explicit: usize) -> (Option<usize>, usize) {
     match (start, end) {
         (GridLine::Index(s), GridLine::Index(e)) => {
-            let s = (s - 1).max(0) as usize;
-            let span = ((e - 1).max(0) as usize).saturating_sub(s).max(1);
+            let s = (*s - 1).max(0) as usize;
+            let span = ((*e - 1).max(0) as usize).saturating_sub(s).max(1);
             (Some(s), span)
         }
         (GridLine::Index(s), GridLine::Span(n)) => {
-            let s = (s - 1).max(0) as usize;
-            (Some(s), (n.max(1)) as usize)
+            let s = (*s - 1).max(0) as usize;
+            (Some(s), (*n).max(1) as usize)
         }
         (GridLine::Index(s), GridLine::Auto) => {
-            let s = (s - 1).max(0) as usize;
+            let s = (*s - 1).max(0) as usize;
             (Some(s), 1)
         }
         (GridLine::Auto, GridLine::Index(e)) => {
-            // End known, start unknown — we know the span ends at `e`.
-            // Auto-placement must handle this; return end as the clue.
-            let span = 1usize; // placeholder; handled differently below
+            let span = 1usize;
             let _ = span;
-            (None, ((e - 1).max(1)) as usize) // return end-1 as span hint
+            (None, ((*e - 1).max(1)) as usize)
         }
-        (GridLine::Auto, GridLine::Span(n)) => (None, (n.max(1)) as usize),
-        (GridLine::Span(n), _) => (None, (n.max(1)) as usize),
-        (GridLine::Auto, GridLine::Auto) => (None, 1),
+        (GridLine::Auto, GridLine::Span(n)) => (None, (*n).max(1) as usize),
+        (GridLine::Span(n), _) => (None, (*n).max(1) as usize),
+        // Named lines that weren't resolved — treat as auto.
+        _ => (None, 1),
     }
 }
 
 /// Place all grid items using the CSS Grid auto-placement algorithm
 /// (row-major, left-to-right, no dense packing).
+/// Resolve `GridLine::Named` values against the template areas.
+/// If all four lines of an item are Named with the same name, look up the area
+/// and set explicit col/row start/end.
+fn resolve_named_area(
+    col_start: &mut GridLine, col_end: &mut GridLine,
+    row_start: &mut GridLine, row_end: &mut GridLine,
+    areas: &[GridArea],
+) {
+    // Case 1: grid-area: areaName → all four are Named("areaName")
+    // (The CSS parser sets row_start = Named, col_start = Named, etc.)
+    if let GridLine::Named(ref name) = row_start {
+        if let Some(area) = areas.iter().find(|a| a.name == *name) {
+            *row_start = GridLine::Index(area.row_start);
+            *row_end = GridLine::Index(area.row_end);
+            // Also set col if not already explicit.
+            if matches!(col_start, GridLine::Auto | GridLine::Named(_)) {
+                *col_start = GridLine::Index(area.col_start);
+            }
+            if matches!(col_end, GridLine::Auto | GridLine::Named(_)) {
+                *col_end = GridLine::Index(area.col_end);
+            }
+            return;
+        }
+    }
+    // Case 2: Individual named lines (grid-column-start: areaName-start etc.)
+    // For simplicity, resolve col/row start/end individually.
+    if let GridLine::Named(ref name) = col_start {
+        if let Some(area) = areas.iter().find(|a| a.name == *name) {
+            *col_start = GridLine::Index(area.col_start);
+        }
+    }
+    if let GridLine::Named(ref name) = col_end {
+        if let Some(area) = areas.iter().find(|a| a.name == *name) {
+            *col_end = GridLine::Index(area.col_end);
+        }
+    }
+    if let GridLine::Named(ref name) = row_start {
+        if let Some(area) = areas.iter().find(|a| a.name == *name) {
+            *row_start = GridLine::Index(area.row_start);
+        }
+    }
+    if let GridLine::Named(ref name) = row_end {
+        if let Some(area) = areas.iter().find(|a| a.name == *name) {
+            *row_end = GridLine::Index(area.row_end);
+        }
+    }
+}
+
 fn auto_place(items: &mut Vec<GridItem>, explicit_cols: usize) {
     // Grid occupancy map: (col, row) → occupied.
     // We use a simple Vec and grow it as needed.
@@ -231,9 +303,9 @@ fn auto_place(items: &mut Vec<GridItem>, explicit_cols: usize) {
     // Pre-pass: resolve items with fully explicit positions.
     for item in items.iter_mut() {
         let (col_start, span_cols) =
-            resolve_span(item.col_start, item.col_end, explicit_cols);
+            resolve_span(&item.col_start, &item.col_end, explicit_cols);
         let (row_start, span_rows) =
-            resolve_span(item.row_start, item.row_end, explicit_cols);
+            resolve_span(&item.row_start, &item.row_end, explicit_cols);
         item.span_cols = span_cols.max(1);
         item.span_rows = span_rows.max(1);
 

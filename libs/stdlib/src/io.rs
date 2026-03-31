@@ -37,15 +37,4 @@ pub fn _print_str(s: &str) {
     crate::fs::write(1, s.as_bytes());
 }
 
-/// Print formatted text to stdout (no newline).
-#[macro_export]
-macro_rules! print {
-    ($($arg:tt)*) => ($crate::io::_print(format_args!($($arg)*)));
-}
-
-/// Print formatted text to stdout with a trailing newline.
-#[macro_export]
-macro_rules! println {
-    () => ($crate::print!("\n"));
-    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
-}
+// print!/println! macros are defined in lib.rs (shared between host and anyOS modes).

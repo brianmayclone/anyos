@@ -66,6 +66,8 @@ pub enum Tag {
     // Media/embedded
     Img, Audio, Video, Source, Track, Canvas, Svg, Iframe, Embed, Object, Param,
     Picture, Map, Area,
+    // HTML5 semantic elements
+    Search,
     // Deprecated but still encountered
     Center, Font, Nobr, Tt,
     // Unknown fallback
@@ -140,6 +142,8 @@ impl Tag {
             b"iframe" => Tag::Iframe, b"embed" => Tag::Embed,
             b"object" => Tag::Object, b"param" => Tag::Param,
             b"picture" => Tag::Picture, b"map" => Tag::Map, b"area" => Tag::Area,
+            // HTML5 semantic
+            b"search" => Tag::Search,
             // Deprecated
             b"center" => Tag::Center, b"font" => Tag::Font,
             b"nobr" => Tag::Nobr, b"tt" => Tag::Tt,
@@ -173,6 +177,7 @@ impl Tag {
                 | Tag::Form | Tag::Fieldset | Tag::Legend
                 | Tag::Hr | Tag::Center
                 | Tag::Noscript | Tag::Canvas | Tag::Video | Tag::Audio
+                | Tag::Search
         )
     }
 
@@ -219,6 +224,7 @@ impl Tag {
             Tag::Svg => "SVG", Tag::Iframe => "IFRAME", Tag::Embed => "EMBED",
             Tag::Object => "OBJECT", Tag::Param => "PARAM", Tag::Picture => "PICTURE",
             Tag::Map => "MAP", Tag::Area => "AREA",
+            Tag::Search => "SEARCH",
             Tag::Center => "CENTER", Tag::Font => "FONT", Tag::Nobr => "NOBR", Tag::Tt => "TT",
             Tag::Unknown => "UNKNOWN",
         }

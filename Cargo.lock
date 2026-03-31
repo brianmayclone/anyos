@@ -666,6 +666,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "dynlink",
+ "libfont_client",
  "libimage_client",
 ]
 
@@ -1184,6 +1185,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libanyui_client",
+ "libfont_client",
  "libimage_client",
  "libsvg_client",
  "libwebview",

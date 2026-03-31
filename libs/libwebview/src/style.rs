@@ -11,10 +11,15 @@ use alloc::vec::Vec;
 use alloc::string::String;
 
 use crate::css::{
-    AttrOp, CssValue, Declaration, PseudoClass, Property, Rule, Selector, SimpleSelector,
-    Stylesheet, Unit,
+    AttrOp, CssValue, Declaration, PseudoClass, PseudoElement, Property, Rule, Selector,
+    SimpleSelector, Stylesheet, Unit,
 };
 use crate::dom::{Dom, NodeId, NodeType, Tag};
+
+// Viewport dimensions for resolving vh/vw/vmin/vmax units.
+// Set at the start of resolve_styles() and read by resolve_length().
+static mut VIEWPORT_W: i32 = 800;
+static mut VIEWPORT_H: i32 = 600;
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -32,7 +37,66 @@ pub enum Display {
     InlineFlex,
     Grid,
     InlineGrid,
+    /// `display: contents` — the element itself generates no box, but its
+    /// children participate in the parent's layout as if they were direct children.
+    Contents,
     None,
+}
+
+/// CSS `text-decoration-style` values.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TextDecorationStyle {
+    Solid,
+    Double,
+    Dotted,
+    Dashed,
+    Wavy,
+}
+
+/// CSS `font-variant` values.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FontVariantVal {
+    Normal,
+    SmallCaps,
+}
+
+/// Parsed CSS `filter` function list.
+#[derive(Clone, PartialEq)]
+pub struct FilterVal {
+    pub blur_px: i32,
+    pub brightness: i32,   // percent * 100 (10000 = 100%)
+    pub contrast: i32,     // percent * 100
+    pub grayscale: i32,    // percent * 100
+    pub saturate: i32,     // percent * 100
+    pub sepia: i32,        // percent * 100
+    pub opacity: i32,      // percent * 100
+    pub hue_rotate: i32,   // degrees
+    pub invert: i32,       // percent * 100
+}
+
+impl FilterVal {
+    pub fn none() -> Self {
+        FilterVal {
+            blur_px: 0, brightness: 10000, contrast: 10000,
+            grayscale: 0, saturate: 10000, sepia: 0,
+            opacity: 10000, hue_rotate: 0, invert: 0,
+        }
+    }
+    pub fn is_none(&self) -> bool {
+        self.blur_px == 0 && self.brightness == 10000 && self.contrast == 10000
+        && self.grayscale == 0 && self.saturate == 10000 && self.sepia == 0
+        && self.opacity == 10000 && self.hue_rotate == 0 && self.invert == 0
+    }
+}
+
+/// CSS `clip-path` value (basic shapes only).
+#[derive(Clone, PartialEq)]
+pub enum ClipPathVal {
+    None,
+    /// `circle(radius at cx cy)` — all in px.
+    Circle { radius: i32, cx: i32, cy: i32 },
+    /// `inset(top right bottom left [round radius])` — all in px.
+    Inset { top: i32, right: i32, bottom: i32, left: i32, radius: i32 },
 }
 
 /// CSS timing function for transitions and animations.
@@ -95,7 +159,7 @@ pub enum GridTrackSize {
 }
 
 /// Resolved line address for `grid-column-start/end` etc.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum GridLine {
     /// Automatic placement.
     Auto,
@@ -103,6 +167,19 @@ pub enum GridLine {
     Index(i32),
     /// `span N` — spans N tracks.
     Span(i32),
+    /// Named grid area — resolved at layout time against grid-template-areas.
+    Named(String),
+}
+
+/// A named grid area parsed from `grid-template-areas`.
+/// Positions are 1-based line numbers (like CSS grid lines).
+#[derive(Clone, PartialEq)]
+pub struct GridArea {
+    pub name: String,
+    pub row_start: i32,
+    pub col_start: i32,
+    pub row_end: i32,
+    pub col_end: i32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -177,6 +254,17 @@ pub enum AlignItems {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AlignContent {
+    FlexStart,
+    FlexEnd,
+    Center,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+    Stretch,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum OverflowVal {
     Visible,
     Hidden,
@@ -202,13 +290,127 @@ pub enum FontStyleVal { Normal, Italic }
 pub enum TextAlignVal { Left, Center, Right, Justify }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum TextDeco { None, Underline, LineThrough }
+pub enum TextDeco { None, Underline, LineThrough, Overline }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ListStyle { None, Disc, Circle, Square, Decimal }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WhiteSpace { Normal, Pre, Nowrap, PreWrap }
+
+/// CSS `border-style` values (litehtml-inspired).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BorderStyleVal { None, Solid, Dashed, Dotted, Double, Groove, Ridge, Inset, Outset, Hidden }
+
+/// CSS `word-break` values.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WordBreak { Normal, BreakAll, KeepAll }
+
+/// CSS `overflow-wrap` values.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum OverflowWrapVal { Normal, BreakWord, Anywhere }
+
+/// CSS `text-overflow` values.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TextOverflowVal { Clip, Ellipsis }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ObjectFit {
+    /// Scale to fill; aspect ratio NOT preserved.
+    Fill,
+    /// Scale to fit inside; aspect ratio preserved; may have empty space.
+    Contain,
+    /// Scale to cover; aspect ratio preserved; may be clipped.
+    Cover,
+    /// Use intrinsic size (no scaling).
+    None,
+    /// Use the smaller of Contain and None.
+    ScaleDown,
+}
+
+/// CSS `vertical-align` values.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum VerticalAlign {
+    Baseline,
+    Top,
+    Middle,
+    Bottom,
+    TextTop,
+    TextBottom,
+    Sub,
+    Super,
+    /// Length offset in px from baseline.
+    Length(i32),
+}
+
+/// Parsed `box-shadow` value (litehtml-inspired).
+#[derive(Clone, PartialEq)]
+pub struct BoxShadowVal {
+    pub offset_x: i32,
+    pub offset_y: i32,
+    pub blur: i32,
+    pub spread: i32,
+    pub color: u32,
+    pub inset: bool,
+}
+
+/// Parsed `text-shadow` value.
+#[derive(Clone, PartialEq)]
+pub struct TextShadowVal {
+    pub offset_x: i32,
+    pub offset_y: i32,
+    pub blur: i32,
+    pub color: u32,
+}
+
+/// Per-side border (litehtml-style).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct BorderSide {
+    pub width: i32,
+    pub style: BorderStyleVal,
+    pub color: u32,
+}
+
+impl BorderSide {
+    pub fn none() -> Self {
+        BorderSide { width: 0, style: BorderStyleVal::None, color: 0xFF000000 }
+    }
+}
+
+/// Background-image value.
+#[derive(Clone, PartialEq)]
+pub enum BackgroundImageVal {
+    None,
+    Url(String),
+    LinearGradient { angle_deg: i32, stops: Vec<GradientStop> },
+}
+
+/// A color stop in a gradient.
+#[derive(Clone, PartialEq)]
+pub struct GradientStop {
+    pub color: u32,
+    /// Position as percentage * 100 (fixed-point). -1 = auto.
+    pub position: i32,
+}
+
+/// CSS `background-size` values.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundSizeVal {
+    Auto,
+    Cover,
+    Contain,
+    /// (width, height) in px. -1 = auto for that dimension.
+    Explicit(i32, i32),
+}
+
+/// CSS `background-repeat` values.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundRepeatVal {
+    Repeat,
+    RepeatX,
+    RepeatY,
+    NoRepeat,
+}
 
 // ---------------------------------------------------------------------------
 // ComputedStyle
@@ -266,12 +468,15 @@ pub struct ComputedStyle {
     pub flex_basis: Option<i32>, // None = auto, Some(px)
     pub row_gap: i32,
     pub column_gap: i32,
+    pub align_content: AlignContent,
     pub order: i32,
     // Grid container
     /// Track sizes for `grid-template-columns` (empty = no explicit columns).
     pub grid_template_columns: Vec<GridTrackSize>,
     /// Track sizes for `grid-template-rows` (empty = no explicit rows).
     pub grid_template_rows: Vec<GridTrackSize>,
+    /// Named grid areas: each entry is (name, row_start, col_start, row_end, col_end) 1-based.
+    pub grid_template_areas: Vec<GridArea>,
     /// Default column size for implicitly created tracks.
     pub grid_auto_columns: GridTrackSize,
     /// Default row size for implicitly created tracks.
@@ -287,6 +492,9 @@ pub struct ComputedStyle {
     pub grid_row_end: GridLine,
     // Box model
     pub box_sizing: BoxSizing,
+    // Table
+    pub border_collapse: bool,  // true = collapse, false = separate
+    pub border_spacing: i32,    // px (CSS border-spacing)
     // Float
     pub float: FloatVal,
     pub clear: ClearVal,
@@ -303,10 +511,91 @@ pub struct ComputedStyle {
     // calc() components: (px * 100, pct * 100) for width/height
     pub width_calc: Option<(i32, i32)>,
     pub height_calc: Option<(i32, i32)>,
+    // Typography (litehtml-inspired)
+    pub font_family: Option<String>,
+    pub letter_spacing: i32,     // px (0 = normal)
+    pub word_spacing: i32,       // px (0 = normal)
+    pub text_indent: i32,        // px
+    pub vertical_align: VerticalAlign,
+    pub word_break: WordBreak,
+    pub overflow_wrap: OverflowWrapVal,
+    pub text_overflow: TextOverflowVal,
+    // Per-side borders (litehtml-inspired)
+    pub border_top: BorderSide,
+    pub border_right: BorderSide,
+    pub border_bottom: BorderSide,
+    pub border_left: BorderSide,
+    pub border_top_left_radius: i32,
+    pub border_top_right_radius: i32,
+    pub border_bottom_right_radius: i32,
+    pub border_bottom_left_radius: i32,
+    // Outline (litehtml-inspired)
+    pub outline_width: i32,
+    pub outline_style: BorderStyleVal,
+    pub outline_color: u32,
+    pub outline_offset: i32,
+    // Shadows (litehtml-inspired)
+    pub box_shadows: Vec<BoxShadowVal>,
+    pub text_shadows: Vec<TextShadowVal>,
+    // Background extensions (litehtml-inspired)
+    pub background_image: BackgroundImageVal,
+    pub background_size: BackgroundSizeVal,
+    pub background_repeat: BackgroundRepeatVal,
+    pub background_position_x: i32,  // px or pct*100
+    pub background_position_y: i32,
+    // Content (for ::before/::after)
+    pub content: Option<String>,
+    // Object-fit for replaced elements (img, video)
+    pub object_fit: ObjectFit,
+    // CSS transform — translate offsets (resolved to px).
+    pub transform_tx: i32,
+    pub transform_ty: i32,
+    // Filter effects (litehtml-inspired)
+    pub filter: FilterVal,
+    // Aspect ratio (width / height as fixed-point * 100, 0 = auto)
+    pub aspect_ratio: i32,
+    // Text decoration sub-properties (CSS3)
+    pub text_decoration_color: u32,   // 0 = use text color
+    pub text_decoration_style: TextDecorationStyle,
+    pub text_decoration_thickness: i32, // px, 0 = auto
+    pub text_underline_offset: i32,   // px, 0 = auto
+    // Typography extras
+    pub font_variant: FontVariantVal,
+    pub tab_size: i32,  // number of spaces (default 8)
+    // Clip path
+    pub clip_path: ClipPathVal,
+    // CSS counters
+    pub counter_reset: Option<String>,
+    pub counter_increment: Option<String>,
     // Transitions
     pub transitions: Vec<TransitionDef>,
     // Animations
     pub animations: Vec<AnimationDef>,
+}
+
+// ---------------------------------------------------------------------------
+// Pseudo-element styles (::before / ::after)
+// ---------------------------------------------------------------------------
+
+/// Stores resolved ::before and ::after styles for each DOM node.
+/// Indexed by node ID (same length as the main styles Vec).
+pub struct PseudoStyles {
+    /// ::before style + content per node. None if no ::before rule matched.
+    pub before: Vec<Option<ComputedStyle>>,
+    /// ::after style + content per node. None if no ::after rule matched.
+    pub after: Vec<Option<ComputedStyle>>,
+}
+
+impl PseudoStyles {
+    pub fn empty(count: usize) -> Self {
+        let mut before = Vec::with_capacity(count);
+        let mut after = Vec::with_capacity(count);
+        for _ in 0..count {
+            before.push(None);
+            after.push(None);
+        }
+        PseudoStyles { before, after }
+    }
 }
 
 // Bitflags for tracking which inheritable properties were explicitly set.
@@ -321,6 +610,10 @@ const SET_LIST_STYLE: u16 = 1 << 7;
 const SET_TEXT_DECO: u16  = 1 << 8;
 const SET_VISIBILITY: u16 = 1 << 9;
 const SET_TEXT_TRANSFORM: u16 = 1 << 10;
+const SET_LETTER_SPACING: u16 = 1 << 11;
+const SET_WORD_SPACING: u16   = 1 << 12;
+const SET_WORD_BREAK: u16     = 1 << 13;
+const SET_OVERFLOW_WRAP: u16  = 1 << 14;
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -370,10 +663,12 @@ pub fn default_style() -> ComputedStyle {
         flex_basis: Option::None, // auto
         row_gap: 0,
         column_gap: 0,
+        align_content: AlignContent::Stretch,
         order: 0,
         // Grid container
         grid_template_columns: Vec::new(),
         grid_template_rows: Vec::new(),
+        grid_template_areas: Vec::new(),
         grid_auto_columns: GridTrackSize::Auto,
         grid_auto_rows: GridTrackSize::Auto,
         grid_auto_flow_column: false,
@@ -385,6 +680,9 @@ pub fn default_style() -> ComputedStyle {
         grid_row_end: GridLine::Auto,
         // Box model
         box_sizing: BoxSizing::ContentBox,
+        // Table
+        border_collapse: false,
+        border_spacing: 2,
         // Float
         float: FloatVal::None,
         clear: ClearVal::None,
@@ -395,6 +693,60 @@ pub fn default_style() -> ComputedStyle {
         // Overflow
         overflow_x: OverflowVal::Visible,
         overflow_y: OverflowVal::Visible,
+        // Typography
+        font_family: Option::None,
+        letter_spacing: 0,
+        word_spacing: 0,
+        text_indent: 0,
+        vertical_align: VerticalAlign::Baseline,
+        word_break: WordBreak::Normal,
+        overflow_wrap: OverflowWrapVal::Normal,
+        text_overflow: TextOverflowVal::Clip,
+        // Per-side borders
+        border_top: BorderSide::none(),
+        border_right: BorderSide::none(),
+        border_bottom: BorderSide::none(),
+        border_left: BorderSide::none(),
+        border_top_left_radius: 0,
+        border_top_right_radius: 0,
+        border_bottom_right_radius: 0,
+        border_bottom_left_radius: 0,
+        // Outline
+        outline_width: 0,
+        outline_style: BorderStyleVal::None,
+        outline_color: 0xFF000000,
+        outline_offset: 0,
+        // Shadows
+        box_shadows: Vec::new(),
+        text_shadows: Vec::new(),
+        // Background extensions
+        background_image: BackgroundImageVal::None,
+        background_size: BackgroundSizeVal::Auto,
+        background_repeat: BackgroundRepeatVal::Repeat,
+        background_position_x: 0,
+        background_position_y: 0,
+        // Content
+        content: Option::None,
+        object_fit: ObjectFit::Fill,
+        transform_tx: 0,
+        transform_ty: 0,
+        // Filter
+        filter: FilterVal::none(),
+        // Aspect ratio
+        aspect_ratio: 0,
+        // Text decoration sub-properties
+        text_decoration_color: 0,
+        text_decoration_style: TextDecorationStyle::Solid,
+        text_decoration_thickness: 0,
+        text_underline_offset: 0,
+        // Typography extras
+        font_variant: FontVariantVal::Normal,
+        tab_size: 8,
+        // Clip path
+        clip_path: ClipPathVal::None,
+        // Counters
+        counter_reset: Option::None,
+        counter_increment: Option::None,
         // Percentages
         width_pct: Option::None,
         height_pct: Option::None,
@@ -760,6 +1112,16 @@ fn push_keyed(buckets: &mut Vec<(String, Vec<usize>)>, key: &str, value: usize) 
 
 /// Check if a CSS selector matches a DOM element node.
 fn selector_matches(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
+    // Skip selectors that target ::before/::after — those are handled separately.
+    if selector.pseudo_element().is_some() {
+        return false;
+    }
+    selector_matches_base(selector, dom, node_id)
+}
+
+/// Match a selector against a node, ignoring the pseudo-element part.
+/// Used both for normal matching (via selector_matches) and pseudo-element resolution.
+fn selector_matches_base(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
     // Bounds check to prevent crashes from corrupted node indices.
     if node_id >= dom.nodes.len() {
         return false;
@@ -776,7 +1138,7 @@ fn selector_matches(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
             let mut cur = dom.nodes[node_id].parent;
             while let Some(pid) = cur {
                 if pid >= dom.nodes.len() { break; }
-                if selector_matches(ancestor_sel, dom, pid) {
+                if selector_matches_base(ancestor_sel, dom, pid) {
                     return true;
                 }
                 cur = dom.nodes[pid].parent;
@@ -789,7 +1151,7 @@ fn selector_matches(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
             }
             if let Some(pid) = dom.nodes[node_id].parent {
                 if pid >= dom.nodes.len() { return false; }
-                selector_matches(parent_sel, dom, pid)
+                selector_matches_base(parent_sel, dom, pid)
             } else {
                 false
             }
@@ -800,7 +1162,7 @@ fn selector_matches(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
             }
             // Find preceding sibling element
             if let Some(sib) = preceding_element_sibling(dom, node_id) {
-                selector_matches(prev_sel, dom, sib)
+                selector_matches_base(prev_sel, dom, sib)
             } else {
                 false
             }
@@ -812,7 +1174,7 @@ fn selector_matches(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
             // Check all preceding sibling elements
             let mut sib = preceding_element_sibling(dom, node_id);
             while let Some(sid) = sib {
-                if selector_matches(prev_sel, dom, sid) {
+                if selector_matches_base(prev_sel, dom, sid) {
                     return true;
                 }
                 sib = preceding_element_sibling(dom, sid);
@@ -1048,10 +1410,52 @@ fn pseudo_class_matches(pc: &PseudoClass, dom: &Dom, node_id: NodeId) -> bool {
                 false
             }
         }
+        // :is() — matches if any selector in the list matches.
+        PseudoClass::Is(selectors) | PseudoClass::Where(selectors) => {
+            selectors.iter().any(|sel| simple_selector_matches(sel, dom, node_id))
+        }
+        // :has() — matches if any descendant matches the inner selector.
+        // For performance, only check direct children (shallow :has).
+        PseudoClass::Has(sel) => {
+            let children = &dom.nodes[node_id].children;
+            children.iter().any(|&c| simple_selector_matches(sel, dom, c))
+        }
+        // :focus-visible, :focus-within — stateful, not applicable in static rendering.
+        PseudoClass::FocusVisible | PseudoClass::FocusWithin => false,
+        // :placeholder-shown — check if input has no value.
+        PseudoClass::PlaceholderShown => {
+            if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
+                let has_value = attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "value") && !a.value.is_empty());
+                !has_value
+            } else { false }
+        }
         // Stateful pseudo-classes (hover, active, focus, visited) are not
         // applicable in static rendering; always return false.
         PseudoClass::Hover | PseudoClass::Active | PseudoClass::Focus | PseudoClass::Visited => false,
     }
+}
+
+/// Check if a SimpleSelector matches a node (used for :is/:where/:has).
+fn simple_selector_matches(sel: &SimpleSelector, dom: &Dom, node_id: NodeId) -> bool {
+    if let Some(tag) = sel.tag {
+        if dom.tag(node_id) != Some(tag) { return false; }
+    }
+    if let Some(ref id) = sel.id {
+        if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
+            let has_id = attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "id") && eq_ignore_ascii_case(&a.value, id));
+            if !has_id { return false; }
+        } else { return false; }
+    }
+    for cls in &sel.classes {
+        if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
+            let class_attr = attrs.iter().find(|a| eq_ignore_ascii_case(&a.name, "class"));
+            let has_class = class_attr.map_or(false, |a| {
+                a.value.split_whitespace().any(|c| eq_ignore_ascii_case(c, cls))
+            });
+            if !has_class { return false; }
+        } else { return false; }
+    }
+    true
 }
 
 fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
@@ -1098,7 +1502,13 @@ pub fn resolve_styles(
     viewport_width: i32,
     viewport_height: i32,
     inline_style_cache: &mut Vec<(usize, Vec<Declaration>)>,
-) -> Vec<ComputedStyle> {
+) -> (Vec<ComputedStyle>, PseudoStyles) {
+    // Store viewport dimensions for resolve_length() to resolve vh/vw units.
+    unsafe {
+        VIEWPORT_W = viewport_width;
+        VIEWPORT_H = viewport_height;
+    }
+
     let count = dom.nodes.len();
     crate::debug_surf!("[style] resolve_styles: {} nodes, {} stylesheets", count, stylesheets.len());
     #[cfg(feature = "debug_surf")]
@@ -1166,6 +1576,17 @@ pub fn resolve_styles(
                 (s, 0u16)
             }
         };
+
+        // UA override: <input type="hidden"> → display:none (per HTML spec).
+        if let NodeType::Element { tag, attrs, .. } = &node.node_type {
+            if *tag == Tag::Input {
+                if attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "type")
+                    && eq_ignore_ascii_case(&a.value, "hidden"))
+                {
+                    style.display = Display::None;
+                }
+            }
+        }
 
         // Phase 2 + 3: Apply author rules and inline styles.
         // Custom property declarations are stored in custom_props[id].
@@ -1254,7 +1675,78 @@ pub fn resolve_styles(
     crate::debug_surf!("[style] resolve_styles done: {} styles", styles.len());
     #[cfg(feature = "debug_surf")]
     crate::debug_surf!("[style]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
-    styles
+
+    // ── Phase 7: Resolve ::before/::after pseudo-element styles ──
+    let mut pseudo = PseudoStyles::empty(count);
+    for id in 0..count {
+        let node = &dom.nodes[id];
+        if !matches!(node.node_type, NodeType::Element { .. }) {
+            continue;
+        }
+        // Check all rules for pseudo-element selectors targeting this node.
+        for &(rule, _order) in &all_rules {
+            for sel in &rule.selectors {
+                let pe = sel.pseudo_element();
+                if pe.is_none() { continue; }
+                // Check if the base selector (without pseudo-element) matches this node.
+                if !selector_matches_base(sel, dom, id) {
+                    continue;
+                }
+                let pe = pe.unwrap();
+                let slot = match pe {
+                    PseudoElement::Before => &mut pseudo.before[id],
+                    PseudoElement::After => &mut pseudo.after[id],
+                };
+                // Create or update the pseudo-element style.
+                // Start from parent style (inherit), then apply rule declarations.
+                if slot.is_none() {
+                    let mut ps = styles[id].clone();
+                    ps.content = None;
+                    // Reset non-inherited properties to defaults.
+                    ps.background_color = 0;
+                    ps.border_width = 0;
+                    ps.padding_top = 0;
+                    ps.padding_right = 0;
+                    ps.padding_bottom = 0;
+                    ps.padding_left = 0;
+                    ps.margin_top = 0;
+                    ps.margin_right = 0;
+                    ps.margin_bottom = 0;
+                    ps.margin_left = 0;
+                    ps.width = None;
+                    ps.height = None;
+                    ps.display = Display::Inline;
+                    *slot = Some(ps);
+                }
+                let ps = slot.as_mut().unwrap();
+                let parent_fs = styles[id].font_size;
+                let root_fs = 16;
+                for decl in &rule.declarations {
+                    apply_declaration(ps, decl, parent_fs, root_fs);
+                }
+            }
+        }
+        // Resolve line_height for pseudo styles.
+        if let Some(ref mut ps) = pseudo.before[id] {
+            if ps.line_height == 0 {
+                ps.line_height = (ps.font_size * 6 + 2) / 5;
+            }
+            // Only keep if content is set and non-empty.
+            if ps.content.is_none() {
+                pseudo.before[id] = None;
+            }
+        }
+        if let Some(ref mut ps) = pseudo.after[id] {
+            if ps.line_height == 0 {
+                ps.line_height = (ps.font_size * 6 + 2) / 5;
+            }
+            if ps.content.is_none() {
+                pseudo.after[id] = None;
+            }
+        }
+    }
+
+    (styles, pseudo)
 }
 
 fn apply_author_rules(
@@ -1438,6 +1930,10 @@ fn inherit_unset(child: &mut ComputedStyle, parent: &ComputedStyle, set: u16) {
     if set & SET_TEXT_DECO == 0  { child.text_decoration = parent.text_decoration; }
     if set & SET_VISIBILITY == 0 { child.visibility = parent.visibility; }
     if set & SET_TEXT_TRANSFORM == 0 { child.text_transform = parent.text_transform; }
+    if set & SET_LETTER_SPACING == 0 { child.letter_spacing = parent.letter_spacing; }
+    if set & SET_WORD_SPACING == 0 { child.word_spacing = parent.word_spacing; }
+    if set & SET_WORD_BREAK == 0 { child.word_break = parent.word_break; }
+    if set & SET_OVERFLOW_WRAP == 0 { child.overflow_wrap = parent.overflow_wrap; }
 }
 
 /// Map a CSS property to the inheritable-set bitflag (0 if not inheritable).
@@ -1454,6 +1950,10 @@ fn decl_set_flag(prop: &Property) -> u16 {
         Property::TextDecoration => SET_TEXT_DECO,
         Property::Visibility => SET_VISIBILITY,
         Property::TextTransform => SET_TEXT_TRANSFORM,
+        Property::LetterSpacing => SET_LETTER_SPACING,
+        Property::WordSpacing => SET_WORD_SPACING,
+        Property::WordBreak => SET_WORD_BREAK,
+        Property::OverflowWrap => SET_OVERFLOW_WRAP,
         _ => 0,
     }
 }
@@ -1481,6 +1981,23 @@ fn resolve_length(val: &CssValue, parent_fs: i32, root_fs: i32) -> Option<i32> {
         CssValue::Length(_, Unit::Percent) => Option::None,
         // fr units are meaningful only inside a grid container; cannot resolve here.
         CssValue::Length(_, Unit::Fr) => Option::None,
+        // Viewport units: 1vw = 1% of viewport width, etc.
+        CssValue::Length(v, Unit::Vw) => {
+            let vw = unsafe { VIEWPORT_W };
+            Some((*v as i64 * vw as i64 / 10000) as i32)
+        }
+        CssValue::Length(v, Unit::Vh) => {
+            let vh = unsafe { VIEWPORT_H };
+            Some((*v as i64 * vh as i64 / 10000) as i32)
+        }
+        CssValue::Length(v, Unit::Vmin) => {
+            let dim = unsafe { VIEWPORT_W.min(VIEWPORT_H) };
+            Some((*v as i64 * dim as i64 / 10000) as i32)
+        }
+        CssValue::Length(v, Unit::Vmax) => {
+            let dim = unsafe { VIEWPORT_W.max(VIEWPORT_H) };
+            Some((*v as i64 * dim as i64 / 10000) as i32)
+        }
         CssValue::Number(v) => Some(v / 100),
         CssValue::Percentage(_) => Option::None,
         CssValue::Calc(px, _pct) => {
@@ -1493,6 +2010,59 @@ fn resolve_length(val: &CssValue, parent_fs: i32, root_fs: i32) -> Option<i32> {
 }
 
 /// Apply a single CSS declaration to a computed style.
+/// Parse a CSS length value from a transform function argument.
+/// Supports: px, em, rem, %, and bare numbers (treated as px).
+fn parse_transform_length(s: &str, parent_fs: i32) -> i32 {
+    let s = s.trim();
+    if s.ends_with("px") {
+        let num = &s[..s.len() - 2];
+        parse_simple_float(num)
+    } else if s.ends_with("em") {
+        let num = &s[..s.len() - 2];
+        let v = parse_simple_float(num);
+        v * parent_fs / 100
+    } else if s.ends_with("rem") {
+        let num = &s[..s.len() - 3];
+        let v = parse_simple_float(num);
+        v * 16 / 100
+    } else if s.ends_with('%') {
+        // Percentage in translate is relative to the element's own size,
+        // which we don't know here. Store as-is and resolve at layout time.
+        // For now, treat as 0 (can't resolve without element dimensions).
+        0
+    } else {
+        // Bare number — treat as px.
+        parse_simple_float(s)
+    }
+}
+
+/// Parse a simple float like "10", "-5.5", "0" to an integer.
+fn parse_simple_float(s: &str) -> i32 {
+    let s = s.trim();
+    let neg = s.starts_with('-');
+    let s = if neg { &s[1..] } else { s };
+    let mut int_part = 0i32;
+    let mut frac = 0i32;
+    let mut in_frac = false;
+    let mut frac_mul = 10;
+    for &b in s.as_bytes() {
+        if b == b'.' {
+            in_frac = true;
+        } else if b.is_ascii_digit() {
+            if in_frac {
+                if frac_mul <= 100 {
+                    frac += (b - b'0') as i32 * (100 / frac_mul);
+                    frac_mul *= 10;
+                }
+            } else {
+                int_part = int_part * 10 + (b - b'0') as i32;
+            }
+        }
+    }
+    let result = int_part;
+    if neg { -result } else { result }
+}
+
 pub fn apply_declaration(
     style: &mut ComputedStyle,
     decl: &Declaration,
@@ -1514,6 +2084,7 @@ pub fn apply_declaration(
                     "grid" => Display::Grid,
                     "inline-grid" => Display::InlineGrid,
                     "none" => Display::None,
+                    "contents" => Display::Contents,
                     _ => style.display,
                 };
             }
@@ -1589,6 +2160,7 @@ pub fn apply_declaration(
                 style.text_decoration = match kw.as_str() {
                     "underline" => TextDeco::Underline,
                     "line-through" => TextDeco::LineThrough,
+                    "overline" => TextDeco::Overline,
                     "none" => TextDeco::None,
                     _ => style.text_decoration,
                 };
@@ -1737,28 +2309,50 @@ pub fn apply_declaration(
         Property::BorderWidth => {
             if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.border_width = px;
+                style.border_top.width = px; style.border_right.width = px;
+                style.border_bottom.width = px; style.border_left.width = px;
             }
             if let CssValue::Keyword(ref kw) = decl.value {
-                style.border_width = match kw.as_str() {
+                let w = match kw.as_str() {
                     "thin" => 1, "medium" => 3, "thick" => 5,
                     _ => style.border_width,
                 };
+                style.border_width = w;
+                style.border_top.width = w; style.border_right.width = w;
+                style.border_bottom.width = w; style.border_left.width = w;
             }
         }
         Property::BorderColor => {
-            if let CssValue::Color(c) = decl.value { style.border_color = c; }
+            if let CssValue::Color(c) = decl.value {
+                style.border_color = c;
+                style.border_top.color = c; style.border_right.color = c;
+                style.border_bottom.color = c; style.border_left.color = c;
+            }
+        }
+        Property::BorderStyle => {
+            let sv = resolve_border_style_val(&decl.value);
+            style.border_top.style = sv; style.border_right.style = sv;
+            style.border_bottom.style = sv; style.border_left.style = sv;
         }
         Property::BorderRadius => {
             if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.border_radius = px;
+                style.border_top_left_radius = px; style.border_top_right_radius = px;
+                style.border_bottom_right_radius = px; style.border_bottom_left_radius = px;
             }
         }
         // Shorthand border: just pick up width and color from the value.
         Property::Border | Property::BorderTop | Property::BorderRight
         | Property::BorderBottom | Property::BorderLeft => {
-            if let CssValue::Color(c) = decl.value { style.border_color = c; }
+            if let CssValue::Color(c) = decl.value {
+                style.border_color = c;
+                style.border_top.color = c; style.border_right.color = c;
+                style.border_bottom.color = c; style.border_left.color = c;
+            }
             if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.border_width = px;
+                style.border_top.width = px; style.border_right.width = px;
+                style.border_bottom.width = px; style.border_left.width = px;
             }
         }
         Property::ListStyleType => {
@@ -2107,12 +2701,428 @@ pub fn apply_declaration(
             }
         }
         Property::AnimationFillMode | Property::AnimationPlayState => {}
+        Property::TextIndent => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.text_indent = px;
+            }
+        }
+        Property::VerticalAlign => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.vertical_align = match kw.as_str() {
+                    "baseline" => VerticalAlign::Baseline,
+                    "top" => VerticalAlign::Top,
+                    "middle" => VerticalAlign::Middle,
+                    "bottom" => VerticalAlign::Bottom,
+                    "text-top" => VerticalAlign::TextTop,
+                    "text-bottom" => VerticalAlign::TextBottom,
+                    "sub" => VerticalAlign::Sub,
+                    "super" => VerticalAlign::Super,
+                    _ => style.vertical_align,
+                };
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.vertical_align = VerticalAlign::Length(px);
+            }
+        }
+        Property::FontFamily => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.font_family = Some(kw.clone());
+            }
+        }
+        Property::LetterSpacing => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                if kw == "normal" {
+                    style.letter_spacing = 0;
+                }
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.letter_spacing = px;
+            }
+        }
+        Property::WordSpacing => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                if kw == "normal" {
+                    style.word_spacing = 0;
+                }
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.word_spacing = px;
+            }
+        }
+        Property::WordBreak => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.word_break = match kw.as_str() {
+                    "break-all" => WordBreak::BreakAll,
+                    "keep-all" => WordBreak::KeepAll,
+                    _ => WordBreak::Normal,
+                };
+            }
+        }
+        Property::OverflowWrap => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.overflow_wrap = match kw.as_str() {
+                    "break-word" => OverflowWrapVal::BreakWord,
+                    "anywhere" => OverflowWrapVal::Anywhere,
+                    _ => OverflowWrapVal::Normal,
+                };
+            }
+        }
+        Property::TextOverflow => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.text_overflow = match kw.as_str() {
+                    "ellipsis" => TextOverflowVal::Ellipsis,
+                    _ => TextOverflowVal::Clip,
+                };
+            }
+        }
+        // Per-side border widths
+        Property::BorderTopWidth => {
+            resolve_border_width(&decl.value, parent_fs, root_fs, &mut style.border_top.width);
+            style.border_width = style.border_top.width; // sync unified
+        }
+        Property::BorderRightWidth => {
+            resolve_border_width(&decl.value, parent_fs, root_fs, &mut style.border_right.width);
+        }
+        Property::BorderBottomWidth => {
+            resolve_border_width(&decl.value, parent_fs, root_fs, &mut style.border_bottom.width);
+        }
+        Property::BorderLeftWidth => {
+            resolve_border_width(&decl.value, parent_fs, root_fs, &mut style.border_left.width);
+        }
+        // Per-side border colors
+        Property::BorderTopColor => {
+            if let CssValue::Color(c) = decl.value { style.border_top.color = c; }
+        }
+        Property::BorderRightColor => {
+            if let CssValue::Color(c) = decl.value { style.border_right.color = c; }
+        }
+        Property::BorderBottomColor => {
+            if let CssValue::Color(c) = decl.value { style.border_bottom.color = c; }
+        }
+        Property::BorderLeftColor => {
+            if let CssValue::Color(c) = decl.value { style.border_left.color = c; }
+        }
+        // Per-side border styles
+        Property::BorderTopStyle => {
+            style.border_top.style = resolve_border_style_val(&decl.value);
+        }
+        Property::BorderRightStyle => {
+            style.border_right.style = resolve_border_style_val(&decl.value);
+        }
+        Property::BorderBottomStyle => {
+            style.border_bottom.style = resolve_border_style_val(&decl.value);
+        }
+        Property::BorderLeftStyle => {
+            style.border_left.style = resolve_border_style_val(&decl.value);
+        }
+        // Per-corner border radius
+        Property::BorderTopLeftRadius => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.border_top_left_radius = px;
+            }
+        }
+        Property::BorderTopRightRadius => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.border_top_right_radius = px;
+            }
+        }
+        Property::BorderBottomRightRadius => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.border_bottom_right_radius = px;
+            }
+        }
+        Property::BorderBottomLeftRadius => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.border_bottom_left_radius = px;
+            }
+        }
+        // Outline
+        Property::OutlineWidth => {
+            resolve_border_width(&decl.value, parent_fs, root_fs, &mut style.outline_width);
+        }
+        Property::OutlineColor => {
+            if let CssValue::Color(c) = decl.value { style.outline_color = c; }
+        }
+        Property::OutlineStyle => {
+            style.outline_style = resolve_border_style_val(&decl.value);
+        }
+        Property::OutlineOffset => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.outline_offset = px;
+            }
+        }
+        // Shadows
+        Property::BoxShadow => {
+            if matches!(decl.value, CssValue::None) {
+                style.box_shadows.clear();
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                style.box_shadows = parse_box_shadows(kw, parent_fs, root_fs);
+            }
+        }
+        Property::TextShadow => {
+            if matches!(decl.value, CssValue::None) {
+                style.text_shadows.clear();
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                style.text_shadows = parse_text_shadows(kw, parent_fs, root_fs);
+            }
+        }
+        // Background extensions
+        Property::BackgroundImage => {
+            if matches!(decl.value, CssValue::None) {
+                style.background_image = BackgroundImageVal::None;
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                style.background_image = parse_background_image_val(kw);
+            }
+        }
+        Property::BackgroundSize => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.background_size = match kw.as_str() {
+                    "cover" => BackgroundSizeVal::Cover,
+                    "contain" => BackgroundSizeVal::Contain,
+                    "auto" => BackgroundSizeVal::Auto,
+                    _ => {
+                        // Try "Wpx Hpx" or "W% H%"
+                        let parts: Vec<&str> = kw.split_whitespace().collect();
+                        if parts.len() >= 2 {
+                            let w = parse_bg_size_dim(parts[0], parent_fs, root_fs);
+                            let h = parse_bg_size_dim(parts[1], parent_fs, root_fs);
+                            BackgroundSizeVal::Explicit(w, h)
+                        } else if parts.len() == 1 {
+                            let w = parse_bg_size_dim(parts[0], parent_fs, root_fs);
+                            BackgroundSizeVal::Explicit(w, -1)
+                        } else {
+                            BackgroundSizeVal::Auto
+                        }
+                    }
+                };
+            }
+            if matches!(decl.value, CssValue::Auto) {
+                style.background_size = BackgroundSizeVal::Auto;
+            }
+        }
+        Property::BackgroundRepeat => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.background_repeat = match kw.as_str() {
+                    "repeat-x" => BackgroundRepeatVal::RepeatX,
+                    "repeat-y" => BackgroundRepeatVal::RepeatY,
+                    "no-repeat" => BackgroundRepeatVal::NoRepeat,
+                    _ => BackgroundRepeatVal::Repeat,
+                };
+            }
+        }
+        Property::BackgroundPosition => {
+            // Simplified: just parse keywords or lengths
+            if let CssValue::Keyword(ref kw) = decl.value {
+                let parts: Vec<&str> = kw.split_whitespace().collect();
+                if !parts.is_empty() {
+                    style.background_position_x = parse_bg_position_part(parts[0], parent_fs, root_fs);
+                }
+                if parts.len() >= 2 {
+                    style.background_position_y = parse_bg_position_part(parts[1], parent_fs, root_fs);
+                }
+            }
+        }
+        // Content
+        Property::Content => {
+            if matches!(decl.value, CssValue::None) {
+                style.content = Option::None;
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                // Content values are typically quoted strings; the parser stores them as keywords.
+                let s = kw.trim_matches('"').trim_matches('\'');
+                if s == "none" || s == "normal" {
+                    style.content = Option::None;
+                } else {
+                    style.content = Some(String::from(s));
+                }
+            }
+        }
+        Property::ObjectFit => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.object_fit = match kw.as_str() {
+                    "fill" => ObjectFit::Fill,
+                    "contain" => ObjectFit::Contain,
+                    "cover" => ObjectFit::Cover,
+                    "none" => ObjectFit::None,
+                    "scale-down" => ObjectFit::ScaleDown,
+                    _ => style.object_fit,
+                };
+            }
+        }
+        Property::Transform => {
+            // Parse transform functions: translate(x,y), translateX(x), translateY(y)
+            if matches!(decl.value, CssValue::None) || matches!(decl.value, CssValue::Keyword(ref k) if k == "none") {
+                style.transform_tx = 0;
+                style.transform_ty = 0;
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                let s = kw.as_str();
+                let mut tx = 0i32;
+                let mut ty = 0i32;
+                let mut pos = 0usize;
+                let bytes = s.as_bytes();
+                while pos < bytes.len() {
+                    // Skip whitespace
+                    while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') { pos += 1; }
+                    if pos >= bytes.len() { break; }
+                    // Read function name
+                    let name_start = pos;
+                    while pos < bytes.len() && bytes[pos] != b'(' && bytes[pos] != b' ' { pos += 1; }
+                    let fname = core::str::from_utf8(&bytes[name_start..pos]).unwrap_or("");
+                    if pos < bytes.len() && bytes[pos] == b'(' {
+                        pos += 1; // skip '('
+                        // Read args until ')'
+                        let args_start = pos;
+                        while pos < bytes.len() && bytes[pos] != b')' { pos += 1; }
+                        let args = core::str::from_utf8(&bytes[args_start..pos]).unwrap_or("");
+                        if pos < bytes.len() { pos += 1; } // skip ')'
+                        match fname {
+                            "translateX" | "translatex" => {
+                                tx += parse_transform_length(args.trim(), parent_fs);
+                            }
+                            "translateY" | "translatey" => {
+                                ty += parse_transform_length(args.trim(), parent_fs);
+                            }
+                            "translate" => {
+                                let parts: Vec<&str> = args.split(',').collect();
+                                if !parts.is_empty() {
+                                    tx += parse_transform_length(parts[0].trim(), parent_fs);
+                                }
+                                if parts.len() > 1 {
+                                    ty += parse_transform_length(parts[1].trim(), parent_fs);
+                                }
+                            }
+                            _ => {} // scale, rotate, etc. — not yet supported
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                style.transform_tx = tx;
+                style.transform_ty = ty;
+            }
+        }
+        Property::TransformOrigin => {}
+        Property::AlignContent => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.align_content = match kw.as_str() {
+                    "flex-start" | "start" => AlignContent::FlexStart,
+                    "flex-end" | "end" => AlignContent::FlexEnd,
+                    "center" => AlignContent::Center,
+                    "space-between" => AlignContent::SpaceBetween,
+                    "space-around" => AlignContent::SpaceAround,
+                    "space-evenly" => AlignContent::SpaceEvenly,
+                    "stretch" => AlignContent::Stretch,
+                    _ => style.align_content,
+                };
+            }
+        }
         // Properties we parse but do not yet resolve:
-        Property::TextIndent | Property::VerticalAlign
-        | Property::BorderStyle | Property::Overflow
-        | Property::AlignContent | Property::Flex
+        Property::BorderCollapse => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.border_collapse = kw == "collapse";
+            }
+        }
+        Property::BorderSpacing => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.border_spacing = px;
+            }
+        }
+        // Filter
+        Property::Filter => {
+            if matches!(decl.value, CssValue::None) {
+                style.filter = FilterVal::none();
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                style.filter = parse_filter_value(kw, parent_fs, root_fs);
+            }
+        }
+        // Aspect ratio
+        Property::AspectRatio => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                if kw == "auto" {
+                    style.aspect_ratio = 0;
+                } else if let Some(pos) = kw.find('/') {
+                    // "16 / 9" format
+                    let w_str = kw[..pos].trim();
+                    let h_str = kw[pos + 1..].trim();
+                    if let (Some(w), Some(h)) = (try_parse_simple_float(w_str), try_parse_simple_float(h_str)) {
+                        if h > 0 { style.aspect_ratio = w * 100 / h; }
+                    }
+                } else if let Some(v) = try_parse_simple_float(kw.trim()) {
+                    style.aspect_ratio = v;
+                }
+            } else if let CssValue::Number(v) = decl.value {
+                style.aspect_ratio = v;
+            }
+        }
+        // Text decoration sub-properties
+        Property::TextDecorationColor => {
+            if let CssValue::Color(c) = decl.value { style.text_decoration_color = c; }
+        }
+        Property::TextDecorationStyle => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.text_decoration_style = match kw.as_str() {
+                    "solid" => TextDecorationStyle::Solid,
+                    "double" => TextDecorationStyle::Double,
+                    "dotted" => TextDecorationStyle::Dotted,
+                    "dashed" => TextDecorationStyle::Dashed,
+                    "wavy" => TextDecorationStyle::Wavy,
+                    _ => style.text_decoration_style,
+                };
+            }
+        }
+        Property::TextDecorationThickness => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.text_decoration_thickness = px;
+            }
+        }
+        Property::TextUnderlineOffset => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.text_underline_offset = px;
+            }
+        }
+        // Font variant
+        Property::FontVariant => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.font_variant = match kw.as_str() {
+                    "small-caps" => FontVariantVal::SmallCaps,
+                    _ => FontVariantVal::Normal,
+                };
+            }
+        }
+        // Tab size
+        Property::TabSize => {
+            if let CssValue::Number(v) = decl.value {
+                style.tab_size = (v / 100).max(1);
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.tab_size = px.max(1);
+            }
+        }
+        // Clip path
+        Property::ClipPath => {
+            if matches!(decl.value, CssValue::None) {
+                style.clip_path = ClipPathVal::None;
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                style.clip_path = parse_clip_path_value(kw, parent_fs, root_fs);
+            }
+        }
+        // CSS counters
+        Property::CounterReset => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.counter_reset = Some(kw.clone());
+            } else if matches!(decl.value, CssValue::None) {
+                style.counter_reset = Option::None;
+            }
+        }
+        Property::CounterIncrement => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.counter_increment = Some(kw.clone());
+            } else if matches!(decl.value, CssValue::None) {
+                style.counter_increment = Option::None;
+            }
+        }
+        // Inset shorthand is expanded before reaching here.
+        Property::Inset => {}
+        Property::BorderStyle | Property::Overflow
+        | Property::Flex
         | Property::Gap | Property::Cursor
-        | Property::BorderCollapse | Property::BorderSpacing | Property::TableLayout => {}
+        | Property::TableLayout
+        | Property::Outline => {}
         // Grid container properties
         Property::GridTemplateColumns => {
             style.grid_template_columns = decode_track_list(&decl.value);
@@ -2120,6 +3130,13 @@ pub fn apply_declaration(
         Property::GridTemplateRows => {
             style.grid_template_rows = decode_track_list(&decl.value);
         }
+        Property::GridTemplateAreas => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.grid_template_areas = parse_grid_template_areas_value(kw);
+            }
+        }
+        // GridTemplate shorthand is expanded before reaching here.
+        Property::GridTemplate => {}
         Property::GridAutoColumns => {
             style.grid_auto_columns = decode_single_track(&decl.value);
         }
@@ -2263,11 +3280,46 @@ fn parse_track_list(s: &str) -> Vec<GridTrackSize> {
         return tracks;
     }
 
-    // Space-separated list of track sizes.
-    for token in s.split_whitespace() {
+    // Space-separated list of track sizes (respecting parentheses).
+    let tokens = split_whitespace_respecting_parens(s);
+    for token in &tokens {
         tracks.push(parse_single_track(token));
     }
     tracks
+}
+
+/// Split a string on whitespace, but keep parenthesized groups together.
+/// E.g. "12.25rem minmax(0, 1fr)" → ["12.25rem", "minmax(0, 1fr)"]
+fn split_whitespace_respecting_parens(s: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    let mut depth: u32 = 0;
+    let mut i = 0;
+    // Skip leading whitespace.
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') { i += 1; }
+    start = i;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => { if depth > 0 { depth -= 1; } }
+            b' ' | b'\t' if depth == 0 => {
+                if start < i {
+                    tokens.push(&s[start..i]);
+                }
+                // Skip whitespace.
+                while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') { i += 1; }
+                start = i;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if start < bytes.len() {
+        tokens.push(&s[start..]);
+    }
+    tokens
 }
 
 /// Extract the minimum pixel value from `minmax(300px, 1fr)` or similar.
@@ -2324,13 +3376,29 @@ pub(crate) fn parse_single_track(token: &str) -> GridTrackSize {
             return GridTrackSize::Px(v as i32);
         }
     }
+    if let Some(rem_val) = token.strip_suffix("rem") {
+        if let Ok(v) = rem_val.parse::<f32>() {
+            // 1rem = 16px (root font-size default).
+            return GridTrackSize::Px((v * 16.0) as i32);
+        }
+    }
+    if let Some(em_val) = token.strip_suffix("em") {
+        if let Ok(v) = em_val.parse::<f32>() {
+            // 1em ≈ 16px (approximation — grid tracks don't have font context).
+            return GridTrackSize::Px((v * 16.0) as i32);
+        }
+    }
+    // Handle min-content / max-content keywords.
+    if token == "min-content" || token == "max-content" {
+        return GridTrackSize::Auto; // sized to content at layout time
+    }
     GridTrackSize::Auto
 }
 
-/// Parse a single `GridLine` from a string token (`"auto"`, `"2"`, `"span 3"`).
+/// Parse a single `GridLine` from a string token (`"auto"`, `"2"`, `"span 3"`, `"areaName"`).
 fn parse_grid_line(s: &str) -> GridLine {
     let s = s.trim();
-    if s == "auto" { return GridLine::Auto; }
+    if s.is_empty() || s == "auto" { return GridLine::Auto; }
     if let Some(rest) = s.strip_prefix("span ") {
         if let Ok(n) = rest.trim().parse::<i32>() {
             return GridLine::Span(n.max(1));
@@ -2338,6 +3406,10 @@ fn parse_grid_line(s: &str) -> GridLine {
     }
     if let Ok(n) = s.parse::<i32>() {
         return GridLine::Index(n);
+    }
+    // Named grid area — store the name for resolution at layout time.
+    if s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return GridLine::Named(String::from(s));
     }
     GridLine::Auto
 }
@@ -2532,4 +3604,521 @@ fn eq_ignore_ascii_case(a: &str, b: &str) -> bool {
         if ca != cb { return false; }
     }
     true
+}
+
+// ---------------------------------------------------------------------------
+// Border helpers
+// ---------------------------------------------------------------------------
+
+fn resolve_border_width(val: &CssValue, parent_fs: i32, root_fs: i32, out: &mut i32) {
+    if let Some(px) = resolve_length(val, parent_fs, root_fs) {
+        *out = px;
+    }
+    if let CssValue::Keyword(ref kw) = *val {
+        *out = match kw.as_str() {
+            "thin" => 1, "medium" => 3, "thick" => 5,
+            _ => *out,
+        };
+    }
+}
+
+fn resolve_border_style_val(val: &CssValue) -> BorderStyleVal {
+    if matches!(*val, CssValue::None) { return BorderStyleVal::None; }
+    if let CssValue::Keyword(ref kw) = *val {
+        match kw.as_str() {
+            "solid" => BorderStyleVal::Solid,
+            "dashed" => BorderStyleVal::Dashed,
+            "dotted" => BorderStyleVal::Dotted,
+            "double" => BorderStyleVal::Double,
+            "groove" => BorderStyleVal::Groove,
+            "ridge" => BorderStyleVal::Ridge,
+            "inset" => BorderStyleVal::Inset,
+            "outset" => BorderStyleVal::Outset,
+            "hidden" => BorderStyleVal::Hidden,
+            "none" => BorderStyleVal::None,
+            _ => BorderStyleVal::None,
+        }
+    } else {
+        BorderStyleVal::None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shadow parsing (litehtml-inspired)
+// ---------------------------------------------------------------------------
+
+/// Parse `box-shadow` value: `offset-x offset-y [blur [spread]] color [inset], ...`
+fn parse_box_shadows(s: &str, parent_fs: i32, root_fs: i32) -> Vec<BoxShadowVal> {
+    let mut shadows = Vec::new();
+    for layer in s.split(',') {
+        let layer = layer.trim();
+        if layer.is_empty() || layer == "none" { continue; }
+        let mut inset = false;
+        let mut lengths: Vec<i32> = Vec::new();
+        let mut color: u32 = 0xFF000000;
+        // Tokenize respecting parentheses (for rgb()/rgba())
+        let tokens = tokenize_respecting_parens(layer);
+        for tok in &tokens {
+            let lower = tok.to_ascii_lowercase();
+            if lower == "inset" {
+                inset = true;
+            } else if let Some(c) = crate::css::try_parse_color_pub(tok) {
+                color = c;
+            } else if let Some(c) = crate::css::named_color_pub(&lower) {
+                color = c;
+            } else if let Some(dim) = crate::css::try_parse_dimension_pub(tok) {
+                if let Some(px) = resolve_length(&dim, parent_fs, root_fs) {
+                    lengths.push(px);
+                }
+            }
+        }
+        if lengths.len() >= 2 {
+            shadows.push(BoxShadowVal {
+                offset_x: lengths[0],
+                offset_y: lengths[1],
+                blur: if lengths.len() >= 3 { lengths[2] } else { 0 },
+                spread: if lengths.len() >= 4 { lengths[3] } else { 0 },
+                color,
+                inset,
+            });
+        }
+    }
+    shadows
+}
+
+/// Parse `text-shadow` value: `offset-x offset-y [blur] color, ...`
+fn parse_text_shadows(s: &str, parent_fs: i32, root_fs: i32) -> Vec<TextShadowVal> {
+    let mut shadows = Vec::new();
+    for layer in s.split(',') {
+        let layer = layer.trim();
+        if layer.is_empty() || layer == "none" { continue; }
+        let mut lengths: Vec<i32> = Vec::new();
+        let mut color: u32 = 0xFF000000;
+        let tokens = tokenize_respecting_parens(layer);
+        for tok in &tokens {
+            let lower = tok.to_ascii_lowercase();
+            if let Some(c) = crate::css::try_parse_color_pub(tok) {
+                color = c;
+            } else if let Some(c) = crate::css::named_color_pub(&lower) {
+                color = c;
+            } else if let Some(dim) = crate::css::try_parse_dimension_pub(tok) {
+                if let Some(px) = resolve_length(&dim, parent_fs, root_fs) {
+                    lengths.push(px);
+                }
+            }
+        }
+        if lengths.len() >= 2 {
+            shadows.push(TextShadowVal {
+                offset_x: lengths[0],
+                offset_y: lengths[1],
+                blur: if lengths.len() >= 3 { lengths[2] } else { 0 },
+                color,
+            });
+        }
+    }
+    shadows
+}
+
+/// Tokenize a CSS value string, keeping parenthesized groups (like `rgb(...)`) as one token.
+fn tokenize_respecting_parens(s: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    let mut depth: u32 = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => { if depth > 0 { depth -= 1; } }
+            b' ' | b'\t' if depth == 0 => {
+                if start < i {
+                    tokens.push(&s[start..i]);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if start < bytes.len() {
+        tokens.push(&s[start..]);
+    }
+    tokens
+}
+
+// ---------------------------------------------------------------------------
+// Background image parsing (litehtml-inspired)
+// ---------------------------------------------------------------------------
+
+/// Parse `background-image` value: `url(...)` or `linear-gradient(...)`.
+fn parse_background_image_val(s: &str) -> BackgroundImageVal {
+    let lower = s.trim().to_ascii_lowercase();
+    if lower == "none" {
+        return BackgroundImageVal::None;
+    }
+    if lower.starts_with("url(") {
+        let inner = lower.trim_start_matches("url(").trim_end_matches(')');
+        let inner = inner.trim_matches('"').trim_matches('\'');
+        return BackgroundImageVal::Url(String::from(inner));
+    }
+    if lower.starts_with("linear-gradient(") {
+        let inner = lower.trim_start_matches("linear-gradient(").trim_end_matches(')');
+        return parse_linear_gradient(inner);
+    }
+    BackgroundImageVal::None
+}
+
+/// Parse the interior of `linear-gradient(...)`.
+fn parse_linear_gradient(inner: &str) -> BackgroundImageVal {
+    let parts: Vec<&str> = split_comma_respecting_parens(inner);
+    if parts.is_empty() {
+        return BackgroundImageVal::None;
+    }
+
+    let mut angle_deg: i32 = 180; // default top-to-bottom
+    let mut stops = Vec::new();
+    let mut start_idx = 0;
+
+    // Check if first part is an angle or direction
+    let first = parts[0].trim();
+    if first.ends_with("deg") {
+        if let Ok(a) = first.trim_end_matches("deg").trim().parse::<f32>() {
+            angle_deg = a as i32;
+        }
+        start_idx = 1;
+    } else if first.starts_with("to ") {
+        angle_deg = match first {
+            "to top" => 0,
+            "to right" => 90,
+            "to bottom" => 180,
+            "to left" => 270,
+            "to top right" | "to right top" => 45,
+            "to bottom right" | "to right bottom" => 135,
+            "to bottom left" | "to left bottom" => 225,
+            "to top left" | "to left top" => 315,
+            _ => 180,
+        };
+        start_idx = 1;
+    }
+
+    for i in start_idx..parts.len() {
+        let part = parts[i].trim();
+        // Try to parse "color position" or just "color"
+        let tokens: Vec<&str> = part.split_whitespace().collect();
+        let color_str = if tokens.len() >= 1 { tokens[0] } else { part };
+        let color = crate::css::try_parse_color_pub(color_str)
+            .or_else(|| crate::css::named_color_pub(&color_str.to_ascii_lowercase()))
+            .unwrap_or(0xFF000000);
+        let position = if tokens.len() >= 2 {
+            parse_gradient_position(tokens[1])
+        } else {
+            -1 // auto
+        };
+        stops.push(GradientStop { color, position });
+    }
+
+    // Auto-distribute positions for stops with position == -1
+    if !stops.is_empty() {
+        let len = stops.len();
+        if stops[0].position < 0 { stops[0].position = 0; }
+        if len > 1 && stops[len - 1].position < 0 { stops[len - 1].position = 10000; }
+        // Interpolate auto positions
+        let mut i = 1;
+        while i < len - 1 {
+            if stops[i].position < 0 {
+                // Find next non-auto
+                let mut j = i + 1;
+                while j < len && stops[j].position < 0 { j += 1; }
+                if j < len {
+                    let start_pos = stops[i - 1].position;
+                    let end_pos = stops[j].position;
+                    let span = j - i + 1;
+                    for k in i..j {
+                        stops[k].position = start_pos + (end_pos - start_pos) * (k - i + 1) as i32 / span as i32;
+                    }
+                }
+                i = j + 1;
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    BackgroundImageVal::LinearGradient { angle_deg, stops }
+}
+
+fn parse_gradient_position(s: &str) -> i32 {
+    if s.ends_with('%') {
+        if let Ok(v) = s.trim_end_matches('%').parse::<f32>() {
+            return (v * 100.0) as i32;
+        }
+    }
+    -1
+}
+
+fn split_comma_respecting_parens(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    let mut depth: u32 = 0;
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => { if depth > 0 { depth -= 1; } }
+            b',' if depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < s.len() {
+        parts.push(&s[start..]);
+    }
+    parts
+}
+
+fn parse_bg_size_dim(s: &str, parent_fs: i32, root_fs: i32) -> i32 {
+    let s = s.trim();
+    if s == "auto" { return -1; }
+    if let Some(dim) = crate::css::try_parse_dimension_pub(s) {
+        if let Some(px) = resolve_length(&dim, parent_fs, root_fs) {
+            return px;
+        }
+    }
+    -1
+}
+
+fn parse_bg_position_part(s: &str, parent_fs: i32, root_fs: i32) -> i32 {
+    match s {
+        "left" | "top" => 0,
+        "center" => 5000, // 50% * 100
+        "right" | "bottom" => 10000, // 100% * 100
+        _ => {
+            if let Some(dim) = crate::css::try_parse_dimension_pub(s) {
+                if let Some(px) = resolve_length(&dim, parent_fs, root_fs) {
+                    return px;
+                }
+            }
+            0
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Filter parsing (litehtml-inspired)
+// ---------------------------------------------------------------------------
+
+/// Parse a CSS `filter` value like `blur(5px) grayscale(50%) brightness(120%)`.
+fn parse_filter_value(s: &str, parent_fs: i32, root_fs: i32) -> FilterVal {
+    let mut f = FilterVal::none();
+    let s = s.trim();
+    if s == "none" { return f; }
+
+    // Tokenize function calls like "blur(5px)" "grayscale(50%)"
+    let mut pos = 0;
+    let bytes = s.as_bytes();
+    while pos < bytes.len() {
+        // Skip whitespace
+        while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') { pos += 1; }
+        if pos >= bytes.len() { break; }
+
+        // Read function name
+        let name_start = pos;
+        while pos < bytes.len() && bytes[pos] != b'(' && bytes[pos] != b' ' { pos += 1; }
+        let name = &s[name_start..pos];
+        if pos >= bytes.len() || bytes[pos] != b'(' { break; }
+        pos += 1; // skip '('
+
+        // Read argument until ')'
+        let arg_start = pos;
+        while pos < bytes.len() && bytes[pos] != b')' { pos += 1; }
+        let arg = &s[arg_start..pos];
+        if pos < bytes.len() { pos += 1; } // skip ')'
+
+        let arg = arg.trim();
+        match name {
+            "blur" => {
+                if let Some(dim) = crate::css::try_parse_dimension_pub(arg) {
+                    if let Some(px) = resolve_length(&dim, parent_fs, root_fs) {
+                        f.blur_px = px.max(0);
+                    }
+                }
+            }
+            "brightness" => { f.brightness = parse_filter_pct(arg); }
+            "contrast" => { f.contrast = parse_filter_pct(arg); }
+            "grayscale" => { f.grayscale = parse_filter_pct(arg); }
+            "saturate" => { f.saturate = parse_filter_pct(arg); }
+            "sepia" => { f.sepia = parse_filter_pct(arg); }
+            "opacity" => { f.opacity = parse_filter_pct(arg); }
+            "invert" => { f.invert = parse_filter_pct(arg); }
+            "hue-rotate" => {
+                let deg_str = arg.trim_end_matches("deg").trim();
+                if let Ok(v) = deg_str.parse::<i32>() {
+                    f.hue_rotate = v;
+                }
+            }
+            _ => {} // drop-shadow, url() — not supported
+        }
+    }
+    f
+}
+
+/// Parse a filter function argument as percentage (100% = 10000).
+fn parse_filter_pct(s: &str) -> i32 {
+    let s = s.trim();
+    if s.ends_with('%') {
+        let num = &s[..s.len() - 1];
+        if let Ok(v) = num.parse::<i32>() {
+            return v * 100;
+        }
+    }
+    // Try as decimal (0.5 = 5000, 1.0 = 10000)
+    if let Some(dim) = crate::css::try_parse_dimension_pub(s) {
+        if let CssValue::Number(v) = dim {
+            return v * 100; // v is already *100
+        }
+    }
+    10000
+}
+
+/// Parse a simple float/int string to fixed-point * 100 (returns Option).
+fn try_parse_simple_float(s: &str) -> Option<i32> {
+    let s = s.trim();
+    if s.is_empty() { return None; }
+    if let Some(dim) = crate::css::try_parse_dimension_pub(s) {
+        match dim {
+            CssValue::Number(v) => return Some(v),
+            CssValue::Length(v, _) => return Some(v),
+            _ => {}
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Clip-path parsing
+// ---------------------------------------------------------------------------
+
+/// Parse `clip-path: circle(...)` or `clip-path: inset(...)`.
+fn parse_clip_path_value(s: &str, parent_fs: i32, root_fs: i32) -> ClipPathVal {
+    let s = s.trim();
+    if s == "none" { return ClipPathVal::None; }
+
+    if s.starts_with("circle(") {
+        let inner = s.trim_start_matches("circle(").trim_end_matches(')').trim();
+        // "50px at 100px 100px" or "50%" or "50px"
+        let parts: Vec<&str> = inner.split_whitespace().collect();
+        let radius = if !parts.is_empty() {
+            resolve_clip_dim(parts[0], parent_fs, root_fs)
+        } else { 50 };
+        let (cx, cy) = if parts.len() >= 4 && parts[1] == "at" {
+            (resolve_clip_dim(parts[2], parent_fs, root_fs),
+             resolve_clip_dim(parts[3], parent_fs, root_fs))
+        } else { (50, 50) }; // default: center (percentage-like)
+        return ClipPathVal::Circle { radius, cx, cy };
+    }
+
+    if s.starts_with("inset(") {
+        let inner = s.trim_start_matches("inset(").trim_end_matches(')').trim();
+        // Split on "round" for optional border-radius
+        let (dims_str, radius) = if let Some(round_pos) = inner.find("round") {
+            let r_str = inner[round_pos + 5..].trim();
+            let r = resolve_clip_dim(r_str, parent_fs, root_fs);
+            (&inner[..round_pos], r)
+        } else {
+            (inner, 0)
+        };
+        let parts: Vec<&str> = dims_str.split_whitespace().collect();
+        let (t, r, b, l) = match parts.len() {
+            1 => {
+                let v = resolve_clip_dim(parts[0], parent_fs, root_fs);
+                (v, v, v, v)
+            }
+            2 => {
+                let tb = resolve_clip_dim(parts[0], parent_fs, root_fs);
+                let lr = resolve_clip_dim(parts[1], parent_fs, root_fs);
+                (tb, lr, tb, lr)
+            }
+            3 => {
+                let t = resolve_clip_dim(parts[0], parent_fs, root_fs);
+                let lr = resolve_clip_dim(parts[1], parent_fs, root_fs);
+                let b = resolve_clip_dim(parts[2], parent_fs, root_fs);
+                (t, lr, b, lr)
+            }
+            _ => {
+                (resolve_clip_dim(parts[0], parent_fs, root_fs),
+                 resolve_clip_dim(parts[1], parent_fs, root_fs),
+                 resolve_clip_dim(parts[2], parent_fs, root_fs),
+                 resolve_clip_dim(parts[3], parent_fs, root_fs))
+            }
+        };
+        return ClipPathVal::Inset { top: t, right: r, bottom: b, left: l, radius };
+    }
+
+    ClipPathVal::None
+}
+
+fn resolve_clip_dim(s: &str, parent_fs: i32, root_fs: i32) -> i32 {
+    if let Some(dim) = crate::css::try_parse_dimension_pub(s) {
+        if let Some(px) = resolve_length(&dim, parent_fs, root_fs) {
+            return px;
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// Grid template areas parsing
+// ---------------------------------------------------------------------------
+
+/// Parse `grid-template-areas` value into named grid areas.
+/// Example: `'header header' 'sidebar content' 'footer footer'`
+/// Returns a list of GridArea with 1-based line numbers.
+fn parse_grid_template_areas_value(s: &str) -> Vec<GridArea> {
+    let mut areas: Vec<GridArea> = Vec::new();
+    let mut row: i32 = 1;
+
+    // Extract each quoted row string.
+    let mut pos = 0;
+    let bytes = s.as_bytes();
+    while pos < bytes.len() {
+        // Find start of quoted string.
+        if bytes[pos] == b'\'' || bytes[pos] == b'"' {
+            let quote = bytes[pos];
+            pos += 1;
+            let start = pos;
+            while pos < bytes.len() && bytes[pos] != quote { pos += 1; }
+            let row_str = core::str::from_utf8(&bytes[start..pos]).unwrap_or("");
+            if pos < bytes.len() { pos += 1; } // skip closing quote
+
+            // Parse cells in this row.
+            let cells: Vec<&str> = row_str.split_whitespace().collect();
+            for (col_idx, &name) in cells.iter().enumerate() {
+                if name == "." { continue; } // empty cell
+                let col = col_idx as i32 + 1; // 1-based
+
+                // Check if this area already exists — extend it.
+                if let Some(existing) = areas.iter_mut().find(|a| a.name == name) {
+                    // Extend the area to cover this cell.
+                    if row + 1 > existing.row_end { existing.row_end = row + 1; }
+                    if col + 1 > existing.col_end { existing.col_end = col + 1; }
+                    if row < existing.row_start { existing.row_start = row; }
+                    if col < existing.col_start { existing.col_start = col; }
+                } else {
+                    areas.push(GridArea {
+                        name: String::from(name),
+                        row_start: row,
+                        col_start: col,
+                        row_end: row + 1,
+                        col_end: col + 1,
+                    });
+                }
+            }
+            row += 1;
+        } else {
+            pos += 1;
+        }
+    }
+    areas
 }

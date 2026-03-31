@@ -1,26 +1,27 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! libfont.so — Userspace TTF font engine (shared library).
+//! libfont — TTF font engine.
 //!
 //! Provides font loading, glyph rasterization (greyscale + subpixel LCD),
 //! text measurement, and rendering into ARGB pixel buffers.
 //!
-//! System fonts are embedded in .rodata via include_bytes!() — shared
-//! read-only pages across all processes. No disk I/O at init.
-//!
-//! State is stored per-process via .bss statics.
-//! Heap memory is obtained via SYS_SBRK (bump allocator in heap.rs).
-//!
-//! Subpixel rendering is auto-detected on init by querying SYS_GPU_HAS_ACCEL.
+//! System fonts are embedded in .rodata via include_bytes!().
 
-#![no_std]
-#![no_main]
+#![cfg_attr(not(feature = "host"), no_std)]
+#![cfg_attr(not(feature = "host"), no_main)]
 
 extern crate alloc;
 
+#[cfg(not(feature = "host"))]
 libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
+
+#[cfg(not(feature = "host"))]
 pub(crate) mod syscall;
+#[cfg(feature = "host")]
+#[path = "host_syscall.rs"]
+pub(crate) mod syscall;
+
 pub(crate) mod ttf;
 mod ttf_rasterizer;
 pub(crate) mod inflate;
@@ -36,7 +37,7 @@ pub(crate) static FONT_SFPRO_ITALIC: &[u8] = include_bytes!("../../../sysroot/Sy
 pub(crate) static FONT_ANDALE_MONO: &[u8] = include_bytes!("../../../sysroot/System/fonts/andale-mono.ttf");
 pub(crate) static FONT_EMOJI: &[u8] = include_bytes!("../../../sysroot/System/fonts/NotoColorEmoji.ttf");
 
-// ── Exported C API (resolved via dl_sym) ────────────────────────────
+// ── Public API (used directly on host, or via dl_sym on anyOS) ────────
 
 /// Initialize the font manager, load system fonts, auto-detect subpixel.
 #[no_mangle]
@@ -51,6 +52,14 @@ pub extern "C" fn font_load(path_ptr: *const u8, path_len: u32) -> u32 {
     font_manager::load_font(path)
 }
 
+/// Load a custom TTF font from raw data in memory. Returns font_id, or u32::MAX on failure.
+#[no_mangle]
+pub extern "C" fn font_load_data(data_ptr: *const u8, data_len: u32) -> u32 {
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    let owned = alloc::vec::Vec::from(data);
+    font_manager::load_font_data(owned)
+}
+
 /// Unload a previously loaded font by ID.
 #[no_mangle]
 pub extern "C" fn font_unload(font_id: u32) {
@@ -58,7 +67,6 @@ pub extern "C" fn font_unload(font_id: u32) {
 }
 
 /// Measure text dimensions for a given font and size.
-/// Writes pixel width/height into out_w/out_h.
 #[no_mangle]
 pub extern "C" fn font_measure_string(
     font_id: u32,
@@ -133,14 +141,14 @@ pub extern "C" fn font_line_height(font_id: u32, size: u16) -> u32 {
 }
 
 /// Override subpixel rendering: 1 = enable, 0 = disable.
-/// Normally auto-detected on init, but apps can override if needed.
 #[no_mangle]
 pub extern "C" fn font_set_subpixel(enabled: u32) {
     font_manager::set_subpixel(enabled != 0);
 }
 
-// ── Panic handler ────────────────────────────────────────
+// ── Panic handler (anyOS only) ────────────────────────────────────────
 
+#[cfg(not(feature = "host"))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     syscall::exit(1);

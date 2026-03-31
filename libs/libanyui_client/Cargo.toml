@@ -3,10 +3,15 @@ name = "libanyui_client"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["dep:libimage_client"]
+host = ["dynlink/host", "anyos_std/host", "dep:libfont_client"]
+
 [dependencies]
 dynlink = { path = "../dynlink" }
 anyos_std = { path = "../stdlib" }
-libimage_client = { path = "../libimage_client" }
+libimage_client = { path = "../libimage_client", optional = true }
+libfont_client = { path = "../libfont_client", features = ["host"], optional = true }
 
 [lib]
 name = "libanyui_client"

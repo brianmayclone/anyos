@@ -18,7 +18,7 @@
 //! libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
 //! ```
 
-#![no_std]
+#![cfg_attr(not(feature = "host"), no_std)]
 
 use core::alloc::Layout;
 use core::ptr;
@@ -135,6 +135,14 @@ pub unsafe fn free_list_dealloc(free_list: *mut *mut FreeBlock, ptr: *mut u8, si
 /// ```ignore
 /// libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
 /// ```
+/// On host: dll_allocator! is a no-op (system allocator handles everything).
+#[cfg(feature = "host")]
+#[macro_export]
+macro_rules! dll_allocator {
+    ($sbrk:path, $mmap:path, $munmap:path) => {};
+}
+
+#[cfg(not(feature = "host"))]
 #[macro_export]
 macro_rules! dll_allocator {
     ($sbrk:path, $mmap:path, $munmap:path) => {

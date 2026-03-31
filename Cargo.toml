@@ -25,6 +25,8 @@ exclude = [
   "bin/sshd",
   # Parent directory (compositor/compositor is the actual crate)
   "system/compositor",
+  # Host-native tools (built with cargo +stable, not part of anyOS image)
+  "tools/surf-host",
 ]
 resolver = "2"
 

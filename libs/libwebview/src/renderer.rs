@@ -152,39 +152,55 @@ struct DrawCmd {
     h: i32,
     /// The drawing operation.
     kind: DrawKind,
+    /// Optional clip rect (from parent with overflow:hidden).
+    /// (clip_x, clip_y, clip_w, clip_h) — commands are clipped to this rect.
+    clip: Option<(i32, i32, i32, i32)>,
+    /// Z-index for stacking order (higher = on top).
+    z_index: i32,
 }
 
 enum DrawKind {
     /// Fill a rectangle with a solid or alpha-blended color.
     Rect { color: u32 },
+    /// Fill a rounded rectangle with corner radii.
+    RoundedRect { color: u32, radii: [i32; 4] }, // [tl, tr, br, bl]
+    /// Draw a dashed/dotted horizontal or vertical border line.
+    DashedLine { color: u32, dash_len: i32, gap_len: i32, vertical: bool },
     /// Draw a text string.
     Text { color: u32, font_id: u32, font_size: u16, text: String },
     /// Blit an image (looked up from ImageCache by src URL at rasterize time).
-    Image { src: String },
+    Image { src: String, object_fit: crate::style::ObjectFit },
 }
 
-/// A Y-sorted display list built from the layout tree.
+/// A display list sorted by (z_index, y) built from the layout tree.
 ///
 /// Replacing the recursive `walk_pixels` tree walk with a flat sorted list
 /// allows O(log n + k) tile rasterization (binary search + k visible commands)
 /// instead of O(n) per tile.
 pub(crate) struct DisplayList {
     cmds: Vec<DrawCmd>,
+    /// Current clip rect during flatten (None = no clipping).
+    clip_stack: Vec<(i32, i32, i32, i32)>,
+    /// Current z-index during flatten.
+    current_z: i32,
     /// Maximum command height seen — used as search margin for binary search.
     max_h: i32,
 }
 
 impl DisplayList {
     pub fn new() -> Self {
-        Self { cmds: Vec::new(), max_h: 0 }
+        Self { cmds: Vec::new(), max_h: 0, clip_stack: Vec::new(), current_z: 0 }
     }
 
     /// Build the display list from a layout tree.  Walks the tree once,
-    /// emitting DrawCmds for every visible element, then sorts by Y.
+    /// emitting DrawCmds for every visible element, then sorts by (z_index, y).
     pub fn build(root: &LayoutBox) -> Self {
-        let mut dl = DisplayList { cmds: Vec::new(), max_h: 0 };
+        let mut dl = DisplayList { cmds: Vec::new(), max_h: 0, clip_stack: Vec::new(), current_z: 0 };
         dl.flatten(root, 0, 0);
-        dl.cmds.sort_unstable_by_key(|c| c.y);
+        // Primary sort by z-index, secondary by Y for correct stacking.
+        dl.cmds.sort_unstable_by(|a, b| {
+            a.z_index.cmp(&b.z_index).then(a.y.cmp(&b.y))
+        });
         dl
     }
 
@@ -228,11 +244,34 @@ impl DisplayList {
 
             let draw_y = cmd.y - tile_y_start;
 
+            // Apply clip rect if present (from overflow:hidden parents).
+            let (cx, cy, cw, ch) = if let Some((clip_x, clip_y, clip_w, clip_h)) = cmd.clip {
+                // Clip rect is in document coordinates — adjust for tile offset.
+                let clip_draw_y = clip_y - tile_y_start;
+                // Intersect command rect with clip rect.
+                let x0 = cmd.x.max(clip_x);
+                let y0 = draw_y.max(clip_draw_y);
+                let x1 = (cmd.x + cmd.w).min(clip_x + clip_w);
+                let y1 = (draw_y + cmd.h).min(clip_draw_y + clip_h);
+                if x1 <= x0 || y1 <= y0 { continue; } // fully clipped
+                (x0, y0, x1 - x0, y1 - y0)
+            } else {
+                (cmd.x, draw_y, cmd.w, cmd.h)
+            };
+
             match &cmd.kind {
                 DrawKind::Rect { color } => {
-                    fill_rect_buf(buf, stride, buf_h, cmd.x, draw_y, cmd.w, cmd.h, *color);
+                    fill_rect_buf(buf, stride, buf_h, cx, cy, cw, ch, *color);
+                }
+                DrawKind::RoundedRect { color, radii } => {
+                    fill_rounded_rect_buf(buf, stride, buf_h, cx, cy, cw, ch, *color, *radii);
+                }
+                DrawKind::DashedLine { color, dash_len, gap_len, vertical } => {
+                    fill_dashed_buf(buf, stride, buf_h, cx, cy, cw, ch, *color, *dash_len, *gap_len, *vertical);
                 }
                 DrawKind::Text { color, font_id, font_size, text } => {
+                    // Text clipping is harder — for now, draw at original position
+                    // (the fill_rect clipping handles most visual cases).
                     libfont_client::draw_string_buf(
                         buf, stride, buf_h,
                         cmd.x, draw_y,
@@ -240,12 +279,13 @@ impl DisplayList {
                         text,
                     );
                 }
-                DrawKind::Image { src } => {
+                DrawKind::Image { src, object_fit } => {
                     if let Some(entry) = images.get_ref(src) {
-                        blit_image_buf(
+                        blit_image_scaled(
                             buf, stride, buf_h,
-                            cmd.x, draw_y, cmd.w, cmd.h,
+                            cx, cy, cw, ch,
                             &entry.pixels, entry.width, entry.height,
+                            *object_fit,
                         );
                     }
                 }
@@ -260,15 +300,107 @@ impl DisplayList {
         }
 
         let abs_x = if bx.is_fixed { bx.x } else { offset_x + bx.x };
+        // For sticky elements, record the natural flow position.  The tile
+        // rasterizer will clamp the Y at render time based on scroll offset.
+        // For the display list, we store the natural position (same as static).
         let abs_y = if bx.is_fixed { bx.y } else { offset_y + bx.y };
+
+        // Set z-index for this stacking context.
+        let prev_z = self.current_z;
+        if bx.z_index != 0 {
+            self.current_z = bx.z_index;
+        }
+
+        // Check if we have border-radius.
+        let has_radius = bx.border_top_left_radius > 0 || bx.border_top_right_radius > 0
+            || bx.border_bottom_right_radius > 0 || bx.border_bottom_left_radius > 0;
+        let radii = [bx.border_top_left_radius, bx.border_top_right_radius,
+                     bx.border_bottom_right_radius, bx.border_bottom_left_radius];
+
+        // Box shadows (behind the background, outer shadows only).
+        for shadow in &bx.box_shadows {
+            if !shadow.inset {
+                let sx = abs_x + shadow.offset_x - shadow.spread;
+                let sy = abs_y + shadow.offset_y - shadow.spread;
+                let sw = bx.width + shadow.spread * 2;
+                let sh = bx.height + shadow.spread * 2;
+                // Multi-pass blur approximation: draw progressively larger/fainter rects.
+                if shadow.blur > 0 {
+                    let steps = (shadow.blur / 2).max(1).min(6);
+                    for s in 0..steps {
+                        let ext = (s + 1) * shadow.blur / steps;
+                        let alpha_frac = 255 / (steps + 1) / (s + 1);
+                        let c = alpha_blend(shadow.color, alpha_frac as u32);
+                        self.push(sx - ext, sy - ext, sw + ext * 2, sh + ext * 2,
+                            DrawKind::Rect { color: c });
+                    }
+                }
+                if has_radius {
+                    self.push(sx, sy, sw, sh,
+                        DrawKind::RoundedRect { color: shadow.color, radii });
+                } else {
+                    self.push(sx, sy, sw, sh, DrawKind::Rect { color: shadow.color });
+                }
+            }
+        }
 
         // Background.
         if bx.bg_color != 0 && bx.bg_color != 0x00000000 {
-            self.push(abs_x, abs_y, bx.width, bx.height, DrawKind::Rect { color: bx.bg_color });
+            if has_radius {
+                self.push(abs_x, abs_y, bx.width, bx.height,
+                    DrawKind::RoundedRect { color: bx.bg_color, radii });
+            } else {
+                self.push(abs_x, abs_y, bx.width, bx.height, DrawKind::Rect { color: bx.bg_color });
+            }
         }
 
-        // Border (4 edges).
-        if bx.border_width > 0 && bx.border_color != 0 && bx.border_color != 0x00000000 {
+        // Background image / gradient.
+        self.emit_background_image(abs_x, abs_y, bx);
+
+        // Inset box shadows (inside the background).
+        for shadow in &bx.box_shadows {
+            if shadow.inset {
+                let s = shadow.spread.max(1);
+                let c = shadow.color;
+                self.push(abs_x, abs_y, bx.width, s, DrawKind::Rect { color: c });
+                self.push(abs_x, abs_y + bx.height - s, bx.width, s, DrawKind::Rect { color: c });
+                self.push(abs_x, abs_y + s, s, (bx.height - s * 2).max(0), DrawKind::Rect { color: c });
+                self.push(abs_x + bx.width - s, abs_y + s, s, (bx.height - s * 2).max(0), DrawKind::Rect { color: c });
+            }
+        }
+
+        // Per-side borders (litehtml-style: each side can have different width/color/style).
+        let has_per_side = bx.border_top_width > 0 || bx.border_right_width > 0
+            || bx.border_bottom_width > 0 || bx.border_left_width > 0;
+        if has_per_side {
+            let w = bx.width;
+            let h = bx.height;
+            // Determine border styles from the node style (fallback: Solid).
+            let (ts, rs, bs, ls) = self.border_styles_for(bx);
+            // Top border
+            if bx.border_top_width > 0 && bx.border_top_color != 0 {
+                self.emit_border_edge(abs_x, abs_y, w, bx.border_top_width,
+                    bx.border_top_color, ts, false);
+            }
+            // Bottom border
+            if bx.border_bottom_width > 0 && bx.border_bottom_color != 0 {
+                self.emit_border_edge(abs_x, abs_y + h - bx.border_bottom_width, w, bx.border_bottom_width,
+                    bx.border_bottom_color, bs, false);
+            }
+            // Left border
+            if bx.border_left_width > 0 && bx.border_left_color != 0 {
+                let inner_h = (h - bx.border_top_width - bx.border_bottom_width).max(0);
+                self.emit_border_edge(abs_x, abs_y + bx.border_top_width, bx.border_left_width, inner_h,
+                    bx.border_left_color, ls, true);
+            }
+            // Right border
+            if bx.border_right_width > 0 && bx.border_right_color != 0 {
+                let inner_h = (h - bx.border_top_width - bx.border_bottom_width).max(0);
+                self.emit_border_edge(abs_x + w - bx.border_right_width, abs_y + bx.border_top_width,
+                    bx.border_right_width, inner_h, bx.border_right_color, rs, true);
+            }
+        } else if bx.border_width > 0 && bx.border_color != 0 && bx.border_color != 0x00000000 {
+            // Fallback: unified border (legacy path)
             let bw = bx.border_width;
             let w = bx.width;
             let h = bx.height;
@@ -295,23 +427,44 @@ impl DisplayList {
         // Text fragment.
         if let Some(ref text) = bx.text {
             if !text.is_empty() && bx.form_field.is_none() {
-                let font_id = if bx.bold { 1u32 } else if bx.italic { 3u32 } else { 0u32 };
+                let font_id = if bx.custom_font_id != 0 {
+                    bx.custom_font_id
+                } else if bx.bold { 1u32 } else if bx.italic { 3u32 } else { 0u32 };
                 let font_size = bx.font_size.max(1) as u16;
                 let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
+
+                // Text shadows (behind the text).
+                for ts in &bx.text_shadows {
+                    self.push(abs_x + ts.offset_x, abs_y + ts.offset_y, bx.width, bx.height,
+                        DrawKind::Text { color: ts.color, font_id, font_size, text: text.clone() });
+                }
 
                 self.push(abs_x, abs_y, bx.width, bx.height,
                     DrawKind::Text { color, font_id, font_size, text: text.clone() });
 
-                // Underline.
-                if bx.text_decoration == TextDeco::Underline || bx.link_url.is_some() {
-                    self.push(abs_x, abs_y + bx.height - 1, bx.width, 1,
-                        DrawKind::Rect { color });
+                // Text decorations with sub-property support.
+                let deco_color = if bx.text_decoration_color != 0 { bx.text_decoration_color } else { color };
+                let deco_thick = if bx.text_decoration_thickness > 0 { bx.text_decoration_thickness } else { 1 };
+                let deco_offset = bx.text_underline_offset;
+
+                // Overline.
+                if bx.text_decoration == TextDeco::Overline {
+                    self.emit_text_deco_line(abs_x, abs_y, bx.width, deco_thick,
+                        deco_color, bx.text_decoration_style);
+                }
+
+                // Underline — only if text-decoration says so (not just because it's a link).
+                // Per CSS spec, `text-decoration: none` on a link suppresses the underline.
+                if bx.text_decoration == TextDeco::Underline {
+                    let y_pos = abs_y + bx.height - deco_thick + deco_offset;
+                    self.emit_text_deco_line(abs_x, y_pos, bx.width, deco_thick,
+                        deco_color, bx.text_decoration_style);
                 }
 
                 // Line-through.
                 if bx.text_decoration == TextDeco::LineThrough {
-                    self.push(abs_x, abs_y + bx.height / 2, bx.width, 1,
-                        DrawKind::Rect { color });
+                    self.emit_text_deco_line(abs_x, abs_y + bx.height / 2, bx.width, deco_thick,
+                        deco_color, bx.text_decoration_style);
                 }
             }
         }
@@ -320,7 +473,7 @@ impl DisplayList {
         if let Some(ref src) = bx.image_src {
             let dw = bx.image_width.unwrap_or(bx.width);
             let dh = bx.image_height.unwrap_or(bx.height);
-            self.push(abs_x, abs_y, dw, dh, DrawKind::Image { src: src.clone() });
+            self.push(abs_x, abs_y, dw, dh, DrawKind::Image { src: src.clone(), object_fit: bx.object_fit });
         }
 
         // Submit/button pixel drawing.
@@ -330,10 +483,265 @@ impl DisplayList {
             }
         }
 
-        // Recurse into children.
+        // Outline (drawn outside the border box).
+        if bx.outline_width > 0 && bx.outline_color != 0 {
+            let ow = bx.outline_width;
+            let off = bx.outline_offset;
+            let ox = abs_x - ow - off;
+            let oy = abs_y - ow - off;
+            let ow_total = bx.width + (ow + off) * 2;
+            let oh_total = bx.height + (ow + off) * 2;
+            // Top
+            self.push(ox, oy, ow_total, ow, DrawKind::Rect { color: bx.outline_color });
+            // Bottom
+            self.push(ox, oy + oh_total - ow, ow_total, ow, DrawKind::Rect { color: bx.outline_color });
+            // Left
+            let inner_h = (oh_total - ow * 2).max(0);
+            self.push(ox, oy + ow, ow, inner_h, DrawKind::Rect { color: bx.outline_color });
+            // Right
+            self.push(ox + ow_total - ow, oy + ow, ow, inner_h, DrawKind::Rect { color: bx.outline_color });
+        }
+
+        // Recurse into children, with optional clip rect for overflow:hidden.
+        let pushed_clip = if bx.overflow_hidden && bx.width > 0 && bx.height > 0 {
+            // Intersect with any existing clip rect.
+            let new_clip = (abs_x, abs_y, bx.width, bx.height);
+            let clip = if let Some(&(cx, cy, cw, ch)) = self.clip_stack.last() {
+                let x0 = abs_x.max(cx);
+                let y0 = abs_y.max(cy);
+                let x1 = (abs_x + bx.width).min(cx + cw);
+                let y1 = (abs_y + bx.height).min(cy + ch);
+                if x1 > x0 && y1 > y0 {
+                    (x0, y0, x1 - x0, y1 - y0)
+                } else {
+                    (0, 0, 0, 0) // fully clipped
+                }
+            } else {
+                new_clip
+            };
+            self.clip_stack.push(clip);
+            true
+        } else {
+            false
+        };
+
         for child in &bx.children {
             let (cx, cy) = if bx.is_fixed { (bx.x, bx.y) } else { (abs_x, abs_y) };
             self.flatten(child, cx, cy);
+        }
+
+        if pushed_clip {
+            self.clip_stack.pop();
+        }
+
+        // Restore previous z-index.
+        self.current_z = prev_z;
+    }
+
+    /// Emit a border edge with the given style (solid/dashed/dotted).
+    fn emit_border_edge(&mut self, x: i32, y: i32, w: i32, h: i32,
+                        color: u32, style: crate::style::BorderStyleVal, vertical: bool) {
+        use crate::style::BorderStyleVal;
+        match style {
+            BorderStyleVal::Dashed => {
+                // Dashed: dash_len = 3 * border_width, gap = same
+                let bw = if vertical { w } else { h };
+                let dash = (bw * 3).max(3);
+                self.push(x, y, w, h,
+                    DrawKind::DashedLine { color, dash_len: dash, gap_len: dash, vertical });
+            }
+            BorderStyleVal::Dotted => {
+                // Dotted: dash = border_width (square dots), gap = border_width
+                let bw = if vertical { w } else { h };
+                let dot = bw.max(1);
+                self.push(x, y, w, h,
+                    DrawKind::DashedLine { color, dash_len: dot, gap_len: dot, vertical });
+            }
+            BorderStyleVal::Double => {
+                // Double: two lines with a gap in between.
+                let bw = if vertical { w } else { h };
+                let line_w = (bw / 3).max(1);
+                if vertical {
+                    // Two vertical lines, left and right of the border area.
+                    self.push(x, y, line_w, h, DrawKind::Rect { color });
+                    self.push(x + w - line_w, y, line_w, h, DrawKind::Rect { color });
+                } else {
+                    // Two horizontal lines, top and bottom of the border area.
+                    self.push(x, y, w, line_w, DrawKind::Rect { color });
+                    self.push(x, y + h - line_w, w, line_w, DrawKind::Rect { color });
+                }
+            }
+            BorderStyleVal::Groove => {
+                // Groove: 3D inset effect — dark top-left, light bottom-right.
+                let half = if vertical { w / 2 } else { h / 2 };
+                let half = half.max(1);
+                let dark = darken_color(color, 60);
+                let light = lighten_color(color, 60);
+                if vertical {
+                    self.push(x, y, half, h, DrawKind::Rect { color: dark });
+                    self.push(x + half, y, w - half, h, DrawKind::Rect { color: light });
+                } else {
+                    self.push(x, y, w, half, DrawKind::Rect { color: dark });
+                    self.push(x, y + half, w, h - half, DrawKind::Rect { color: light });
+                }
+            }
+            BorderStyleVal::Ridge => {
+                // Ridge: opposite of groove.
+                let half = if vertical { w / 2 } else { h / 2 };
+                let half = half.max(1);
+                let dark = darken_color(color, 60);
+                let light = lighten_color(color, 60);
+                if vertical {
+                    self.push(x, y, half, h, DrawKind::Rect { color: light });
+                    self.push(x + half, y, w - half, h, DrawKind::Rect { color: dark });
+                } else {
+                    self.push(x, y, w, half, DrawKind::Rect { color: light });
+                    self.push(x, y + half, w, h - half, DrawKind::Rect { color: dark });
+                }
+            }
+            BorderStyleVal::Inset => {
+                let dark = darken_color(color, 80);
+                self.push(x, y, w, h, DrawKind::Rect { color: dark });
+            }
+            BorderStyleVal::Outset => {
+                let light = lighten_color(color, 80);
+                self.push(x, y, w, h, DrawKind::Rect { color: light });
+            }
+            BorderStyleVal::None | BorderStyleVal::Hidden => {}
+            _ => {
+                // Solid (default)
+                self.push(x, y, w, h, DrawKind::Rect { color });
+            }
+        }
+    }
+
+    /// Get per-side border styles from the LayoutBox.
+    fn border_styles_for(&self, bx: &LayoutBox) -> (crate::style::BorderStyleVal, crate::style::BorderStyleVal,
+                                                     crate::style::BorderStyleVal, crate::style::BorderStyleVal) {
+        use crate::style::BorderStyleVal;
+        let fallback = BorderStyleVal::Solid;
+        let ts = if bx.border_top_style != BorderStyleVal::None { bx.border_top_style } else { fallback };
+        let rs = if bx.border_right_style != BorderStyleVal::None { bx.border_right_style } else { fallback };
+        let bs = if bx.border_bottom_style != BorderStyleVal::None { bx.border_bottom_style } else { fallback };
+        let ls = if bx.border_left_style != BorderStyleVal::None { bx.border_left_style } else { fallback };
+        (ts, rs, bs, ls)
+    }
+
+    /// Emit draw commands for a linear gradient background.
+    /// Emit a text decoration line (underline/overline/line-through) with style support.
+    fn emit_text_deco_line(&mut self, x: i32, y: i32, w: i32, thickness: i32,
+                           color: u32, style: crate::style::TextDecorationStyle) {
+        use crate::style::TextDecorationStyle;
+        match style {
+            TextDecorationStyle::Solid => {
+                self.push(x, y, w, thickness, DrawKind::Rect { color });
+            }
+            TextDecorationStyle::Double => {
+                let t = thickness.max(1);
+                self.push(x, y, w, t, DrawKind::Rect { color });
+                self.push(x, y + t * 2, w, t, DrawKind::Rect { color });
+            }
+            TextDecorationStyle::Dotted => {
+                self.push(x, y, w, thickness,
+                    DrawKind::DashedLine { color, dash_len: thickness, gap_len: thickness, vertical: false });
+            }
+            TextDecorationStyle::Dashed => {
+                let dash = (thickness * 3).max(3);
+                self.push(x, y, w, thickness,
+                    DrawKind::DashedLine { color, dash_len: dash, gap_len: dash, vertical: false });
+            }
+            TextDecorationStyle::Wavy => {
+                // Approximate wavy as alternating up/down segments.
+                let wave_len = (thickness * 4).max(4);
+                let half = wave_len / 2;
+                let mut pos = 0;
+                while pos < w {
+                    let seg = half.min(w - pos);
+                    // Up segment
+                    self.push(x + pos, y - thickness, seg, thickness, DrawKind::Rect { color });
+                    pos += half;
+                    if pos >= w { break; }
+                    let seg = half.min(w - pos);
+                    // Down segment
+                    self.push(x + pos, y + thickness, seg, thickness, DrawKind::Rect { color });
+                    pos += half;
+                }
+            }
+        }
+    }
+
+    fn emit_background_image(&mut self, abs_x: i32, abs_y: i32, bx: &LayoutBox) {
+        use crate::style::BackgroundImageVal;
+        match &bx.background_image {
+            BackgroundImageVal::LinearGradient { angle_deg, stops } => {
+                if stops.len() < 2 || bx.width <= 0 || bx.height <= 0 {
+                    return;
+                }
+                let angle = *angle_deg;
+                let is_horizontal = angle == 90 || angle == 270;
+                let is_vertical = angle == 0 || angle == 180;
+
+                if is_horizontal || is_vertical {
+                    // Fast path: axis-aligned gradients rendered as stripe rects.
+                    let dimension = if is_horizontal { bx.width } else { bx.height };
+                    let stripe_count = dimension.min(64).max(2);
+                    let stripe_size = dimension / stripe_count;
+                    if stripe_size <= 0 { return; }
+
+                    let reversed = angle == 270 || angle == 0;
+                    for i in 0..stripe_count {
+                        let t_raw = i * 10000 / stripe_count;
+                        let t = if reversed { 10000 - t_raw } else { t_raw };
+                        let color = interpolate_gradient_color(stops, t);
+
+                        if is_horizontal {
+                            let sx = abs_x + i * stripe_size;
+                            let sw = if i == stripe_count - 1 { bx.width - i * stripe_size } else { stripe_size };
+                            self.push(sx, abs_y, sw, bx.height, DrawKind::Rect { color });
+                        } else {
+                            let sy = abs_y + i * stripe_size;
+                            let sh = if i == stripe_count - 1 { bx.height - i * stripe_size } else { stripe_size };
+                            self.push(abs_x, sy, bx.width, sh, DrawKind::Rect { color });
+                        }
+                    }
+                } else {
+                    // Diagonal gradient: decompose into scanline stripes.
+                    // Project each scanline position onto the gradient axis.
+                    // Gradient direction vector from angle (CSS angles: 0=up, 90=right, 180=down).
+                    let rad = (angle as f32 - 90.0) * core::f32::consts::PI / 180.0;
+                    let dx = cos_approx(rad);
+                    let dy = sin_approx(rad);
+                    // Gradient length = projection of the rect diagonal onto the direction.
+                    let w_f = bx.width as f32;
+                    let h_f = bx.height as f32;
+                    let half_w = w_f / 2.0;
+                    let half_h = h_f / 2.0;
+                    let grad_len = (dx.abs() * w_f + dy.abs() * h_f).max(1.0);
+
+                    // Render as horizontal scan-line stripes, max 64 for perf.
+                    let stripe_count = bx.height.min(64).max(2);
+                    let stripe_h = bx.height / stripe_count;
+                    if stripe_h <= 0 { return; }
+
+                    for i in 0..stripe_count {
+                        let cy = (i * bx.height / stripe_count) as f32 + stripe_h as f32 / 2.0 - half_h;
+                        let cx = 0.0_f32; // center of scanline
+                        let proj = (cx * dx + cy * dy) / grad_len + 0.5;
+                        let t = (proj * 10000.0).max(0.0).min(10000.0) as i32;
+                        let color = interpolate_gradient_color(stops, t);
+                        let sy = abs_y + i * stripe_h;
+                        let sh = if i == stripe_count - 1 { bx.height - i * stripe_h } else { stripe_h };
+                        self.push(abs_x, sy, bx.width, sh, DrawKind::Rect { color });
+                    }
+                }
+            }
+            BackgroundImageVal::Url(ref src) => {
+                if !src.is_empty() {
+                    self.push(abs_x, abs_y, bx.width, bx.height,
+                        DrawKind::Image { src: src.clone(), object_fit: bx.object_fit });
+                }
+            }
+            _ => {}
         }
     }
 
@@ -363,7 +771,9 @@ impl DisplayList {
     #[inline]
     fn push(&mut self, x: i32, y: i32, w: i32, h: i32, kind: DrawKind) {
         if h > self.max_h { self.max_h = h; }
-        self.cmds.push(DrawCmd { x, y, w, h, kind });
+        let clip = self.clip_stack.last().copied();
+        let z_index = self.current_z;
+        self.cmds.push(DrawCmd { x, y, w, h, kind, clip, z_index });
     }
 }
 
@@ -1054,4 +1464,271 @@ fn blit_image_buf(
             }
         }
     }
+}
+
+/// Blit image with object-fit semantics.
+fn blit_image_scaled(
+    buf: *mut u32, stride: u32, buf_h: u32,
+    dx: i32, dy: i32, dw: i32, dh: i32,
+    src: &[u32], src_w: u32, src_h: u32,
+    fit: crate::style::ObjectFit,
+) {
+    use crate::style::ObjectFit;
+    if dw <= 0 || dh <= 0 || src.is_empty() || src_w == 0 || src_h == 0 {
+        return;
+    }
+    match fit {
+        ObjectFit::Fill => {
+            // Stretch to fill (default, same as original blit).
+            blit_image_buf(buf, stride, buf_h, dx, dy, dw, dh, src, src_w, src_h);
+        }
+        ObjectFit::Contain | ObjectFit::ScaleDown => {
+            // Scale to fit inside, preserving aspect ratio.
+            let sw = src_w as i64;
+            let sh = src_h as i64;
+            let dw64 = dw as i64;
+            let dh64 = dh as i64;
+            let (fw, fh) = if sw * dh64 > sh * dw64 {
+                // Width-limited.
+                (dw, (sh * dw64 / sw).max(1) as i32)
+            } else {
+                // Height-limited.
+                ((sw * dh64 / sh).max(1) as i32, dh)
+            };
+            let ox = dx + (dw - fw) / 2;
+            let oy = dy + (dh - fh) / 2;
+            blit_image_buf(buf, stride, buf_h, ox, oy, fw, fh, src, src_w, src_h);
+        }
+        ObjectFit::Cover => {
+            // Scale to cover, preserving aspect ratio (may crop).
+            let sw = src_w as i64;
+            let sh = src_h as i64;
+            let dw64 = dw as i64;
+            let dh64 = dh as i64;
+            let (fw, fh) = if sw * dh64 < sh * dw64 {
+                (dw, (sh * dw64 / sw).max(1) as i32)
+            } else {
+                ((sw * dh64 / sh).max(1) as i32, dh)
+            };
+            let ox = dx + (dw - fw) / 2;
+            let oy = dy + (dh - fh) / 2;
+            blit_image_buf(buf, stride, buf_h, ox, oy, fw, fh, src, src_w, src_h);
+        }
+        ObjectFit::None => {
+            // Render at natural size, centered.
+            let nw = src_w as i32;
+            let nh = src_h as i32;
+            let ox = dx + (dw - nw) / 2;
+            let oy = dy + (dh - nh) / 2;
+            blit_image_buf(buf, stride, buf_h, ox, oy, nw, nh, src, src_w, src_h);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gradient and shadow helpers
+// ---------------------------------------------------------------------------
+
+/// Interpolate a color along a gradient at position `t` (0..10000).
+fn interpolate_gradient_color(stops: &[crate::style::GradientStop], t: i32) -> u32 {
+    if stops.is_empty() { return 0xFF000000; }
+    if stops.len() == 1 { return stops[0].color; }
+
+    // Find the two stops that bracket `t`.
+    let t_clamped = t.max(0).min(10000);
+    let mut prev = &stops[0];
+    for stop in &stops[1..] {
+        if stop.position >= t_clamped {
+            // Interpolate between prev and stop.
+            let range = stop.position - prev.position;
+            if range <= 0 { return stop.color; }
+            let frac = ((t_clamped - prev.position) * 255 / range) as u32;
+            return lerp_color(prev.color, stop.color, frac);
+        }
+        prev = stop;
+    }
+    stops.last().map(|s| s.color).unwrap_or(0xFF000000)
+}
+
+/// Linear interpolation between two ARGB colors. `frac` is 0..255.
+fn lerp_color(c0: u32, c1: u32, frac: u32) -> u32 {
+    let inv = 255 - frac;
+    let a = (((c0 >> 24) & 0xFF) * inv + ((c1 >> 24) & 0xFF) * frac) / 255;
+    let r = (((c0 >> 16) & 0xFF) * inv + ((c1 >> 16) & 0xFF) * frac) / 255;
+    let g = (((c0 >> 8)  & 0xFF) * inv + ((c1 >> 8)  & 0xFF) * frac) / 255;
+    let b = (( c0        & 0xFF) * inv + ( c1        & 0xFF) * frac) / 255;
+    (a << 24) | (r << 16) | (g << 8) | b
+}
+
+/// Apply an alpha value (0..255) to an existing color.
+fn alpha_blend(color: u32, alpha: u32) -> u32 {
+    let existing_a = (color >> 24) & 0xFF;
+    let new_a = (existing_a * alpha / 255).min(255);
+    (new_a << 24) | (color & 0x00FFFFFF)
+}
+
+/// Darken a color by a percentage (0..100).
+fn darken_color(color: u32, amount: u32) -> u32 {
+    let a = (color >> 24) & 0xFF;
+    let r = ((color >> 16) & 0xFF) * (100 - amount) / 100;
+    let g = ((color >> 8) & 0xFF) * (100 - amount) / 100;
+    let b = (color & 0xFF) * (100 - amount) / 100;
+    (a << 24) | (r << 16) | (g << 8) | b
+}
+
+/// Lighten a color by a percentage (0..100).
+fn lighten_color(color: u32, amount: u32) -> u32 {
+    let a = (color >> 24) & 0xFF;
+    let r = (((color >> 16) & 0xFF) + (255 - ((color >> 16) & 0xFF)) * amount / 100).min(255);
+    let g = (((color >> 8) & 0xFF) + (255 - ((color >> 8) & 0xFF)) * amount / 100).min(255);
+    let b = ((color & 0xFF) + (255 - (color & 0xFF)) * amount / 100).min(255);
+    (a << 24) | (r << 16) | (g << 8) | b
+}
+
+// ---------------------------------------------------------------------------
+// Rounded rectangle rendering
+// ---------------------------------------------------------------------------
+
+/// Fill a rounded rectangle. `radii` = [top-left, top-right, bottom-right, bottom-left].
+/// Uses a simple per-pixel distance check against corner circles.
+fn fill_rounded_rect_buf(
+    buf: *mut u32, stride: u32, buf_h: u32,
+    x: i32, y: i32, w: i32, h: i32,
+    color: u32, radii: [i32; 4],
+) {
+    if w <= 0 || h <= 0 || buf.is_null() { return; }
+    let s = stride as i32;
+    let bh = buf_h as i32;
+
+    let x0 = x.max(0);
+    let y0 = y.max(0);
+    let x1 = (x + w).min(s);
+    let y1 = (y + h).min(bh);
+    if x0 >= x1 || y0 >= y1 { return; }
+
+    let alpha = (color >> 24) & 0xFF;
+    if alpha == 0 { return; }
+
+    let [rtl, rtr, rbr, rbl] = radii;
+
+    unsafe {
+        for row in y0..y1 {
+            let ry = row - y; // relative y within rect
+            let offset = row as usize * stride as usize;
+            for col in x0..x1 {
+                let rx = col - x; // relative x within rect
+
+                // Check if this pixel falls inside a rounded corner.
+                let inside = is_inside_rounded_rect(rx, ry, w, h, rtl, rtr, rbr, rbl);
+                if !inside { continue; }
+
+                let dst_idx = offset + col as usize;
+                if alpha >= 255 {
+                    *buf.add(dst_idx) = color;
+                } else {
+                    let dst = *buf.add(dst_idx);
+                    let inv_a = 255 - alpha;
+                    let r = (((color >> 16) & 0xFF) * alpha + ((dst >> 16) & 0xFF) * inv_a) / 255;
+                    let g = (((color >> 8) & 0xFF) * alpha + ((dst >> 8) & 0xFF) * inv_a) / 255;
+                    let b = ((color & 0xFF) * alpha + (dst & 0xFF) * inv_a) / 255;
+                    *buf.add(dst_idx) = 0xFF000000 | (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+    }
+}
+
+/// Check if point (px, py) relative to rect origin is inside a rounded rect.
+#[inline]
+fn is_inside_rounded_rect(px: i32, py: i32, w: i32, h: i32,
+                          rtl: i32, rtr: i32, rbr: i32, rbl: i32) -> bool {
+    // Top-left corner
+    if px < rtl && py < rtl {
+        let dx = rtl - px;
+        let dy = rtl - py;
+        return dx * dx + dy * dy <= rtl * rtl;
+    }
+    // Top-right corner
+    if px >= w - rtr && py < rtr {
+        let dx = px - (w - rtr - 1);
+        let dy = rtr - py;
+        return dx * dx + dy * dy <= rtr * rtr;
+    }
+    // Bottom-right corner
+    if px >= w - rbr && py >= h - rbr {
+        let dx = px - (w - rbr - 1);
+        let dy = py - (h - rbr - 1);
+        return dx * dx + dy * dy <= rbr * rbr;
+    }
+    // Bottom-left corner
+    if px < rbl && py >= h - rbl {
+        let dx = rbl - px;
+        let dy = py - (h - rbl - 1);
+        return dx * dx + dy * dy <= rbl * rbl;
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Dashed / dotted border rendering
+// ---------------------------------------------------------------------------
+
+/// Fill a dashed/dotted line pattern within the given rect.
+fn fill_dashed_buf(
+    buf: *mut u32, stride: u32, buf_h: u32,
+    x: i32, y: i32, w: i32, h: i32,
+    color: u32, dash_len: i32, gap_len: i32, vertical: bool,
+) {
+    if w <= 0 || h <= 0 || buf.is_null() || dash_len <= 0 { return; }
+    let cycle = dash_len + gap_len;
+    if cycle <= 0 { return; }
+
+    if vertical {
+        // Vertical dashed line: iterate along height, fill dash segments.
+        let mut pos = 0;
+        while pos < h {
+            let seg_len = dash_len.min(h - pos);
+            if seg_len > 0 {
+                fill_rect_buf(buf, stride, buf_h, x, y + pos, w, seg_len, color);
+            }
+            pos += cycle;
+        }
+    } else {
+        // Horizontal dashed line: iterate along width, fill dash segments.
+        let mut pos = 0;
+        while pos < w {
+            let seg_len = dash_len.min(w - pos);
+            if seg_len > 0 {
+                fill_rect_buf(buf, stride, buf_h, x + pos, y, seg_len, h, color);
+            }
+            pos += cycle;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trig approximations (no_std)
+// ---------------------------------------------------------------------------
+
+/// Sine approximation using Bhaskara I's formula. Input in radians.
+fn sin_approx(x: f32) -> f32 {
+    // Normalize to [0, 2*PI)
+    let pi = core::f32::consts::PI;
+    let two_pi = 2.0 * pi;
+    let mut a = x % two_pi;
+    if a < 0.0 { a += two_pi; }
+
+    let sign = if a > pi { a -= pi; -1.0 } else { 1.0 };
+
+    // Bhaskara I approximation for [0, PI]:
+    // sin(x) ≈ 16x(PI-x) / (5*PI^2 - 4x(PI-x))
+    let num = 16.0 * a * (pi - a);
+    let den = 5.0 * pi * pi - 4.0 * a * (pi - a);
+    if den.abs() < 0.001 { return 0.0; }
+    sign * num / den
+}
+
+/// Cosine approximation: cos(x) = sin(x + PI/2).
+fn cos_approx(x: f32) -> f32 {
+    sin_approx(x + core::f32::consts::FRAC_PI_2)
 }

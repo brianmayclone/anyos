@@ -23,6 +23,7 @@ use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
     ComputedStyle, Display, FontWeight, FontStyleVal, TextAlignVal,
     ListStyle, TextDeco, TextTransform, FloatVal, Position, ClearVal,
+    PseudoStyles,
 };
 use crate::ImageCache;
 
@@ -79,6 +80,65 @@ pub struct LayoutBox {
     /// If true, this box is `position:fixed` and its x/y are viewport-relative.
     /// The renderer will ignore accumulated parent offsets and use x/y directly.
     pub is_fixed: bool,
+    /// Per-side border widths (litehtml-style).
+    pub border_top_width: i32,
+    pub border_right_width: i32,
+    pub border_bottom_width: i32,
+    pub border_left_width: i32,
+    /// Per-side border colors.
+    pub border_top_color: u32,
+    pub border_right_color: u32,
+    pub border_bottom_color: u32,
+    pub border_left_color: u32,
+    /// Per-corner radii.
+    pub border_top_left_radius: i32,
+    pub border_top_right_radius: i32,
+    pub border_bottom_right_radius: i32,
+    pub border_bottom_left_radius: i32,
+    /// Outline.
+    pub outline_width: i32,
+    pub outline_color: u32,
+    pub outline_offset: i32,
+    /// Box shadows.
+    pub box_shadows: Vec<crate::style::BoxShadowVal>,
+    /// Text shadows.
+    pub text_shadows: Vec<crate::style::TextShadowVal>,
+    /// Text overflow mode.
+    pub text_overflow_ellipsis: bool,
+    /// Background image / gradient.
+    pub background_image: crate::style::BackgroundImageVal,
+    pub background_size: crate::style::BackgroundSizeVal,
+    pub background_repeat: crate::style::BackgroundRepeatVal,
+    /// Letter spacing (px).
+    pub letter_spacing: i32,
+    /// Z-index for stacking context.
+    pub z_index: i32,
+    /// Per-side border styles.
+    pub border_top_style: crate::style::BorderStyleVal,
+    pub border_right_style: crate::style::BorderStyleVal,
+    pub border_bottom_style: crate::style::BorderStyleVal,
+    pub border_left_style: crate::style::BorderStyleVal,
+    /// CSS filter effects.
+    pub filter: crate::style::FilterVal,
+    /// Clip path.
+    pub clip_path: crate::style::ClipPathVal,
+    /// Text decoration color (0 = use text color).
+    pub text_decoration_color: u32,
+    /// Text decoration style.
+    pub text_decoration_style: crate::style::TextDecorationStyle,
+    /// Text decoration thickness (0 = auto).
+    pub text_decoration_thickness: i32,
+    /// Text underline offset (0 = auto).
+    pub text_underline_offset: i32,
+    /// Object-fit for `<img>` elements.
+    pub object_fit: crate::style::ObjectFit,
+    /// Custom font ID from web fonts (0 = use system font based on bold/italic).
+    pub custom_font_id: u32,
+    /// If true, this box is `position:sticky` — the renderer should clamp its Y
+    /// position based on the scroll offset and `sticky_top`.
+    pub is_sticky: bool,
+    /// The `top` value for sticky positioning (distance from viewport top when stuck).
+    pub sticky_top: i32,
     /// Maximum Y extent of this subtree (relative to parent origin, like `y`).
     /// Computed by `compute_subtree_bottom()` after layout.  Used by the
     /// tile rasterizer to cull entire subtrees that are outside the tile.
@@ -155,6 +215,41 @@ impl LayoutBox {
             visibility_hidden: false,
             opacity: 255,
             is_fixed: false,
+            // Per-side borders
+            border_top_width: 0, border_right_width: 0,
+            border_bottom_width: 0, border_left_width: 0,
+            border_top_color: 0, border_right_color: 0,
+            border_bottom_color: 0, border_left_color: 0,
+            border_top_left_radius: 0, border_top_right_radius: 0,
+            border_bottom_right_radius: 0, border_bottom_left_radius: 0,
+            // Outline
+            outline_width: 0, outline_color: 0, outline_offset: 0,
+            // Shadows
+            box_shadows: Vec::new(),
+            text_shadows: Vec::new(),
+            // Text overflow
+            text_overflow_ellipsis: false,
+            // Background image
+            background_image: crate::style::BackgroundImageVal::None,
+            background_size: crate::style::BackgroundSizeVal::Auto,
+            background_repeat: crate::style::BackgroundRepeatVal::Repeat,
+            // Letter spacing
+            letter_spacing: 0,
+            z_index: 0,
+            border_top_style: crate::style::BorderStyleVal::None,
+            border_right_style: crate::style::BorderStyleVal::None,
+            border_bottom_style: crate::style::BorderStyleVal::None,
+            border_left_style: crate::style::BorderStyleVal::None,
+            filter: crate::style::FilterVal::none(),
+            clip_path: crate::style::ClipPathVal::None,
+            text_decoration_color: 0,
+            text_decoration_style: crate::style::TextDecorationStyle::Solid,
+            text_decoration_thickness: 0,
+            text_underline_offset: 0,
+            object_fit: crate::style::ObjectFit::Fill,
+            custom_font_id: 0,
+            is_sticky: false,
+            sticky_top: 0,
             subtree_bottom: 0,
         }
     }
@@ -340,7 +435,7 @@ pub(super) fn size_attr_width(dom: &Dom, node_id: NodeId, default: i32) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// Build a layout tree from the DOM and computed styles.
-pub fn layout(dom: &Dom, styles: &[ComputedStyle], viewport_width: i32, images: &ImageCache) -> LayoutBox {
+pub fn layout(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, viewport_width: i32, images: &ImageCache) -> LayoutBox {
     crate::debug_surf!("[layout] layout start: {} nodes, viewport_width={}", dom.nodes.len(), viewport_width);
     #[cfg(feature = "debug_surf")]
     crate::debug_surf!("[layout]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
@@ -367,9 +462,24 @@ pub fn layout(dom: &Dom, styles: &[ComputedStyle], viewport_width: i32, images: 
     let children = &dom.get(body_id).children;
     let child_ids: Vec<NodeId> = children.iter().copied().collect();
     crate::debug_surf!("[layout] body has {} direct children, content_width={}", child_ids.len(), content_width);
-    let height = layout_children(dom, styles, &child_ids, content_width, &mut root, body_id, images, viewport_width);
+
+    // Dispatch to the correct layout mode based on body's display property.
+    let height = if matches!(style.display, Display::Flex | Display::InlineFlex) {
+        flex::layout_flex(dom, styles, pseudo, &child_ids, content_width, &mut root, images, viewport_width)
+    } else if matches!(style.display, Display::Grid | Display::InlineGrid) {
+        grid::layout_grid(dom, styles, pseudo, &child_ids, content_width, &mut root, images, viewport_width)
+    } else {
+        layout_children(dom, styles, pseudo, &child_ids, content_width, &mut root, body_id, images, viewport_width)
+    };
 
     root.height = height + root.padding.top + root.padding.bottom;
+
+    // Debug: show layout tree summary
+    anyos_std::println!("[layout] root h={} children={}", root.height, root.children.len());
+    for (ci, child) in root.children.iter().enumerate() {
+        anyos_std::println!("[layout]   child[{}] y={} h={} w={} nid={:?} children={}",
+            ci, child.y, child.height, child.width, child.node_id, child.children.len());
+    }
 
     // Post-pass: compute subtree_bottom for tile rasterizer culling.
     compute_subtree_bottom(&mut root);
@@ -412,6 +522,7 @@ fn compute_subtree_bottom(bx: &mut LayoutBox) {
 pub(super) fn layout_children(
     dom: &Dom,
     styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
     child_ids: &[NodeId],
     available_width: i32,
     parent: &mut LayoutBox,
@@ -438,6 +549,16 @@ pub(super) fn layout_children(
             continue;
         }
 
+        // display: contents — skip the element box, promote children.
+        if style.display == Display::Contents {
+            let grandchildren: Vec<NodeId> = dom.get(cid).children.iter().copied().collect();
+            let h = layout_children(dom, styles, pseudo, &grandchildren, available_width,
+                parent, cid, images, viewport_w);
+            cursor_y += h;
+            i += 1;
+            continue;
+        }
+
         // Skip absolute/fixed from normal flow — position them after.
         if matches!(style.position, Position::Absolute | Position::Fixed) {
             deferred_abs.push(cid);
@@ -460,11 +581,11 @@ pub(super) fn layout_children(
 
             // ── Floated elements ──
             if float_val != FloatVal::None {
-                let stf_width = shrink_to_fit_width(dom, styles, cid, available_width, images, viewport_w);
+                let stf_width = shrink_to_fit_width(dom, styles, pseudo, cid, available_width, images, viewport_w);
                 let mut placed = if is_table_element(dom, cid) {
-                    table::layout_table(dom, styles, cid, stf_width, images, viewport_w)
+                    table::layout_table(dom, styles, pseudo, cid, stf_width, images, viewport_w)
                 } else {
-                    build_block(dom, styles, cid, stf_width, images, viewport_w)
+                    build_block(dom, styles, pseudo, cid, stf_width, images, viewport_w)
                 };
 
                 let total_w = placed.width + placed.margin.left + placed.margin.right;
@@ -501,9 +622,9 @@ pub(super) fn layout_children(
             let effective_avail = (available_width - li - ri).max(0);
 
             let child_box = if is_table_element(dom, cid) {
-                table::layout_table(dom, styles, cid, effective_avail, images, viewport_w)
+                table::layout_table(dom, styles, pseudo, cid, effective_avail, images, viewport_w)
             } else {
-                build_block(dom, styles, cid, effective_avail, images, viewport_w)
+                build_block(dom, styles, pseudo, cid, effective_avail, images, viewport_w)
             };
 
             let collapsed = if prev_margin_bottom > child_box.margin.top {
@@ -565,7 +686,7 @@ pub(super) fn layout_children(
             let parent_style = &styles[_parent_node];
             let parent_align = parent_style.text_align;
             let line_boxes = layout_inline_content(
-                dom, styles, &inline_ids, inline_avail, bw + parent.padding.left + li, images,
+                dom, styles, pseudo, &inline_ids, inline_avail, bw + parent.padding.left + li, images,
                 parent_align, parent_style.line_height, viewport_w,
             );
             for lb in line_boxes {
@@ -588,9 +709,9 @@ pub(super) fn layout_children(
         let sizing_width = if is_fixed_pos { viewport_w } else { available_width };
 
         let mut abs_box = if is_table_element(dom, abs_id) {
-            table::layout_table(dom, styles, abs_id, sizing_width, images, viewport_w)
+            table::layout_table(dom, styles, pseudo, abs_id, sizing_width, images, viewport_w)
         } else {
-            build_block(dom, styles, abs_id, sizing_width, images, viewport_w)
+            build_block(dom, styles, pseudo, abs_id, sizing_width, images, viewport_w)
         };
 
         if is_fixed_pos {
@@ -787,6 +908,7 @@ impl FloatContext {
 fn shrink_to_fit_width(
     dom: &Dom,
     styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
     node_id: NodeId,
     max_width: i32,
     images: &ImageCache,
@@ -798,7 +920,7 @@ fn shrink_to_fit_width(
         if w > 0 { return w.min(max_width); }
     }
     // Otherwise, lay out with max_width and use the resulting content width.
-    let trial = build_block(dom, styles, node_id, max_width, images, viewport_w);
+    let trial = build_block(dom, styles, pseudo, node_id, max_width, images, viewport_w);
     // Shrink-to-fit: use the content width (sum of children) capped at max_width.
     let content_w = trial.children.iter()
         .map(|c| c.x + c.width + c.margin.right)

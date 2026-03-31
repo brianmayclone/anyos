@@ -18,6 +18,21 @@ pub struct Stylesheet {
     pub media_rules: Vec<MediaRule>,
     /// @keyframes blocks indexed by animation name.
     pub keyframes: Vec<KeyframeSet>,
+    /// URLs from `@import url("...")` rules, in source order.
+    pub imports: Vec<String>,
+    /// `@font-face` declarations: (font_family, src_url).
+    pub font_faces: Vec<FontFaceRule>,
+}
+
+/// A parsed `@font-face` rule.
+#[derive(Clone)]
+pub struct FontFaceRule {
+    pub family: String,
+    pub src_url: String,
+    /// CSS font-weight (400 = normal, 700 = bold).
+    pub weight: u32,
+    /// CSS font-style: "normal" or "italic".
+    pub italic: bool,
 }
 
 /// A complete `@keyframes name { … }` block.
@@ -84,6 +99,7 @@ pub struct SimpleSelector {
     pub classes: Vec<String>,
     pub attrs: Vec<AttrSelector>,
     pub pseudo_classes: Vec<PseudoClass>,
+    pub pseudo_element: Option<PseudoElement>,
 }
 
 /// Attribute selector: [attr], [attr=val], [attr~=val], etc.
@@ -105,6 +121,13 @@ pub enum AttrOp {
     DashMatch,  // [attr|=val]
 }
 
+/// Pseudo-element (::before, ::after).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PseudoElement {
+    Before,
+    After,
+}
+
 /// Pseudo-class selectors.
 #[derive(Clone)]
 pub enum PseudoClass {
@@ -119,11 +142,23 @@ pub enum PseudoClass {
     FirstOfType,
     LastOfType,
     Not(Box<SimpleSelector>),
+    /// `:is(selector, ...)` — matches if any selector in the list matches.
+    Is(Vec<SimpleSelector>),
+    /// `:where(selector, ...)` — same as :is() but zero specificity.
+    Where(Vec<SimpleSelector>),
+    /// `:has(selector)` — matches if the element has a descendant matching the selector.
+    Has(Box<SimpleSelector>),
     Empty,
     Checked,
     Disabled,
     Enabled,
     Root,
+    /// `:focus-visible` — like :focus but only when keyboard-navigated.
+    FocusVisible,
+    /// `:focus-within` — matches if the element or any descendant has focus.
+    FocusWithin,
+    /// `:placeholder-shown` — matches input elements showing placeholder text.
+    PlaceholderShown,
 }
 
 #[derive(Clone)]
@@ -209,6 +244,70 @@ pub enum Property {
     Visibility,
     TextTransform,
     Cursor,
+    // Typography (litehtml-inspired)
+    FontFamily,
+    LetterSpacing,
+    WordSpacing,
+    WordBreak,
+    OverflowWrap,
+    TextOverflow,
+    // Per-side border properties
+    BorderTopWidth,
+    BorderRightWidth,
+    BorderBottomWidth,
+    BorderLeftWidth,
+    BorderTopColor,
+    BorderRightColor,
+    BorderBottomColor,
+    BorderLeftColor,
+    BorderTopStyle,
+    BorderRightStyle,
+    BorderBottomStyle,
+    BorderLeftStyle,
+    BorderTopLeftRadius,
+    BorderTopRightRadius,
+    BorderBottomRightRadius,
+    BorderBottomLeftRadius,
+    // Outline (litehtml-inspired)
+    Outline,
+    OutlineColor,
+    OutlineStyle,
+    OutlineWidth,
+    OutlineOffset,
+    // Shadows (litehtml-inspired)
+    BoxShadow,
+    TextShadow,
+    // Background extensions (litehtml-inspired)
+    BackgroundImage,
+    BackgroundPosition,
+    BackgroundRepeat,
+    BackgroundSize,
+    // Transform
+    Transform,
+    TransformOrigin,
+    // Content (for ::before/::after)
+    Content,
+    // Object-fit for replaced elements (img, video)
+    ObjectFit,
+    // Filter effects (litehtml-inspired)
+    Filter,
+    // Layout
+    AspectRatio,
+    Inset,
+    ClipPath,
+    // Text decoration sub-properties (CSS3)
+    TextDecorationColor,
+    TextDecorationStyle,
+    TextDecorationThickness,
+    TextUnderlineOffset,
+    // Typography extras
+    FontVariant,
+    TabSize,
+    // Counters
+    CounterReset,
+    CounterIncrement,
+    // Display extensions
+    // (display: contents handled in Display enum)
     // Table
     BorderCollapse,
     BorderSpacing,
@@ -232,6 +331,8 @@ pub enum Property {
     // Grid container
     GridTemplateColumns,
     GridTemplateRows,
+    GridTemplateAreas,
+    GridTemplate,
     GridAutoColumns,
     GridAutoRows,
     GridAutoFlow,
@@ -274,6 +375,14 @@ pub enum Unit {
     Percent,
     /// CSS `fr` unit (fractional share of free space in a grid).
     Fr,
+    /// Viewport width (1vw = 1% of viewport width).
+    Vw,
+    /// Viewport height (1vh = 1% of viewport height).
+    Vh,
+    /// Minimum of vw and vh (1vmin = 1% of min(vw, vh)).
+    Vmin,
+    /// Maximum of vw and vh (1vmax = 1% of max(vw, vh)).
+    Vmax,
 }
 
 // ---------------------------------------------------------------------------
@@ -304,8 +413,23 @@ impl SimpleSelector {
         let classes = self.classes.len() as u32
             + self.attrs.len() as u32
             + self.pseudo_classes.len() as u32;
-        let tags = if self.tag.is_some() { 1 } else { 0 };
+        let tags = if self.tag.is_some() { 1 } else { 0 }
+            + if self.pseudo_element.is_some() { 1 } else { 0 };
         (ids, classes, tags)
+    }
+}
+
+impl Selector {
+    /// Extract the pseudo-element from the innermost (rightmost) simple selector, if any.
+    pub fn pseudo_element(&self) -> Option<PseudoElement> {
+        match self {
+            Selector::Simple(s) => s.pseudo_element,
+            Selector::Descendant(_, leaf)
+            | Selector::Child(_, leaf)
+            | Selector::AdjacentSibling(_, leaf)
+            | Selector::GeneralSibling(_, leaf) => leaf.pseudo_element,
+            Selector::Universal => None,
+        }
     }
 }
 
@@ -419,6 +543,8 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
     let mut rules = Vec::new();
     let mut media_rules = Vec::new();
     let mut keyframes = Vec::new();
+    let mut imports = Vec::new();
+    let mut font_faces = Vec::new();
 
     loop {
         p.skip_whitespace();
@@ -432,6 +558,100 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
             let keyword = p.read_ident();
             let kw_lower = keyword.to_ascii_lowercase();
 
+            if kw_lower == "import" {
+                // Parse @import url("...") or @import "..."
+                p.skip_whitespace();
+                let url = if p.starts_with(b"url(") {
+                    p.pos += 4;
+                    let q = if p.peek() == b'"' || p.peek() == b'\'' { p.advance() } else { 0 };
+                    let start = p.pos;
+                    while !p.eof() && p.peek() != b')' && (q == 0 || p.peek() != q) {
+                        p.pos += 1;
+                    }
+                    let url = String::from_utf8_lossy(&p.input[start..p.pos]).into_owned();
+                    if q != 0 && p.peek() == q { p.pos += 1; }
+                    if p.peek() == b')' { p.pos += 1; }
+                    url
+                } else if p.peek() == b'"' || p.peek() == b'\'' {
+                    let q = p.advance();
+                    let start = p.pos;
+                    while !p.eof() && p.peek() != q { p.pos += 1; }
+                    let url = String::from_utf8_lossy(&p.input[start..p.pos]).into_owned();
+                    if p.peek() == q { p.pos += 1; }
+                    url
+                } else {
+                    String::new()
+                };
+                // Skip to semicolon
+                while !p.eof() && p.peek() != b';' { p.pos += 1; }
+                if p.peek() == b';' { p.pos += 1; }
+                if !url.is_empty() {
+                    imports.push(url);
+                }
+                continue;
+            }
+
+            if kw_lower == "font-face" {
+                // Parse @font-face { font-family: ...; src: url(...); ... }
+                p.skip_whitespace();
+                if p.peek() == b'{' {
+                    p.pos += 1;
+                    let mut family = String::new();
+                    let mut src_url = String::new();
+                    let mut weight = 400u32;
+                    let mut italic = false;
+                    // Parse declarations until '}'
+                    while !p.eof() && p.peek() != b'}' {
+                        p.skip_whitespace();
+                        if p.peek() == b'}' { break; }
+                        let prop_name = p.read_ident();
+                        p.skip_whitespace();
+                        if p.peek() == b':' { p.pos += 1; }
+                        p.skip_whitespace();
+                        // Read value until ';' or '}'
+                        let val_start = p.pos;
+                        while !p.eof() && p.peek() != b';' && p.peek() != b'}' { p.pos += 1; }
+                        let val = String::from_utf8_lossy(&p.input[val_start..p.pos]).into_owned();
+                        if p.peek() == b';' { p.pos += 1; }
+                        let prop_lower = prop_name.to_ascii_lowercase();
+                        match prop_lower.as_str() {
+                            "font-family" => {
+                                family = val.trim().trim_matches('"').trim_matches('\'').into();
+                            }
+                            "src" => {
+                                // Extract url(...) from src value
+                                let v = val.trim();
+                                if let Some(url_start) = v.find("url(") {
+                                    let after = &v[url_start + 4..];
+                                    let url_end = after.find(')').unwrap_or(after.len());
+                                    let url = after[..url_end].trim().trim_matches('"').trim_matches('\'');
+                                    src_url = String::from(url);
+                                }
+                            }
+                            "font-weight" => {
+                                let v = val.trim();
+                                weight = match v {
+                                    "bold" | "700" => 700,
+                                    "normal" | "400" => 400,
+                                    "100" => 100, "200" => 200, "300" => 300,
+                                    "500" => 500, "600" => 600, "800" => 800, "900" => 900,
+                                    _ => 400,
+                                };
+                            }
+                            "font-style" => {
+                                italic = val.trim() == "italic";
+                            }
+                            _ => {}
+                        }
+                    }
+                    if p.peek() == b'}' { p.pos += 1; }
+                    if !family.is_empty() && !src_url.is_empty() {
+                        font_faces.push(FontFaceRule { family, src_url, weight, italic });
+                    }
+                }
+                continue;
+            }
+
             if kw_lower == "media" {
                 // Parse @media query and inner rules.
                 if let Some(mr) = parse_media_rule(&mut p) {
@@ -443,6 +663,18 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
             if kw_lower == "keyframes" || kw_lower == "-webkit-keyframes" {
                 if let Some(kf) = parse_keyframes(&mut p) {
                     keyframes.push(kf);
+                }
+                continue;
+            }
+
+            // @supports — evaluate the condition and include rules if supported.
+            if kw_lower == "supports" {
+                if let Some(sr) = parse_supports_rule(&mut p) {
+                    // @supports rules whose condition evaluates to true have their
+                    // inner rules merged into the main rule list.
+                    for rule in sr {
+                        rules.push(rule);
+                    }
                 }
                 continue;
             }
@@ -480,7 +712,7 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
 
     crate::debug_surf!("[css] parse_stylesheet done: {} rules, {} @media, {} @keyframes",
         rules.len(), media_rules.len(), keyframes.len());
-    Stylesheet { rules, media_rules, keyframes }
+    Stylesheet { rules, media_rules, keyframes, imports, font_faces }
 }
 
 /// Parse a @media rule: query { rules }.
@@ -648,6 +880,92 @@ pub fn evaluate_media_query(query: &MediaQuery, viewport_width: i32, viewport_he
 }
 
 /// Parse a `@keyframes name { stop { … } … }` block.
+/// Parse `@supports (condition) { rules }`.
+/// Evaluates whether the condition references supported properties.
+/// Returns the inner rules if the condition is met, None otherwise.
+fn parse_supports_rule(p: &mut Parser) -> Option<Vec<Rule>> {
+    p.skip_whitespace();
+
+    // Read everything until '{' as the supports condition.
+    let cond_start = p.pos;
+    while !p.eof() && p.peek() != b'{' {
+        p.pos += 1;
+    }
+    let condition = core::str::from_utf8(&p.input[cond_start..p.pos]).unwrap_or("").trim();
+
+    if p.eof() { return None; }
+    p.pos += 1; // consume '{'
+
+    // Parse inner rules.
+    let mut inner_rules = Vec::new();
+    loop {
+        p.skip_whitespace();
+        if p.eof() { break; }
+        if p.peek() == b'}' {
+            p.pos += 1;
+            break;
+        }
+        if p.peek() == b'@' {
+            p.pos += 1;
+            let _kw = p.read_ident();
+            loop {
+                p.skip_whitespace();
+                if p.eof() { break; }
+                if p.peek() == b'{' { p.skip_block(); break; }
+                if p.peek() == b';' { p.pos += 1; break; }
+                p.pos += 1;
+            }
+            continue;
+        }
+        if let Some(rule) = parse_rule(p) {
+            inner_rules.push(rule);
+        }
+    }
+
+    // Evaluate the supports condition.
+    // Simple heuristic: check if the condition contains a known property name.
+    // `@supports (display: grid)` → check if "display" is a known property.
+    if evaluate_supports_condition(condition) {
+        Some(inner_rules)
+    } else {
+        None // condition not supported — discard rules
+    }
+}
+
+/// Evaluate a simple @supports condition.
+/// Supports: `(property: value)`, `not (...)`, `(...) and (...)`, `(...) or (...)`.
+fn evaluate_supports_condition(cond: &str) -> bool {
+    let cond = cond.trim();
+
+    // Handle `not (...)`
+    if cond.starts_with("not ") || cond.starts_with("not(") {
+        let inner = cond[3..].trim().trim_start_matches('(').trim_end_matches(')');
+        return !evaluate_supports_condition(inner);
+    }
+
+    // Handle `(...) and (...)`
+    if cond.contains(") and (") {
+        return cond.split(") and (")
+            .all(|part| evaluate_supports_condition(part.trim_matches('(').trim_matches(')')));
+    }
+
+    // Handle `(...) or (...)`
+    if cond.contains(") or (") {
+        return cond.split(") or (")
+            .any(|part| evaluate_supports_condition(part.trim_matches('(').trim_matches(')')));
+    }
+
+    // Simple `(property: value)` — check if property is known.
+    let inner = cond.trim_matches('(').trim_matches(')').trim();
+    if let Some(colon) = inner.find(':') {
+        let prop_name = inner[..colon].trim();
+        return parse_property(prop_name).is_some();
+    }
+
+    // Unknown condition — be conservative, assume supported.
+    true
+}
+
 fn parse_keyframes(p: &mut Parser) -> Option<KeyframeSet> {
     p.skip_whitespace();
 
@@ -884,6 +1202,7 @@ fn skip_spaces_only(p: &mut Parser) -> bool {
 fn is_universal(s: &SimpleSelector) -> bool {
     s.tag.is_none() && s.id.is_none() && s.classes.is_empty()
         && s.attrs.is_empty() && s.pseudo_classes.is_empty()
+        && s.pseudo_element.is_none()
 }
 
 fn parse_simple_selector(p: &mut Parser) -> SimpleSelector {
@@ -892,6 +1211,7 @@ fn parse_simple_selector(p: &mut Parser) -> SimpleSelector {
     let mut classes = Vec::new();
     let mut attrs = Vec::new();
     let mut pseudo_classes = Vec::new();
+    let mut pseudo_element = Option::None;
 
     if p.peek() == b'*' {
         p.pos += 1;
@@ -900,7 +1220,7 @@ fn parse_simple_selector(p: &mut Parser) -> SimpleSelector {
         tag = Some(Tag::from_str(&name));
     }
 
-    // Parse chained #id, .class, [attr], :pseudo (no spaces between them)
+    // Parse chained #id, .class, [attr], :pseudo, ::pseudo-element (no spaces between them)
     loop {
         if p.peek() == b'#' {
             p.pos += 1;
@@ -912,17 +1232,47 @@ fn parse_simple_selector(p: &mut Parser) -> SimpleSelector {
             if let Some(attr) = parse_attr_selector(p) {
                 attrs.push(attr);
             }
-        } else if p.peek() == b':' && !p.starts_with(b"::") {
+        } else if p.starts_with(b"::") {
+            p.pos += 2;
+            let name = p.read_ident();
+            let lower = to_ascii_lower(&name);
+            match lower.as_str() {
+                "before" => pseudo_element = Some(PseudoElement::Before),
+                "after" => pseudo_element = Some(PseudoElement::After),
+                _ => {
+                    // Skip unknown pseudo-element arguments
+                    if p.peek() == b'(' {
+                        let mut depth: u32 = 1;
+                        p.pos += 1;
+                        while !p.eof() && depth > 0 {
+                            if p.peek() == b'(' { depth += 1; }
+                            if p.peek() == b')' { depth -= 1; }
+                            p.pos += 1;
+                        }
+                    }
+                }
+            }
+        } else if p.peek() == b':' {
+            // Single colon — could also be legacy :before/:after syntax
             p.pos += 1;
-            if let Some(pc) = parse_pseudo_class(p) {
-                pseudo_classes.push(pc);
+            let name = p.read_ident();
+            let lower = to_ascii_lower(&name);
+            match lower.as_str() {
+                "before" => pseudo_element = Some(PseudoElement::Before),
+                "after" => pseudo_element = Some(PseudoElement::After),
+                _ => {
+                    // Re-parse as pseudo-class by feeding the already-read name
+                    if let Some(pc) = parse_pseudo_class_from_name(&lower, p) {
+                        pseudo_classes.push(pc);
+                    }
+                }
             }
         } else {
             break;
         }
     }
 
-    SimpleSelector { tag, id, classes, attrs, pseudo_classes }
+    SimpleSelector { tag, id, classes, attrs, pseudo_classes, pseudo_element }
 }
 
 fn parse_attr_selector(p: &mut Parser) -> Option<AttrSelector> {
@@ -972,7 +1322,11 @@ fn parse_attr_selector(p: &mut Parser) -> Option<AttrSelector> {
 fn parse_pseudo_class(p: &mut Parser) -> Option<PseudoClass> {
     let name = p.read_ident();
     let lower = to_ascii_lower(&name);
-    match lower.as_str() {
+    parse_pseudo_class_from_name(&lower, p)
+}
+
+fn parse_pseudo_class_from_name(lower: &str, p: &mut Parser) -> Option<PseudoClass> {
+    match lower {
         "hover" => Some(PseudoClass::Hover),
         "active" => Some(PseudoClass::Active),
         "focus" => Some(PseudoClass::Focus),
@@ -1022,6 +1376,31 @@ fn parse_pseudo_class(p: &mut Parser) -> Option<PseudoClass> {
                 Option::None
             }
         }
+        "is" | "matches" | "-webkit-any" | "-moz-any" => {
+            if p.peek() == b'(' {
+                let selectors = parse_selector_list_in_parens(p);
+                Some(PseudoClass::Is(selectors))
+            } else { Option::None }
+        }
+        "where" => {
+            if p.peek() == b'(' {
+                let selectors = parse_selector_list_in_parens(p);
+                Some(PseudoClass::Where(selectors))
+            } else { Option::None }
+        }
+        "has" => {
+            if p.peek() == b'(' {
+                p.pos += 1;
+                skip_spaces_only(p);
+                let inner = parse_simple_selector(p);
+                skip_spaces_only(p);
+                if p.peek() == b')' { p.pos += 1; }
+                Some(PseudoClass::Has(Box::new(inner)))
+            } else { Option::None }
+        }
+        "focus-visible" => Some(PseudoClass::FocusVisible),
+        "focus-within" => Some(PseudoClass::FocusWithin),
+        "placeholder-shown" => Some(PseudoClass::PlaceholderShown),
         _ => {
             // Skip unknown pseudo-class arguments
             if p.peek() == b'(' {
@@ -1038,6 +1417,27 @@ fn parse_pseudo_class(p: &mut Parser) -> Option<PseudoClass> {
             Option::None
         }
     }
+}
+
+/// Parse a comma-separated list of simple selectors inside parentheses: `(sel1, sel2, ...)`
+fn parse_selector_list_in_parens(p: &mut Parser) -> Vec<SimpleSelector> {
+    let mut selectors = Vec::new();
+    if p.peek() != b'(' { return selectors; }
+    p.pos += 1; // consume '('
+    loop {
+        skip_spaces_only(p);
+        if p.eof() || p.peek() == b')' {
+            if p.peek() == b')' { p.pos += 1; }
+            break;
+        }
+        let sel = parse_simple_selector(p);
+        selectors.push(sel);
+        skip_spaces_only(p);
+        if p.peek() == b',' {
+            p.pos += 1;
+        }
+    }
+    selectors
 }
 
 fn parse_nth_arg(p: &mut Parser) -> i32 {
@@ -1067,6 +1467,20 @@ fn parse_declarations(p: &mut Parser) -> Vec<Declaration> {
             break;
         }
 
+        // Check for CSS nesting: if the next char is a selector start (.#&*[)
+        // or if we see a combinator, skip to the nested block.
+        let ch = p.peek();
+        if ch == b'.' || ch == b'#' || ch == b'&' || ch == b'*' || ch == b'[' || ch == b'>' || ch == b'+' || ch == b'~' {
+            // Skip nested rule (CSS nesting).
+            while !p.eof() && p.peek() != b'{' && p.peek() != b'}' {
+                p.pos += 1;
+            }
+            if p.peek() == b'{' {
+                p.skip_block();
+            }
+            continue;
+        }
+
         let prop_name = p.read_ident();
         if prop_name.is_empty() {
             // Skip garbage character
@@ -1076,11 +1490,14 @@ fn parse_declarations(p: &mut Parser) -> Vec<Declaration> {
 
         p.skip_whitespace();
         if p.peek() != b':' {
-            // Skip to next ';' or '}'
-            while !p.eof() && p.peek() != b';' && p.peek() != b'}' {
+            // Could be a nested rule (CSS nesting) — skip the entire block.
+            // Also handles selectors that look like property names (e.g. ".child { ... }").
+            while !p.eof() && p.peek() != b';' && p.peek() != b'}' && p.peek() != b'{' {
                 p.pos += 1;
             }
-            if p.peek() == b';' {
+            if p.peek() == b'{' {
+                p.skip_block(); // Skip the nested { ... } block
+            } else if p.peek() == b';' {
                 p.pos += 1;
             }
             continue;
@@ -1105,6 +1522,16 @@ fn parse_declarations(p: &mut Parser) -> Vec<Declaration> {
                 value: CssValue::Keyword(String::from(trimmed)),
                 important,
             });
+        } else if prop_name == "font" || prop_name == "Font" {
+            // `font` shorthand: [style] [variant] [weight] size[/line-height] family
+            // Extract font-size and font-family from the shorthand.
+            let trimmed = value_str.trim();
+            let (trimmed, important) = strip_important(trimmed);
+            let expanded = expand_font_shorthand(trimmed);
+            for mut d in expanded {
+                d.important = important;
+                decls.push(d);
+            }
         } else if let Some(property) = parse_property(&prop_name) {
             let trimmed = value_str.trim();
             // Detect and strip !important
@@ -1241,6 +1668,26 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "border-radius" => Some(Property::BorderRadius),
         "border-collapse" => Some(Property::BorderCollapse),
         "border-spacing" => Some(Property::BorderSpacing),
+        // Per-side border width
+        "border-top-width" => Some(Property::BorderTopWidth),
+        "border-right-width" => Some(Property::BorderRightWidth),
+        "border-bottom-width" => Some(Property::BorderBottomWidth),
+        "border-left-width" => Some(Property::BorderLeftWidth),
+        // Per-side border color
+        "border-top-color" => Some(Property::BorderTopColor),
+        "border-right-color" => Some(Property::BorderRightColor),
+        "border-bottom-color" => Some(Property::BorderBottomColor),
+        "border-left-color" => Some(Property::BorderLeftColor),
+        // Per-side border style
+        "border-top-style" => Some(Property::BorderTopStyle),
+        "border-right-style" => Some(Property::BorderRightStyle),
+        "border-bottom-style" => Some(Property::BorderBottomStyle),
+        "border-left-style" => Some(Property::BorderLeftStyle),
+        // Per-corner border radius
+        "border-top-left-radius" => Some(Property::BorderTopLeftRadius),
+        "border-top-right-radius" => Some(Property::BorderTopRightRadius),
+        "border-bottom-right-radius" => Some(Property::BorderBottomRightRadius),
+        "border-bottom-left-radius" => Some(Property::BorderBottomLeftRadius),
         "list-style-type" => Some(Property::ListStyleType),
         "list-style" => Some(Property::ListStyleType),
         "white-space" => Some(Property::WhiteSpace),
@@ -1280,6 +1727,50 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "text-transform" => Some(Property::TextTransform),
         "cursor" => Some(Property::Cursor),
         "table-layout" => Some(Property::TableLayout),
+        // Typography
+        "font-family" => Some(Property::FontFamily),
+        "letter-spacing" => Some(Property::LetterSpacing),
+        "word-spacing" => Some(Property::WordSpacing),
+        "word-break" => Some(Property::WordBreak),
+        "overflow-wrap" | "word-wrap" => Some(Property::OverflowWrap),
+        "text-overflow" => Some(Property::TextOverflow),
+        // Outline
+        "outline" => Some(Property::Outline),
+        "outline-color" => Some(Property::OutlineColor),
+        "outline-style" => Some(Property::OutlineStyle),
+        "outline-width" => Some(Property::OutlineWidth),
+        "outline-offset" => Some(Property::OutlineOffset),
+        // Shadows
+        "box-shadow" => Some(Property::BoxShadow),
+        "text-shadow" => Some(Property::TextShadow),
+        // Background extensions
+        "background-image" => Some(Property::BackgroundImage),
+        "background-position" => Some(Property::BackgroundPosition),
+        "background-repeat" => Some(Property::BackgroundRepeat),
+        "background-size" => Some(Property::BackgroundSize),
+        // Transform
+        "transform" => Some(Property::Transform),
+        "transform-origin" => Some(Property::TransformOrigin),
+        // Content
+        "content" => Some(Property::Content),
+        "object-fit" => Some(Property::ObjectFit),
+        // Filter
+        "filter" | "-webkit-filter" => Some(Property::Filter),
+        // Layout
+        "aspect-ratio" => Some(Property::AspectRatio),
+        "inset" => Some(Property::Inset),
+        "clip-path" | "-webkit-clip-path" => Some(Property::ClipPath),
+        // Text decoration sub-properties
+        "text-decoration-color" => Some(Property::TextDecorationColor),
+        "text-decoration-style" => Some(Property::TextDecorationStyle),
+        "text-decoration-thickness" => Some(Property::TextDecorationThickness),
+        "text-underline-offset" => Some(Property::TextUnderlineOffset),
+        // Typography extras
+        "font-variant" => Some(Property::FontVariant),
+        "tab-size" | "-moz-tab-size" => Some(Property::TabSize),
+        // Counters
+        "counter-reset" => Some(Property::CounterReset),
+        "counter-increment" => Some(Property::CounterIncrement),
         // Transitions
         "transition"                  => Some(Property::Transition),
         "transition-property"         => Some(Property::TransitionProperty),
@@ -1299,6 +1790,8 @@ pub fn parse_property(name: &str) -> Option<Property> {
         // Grid
         "grid-template-columns" => Some(Property::GridTemplateColumns),
         "grid-template-rows"    => Some(Property::GridTemplateRows),
+        "grid-template-areas"   => Some(Property::GridTemplateAreas),
+        "grid-template"         => Some(Property::GridTemplate),
         "grid-auto-columns"     => Some(Property::GridAutoColumns),
         "grid-auto-rows"        => Some(Property::GridAutoRows),
         "grid-auto-flow"        => Some(Property::GridAutoFlow),
@@ -1502,6 +1995,12 @@ fn parse_calc_operand(s: &str) -> (i32, i32) {
         let num = &s[..s.len() - 3];
         let val = parse_fixed_100(num);
         (val * 16, 0)
+    } else if s.ends_with("vw") || s.ends_with("vh") || s.ends_with("vmin") || s.ends_with("vmax") {
+        // Viewport units in calc — treated as percentage-like (resolved at layout time).
+        let suffix_len = if s.ends_with("vmin") || s.ends_with("vmax") { 4 } else { 2 };
+        let num = &s[..s.len() - suffix_len];
+        let val = parse_fixed_100(num);
+        (0, val)
     } else {
         // Pure number.
         let val = parse_fixed_100(s);
@@ -1552,6 +2051,12 @@ fn is_color_property(p: &Property) -> bool {
             | Property::BackgroundColor
             | Property::Background
             | Property::BorderColor
+            | Property::BorderTopColor
+            | Property::BorderRightColor
+            | Property::BorderBottomColor
+            | Property::BorderLeftColor
+            | Property::OutlineColor
+            | Property::TextDecorationColor
     )
 }
 
@@ -1560,13 +2065,36 @@ fn is_expandable_shorthand(p: &Property) -> bool {
     matches!(
         p,
         Property::Margin | Property::Padding | Property::Border
+        | Property::BorderTop | Property::BorderRight
+        | Property::BorderBottom | Property::BorderLeft
+        | Property::BorderRadius
+        | Property::Outline
         | Property::Flex | Property::Gap | Property::Overflow
         | Property::Background
+        | Property::TextDecoration
+        | Property::Inset
+        | Property::GridTemplate
+        | Property::GridTemplateAreas
     )
 }
 
 /// Expand a shorthand property into individual declarations.
 fn expand_shorthand(property: Property, value_str: &str) -> Vec<Declaration> {
+    // If the ENTIRE value is a single var() call, don't expand the shorthand —
+    // instead emit a single declaration with the primary property and var() value.
+    // The var() will be resolved at style resolution time by apply_author_rules.
+    let trimmed_lower = to_ascii_lower(value_str.trim());
+    if trimmed_lower.starts_with("var(") && !trimmed_lower.contains(')') ||
+       (trimmed_lower.starts_with("var(") && trimmed_lower.ends_with(')') && trimmed_lower.matches(')').count() == 1) {
+        let primary = match &property {
+            Property::Background => Property::BackgroundColor,
+            Property::Outline => Property::OutlineColor,
+            _ => property.clone(),
+        };
+        let var_val = parse_var_value(value_str.trim());
+        return alloc::vec![Declaration { property: primary, value: var_val, important: false }];
+    }
+
     match &property {
         Property::Margin => expand_box_shorthand(
             value_str,
@@ -1583,6 +2111,23 @@ fn expand_shorthand(property: Property, value_str: &str) -> Vec<Declaration> {
         Property::Gap => expand_gap_shorthand(value_str),
         Property::Overflow => expand_overflow_shorthand(value_str),
         Property::Background => expand_background_shorthand(value_str),
+        Property::BorderTop => expand_border_side_shorthand(value_str,
+            Property::BorderTopWidth, Property::BorderTopStyle, Property::BorderTopColor),
+        Property::BorderRight => expand_border_side_shorthand(value_str,
+            Property::BorderRightWidth, Property::BorderRightStyle, Property::BorderRightColor),
+        Property::BorderBottom => expand_border_side_shorthand(value_str,
+            Property::BorderBottomWidth, Property::BorderBottomStyle, Property::BorderBottomColor),
+        Property::BorderLeft => expand_border_side_shorthand(value_str,
+            Property::BorderLeftWidth, Property::BorderLeftStyle, Property::BorderLeftColor),
+        Property::BorderRadius => expand_border_radius_shorthand(value_str),
+        Property::Outline => expand_outline_shorthand(value_str),
+        Property::TextDecoration => expand_text_decoration_shorthand(value_str),
+        Property::Inset => expand_box_shorthand(
+            value_str,
+            Property::Top, Property::Right, Property::Bottom, Property::Left,
+        ),
+        Property::GridTemplate => expand_grid_template_shorthand(value_str),
+        Property::GridTemplateAreas => expand_grid_template_areas(value_str),
         _ => {
             let value = parse_value(&property, value_str);
             let mut v = Vec::new();
@@ -1619,40 +2164,93 @@ fn expand_box_shorthand(
     v
 }
 
+/// Reassemble var() calls that were split across whitespace-delimited parts.
+/// E.g. ["1px", "solid", "var(", "--color-grey", ")"] → ["1px", "solid", "var( --color-grey )"]
+fn reassemble_var_parts(parts: &[&str]) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < parts.len() {
+        let lower = parts[i].to_ascii_lowercase();
+        if lower.starts_with("var(") && !lower.ends_with(')') {
+            // Collect parts until we find one ending with ')'
+            let mut combined = String::from(parts[i]);
+            i += 1;
+            while i < parts.len() {
+                combined.push(' ');
+                combined.push_str(parts[i]);
+                if parts[i].ends_with(')') {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            result.push(combined);
+        } else {
+            result.push(String::from(parts[i]));
+            i += 1;
+        }
+    }
+    result
+}
+
 /// Expand `border: <width> <style> <color>` shorthand.
+/// Sets both the unified properties AND per-side properties (like litehtml).
 fn expand_border_shorthand(value_str: &str) -> Vec<Declaration> {
     let mut decls = Vec::new();
-    let parts: Vec<&str> = value_str.split_whitespace().collect();
+    // Reassemble var() calls that span multiple whitespace-split parts.
+    let raw_parts: Vec<&str> = value_str.split_whitespace().collect();
+    let parts = reassemble_var_parts(&raw_parts);
+    let mut width_val: Option<CssValue> = None;
+    let mut style_val: Option<CssValue> = None;
+    let mut color_val: Option<CssValue> = None;
     for part in &parts {
         let lower = to_ascii_lower(part);
         if matches!(lower.as_str(), "solid" | "dashed" | "dotted" | "double"
             | "groove" | "ridge" | "inset" | "outset" | "hidden") {
-            decls.push(Declaration {
-                property: Property::BorderStyle, value: CssValue::Keyword(lower), important: false,
-            });
+            style_val = Some(CssValue::Keyword(lower));
+        } else if lower.starts_with("var(") {
+            // var() reference — store as Var for later resolution.
+            color_val = Some(parse_var_value(part));
         } else if let Some(c) = try_parse_color(part) {
-            decls.push(Declaration {
-                property: Property::BorderColor, value: CssValue::Color(c), important: false,
-            });
+            color_val = Some(CssValue::Color(c));
         } else if let Some(c) = named_color(&lower) {
-            decls.push(Declaration {
-                property: Property::BorderColor, value: CssValue::Color(c), important: false,
-            });
+            color_val = Some(CssValue::Color(c));
         } else if let Some(dim) = try_parse_dimension(part) {
-            decls.push(Declaration {
-                property: Property::BorderWidth, value: dim, important: false,
-            });
+            width_val = Some(dim);
         } else if matches!(lower.as_str(), "thin" | "medium" | "thick") {
-            decls.push(Declaration {
-                property: Property::BorderWidth, value: CssValue::Keyword(lower), important: false,
-            });
+            width_val = Some(CssValue::Keyword(lower));
         } else if lower == "none" {
-            decls.push(Declaration {
-                property: Property::BorderStyle, value: CssValue::None, important: false,
-            });
-            decls.push(Declaration {
-                property: Property::BorderWidth, value: CssValue::Length(0, Unit::Px), important: false,
-            });
+            style_val = Some(CssValue::None);
+            width_val = Some(CssValue::Length(0, Unit::Px));
+        }
+    }
+    // Emit unified properties
+    if let Some(ref sv) = style_val {
+        decls.push(Declaration { property: Property::BorderStyle, value: sv.clone(), important: false });
+    }
+    if let Some(ref cv) = color_val {
+        decls.push(Declaration { property: Property::BorderColor, value: cv.clone(), important: false });
+    }
+    if let Some(ref wv) = width_val {
+        decls.push(Declaration { property: Property::BorderWidth, value: wv.clone(), important: false });
+    }
+    // Emit per-side properties for consistent per-side override support
+    for side_w in &[Property::BorderTopWidth, Property::BorderRightWidth,
+                    Property::BorderBottomWidth, Property::BorderLeftWidth] {
+        if let Some(ref wv) = width_val {
+            decls.push(Declaration { property: side_w.clone(), value: wv.clone(), important: false });
+        }
+    }
+    for side_s in &[Property::BorderTopStyle, Property::BorderRightStyle,
+                    Property::BorderBottomStyle, Property::BorderLeftStyle] {
+        if let Some(ref sv) = style_val {
+            decls.push(Declaration { property: side_s.clone(), value: sv.clone(), important: false });
+        }
+    }
+    for side_c in &[Property::BorderTopColor, Property::BorderRightColor,
+                    Property::BorderBottomColor, Property::BorderLeftColor] {
+        if let Some(ref cv) = color_val {
+            decls.push(Declaration { property: side_c.clone(), value: cv.clone(), important: false });
         }
     }
     decls
@@ -1687,6 +2285,14 @@ fn expand_flex_shorthand(value_str: &str) -> Vec<Declaration> {
     decls.push(Declaration {
         property: Property::FlexGrow, value: parse_value(&Property::FlexGrow, parts[0]), important: false,
     });
+
+    // CSS spec: `flex: <number>` is shorthand for `flex: <number> 1 0`.
+    // If only one value, set shrink=1 and basis=0 (not auto).
+    if parts.len() == 1 {
+        decls.push(Declaration { property: Property::FlexShrink, value: CssValue::Number(100), important: false });
+        decls.push(Declaration { property: Property::FlexBasis, value: CssValue::Length(0, Unit::Px), important: false });
+        return decls;
+    }
 
     if parts.len() >= 2 {
         if let Some(dim) = try_parse_dimension(parts[1]) {
@@ -1763,12 +2369,31 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
         return v;
     }
 
+    // Handle var() — store as Var for later resolution by apply_author_rules.
+    if lower.starts_with("var(") {
+        let var_val = parse_var_value(s);
+        let mut v = Vec::new();
+        v.push(Declaration {
+            property: Property::BackgroundColor,
+            value: var_val,
+            important: false,
+        });
+        return v;
+    }
+
     // Scan tokens for a color value; skip url(...), gradient functions, and keywords
     // like no-repeat, center, cover, etc.
     let mut found_color: Option<u32> = None;
-    let parts: Vec<&str> = split_background_tokens(s);
+    let mut found_var: Option<CssValue> = None;
+    let raw_parts: Vec<&str> = split_background_tokens(s);
+    let parts = reassemble_var_parts(&raw_parts.iter().map(|s| *s).collect::<Vec<&str>>());
     for part in &parts {
         let pl = to_ascii_lower(part);
+        // Handle var() reference within background shorthand.
+        if pl.starts_with("var(") {
+            found_var = Some(parse_var_value(part));
+            continue;
+        }
         // Skip url(...) and gradient functions.
         if pl.starts_with("url(") || pl.starts_with("linear-gradient(")
             || pl.starts_with("radial-gradient(") || pl.starts_with("conic-gradient(")
@@ -1811,6 +2436,12 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
             value: CssValue::Color(c),
             important: false,
         });
+    } else if let Some(var_val) = found_var {
+        v.push(Declaration {
+            property: Property::BackgroundColor,
+            value: var_val,
+            important: false,
+        });
     }
     v
 }
@@ -1848,8 +2479,297 @@ fn split_background_tokens(s: &str) -> Vec<&str> {
     tokens
 }
 
+/// Expand `border-top/right/bottom/left: <width> <style> <color>` per-side shorthand.
+fn expand_border_side_shorthand(
+    value_str: &str,
+    width_prop: Property, style_prop: Property, color_prop: Property,
+) -> Vec<Declaration> {
+    let mut decls = Vec::new();
+    let raw_parts: Vec<&str> = value_str.split_whitespace().collect();
+    let parts = reassemble_var_parts(&raw_parts);
+    for part in &parts {
+        let lower = to_ascii_lower(part);
+        if matches!(lower.as_str(), "solid" | "dashed" | "dotted" | "double"
+            | "groove" | "ridge" | "inset" | "outset" | "hidden") {
+            decls.push(Declaration {
+                property: style_prop.clone(), value: CssValue::Keyword(lower), important: false,
+            });
+        } else if lower == "none" {
+            decls.push(Declaration {
+                property: style_prop.clone(), value: CssValue::None, important: false,
+            });
+            decls.push(Declaration {
+                property: width_prop.clone(), value: CssValue::Length(0, Unit::Px), important: false,
+            });
+        } else if lower.starts_with("var(") {
+            decls.push(Declaration {
+                property: color_prop.clone(), value: parse_var_value(part), important: false,
+            });
+        } else if let Some(c) = try_parse_color(part) {
+            decls.push(Declaration {
+                property: color_prop.clone(), value: CssValue::Color(c), important: false,
+            });
+        } else if let Some(c) = named_color(&lower) {
+            decls.push(Declaration {
+                property: color_prop.clone(), value: CssValue::Color(c), important: false,
+            });
+        } else if let Some(dim) = try_parse_dimension(part) {
+            decls.push(Declaration {
+                property: width_prop.clone(), value: dim, important: false,
+            });
+        } else if matches!(lower.as_str(), "thin" | "medium" | "thick") {
+            decls.push(Declaration {
+                property: width_prop.clone(), value: CssValue::Keyword(lower), important: false,
+            });
+        }
+    }
+    decls
+}
+
+/// Expand `border-radius: <tl> [<tr>] [<br>] [<bl>]` shorthand.
+fn expand_border_radius_shorthand(value_str: &str) -> Vec<Declaration> {
+    // Ignore elliptical syntax (/) for simplicity — only use the first set.
+    let s = if let Some(pos) = value_str.find('/') {
+        &value_str[..pos]
+    } else {
+        value_str
+    };
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.is_empty() {
+        return Vec::new();
+    }
+    let (tl, tr, br, bl) = match parts.len() {
+        1 => (parts[0], parts[0], parts[0], parts[0]),
+        2 => (parts[0], parts[1], parts[0], parts[1]),
+        3 => (parts[0], parts[1], parts[2], parts[1]),
+        _ => (parts[0], parts[1], parts[2], parts[3]),
+    };
+    let mut v = Vec::with_capacity(4);
+    v.push(Declaration { property: Property::BorderTopLeftRadius,     value: parse_value(&Property::BorderTopLeftRadius, tl),     important: false });
+    v.push(Declaration { property: Property::BorderTopRightRadius,    value: parse_value(&Property::BorderTopRightRadius, tr),    important: false });
+    v.push(Declaration { property: Property::BorderBottomRightRadius, value: parse_value(&Property::BorderBottomRightRadius, br), important: false });
+    v.push(Declaration { property: Property::BorderBottomLeftRadius,  value: parse_value(&Property::BorderBottomLeftRadius, bl),  important: false });
+    v
+}
+
+/// Expand `outline: <width> <style> <color>` shorthand.
+fn expand_outline_shorthand(value_str: &str) -> Vec<Declaration> {
+    let mut decls = Vec::new();
+    let parts: Vec<&str> = value_str.split_whitespace().collect();
+    for part in &parts {
+        let lower = to_ascii_lower(part);
+        if matches!(lower.as_str(), "solid" | "dashed" | "dotted" | "double"
+            | "groove" | "ridge" | "inset" | "outset") {
+            decls.push(Declaration {
+                property: Property::OutlineStyle, value: CssValue::Keyword(lower), important: false,
+            });
+        } else if lower == "none" {
+            decls.push(Declaration {
+                property: Property::OutlineStyle, value: CssValue::None, important: false,
+            });
+        } else if let Some(c) = try_parse_color(part) {
+            decls.push(Declaration {
+                property: Property::OutlineColor, value: CssValue::Color(c), important: false,
+            });
+        } else if let Some(c) = named_color(&lower) {
+            decls.push(Declaration {
+                property: Property::OutlineColor, value: CssValue::Color(c), important: false,
+            });
+        } else if let Some(dim) = try_parse_dimension(part) {
+            decls.push(Declaration {
+                property: Property::OutlineWidth, value: dim, important: false,
+            });
+        } else if matches!(lower.as_str(), "thin" | "medium" | "thick") {
+            decls.push(Declaration {
+                property: Property::OutlineWidth, value: CssValue::Keyword(lower), important: false,
+            });
+        }
+    }
+    decls
+}
+
+/// Expand `text-decoration: <line> [<style>] [<color>]` shorthand (CSS3).
+/// We keep it simple: extract underline/line-through/none and store as keyword.
+fn expand_text_decoration_shorthand(value_str: &str) -> Vec<Declaration> {
+    let lower = to_ascii_lower(value_str);
+    let mut decls = Vec::new();
+    // Extract the line value (underline, line-through, overline, none)
+    let line_kw = if lower.contains("underline") {
+        "underline"
+    } else if lower.contains("line-through") {
+        "line-through"
+    } else if lower.contains("overline") {
+        "overline"
+    } else if lower.contains("none") {
+        "none"
+    } else {
+        "none"
+    };
+    decls.push(Declaration {
+        property: Property::TextDecoration,
+        value: CssValue::Keyword(String::from(line_kw)),
+        important: false,
+    });
+    decls
+}
+
 // ---------------------------------------------------------------------------
 // Color parsing
+/// Expand `font` shorthand: `[style] [variant] [weight] size[/line-height] family`
+/// Extracts font-size and font-family, ignoring style/variant/weight for simplicity.
+/// Expand `grid-template: rows / columns` shorthand.
+/// Example: `min-content 1fr min-content / 12.25rem minmax(0,1fr)`
+fn expand_grid_template_shorthand(value_str: &str) -> Vec<Declaration> {
+    let mut decls = Vec::new();
+    let s = value_str.trim();
+
+    // Split on '/' — left side = rows, right side = columns.
+    // But we need to handle quoted area strings like 'header header' / columns.
+    // Simple heuristic: find the '/' that separates rows from columns.
+    if let Some(slash_pos) = find_grid_template_slash(s) {
+        let rows_str = s[..slash_pos].trim();
+        let cols_str = s[slash_pos + 1..].trim();
+
+        if !rows_str.is_empty() {
+            decls.push(Declaration {
+                property: Property::GridTemplateRows,
+                value: CssValue::Keyword(String::from(rows_str)),
+                important: false,
+            });
+        }
+        if !cols_str.is_empty() {
+            decls.push(Declaration {
+                property: Property::GridTemplateColumns,
+                value: CssValue::Keyword(String::from(cols_str)),
+                important: false,
+            });
+        }
+    } else {
+        // No slash — might be just rows or areas.
+        // If it contains quoted strings, treat as areas.
+        if s.contains('\'') || s.contains('"') {
+            return expand_grid_template_areas(s);
+        }
+        // Otherwise treat as rows only.
+        decls.push(Declaration {
+            property: Property::GridTemplateRows,
+            value: CssValue::Keyword(String::from(s)),
+            important: false,
+        });
+    }
+    decls
+}
+
+/// Find the '/' in a grid-template value that separates rows from columns.
+/// Must skip '/' inside parentheses (e.g. `minmax(0,1fr)`).
+fn find_grid_template_slash(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth: u32 = 0;
+    let mut in_quote = false;
+    let mut quote_char: u8 = 0;
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' => {
+                if !in_quote {
+                    in_quote = true;
+                    quote_char = bytes[i];
+                } else if bytes[i] == quote_char {
+                    in_quote = false;
+                }
+            }
+            b'(' if !in_quote => depth += 1,
+            b')' if !in_quote => { if depth > 0 { depth -= 1; } }
+            b'/' if !in_quote && depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse `grid-template-areas` value.
+/// Example: `'header header' 'sidebar content' 'footer footer'`
+/// Each quoted string defines one row. Area names map to grid positions.
+/// Emits a GridTemplateAreas keyword value that the style resolver will parse.
+fn expand_grid_template_areas(value_str: &str) -> Vec<Declaration> {
+    let mut decls = Vec::new();
+    // Store the raw areas string as a keyword — the grid layout engine will parse it.
+    decls.push(Declaration {
+        property: Property::GridTemplateAreas,
+        value: CssValue::Keyword(String::from(value_str.trim())),
+        important: false,
+    });
+    decls
+}
+
+fn expand_font_shorthand(value_str: &str) -> Vec<Declaration> {
+    let mut decls = Vec::new();
+    let parts: Vec<&str> = value_str.split_whitespace().collect();
+    if parts.is_empty() { return decls; }
+
+    let style_weight_keywords = [
+        "normal", "italic", "oblique",    // font-style
+        "bold", "bolder", "lighter",      // font-weight
+        "small-caps",                      // font-variant
+        "100", "200", "300", "400", "500", "600", "700", "800", "900",
+    ];
+
+    let mut font_size_idx = None;
+    for (i, part) in parts.iter().enumerate() {
+        let lower = part.to_ascii_lowercase();
+        // font-style / font-weight / font-variant keywords → skip
+        if style_weight_keywords.contains(&lower.as_str()) {
+            // Emit font-weight if bold
+            if lower == "bold" || lower == "bolder" {
+                decls.push(Declaration {
+                    property: Property::FontWeight,
+                    value: CssValue::Keyword(String::from("bold")),
+                    important: false,
+                });
+            } else if lower == "italic" || lower == "oblique" {
+                decls.push(Declaration {
+                    property: Property::FontStyle,
+                    value: CssValue::Keyword(lower),
+                    important: false,
+                });
+            }
+            continue;
+        }
+        // This must be the font-size (possibly with /line-height)
+        font_size_idx = Some(i);
+        break;
+    }
+
+    if let Some(si) = font_size_idx {
+        let size_part = parts[si];
+        // Handle size/line-height (e.g. "14px/1.5")
+        let (size_str, lh_str) = if let Some(slash) = size_part.find('/') {
+            (&size_part[..slash], Some(&size_part[slash + 1..]))
+        } else {
+            (size_part, None)
+        };
+
+        let size_val = parse_value(&Property::FontSize, size_str);
+        decls.push(Declaration { property: Property::FontSize, value: size_val, important: false });
+
+        if let Some(lh) = lh_str {
+            let lh_val = parse_value(&Property::LineHeight, lh);
+            decls.push(Declaration { property: Property::LineHeight, value: lh_val, important: false });
+        }
+
+        // Everything after the font-size is the font-family
+        if si + 1 < parts.len() {
+            let family = parts[si + 1..].join(" ");
+            decls.push(Declaration {
+                property: Property::FontFamily,
+                value: CssValue::Keyword(family),
+                important: false,
+            });
+        }
+    }
+
+    decls
+}
+
 // ---------------------------------------------------------------------------
 
 fn try_parse_color(s: &str) -> Option<u32> {
@@ -2282,6 +3202,11 @@ fn try_parse_dimension(s: &str) -> Option<CssValue> {
         "%" => Some(CssValue::Percentage(val)),
         // `fr` unit for CSS Grid fractional tracks (stored as Length with Fr unit)
         "fr" => Some(CssValue::Length(val, Unit::Fr)),
+        // Viewport units
+        "vw" => Some(CssValue::Length(val, Unit::Vw)),
+        "vh" => Some(CssValue::Length(val, Unit::Vh)),
+        "vmin" => Some(CssValue::Length(val, Unit::Vmin)),
+        "vmax" => Some(CssValue::Length(val, Unit::Vmax)),
         _ => Option::None,
     }
 }
@@ -2378,5 +3303,24 @@ fn to_ascii_lower(s: &str) -> String {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Public wrappers for use by style.rs shadow/gradient parsing
+// ---------------------------------------------------------------------------
+
+/// Public wrapper for `try_parse_color`.
+pub fn try_parse_color_pub(s: &str) -> Option<u32> {
+    try_parse_color(s)
+}
+
+/// Public wrapper for `named_color`.
+pub fn named_color_pub(name: &str) -> Option<u32> {
+    named_color(name)
+}
+
+/// Public wrapper for `try_parse_dimension`.
+pub fn try_parse_dimension_pub(s: &str) -> Option<CssValue> {
+    try_parse_dimension(s)
 }
 

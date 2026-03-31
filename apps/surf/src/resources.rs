@@ -150,6 +150,38 @@ pub(crate) fn queue_stylesheets(
 }
 
 // ═══════════════════════════════════════════════════════════
+// @font-face discovery — submits web font fetches to network worker
+// ═══════════════════════════════════════════════════════════
+
+/// Queue font downloads for all @font-face rules found in inline <style> blocks.
+pub(crate) fn queue_font_faces(
+    webview: &libwebview::WebView,
+    base_url: &crate::http::Url,
+    tab_index: usize,
+) {
+    let generation = crate::net_worker::current_generation();
+    let font_faces = webview.all_font_faces();
+    let mut count = 0u32;
+
+    for ff in font_faces {
+        if ff.src_url.is_empty() { continue; }
+        let resolved = crate::http::resolve_url(base_url, &ff.src_url);
+        crate::net_worker::submit(crate::net_worker::FetchRequest::Font {
+            tab_index,
+            family: ff.family.clone(),
+            url: resolved,
+            generation,
+        });
+        count += 1;
+    }
+
+    if count > 0 {
+        anyos_std::println!("[surf] submitted {} web font(s) to worker", count);
+        crate::ensure_net_poll_timer();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
 // Image discovery — submits to network worker
 // ═══════════════════════════════════════════════════════════
 

@@ -144,10 +144,12 @@ pub(crate) fn close_tab(idx: usize) {
 pub(crate) fn toggle_devtools() {
     let st = crate::state();
     st.devtools_open = !st.devtools_open;
-    st.devtools_win.set_visible(st.devtools_open);
     if st.devtools_open {
+        // Move from off-screen to a visible position on first open.
+        st.devtools_win.move_to(100, 100);
         update_devtools();
     }
+    st.devtools_win.set_visible(st.devtools_open);
 }
 
 /// Clear the DevTools console output.

@@ -1,0 +1,20 @@
+[package]
+name = "surf-host"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libwebview = { path = "../../libs/libwebview", features = ["host"] }
+libfont_client = { path = "../../libs/libfont_client", features = ["host"] }
+libfont = { path = "../../libs/libfont", features = ["host"], default-features = false }
+libanyui_client = { path = "../../libs/libanyui_client", features = ["host"] }
+anyos_std = { path = "../../libs/stdlib", features = ["host"] }
+
+# Host-native dependencies
+minifb = "0.28"
+ureq = { version = "2", features = ["tls"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "ico"] }
+resvg = "0.45"
+
+# Standalone project — not part of the anyOS workspace.
+# Build with: cargo +stable build --release

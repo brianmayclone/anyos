@@ -22,6 +22,8 @@ mod net_worker;
 
 anyos_std::entry!(main);
 
+extern crate libfont_client;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::vec;
@@ -294,6 +296,11 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     mark_relayout_dirty(tab_index);
                 }
             }
+            net_worker::FetchResult::FontDone { tab_index, family, body, generation } => {
+                if handle_font_done(tab_index, family, body, generation) {
+                    mark_relayout_dirty(tab_index);
+                }
+            }
         }
     }
 }
@@ -443,11 +450,14 @@ fn handle_nav_done(
     // Connect any WebSockets that JS requested during set_html().
     connect_pending_ws(tab_idx);
 
-    // Queue external CSS and images for async fetch via the worker thread.
+    // Queue external CSS, images, and web fonts for async fetch via the worker thread.
+    // Queue external CSS, images, and web fonts.
     if let Some(dom) = st.tabs[tab_idx].webview.dom() {
         resources::queue_stylesheets(dom, &base_url, tab_idx);
         resources::queue_images(dom, &base_url, tab_idx);
     }
+    // Queue @font-face downloads from inline <style> blocks.
+    resources::queue_font_faces(&st.tabs[tab_idx].webview, &base_url, tab_idx);
 
     // Restart animation/scroll tick timer (may have been stopped while idle).
     ensure_anim_timer();
@@ -484,7 +494,62 @@ fn handle_css_done(
     let css_text = resources::decode_http_body(&body, &headers);
     st.tabs[tab_index].webview.add_stylesheet(&css_text);
     anyos_std::println!("[surf] applied CSS: {}", href);
+
+    // Process @import URLs from the newly added stylesheet.
+    if let Ok(base_url) = crate::http::parse_url(&href) {
+        let imports: Vec<String> = st.tabs[tab_index].webview.last_stylesheet_imports().to_vec();
+        for import_url in imports {
+            let resolved = crate::http::resolve_url(&base_url, &import_url);
+            crate::net_worker::submit(crate::net_worker::FetchRequest::Css {
+                tab_index,
+                href: String::from(import_url.as_str()),
+                url: resolved,
+                generation,
+            });
+        }
+
+        // Process @font-face rules — queue font downloads.
+        let font_faces: Vec<(String, String)> = st.tabs[tab_index].webview
+            .last_stylesheet_font_faces()
+            .iter()
+            .map(|ff| (ff.family.clone(), ff.src_url.clone()))
+            .collect();
+        for (family, src_url) in font_faces {
+            let resolved = crate::http::resolve_url(&base_url, &src_url);
+            crate::net_worker::submit(crate::net_worker::FetchRequest::Font {
+                tab_index,
+                family,
+                url: resolved,
+                generation,
+            });
+        }
+    }
+
     true
+}
+
+/// Handle a completed web font fetch: load TTF data into libfont.
+///
+/// Returns `true` if the font was loaded and a relayout is needed.
+fn handle_font_done(
+    tab_index: usize,
+    family: String,
+    body: Vec<u8>,
+    generation: u32,
+) -> bool {
+    let st = state();
+    if tab_index >= st.tabs.len() { return false; }
+    if st.tabs[tab_index].nav_generation != generation { return false; }
+
+    // Try loading the font data (supports TTF, possibly WOFF if headers match).
+    if let Some(font_id) = libfont_client::load_data(&body) {
+        st.tabs[tab_index].webview.register_web_font(&family, font_id);
+        anyos_std::println!("[surf] loaded web font '{}' -> id {}", family, font_id);
+        true
+    } else {
+        anyos_std::println!("[surf] failed to load web font '{}'", family);
+        false
+    }
 }
 
 /// Handle a completed image fetch: decode SVG or raster and add to cache.
@@ -634,7 +699,9 @@ fn main() {
     win.add(&tab_bar_view);
 
     // ── DevTools window (separate window, initially hidden) ─────────────────
-    let devtools_win = ui_lib::Window::new(i18n::t("DevTools - Console"), -1, -1, 700, 400);
+    // Create off-screen (x=9999) so it doesn't flash on startup.
+    // toggle_devtools() will move it to a visible position when opened.
+    let devtools_win = ui_lib::Window::new(i18n::t("DevTools - Console"), 9999, 9999, 700, 400);
     devtools_win.set_visible(false);
 
     let devtools_label = ui_lib::Label::new("");

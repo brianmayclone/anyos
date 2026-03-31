@@ -11,6 +11,7 @@ libjs = { path = "../libjs" }
 
 [features]
 debug_surf = []
+host = ["anyos_std/host", "libanyui_client/host", "libfont_client/host", "libjs/host"]
 
 [lib]
 name = "libwebview"

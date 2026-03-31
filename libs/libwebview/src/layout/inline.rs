@@ -4,7 +4,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
-use crate::style::{ComputedStyle, Display, Position, WhiteSpace, TextDeco, TextTransform, TextAlignVal};
+use crate::style::{ComputedStyle, Display, Position, WhiteSpace, TextDeco, TextTransform, TextAlignVal, VerticalAlign, PseudoStyles};
 use crate::ImageCache;
 
 use super::{
@@ -28,6 +28,7 @@ struct InlineFragment {
 pub fn layout_inline_content(
     dom: &Dom,
     styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
     child_ids: &[NodeId],
     available_width: i32,
     start_x: i32,
@@ -36,6 +37,14 @@ pub fn layout_inline_content(
     line_height: i32,
     viewport_w: i32,
 ) -> Vec<LayoutBox> {
+    // Determine text_indent from the parent style of the first child.
+    let text_indent = if let Some(&first_cid) = child_ids.first() {
+        let dom_node = dom.get(first_cid);
+        if let Some(pid) = dom_node.parent {
+            styles[pid].text_indent
+        } else { 0 }
+    } else { 0 };
+
     // 1. Flatten all inline children into fragments.
     let mut fragments: Vec<InlineFragment> = Vec::new();
     for &cid in child_ids {
@@ -43,7 +52,7 @@ pub fn layout_inline_content(
         if style.display == Display::None {
             continue;
         }
-        collect_inline_fragments(dom, styles, cid, &mut fragments, available_width, images, 0, viewport_w);
+        collect_inline_fragments(dom, styles, pseudo, cid, &mut fragments, available_width, images, 0, viewport_w);
     }
 
     // 2. Break fragments into lines.
@@ -51,21 +60,24 @@ pub fn layout_inline_content(
     let mut line = LayoutBox::new(None, BoxType::LineBox);
     line.x = start_x;
     line.width = available_width;
-    let mut line_x: i32 = 0;
+    // Apply text-indent to the first line
+    let mut line_x: i32 = if text_indent > 0 { text_indent } else { 0 };
     let mut line_h: i32 = 0;
+    let first_line_width = available_width - line_x;
 
     for frag in fragments {
         let fw = frag.width;
         let fh = frag.height;
+        let _cur_avail = if lines.is_empty() { first_line_width } else { available_width };
 
         // Check if we need to wrap.
-        if line_x > 0 && line_x + fw > available_width && !line.children.is_empty() {
+        if line_x > 0 && line_x + fw > (if lines.is_empty() { available_width } else { available_width }) && !line.children.is_empty() {
             line.height = line_h.max(line_height);
             lines.push(line);
             line = LayoutBox::new(None, BoxType::LineBox);
             line.x = start_x;
             line.width = available_width;
-            line_x = 0;
+            line_x = 0; // No text-indent on subsequent lines
             line_h = 0;
         }
 
@@ -100,33 +112,80 @@ pub fn layout_inline_content(
     }
 
     // 3. Apply text-align: shift children within each line box.
+    let line_count = lines.len();
     if text_align != TextAlignVal::Left {
-        for ln in &mut lines {
+        for (line_idx, ln) in lines.iter_mut().enumerate() {
             // Calculate used width of content in this line.
             let used: i32 = ln.children.last()
                 .map(|c| (c.x - start_x) + c.width)
                 .unwrap_or(0);
             let free = available_width - used;
             if free > 0 {
-                let shift = match text_align {
-                    TextAlignVal::Center => free / 2,
-                    TextAlignVal::Right => free,
-                    _ => 0,
-                };
-                if shift > 0 {
-                    for child in &mut ln.children {
-                        child.x += shift;
+                match text_align {
+                    TextAlignVal::Justify => {
+                        // Justify: distribute extra space between words.
+                        // Don't justify the last line.
+                        if line_idx < line_count - 1 && ln.children.len() > 1 {
+                            let gaps = (ln.children.len() - 1) as i32;
+                            if gaps > 0 {
+                                let extra_per_gap = free / gaps;
+                                let mut remainder = free % gaps;
+                                let mut cumulative = 0i32;
+                                for (ci, child) in ln.children.iter_mut().enumerate() {
+                                    if ci > 0 {
+                                        cumulative += extra_per_gap;
+                                        if remainder > 0 {
+                                            cumulative += 1;
+                                            remainder -= 1;
+                                        }
+                                    }
+                                    child.x += cumulative;
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        let shift = match text_align {
+                            TextAlignVal::Center => free / 2,
+                            TextAlignVal::Right => free,
+                            _ => 0,
+                        };
+                        if shift > 0 {
+                            for child in &mut ln.children {
+                                child.x += shift;
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    // 4. Baseline-align children inside each line.
+    // 4. Vertical-align children inside each line.
     for ln in &mut lines {
         let lh = ln.height;
         for child in &mut ln.children {
-            child.y = lh - child.height;
+            // Default: align to bottom (baseline approximation).
+            let base_y = lh - child.height;
+            child.y = base_y;
+
+            // Apply vertical-align from the node's style if available.
+            if let Some(nid) = child.node_id {
+                if nid < styles.len() {
+                    let va = &styles[nid].vertical_align;
+                    child.y = match va {
+                        VerticalAlign::Baseline => base_y,
+                        VerticalAlign::Top => 0,
+                        VerticalAlign::Middle => (lh - child.height) / 2,
+                        VerticalAlign::Bottom => lh - child.height,
+                        VerticalAlign::TextTop => 0,
+                        VerticalAlign::TextBottom => lh - child.height,
+                        VerticalAlign::Sub => base_y + child.height / 4,
+                        VerticalAlign::Super => base_y - child.height / 4,
+                        VerticalAlign::Length(offset) => base_y - *offset,
+                    };
+                }
+            }
         }
     }
 
@@ -137,6 +196,7 @@ pub fn layout_inline_content(
 fn collect_inline_fragments(
     dom: &Dom,
     styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
     node_id: NodeId,
     out: &mut Vec<InlineFragment>,
     available_width: i32,
@@ -175,13 +235,22 @@ fn collect_inline_fragments(
             } else if style.white_space == WhiteSpace::Nowrap {
                 emit_nowrap_fragments(&transformed, fs, bold, italic, color, link, deco, out);
             } else {
-                emit_word_fragments(&transformed, fs, bold, italic, color, link, deco, out);
+                emit_word_fragments(&transformed, fs, bold, italic, color, link, deco,
+                    style.letter_spacing, style.word_spacing, out);
             }
             // Propagate inherited background color to newly emitted text fragments.
             if inherited_bg != 0 {
                 for frag in &mut out[start_idx..] {
                     if frag.layout_box.bg_color == 0 {
                         frag.layout_box.bg_color = inherited_bg;
+                    }
+                }
+            }
+            // Resolve web font ID from font-family.
+            if let Some(ref family) = style.font_family {
+                if let Some(wf_id) = crate::lookup_web_font(family) {
+                    for frag in &mut out[start_idx..] {
+                        frag.layout_box.custom_font_id = wf_id;
                     }
                 }
             }
@@ -207,6 +276,7 @@ fn collect_inline_fragments(
                 img.image_src = dom.attr(node_id, "src").map(|s| String::from(s));
                 img.image_width = Some(iw);
                 img.image_height = Some(ih);
+                img.object_fit = style.object_fit;
                 img.width = iw;
                 img.height = ih;
                 out.push(InlineFragment {
@@ -254,7 +324,7 @@ fn collect_inline_fragments(
             // Handle display: inline-block / inline-flex — lay out as block, emit as inline fragment.
             if matches!(style.display, Display::InlineBlock | Display::InlineFlex) {
                 use super::block::build_block;
-                let mut block_box = build_block(dom, styles, node_id, available_width, images, viewport_w);
+                let mut block_box = build_block(dom, styles, pseudo, node_id, available_width, images, viewport_w);
                 block_box.box_type = BoxType::InlineBlock;
                 let w = block_box.width + block_box.margin.left + block_box.margin.right;
                 let h = block_box.height + block_box.margin.top + block_box.margin.bottom;
@@ -275,6 +345,24 @@ fn collect_inline_fragments(
                 out.push(InlineFragment { width: left_space, height: 0, layout_box: spacer, breaks_after: false });
             }
 
+            // Inject ::before pseudo-element content.
+            if node_id < pseudo.before.len() {
+                if let Some(ref ps) = pseudo.before[node_id] {
+                    if let Some(ref text) = ps.content {
+                        if !text.is_empty() {
+                            let fs = if ps.font_size > 0 { ps.font_size } else { 16 };
+                            let bold = matches!(ps.font_weight, crate::style::FontWeight::Bold);
+                            let italic = matches!(ps.font_style, crate::style::FontStyleVal::Italic);
+                            let (tw, th) = measure_text(text, fs, bold);
+                            let mut tb = LayoutBox::new_text(text.clone(), fs, bold, italic, ps.color);
+                            tb.bg_color = ps.background_color;
+                            tb.text_decoration = ps.text_decoration;
+                            out.push(InlineFragment { width: tw, height: th, layout_box: tb, breaks_after: false });
+                        }
+                    }
+                }
+            }
+
             let children: Vec<NodeId> = node.children.iter().copied().collect();
             let child_bg = if style.background_color != 0 { style.background_color } else { inherited_bg };
             for &cid in &children {
@@ -282,7 +370,25 @@ fn collect_inline_fragments(
                 if cs.display == Display::None {
                     continue;
                 }
-                collect_inline_fragments(dom, styles, cid, out, available_width, images, child_bg, viewport_w);
+                collect_inline_fragments(dom, styles, pseudo, cid, out, available_width, images, child_bg, viewport_w);
+            }
+
+            // Inject ::after pseudo-element content.
+            if node_id < pseudo.after.len() {
+                if let Some(ref ps) = pseudo.after[node_id] {
+                    if let Some(ref text) = ps.content {
+                        if !text.is_empty() {
+                            let fs = if ps.font_size > 0 { ps.font_size } else { 16 };
+                            let bold = matches!(ps.font_weight, crate::style::FontWeight::Bold);
+                            let italic = matches!(ps.font_style, crate::style::FontStyleVal::Italic);
+                            let (tw, th) = measure_text(text, fs, bold);
+                            let mut tb = LayoutBox::new_text(text.clone(), fs, bold, italic, ps.color);
+                            tb.bg_color = ps.background_color;
+                            tb.text_decoration = ps.text_decoration;
+                            out.push(InlineFragment { width: tw, height: th, layout_box: tb, breaks_after: false });
+                        }
+                    }
+                }
             }
 
             // Right padding + margin → insert spacer.
@@ -440,6 +546,8 @@ fn emit_word_fragments(
     color: u32,
     link: Option<String>,
     deco: TextDeco,
+    letter_spacing: i32,
+    word_spacing: i32,
     out: &mut Vec<InlineFragment>,
 ) {
     let trimmed = text.as_bytes();
@@ -503,11 +611,13 @@ fn emit_word_fragments(
 
     for (wi, word) in words.iter().enumerate() {
         let (ww, wh) = measure_text(word, font_size, bold);
+        // Apply letter-spacing: add extra pixels per character.
+        let letter_extra = letter_spacing * (word.len().max(1) as i32 - 1).max(0);
         let mut wbox = LayoutBox::new_text(String::from(*word), font_size, bold, italic, color);
         wbox.link_url = link.clone();
         wbox.text_decoration = deco;
         out.push(InlineFragment {
-            width: ww,
+            width: ww + letter_extra,
             height: wh,
             layout_box: wbox,
             breaks_after: false,
@@ -516,11 +626,12 @@ fn emit_word_fragments(
         let need_space = wi + 1 < words.len() || has_trailing_space;
         if need_space {
             let (sw, sh) = measure_text(" ", font_size, bold);
+            // Apply word-spacing: add extra pixels to space between words.
             let mut sbox = LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
             sbox.link_url = link.clone();
             sbox.text_decoration = deco;
             out.push(InlineFragment {
-                width: sw,
+                width: sw + word_spacing,
                 height: sh,
                 layout_box: sbox,
                 breaks_after: false,

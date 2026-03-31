@@ -14,7 +14,7 @@
 //! wv.set_html("<h1>Hello World</h1><p>This is rendered with real controls.</p>");
 //! ```
 
-#![no_std]
+#![cfg_attr(not(feature = "host"), no_std)]
 
 extern crate alloc;
 
@@ -75,6 +75,20 @@ pub use layout::{LayoutBox, FormFieldKind};
 /// Uses viewport-based tile rendering: only the visible area (plus a buffer zone)
 /// is drawn into the canvas.  On scroll, the tile is re-rendered from the cached
 /// layout tree without a full CSS resolve or relayout.
+/// Global web font map pointer — set before layout, read by the renderer.
+/// Points to the current WebView's web_fonts Vec. Only valid during relayout.
+static mut WEB_FONT_MAP: *const Vec<(String, u32)> = core::ptr::null();
+
+/// Look up a web font ID by family name (called from renderer/layout).
+pub fn lookup_web_font(family: &str) -> Option<u32> {
+    unsafe {
+        if WEB_FONT_MAP.is_null() { return None; }
+        let map = &*WEB_FONT_MAP;
+        let lower = family.to_ascii_lowercase();
+        map.iter().find(|(f, _)| f == &lower).map(|(_, id)| *id)
+    }
+}
+
 pub struct WebView {
     scroll_view: ui::ScrollView,
     content_view: ui::View,
@@ -115,6 +129,8 @@ pub struct WebView {
     last_render_scroll_y: i32,
     /// Cached body background color for scroll re-renders.
     bg_color_cached: u32,
+    /// Web font mapping: (family_name_lowercase, font_id from libfont).
+    web_fonts: Vec<(String, u32)>,
 }
 
 impl WebView {
@@ -155,6 +171,7 @@ impl WebView {
             layout_root: None,
             last_render_scroll_y: 0,
             bg_color_cached: 0xFFFFFFFF,
+            web_fonts: Vec::new(),
         }
     }
 
@@ -196,6 +213,60 @@ impl WebView {
     /// hundreds of kilobytes of CSS text on every image or resource load.
     pub fn add_stylesheet(&mut self, css_text: &str) {
         self.external_sheets.push(css::parse_stylesheet(css_text));
+    }
+
+    /// Return `@import` URLs from the most recently added external stylesheet.
+    /// The caller should fetch these and add them as additional stylesheets.
+    pub fn last_stylesheet_imports(&self) -> &[String] {
+        if let Some(sheet) = self.external_sheets.last() {
+            &sheet.imports
+        } else {
+            &[]
+        }
+    }
+
+    /// Return `@font-face` rules from the most recently added external stylesheet.
+    pub fn last_stylesheet_font_faces(&self) -> &[css::FontFaceRule] {
+        if let Some(sheet) = self.external_sheets.last() {
+            &sheet.font_faces
+        } else {
+            &[]
+        }
+    }
+
+    /// Register a web font loaded from @font-face.
+    /// `family` is the CSS font-family name (will be lowercased for matching).
+    /// `font_id` is the ID returned by `libfont_client::load_data()`.
+    pub fn register_web_font(&mut self, family: &str, font_id: u32) {
+        let lower = family.to_ascii_lowercase();
+        // Replace existing entry for the same family.
+        if let Some(existing) = self.web_fonts.iter_mut().find(|(f, _)| f == &lower) {
+            existing.1 = font_id;
+        } else {
+            self.web_fonts.push((lower, font_id));
+        }
+    }
+
+    /// Look up a web font ID by family name. Returns None if not registered.
+    pub fn web_font_id(&self, family: &str) -> Option<u32> {
+        let lower = family.to_ascii_lowercase();
+        self.web_fonts.iter().find(|(f, _)| f == &lower).map(|(_, id)| *id)
+    }
+
+    /// Return all `@font-face` rules across all stylesheets (inline + external + default).
+    pub fn all_font_faces(&self) -> Vec<&css::FontFaceRule> {
+        let mut result = Vec::new();
+        for sheet in &self.external_sheets {
+            for ff in &sheet.font_faces {
+                result.push(ff);
+            }
+        }
+        for sheet in &self.inline_sheets {
+            for ff in &sheet.font_faces {
+                result.push(ff);
+            }
+        }
+        result
     }
 
     /// Clear all cached external and inline stylesheets.
@@ -266,6 +337,17 @@ impl WebView {
     /// Get the total document height in pixels.
     pub fn total_height(&self) -> i32 {
         self.total_height_val
+    }
+
+    /// Get the viewport height in pixels.
+    pub fn viewport_height(&self) -> u32 {
+        self.viewport_height
+    }
+
+    /// Render tiles for the given scroll position (public wrapper).
+    /// Returns `true` if there are pending tiles not yet rasterized.
+    pub fn render_viewport_at(&mut self, scroll_y: i32) -> bool {
+        self.render_viewport(scroll_y)
     }
 
     /// Resize the viewport and re-layout.
@@ -553,9 +635,9 @@ impl WebView {
 
         // Phase B: Resolve styles using zero-copy references to pre-parsed sheets.
         let vw = self.viewport_width;
-        let vh = self.total_height_val.max(self.viewport_width);
+        let vh = if self.viewport_height > 0 { self.viewport_height as i32 } else { self.viewport_width };
         debug_surf!("[webview] resolve_styles start ({} nodes)", d.nodes.len());
-        let styles = {
+        let (styles, pseudo_styles) = {
             let mut all_sheets: Vec<&css::Stylesheet> = Vec::with_capacity(
                 1 + self.external_sheets.len() + self.inline_sheets.len()
             );
@@ -578,7 +660,9 @@ impl WebView {
 
         // Layout.
         debug_surf!("[webview] layout start (viewport_width={})", self.viewport_width);
-        let root = layout::layout(d, &styles, self.viewport_width, &self.images);
+        // Set web font map for renderer access.
+        unsafe { WEB_FONT_MAP = &self.web_fonts as *const _; }
+        let root = layout::layout(d, &styles, &pseudo_styles, self.viewport_width, &self.images);
         self.total_height_val = calc_total_height(&root);
         #[cfg(feature = "debug_surf")]
         {

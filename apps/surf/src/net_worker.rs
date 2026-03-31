@@ -47,6 +47,13 @@ pub(crate) enum FetchRequest {
         url: Url,
         generation: u32,
     },
+    /// Web font fetch (@font-face src).
+    Font {
+        tab_index: usize,
+        family: String,
+        url: Url,
+        generation: u32,
+    },
 }
 
 /// A completed fetch result returned by the worker thread.
@@ -77,6 +84,13 @@ pub(crate) enum FetchResult {
         src: String,
         body: Vec<u8>,
         headers: String,
+        generation: u32,
+    },
+    /// Web font fetch completed successfully.
+    FontDone {
+        tab_index: usize,
+        family: String,
+        body: Vec<u8>,
         generation: u32,
     },
 }
@@ -203,7 +217,8 @@ pub(crate) fn new_generation() -> u32 {
             q.retain(|r| match r {
                 FetchRequest::Navigate { .. } | FetchRequest::NavigatePost { .. } => true,
                 FetchRequest::Css { generation, .. }
-                | FetchRequest::Image { generation, .. } => *generation == gen,
+                | FetchRequest::Image { generation, .. }
+                | FetchRequest::Font { generation, .. } => *generation == gen,
             });
         }
     }
@@ -215,7 +230,8 @@ pub(crate) fn new_generation() -> u32 {
             q.retain(|r| match r {
                 FetchResult::NavDone { .. } | FetchResult::NavError { .. } => true,
                 FetchResult::CssDone { generation, .. }
-                | FetchResult::ImageDone { generation, .. } => *generation == gen,
+                | FetchResult::ImageDone { generation, .. }
+                | FetchResult::FontDone { generation, .. } => *generation == gen,
             });
         }
     }
@@ -476,6 +492,24 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                         src,
                         body: resp.body,
                         headers: resp.headers,
+                        generation,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        FetchRequest::Font { tab_index, family, url, generation } => {
+            if generation != current_gen {
+                return;
+            }
+
+            match http::fetch(&url, &mut CookieJar::new(), pool) {
+                Ok(resp) => {
+                    enqueue_result(FetchResult::FontDone {
+                        tab_index,
+                        family,
+                        body: resp.body,
                         generation,
                     });
                 }

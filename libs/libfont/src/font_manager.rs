@@ -27,12 +27,21 @@ static mut GAMMA_LUT_M: [u8; 256] = [0u8; 256];
 
 /// Address of the `font_smoothing` field in the uisys DLL export struct.
 /// 0 = no smoothing, 1 = greyscale AA, 2 = subpixel LCD.
+#[cfg(not(feature = "host"))]
 const FONT_SMOOTHING_ADDR: *const u32 = 0x0400_0010 as *const u32;
 
 /// Read the font smoothing mode from the shared uisys DLL page.
+#[cfg(not(feature = "host"))]
 #[inline(always)]
 fn read_font_smoothing() -> u32 {
     unsafe { core::ptr::read_volatile(FONT_SMOOTHING_ADDR) }
+}
+
+/// On host: always return greyscale AA mode.
+#[cfg(feature = "host")]
+#[inline(always)]
+fn read_font_smoothing() -> u32 {
+    1 // greyscale AA
 }
 
 /// Maximum number of cached glyphs before LRU eviction.
@@ -479,6 +488,18 @@ pub fn load_font(path: &[u8]) -> u32 {
     };
     let data = match syscall::read_file(path) {
         Some(d) => d,
+        None => return u32::MAX,
+    };
+    match TtfFont::parse(data) {
+        Some(ttf) => mgr.add_font(ttf) as u32,
+        None => u32::MAX,
+    }
+}
+
+/// Load a font from raw TTF data in memory. Returns font_id or u32::MAX.
+pub fn load_font_data(data: alloc::vec::Vec<u8>) -> u32 {
+    let mgr = match ensure_init() {
+        Some(m) => m,
         None => return u32::MAX,
     };
     match TtfFont::parse(data) {

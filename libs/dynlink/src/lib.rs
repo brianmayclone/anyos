@@ -13,13 +13,25 @@
 //! init();
 //! ```
 
-#![no_std]
+#![cfg_attr(not(feature = "host"), no_std)]
 
+#[cfg(not(feature = "host"))]
 mod elf;
 
+#[cfg(not(feature = "host"))]
 use elf::{Elf64Dyn, Elf64Ehdr, Elf64Phdr, Elf64Sym};
 
+/// Dummy handle for host mode.
+#[cfg(feature = "host")]
+pub struct DlHandle;
+
+#[cfg(feature = "host")]
+unsafe impl Send for DlHandle {}
+#[cfg(feature = "host")]
+unsafe impl Sync for DlHandle {}
+
 /// Handle to a loaded shared library.
+#[cfg(not(feature = "host"))]
 pub struct DlHandle {
     /// Base virtual address where the .so is mapped.
     pub base: u64,
@@ -36,9 +48,12 @@ pub struct DlHandle {
 }
 
 // DlHandle contains raw pointers but we only use them for reads in the same address space.
+#[cfg(not(feature = "host"))]
 unsafe impl Send for DlHandle {}
+#[cfg(not(feature = "host"))]
 unsafe impl Sync for DlHandle {}
 
+#[cfg(not(feature = "host"))]
 /// Load a shared library by path.
 ///
 /// Calls `SYS_DLL_LOAD` to map the .so into the process, then parses the
@@ -139,6 +154,7 @@ pub fn dl_open(path: &str) -> Option<DlHandle> {
     })
 }
 
+#[cfg(not(feature = "host"))]
 /// Look up a symbol by name in a loaded shared library.
 ///
 /// Returns the symbol's virtual address as a raw pointer, or `None` if not found.
@@ -164,26 +180,35 @@ pub fn dl_sym(handle: &DlHandle, name: &str) -> Option<*const ()> {
 
 // ── dll_exports! macro ──────────────────────────────────────────────────────
 
-/// Generate the boilerplate for a shared-library client crate.
-///
-/// Generates a private struct holding function pointers, a `static mut` global,
-/// a `lib()` accessor, and a public `init() -> bool` that loads the library
-/// and resolves all symbols.
-///
-/// # Example
-/// ```ignore
-/// dynlink::dll_exports! {
-///     lib_path: "/Libraries/libfont.so",
-///     lib_struct: FontLib,
-///     init_call: "font_init",  // optional: symbol called after resolve
-///     symbols: {
-///         font_load(path_ptr: *const u8, len: u32) -> u32,
-///         font_unload(id: u32) -> (),
-///     }
-/// }
-///
-/// // Now you can call:  init(), and lib().font_load, lib().font_unload, etc.
-/// ```
+/// Host-mode: dll_exports! generates a stub that always succeeds.
+/// The actual function implementations must be linked in via the host
+/// feature of the specific client crate (e.g., libfont_client).
+#[cfg(feature = "host")]
+#[macro_export]
+macro_rules! dll_exports {
+    (
+        lib_path: $path:expr,
+        lib_struct: $name:ident,
+        init_call: $init_sym:expr,
+        symbols: {
+            $( $sym:ident ( $($pname:ident : $pty:ty),* $(,)? ) -> $ret:ty ),+ $(,)?
+        }
+    ) => {
+        // Host mode: no DLL loading needed.
+        // Client crates provide their own host implementations.
+    };
+    (
+        lib_path: $path:expr,
+        lib_struct: $name:ident,
+        symbols: {
+            $( $sym:ident ( $($pname:ident : $pty:ty),* $(,)? ) -> $ret:ty ),+ $(,)?
+        }
+    ) => {
+        // Host mode: no DLL loading needed.
+    };
+}
+
+#[cfg(not(feature = "host"))]
 #[macro_export]
 macro_rules! dll_exports {
     (
@@ -288,6 +313,7 @@ macro_rules! dll_exports {
     };
 }
 
+#[cfg(not(feature = "host"))]
 /// ELF hash function (SysV ABI).
 fn elf_hash(name: &[u8]) -> u32 {
     let mut h: u32 = 0;
@@ -302,6 +328,7 @@ fn elf_hash(name: &[u8]) -> u32 {
     h
 }
 
+#[cfg(not(feature = "host"))]
 /// Compare a NUL-terminated C string with a Rust byte slice.
 unsafe fn cstr_eq(cstr: *const u8, name: &[u8]) -> bool {
     for (i, &b) in name.iter().enumerate() {

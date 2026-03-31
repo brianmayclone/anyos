@@ -1,41 +1,105 @@
-#![no_std]
-#![feature(alloc_error_handler)]
+#![cfg_attr(not(feature = "host"), no_std)]
+#![cfg_attr(not(feature = "host"), feature(alloc_error_handler))]
 
 extern crate alloc;
 
+// ── Platform-specific modules ────────────────────────────────────────────────
+
+#[cfg(not(feature = "host"))]
 mod raw;
 
-pub mod args;
-pub mod anim;
-pub mod shell;
-pub mod collections;
-pub mod debug;
-pub mod hashmap;
-pub mod audio;
-pub mod bundle;
-pub mod crypto;
-pub mod dll;
+// Modules with host-mode alternatives (use #[path] to swap implementations)
+#[cfg(not(feature = "host"))]
+pub mod fs;
+#[cfg(feature = "host")]
+#[path = "host/fs.rs"]
+pub mod fs;
+
+#[cfg(not(feature = "host"))]
+pub mod heap;
+#[cfg(feature = "host")]
+#[path = "host/heap.rs"]
+pub mod heap;
+
+#[cfg(not(feature = "host"))]
+pub mod io;
+#[cfg(feature = "host")]
+#[path = "host/io.rs"]
+pub mod io;
+
+#[cfg(not(feature = "host"))]
+pub mod process;
+#[cfg(feature = "host")]
+#[path = "host/process.rs"]
+pub mod process;
+
+#[cfg(not(feature = "host"))]
+pub mod net;
+#[cfg(feature = "host")]
+#[path = "host/net.rs"]
+pub mod net;
+
+#[cfg(not(feature = "host"))]
+pub mod sys;
+#[cfg(feature = "host")]
+#[path = "host/sys.rs"]
+pub mod sys;
+
+#[cfg(not(feature = "host"))]
+pub mod i18n;
+#[cfg(feature = "host")]
+#[path = "host/i18n.rs"]
+pub mod i18n;
+
+#[cfg(not(feature = "host"))]
 pub mod env;
+#[cfg(feature = "host")]
+#[path = "host/env.rs"]
+pub mod env;
+
+// ── Platform-independent modules ─────────────────────────────────────────────
+
+pub mod args;
+pub mod collections;
 pub mod error;
 pub mod fmt;
-pub mod fs;
-pub mod heap;
-pub mod i18n;
-pub mod icons;
-pub mod io;
-pub mod ipc;
-pub mod log;
+pub mod hashmap;
 pub mod json;
-pub mod kbd;
-pub mod net;
 pub mod path;
-pub mod permissions;
-pub mod prelude;
-pub mod process;
-pub mod sys;
-pub mod ui;
-pub mod users;
 pub mod xml;
+
+// ── anyOS-only modules (not needed on host) ──────────────────────────────────
+
+#[cfg(not(feature = "host"))]
+pub mod anim;
+#[cfg(not(feature = "host"))]
+pub mod audio;
+#[cfg(not(feature = "host"))]
+pub mod bundle;
+#[cfg(not(feature = "host"))]
+pub mod crypto;
+#[cfg(not(feature = "host"))]
+pub mod debug;
+#[cfg(not(feature = "host"))]
+pub mod dll;
+#[cfg(not(feature = "host"))]
+pub mod icons;
+#[cfg(not(feature = "host"))]
+pub mod ipc;
+#[cfg(not(feature = "host"))]
+pub mod kbd;
+#[cfg(not(feature = "host"))]
+pub mod log;
+#[cfg(not(feature = "host"))]
+pub mod permissions;
+#[cfg(not(feature = "host"))]
+pub mod prelude;
+#[cfg(not(feature = "host"))]
+pub mod shell;
+#[cfg(not(feature = "host"))]
+pub mod ui;
+#[cfg(not(feature = "host"))]
+pub mod users;
 
 // ── Global app state macro ──────────────────────────────────────────────────
 
@@ -93,7 +157,6 @@ impl MainReturn for error::Result<()> {
             Ok(()) => 0,
             Err(e) => {
                 io::_print_str("Error: ");
-                // Use Display impl via format_args
                 let _ = core::fmt::Write::write_fmt(
                     &mut io::Stdout,
                     format_args!("{}\n", e),
@@ -104,20 +167,28 @@ impl MainReturn for error::Result<()> {
     }
 }
 
-/// Entry point macro for .anyOS user programs.
+// ── Print macros ─────────────────────────────────────────────────────────────
+
+/// Print formatted text to stdout (no newline).
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => ($crate::io::_print(format_args!($($arg)*)));
+}
+
+/// Print formatted text to stdout with a trailing newline.
+#[macro_export]
+macro_rules! println {
+    () => ($crate::print!("\n"));
+    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
+}
+
+// ── Entry point ──────────────────────────────────────────────────────────────
+
+/// Entry point macro for anyOS user programs.
 ///
-/// Generates `_start` entry point and `extern crate alloc`.
-/// The stdlib provides `#[panic_handler]` and `#[global_allocator]`.
-///
-/// Usage:
-/// ```ignore
-/// #![no_std]
-/// #![no_main]
-/// anyos_std::entry!(main);
-/// fn main() { ... }                              // returns exit code 0
-/// fn main() -> u32 { 42 }                       // returns exit code 42
-/// fn main() -> anyos_std::error::Result<()> { Ok(()) }  // Result support
-/// ```
+/// On anyOS: generates `_start` with heap init and panic/alloc error handlers.
+/// On host: generates a normal `fn main()`.
+#[cfg(not(feature = "host"))]
 #[macro_export]
 macro_rules! entry {
     ($main:path) => {
@@ -132,12 +203,29 @@ macro_rules! entry {
     };
 }
 
+#[cfg(feature = "host")]
+#[macro_export]
+macro_rules! entry {
+    ($main:path) => {
+        fn main() {
+            let code = $crate::MainReturn::to_exit_code($main());
+            if code != 0 {
+                std::process::exit(code as i32);
+            }
+        }
+    };
+}
+
+// ── Panic/alloc handlers (anyOS only) ────────────────────────────────────────
+
+#[cfg(not(feature = "host"))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     io::_print_panic(info);
     process::exit(1);
 }
 
+#[cfg(not(feature = "host"))]
 #[alloc_error_handler]
 fn alloc_error(_layout: core::alloc::Layout) -> ! {
     io::_print_str("ALLOC ERROR: out of memory\n");
