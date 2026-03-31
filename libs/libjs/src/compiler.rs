@@ -129,6 +129,16 @@ impl Compiler {
 
     /// Compile a program into a top-level chunk.
     pub fn compile(&mut self, program: &Program) -> Chunk {
+        self.compile_program(program, false)
+    }
+
+    /// Compile for eval(): the last expression statement's value is returned
+    /// instead of being discarded (ES2023 §19.2.1.1 PerformEval).
+    pub fn compile_eval(&mut self, program: &Program) -> Chunk {
+        self.compile_program(program, true)
+    }
+
+    fn compile_program(&mut self, program: &Program, is_eval: bool) -> Chunk {
         self.scopes.push(Scope::new());
 
         // Detect "use strict" directive at the beginning of the program
@@ -138,7 +148,20 @@ impl Compiler {
             }
         }
 
-        for stmt in &program.body {
+        let body_len = program.body.len();
+        for (i, stmt) in program.body.iter().enumerate() {
+            let is_last = i == body_len - 1;
+            if is_eval && is_last {
+                // For eval: if the last statement is an expression statement,
+                // compile it without popping so the value is returned.
+                if let Stmt::Expr(expr) = stmt {
+                    self.compile_expr(expr);
+                    self.emit(Op::Return);
+                    let mut chunk = self.scopes.pop().unwrap().chunk;
+                    chunk.strict = self.is_strict;
+                    return chunk;
+                }
+            }
             self.compile_stmt(stmt);
         }
         // Implicit return undefined

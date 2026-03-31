@@ -171,6 +171,11 @@ impl Vm {
         obj.prototype = Some(self.error_proto.clone());
         obj.set(String::from("name"), JsValue::String(String::from("TypeError")));
         obj.set(String::from("message"), JsValue::String(String::from(message)));
+        // Set constructor so assert.throws(TypeError, ...) can identify the error type
+        let ctor = self.globals.get("TypeError");
+        if !matches!(ctor, JsValue::Undefined) {
+            obj.set(String::from("constructor"), ctor);
+        }
         JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 
@@ -346,7 +351,53 @@ impl Vm {
                 Op::Add => {
                     let b = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let a = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    self.stack.push(self.op_add(&a, &b));
+
+                    let depth_before = self.frames.len();
+
+                    // ToPrimitive(a, "default")
+                    let a_prim = if matches!(a, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) {
+                        let result = self.to_primitive_for_op(a, "default");
+                        if self.frames.len() < depth_before { continue; }
+                        if let Some(exc) = self.pending_exception.take() {
+                            if !self.handle_exception(exc) { return JsValue::Undefined; }
+                            continue;
+                        }
+                        result
+                    } else { a };
+
+                    // ToPrimitive(b, "default")
+                    let b_prim = if matches!(b, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) {
+                        let result = self.to_primitive_for_op(b, "default");
+                        if self.frames.len() < depth_before { continue; }
+                        if let Some(exc) = self.pending_exception.take() {
+                            if !self.handle_exception(exc) { return JsValue::Undefined; }
+                            continue;
+                        }
+                        result
+                    } else { b };
+
+                    // Symbol value + anything → TypeError
+                    if is_symbol_value(&a_prim) || is_symbol_value(&b_prim) {
+                        let err = self.make_type_error("Cannot convert a Symbol value to a string");
+                        if !self.handle_exception(err) { return JsValue::Undefined; }
+                        continue;
+                    }
+
+                    // Perform addition
+                    let result = match (&a_prim, &b_prim) {
+                        (JsValue::String(sa), _) => {
+                            let mut r = sa.clone();
+                            r.push_str(&b_prim.to_js_string());
+                            JsValue::String(r)
+                        }
+                        (_, JsValue::String(sb)) => {
+                            let mut r = a_prim.to_js_string();
+                            r.push_str(sb);
+                            JsValue::String(r)
+                        }
+                        _ => JsValue::Number(a_prim.to_number() + b_prim.to_number()),
+                    };
+                    self.stack.push(result);
                 }
                 Op::Sub => self.binary_num_op(|a, b| a - b),
                 Op::Mul => self.binary_num_op(|a, b| a * b),
@@ -485,16 +536,23 @@ impl Vm {
                     // Populate `params` with `param_count` entries so `fn.length` works.
                     let param_stubs: Vec<alloc::string::String> =
                         (0..chunk.param_count).map(|_| alloc::string::String::new()).collect();
-                    let func = JsFunction {
+                    let func_rc = Rc::new(RefCell::new(JsFunction {
                         name: chunk.name.clone(),
                         params: param_stubs,
                         kind: FnKind::Bytecode(chunk),
                         this_binding: None,
                         upvalues: upvalue_cells,
-                        prototype: Some(Rc::new(RefCell::new(JsObject::new()))),
+                        prototype: None, // lazy-created with constructor on first access
                         own_props: BTreeMap::new(),
-                    };
-                    self.stack.push(JsValue::Function(Rc::new(RefCell::new(func))));
+                    }));
+                    // Create the prototype with constructor back-link now
+                    let proto = Rc::new(RefCell::new(JsObject::new()));
+                    proto.borrow_mut().set(
+                        String::from("constructor"),
+                        JsValue::Function(func_rc.clone()),
+                    );
+                    func_rc.borrow_mut().prototype = Some(proto);
+                    self.stack.push(JsValue::Function(func_rc));
                 }
 
                 // ── Objects and Properties ──
@@ -689,6 +747,41 @@ impl Vm {
                                     let mut cs = String::new();
                                     cs.push(ch);
                                     tgt_rc.borrow_mut().elements.push(JsValue::String(cs));
+                                }
+                            }
+                            JsValue::Object(_) => {
+                                // Use Symbol.iterator protocol
+                                let depth_before = self.frames.len();
+                                let sym_iter_key = native_symbol::WELL_KNOWN_ITERATOR;
+                                let iter_fn = self.get_property_with_proto(&src, sym_iter_key);
+                                if matches!(iter_fn, JsValue::Function(_)) {
+                                    let iterator = self.call_value(&iter_fn, &[], src.clone());
+                                    if self.frames.len() < depth_before {
+                                        self.stack.push(tgt);
+                                        continue;
+                                    }
+                                    if let Some(exc) = self.pending_exception.take() {
+                                        if !self.handle_exception(exc) { return JsValue::Undefined; }
+                                        self.stack.push(tgt);
+                                        continue;
+                                    }
+                                    // Call next() repeatedly
+                                    loop {
+                                        let next_fn = self.get_property_with_proto(&iterator, "next");
+                                        if !matches!(next_fn, JsValue::Function(_)) { break; }
+                                        let next_result = self.call_value(&next_fn, &[], iterator.clone());
+                                        if self.frames.len() < depth_before { break; }
+                                        if let Some(exc) = self.pending_exception.take() {
+                                            if !self.handle_exception(exc) { return JsValue::Undefined; }
+                                            break;
+                                        }
+                                        let done = self.get_property_with_proto(&next_result, "done");
+                                        let value = self.get_property_with_proto(&next_result, "value");
+                                        if done.to_boolean() {
+                                            break;
+                                        }
+                                        tgt_rc.borrow_mut().elements.push(value);
+                                    }
                                 }
                             }
                             _ => {}
@@ -1034,8 +1127,13 @@ impl Vm {
                         return JsValue::Object(proto.clone());
                     }
                     // Create and cache a new prototype on first access.
+                    // Set constructor back to the function (ES2023 §10.2.4).
                     drop(func);
                     let proto = Rc::new(RefCell::new(JsObject::new()));
+                    proto.borrow_mut().set(
+                        String::from("constructor"),
+                        JsValue::Function(f.clone()),
+                    );
                     f.borrow_mut().prototype = Some(proto.clone());
                     return JsValue::Object(proto);
                 }
@@ -1044,6 +1142,114 @@ impl Vm {
             }
             _ => JsValue::Undefined,
         }
+    }
+
+    /// ES Abstract ToPrimitive(val, hint) — converts objects to primitives.
+    /// Returns the primitive value, or Undefined if an exception was set in pending_exception.
+    pub fn to_primitive_for_op(&mut self, val: JsValue, hint: &str) -> JsValue {
+        // Already a primitive?
+        if !matches!(val, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) {
+            return val;
+        }
+
+        // Date objects override ToPrimitive: "default" hint becomes "string"
+        // (per ES2023 §21.4.4.45 Date.prototype[@@toPrimitive])
+        let effective_hint = if hint == "default" {
+            if let JsValue::Object(obj) = &val {
+                if obj.borrow().internal_tag.as_deref() == Some("__date__") {
+                    "string"
+                } else {
+                    hint
+                }
+            } else {
+                hint
+            }
+        } else {
+            hint
+        };
+
+        // Check for Symbol.toPrimitive method
+        // get_property_with_proto returns the getter function for accessor properties,
+        // so we need to check if the property is an accessor and invoke the getter.
+        let sym_to_prim_key = native_symbol::WELL_KNOWN_TO_PRIMITIVE;
+        let raw_prop = self.get_property_with_proto(&val, sym_to_prim_key);
+        let to_prim_fn = if matches!(raw_prop, JsValue::Function(_)) {
+            // Could be a getter or the actual toPrimitive function.
+            // Check if the property is defined as an accessor on the object.
+            let is_getter = if let JsValue::Object(obj) = &val {
+                let o = obj.borrow();
+                o.properties.get(sym_to_prim_key).map(|p| p.is_accessor()).unwrap_or(false)
+            } else { false };
+            if is_getter {
+                // Invoke the getter to get the actual toPrimitive value
+                let getter_result = self.call_value(&raw_prop, &[], val.clone());
+                if let Some(exc) = self.last_exception.take() {
+                    self.pending_exception = Some(exc);
+                    return JsValue::Undefined;
+                }
+                if self.pending_exception.is_some() {
+                    return JsValue::Undefined;
+                }
+                getter_result
+            } else {
+                raw_prop
+            }
+        } else {
+            raw_prop
+        };
+        if matches!(to_prim_fn, JsValue::Function(_)) {
+            let hint_val = JsValue::String(alloc::string::String::from(effective_hint));
+            let result = self.call_value(&to_prim_fn, &[hint_val], val.clone());
+            if self.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
+            if let Some(exc) = self.last_exception.take() {
+                self.pending_exception = Some(exc);
+                return JsValue::Undefined;
+            }
+            // If result is still an object, throw TypeError
+            if matches!(result, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) {
+                let err = self.make_type_error("Cannot convert object to primitive value");
+                self.pending_exception = Some(err);
+                return JsValue::Undefined;
+            }
+            return result;
+        }
+
+        // No Symbol.toPrimitive — use valueOf/toString
+        // "string" hint: toString first, then valueOf
+        // "number" and "default" hints: valueOf first, then toString
+        let methods: &[&str] = if effective_hint == "string" {
+            &["toString", "valueOf"]
+        } else {
+            &["valueOf", "toString"]
+        };
+
+        for &method_name in methods {
+            let method = self.get_property_with_proto(&val, method_name);
+            if matches!(method, JsValue::Function(_)) {
+                let result = self.call_value(&method, &[], val.clone());
+                if self.pending_exception.is_some() {
+                    return JsValue::Undefined;
+                }
+                // If the called function threw (unhandled → last_exception),
+                // propagate it as pending_exception for the caller to handle.
+                if let Some(exc) = self.last_exception.take() {
+                    self.pending_exception = Some(exc);
+                    return JsValue::Undefined;
+                }
+                // Primitive result — use it
+                if !matches!(result, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) {
+                    return result;
+                }
+                // Object/Function result — try next method
+            }
+        }
+
+        // Both methods failed to return a primitive
+        let err = self.make_type_error("Cannot convert object to primitive value");
+        self.pending_exception = Some(err);
+        JsValue::Undefined
     }
 
     pub fn op_add(&self, a: &JsValue, b: &JsValue) -> JsValue {
@@ -1086,21 +1292,28 @@ impl Vm {
     }
 
     fn handle_exception(&mut self, val: JsValue) -> bool {
-        if let Some(handler) = self.try_handlers.pop() {
-            self.stack.truncate(handler.stack_depth);
-            while self.frames.len() > handler.frame_depth {
-                self.frames.pop();
+        // Only use try handlers that belong to the current run scope.
+        // Handlers with frame_depth <= run_target_depth belong to a parent
+        // call_value context and must not catch exceptions from this scope
+        // (e.g. valueOf/toString called during ToPrimitive should not be
+        // caught by an outer try/catch).
+        if let Some(handler) = self.try_handlers.last() {
+            if handler.frame_depth > self.run_target_depth {
+                let handler = self.try_handlers.pop().unwrap();
+                self.stack.truncate(handler.stack_depth);
+                while self.frames.len() > handler.frame_depth {
+                    self.frames.pop();
+                }
+                if let Some(frame) = self.frames.last_mut() {
+                    frame.ip = handler.catch_ip;
+                }
+                self.stack.push(val);
+                return true;
             }
-            if let Some(frame) = self.frames.last_mut() {
-                frame.ip = handler.catch_ip;
-            }
-            self.stack.push(val);
-            true
-        } else {
-            self.log_engine("[libjs] WARN: unhandled exception");
-            self.last_exception = Some(val);
-            false
         }
+        self.log_engine("[libjs] WARN: unhandled exception");
+        self.last_exception = Some(val);
+        false
     }
 
     /// Run a generator function's bytecode from a saved state until Yield or Return.
@@ -1162,6 +1375,11 @@ impl Vm {
 }
 
 // ── Free functions ──
+
+/// Returns true if the value is a JavaScript Symbol (stored as a special prefixed string).
+pub fn is_symbol_value(val: &JsValue) -> bool {
+    matches!(val, JsValue::String(s) if s.starts_with("__symbol__") || s.starts_with("__symbol_global__"))
+}
 
 /// Walk prototype chain (free function to avoid borrow conflicts on Vm).
 pub fn get_proto_prop_rc(proto: &Rc<RefCell<JsObject>>, key: &str) -> JsValue {

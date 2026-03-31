@@ -288,6 +288,33 @@ fn collect_inline_fragments(
                 return;
             }
 
+            // Handle inline <svg> as replaced element.
+            if *tag == Tag::Svg {
+                let key = super::svg_inline_key(node_id);
+                let natural = images.get_ref(&key).map(|e| {
+                    (e.width.min(65535) as i32, e.height.min(65535) as i32)
+                });
+                let iw = dom.attr(node_id, "width").and_then(parse_attr_int)
+                    .or(natural.map(|(w, _)| w)).unwrap_or(100);
+                let ih = dom.attr(node_id, "height").and_then(parse_attr_int)
+                    .or(natural.map(|(_, h)| h)).unwrap_or(100);
+                let iw = iw.min(available_width.max(1));
+                let mut img = LayoutBox::new(Some(node_id), BoxType::Inline);
+                img.image_src = Some(key);
+                img.image_width = Some(iw);
+                img.image_height = Some(ih);
+                img.object_fit = style.object_fit;
+                img.width = iw;
+                img.height = ih;
+                out.push(InlineFragment {
+                    width: iw,
+                    height: ih,
+                    layout_box: img,
+                    breaks_after: false,
+                });
+                return;
+            }
+
             // Handle <input>
             if *tag == Tag::Input {
                 emit_input_fragment(dom, styles, node_id, out);

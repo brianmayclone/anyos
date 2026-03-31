@@ -182,11 +182,80 @@ pub(crate) fn queue_font_faces(
 }
 
 // ═══════════════════════════════════════════════════════════
+// Base64 decode (for data: URI support)
+// ═══════════════════════════════════════════════════════════
+
+/// Decode a base64-encoded byte slice to raw bytes.
+///
+/// Skips whitespace characters (newlines, spaces, tabs) which are legal inside
+/// base64 data URIs. Returns an empty Vec on invalid input.
+fn base64_decode(input: &[u8]) -> Vec<u8> {
+    static TABLE: [i8; 256] = {
+        let mut t = [-1i8; 256];
+        let mut i = 0usize;
+        while i < 26 { t[b'A' as usize + i] = i as i8; i += 1; }
+        let mut i = 0usize;
+        while i < 26 { t[b'a' as usize + i] = (26 + i) as i8; i += 1; }
+        let mut i = 0usize;
+        while i < 10 { t[b'0' as usize + i] = (52 + i) as i8; i += 1; }
+        t[b'+' as usize] = 62; t[b'/' as usize] = 63;
+        t
+    };
+    let mut out = Vec::new();
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for &b in input {
+        if b == b'=' { break; }
+        if b == b' ' || b == b'\n' || b == b'\r' || b == b'\t' { continue; }
+        let v = TABLE[b as usize];
+        if v < 0 { continue; }
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xFF) as u8);
+        }
+    }
+    out
+}
+
+/// Parse a `data:` URI into raw bytes and whether it is SVG.
+///
+/// Returns `None` for URIs that are not image data URIs or cannot be decoded.
+fn decode_data_uri(src: &str) -> Option<(Vec<u8>, bool)> {
+    let rest = src.strip_prefix("data:")?;
+    let comma = rest.find(',')?;
+    let meta = &rest[..comma];
+    let payload = &rest[comma + 1..];
+
+    // Determine MIME type (first segment before ';')
+    let mime = meta.split(';').next().unwrap_or("").trim();
+    // Only handle image/* MIME types
+    if !mime.starts_with("image/") && !mime.eq_ignore_ascii_case("image/svg+xml") {
+        return None;
+    }
+    let is_svg = mime.eq_ignore_ascii_case("image/svg+xml")
+        || mime.eq_ignore_ascii_case("image/svg");
+
+    let is_base64 = meta.contains(";base64");
+    let bytes = if is_base64 {
+        base64_decode(payload.as_bytes())
+    } else {
+        // URL-encoded (rare for images) — treat payload as UTF-8 bytes directly
+        payload.as_bytes().to_vec()
+    };
+
+    if bytes.is_empty() { return None; }
+    Some((bytes, is_svg))
+}
+
+// ═══════════════════════════════════════════════════════════
 // Image discovery — submits to network worker
 // ═══════════════════════════════════════════════════════════
 
 /// Scan the DOM for `<img src="…">` tags and submit them to the background
-/// network worker for async fetching.
+/// network worker for async fetching. `data:` URIs are decoded inline without
+/// a network round-trip and added directly to the image cache.
 pub(crate) fn queue_images(
     dom: &libwebview::dom::Dom,
     base_url: &crate::http::Url,
@@ -202,9 +271,21 @@ pub(crate) fn queue_images(
         } = &node.node_type
         {
             if let Some(src) = dom.attr(i, "src") {
-                if src.is_empty() || src.starts_with("data:") {
+                if src.is_empty() { continue; }
+
+                if src.starts_with("data:") {
+                    // Decode inline — no network fetch needed.
+                    if let Some((bytes, is_svg)) = decode_data_uri(src) {
+                        let key = String::from(src);
+                        if is_svg {
+                            decode_svg_no_relayout(&bytes, &key, tab_index);
+                        } else {
+                            decode_raster_no_relayout(&bytes, &key, tab_index);
+                        }
+                    }
                     continue;
                 }
+
                 let img_url = crate::http::resolve_url(base_url, src);
                 crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
                     tab_index,
@@ -220,6 +301,103 @@ pub(crate) fn queue_images(
     if count > 0 {
         anyos_std::println!("[surf] submitted {} image(s) to worker", count);
         crate::ensure_net_poll_timer();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Inline SVG discovery — rasterises <svg>…</svg> blocks
+// ═══════════════════════════════════════════════════════════
+
+/// Generate the synthetic image-cache key used for an inline `<svg>` node.
+pub(crate) fn inline_svg_key(node_id: usize) -> String {
+    let mut s = String::from("__svg_");
+    // Append node_id as decimal without format! macro
+    let mut n = node_id;
+    if n == 0 {
+        s.push('0');
+    } else {
+        let mut buf = [0u8; 20];
+        let mut pos = 20;
+        while n > 0 { pos -= 1; buf[pos] = b'0' + (n % 10) as u8; n /= 10; }
+        for &b in &buf[pos..] { s.push(b as char); }
+    }
+    s.push_str("__");
+    s
+}
+
+/// Scan the DOM for `<svg>` nodes whose raw SVG markup has been captured as a
+/// child text node by the HTML parser (see `html.rs` where `svg` is treated as
+/// a raw-text element), rasterise each one with `libsvg_client`, and store the
+/// result in the image cache under the synthetic key `__svg_<node_id>__`.
+///
+/// Called once per page load, immediately after `queue_images()`.
+pub(crate) fn queue_inline_svgs(dom: &libwebview::dom::Dom, tab_index: usize) {
+    let mut count = 0u32;
+
+    for (node_id, node) in dom.nodes.iter().enumerate() {
+        if let libwebview::dom::NodeType::Element {
+            tag: libwebview::dom::Tag::Svg,
+            attrs,
+            ..
+        } = &node.node_type
+        {
+            // The HTML parser stores the raw SVG inner-markup as a single Text child.
+            let inner = node.children.iter().find_map(|&child| {
+                if let libwebview::dom::NodeType::Text(ref s) = dom.nodes[child].node_type {
+                    if !s.is_empty() { Some(s.as_str()) } else { None }
+                } else {
+                    None
+                }
+            });
+
+            let inner = match inner {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // Reconstruct a self-contained SVG document from attrs + inner markup.
+            let mut svg = String::from("<svg");
+            // Pass through known SVG attributes
+            for attr in attrs {
+                let n = attr.name.as_str();
+                if matches!(n, "width"|"height"|"viewBox"|"viewbox"|"xmlns"|"version"
+                    |"fill"|"stroke"|"class"|"id"|"style"|"preserveAspectRatio") {
+                    svg.push(' ');
+                    svg.push_str(n);
+                    svg.push_str("=\"");
+                    // Basic XML attribute escaping
+                    for c in attr.value.chars() {
+                        match c {
+                            '"' => svg.push_str("&quot;"),
+                            '&' => svg.push_str("&amp;"),
+                            '<' => svg.push_str("&lt;"),
+                            '>' => svg.push_str("&gt;"),
+                            c => svg.push(c),
+                        }
+                    }
+                    svg.push('"');
+                }
+            }
+            // Ensure there is an xmlns so libsvg is happy
+            if !attrs.iter().any(|a| a.name == "xmlns") {
+                svg.push_str(" xmlns=\"http://www.w3.org/2000/svg\"");
+            }
+            svg.push('>');
+            svg.push_str(inner);
+            svg.push_str("</svg>");
+
+            let key = inline_svg_key(node_id);
+            decode_svg_no_relayout(svg.as_bytes(), &key, tab_index);
+            count += 1;
+        }
+    }
+
+    if count > 0 {
+        anyos_std::println!("[surf] rasterised {} inline SVG(s)", count);
+        let st = crate::state();
+        if tab_index < st.tabs.len() {
+            st.tabs[tab_index].webview.relayout();
+        }
     }
 }
 

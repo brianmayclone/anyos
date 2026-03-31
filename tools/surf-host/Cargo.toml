@@ -13,7 +13,7 @@ anyos_std = { path = "../../libs/stdlib", features = ["host"] }
 # Host-native dependencies
 minifb = "0.28"
 ureq = { version = "2", features = ["tls"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "ico"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "ico", "webp"] }
 resvg = "0.45"
 
 # Standalone project — not part of the anyOS workspace.

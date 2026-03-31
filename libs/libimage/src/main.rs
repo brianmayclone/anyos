@@ -15,6 +15,7 @@ pub mod jpeg;
 pub mod jpeg_tables;
 pub mod gif;
 pub mod ico;
+pub mod webp;
 pub mod lzw;
 pub mod video;
 pub mod scale;

@@ -12,7 +12,17 @@ use super::Vm;
 // ═══════════════════════════════════════════════════════════
 
 fn this_string(vm: &Vm) -> String {
-    vm.current_this.to_js_string()
+    match &vm.current_this {
+        JsValue::String(s) => s.clone(),
+        JsValue::Object(obj) => {
+            let o = obj.borrow();
+            match o.primitive_value.as_deref() {
+                Some(JsValue::String(s)) => s.clone(),
+                _ => vm.current_this.to_js_string(),
+            }
+        }
+        _ => vm.current_this.to_js_string(),
+    }
 }
 
 /// Collect the string into chars for indexing.

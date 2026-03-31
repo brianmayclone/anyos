@@ -5,3 +5,11 @@ edition = "2021"
 
 [dependencies]
 libjs = { path = "../../libs/libjs", features = ["host"] }
+
+[[bin]]
+name = "crash_test"
+path = "src/crash_test.rs"
+
+[[bin]]
+name = "minimal_test"
+path = "src/minimal_test.rs"

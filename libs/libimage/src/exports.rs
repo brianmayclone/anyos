@@ -130,6 +130,10 @@ extern "C" fn image_probe(data: *const u8, len: u32, info: *mut ImageInfo) -> i3
         *out = i;
         return crate::types::ERR_OK;
     }
+    if let Some(i) = crate::webp::probe(data) {
+        *out = i;
+        return crate::types::ERR_OK;
+    }
 
     crate::types::ERR_UNSUPPORTED
 }
@@ -177,6 +181,10 @@ extern "C" fn image_decode(
         if reserved == 0 && (ico_type == 1 || ico_type == 2) && count > 0 && count < 256 {
             return crate::ico::decode(data, out, scratch);
         }
+    }
+    // WebP: RIFF....WEBP
+    if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        return crate::webp::decode(data, out, scratch);
     }
 
     crate::types::ERR_UNSUPPORTED

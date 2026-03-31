@@ -50,7 +50,17 @@ pub fn number_to_string(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn number_value_of(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::Number(vm.current_this.to_number())
+    match &vm.current_this {
+        JsValue::Number(n) => JsValue::Number(*n),
+        JsValue::Object(obj) => {
+            let o = obj.borrow();
+            match o.primitive_value.as_deref() {
+                Some(JsValue::Number(n)) => JsValue::Number(*n),
+                _ => JsValue::Number(f64::NAN),
+            }
+        }
+        _ => JsValue::Number(vm.current_this.to_number()),
+    }
 }
 
 pub fn number_to_fixed(vm: &mut Vm, args: &[JsValue]) -> JsValue {

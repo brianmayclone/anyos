@@ -481,8 +481,10 @@ pub fn tokenize(html: &str) -> Vec<Token> {
 
             let (attrs, self_closing) = parse_attrs(bytes, &mut pos);
 
-            // For raw text elements, collect content now
-            let is_raw = name == "script" || name == "style";
+            // For raw text elements, collect content now.
+            // SVG is treated as raw text so that its child markup (path, circle,
+            // rect, etc.) is preserved verbatim for rasterisation by libsvg.
+            let is_raw = name == "script" || name == "style" || name == "svg";
             tokens.push(Token::StartTag {
                 name: name.clone(),
                 attrs,

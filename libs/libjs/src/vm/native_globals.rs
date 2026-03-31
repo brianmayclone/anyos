@@ -144,14 +144,33 @@ pub fn ctor_array(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 /// `String(value)` — converts to string.
-pub fn ctor_string(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn ctor_string(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    // When called as `new String(x)`, tag the wrapper object with the primitive value.
+    if let JsValue::Object(obj) = vm.current_this.clone() {
+        let mut o = obj.borrow_mut();
+        o.internal_tag = Some(String::from("__string__"));
+        o.primitive_value = Some(Box::new(JsValue::String(s)));
+        drop(o);
+        return JsValue::Object(obj);
+    }
+    // Called as plain function: return primitive
     JsValue::String(s)
 }
 
 /// `Number(value)` — converts to number.
-pub fn ctor_number(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn ctor_number(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let n = args.first().map(|v| v.to_number()).unwrap_or(0.0);
+    // When called as `new Number(x)`, tag the wrapper object with the primitive value
+    // so that valueOf/toString return the correct value.
+    if let JsValue::Object(obj) = vm.current_this.clone() {
+        let mut o = obj.borrow_mut();
+        o.internal_tag = Some(String::from("__number__"));
+        o.primitive_value = Some(Box::new(JsValue::Number(n)));
+        drop(o);
+        return JsValue::Object(obj);
+    }
+    // Called as plain function: return primitive
     JsValue::Number(n)
 }
 

@@ -1043,7 +1043,7 @@ fn build_request_with_method(url: &Url, method: &str, body: Option<&str>, cookie
         push_u32(&mut req, url.port as u32);
     }
     req.push_str("\r\nUser-Agent: Surf/1.0 (anyOS)");
-    req.push_str("\r\nAccept: text/html,application/xhtml+xml,*/*");
+    req.push_str("\r\nAccept: text/html,application/xhtml+xml,image/webp,image/avif,image/png,image/svg+xml,*/*");
     req.push_str("\r\nAccept-Encoding: gzip, deflate");
     req.push_str("\r\nConnection: keep-alive");
 

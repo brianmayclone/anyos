@@ -67,11 +67,26 @@ impl<'a> Lexer<'a> {
             // Whitespace
             while self.pos < self.src.len() {
                 let ch = self.src[self.pos];
-                if ch == b' ' || ch == b'\t' || ch == b'\r' || ch == b'\n' {
+                if ch == b' ' || ch == b'\t' || ch == b'\r' || ch == b'\n'
+                    || ch == 0x0B /* VT */ || ch == 0x0C /* FF */
+                {
                     if ch == b'\n' {
                         self.line += 1;
                     }
                     self.pos += 1;
+                } else if ch == 0xC2 && self.pos + 1 < self.src.len() && self.src[self.pos + 1] == 0xA0 {
+                    // U+00A0 NBSP (UTF-8: C2 A0)
+                    self.pos += 2;
+                } else if ch == 0xE2 && self.pos + 2 < self.src.len() {
+                    // U+2028 LS (UTF-8: E2 80 A8) and U+2029 PS (UTF-8: E2 80 A9)
+                    if self.src[self.pos + 1] == 0x80
+                        && (self.src[self.pos + 2] == 0xA8 || self.src[self.pos + 2] == 0xA9)
+                    {
+                        self.line += 1;
+                        self.pos += 3;
+                    } else {
+                        break;
+                    }
                 } else {
                     break;
                 }

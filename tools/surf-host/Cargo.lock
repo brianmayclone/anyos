@@ -535,6 +535,7 @@ dependencies = [
  "byteorder-lite",
  "color_quant",
  "gif 0.14.1",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png 0.18.1",

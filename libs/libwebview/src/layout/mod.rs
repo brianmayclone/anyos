@@ -362,6 +362,24 @@ fn format_decimal(out: &mut String, mut n: u32) {
     }
 }
 
+/// Generate the synthetic image-cache key for an inline `<svg>` node.
+///
+/// Must match the key produced by `surf::resources::inline_svg_key`.
+pub(crate) fn svg_inline_key(node_id: NodeId) -> String {
+    let mut s = String::from("__svg_");
+    let mut n = node_id;
+    if n == 0 {
+        s.push('0');
+    } else {
+        let mut buf = [0u8; 20];
+        let mut pos = 20usize;
+        while n > 0 { pos -= 1; buf[pos] = b'0' + (n % 10) as u8; n /= 10; }
+        for &b in &buf[pos..] { s.push(b as char); }
+    }
+    s.push_str("__");
+    s
+}
+
 pub(super) fn image_dimensions(dom: &Dom, node_id: NodeId, max_width: i32, images: &ImageCache) -> (i32, i32) {
     // Get natural dimensions from image cache (actual decoded image size).
     let src = dom.attr(node_id, "src");

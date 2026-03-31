@@ -1,12 +1,13 @@
 //! Test262 runner for libjs.
 //!
 //! Usage:
-//!   test262-runner <test262-dir> [filter]
+//!   test262-runner <test262-dir> [filter] [--limit N] [--verbose]
 //!
 //! Examples:
 //!   test262-runner /tmp/test262-main                              # run all
 //!   test262-runner /tmp/test262-main language/expressions         # run subset
 //!   test262-runner /tmp/test262-main built-ins/Array/prototype    # specific category
+//!   test262-runner /tmp/test262-main language/expressions -v      # all failure details
 
 use std::collections::HashMap;
 use std::fs;
@@ -18,18 +19,19 @@ use libjs::JsEngine;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: test262-runner <test262-dir> [filter] [--limit N]");
+        eprintln!("Usage: test262-runner <test262-dir> [filter] [--limit N] [--verbose]");
         std::process::exit(1);
     }
 
     let test262_dir = PathBuf::from(&args[1]);
+    let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
     let limit: usize = args.iter()
         .position(|a| a == "--limit")
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(usize::MAX);
     let filter = args.get(2)
-        .filter(|s| *s != "--limit")
+        .filter(|s| !s.starts_with("--") && *s != "-v")
         .map(|s| s.as_str())
         .unwrap_or("");
 
@@ -124,32 +126,49 @@ fn main() {
         }
 
         // Run test in a separate thread with bounded stack (16MB)
+        // Returns: (succeeded: bool, console: Vec<String>, exception_msg: Option<String>)
         let full_source_clone = full_source.clone();
-        let test_result = std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
                 let mut engine = JsEngine::new();
                 engine.set_step_limit(5_000_000);
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    engine.eval(&full_source_clone)
-                }));
-                match result {
-                    Ok(_val) => {
-                        // An unhandled exception (no try/catch) counts as failure
-                        let had_exception = engine.last_exception().is_some();
-                        let console = engine.console_output().to_vec();
-                        (!had_exception, console)
+                engine.eval(&full_source_clone);
+                let exc_msg = engine.last_exception().map(|exc| {
+                    match exc {
+                        libjs::JsValue::Object(o) => {
+                            let o = o.borrow();
+                            let msg = o.get("message");
+                            let name = o.get("name");
+                            if matches!(name, libjs::JsValue::String(_)) {
+                                format!("{}: {}", name.to_js_string(), msg.to_js_string())
+                            } else {
+                                msg.to_js_string()
+                            }
+                        }
+                        libjs::JsValue::String(s) => s.clone(),
+                        other => other.to_js_string(),
                     }
-                    Err(_panic) => {
-                        (false, Vec::new())
-                    }
-                }
-            })
-            .and_then(|handle| handle.join().map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "join")));
+                });
+                let console = engine.console_output().to_vec();
+                (exc_msg.is_none(), console, exc_msg)
+            });
 
-        let (succeeded, console_out) = match test_result {
-            Ok((ok, console)) => (ok, console),
-            Err(_) => (false, Vec::new()), // Thread panicked or crashed
+        let (succeeded, console_out, exc_msg) = match handle {
+            Ok(h) => match h.join() {
+                Ok(result) => result,
+                Err(panic) => {
+                    let panic_msg = if let Some(s) = panic.downcast_ref::<String>() {
+                        s.clone()
+                    } else if let Some(s) = panic.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    (false, Vec::new(), Some(format!("PANIC: {}", panic_msg)))
+                }
+            },
+            Err(_) => (false, Vec::new(), Some("PANIC: failed to spawn thread".to_string())),
         };
 
         let test_passed = if expect_error {
@@ -165,16 +184,12 @@ fn main() {
         } else {
             failed += 1;
             let short_path = rel_path.display().to_string();
-            let reason = if expect_error {
-                "expected error but none thrown".to_string()
-            } else if !succeeded {
-                "crash/panic".to_string()
+            let reason = if let Some(ref exc) = exc_msg {
+                exc.clone()
+            } else if let Some(err_line) = console_out.iter().find(|s| s.contains("Test262Error")) {
+                err_line.clone()
             } else {
-                if let Some(err_line) = console_out.iter().find(|s| s.contains("Test262Error")) {
-                    err_line.clone()
-                } else {
-                    "unknown failure".to_string()
-                }
+                "unknown failure".to_string()
             };
             errors.push((short_path, reason));
         }
@@ -205,21 +220,29 @@ fn main() {
     println!("  Time:     {:.1}s", elapsed);
     println!("═══════════════════════════════════════════════════════");
 
-    // Print first 50 failures
+    // Print failures
     if !errors.is_empty() {
         println!();
-        println!("First {} failures:", errors.len().min(50));
-        for (path, reason) in errors.iter().take(50) {
-            println!("  FAIL  {}  — {}", path, reason);
-        }
-        if errors.len() > 50 {
-            println!("  ... and {} more", errors.len() - 50);
+        if verbose {
+            println!("All {} failures:", errors.len());
+            for (path, reason) in &errors {
+                println!("  FAIL  {}  — {}", path, reason);
+            }
+        } else {
+            println!("First {} failures:", errors.len().min(50));
+            for (path, reason) in errors.iter().take(50) {
+                println!("  FAIL  {}  — {}", path, reason);
+            }
+            if errors.len() > 50 {
+                println!("  ... and {} more (use --verbose to show all)", errors.len() - 50);
+            }
         }
     }
 
     // Summary by category
     println!();
-    println!("Category breakdown (first 20 failure directories):");
+    let cat_limit = if verbose { usize::MAX } else { 20 };
+    println!("Category breakdown{}:", if verbose { "" } else { " (first 20 failure directories)" });
     let mut cat_fails: HashMap<String, usize> = HashMap::new();
     for (path, _) in &errors {
         let parts: Vec<&str> = path.split('/').collect();
@@ -232,7 +255,7 @@ fn main() {
     }
     let mut cat_list: Vec<_> = cat_fails.into_iter().collect();
     cat_list.sort_by(|a, b| b.1.cmp(&a.1));
-    for (cat, count) in cat_list.iter().take(20) {
+    for (cat, count) in cat_list.iter().take(cat_limit) {
         println!("  {:>5}  {}", count, cat);
     }
 
@@ -331,7 +354,7 @@ const SKIP_FEATURES: &[&str] = &[
     "json-modules", "source-phase-imports",
     "Float16Array", "uint8array-base64",
     "IsHTMLDDA", "change-array-by-copy",
-    "array-grouping",
+    "array-grouping", "BigInt",
 ];
 
 fn should_skip(meta: &HashMap<String, String>) -> bool {

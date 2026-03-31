@@ -455,6 +455,7 @@ fn handle_nav_done(
     if let Some(dom) = st.tabs[tab_idx].webview.dom() {
         resources::queue_stylesheets(dom, &base_url, tab_idx);
         resources::queue_images(dom, &base_url, tab_idx);
+        resources::queue_inline_svgs(dom, tab_idx);
     }
     // Queue @font-face downloads from inline <style> blocks.
     resources::queue_font_faces(&st.tabs[tab_idx].webview, &base_url, tab_idx);

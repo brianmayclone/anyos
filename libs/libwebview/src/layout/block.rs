@@ -13,7 +13,7 @@ use crate::ImageCache;
 use super::{
     LayoutBox, BoxType, FormFieldKind,
     font_size_px, is_bold, is_italic, edges_from,
-    link_href, list_marker_for, image_dimensions,
+    link_href, list_marker_for, image_dimensions, parse_attr_int,
     layout_children,
 };
 use super::flex::layout_flex;
@@ -195,6 +195,27 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
         bx.object_fit = style.object_fit;
         bx.height = ih + bx.padding.top + bx.padding.bottom + border2;
         bx.width = iw + bx.padding.left + bx.padding.right + border2;
+        return bx;
+    }
+
+    // Handle inline <svg> as a replaced element: rasterised by surf into the
+    // image cache under the synthetic key "__svg_<node_id>__".
+    if tag == Some(Tag::Svg) {
+        let key = super::svg_inline_key(node_id);
+        let natural = images.get_ref(&key).map(|e| {
+            (e.width.min(65535) as i32, e.height.min(65535) as i32)
+        });
+        let w = dom.attr(node_id, "width").and_then(parse_attr_int)
+            .or(natural.map(|(w, _)| w)).unwrap_or(100);
+        let h = dom.attr(node_id, "height").and_then(parse_attr_int)
+            .or(natural.map(|(_, h)| h)).unwrap_or(100);
+        let w = w.min(bx.width.max(1));
+        bx.image_src = Some(key);
+        bx.image_width = Some(w);
+        bx.image_height = Some(h);
+        bx.object_fit = style.object_fit;
+        bx.height = h + bx.padding.top + bx.padding.bottom + border2;
+        bx.width = w + bx.padding.left + bx.padding.right + border2;
         return bx;
     }
 

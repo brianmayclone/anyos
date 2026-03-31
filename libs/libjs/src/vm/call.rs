@@ -138,8 +138,18 @@ impl Vm {
                     let f = func_rc.borrow();
                     if let Some(JsValue::Object(proto_obj)) = f.own_props.get("prototype") {
                         Some(proto_obj.clone())
+                    } else if let Some(ref proto) = f.prototype {
+                        Some(proto.clone())
                     } else {
-                        f.prototype.clone()
+                        // Lazy-create prototype with constructor back-link (ES2023 §10.2.4)
+                        drop(f);
+                        let proto = Rc::new(RefCell::new(JsObject::new()));
+                        proto.borrow_mut().set(
+                            String::from("constructor"),
+                            JsValue::Function(func_rc.clone()),
+                        );
+                        func_rc.borrow_mut().prototype = Some(proto.clone());
+                        Some(proto)
                     }
                 };
                 let new_obj = JsValue::Object(Rc::new(RefCell::new(JsObject {

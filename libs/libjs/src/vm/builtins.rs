@@ -205,6 +205,7 @@ impl Vm {
         self.set_global("isFinite", native_fn("isFinite", native_globals::global_is_finite));
         self.set_global("encodeURIComponent", native_fn("encodeURIComponent", native_globals::global_encode_uri_component));
         self.set_global("decodeURIComponent", native_fn("decodeURIComponent", native_globals::global_decode_uri_component));
+        self.set_global("eval", native_fn("eval", global_eval));
 
         // ── Constructors ──
         self.set_global("Object", native_fn("Object", native_globals::ctor_object));
@@ -236,6 +237,12 @@ impl Vm {
 
         // ── Array static methods ──
         self.init_array_statics();
+
+        // ── String prototype link ──
+        if let JsValue::Function(f) = self.globals.get("String") {
+            let ctor = JsValue::Function(f.clone());
+            ctor.set_property(String::from("prototype"), JsValue::Object(self.string_proto.clone()));
+        }
 
         // ── Number static methods ──
         self.init_number_statics();
@@ -463,6 +470,7 @@ impl Vm {
     fn init_number_statics(&mut self) {
         if let JsValue::Function(f) = self.globals.get("Number") {
             let num_ctor = JsValue::Function(f.clone());
+            num_ctor.set_property(String::from("prototype"), JsValue::Object(self.number_proto.clone()));
             num_ctor.set_property(String::from("isNaN"), native_fn("isNaN", native_globals::number_is_nan));
             num_ctor.set_property(String::from("isFinite"), native_fn("isFinite", native_globals::number_is_finite));
             num_ctor.set_property(String::from("isInteger"), native_fn("isInteger", native_globals::number_is_integer));
@@ -541,4 +549,46 @@ fn queue_microtask_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
     }
     JsValue::Undefined
+}
+
+/// `eval(source)` — evaluate JavaScript source code in the current VM context.
+fn global_eval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let src = match args.first() {
+        Some(v) => {
+            // Non-string arguments are returned as-is per spec
+            if let JsValue::String(s) = v {
+                s.clone()
+            } else {
+                return v.clone();
+            }
+        }
+        None => return JsValue::Undefined,
+    };
+
+    let tokens = crate::lexer::Lexer::tokenize(&src);
+    let mut parser = crate::parser::Parser::new(tokens);
+    let program = parser.parse_program();
+    if !parser.errors.is_empty() {
+        let err = vm.make_syntax_error(&parser.errors[0]);
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+    let mut compiler = crate::compiler::Compiler::new();
+    let chunk = compiler.compile_eval(&program);
+
+    // Run inline in the current VM
+    let result = vm.call_value(
+        &JsValue::Function(alloc::rc::Rc::new(core::cell::RefCell::new(crate::value::JsFunction {
+            name: Some(String::from("eval")),
+            params: alloc::vec::Vec::new(),
+            kind: crate::value::FnKind::Bytecode(chunk),
+            this_binding: None,
+            upvalues: alloc::vec::Vec::new(),
+            prototype: None,
+            own_props: alloc::collections::BTreeMap::new(),
+        }))),
+        &[],
+        JsValue::Undefined,
+    );
+    result
 }

@@ -7,6 +7,7 @@ use alloc::string::String;
 #[derive(Clone)]
 pub struct ProcessEntry {
     pub tid: u32,
+    pub parent_tid: u32,
     pub name: String,
     pub state: u8,
     pub priority: u8,
@@ -17,9 +18,9 @@ pub struct ProcessEntry {
 /// Poll the system for the current process list.
 ///
 /// Uses `anyos_std::sys::sysinfo(1, buf)` which returns the **count** of
-/// thread entries written into `buf`.  Each entry is 60 bytes.
+/// thread entries written into `buf`.  Each entry is 64 bytes.
 pub fn poll_processes() -> Vec<ProcessEntry> {
-    let mut buf = [0u8; 60 * 128]; // room for 128 threads
+    let mut buf = [0u8; 64 * 128]; // room for 128 threads
     let count = anyos_std::sys::sysinfo(1, &mut buf);
     if count == 0 || count == u32::MAX {
         return Vec::new();
@@ -30,7 +31,7 @@ pub fn poll_processes() -> Vec<ProcessEntry> {
 
 /// Parse the sysinfo buffer into process entries.
 ///
-/// Kernel 60-byte entry layout (all LE):
+/// Kernel 64-byte entry layout (all LE):
 ///   +0   u32   tid
 ///   +4   u8    priority
 ///   +5   u8    state  (0=ready, 1=running, 2=blocked, 3=dead)
@@ -43,8 +44,9 @@ pub fn poll_processes() -> Vec<ProcessEntry> {
 ///   +48  u64   io_write_bytes
 ///   +56  u16   uid
 ///   +58  u16   pad
+///   +60  u32   parent_tid
 fn parse_sysinfo(buf: &[u8], count: usize) -> Vec<ProcessEntry> {
-    const ENTRY_SIZE: usize = 60;
+    const ENTRY_SIZE: usize = 64;
     let mut entries = Vec::new();
 
     for i in 0..count {
@@ -66,11 +68,13 @@ fn parse_sysinfo(buf: &[u8], count: usize) -> Vec<ProcessEntry> {
         let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(24);
         let name = String::from(core::str::from_utf8(&name_bytes[..name_len]).unwrap_or("?"));
 
-        let user_pages = u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
-        let cpu_ticks = u32::from_le_bytes([buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39]]);
+        let user_pages  = u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
+        let cpu_ticks   = u32::from_le_bytes([buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39]]);
+        let parent_tid  = u32::from_le_bytes([buf[off + 60], buf[off + 61], buf[off + 62], buf[off + 63]]);
 
         entries.push(ProcessEntry {
             tid,
+            parent_tid,
             name,
             state,
             priority,
