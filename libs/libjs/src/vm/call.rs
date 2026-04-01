@@ -1,6 +1,7 @@
 //! Function call, method call, and constructor handling.
 
 use alloc::rc::Rc;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
