@@ -215,6 +215,7 @@ impl Vm {
     /// Handles both native and bytecode functions, including re-entrant execution.
     pub fn call_value(&mut self, callee: &JsValue, args: &[JsValue], this_val: JsValue) -> JsValue {
         let saved_depth = self.frames.len();
+        let stack_before = self.stack.len();
         self.invoke_function(callee, args, this_val);
 
         // Native function: result already on stack, no new frame pushed.
@@ -227,6 +228,11 @@ impl Vm {
         self.run_target_depth = saved_depth;
         let result = self.run();
         self.run_target_depth = prev_target;
+        // Op::Return pushes the return value onto the stack AND returns it
+        // from run(). Restore stack to pre-call depth to avoid pollution.
+        // Use truncate (not pop) because run() might exit without pushing
+        // (e.g. step limit, empty frames, exception).
+        self.stack.truncate(stack_before);
         result
     }
 

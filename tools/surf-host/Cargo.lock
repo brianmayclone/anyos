@@ -1242,6 +1242,7 @@ dependencies = [
  "libanyui_client",
  "libfont",
  "libfont_client",
+ "libjs",
  "libwebview",
  "minifb",
  "resvg",

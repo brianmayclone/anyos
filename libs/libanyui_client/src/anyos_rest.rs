@@ -271,6 +271,8 @@ struct AnyuiLib {
     set_blur_behind: extern "C" fn(u32, u32),
     // Focus management
     set_focus: extern "C" fn(u32),
+    // Z-order
+    bring_to_front: extern "C" fn(u32),
     set_tab_index: extern "C" fn(u32, u32),
     // Screen size
     screen_size: extern "C" fn(*mut u32, *mut u32),
@@ -532,6 +534,7 @@ pub fn init() -> bool {
             set_blur_behind: resolve(&handle, "anyui_set_blur_behind"),
             // Focus management
             set_focus: resolve(&handle, "anyui_set_focus"),
+            bring_to_front: resolve(&handle, "anyui_bring_to_front"),
             set_tab_index: resolve(&handle, "anyui_set_tab_index"),
             // Screen size
             screen_size: resolve(&handle, "anyui_screen_size"),
@@ -892,6 +895,13 @@ impl Control {
     /// first, then child tab_index. Default is 0 (insertion order).
     pub fn set_tab_index(&self, index: u32) {
         (lib().set_tab_index)(self.id, index);
+    }
+
+    // ── Z-order ──
+
+    /// Move this control to the end of its parent's child list (render on top).
+    pub fn bring_to_front(&self) {
+        (lib().bring_to_front)(self.id);
     }
 
     // ── Removal ──

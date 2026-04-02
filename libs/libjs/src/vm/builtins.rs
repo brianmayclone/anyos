@@ -115,6 +115,8 @@ impl Vm {
             p.set(String::from("concat"), native_fn("concat", native_string::string_concat));
             p.set(String::from("toString"), native_fn("toString", native_string::string_to_string));
             p.set(String::from("valueOf"), native_fn("valueOf", native_string::string_to_string));
+            p.set(String::from("normalize"), native_fn("normalize", native_string::string_normalize));
+            p.set(String::from("localeCompare"), native_fn("localeCompare", native_string::string_locale_compare));
             p.set(String::from("match"), native_fn("match", native_regexp::string_match));
             p.set(String::from("matchAll"), native_fn("matchAll", native_regexp::string_match_all));
             p.set(String::from("search"), native_fn("search", native_regexp::string_search));
@@ -130,6 +132,8 @@ impl Vm {
             p.set(String::from("toString"), native_fn("toString", native_number::number_to_string));
             p.set(String::from("valueOf"), native_fn("valueOf", native_number::number_value_of));
             p.set(String::from("toFixed"), native_fn("toFixed", native_number::number_to_fixed));
+            p.set(String::from("toPrecision"), native_fn("toPrecision", native_number::number_to_precision));
+            p.set(String::from("toExponential"), native_fn("toExponential", native_number::number_to_exponential));
         }
 
         // ── Boolean.prototype ──
@@ -179,6 +183,11 @@ impl Vm {
             p.set(String::from("next"), native_fn("next", native_generator::generator_next));
             p.set(String::from("return"), native_fn("return", native_generator::generator_return));
             p.set(String::from("throw"), native_fn("throw", native_generator::generator_throw));
+            // Generators are iterable: Symbol.iterator returns `this`
+            p.set(
+                String::from(native_symbol::WELL_KNOWN_ITERATOR),
+                native_fn("[Symbol.iterator]", |vm: &mut Vm, _args: &[JsValue]| vm.current_this.clone()),
+            );
         }
 
         // ── TypedArray.prototype ──
@@ -218,10 +227,13 @@ impl Vm {
         // and truthy, and makes Function.prototype.isPrototypeOf(Boolean) work.
         self.set_global("Function", native_fn("Function", native_globals::ctor_function));
         self.set_global("Error", native_fn("Error", native_error::ctor_error));
-        self.set_global("TypeError", native_fn("TypeError", native_error::ctor_error));
-        self.set_global("RangeError", native_fn("RangeError", native_error::ctor_error));
-        self.set_global("ReferenceError", native_fn("ReferenceError", native_error::ctor_error));
-        self.set_global("SyntaxError", native_fn("SyntaxError", native_error::ctor_error));
+        self.set_global("TypeError", native_fn("TypeError", native_error::ctor_type_error));
+        self.set_global("RangeError", native_fn("RangeError", native_error::ctor_range_error));
+        self.set_global("ReferenceError", native_fn("ReferenceError", native_error::ctor_reference_error));
+        self.set_global("SyntaxError", native_fn("SyntaxError", native_error::ctor_syntax_error));
+        self.set_global("URIError", native_fn("URIError", native_error::ctor_uri_error));
+        self.set_global("EvalError", native_fn("EvalError", native_error::ctor_eval_error));
+        self.set_global("AggregateError", native_fn("AggregateError", native_error::ctor_aggregate_error));
 
         // ── console ──
         self.init_console();
@@ -238,10 +250,13 @@ impl Vm {
         // ── Array static methods ──
         self.init_array_statics();
 
-        // ── String prototype link ──
+        // ── String static methods + prototype link ──
         if let JsValue::Function(f) = self.globals.get("String") {
             let ctor = JsValue::Function(f.clone());
             ctor.set_property(String::from("prototype"), JsValue::Object(self.string_proto.clone()));
+            ctor.set_property(String::from("fromCharCode"), native_fn("fromCharCode", native_string::string_from_char_code));
+            ctor.set_property(String::from("fromCodePoint"), native_fn("fromCodePoint", native_string::string_from_code_point));
+            ctor.set_property(String::from("raw"), native_fn("raw", native_string::string_raw));
         }
 
         // ── Number static methods ──
@@ -445,9 +460,22 @@ impl Vm {
             obj_ctor.set_property(String::from("freeze"), native_fn("freeze", native_object::object_freeze));
             obj_ctor.set_property(String::from("create"), native_fn("create", native_object::object_create));
             obj_ctor.set_property(String::from("defineProperty"), native_fn("defineProperty", native_object::object_define_property));
+            obj_ctor.set_property(String::from("defineProperties"), native_fn("defineProperties", native_object::object_define_properties));
             obj_ctor.set_property(String::from("getPrototypeOf"), native_fn("getPrototypeOf", native_object::object_get_prototype_of));
+            obj_ctor.set_property(String::from("setPrototypeOf"), native_fn("setPrototypeOf", native_object::object_set_prototype_of));
+            obj_ctor.set_property(String::from("fromEntries"), native_fn("fromEntries", native_object::object_from_entries));
+            obj_ctor.set_property(String::from("is"), native_fn("is", native_object::object_is));
+            obj_ctor.set_property(String::from("getOwnPropertyNames"), native_fn("getOwnPropertyNames", native_object::object_get_own_property_names));
+            obj_ctor.set_property(String::from("getOwnPropertyDescriptor"), native_fn("getOwnPropertyDescriptor", native_object::object_get_own_property_descriptor));
+            obj_ctor.set_property(String::from("getOwnPropertyDescriptors"), native_fn("getOwnPropertyDescriptors", native_object::object_get_own_property_descriptors));
+            obj_ctor.set_property(String::from("getOwnPropertySymbols"), native_fn("getOwnPropertySymbols", native_object::object_get_own_property_symbols));
+            obj_ctor.set_property(String::from("preventExtensions"), native_fn("preventExtensions", native_object::object_prevent_extensions));
+            obj_ctor.set_property(String::from("isExtensible"), native_fn("isExtensible", native_object::object_is_extensible));
+            obj_ctor.set_property(String::from("seal"), native_fn("seal", native_object::object_seal));
+            obj_ctor.set_property(String::from("isSealed"), native_fn("isSealed", native_object::object_is_sealed));
+            obj_ctor.set_property(String::from("isFrozen"), native_fn("isFrozen", native_object::object_is_frozen));
             // ES2022+
-            obj_ctor.set_property(String::from("hasOwn"), native_fn("hasOwn", native_es2024::object_has_own));
+            obj_ctor.set_property(String::from("hasOwn"), native_fn("hasOwn", native_object::object_has_own));
             obj_ctor.set_property(String::from("groupBy"), native_fn("groupBy", native_es2024::object_group_by));
             // Expose object_proto as Object.prototype own_prop so that
             // `Object.hasOwnProperty("prototype")` is true and
@@ -474,6 +502,9 @@ impl Vm {
             num_ctor.set_property(String::from("isNaN"), native_fn("isNaN", native_globals::number_is_nan));
             num_ctor.set_property(String::from("isFinite"), native_fn("isFinite", native_globals::number_is_finite));
             num_ctor.set_property(String::from("isInteger"), native_fn("isInteger", native_globals::number_is_integer));
+            num_ctor.set_property(String::from("isSafeInteger"), native_fn("isSafeInteger", native_number::number_is_safe_integer));
+            num_ctor.set_property(String::from("parseFloat"), native_fn("parseFloat", native_number::number_parse_float));
+            num_ctor.set_property(String::from("parseInt"), native_fn("parseInt", native_number::number_parse_int));
             num_ctor.set_property(String::from("MAX_SAFE_INTEGER"), JsValue::Number(9007199254740991.0));
             num_ctor.set_property(String::from("MIN_SAFE_INTEGER"), JsValue::Number(-9007199254740991.0));
             num_ctor.set_property(String::from("EPSILON"), JsValue::Number(f64::EPSILON));
@@ -487,7 +518,7 @@ impl Vm {
 
     fn init_error_statics(&mut self) {
         // Link Error.prototype so that `new Error()` gets error_proto as its prototype.
-        for name in ["Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError"] {
+        for name in ["Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError", "AggregateError"] {
             if let JsValue::Function(f) = self.globals.get(name) {
                 let ctor = JsValue::Function(f.clone());
                 ctor.set_property(String::from("prototype"), JsValue::Object(self.error_proto.clone()));

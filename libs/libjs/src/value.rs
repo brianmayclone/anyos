@@ -440,8 +440,18 @@ impl JsValue {
             JsValue::Null => "object", // historical JS quirk
             JsValue::Bool(_) => "boolean",
             JsValue::Number(_) => "number",
-            JsValue::String(_) => "string",
-            JsValue::Object(_) | JsValue::Array(_) => "object",
+            JsValue::String(s) => {
+                // Symbols are represented as strings with "__symbol__" prefix
+                if s.starts_with("__symbol__") { "symbol" } else { "string" }
+            }
+            JsValue::Object(obj) => {
+                let o = obj.borrow();
+                match o.internal_tag.as_deref() {
+                    Some("__symbol__") => "symbol",
+                    _ => "object",
+                }
+            }
+            JsValue::Array(_) => "object",
             JsValue::Function(_) => "function",
         }
     }

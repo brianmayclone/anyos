@@ -865,6 +865,8 @@ fn main() {
         ui::switch_tab(e.index as usize);
     });
 
+    win.on_close(|_| { ui_lib::quit(); });
+
     // Keyboard shortcuts.
     win.on_key_down(|e| {
         let mods = e.modifiers;
@@ -937,4 +939,5 @@ fn main() {
 
     anyos_std::println!("[surf] entering event loop");
     ui_lib::run();
+    anyos_std::process::exit(0);
 }

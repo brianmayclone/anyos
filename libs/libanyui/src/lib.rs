@@ -2523,6 +2523,23 @@ pub extern "C" fn anyui_kill_timer(timer_id: u32) {
     state().timers.kill_timer(timer_id);
 }
 
+// ── Z-order ─────────────────────────────────────────────────────────
+
+/// Move a control to the end of its parent's child list (render on top).
+#[no_mangle]
+pub extern "C" fn anyui_bring_to_front(id: ControlId) {
+    let st = state();
+    let parent_id = match st.controls.iter().find(|c| c.id() == id) {
+        Some(ctrl) => ctrl.parent_id(),
+        None => return,
+    };
+    if let Some(p) = st.controls.iter_mut().find(|c| c.id() == parent_id) {
+        p.remove_child(id);
+        p.add_child(id);
+        p.base_mut().mark_dirty();
+    }
+}
+
 // ── Control removal ──────────────────────────────────────────────────
 
 #[no_mangle]

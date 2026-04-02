@@ -25,7 +25,7 @@ static mut VIEWPORT_H: i32 = 600;
 // Enums
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Display {
     Block,
     Inline,
@@ -37,6 +37,9 @@ pub enum Display {
     InlineFlex,
     Grid,
     InlineGrid,
+    /// `display: flow-root` — block-level box that establishes a new BFC.
+    /// CSS Display Module Level 3 §2.
+    FlowRoot,
     /// `display: contents` — the element itself generates no box, but its
     /// children participate in the parent's layout as if they were direct children.
     Contents,
@@ -152,6 +155,13 @@ pub enum GridTrackSize {
     Percent(i32),
     /// `auto` — shrink/grow to fit content.
     Auto,
+    /// `min-content` — minimum intrinsic size.
+    MinContent,
+    /// `max-content` — maximum intrinsic size.
+    MaxContent,
+    /// `minmax(min, max)` — clamped range; `min` and `max` are pixel values or -1 for fr.
+    /// Stored as (min_px, max_px_or_fr_times_100, is_fr_max).
+    Minmax { min_px: i32, max_px: i32, max_is_fr: bool },
     /// `repeat(auto-fill, minmax(min_px, 1fr))` — resolved at layout time.
     AutoFill { min_px: i32 },
     /// `repeat(auto-fit, minmax(min_px, 1fr))` — resolved at layout time.
@@ -159,7 +169,7 @@ pub enum GridTrackSize {
 }
 
 /// Resolved line address for `grid-column-start/end` etc.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum GridLine {
     /// Automatic placement.
     Auto,
@@ -265,6 +275,7 @@ pub enum AlignContent {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum OverflowVal {
     Visible,
     Hidden,
@@ -293,7 +304,14 @@ pub enum TextAlignVal { Left, Center, Right, Justify }
 pub enum TextDeco { None, Underline, LineThrough, Overline }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ListStyle { None, Disc, Circle, Square, Decimal }
+pub enum ListStyle {
+    None, Disc, Circle, Square, Decimal,
+    LowerAlpha, UpperAlpha, LowerLatin, UpperLatin,
+    LowerRoman, UpperRoman,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ListStylePosition { Outside, Inside }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WhiteSpace { Normal, Pre, Nowrap, PreWrap }
@@ -449,6 +467,7 @@ pub struct ComputedStyle {
     pub max_height: Option<i32>,
     pub min_height: i32,
     pub list_style: ListStyle,
+    pub list_style_position: ListStylePosition,
     pub white_space: WhiteSpace,
     // Positioning
     pub position: Position,
@@ -457,6 +476,10 @@ pub struct ComputedStyle {
     pub bottom_offset: Option<i32>,
     pub left_offset: Option<i32>,
     pub z_index: i32,
+    /// Whether z-index is `auto` (true) or an explicit integer (false).
+    /// Per CSS2 §9.9.1, positioned elements with explicit z-index (including 0)
+    /// create a new stacking context; `auto` does not.
+    pub z_index_auto: bool,
     // Flexbox
     pub flex_direction: FlexDirection,
     pub flex_wrap: FlexWrap,
@@ -511,6 +534,10 @@ pub struct ComputedStyle {
     // calc() components: (px * 100, pct * 100) for width/height
     pub width_calc: Option<(i32, i32)>,
     pub height_calc: Option<(i32, i32)>,
+    // Intrinsic sizing keywords for width.
+    pub width_max_content: bool,  // width: max-content
+    pub width_min_content: bool,  // width: min-content
+    pub width_fit_content: bool,  // width: fit-content
     // Typography (litehtml-inspired)
     pub font_family: Option<String>,
     pub letter_spacing: i32,     // px (0 = normal)
@@ -545,6 +572,8 @@ pub struct ComputedStyle {
     pub background_position_y: i32,
     // Content (for ::before/::after)
     pub content: Option<String>,
+    /// URL for `content: url("...")` in pseudo-elements.
+    pub content_url: Option<String>,
     // Object-fit for replaced elements (img, video)
     pub object_fit: ObjectFit,
     // CSS transform — translate offsets (resolved to px).
@@ -564,6 +593,9 @@ pub struct ComputedStyle {
     pub tab_size: i32,  // number of spaces (default 8)
     // Clip path
     pub clip_path: ClipPathVal,
+    /// CSS `clip: rect(top, right, bottom, left)` for absolutely positioned elements.
+    /// Values in px*100 fixed-point. None = no clip.
+    pub clip_rect: Option<[i32; 4]>,
     // CSS counters
     pub counter_reset: Option<String>,
     pub counter_increment: Option<String>,
@@ -614,6 +646,7 @@ const SET_LETTER_SPACING: u16 = 1 << 11;
 const SET_WORD_SPACING: u16   = 1 << 12;
 const SET_WORD_BREAK: u16     = 1 << 13;
 const SET_OVERFLOW_WRAP: u16  = 1 << 14;
+const SET_LIST_STYLE_POS: u16 = 1 << 15;
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -644,6 +677,7 @@ pub fn default_style() -> ComputedStyle {
         max_height: Option::None,
         min_height: 0,
         list_style: ListStyle::None,
+        list_style_position: ListStylePosition::Outside,
         white_space: WhiteSpace::Normal,
         // Positioning
         position: Position::Static,
@@ -652,6 +686,7 @@ pub fn default_style() -> ComputedStyle {
         bottom_offset: Option::None,
         left_offset: Option::None,
         z_index: 0,
+        z_index_auto: true,
         // Flexbox
         flex_direction: FlexDirection::Row,
         flex_wrap: FlexWrap::Nowrap,
@@ -744,12 +779,17 @@ pub fn default_style() -> ComputedStyle {
         tab_size: 8,
         // Clip path
         clip_path: ClipPathVal::None,
+        clip_rect: Option::None,
         // Counters
+        content_url: Option::None,
         counter_reset: Option::None,
         counter_increment: Option::None,
         // Percentages
         width_pct: Option::None,
         height_pct: Option::None,
+        width_max_content: false,
+        width_min_content: false,
+        width_fit_content: false,
         // Calc
         width_calc: Option::None,
         height_calc: Option::None,
@@ -834,14 +874,22 @@ fn ua_style_and_flags(tag: Tag) -> (ComputedStyle, u16) {
         Tag::Blockquote => { s.margin_left = 40; }
         Tag::Ul => {
             s.margin_top = 16; s.margin_bottom = 16; s.padding_left = 40;
+            // UA list-style: disc is inherited by <li> children.
+            // Setting the flag here prevents <ul> from inheriting list-style from its
+            // ancestors; <li> children inherit from <ul> because <li> has no flag.
+            s.list_style = ListStyle::Disc;
+            flags |= SET_LIST_STYLE;
         }
         Tag::Ol => {
             s.margin_top = 16; s.margin_bottom = 16; s.padding_left = 40;
+            s.list_style = ListStyle::Decimal;
+            flags |= SET_LIST_STYLE;
         }
         Tag::Li => {
             s.display = Display::ListItem;
-            s.list_style = ListStyle::Disc;
-            flags |= SET_LIST_STYLE;
+            // No SET_LIST_STYLE flag: <li> inherits list-style from its parent (<ul>/<ol>).
+            // This allows `list-style: none` on the parent to propagate via CSS inheritance.
+            s.list_style = ListStyle::Disc; // fallback if orphan (no <ul>/<ol> parent)
         }
         Tag::Hr => {
             s.border_width = 1; s.margin_top = 8; s.margin_bottom = 8;
@@ -1394,8 +1442,9 @@ fn pseudo_class_matches(pc: &PseudoClass, dom: &Dom, node_id: NodeId) -> bool {
         PseudoClass::Empty => {
             dom.nodes[node_id].children.is_empty()
         }
-        PseudoClass::Not(inner) => {
-            !simple_matches(inner, dom, node_id)
+        PseudoClass::Not(selectors) => {
+            // :not(a, b, c) — matches if NONE of the listed selectors match.
+            !selectors.iter().any(|sel| simple_matches(sel, dom, node_id))
         }
         PseudoClass::Checked | PseudoClass::Disabled | PseudoClass::Enabled => {
             // Check for corresponding HTML attributes
@@ -1588,6 +1637,46 @@ pub fn resolve_styles(
             }
         }
 
+        // Phase 1b: Presentational hints from HTML attributes (specificity 0,
+        // per HTML spec §15.3.3). Applied after UA styles but before author rules.
+        if let NodeType::Element { tag, attrs, .. } = &node.node_type {
+            // `align` attribute on div, main, nav, header, footer, section,
+            // article, aside, hgroup, address, center, p, h1-h6, blockquote,
+            // figure, figcaption, details, summary, dialog, search.
+            // Maps to text-align (HTML spec §15.3.3).
+            let supports_align = matches!(tag,
+                Tag::Div | Tag::Main | Tag::Nav | Tag::Header | Tag::Footer
+                | Tag::Section | Tag::Article | Tag::Aside | Tag::Hgroup
+                | Tag::Address | Tag::Center | Tag::P
+                | Tag::H1 | Tag::H2 | Tag::H3 | Tag::H4 | Tag::H5 | Tag::H6
+                | Tag::Blockquote | Tag::Figure | Tag::Figcaption
+                | Tag::Details | Tag::Summary | Tag::Dialog | Tag::Search
+            );
+            if supports_align {
+                for a in attrs {
+                    if eq_ignore_ascii_case(&a.name, "align") {
+                        let val = a.value.trim();
+                        let align = if val.eq_ignore_ascii_case("left") {
+                            Some(TextAlignVal::Left)
+                        } else if val.eq_ignore_ascii_case("right") {
+                            Some(TextAlignVal::Right)
+                        } else if val.eq_ignore_ascii_case("center") {
+                            Some(TextAlignVal::Center)
+                        } else if val.eq_ignore_ascii_case("justify") {
+                            Some(TextAlignVal::Justify)
+                        } else {
+                            None
+                        };
+                        if let Some(ta) = align {
+                            style.text_align = ta;
+                            set_flags |= SET_TEXT_ALIGN;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         // Phase 2 + 3: Apply author rules and inline styles.
         // Custom property declarations are stored in custom_props[id].
         // var() references are resolved by walking the parent chain.
@@ -1710,6 +1799,7 @@ pub fn resolve_styles(
                 if slot.is_none() {
                     let mut ps = styles[id].clone();
                     ps.content = None;
+                    ps.content_url = None;
                     // Reset non-inherited properties to defaults.
                     ps.background_color = 0;
                     ps.border_width = 0;
@@ -2023,6 +2113,7 @@ fn inherit_unset(child: &mut ComputedStyle, parent: &ComputedStyle, set: u16) {
     if set & SET_LINE_HEIGHT == 0 { child.line_height = parent.line_height; }
     if set & SET_WHITE_SPACE == 0 { child.white_space = parent.white_space; }
     if set & SET_LIST_STYLE == 0 { child.list_style = parent.list_style; }
+    if set & SET_LIST_STYLE_POS == 0 { child.list_style_position = parent.list_style_position; }
     if set & SET_TEXT_DECO == 0  { child.text_decoration = parent.text_decoration; }
     if set & SET_VISIBILITY == 0 { child.visibility = parent.visibility; }
     if set & SET_TEXT_TRANSFORM == 0 { child.text_transform = parent.text_transform; }
@@ -2043,6 +2134,7 @@ fn decl_set_flag(prop: &Property) -> u16 {
         Property::LineHeight => SET_LINE_HEIGHT,
         Property::WhiteSpace => SET_WHITE_SPACE,
         Property::ListStyleType => SET_LIST_STYLE,
+        Property::ListStylePosition => SET_LIST_STYLE_POS,
         Property::TextDecoration => SET_TEXT_DECO,
         Property::Visibility => SET_VISIBILITY,
         Property::TextTransform => SET_TEXT_TRANSFORM,
@@ -2179,6 +2271,7 @@ pub fn apply_declaration(
                     "inline-flex" => Display::InlineFlex,
                     "grid" => Display::Grid,
                     "inline-grid" => Display::InlineGrid,
+                    "flow-root" => Display::FlowRoot,
                     "none" => Display::None,
                     "contents" => Display::Contents,
                     _ => style.display,
@@ -2195,6 +2288,10 @@ pub fn apply_declaration(
             match decl.value {
                 CssValue::Color(c) => { style.background_color = c; }
                 CssValue::None => { style.background_color = 0x00000000; }
+                CssValue::CurrentColor => {
+                    // currentColor → use this element's computed color property.
+                    style.background_color = if style.color != 0 { style.color } else { 0xFF000000 };
+                }
                 _ => {}
             }
         }
@@ -2275,10 +2372,37 @@ pub fn apply_declaration(
             }
         }
         Property::Width => {
+            // Clear all width variants first.
+            style.width_max_content = false;
+            style.width_min_content = false;
+            style.width_fit_content = false;
             match decl.value {
                 CssValue::Auto => { style.width = Option::None; style.width_pct = Option::None; style.width_calc = Option::None; }
                 CssValue::Percentage(v) => { style.width_pct = Some(v); style.width = Option::None; style.width_calc = Option::None; }
                 CssValue::Calc(px, pct) => { style.width_calc = Some((px, pct)); style.width = Option::None; style.width_pct = Option::None; }
+                CssValue::Keyword(ref kw) => {
+                    match kw.as_str() {
+                        "max-content" | "-webkit-max-content" | "-moz-max-content" => {
+                            style.width_max_content = true;
+                            style.width = Option::None; style.width_pct = Option::None; style.width_calc = Option::None;
+                        }
+                        "min-content" | "-webkit-min-content" | "-moz-min-content" => {
+                            style.width_min_content = true;
+                            style.width = Option::None; style.width_pct = Option::None; style.width_calc = Option::None;
+                        }
+                        "fit-content" | "-webkit-fit-content" | "-moz-fit-content" => {
+                            style.width_fit_content = true;
+                            style.width = Option::None; style.width_pct = Option::None; style.width_calc = Option::None;
+                        }
+                        _ => {
+                            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                                style.width = Some(px);
+                                style.width_pct = Option::None;
+                                style.width_calc = Option::None;
+                            }
+                        }
+                    }
+                }
                 _ => {
                     if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                         style.width = Some(px);
@@ -2419,7 +2543,12 @@ pub fn apply_declaration(
             }
         }
         Property::BorderColor => {
-            if let CssValue::Color(c) = decl.value {
+            let c = match decl.value {
+                CssValue::Color(c) => Some(c),
+                CssValue::CurrentColor => Some(if style.color != 0 { style.color } else { 0xFF000000 }),
+                _ => None,
+            };
+            if let Some(c) = c {
                 style.border_color = c;
                 style.border_top.color = c; style.border_right.color = c;
                 style.border_bottom.color = c; style.border_left.color = c;
@@ -2457,13 +2586,25 @@ pub fn apply_declaration(
                     "disc" => ListStyle::Disc,
                     "circle" => ListStyle::Circle,
                     "square" => ListStyle::Square,
-                    "decimal" => ListStyle::Decimal,
+                    "decimal" | "decimal-leading-zero" => ListStyle::Decimal,
                     "none" => ListStyle::None,
+                    "lower-alpha" | "lower-latin" => ListStyle::LowerAlpha,
+                    "upper-alpha" | "upper-latin" => ListStyle::UpperAlpha,
+                    "lower-roman" => ListStyle::LowerRoman,
+                    "upper-roman" => ListStyle::UpperRoman,
                     _ => style.list_style,
                 };
             }
             if matches!(decl.value, CssValue::None) {
                 style.list_style = ListStyle::None;
+            }
+        }
+        Property::ListStylePosition => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.list_style_position = match kw.as_str() {
+                    "inside" => ListStylePosition::Inside,
+                    _ => ListStylePosition::Outside,
+                };
             }
         }
         Property::WhiteSpace => {
@@ -2517,10 +2658,21 @@ pub fn apply_declaration(
             }
         }
         Property::ZIndex => {
-            if let CssValue::Number(v) = decl.value {
-                style.z_index = v / 100;
-            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
-                style.z_index = px;
+            match decl.value {
+                CssValue::Number(v) => {
+                    style.z_index = v / 100;
+                    style.z_index_auto = false;
+                }
+                CssValue::Auto | CssValue::Inherit => {
+                    style.z_index = 0;
+                    style.z_index_auto = true;
+                }
+                _ => {
+                    if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                        style.z_index = px;
+                        style.z_index_auto = false;
+                    }
+                }
             }
         }
         Property::FlexDirection => {
@@ -3019,14 +3171,12 @@ pub fn apply_declaration(
         Property::Content => {
             if matches!(decl.value, CssValue::None) {
                 style.content = Option::None;
+                style.content_url = Option::None;
             } else if let CssValue::Keyword(ref kw) = decl.value {
-                // Content values are typically quoted strings; the parser stores them as keywords.
-                let s = kw.trim_matches('"').trim_matches('\'');
-                if s == "none" || s == "normal" {
-                    style.content = Option::None;
-                } else {
-                    style.content = Some(String::from(s));
-                }
+                // Use the full content value parser for proper multi-value handling.
+                let (text, url) = parse_content_value(kw.as_str());
+                style.content = text;
+                style.content_url = url;
             }
         }
         Property::ObjectFit => {
@@ -3197,6 +3347,15 @@ pub fn apply_declaration(
                 style.clip_path = parse_clip_path_value(kw, parent_fs, root_fs);
             }
         }
+        Property::Clip => {
+            // `clip: rect(top, right, bottom, left)` for absolutely-positioned elements.
+            // `clip: auto` clears the clip rect.
+            if matches!(decl.value, CssValue::Auto) || matches!(decl.value, CssValue::None) {
+                style.clip_rect = Option::None;
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                style.clip_rect = parse_clip_rect(kw, parent_fs, root_fs);
+            }
+        }
         // CSS counters
         Property::CounterReset => {
             if let CssValue::Keyword(ref kw) = decl.value {
@@ -3214,7 +3373,22 @@ pub fn apply_declaration(
         }
         // Inset shorthand is expanded before reaching here.
         Property::Inset => {}
-        Property::BorderStyle | Property::Overflow
+        Property::Overflow => {
+            // `overflow` shorthand: one or two keywords.
+            // One value → both axes. Two values → overflow-x overflow-y.
+            if let CssValue::Keyword(ref kw) = decl.value {
+                let parts: Vec<&str> = kw.split_whitespace().collect();
+                if parts.len() == 1 {
+                    let v = parse_overflow_keyword(parts[0]);
+                    style.overflow_x = v;
+                    style.overflow_y = v;
+                } else if parts.len() >= 2 {
+                    style.overflow_x = parse_overflow_keyword(parts[0]);
+                    style.overflow_y = parse_overflow_keyword(parts[1]);
+                }
+            }
+        }
+        Property::BorderStyle
         | Property::Flex
         | Property::Gap | Property::Cursor
         | Property::TableLayout
@@ -3314,6 +3488,9 @@ pub fn apply_declaration(
         }
         Property::CustomProperty(_) => {
             // Custom properties stored separately in resolve_styles; no-op here.
+        }
+        Property::MaskImage => {
+            // Recognized for @supports evaluation but not visually applied.
         }
     }
 }
@@ -3458,11 +3635,30 @@ pub(crate) fn parse_single_track(token: &str) -> GridTrackSize {
     if token == "auto" || token.is_empty() {
         return GridTrackSize::Auto;
     }
-    // Handle minmax(min, max) — use the max track size for sizing.
+    // Handle minmax(min, max).
     if token.starts_with("minmax(") {
         let inner = token.trim_start_matches("minmax(").trim_end_matches(')');
-        if let Some((_min_str, max_str)) = inner.split_once(',') {
-            return parse_single_track(max_str.trim());
+        if let Some((min_str, max_str)) = inner.split_once(',') {
+            let min_str = min_str.trim();
+            let max_str = max_str.trim();
+            // Parse min component → pixel value (0 for min-content/auto).
+            let min_px = if min_str == "0" { 0 }
+                else if min_str == "min-content" || min_str == "max-content" || min_str == "auto" { 0 }
+                else if let Some(v) = min_str.strip_suffix("px") { v.parse::<f32>().map(|f| f as i32).unwrap_or(0) }
+                else if let Some(v) = min_str.strip_suffix("rem") { v.parse::<f32>().map(|f| (f * 16.0) as i32).unwrap_or(0) }
+                else { 0 };
+            // Parse max component.
+            if let Some(fr_v) = max_str.strip_suffix("fr") {
+                let fr = fr_v.parse::<f32>().map(|f| (f * 100.0) as i32).unwrap_or(100);
+                return GridTrackSize::Minmax { min_px, max_px: fr, max_is_fr: true };
+            }
+            // Non-fr max: treat as a track size with a minimum floor.
+            let max_track = parse_single_track(max_str);
+            return match max_track {
+                GridTrackSize::Px(px) => GridTrackSize::Minmax { min_px, max_px: px, max_is_fr: false },
+                GridTrackSize::Auto | GridTrackSize::MaxContent => GridTrackSize::Minmax { min_px, max_px: -1, max_is_fr: false },
+                other => other,
+            };
         }
         return GridTrackSize::Auto;
     }
@@ -3493,10 +3689,24 @@ pub(crate) fn parse_single_track(token: &str) -> GridTrackSize {
             return GridTrackSize::Px((v * 16.0) as i32);
         }
     }
-    // Handle min-content / max-content keywords.
-    if token == "min-content" || token == "max-content" {
-        return GridTrackSize::Auto; // sized to content at layout time
+    // Handle fit-content(value): min(max-content, max(min-content, value))
+    // Approximated as Minmax { min_px: 0, max_px: value, max_is_fr: false }.
+    if token.starts_with("fit-content(") && token.ends_with(')') {
+        let inner = &token["fit-content(".len()..token.len() - 1];
+        let max_px = if let Some(v) = inner.trim().strip_suffix("px") {
+            v.parse::<f32>().unwrap_or(0.0) as i32
+        } else if let Some(v) = inner.trim().strip_suffix("rem") {
+            (v.parse::<f32>().unwrap_or(0.0) * 16.0) as i32
+        } else if let Some(v) = inner.trim().strip_suffix("em") {
+            (v.parse::<f32>().unwrap_or(0.0) * 16.0) as i32
+        } else {
+            0
+        };
+        return GridTrackSize::Minmax { min_px: 0, max_px, max_is_fr: false };
     }
+    // Handle min-content / max-content keywords.
+    if token == "min-content" { return GridTrackSize::MinContent; }
+    if token == "max-content" { return GridTrackSize::MaxContent; }
     GridTrackSize::Auto
 }
 
@@ -4106,6 +4316,256 @@ fn try_parse_simple_float(s: &str) -> Option<i32> {
 // ---------------------------------------------------------------------------
 
 /// Parse `clip-path: circle(...)` or `clip-path: inset(...)`.
+/// Parse `clip: rect(top, right, bottom, left)` into [top, right, bottom, left] in px.
+/// Also accepts space-separated values (legacy syntax).
+fn parse_clip_rect(s: &str, parent_fs: i32, root_fs: i32) -> Option<[i32; 4]> {
+    let s = s.trim();
+    // Must start with "rect("
+    let inner = s.strip_prefix("rect(")?.trim_end_matches(')').trim();
+    // Values can be comma- or space-separated.
+    let parts: Vec<&str> = if inner.contains(',') {
+        inner.split(',').map(|p| p.trim()).collect()
+    } else {
+        inner.split_whitespace().collect()
+    };
+    if parts.len() < 4 { return None; }
+    let mut vals = [0i32; 4];
+    for (i, p) in parts[..4].iter().enumerate() {
+        vals[i] = if *p == "auto" {
+            0
+        } else {
+            let cv = crate::css::parse_value(&crate::css::Property::Top, p);
+            resolve_length(&cv, parent_fs, root_fs).unwrap_or(0)
+        };
+    }
+    Some(vals)
+}
+
+/// Parse a CSS `content` property value.
+///
+/// Handles:
+/// - Quoted strings: `"text"` or `'text'`
+/// - `none` / `normal` → (None, None)
+/// - `counter(name)` / `counter(name, style)` → encoded as `\x01COUNTER:name\x01` in text
+/// - `counters(name, sep)` → encoded as `\x01COUNTER:name\x01`
+/// - `url("...")` → (Some(""), Some(url))
+/// - Multi-value: `"(" counter(n) ")"` → concatenated result
+/// - Icon/unicode: `"\e900"` → kept as-is (Unicode escape)
+///
+/// Returns `(text_content, url_content)`.
+pub(crate) fn parse_content_value(raw: &str) -> (Option<String>, Option<String>) {
+    let s = raw.trim();
+    if s.is_empty() { return (None, None); }
+
+    let lower = s.to_ascii_lowercase();
+    if lower == "none" || lower == "normal" || lower == "no-open-quote" || lower == "no-close-quote" {
+        return (None, None);
+    }
+
+    // Pure url(...) without any surrounding text
+    if lower.starts_with("url(") && !lower.contains('"') && !lower.contains('\'') || lower.starts_with("url(\"") || lower.starts_with("url('") {
+        // Check if the whole value is url(...)
+        let trimmed = s.trim_end_matches(')').trim();
+        if trimmed.starts_with("url(") || trimmed.to_ascii_lowercase().starts_with("url(") {
+            let url = extract_css_url(s);
+            return (Some(String::new()), Some(url));
+        }
+    }
+
+    // Multi-value parser: iterate over tokens
+    let mut result = String::new();
+    let mut url_found: Option<String> = None;
+    let bytes = s.as_bytes();
+    let mut pos = 0;
+
+    while pos < bytes.len() {
+        // Skip whitespace
+        while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') {
+            pos += 1;
+        }
+        if pos >= bytes.len() { break; }
+
+        if bytes[pos] == b'"' || bytes[pos] == b'\'' {
+            // Quoted string: collect content between quotes
+            let quote = bytes[pos];
+            pos += 1;
+            let start = pos;
+            while pos < bytes.len() && bytes[pos] != quote {
+                pos += 1;
+            }
+            let text = core::str::from_utf8(&bytes[start..pos]).unwrap_or("");
+            // Unescape CSS unicode escapes like \e900
+            result.push_str(&unescape_css_string(text));
+            if pos < bytes.len() { pos += 1; } // skip closing quote
+        } else if rest_starts_with_ci(bytes, pos, b"counter(") {
+            pos += 8;
+            let (name, new_pos) = read_counter_name(bytes, pos);
+            pos = new_pos;
+            result.push('\x01');
+            result.push_str("COUNTER:");
+            result.push_str(&name);
+            result.push('\x01');
+        } else if rest_starts_with_ci(bytes, pos, b"counters(") {
+            pos += 9;
+            let (name, new_pos) = read_counter_name(bytes, pos);
+            pos = new_pos;
+            result.push('\x01');
+            result.push_str("COUNTER:");
+            result.push_str(&name);
+            result.push('\x01');
+        } else if rest_starts_with_ci(bytes, pos, b"url(") {
+            // url(...) inside multi-value content
+            pos += 4;
+            // Skip past closing paren
+            let mut depth = 1usize;
+            let url_start = pos;
+            while pos < bytes.len() && depth > 0 {
+                if bytes[pos] == b'(' { depth += 1; }
+                else if bytes[pos] == b')' { depth -= 1; }
+                if depth > 0 { pos += 1; }
+            }
+            let url_raw = core::str::from_utf8(&bytes[url_start..pos]).unwrap_or("");
+            let url = url_raw.trim().trim_matches('"').trim_matches('\'');
+            url_found = Some(String::from(url));
+            if pos < bytes.len() { pos += 1; }
+        } else if rest_starts_with_ci(bytes, pos, b"open-quote") {
+            result.push('\u{201C}');
+            pos += 10;
+        } else if rest_starts_with_ci(bytes, pos, b"close-quote") {
+            result.push('\u{201D}');
+            pos += 11;
+        } else if rest_starts_with_ci(bytes, pos, b"attr(") {
+            // attr(name) — skip for now
+            pos += 5;
+            while pos < bytes.len() && bytes[pos] != b')' { pos += 1; }
+            if pos < bytes.len() { pos += 1; }
+        } else {
+            // Unknown token — skip to next whitespace or quote
+            while pos < bytes.len()
+                && bytes[pos] != b' ' && bytes[pos] != b'\t'
+                && bytes[pos] != b'"' && bytes[pos] != b'\''
+            {
+                pos += 1;
+            }
+        }
+    }
+
+    if result.is_empty() && url_found.is_none() {
+        // Nothing useful parsed — treat the raw value as a plain text string
+        // (handles icon font chars stored as unquoted keywords)
+        let stripped = s.trim_matches('"').trim_matches('\'');
+        if stripped == "none" || stripped == "normal" {
+            return (None, None);
+        }
+        if stripped.is_empty() {
+            return (Some(String::new()), None);
+        }
+        return (Some(String::from(stripped)), None);
+    }
+
+    let text = if result.is_empty() { Some(String::new()) } else { Some(result) };
+    (text, url_found)
+}
+
+/// Unescape CSS string escapes: `\e900` → U+E900, `\n` → newline, etc.
+fn unescape_css_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 1;
+            // Hex escape: up to 6 hex digits
+            if bytes[i].is_ascii_hexdigit() {
+                let start = i;
+                let mut hex_end = i;
+                while hex_end < bytes.len() && hex_end - start < 6 && bytes[hex_end].is_ascii_hexdigit() {
+                    hex_end += 1;
+                }
+                let hex_str = core::str::from_utf8(&bytes[start..hex_end]).unwrap_or("0");
+                if let Ok(code) = u32::from_str_radix(hex_str, 16) {
+                    if let Some(c) = char::from_u32(code) {
+                        out.push(c);
+                    }
+                }
+                i = hex_end;
+                // Skip optional single whitespace after hex escape
+                if i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\n' || bytes[i] == b'\r' || bytes[i] == b'\t') {
+                    i += 1;
+                }
+            } else {
+                // Simple escape: \n, \t, \", \\, etc.
+                let c = match bytes[i] {
+                    b'n' => '\n',
+                    b't' => '\t',
+                    b'r' => '\r',
+                    b => b as char,
+                };
+                out.push(c);
+                i += 1;
+            }
+        } else {
+            // Pass through non-escape bytes as UTF-8.
+            // Collect a run of non-backslash bytes and decode them.
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'\\' { i += 1; }
+            if let Ok(s) = core::str::from_utf8(&bytes[start..i]) {
+                out.push_str(s);
+            } else {
+                // Fallback: push individual ASCII chars
+                for b in &bytes[start..i] {
+                    if *b < 128 { out.push(*b as char); }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Check if `bytes[pos..]` starts with `prefix` (case-insensitive ASCII).
+fn rest_starts_with_ci(bytes: &[u8], pos: usize, prefix: &[u8]) -> bool {
+    if pos + prefix.len() > bytes.len() { return false; }
+    for (i, &pb) in prefix.iter().enumerate() {
+        let b = bytes[pos + i];
+        let bl = if b >= b'A' && b <= b'Z' { b + 32 } else { b };
+        let pl = if pb >= b'A' && pb <= b'Z' { pb + 32 } else { pb };
+        if bl != pl { return false; }
+    }
+    true
+}
+
+/// Read a counter name from bytes starting at `pos` (inside counter(...) after the `(`).
+/// Returns (name, new_pos) where new_pos is after the closing `)`.
+fn read_counter_name(bytes: &[u8], mut pos: usize) -> (String, usize) {
+    // Skip whitespace
+    while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') { pos += 1; }
+    let start = pos;
+    // Read until comma or closing paren
+    while pos < bytes.len() && bytes[pos] != b',' && bytes[pos] != b')' { pos += 1; }
+    let name = core::str::from_utf8(&bytes[start..pos]).unwrap_or("").trim().to_ascii_lowercase();
+    // Skip past closing paren (and anything between comma and paren)
+    let mut depth = 1i32;
+    while pos < bytes.len() && depth > 0 {
+        if bytes[pos] == b'(' { depth += 1; }
+        else if bytes[pos] == b')' { depth -= 1; }
+        pos += 1;
+    }
+    (name, pos)
+}
+
+/// Extract the URL from `url("...")` or `url(...)`.
+fn extract_css_url(s: &str) -> String {
+    let s = s.trim();
+    let inner = if let Some(rest) = s.strip_prefix("url(") {
+        rest.trim_end_matches(')').trim()
+    } else if let Some(rest) = s.to_ascii_lowercase().strip_prefix("url(").map(|_| &s[4..]) {
+        rest.trim_end_matches(')').trim()
+    } else {
+        s
+    };
+    String::from(inner.trim_matches('"').trim_matches('\''))
+}
+
 fn parse_clip_path_value(s: &str, parent_fs: i32, root_fs: i32) -> ClipPathVal {
     let s = s.trim();
     if s == "none" { return ClipPathVal::None; }

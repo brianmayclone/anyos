@@ -2,18 +2,23 @@
 //!
 //! This implementation covers the most common subset of the spec:
 //! - Explicit track sizing via `grid-template-columns` / `grid-template-rows`
-//! - `fr` units resolved after fixed and percent tracks are sized
-//! - `auto` tracks sized to the tallest content in the row
+//! - `fr`, `px`, `%`, `rem`/`em` units and `auto` / `min-content` / `max-content`
+//! - `minmax(min, max)` with fr, px, or auto max (§7.2)
+//! - `fit-content(value)` approximated as `minmax(0, value)` (§7.2)
+//! - `repeat(N, ...)`, `repeat(auto-fill, ...)`, `repeat(auto-fit, ...)` (§7.1)
+//! - `grid-template-areas` → named area placement (§7.3, case-sensitive)
+//! - `grid-area: areaName` → resolved against template areas at layout time
+//! - Named `GridLine::Named` resolved to 1-based indices via `resolve_named_area`
+//! - `grid-template` shorthand: simple (rows / cols) and interleaved (areas + row sizes / cols)
 //! - Explicit item placement with `grid-column-start/end` and `grid-row-start/end`
-//! - Auto-placement (row-major scanning, left-to-right, top-to-bottom)
+//! - Auto-placement (row-major scanning, left-to-right, top-to-bottom) (§8)
 //! - `column-gap` / `row-gap` between tracks
 //! - `justify-items` / `align-items` within each cell
 //!
-//! Limitations (future work):
-//! - Named grid lines are ignored (only numeric indices and `span N`)
-//! - `grid-template-areas` not parsed or used
-//! - `minmax()` and `fit-content()` are not supported
-//! - Subgrid and nested grids are not specially handled
+//! Known limitations (future work):
+//! - Named grid lines (`[line-name]` syntax) — only area names via Named(String) are resolved
+//! - Subgrid is not handled
+//! - `grid-auto-flow: column` dense packing is not implemented
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -451,8 +456,9 @@ fn fits(
 ///
 /// Algorithm:
 /// 1. Assign fixed-px and percent tracks.
-/// 2. Distribute remaining space proportionally among `fr` tracks.
-/// 3. Fill `auto` tracks with equal shares of the remaining free space.
+/// 2. Distribute remaining space proportionally among `fr` tracks (incl. Minmax with fr max).
+/// 3. Fill `auto` / `MinContent` / `MaxContent` tracks with equal shares of remaining free space.
+/// 4. Apply min_px floors from Minmax tracks.
 fn resolve_col_widths(
     templates: &[GridTrackSize],
     auto_track: &GridTrackSize,
@@ -482,7 +488,25 @@ fn resolve_col_widths(
                 fixed_total += px;
             }
             GridTrackSize::Fr(f) => { widths.push(0); fr_total += f; }
+            GridTrackSize::Minmax { min_px, max_px, max_is_fr } => {
+                if *max_is_fr {
+                    // Behaves like fr(max_px) with a minimum floor of min_px.
+                    widths.push(0);
+                    fr_total += max_px;
+                } else if *max_px < 0 {
+                    // minmax(N, auto) — start at min_px, may grow with free space.
+                    widths.push(*min_px);
+                    fixed_total += min_px;
+                } else {
+                    // minmax(min, max_px) — use max_px as fixed size, floor at min_px.
+                    let px = (*max_px).max(*min_px);
+                    widths.push(px);
+                    fixed_total += px;
+                }
+            }
             GridTrackSize::Auto
+            | GridTrackSize::MinContent
+            | GridTrackSize::MaxContent
             | GridTrackSize::AutoFill { .. }
             | GridTrackSize::AutoFit { .. } => { widths.push(0); }
         }
@@ -492,19 +516,32 @@ fn resolve_col_widths(
     let free = (available - fixed_total).max(0);
     if fr_total > 0 {
         for i in 0..total_cols {
-            if let GridTrackSize::Fr(f) = track_for(i) {
-                widths[i] = (free as i64 * *f as i64 / fr_total as i64) as i32;
+            match track_for(i) {
+                GridTrackSize::Fr(f) => {
+                    widths[i] = (free as i64 * *f as i64 / fr_total as i64) as i32;
+                }
+                GridTrackSize::Minmax { min_px, max_px, max_is_fr: true } => {
+                    let fr_share = (free as i64 * *max_px as i64 / fr_total as i64) as i32;
+                    widths[i] = fr_share.max(*min_px);
+                }
+                _ => {}
             }
         }
     } else {
         // No fr tracks — distribute remaining free space equally to auto tracks.
         let auto_count = (0..total_cols)
-            .filter(|&i| matches!(track_for(i), GridTrackSize::Auto))
+            .filter(|&i| matches!(
+                track_for(i),
+                GridTrackSize::Auto | GridTrackSize::MinContent | GridTrackSize::MaxContent
+            ))
             .count() as i32;
         if auto_count > 0 {
             let share = free / auto_count;
             for i in 0..total_cols {
-                if matches!(track_for(i), GridTrackSize::Auto) {
+                if matches!(
+                    track_for(i),
+                    GridTrackSize::Auto | GridTrackSize::MinContent | GridTrackSize::MaxContent
+                ) {
                     widths[i] = share;
                 }
             }
@@ -532,11 +569,19 @@ fn resolve_row_heights(
     for r in 0..total_rows {
         match track_for(r) {
             GridTrackSize::Px(px) => heights[r] = *px,
+            GridTrackSize::Minmax { min_px, max_px, max_is_fr } => {
+                if !max_is_fr && *max_px >= 0 {
+                    heights[r] = (*max_px).max(*min_px);
+                } else {
+                    // fr or auto max — enforce minimum, grow from content
+                    heights[r] = *min_px;
+                }
+            }
             _ => {} // content-sized or fr — determined from items
         }
     }
 
-    // Pass 2: content-size rows that are `auto` or `fr`.
+    // Pass 2: content-size rows that are `auto`, `fr`, `MinContent`, or `MaxContent`.
     for item in items {
         let item_h = item.layout.as_ref().map(|b| b.height).unwrap_or(0);
         // Distribute the item height evenly across its row span.
@@ -544,9 +589,19 @@ fn resolve_row_heights(
         let r = item.placed_row;
         if r < total_rows {
             match track_for(r) {
-                GridTrackSize::Auto | GridTrackSize::Fr(_) => {
+                GridTrackSize::Auto
+                | GridTrackSize::Fr(_)
+                | GridTrackSize::MinContent
+                | GridTrackSize::MaxContent => {
                     if item_h > heights[r] {
                         heights[r] = item_h;
+                    }
+                }
+                GridTrackSize::Minmax { min_px, max_is_fr: true, .. }
+                | GridTrackSize::Minmax { min_px, max_px: -1, .. } => {
+                    // fr or auto max — grow from content, respecting min floor
+                    if item_h > heights[r] {
+                        heights[r] = item_h.max(*min_px);
                     }
                 }
                 _ => {}

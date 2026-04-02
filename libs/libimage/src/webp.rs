@@ -827,10 +827,11 @@ impl<'a> BoolDecoder<'a> {
 
     fn read_bit(&mut self, prob: u8) -> u32 {
         let split = 1 + (((self.range - 1) * prob as u32) >> 8);
-        let big = self.value >= split;
+        let bigsplit = split << 8; // Compare on the same scale as value
+        let big = self.value >= bigsplit;
         if big {
             self.range -= split;
-            self.value -= split;
+            self.value -= bigsplit;
         } else {
             self.range = split;
         }
@@ -1051,16 +1052,24 @@ fn build_quant(base_qp: i32, y_dc_delta: i32, y2_dc_delta: i32, y2_ac_delta: i32
 // ── 4×4 Inverse DCT (RFC 6386 §14.3) ───────────────────────────────────────
 
 fn idct4x4(input: &[i16; 16], dst: &mut [u8], stride: usize) {
+    // VP8 IDCT uses simplified constants (RFC 6386 §14.4):
+    //   sinpi8sqrt2       = 35468
+    //   cospi8sqrt2minus1 = 20091
+    // Transform:  t1 = (x * sinpi8sqrt2) >> 16
+    //             t2 = x + ((x * cospi8sqrt2minus1) >> 16)
+    const SINPI8: i32 = 35468;
+    const COSPI8M1: i32 = 20091;
+
     let mut tmp = [0i32; 16];
 
     // Columns
     for i in 0..4 {
         let a1 = input[i] as i32 + input[8 + i] as i32;
         let b1 = input[i] as i32 - input[8 + i] as i32;
-        let t1 = ((input[4 + i] as i32) * 35468 >> 16) - ((input[12 + i] as i32) * 85627 >> 16);
-        let t2 = ((input[4 + i] as i32) * 85627 >> 16) + ((input[12 + i] as i32) * 35468 >> 16);
-        // sin(pi/8)*65536 ≈ 35468, cos(pi/8)*65536 ≈ 85627 — but VP8 uses
-        // simpler constants: c1 = 20091, c2 = 35468
+        let ip4 = input[4 + i] as i32;
+        let ip12 = input[12 + i] as i32;
+        let t1 = (ip4 * SINPI8 >> 16) - ip12 - (ip12 * COSPI8M1 >> 16);
+        let t2 = ip4 + (ip4 * COSPI8M1 >> 16) + (ip12 * SINPI8 >> 16);
         tmp[i]      = a1 + t2;
         tmp[4 + i]  = b1 + t1;
         tmp[8 + i]  = b1 - t1;
@@ -1072,12 +1081,12 @@ fn idct4x4(input: &[i16; 16], dst: &mut [u8], stride: usize) {
         let r = i * 4;
         let a1 = tmp[r] + tmp[r + 2];
         let b1 = tmp[r] - tmp[r + 2];
-        let t1 = (tmp[r + 1] * 35468 >> 16) - (tmp[r + 3] * 85627 >> 16);
-        let t2 = (tmp[r + 1] * 85627 >> 16) + (tmp[r + 3] * 35468 >> 16);
-        let d0 = ((a1 + t2 + 4) >> 3).clamp(-128, 127);
-        let d1 = ((b1 + t1 + 4) >> 3).clamp(-128, 127);
-        let d2 = ((b1 - t1 + 4) >> 3).clamp(-128, 127);
-        let d3 = ((a1 - t2 + 4) >> 3).clamp(-128, 127);
+        let t1 = (tmp[r + 1] * SINPI8 >> 16) - tmp[r + 3] - (tmp[r + 3] * COSPI8M1 >> 16);
+        let t2 = tmp[r + 1] + (tmp[r + 1] * COSPI8M1 >> 16) + (tmp[r + 3] * SINPI8 >> 16);
+        let d0 = (a1 + t2 + 4) >> 3;
+        let d1 = (b1 + t1 + 4) >> 3;
+        let d2 = (b1 - t1 + 4) >> 3;
+        let d3 = (a1 - t2 + 4) >> 3;
         let row = i * stride;
         dst[row]     = (dst[row] as i32 + d0).clamp(0, 255) as u8;
         dst[row + 1] = (dst[row + 1] as i32 + d1).clamp(0, 255) as u8;
@@ -1347,31 +1356,34 @@ fn predict_4x4(mode: u8, dst: &mut [u8], stride: usize, above: &[u8; 8], left: &
 
 /// Read a single DCT coefficient using the token tree.
 /// Returns (value, is_eob)
-fn read_coeff(bd: &mut BoolDecoder, probs: &[u8; 11], prev_nonzero: bool) -> (i16, bool) {
-    // Tree structure (RFC 6386 §13.2):
-    // Node 0: EOB (prob[0]) vs rest
-    // Node 1: 0 (prob[1]) vs rest
-    // Node 2: 1 (prob[2]) vs rest
-    // Node 3: 2..4 (prob[3]) vs rest
-    // Node 4: 2 (prob[4]) vs {3,4}
-    // Node 5: 3 (prob[5]) vs 4
-    // Node 6: 5..10 (prob[6]) vs 11+
-    // Node 7: 5..6 (prob[7]) vs 7..10
-    // Node 8: 5 (prob[8]) vs 6
-    // Node 9: 7..8 (prob[9]) vs 9..10
-    // Node 10: 7 vs 8 / 9 vs 10
+/// Category extra-bit probabilities (RFC 6386 §13.3).
+/// Each category defines fixed probabilities for its extra bits.
+static CAT1_PROB: [u8; 1] = [159];
+static CAT2_PROB: [u8; 2] = [165, 145];
+static CAT3_PROB: [u8; 3] = [173, 148, 140];
+static CAT4_PROB: [u8; 4] = [176, 155, 140, 135];
+static CAT5_PROB: [u8; 5] = [180, 157, 141, 134, 130];
+static CAT6_PROB: [u8; 11] = [254, 254, 243, 230, 196, 177, 153, 140, 133, 130, 129];
 
-    if !prev_nonzero {
-        // First coeff in block: no EOB check needed at position 0
+/// Read extra bits for a DCT coefficient category using fixed probabilities.
+fn read_cat_extra(bd: &mut BoolDecoder, probs: &[u8]) -> i16 {
+    let mut v = 0i16;
+    for &p in probs {
+        v = (v << 1) | bd.read_bit(p) as i16;
     }
+    v
+}
+
+fn read_coeff(bd: &mut BoolDecoder, probs: &[u8; 11], _prev_nonzero: bool) -> (i16, bool) {
+    // Token tree (RFC 6386 §13.2)
 
     // Check EOB
     if !bd.read_bool(probs[0]) {
-        return (0, true); // End of block
+        return (0, true);
     }
     // Check zero
     if !bd.read_bool(probs[1]) {
-        return (0, false); // Zero coefficient
+        return (0, false);
     }
     // Check literal 1
     if !bd.read_bool(probs[2]) {
@@ -1392,26 +1404,26 @@ fn read_coeff(bd: &mut BoolDecoder, probs: &[u8; 11], prev_nonzero: bool) -> (i1
     } else if !bd.read_bool(probs[6]) {
         // Category 1 (5..6) or Category 2 (7..10)
         if !bd.read_bool(probs[7]) {
-            // Cat 1: 5 + 1 extra bit
-            val = 5 + bd.read_literal(1) as i16;
+            // Cat 1: base=5, 1 extra bit
+            val = 5 + read_cat_extra(bd, &CAT1_PROB);
         } else {
-            // Cat 2: 7 + 2 extra bits
-            val = 7 + bd.read_literal(2) as i16;
+            // Cat 2: base=7, 2 extra bits
+            val = 7 + read_cat_extra(bd, &CAT2_PROB);
         }
     } else {
         // Category 3..6
         if !bd.read_bool(probs[8]) {
-            // Cat 3: 11 + 3 extra bits
-            val = 11 + bd.read_literal(3) as i16;
+            // Cat 3: base=11, 3 extra bits
+            val = 11 + read_cat_extra(bd, &CAT3_PROB);
         } else if !bd.read_bool(probs[9]) {
-            // Cat 4: 19 + 4 extra bits
-            val = 19 + bd.read_literal(4) as i16;
+            // Cat 4: base=19, 4 extra bits
+            val = 19 + read_cat_extra(bd, &CAT4_PROB);
         } else if !bd.read_bool(probs[10]) {
-            // Cat 5: 35 + 5 extra bits
-            val = 35 + bd.read_literal(5) as i16;
+            // Cat 5: base=35, 5 extra bits
+            val = 35 + read_cat_extra(bd, &CAT5_PROB);
         } else {
-            // Cat 6: 67 + 11 extra bits
-            val = 67 + bd.read_literal(11) as i16;
+            // Cat 6: base=67, 11 extra bits
+            val = 67 + read_cat_extra(bd, &CAT6_PROB);
         }
     }
     let sign = if bd.read_bool(128) { -val } else { val };
@@ -1426,22 +1438,26 @@ fn decode_block(bd: &mut BoolDecoder, coeffs: &mut [i16; 16],
                 above_nz: bool, left_nz: bool) -> u32 {
     let ctx = above_nz as usize + left_nz as usize; // 0, 1, or 2
     let mut nonzero_count = 0u32;
-    let mut has_prev_nz = false;
+    let mut prev_token_ctx: usize = 0; // 0=zero/none, 1=one, 2=more
 
     for i in first_coeff..16 {
         let band = COEFF_BANDS[i] as usize;
-        let c = if i == first_coeff { ctx } else if has_prev_nz { 2 } else { 0 };
+        let c = if i == first_coeff { ctx } else { prev_token_ctx };
         let c = c.min(2);
         let probs = &coeff_probs[plane_type][band][c];
 
-        let (val, eob) = read_coeff(bd, probs, has_prev_nz);
+        let (val, eob) = read_coeff(bd, probs, prev_token_ctx > 0);
         if eob { break; }
         coeffs[ZIGZAG[i]] = val;
-        if val != 0 {
+        let abs_val = val.unsigned_abs() as usize;
+        if abs_val == 0 {
+            prev_token_ctx = 0;
+        } else if abs_val == 1 {
             nonzero_count += 1;
-            has_prev_nz = true;
+            prev_token_ctx = 1;
         } else {
-            has_prev_nz = false;
+            nonzero_count += 1;
+            prev_token_ctx = 2;
         }
     }
     nonzero_count
@@ -1482,11 +1498,12 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
     let mut seg_filter = [0i32; 4];
     let mut seg_probs = [255u8; MB_FEATURE_TREE_PROBS];
     let mut seg_update_map = false;
+    let mut seg_abs_delta = false;
     if segmentation_enabled {
         seg_update_map = bd.read_bool(128);
         let update_data = bd.read_bool(128);
         if update_data {
-            let abs_delta = bd.read_bool(128);
+            seg_abs_delta = bd.read_bool(128);
             for i in 0..4 {
                 if bd.read_bool(128) {
                     seg_quants[i] = bd.read_signed(7);
@@ -1538,7 +1555,25 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
     let uv_dc_delta = if bd.read_bool(128) { bd.read_signed(4) } else { 0 };
     let uv_ac_delta = if bd.read_bool(128) { bd.read_signed(4) } else { 0 };
 
-    let quant = build_quant(base_qp, y_dc_delta, y2_dc_delta, y2_ac_delta, uv_dc_delta, uv_ac_delta);
+    // Build per-segment quantization parameters
+    let mut seg_quant_params = [
+        build_quant(base_qp, y_dc_delta, y2_dc_delta, y2_ac_delta, uv_dc_delta, uv_ac_delta),
+        build_quant(base_qp, y_dc_delta, y2_dc_delta, y2_ac_delta, uv_dc_delta, uv_ac_delta),
+        build_quant(base_qp, y_dc_delta, y2_dc_delta, y2_ac_delta, uv_dc_delta, uv_ac_delta),
+        build_quant(base_qp, y_dc_delta, y2_dc_delta, y2_ac_delta, uv_dc_delta, uv_ac_delta),
+    ];
+    if segmentation_enabled {
+        for seg in 0..4 {
+            let seg_qp = if seg_abs_delta {
+                seg_quants[seg] // Absolute QP
+            } else {
+                base_qp + seg_quants[seg] // Delta from base
+            };
+            seg_quant_params[seg] = build_quant(
+                seg_qp, y_dc_delta, y2_dc_delta, y2_ac_delta, uv_dc_delta, uv_ac_delta,
+            );
+        }
+    }
 
     // Refresh entropy probs (not used for single-frame WebP)
     let _refresh_probs = bd.read_bool(128);
@@ -1561,16 +1596,46 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
     let mb_no_skip_coeff = bd.read_bool(128);
     let skip_prob = if mb_no_skip_coeff { bd.read_literal(8) as u8 } else { 0 };
 
-    // ── Token partition (second partition) ───────────────────────────────
-    // For simplicity, use only the first token partition
+    // ── Token partitions (RFC 6386 §9.5) ──────────────────────────────
+    let nbr_partitions = _nbr_partitions;
     let token_start = part1_end;
-    // If multiple partitions, skip the partition size table
+    // Parse partition size table (3 bytes LE per partition, except last)
     let part_sizes_len = if log2_nbr_of_partitions > 0 {
-        3 * ((_nbr_partitions - 1) as usize)
+        3 * (nbr_partitions - 1)
     } else { 0 };
-    let token_data_start = token_start + part_sizes_len;
-    if token_data_start >= data.len() { return ERR_INVALID_DATA; }
-    let mut tbd = BoolDecoder::new(&data[token_data_start..]);
+    let sizes_start = token_start;
+    if sizes_start + part_sizes_len > data.len() { return ERR_INVALID_DATA; }
+
+    // Compute start offset of each token partition
+    let mut part_offsets = Vec::with_capacity(nbr_partitions);
+    let mut part_sizes_vec = Vec::with_capacity(nbr_partitions);
+    let mut off = token_start + part_sizes_len;
+    for i in 0..nbr_partitions {
+        part_offsets.push(off);
+        if i < nbr_partitions - 1 {
+            let si = sizes_start + i * 3;
+            let sz = data[si] as usize
+                | ((data[si + 1] as usize) << 8)
+                | ((data[si + 2] as usize) << 16);
+            part_sizes_vec.push(sz);
+            off += sz;
+        } else {
+            // Last partition extends to end of data
+            part_sizes_vec.push(data.len().saturating_sub(off));
+        }
+    }
+
+    // Create a BoolDecoder for each token partition
+    let mut token_decoders: Vec<BoolDecoder> = Vec::with_capacity(nbr_partitions);
+    for i in 0..nbr_partitions {
+        let start = part_offsets[i];
+        let end = (start + part_sizes_vec[i]).min(data.len());
+        if start >= data.len() {
+            token_decoders.push(BoolDecoder::new(&[]));
+        } else {
+            token_decoders.push(BoolDecoder::new(&data[start..end]));
+        }
+    }
 
     // ── Allocate plane buffers (YUV 4:2:0) ──────────────────────────────
     let y_stride = padded_w;
@@ -1590,6 +1655,9 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
 
     // ── Decode macroblocks ──────────────────────────────────────────────
     for mb_y in 0..mb_h {
+        // Select the token partition for this macroblock row (round-robin)
+        let tp = mb_y % nbr_partitions;
+
         let mut left_nz_y = [false; 4];
         let mut left_nz_u = [false; 2];
         let mut left_nz_v = [false; 2];
@@ -1740,14 +1808,14 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                 if !is_4x4 {
                     // Y2 block (16x16 mode): decode DC coefficients via WHT
                     let mut y2_coeffs = [0i16; 16];
-                    let nz = decode_block(&mut tbd, &mut y2_coeffs, 1, 0,
+                    let nz = decode_block(&mut token_decoders[tp], &mut y2_coeffs, 1, 0,
                                          &coeff_probs, above_nz_dc[mb_x], left_nz_dc);
                     above_nz_dc[mb_x] = nz > 0;
                     left_nz_dc = nz > 0;
 
                     // Dequantize Y2
-                    y2_coeffs[0] = y2_coeffs[0].wrapping_mul(quant.y2_dc);
-                    for i in 1..16 { y2_coeffs[i] = y2_coeffs[i].wrapping_mul(quant.y2_ac); }
+                    y2_coeffs[0] = y2_coeffs[0].wrapping_mul(seg_quant_params[seg_id].y2_dc);
+                    for i in 1..16 { y2_coeffs[i] = y2_coeffs[i].wrapping_mul(seg_quant_params[seg_id].y2_ac); }
 
                     // Inverse WHT → 16 DC values
                     let mut dc16 = [0i16; 16];
@@ -1759,7 +1827,7 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                         let sx = sb % 4;
                         let mut coeffs = [0i16; 16];
                         coeffs[0] = dc16[sb]; // DC from WHT
-                        let nz = decode_block(&mut tbd, &mut coeffs, 0, 1,
+                        let nz = decode_block(&mut token_decoders[tp], &mut coeffs, 0, 1,
                                              &coeff_probs,
                                              above_nz_y[mb_x * 4 + sx],
                                              left_nz_y[sy]);
@@ -1769,7 +1837,7 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
 
                         // Dequantize
                         // DC already dequantized via WHT path
-                        for i in 1..16 { coeffs[i] = coeffs[i].wrapping_mul(quant.y_ac); }
+                        for i in 1..16 { coeffs[i] = coeffs[i].wrapping_mul(seg_quant_params[seg_id].y_ac); }
 
                         // Inverse DCT
                         let bx = mb_x * 16 + sx * 4;
@@ -1785,7 +1853,7 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                         let sy = sb / 4;
                         let sx = sb % 4;
                         let mut coeffs = [0i16; 16];
-                        let nz = decode_block(&mut tbd, &mut coeffs, 2, 0,
+                        let nz = decode_block(&mut token_decoders[tp], &mut coeffs, 2, 0,
                                              &coeff_probs,
                                              above_nz_y[mb_x * 4 + sx],
                                              left_nz_y[sy]);
@@ -1793,8 +1861,8 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                         left_nz_y[sy] = nz > 0;
 
                         // Dequantize
-                        coeffs[0] = coeffs[0].wrapping_mul(quant.y_dc);
-                        for i in 1..16 { coeffs[i] = coeffs[i].wrapping_mul(quant.y_ac); }
+                        coeffs[0] = coeffs[0].wrapping_mul(seg_quant_params[seg_id].y_dc);
+                        for i in 1..16 { coeffs[i] = coeffs[i].wrapping_mul(seg_quant_params[seg_id].y_ac); }
 
                         let bx = mb_x * 16 + sx * 4;
                         let by = mb_y * 16 + sy * 4;
@@ -1807,15 +1875,15 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                     let sy = sb / 2;
                     let sx = sb % 2;
                     let mut coeffs = [0i16; 16];
-                    let nz = decode_block(&mut tbd, &mut coeffs, 3, 0,
+                    let nz = decode_block(&mut token_decoders[tp], &mut coeffs, 3, 0,
                                          &coeff_probs,
                                          above_nz_u[mb_x * 2 + sx],
                                          left_nz_u[sy]);
                     above_nz_u[mb_x * 2 + sx] = nz > 0;
                     left_nz_u[sy] = nz > 0;
 
-                    coeffs[0] = coeffs[0].wrapping_mul(quant.uv_dc);
-                    for i in 1..16 { coeffs[i] = coeffs[i].wrapping_mul(quant.uv_ac); }
+                    coeffs[0] = coeffs[0].wrapping_mul(seg_quant_params[seg_id].uv_dc);
+                    for i in 1..16 { coeffs[i] = coeffs[i].wrapping_mul(seg_quant_params[seg_id].uv_ac); }
 
                     let bx = mb_x * 8 + sx * 4;
                     let by = mb_y * 8 + sy * 4;
@@ -1827,15 +1895,15 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                     let sy = sb / 2;
                     let sx = sb % 2;
                     let mut coeffs = [0i16; 16];
-                    let nz = decode_block(&mut tbd, &mut coeffs, 3, 0,
+                    let nz = decode_block(&mut token_decoders[tp], &mut coeffs, 3, 0,
                                          &coeff_probs,
                                          above_nz_v[mb_x * 2 + sx],
                                          left_nz_v[sy]);
                     above_nz_v[mb_x * 2 + sx] = nz > 0;
                     left_nz_v[sy] = nz > 0;
 
-                    coeffs[0] = coeffs[0].wrapping_mul(quant.uv_dc);
-                    for i in 1..16 { coeffs[i] = coeffs[i].wrapping_mul(quant.uv_ac); }
+                    coeffs[0] = coeffs[0].wrapping_mul(seg_quant_params[seg_id].uv_dc);
+                    for i in 1..16 { coeffs[i] = coeffs[i].wrapping_mul(seg_quant_params[seg_id].uv_ac); }
 
                     let bx = mb_x * 8 + sx * 4;
                     let by = mb_y * 8 + sy * 4;

@@ -21,6 +21,7 @@ EXPORTS
     anyui_run_once
     anyui_quit
     anyui_remove
+    anyui_bring_to_front
     anyui_destroy_window
     anyui_set_padding
     anyui_set_margin

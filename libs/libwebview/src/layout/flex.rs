@@ -40,7 +40,7 @@ fn resolve_align(container_align: AlignItems, child_style: &ComputedStyle) -> Al
 /// For flex items without explicit width (Case E), `build_block` fills
 /// available width for block children, so we can't use the built layout
 /// box widths.  Instead, measure the natural content extent directly.
-fn measure_max_content(
+pub(super) fn measure_max_content(
     dom: &Dom,
     styles: &[ComputedStyle],
     pseudo: &PseudoStyles,

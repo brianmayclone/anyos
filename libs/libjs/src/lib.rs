@@ -71,9 +71,9 @@ impl JsEngine {
             return JsValue::Undefined;
         }
 
-        // Compile
+        // Compile (using eval mode to return the last expression's value)
         let mut compiler = compiler::Compiler::new();
-        let chunk = compiler.compile(&program);
+        let chunk = compiler.compile_eval(&program);
 
         // Execute
         self.vm.execute(chunk)

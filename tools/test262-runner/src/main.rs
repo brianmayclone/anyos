@@ -12,14 +12,15 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use libjs::JsEngine;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: test262-runner <test262-dir> [filter] [--limit N] [--verbose]");
+        eprintln!("Usage: test262-runner <test262-dir> [filter] [--limit N] [--start N] [--timeout SECS] [--verbose]");
         std::process::exit(1);
     }
 
@@ -30,6 +31,16 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(usize::MAX);
+    let start: usize = args.iter()
+        .position(|a| a == "--start")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1); // 1-based
+    let timeout_secs: u64 = args.iter()
+        .position(|a| a == "--timeout")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
     let filter = args.get(2)
         .filter(|s| !s.starts_with("--") && *s != "-v")
         .map(|s| s.as_str())
@@ -68,17 +79,23 @@ fn main() {
     collect_js_files(&search_dir, &mut test_files);
     test_files.sort();
 
-    let total = test_files.len().min(limit);
-    eprintln!("[test262] Found {} test files, running {} ...", test_files.len(), total);
+    let start_idx = (start.max(1) - 1).min(test_files.len()); // convert 1-based to 0-based
+    let end_idx = test_files.len().min(start_idx.saturating_add(limit));
+    let total = end_idx - start_idx;
+    eprintln!("[test262] Found {} test files, running {} (tests {}-{}) ...",
+        test_files.len(), total, start_idx + 1, end_idx);
 
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut skipped = 0usize;
+    let mut timed_out = 0usize;
     let mut errors: Vec<(String, String)> = Vec::new();
 
-    let start = Instant::now();
+    let timer_start = Instant::now();
+    let timeout_dur = Duration::from_secs(timeout_secs);
 
-    for (i, path) in test_files.iter().take(limit).enumerate() {
+    for (i, path) in test_files[start_idx..end_idx].iter().enumerate() {
+        let test_num = start_idx + i + 1; // 1-based test number
         let rel_path = path.strip_prefix(&test_dir).unwrap_or(path);
         let source = match fs::read_to_string(path) {
             Ok(s) => s,
@@ -125,9 +142,9 @@ fn main() {
             continue;
         }
 
-        // Run test in a separate thread with bounded stack (16MB)
-        // Returns: (succeeded: bool, console: Vec<String>, exception_msg: Option<String>)
+        // Run test in a separate thread with bounded stack (16MB) and timeout
         let full_source_clone = full_source.clone();
+        let (tx, rx) = mpsc::channel();
         let handle = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
@@ -151,22 +168,18 @@ fn main() {
                     }
                 });
                 let console = engine.console_output().to_vec();
-                (exc_msg.is_none(), console, exc_msg)
+                let _ = tx.send((exc_msg.is_none(), console, exc_msg));
             });
 
         let (succeeded, console_out, exc_msg) = match handle {
-            Ok(h) => match h.join() {
+            Ok(_h) => match rx.recv_timeout(timeout_dur) {
                 Ok(result) => result,
-                Err(panic) => {
-                    let panic_msg = if let Some(s) = panic.downcast_ref::<String>() {
-                        s.clone()
-                    } else if let Some(s) = panic.downcast_ref::<&str>() {
-                        s.to_string()
-                    } else {
-                        "unknown panic".to_string()
-                    };
-                    (false, Vec::new(), Some(format!("PANIC: {}", panic_msg)))
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    timed_out += 1;
+                    eprintln!("  TIMEOUT  #{} {} (>{}s)", test_num, rel_path.display(), timeout_secs);
+                    (false, Vec::new(), Some(format!("TIMEOUT after {}s", timeout_secs)))
                 }
+                Err(_) => (false, Vec::new(), Some("PANIC: channel disconnected".to_string())),
             },
             Err(_) => (false, Vec::new(), Some("PANIC: failed to spawn thread".to_string())),
         };
@@ -196,16 +209,16 @@ fn main() {
 
         // Progress every 500 tests
         if (i + 1) % 500 == 0 {
-            let elapsed = start.elapsed().as_secs_f64();
+            let elapsed = timer_start.elapsed().as_secs_f64();
             let rate = (i + 1) as f64 / elapsed;
             eprintln!(
-                "[test262] {}/{} done ({} pass, {} fail, {} skip) [{:.0} tests/s]",
-                i + 1, total, passed, failed, skipped, rate
+                "[test262] {}/{} done ({} pass, {} fail, {} skip, {} timeout) [{:.0} tests/s]",
+                i + 1, total, passed, failed, skipped, timed_out, rate
             );
         }
     }
 
-    let elapsed = start.elapsed().as_secs_f64();
+    let elapsed = timer_start.elapsed().as_secs_f64();
     let total_run = passed + failed;
     let pass_rate = if total_run > 0 { passed as f64 / total_run as f64 * 100.0 } else { 0.0 };
 
@@ -217,6 +230,9 @@ fn main() {
     println!("  Passed:   {} ({:.1}%)", passed, pass_rate);
     println!("  Failed:   {}", failed);
     println!("  Skipped:  {}", skipped);
+    if timed_out > 0 {
+    println!("  Timeout:  {} (>{}s)", timed_out, timeout_secs);
+    }
     println!("  Time:     {:.1}s", elapsed);
     println!("═══════════════════════════════════════════════════════");
 

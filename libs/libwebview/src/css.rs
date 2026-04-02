@@ -63,6 +63,21 @@ pub struct MediaRule {
 #[derive(Clone)]
 pub struct MediaQuery {
     pub conditions: Vec<MediaCondition>,
+    /// Media type restriction: None = all, Some("screen") = screen only, etc.
+    pub media_type: MediaType,
+}
+
+/// Media type for @media rules.
+#[derive(Clone, PartialEq)]
+pub enum MediaType {
+    /// Matches all media types (default, or `@media all`).
+    All,
+    /// Matches only screen (`@media screen`).
+    Screen,
+    /// Matches only print (`@media print`) — we never render for print.
+    Print,
+    /// Negated type: `@media not print` → matches everything except print.
+    Not(Box<MediaType>),
 }
 
 /// A single media condition.
@@ -74,6 +89,11 @@ pub enum MediaCondition {
     MaxHeight(i32),
     /// `prefers-color-scheme: dark` etc.
     PrefersColorScheme(String),
+    /// `hover: hover` / `pointer: fine` / `prefers-reduced-motion: no-preference` etc.
+    /// Stores whether we consider ourselves to satisfy this feature.
+    Known(bool),
+    /// Unknown media feature — treated as false (unknown = not supported).
+    Unsupported,
 }
 
 #[derive(Clone)]
@@ -141,7 +161,8 @@ pub enum PseudoClass {
     NthLastChild(i32),
     FirstOfType,
     LastOfType,
-    Not(Box<SimpleSelector>),
+    /// `:not(selector, ...)` — matches if NONE of the selectors match.
+    Not(Vec<SimpleSelector>),
     /// `:is(selector, ...)` — matches if any selector in the list matches.
     Is(Vec<SimpleSelector>),
     /// `:where(selector, ...)` — same as :is() but zero specificity.
@@ -208,6 +229,7 @@ pub enum Property {
     BorderStyle,
     BorderRadius,
     ListStyleType,
+    ListStylePosition,
     WhiteSpace,
     Overflow,
     OverflowX,
@@ -295,6 +317,7 @@ pub enum Property {
     AspectRatio,
     Inset,
     ClipPath,
+    Clip,
     // Text decoration sub-properties (CSS3)
     TextDecorationColor,
     TextDecorationStyle,
@@ -345,6 +368,8 @@ pub enum Property {
     GridRowStart,
     GridRowEnd,
     GridArea,
+    // Mask (parsed but not visually applied — makes @supports queries work)
+    MaskImage,
     /// CSS custom property (--name). Value stored in Declaration.value as Keyword.
     CustomProperty(String),
 }
@@ -364,6 +389,8 @@ pub enum CssValue {
     /// `calc(expr)` — stores (px_component * 100, pct_component * 100).
     /// At layout time: result = (container_width * pct / 10000) + (px / 100).
     Calc(i32, i32),
+    /// `currentColor` — resolved to the element's computed `color` property.
+    CurrentColor,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -702,9 +729,12 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
             if kw_lower == "supports" {
                 if let Some(sr) = parse_supports_rule(&mut p) {
                     // @supports rules whose condition evaluates to true have their
-                    // inner rules merged into the main rule list.
-                    for rule in sr {
+                    // inner rules and media rules merged into the main lists.
+                    for rule in sr.rules {
                         rules.push(rule);
+                    }
+                    for mr in sr.media_rules {
+                        media_rules.push(mr);
                     }
                 }
                 continue;
@@ -741,8 +771,8 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
         }
     }
 
-    crate::debug_surf!("[css] parse_stylesheet done: {} rules, {} @media, {} @keyframes",
-        rules.len(), media_rules.len(), keyframes.len());
+    crate::debug_surf!("[css] parse_stylesheet done: {} rules, {} @media, {} @keyframes, {} imports",
+        rules.len(), media_rules.len(), keyframes.len(), imports.len());
     Stylesheet { rules, media_rules, keyframes, imports, font_faces }
 }
 
@@ -770,16 +800,36 @@ fn parse_media_rule(p: &mut Parser) -> Option<MediaRule> {
             p.pos += 1;
             break;
         }
-        // Skip nested at-rules inside @media.
+        // Handle nested at-rules inside @media.
         if p.peek() == b'@' {
             p.pos += 1;
-            let _kw = p.read_ident();
-            loop {
-                p.skip_whitespace();
-                if p.eof() { break; }
-                if p.peek() == b'{' { p.skip_block(); break; }
-                if p.peek() == b';' { p.pos += 1; break; }
-                p.pos += 1;
+            let kw = p.read_ident();
+            let kw_lower = {
+                let mut buf = [0u8; 32];
+                let len = kw.len().min(32);
+                for (i, &b) in kw.as_bytes()[..len].iter().enumerate() {
+                    buf[i] = if b >= b'A' && b <= b'Z' { b + 32 } else { b };
+                }
+                String::from(core::str::from_utf8(&buf[..len]).unwrap_or(""))
+            };
+            // Handle @supports nested inside @media.
+            if kw_lower == "supports" {
+                if let Some(sr) = parse_supports_rule(p) {
+                    for rule in sr.rules {
+                        inner_rules.push(rule);
+                    }
+                    // Note: nested media rules inside @supports inside @media
+                    // are dropped (three-level nesting not supported).
+                }
+            } else {
+                // Skip other nested at-rules.
+                loop {
+                    p.skip_whitespace();
+                    if p.eof() { break; }
+                    if p.peek() == b'{' { p.skip_block(); break; }
+                    if p.peek() == b';' { p.pos += 1; break; }
+                    p.pos += 1;
+                }
             }
             continue;
         }
@@ -795,17 +845,44 @@ fn parse_media_rule(p: &mut Parser) -> Option<MediaRule> {
 fn parse_media_query(text: &str) -> MediaQuery {
     let mut conditions = Vec::new();
     let trimmed = text.trim();
+    let mut media_type = MediaType::All;
+    let mut negated = false;
 
     // Split on "and" (case-insensitive).
     for part in split_and(trimmed) {
         let p = part.trim();
         if p.is_empty() { continue; }
 
-        // Skip media types: "screen", "all", "print", "not", "only".
         let lower = p.to_ascii_lowercase();
-        if lower == "screen" || lower == "all" || lower == "print"
-            || lower == "not" || lower == "only"
-        {
+
+        // Track `not` modifier.
+        if lower == "not" {
+            negated = true;
+            continue;
+        }
+
+        // Skip `only` modifier (has no effect on matching).
+        if lower == "only" {
+            continue;
+        }
+
+        // Recognize media types.
+        if lower == "screen" {
+            let mt = MediaType::Screen;
+            media_type = if negated { MediaType::Not(Box::new(mt)) } else { mt };
+            negated = false;
+            continue;
+        }
+        if lower == "print" {
+            let mt = MediaType::Print;
+            media_type = if negated { MediaType::Not(Box::new(mt)) } else { mt };
+            negated = false;
+            continue;
+        }
+        if lower == "all" {
+            let mt = MediaType::All;
+            media_type = if negated { MediaType::Not(Box::new(mt)) } else { mt };
+            negated = false;
             continue;
         }
 
@@ -818,7 +895,7 @@ fn parse_media_query(text: &str) -> MediaQuery {
         }
     }
 
-    MediaQuery { conditions }
+    MediaQuery { conditions, media_type }
 }
 
 /// Split a media query string on " and " (case-insensitive).
@@ -847,7 +924,21 @@ fn split_and(s: &str) -> Vec<&str> {
 }
 
 /// Parse a single media condition like `max-width: 768px`.
+/// Returns `Some(Unsupported)` for unknown features (so they evaluate to false).
 fn parse_media_condition(inner: &str) -> Option<MediaCondition> {
+    let inner = inner.trim();
+
+    // Boolean media feature with no value: (color), (hover), etc.
+    if !inner.contains(':') {
+        let feature = inner.to_ascii_lowercase();
+        return match feature.as_str() {
+            // Features we know we support/don't support.
+            "color" | "color-index" => Some(MediaCondition::Known(true)),
+            "monochrome" => Some(MediaCondition::Known(false)),
+            _ => Some(MediaCondition::Unsupported),
+        };
+    }
+
     let colon = inner.find(':')?;
     let name = inner[..colon].trim().to_ascii_lowercase();
     let value_str = inner[colon + 1..].trim();
@@ -872,13 +963,59 @@ fn parse_media_condition(inner: &str) -> Option<MediaCondition> {
         "prefers-color-scheme" => {
             Some(MediaCondition::PrefersColorScheme(String::from(value_str.trim())))
         }
-        _ => None,
+        // Interaction media features — we're a desktop browser with mouse.
+        "hover" => Some(MediaCondition::Known(value_str == "hover")),
+        "any-hover" => Some(MediaCondition::Known(value_str == "hover")),
+        "pointer" => Some(MediaCondition::Known(value_str == "fine")),
+        "any-pointer" => Some(MediaCondition::Known(value_str == "fine")),
+        // Motion preferences — we don't animate, so treat as no-preference.
+        "prefers-reduced-motion" => Some(MediaCondition::Known(value_str == "no-preference")),
+        // Contrast preferences — we render standard contrast.
+        "prefers-contrast" => Some(MediaCondition::Known(value_str == "no-preference")),
+        // Data/update preferences.
+        "prefers-reduced-data" | "prefers-reduced-transparency" => {
+            Some(MediaCondition::Known(value_str == "no-preference"))
+        }
+        // Color gamut — we support sRGB.
+        "color-gamut" => Some(MediaCondition::Known(value_str == "srgb")),
+        // Resolution — assume standard 96dpi.
+        "resolution" | "min-resolution" | "max-resolution" => {
+            // Accept all — high-DPI media queries don't affect layout.
+            Some(MediaCondition::Known(true))
+        }
+        // orientation — we're always landscape for wide viewports.
+        "orientation" => {
+            // True for landscape; false for portrait.
+            Some(MediaCondition::Known(value_str == "landscape"))
+        }
+        // Dynamic viewport — unknown, skip.
+        "dynamic-viewport-height" | "environment" => Some(MediaCondition::Unsupported),
+        // Anything else unknown — treat as false.
+        _ => Some(MediaCondition::Unsupported),
     }
 }
 
-/// Parse a CSS pixel value like "768px" or "1024" into i32.
+/// Parse a CSS pixel value like "768px", "48rem", or "calc(640px - 1px)" into i32.
 fn parse_px_value(s: &str) -> Option<i32> {
-    let s = s.trim().trim_end_matches("px").trim();
+    let s = s.trim();
+
+    // Handle calc() expressions — evaluate simple arithmetic at parse time.
+    if s.to_ascii_lowercase().starts_with("calc(") {
+        return eval_media_calc(s);
+    }
+
+    // Rem/em units — multiply by 16 (default root font size).
+    if s.ends_with("rem") {
+        let n = &s[..s.len() - 3];
+        return parse_float_px(n).map(|v| (v * 16.0) as i32);
+    }
+    if s.ends_with("em") {
+        let n = &s[..s.len() - 2];
+        return parse_float_px(n).map(|v| (v * 16.0) as i32);
+    }
+
+    // Strip "px" and parse integer.
+    let s = s.trim_end_matches("px").trim();
     let mut val: i32 = 0;
     for b in s.as_bytes() {
         if *b >= b'0' && *b <= b'9' {
@@ -892,8 +1029,177 @@ fn parse_px_value(s: &str) -> Option<i32> {
     if val > 0 || s == "0" { Some(val) } else { None }
 }
 
+/// Parse a floating-point number string (no unit) into f32.
+fn parse_float_px(s: &str) -> Option<f32> {
+    let s = s.trim();
+    if s.is_empty() { return None; }
+    let mut result: f32 = 0.0;
+    let mut frac: f32 = 0.0;
+    let mut in_frac = false;
+    let mut frac_div: f32 = 10.0;
+    let mut has_digit = false;
+    for b in s.as_bytes() {
+        match b {
+            b'0'..=b'9' => {
+                has_digit = true;
+                if in_frac {
+                    frac += (*b - b'0') as f32 / frac_div;
+                    frac_div *= 10.0;
+                } else {
+                    result = result * 10.0 + (*b - b'0') as f32;
+                }
+            }
+            b'.' if !in_frac => { in_frac = true; }
+            _ => break,
+        }
+    }
+    if has_digit { Some(result + frac) } else { None }
+}
+
+/// Evaluate a simple calc() expression for @media conditions.
+/// Only handles px/rem/em values with +, -, *, / operators.
+/// Examples: "calc(640px - 1px)" → 639, "calc(48rem)" → 768
+fn eval_media_calc(s: &str) -> Option<i32> {
+    let lower = s.to_ascii_lowercase();
+    let inner = lower.strip_prefix("calc(")?;
+    // Strip trailing ')' — handle nested parens by finding the matching one.
+    let inner = strip_outer_paren(inner)?;
+    eval_calc_expr_px(inner)
+}
+
+/// Strip one layer of trailing ')' from a string that may have nested parens.
+fn strip_outer_paren(s: &str) -> Option<&str> {
+    // Just strip the last ')' — for simple media calc expressions this is enough.
+    let s = s.trim();
+    if s.ends_with(')') {
+        Some(&s[..s.len() - 1])
+    } else {
+        Some(s)
+    }
+}
+
+/// Evaluate a calc expression string to pixels (f32).
+/// Supports px, rem, em units and +, -, *, / operators.
+fn eval_calc_expr_px(s: &str) -> Option<i32> {
+    let val = eval_calc_f32(s.trim())?;
+    Some((val + 0.5) as i32)
+}
+
+/// Recursively evaluate a calc arithmetic expression, returning value in px as f32.
+fn eval_calc_f32(s: &str) -> Option<f32> {
+    let s = s.trim();
+
+    // Find the last + or - operator (lowest precedence) respecting parentheses.
+    // We scan right-to-left to get left-associativity.
+    let bytes = s.as_bytes();
+    let mut depth: i32 = 0;
+    let mut split_pos: Option<usize> = None;
+    let mut split_op: u8 = 0;
+    // Scan right-to-left to handle: a - b - c = (a-b)-c correctly.
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' => depth -= 1,
+            b'+' | b'-' if depth == 0 && i > 0 => {
+                // Must be binary op, not unary (preceded by space or digit).
+                let prev = bytes[i - 1];
+                if prev == b' ' || prev.is_ascii_digit() || prev == b')' {
+                    split_pos = Some(i);
+                    split_op = bytes[i];
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(pos) = split_pos {
+        let left = eval_calc_f32(&s[..pos])?;
+        let right = eval_calc_f32(&s[pos + 1..])?;
+        return Some(if split_op == b'+' { left + right } else { left - right });
+    }
+
+    // Find * or / at top level.
+    depth = 0;
+    split_pos = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b'*' | b'/' if depth == 0 => {
+                split_pos = Some(i);
+                split_op = b;
+                // Don't break — find last one for left-associativity.
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(pos) = split_pos {
+        let left = eval_calc_f32(&s[..pos])?;
+        let right = eval_calc_f32(&s[pos + 1..])?;
+        return if split_op == b'*' {
+            Some(left * right)
+        } else if right != 0.0 {
+            Some(left / right)
+        } else {
+            None
+        };
+    }
+
+    // Atom — a number with optional unit.
+    let s_lower = s.to_ascii_lowercase();
+    let s_lower = s_lower.trim();
+
+    // Nested calc()
+    if s_lower.starts_with("calc(") {
+        let inner = s_lower.strip_prefix("calc(")?;
+        let inner = strip_outer_paren(inner)?;
+        return eval_calc_f32(inner);
+    }
+
+    // Parenthesized expression
+    if s_lower.starts_with('(') && s_lower.ends_with(')') {
+        return eval_calc_f32(&s_lower[1..s_lower.len() - 1]);
+    }
+
+    if s_lower.ends_with("px") {
+        return parse_float_px(&s_lower[..s_lower.len() - 2]);
+    }
+    if s_lower.ends_with("rem") {
+        return parse_float_px(&s_lower[..s_lower.len() - 3]).map(|v| v * 16.0);
+    }
+    if s_lower.ends_with("em") {
+        return parse_float_px(&s_lower[..s_lower.len() - 2]).map(|v| v * 16.0);
+    }
+    if s_lower.ends_with("vw") || s_lower.ends_with("vh") {
+        // For media calc, treat vw/vh as 0 (viewport not known at parse time).
+        return Some(0.0);
+    }
+    // Plain number (treat as px).
+    let neg = s_lower.starts_with('-');
+    let s2 = if neg { &s_lower[1..] } else { s_lower };
+    parse_float_px(s2).map(|v| if neg { -v } else { v })
+}
+
 /// Evaluate a media query against viewport dimensions.
+/// We always render as `screen` media type.
 pub fn evaluate_media_query(query: &MediaQuery, viewport_width: i32, viewport_height: i32) -> bool {
+    // Check media type first.  We are always "screen".
+    match &query.media_type {
+        MediaType::All => {}    // matches everything
+        MediaType::Screen => {} // we ARE screen
+        MediaType::Print => { return false; } // we are NOT print
+        MediaType::Not(inner) => match inner.as_ref() {
+            MediaType::Print => {}   // not print → we match (we're screen)
+            MediaType::Screen => { return false; } // not screen → we don't match
+            MediaType::All => { return false; } // not all → matches nothing
+            MediaType::Not(_) => {}  // double negation → treat as all
+        }
+    }
+
     for cond in &query.conditions {
         let ok = match cond {
             MediaCondition::MinWidth(w) => viewport_width >= *w,
@@ -901,11 +1207,11 @@ pub fn evaluate_media_query(query: &MediaQuery, viewport_width: i32, viewport_he
             MediaCondition::MinHeight(h) => viewport_height >= *h,
             MediaCondition::MaxHeight(h) => viewport_height <= *h,
             MediaCondition::PrefersColorScheme(scheme) => {
-                // Report light theme — most sites default to dark-on-light text,
-                // and dark-mode CSS often uses modern syntax (rgb() with /alpha,
-                // Tailwind utilities) that we don't fully support yet.
+                // Report light theme — most sites default to dark-on-light text.
                 scheme == "light"
             }
+            MediaCondition::Known(v) => *v,
+            MediaCondition::Unsupported => false,
         };
         if !ok { return false; }
     }
@@ -916,7 +1222,13 @@ pub fn evaluate_media_query(query: &MediaQuery, viewport_width: i32, viewport_he
 /// Parse `@supports (condition) { rules }`.
 /// Evaluates whether the condition references supported properties.
 /// Returns the inner rules if the condition is met, None otherwise.
-fn parse_supports_rule(p: &mut Parser) -> Option<Vec<Rule>> {
+/// Result of parsing a @supports block: plain rules + nested @media rules.
+struct SupportsResult {
+    rules: Vec<Rule>,
+    media_rules: Vec<MediaRule>,
+}
+
+fn parse_supports_rule(p: &mut Parser) -> Option<SupportsResult> {
     p.skip_whitespace();
 
     // Read everything until '{' as the supports condition.
@@ -929,8 +1241,9 @@ fn parse_supports_rule(p: &mut Parser) -> Option<Vec<Rule>> {
     if p.eof() { return None; }
     p.pos += 1; // consume '{'
 
-    // Parse inner rules.
+    // Parse inner rules (including nested @media).
     let mut inner_rules = Vec::new();
+    let mut inner_media = Vec::new();
     loop {
         p.skip_whitespace();
         if p.eof() { break; }
@@ -940,13 +1253,28 @@ fn parse_supports_rule(p: &mut Parser) -> Option<Vec<Rule>> {
         }
         if p.peek() == b'@' {
             p.pos += 1;
-            let _kw = p.read_ident();
-            loop {
-                p.skip_whitespace();
-                if p.eof() { break; }
-                if p.peek() == b'{' { p.skip_block(); break; }
-                if p.peek() == b';' { p.pos += 1; break; }
-                p.pos += 1;
+            let kw = p.read_ident();
+            let kw_lower = {
+                let mut buf = [0u8; 32];
+                let len = kw.len().min(32);
+                for (i, &b) in kw.as_bytes()[..len].iter().enumerate() {
+                    buf[i] = if b >= b'A' && b <= b'Z' { b + 32 } else { b };
+                }
+                String::from(core::str::from_utf8(&buf[..len]).unwrap_or(""))
+            };
+            if kw_lower == "media" {
+                if let Some(mr) = parse_media_rule(p) {
+                    inner_media.push(mr);
+                }
+            } else {
+                // Skip other nested at-rules.
+                loop {
+                    p.skip_whitespace();
+                    if p.eof() { break; }
+                    if p.peek() == b'{' { p.skip_block(); break; }
+                    if p.peek() == b';' { p.pos += 1; break; }
+                    p.pos += 1;
+                }
             }
             continue;
         }
@@ -956,10 +1284,8 @@ fn parse_supports_rule(p: &mut Parser) -> Option<Vec<Rule>> {
     }
 
     // Evaluate the supports condition.
-    // Simple heuristic: check if the condition contains a known property name.
-    // `@supports (display: grid)` → check if "display" is a known property.
     if evaluate_supports_condition(condition) {
-        Some(inner_rules)
+        Some(SupportsResult { rules: inner_rules, media_rules: inner_media })
     } else {
         None // condition not supported — discard rules
     }
@@ -1399,12 +1725,9 @@ fn parse_pseudo_class_from_name(lower: &str, p: &mut Parser) -> Option<PseudoCla
         }
         "not" => {
             if p.peek() == b'(' {
-                p.pos += 1;
-                skip_spaces_only(p);
-                let inner = parse_simple_selector(p);
-                skip_spaces_only(p);
-                if p.peek() == b')' { p.pos += 1; }
-                Some(PseudoClass::Not(Box::new(inner)))
+                // Use parse_selector_list_in_parens so :not(.a, .b) works.
+                let selectors = parse_selector_list_in_parens(p);
+                Some(PseudoClass::Not(selectors))
             } else {
                 Option::None
             }
@@ -1723,6 +2046,7 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "border-bottom-left-radius" => Some(Property::BorderBottomLeftRadius),
         "list-style-type" => Some(Property::ListStyleType),
         "list-style" => Some(Property::ListStyleType),
+        "list-style-position" => Some(Property::ListStylePosition),
         "white-space" => Some(Property::WhiteSpace),
         "overflow" => Some(Property::Overflow),
         "overflow-x" => Some(Property::OverflowX),
@@ -1793,6 +2117,7 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "aspect-ratio" => Some(Property::AspectRatio),
         "inset" => Some(Property::Inset),
         "clip-path" | "-webkit-clip-path" => Some(Property::ClipPath),
+        "clip" => Some(Property::Clip),
         // Text decoration sub-properties
         "text-decoration-color" => Some(Property::TextDecorationColor),
         "text-decoration-style" => Some(Property::TextDecorationStyle),
@@ -1836,6 +2161,8 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "grid-row-start"        => Some(Property::GridRowStart),
         "grid-row-end"          => Some(Property::GridRowEnd),
         "grid-area"             => Some(Property::GridArea),
+        // Mask (parsed for @supports evaluation, not visually applied)
+        "mask-image" | "-webkit-mask-image" | "mask" | "-webkit-mask" => Some(Property::MaskImage),
         _ => Option::None,
     }
 }
@@ -1868,6 +2195,22 @@ pub fn parse_value(property: &Property, value_str: &str) -> CssValue {
     // calc() — CSS math expression.
     if lower.starts_with("calc(") {
         return parse_calc_value(s);
+    }
+
+    // min(), max(), clamp() — CSS comparison functions.
+    if lower.starts_with("min(") {
+        return parse_min_max_clamp_value(s, CssMathFunc::Min);
+    }
+    if lower.starts_with("max(") {
+        return parse_min_max_clamp_value(s, CssMathFunc::Max);
+    }
+    if lower.starts_with("clamp(") {
+        return parse_min_max_clamp_value(s, CssMathFunc::Clamp);
+    }
+
+    // currentColor keyword — resolves to the element's computed `color` property.
+    if lower == "currentcolor" {
+        return CssValue::CurrentColor;
     }
 
     // Color properties — try color parsing
@@ -1936,56 +2279,25 @@ fn parse_var_value(s: &str) -> CssValue {
     }
 }
 
-/// Parse `calc(expr)` into (px_component, pct_component).
-/// Supports: `calc(100% - 32px)`, `calc(50% + 10px)`, `calc(16px * 2)`.
+/// Parse `calc(expr)` into a CssValue.
+/// Evaluates pure-px expressions to Length, pure-% to Percentage, mixed to Calc.
 fn parse_calc_value(s: &str) -> CssValue {
-    // Strip "calc(" and trailing ")".
-    let inner = s.trim();
-    let inner = if let Some(stripped) = inner.strip_prefix("calc(")
-        .or_else(|| inner.strip_prefix("CALC("))
-    {
-        stripped
-    } else { inner };
-    let inner = inner.trim_end_matches(')').trim();
-
-    // Try to find an operator (+ or - surrounded by spaces, or * or /).
-    // We need to find the operator that splits the expression into two operands.
-    let mut px: i32 = 0;
-    let mut pct: i32 = 0;
-
-    // Find the main binary operator (look for + or - with spaces).
-    if let Some((left, op, right)) = split_calc_expr(inner) {
-        let (lpx, lpct) = parse_calc_operand(left.trim());
-        let (rpx, rpct) = parse_calc_operand(right.trim());
-
-        match op {
-            b'+' => { px = lpx + rpx; pct = lpct + rpct; }
-            b'-' => { px = lpx - rpx; pct = lpct - rpct; }
-            b'*' => {
-                // Only one side should be a number (no unit).
-                if lpct == 0 && rpct == 0 {
-                    px = lpx * rpx / 100; // both are *100, one division to normalize
-                } else {
-                    px = lpx * rpx / 100;
-                    pct = lpct * rpx / 100;
-                }
-            }
-            b'/' => {
-                if rpx != 0 {
-                    px = lpx * 100 / rpx;
-                    pct = lpct * 100 / rpx;
-                }
-            }
-            _ => {}
-        }
+    let s = s.trim();
+    // Strip outer "calc(" and matching ")" — find the matching closing paren.
+    let lower = s.to_ascii_lowercase();
+    let inner = if lower.starts_with("calc(") {
+        // Find the matching closing paren (last ')' in simple expressions).
+        let without_prefix = &s[5..]; // after "calc("
+        // Strip trailing ')'.
+        let inner = without_prefix.trim_end_matches(')').trim();
+        inner
     } else {
-        // Single operand — just parse it.
-        let (p, pc) = parse_calc_operand(inner);
-        px = p;
-        pct = pc;
-    }
+        s
+    };
 
-    // If pure px, return as Length. If pure pct, return as Percentage.
+    // Use the more precise 2-component evaluator: (px*100, pct*100).
+    let (px, pct) = eval_calc_components(inner);
+
     if pct == 0 {
         CssValue::Length(px, Unit::Px)
     } else if px == 0 {
@@ -1995,27 +2307,126 @@ fn parse_calc_value(s: &str) -> CssValue {
     }
 }
 
-/// Split a calc expression on the main binary operator.
+/// Evaluate a calc() expression into two components: (px * 100, pct * 100).
+/// Supports: +, -, *, /, nested parens, rem/em/px/% units.
+fn eval_calc_components(s: &str) -> (i32, i32) {
+    let s = s.trim();
+
+    // Find the last + or - operator at depth 0 (left-to-right lowest precedence).
+    // Scan right-to-left so we handle e.g. "a - b - c" as "(a-b)-c".
+    let bytes = s.as_bytes();
+    let mut depth: i32 = 0;
+    let mut split_i: Option<usize> = None;
+    let mut split_op: u8 = 0;
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' => depth -= 1,
+            b'+' | b'-' if depth == 0 && i > 0 => {
+                let prev = bytes[i - 1];
+                if prev == b' ' || prev.is_ascii_digit() || prev == b')' || prev == b'%' {
+                    split_i = Some(i);
+                    split_op = bytes[i];
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(pos) = split_i {
+        let (lpx, lpct) = eval_calc_components(&s[..pos]);
+        let (rpx, rpct) = eval_calc_components(&s[pos + 1..]);
+        return if split_op == b'+' {
+            (lpx + rpx, lpct + rpct)
+        } else {
+            (lpx - rpx, lpct - rpct)
+        };
+    }
+
+    // Find * or / at top level (scan left for last occurrence for left-assoc).
+    depth = 0;
+    split_i = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b'*' | b'/' if depth == 0 => {
+                split_i = Some(i);
+                split_op = b;
+            }
+            _ => {}
+        }
+    }
+    if let Some(pos) = split_i {
+        let (lpx, lpct) = eval_calc_components(&s[..pos]);
+        let (rpx, rpct) = eval_calc_components(&s[pos + 1..]);
+        if split_op == b'*' {
+            // One side is always a pure number (no %).
+            if lpct == 0 && rpct == 0 {
+                // Both px-like, treat as: (lpx/100) * (rpx/100) * 100 = lpx*rpx/100
+                return (lpx * rpx / 100, 0);
+            } else if lpct == 0 {
+                // Right has pct, left is multiplier
+                let mul = lpx; // *100 fixed point
+                return (0, lpct * mul / 100);
+            } else {
+                let mul = rpx;
+                return (lpx * mul / 100, lpct * mul / 100);
+            }
+        } else {
+            // Division: right must be a plain number.
+            let div = rpx; // *100 fixed point
+            if div != 0 {
+                return (lpx * 100 / div, lpct * 100 / div);
+            } else {
+                return (0, 0);
+            }
+        }
+    }
+
+    // Atom.
+    parse_calc_operand(s)
+}
+
+/// Split a calc expression on the main binary operator (respects parentheses).
 /// Handles `100% - 32px`, `50% + 10px`, `16px * 2`.
 fn split_calc_expr(s: &str) -> Option<(&str, u8, &str)> {
     let bytes = s.as_bytes();
+    let mut depth: usize = 0;
     // Look for ` + ` or ` - ` first (addition/subtraction have lower precedence).
-    for i in 1..bytes.len().saturating_sub(1) {
-        if bytes[i] == b'+' && bytes[i - 1] == b' ' && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
-            return Some((&s[..i - 1], b'+', &s[i + 2..]));
-        }
-        if bytes[i] == b'-' && bytes[i - 1] == b' ' && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
-            return Some((&s[..i - 1], b'-', &s[i + 2..]));
+    // Scan right-to-left for left-associativity.
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' => { if depth > 0 { depth -= 1; } }
+            b'+' | b'-' if depth == 0 && i > 0 => {
+                let prev = bytes[i - 1];
+                if prev == b' ' || prev.is_ascii_digit() || prev == b')' {
+                    let left = s[..i].trim_end();
+                    let right = s[i + 1..].trim_start();
+                    return Some((left, bytes[i], right));
+                }
+            }
+            _ => {}
         }
     }
-    // Look for * or / (no space requirement).
-    for i in 0..bytes.len() {
-        if bytes[i] == b'*' {
-            return Some((&s[..i], b'*', &s[i + 1..]));
+    // Look for * or / at top level.
+    depth = 0;
+    let mut last_mul_div: Option<(usize, u8)> = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => { if depth > 0 { depth -= 1; } }
+            b'*' | b'/' if depth == 0 => { last_mul_div = Some((i, b)); }
+            _ => {}
         }
-        if bytes[i] == b'/' {
-            return Some((&s[..i], b'/', &s[i + 1..]));
-        }
+    }
+    if let Some((i, op)) = last_mul_div {
+        return Some((&s[..i], op, &s[i + 1..]));
     }
     None
 }
@@ -2023,33 +2434,148 @@ fn split_calc_expr(s: &str) -> Option<(&str, u8, &str)> {
 /// Parse a single calc operand into (px * 100, pct * 100).
 fn parse_calc_operand(s: &str) -> (i32, i32) {
     let s = s.trim();
-    if s.ends_with('%') {
-        let num = &s[..s.len() - 1];
+    let lower = s.to_ascii_lowercase();
+    let lower = lower.trim();
+
+    // Nested calc() or parenthesized expression.
+    if lower.starts_with("calc(") || (lower.starts_with('(') && lower.ends_with(')')) {
+        let inner = if lower.starts_with("calc(") {
+            &lower[5..lower.len() - 1]
+        } else {
+            &lower[1..lower.len() - 1]
+        };
+        return eval_calc_components(inner);
+    }
+    // min()/max()/clamp() as operand — evaluate to px approximation.
+    if lower.starts_with("min(") || lower.starts_with("max(") || lower.starts_with("clamp(") {
+        let func = if lower.starts_with("clamp(") { CssMathFunc::Clamp }
+            else if lower.starts_with("min(") { CssMathFunc::Min }
+            else { CssMathFunc::Max };
+        match eval_min_max_clamp(lower, func) {
+            CssValue::Length(v, Unit::Px) => return (v * 100, 0),
+            CssValue::Percentage(p) => return (0, p),
+            CssValue::Calc(px, pct) => return (px, pct),
+            _ => {}
+        }
+    }
+
+    if lower.ends_with('%') {
+        let num = &lower[..lower.len() - 1];
         let val = parse_fixed_100(num);
         (0, val)
-    } else if s.ends_with("px") {
-        let num = &s[..s.len() - 2];
+    } else if lower.ends_with("px") {
+        let num = &lower[..lower.len() - 2];
         let val = parse_fixed_100(num);
         (val, 0)
-    } else if s.ends_with("em") {
-        let num = &s[..s.len() - 2];
+    } else if lower.ends_with("rem") {
+        let num = &lower[..lower.len() - 3];
+        let val = parse_fixed_100(num);
+        (val * 16, 0)
+    } else if lower.ends_with("em") {
+        let num = &lower[..lower.len() - 2];
         let val = parse_fixed_100(num);
         // Treat em as px * 16 (approximate).
         (val * 16, 0)
-    } else if s.ends_with("rem") {
-        let num = &s[..s.len() - 3];
-        let val = parse_fixed_100(num);
-        (val * 16, 0)
-    } else if s.ends_with("vw") || s.ends_with("vh") || s.ends_with("vmin") || s.ends_with("vmax") {
+    } else if lower.ends_with("vw") || lower.ends_with("vh") || lower.ends_with("vmin") || lower.ends_with("vmax") {
         // Viewport units in calc — treated as percentage-like (resolved at layout time).
-        let suffix_len = if s.ends_with("vmin") || s.ends_with("vmax") { 4 } else { 2 };
-        let num = &s[..s.len() - suffix_len];
+        let suffix_len = if lower.ends_with("vmin") || lower.ends_with("vmax") { 4 } else { 2 };
+        let num = &lower[..lower.len() - suffix_len];
         let val = parse_fixed_100(num);
         (0, val)
     } else {
         // Pure number.
         let val = parse_fixed_100(s);
         (val, 0)
+    }
+}
+
+enum CssMathFunc { Min, Max, Clamp }
+
+/// Parse and evaluate min(), max(), clamp() CSS functions.
+fn parse_min_max_clamp_value(s: &str, func: CssMathFunc) -> CssValue {
+    let lower = s.to_ascii_lowercase();
+    eval_min_max_clamp(&lower, func)
+}
+
+/// Split top-level comma-separated arguments (respecting parentheses).
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let bytes = s.as_bytes();
+    let mut depth: usize = 0;
+    let mut start = 0;
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => { if depth > 0 { depth -= 1; } }
+            b',' if depth == 0 => {
+                parts.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(s[start..].trim());
+    parts
+}
+
+/// Evaluate a min/max/clamp function expression. Expects lowercase input.
+fn eval_min_max_clamp(s: &str, func: CssMathFunc) -> CssValue {
+    // Find opening paren.
+    let paren_start = match s.find('(') {
+        Some(i) => i,
+        None => return CssValue::None,
+    };
+    let inner = s[paren_start + 1..].trim_end_matches(')').trim();
+    let args: Vec<&str> = split_top_level_commas(inner);
+
+    // Evaluate each arg as a calc-like expression.
+    let vals: Vec<(i32, i32)> = args.iter().map(|a| eval_calc_components(a)).collect();
+
+    match func {
+        CssMathFunc::Min => {
+            // If all pure-px, return the minimum.
+            if vals.iter().all(|(_, pct)| *pct == 0) {
+                let min_px = vals.iter().map(|(px, _)| *px).min().unwrap_or(0);
+                return CssValue::Length(min_px / 100, Unit::Px);
+            }
+            // Mixed: return first arg as approximation.
+            let (px, pct) = vals.first().copied().unwrap_or((0, 0));
+            if pct == 0 { CssValue::Length(px / 100, Unit::Px) }
+            else if px == 0 { CssValue::Percentage(pct) }
+            else { CssValue::Calc(px, pct) }
+        }
+        CssMathFunc::Max => {
+            if vals.iter().all(|(_, pct)| *pct == 0) {
+                let max_px = vals.iter().map(|(px, _)| *px).max().unwrap_or(0);
+                return CssValue::Length(max_px / 100, Unit::Px);
+            }
+            let (px, pct) = vals.last().copied().unwrap_or((0, 0));
+            if pct == 0 { CssValue::Length(px / 100, Unit::Px) }
+            else if px == 0 { CssValue::Percentage(pct) }
+            else { CssValue::Calc(px, pct) }
+        }
+        CssMathFunc::Clamp => {
+            // clamp(min, val, max) — use val if all are pure-px, then clamp.
+            if vals.len() >= 3 {
+                let (min_px, min_pct) = vals[0];
+                let (val_px, val_pct) = vals[1];
+                let (max_px, max_pct) = vals[2];
+                // If all pure-px, fully resolve.
+                if min_pct == 0 && val_pct == 0 && max_pct == 0 {
+                    let v = val_px.max(min_px).min(max_px);
+                    return CssValue::Length(v / 100, Unit::Px);
+                }
+                // Otherwise return the middle (val) as best approximation.
+                if val_pct == 0 { CssValue::Length(val_px / 100, Unit::Px) }
+                else if val_px == 0 { CssValue::Percentage(val_pct) }
+                else { CssValue::Calc(val_px, val_pct) }
+            } else {
+                // Malformed — return first arg.
+                let (px, pct) = vals.first().copied().unwrap_or((0, 0));
+                if pct == 0 { CssValue::Length(px / 100, Unit::Px) }
+                else { CssValue::Percentage(pct) }
+            }
+        }
     }
 }
 
@@ -2663,19 +3189,45 @@ fn expand_text_decoration_shorthand(value_str: &str) -> Vec<Declaration> {
 /// Expand `font` shorthand: `[style] [variant] [weight] size[/line-height] family`
 /// Extracts font-size and font-family, ignoring style/variant/weight for simplicity.
 /// Expand `grid-template: rows / columns` shorthand.
-/// Example: `min-content 1fr min-content / 12.25rem minmax(0,1fr)`
+///
+/// Handles two forms (CSS Grid §7.4):
+/// - Simple: `track-list / track-list`  →  rows / columns
+/// - Interleaved: `"area row" track-size "area row" track-size / columns`
+///   Extracts grid-template-areas + grid-template-rows + grid-template-columns.
 fn expand_grid_template_shorthand(value_str: &str) -> Vec<Declaration> {
     let mut decls = Vec::new();
     let s = value_str.trim();
 
-    // Split on '/' — left side = rows, right side = columns.
-    // But we need to handle quoted area strings like 'header header' / columns.
-    // Simple heuristic: find the '/' that separates rows from columns.
     if let Some(slash_pos) = find_grid_template_slash(s) {
         let rows_str = s[..slash_pos].trim();
         let cols_str = s[slash_pos + 1..].trim();
 
-        if !rows_str.is_empty() {
+        // If rows_str contains quoted strings, it's the interleaved areas+rows format:
+        // "area col1 col2" row-track-size ...
+        if rows_str.contains('\'') || rows_str.contains('"') {
+            let (area_rows, row_tracks) = parse_interleaved_areas_rows(rows_str);
+            if !area_rows.is_empty() {
+                // Join quoted area strings into one grid-template-areas value.
+                let mut areas_val = String::new();
+                for (i, r) in area_rows.iter().enumerate() {
+                    if i > 0 { areas_val.push(' '); }
+                    areas_val.push_str(r);
+                }
+                decls.push(Declaration {
+                    property: Property::GridTemplateAreas,
+                    value: CssValue::Keyword(areas_val),
+                    important: false,
+                });
+            }
+            if !row_tracks.is_empty() {
+                let tracks_val = row_tracks.join(" ");
+                decls.push(Declaration {
+                    property: Property::GridTemplateRows,
+                    value: CssValue::Keyword(tracks_val),
+                    important: false,
+                });
+            }
+        } else if !rows_str.is_empty() {
             decls.push(Declaration {
                 property: Property::GridTemplateRows,
                 value: CssValue::Keyword(String::from(rows_str)),
@@ -2691,11 +3243,9 @@ fn expand_grid_template_shorthand(value_str: &str) -> Vec<Declaration> {
         }
     } else {
         // No slash — might be just rows or areas.
-        // If it contains quoted strings, treat as areas.
         if s.contains('\'') || s.contains('"') {
             return expand_grid_template_areas(s);
         }
-        // Otherwise treat as rows only.
         decls.push(Declaration {
             property: Property::GridTemplateRows,
             value: CssValue::Keyword(String::from(s)),
@@ -2703,6 +3253,66 @@ fn expand_grid_template_shorthand(value_str: &str) -> Vec<Declaration> {
         });
     }
     decls
+}
+
+/// Parse the interleaved `grid-template` rows format:
+/// `"area col1 col2" track-size "area col1 col2" track-size ...`
+///
+/// Returns (Vec of quoted area row strings, Vec of row track size strings).
+/// Area rows without an explicit track size get "auto" inserted.
+fn parse_interleaved_areas_rows(s: &str) -> (Vec<String>, Vec<String>) {
+    let mut area_rows: Vec<String> = Vec::new();
+    let mut row_tracks: Vec<String> = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // Skip whitespace and newlines.
+        while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r') { i += 1; }
+        if i >= bytes.len() { break; }
+
+        if bytes[i] == b'\'' || bytes[i] == b'"' {
+            // Quoted area row: collect including the quotes.
+            let quote = bytes[i];
+            let start = i;
+            i += 1;
+            while i < bytes.len() && bytes[i] != quote { i += 1; }
+            if i < bytes.len() { i += 1; } // skip closing quote
+            area_rows.push(String::from(&s[start..i]));
+
+            // Look ahead: is the next non-whitespace token a track size (not a quote)?
+            let mut j = i;
+            while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\n' | b'\r') { j += 1; }
+            if j < bytes.len() && bytes[j] != b'\'' && bytes[j] != b'"' {
+                // Consume the track size token (respects parentheses).
+                let track_start = j;
+                let mut depth: u32 = 0;
+                while j < bytes.len() {
+                    match bytes[j] {
+                        b'(' => depth += 1,
+                        b')' => { if depth > 0 { depth -= 1; } }
+                        b' ' | b'\t' | b'\n' | b'\r' if depth == 0 => break,
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                if track_start < j {
+                    row_tracks.push(String::from(&s[track_start..j]));
+                } else {
+                    row_tracks.push(String::from("auto"));
+                }
+                i = j;
+            } else {
+                // No explicit row track size — use auto.
+                row_tracks.push(String::from("auto"));
+            }
+        } else {
+            // Non-quoted token outside an area row — skip (e.g. line names [...]).
+            while i < bytes.len() && !matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r') { i += 1; }
+        }
+    }
+
+    (area_rows, row_tracks)
 }
 
 /// Find the '/' in a grid-template value that separates rows from columns.

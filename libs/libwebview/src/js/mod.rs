@@ -261,6 +261,15 @@ pub struct PendingTimer {
     pub elapsed_ms: u64,
 }
 
+/// A script entry found in the DOM — either inline text or an external URL.
+#[derive(Clone)]
+pub enum ScriptEntry {
+    /// Inline `<script>` with text content.
+    Inline(String),
+    /// External `<script src="url">` — the host must fetch the URL and provide the text.
+    External(String),
+}
+
 // ═══════════════════════════════════════════════════════════
 // JsRuntime — public API
 // ═══════════════════════════════════════════════════════════
@@ -350,16 +359,16 @@ impl JsRuntime {
         self.cookies = String::from(cookies);
     }
 
-    /// Execute all `<script>` tags in the DOM.
+    /// Collect all `<script>` entries from the DOM in document order.
     ///
-    /// * `url` — the current page URL, used to populate `window.location` /
-    ///   `document.location` inside the JS environment.
-    pub fn execute_scripts(&mut self, dom: &Dom, url: &str) {
-        let mut scripts: Vec<String> = Vec::new();
+    /// Returns a list of [`ScriptEntry`] — either inline text or external URLs.
+    /// The host can then fetch external scripts and pass the resolved texts to
+    /// [`execute_script_sources`].
+    pub fn collect_script_entries(dom: &Dom) -> Vec<ScriptEntry> {
+        let mut entries = Vec::new();
         for i in 0..dom.nodes.len() {
             if let NodeType::Element { tag: Tag::Script, attrs } = &dom.nodes[i].node_type {
-                let has_src = attrs.iter().any(|a| a.name == "src");
-                if has_src { continue; }
+                // Check type attribute — skip non-JS types.
                 let type_attr = attrs.iter().find(|a| a.name == "type");
                 if let Some(t) = type_attr {
                     let lower = t.value.to_ascii_lowercase();
@@ -369,25 +378,43 @@ impl JsRuntime {
                         && lower != "module"
                     { continue; }
                 }
-                let text = dom.text_content(i);
-                if !text.is_empty() {
-                    scripts.push(text);
+                let src = attrs.iter().find(|a| a.name == "src").map(|a| a.value.as_str());
+                if let Some(url) = src {
+                    if !url.is_empty() {
+                        entries.push(ScriptEntry::External(String::from(url)));
+                    }
+                } else {
+                    let text = dom.text_content(i);
+                    if !text.is_empty() {
+                        entries.push(ScriptEntry::Inline(text));
+                    }
                 }
             }
         }
+        entries
+    }
 
+    /// Execute pre-resolved script sources (inline or fetched external).
+    ///
+    /// Call this after the host has resolved all [`ScriptEntry::External`] URLs
+    /// into actual source text.  Pass each script's text in the `scripts` slice
+    /// (in document order).
+    ///
+    /// * `url` — the current page URL, used to populate `window.location` /
+    ///   `document.location` inside the JS environment.
+    pub fn execute_script_sources(&mut self, dom: &Dom, url: &str, scripts: &[String]) {
         if scripts.is_empty() { return; }
 
         let total_bytes: usize = scripts.iter().map(|s| s.len()).sum();
-        anyos_std::println!("[js] {} script(s) found, {} bytes total",
+        anyos_std::println!("[js] {} script(s) to execute, {} bytes total",
             scripts.len(), total_bytes);
 
-        // Cap large pages: skip very large scripts (>64 KiB) and limit total
+        // Cap large pages: skip very large scripts (>256 KiB) and limit total
         // number of scripts to avoid blocking the UI thread for too long.
-        const MAX_SCRIPTS: usize = 16;
-        const MAX_SCRIPT_BYTES: usize = 64 * 1024;
+        const MAX_SCRIPTS: usize = 32;
+        const MAX_SCRIPT_BYTES: usize = 256 * 1024;
 
-        // Lower the per-script step limit to keep pages responsive.
+        // Per-script step limit to keep pages responsive.
         self.engine.set_step_limit(2_000_000);
 
         // Set up DOM bridge via userdata.
@@ -399,7 +426,7 @@ impl JsRuntime {
             virtual_nodes: Vec::new(),
             pending_http_requests: Vec::new(),
             timers: Vec::new(),
-            next_timer_id: 1,
+            next_timer_id: self.next_timer_id,
             propagation_stopped: false,
             pending_ws_connects: Vec::new(),
             pending_ws_sends: Vec::new(),
@@ -441,14 +468,33 @@ impl JsRuntime {
         self.mutations = bridge.mutations;
         self.event_listeners = bridge.event_listeners;
         self.pending_http_requests = bridge.pending_http_requests;
+        self.next_timer_id = bridge.next_timer_id;
         self.timers.extend(bridge.timers);
         self.pending_ws_connects.extend(bridge.pending_ws_connects);
         self.pending_ws_sends.extend(bridge.pending_ws_sends);
         self.pending_ws_closes.extend(bridge.pending_ws_closes);
         self.ws_registry.extend(bridge.ws_registry);
         self.engine.vm().userdata = core::ptr::null_mut();
-        crate::debug_surf!("[js] execute_scripts complete: {} mutations, {} listeners",
+        crate::debug_surf!("[js] execute_script_sources complete: {} mutations, {} listeners",
             self.mutations.len(), self.event_listeners.len());
+    }
+
+    /// Execute all `<script>` tags in the DOM (inline only, skips external).
+    ///
+    /// This is the legacy method — prefer [`execute_script_sources`] with
+    /// [`collect_script_entries`] for full external script support.
+    ///
+    /// * `url` — the current page URL, used to populate `window.location` /
+    ///   `document.location` inside the JS environment.
+    pub fn execute_scripts(&mut self, dom: &Dom, url: &str) {
+        let entries = Self::collect_script_entries(dom);
+        let scripts: Vec<String> = entries.into_iter().filter_map(|e| {
+            match e {
+                ScriptEntry::Inline(text) => Some(text),
+                ScriptEntry::External(_) => None,
+            }
+        }).collect();
+        self.execute_script_sources(dom, url, &scripts);
     }
 
     /// Set up all native host objects — zero JS injection.

@@ -257,6 +257,233 @@ pub fn object_get_prototype_of(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 }
 
+// ═══════════════════════════════════════════════════════════
+// Additional Object static methods
+// ═══════════════════════════════════════════════════════════
+
+/// `Object.fromEntries(iterable)` — create object from [key, value] pairs.
+pub fn object_from_entries(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let obj = JsValue::new_object();
+    if let Some(JsValue::Array(arr)) = args.first() {
+        let entries = arr.borrow();
+        for entry in &entries.elements {
+            if let JsValue::Array(pair) = entry {
+                let p = pair.borrow();
+                let key = p.elements.first().map(|v| v.to_js_string()).unwrap_or_default();
+                let val = p.elements.get(1).cloned().unwrap_or(JsValue::Undefined);
+                obj.set_property(key, val);
+            }
+        }
+    }
+    obj
+}
+
+/// `Object.is(value1, value2)` — SameValue comparison.
+pub fn object_is(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let a = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let b = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    JsValue::Bool(same_value(&a, &b))
+}
+
+fn same_value(a: &JsValue, b: &JsValue) -> bool {
+    match (a, b) {
+        (JsValue::Undefined, JsValue::Undefined) => true,
+        (JsValue::Null, JsValue::Null) => true,
+        (JsValue::Bool(x), JsValue::Bool(y)) => x == y,
+        (JsValue::Number(x), JsValue::Number(y)) => {
+            if x.is_nan() && y.is_nan() { return true; }
+            if *x == 0.0 && *y == 0.0 { return x.is_sign_positive() == y.is_sign_positive(); }
+            x.to_bits() == y.to_bits()
+        }
+        (JsValue::String(x), JsValue::String(y)) => x == y,
+        (JsValue::Object(x), JsValue::Object(y)) => Rc::ptr_eq(x, y),
+        (JsValue::Array(x), JsValue::Array(y)) => Rc::ptr_eq(x, y),
+        (JsValue::Function(x), JsValue::Function(y)) => Rc::ptr_eq(x, y),
+        _ => false,
+    }
+}
+
+/// `Object.setPrototypeOf(obj, proto)` — set __proto__.
+pub fn object_set_prototype_of(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let obj = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let proto = args.get(1).cloned().unwrap_or(JsValue::Null);
+    if let JsValue::Object(o) = &obj {
+        let new_proto = match &proto {
+            JsValue::Object(p) => Some(p.clone()),
+            JsValue::Null => None,
+            _ => return obj,
+        };
+        o.borrow_mut().prototype = new_proto;
+    }
+    obj
+}
+
+/// `Object.getOwnPropertyNames(obj)` — all own property names (including non-enumerable).
+pub fn object_get_own_property_names(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match args.first() {
+        Some(JsValue::Object(obj)) => {
+            let o = obj.borrow();
+            let keys: Vec<JsValue> = o.properties.keys()
+                .map(|k| JsValue::String(k.clone()))
+                .collect();
+            JsValue::new_array(keys)
+        }
+        Some(JsValue::Array(arr)) => {
+            let a = arr.borrow();
+            let mut keys: Vec<JsValue> = (0..a.elements.len())
+                .map(|i| JsValue::String(format_usize(i)))
+                .collect();
+            keys.push(JsValue::String(String::from("length")));
+            JsValue::new_array(keys)
+        }
+        _ => JsValue::new_array(Vec::new()),
+    }
+}
+
+/// `Object.getOwnPropertyDescriptor(obj, key)`.
+pub fn object_get_own_property_descriptor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    match args.first() {
+        Some(JsValue::Object(obj)) => {
+            let o = obj.borrow();
+            if let Some(prop) = o.properties.get(&key) {
+                prop_to_descriptor(prop)
+            } else {
+                JsValue::Undefined
+            }
+        }
+        _ => JsValue::Undefined,
+    }
+}
+
+/// `Object.getOwnPropertyDescriptors(obj)`.
+pub fn object_get_own_property_descriptors(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let result = JsValue::new_object();
+    if let Some(JsValue::Object(obj)) = args.first() {
+        let o = obj.borrow();
+        for (key, prop) in &o.properties {
+            let desc = prop_to_descriptor(prop);
+            result.set_property(key.clone(), desc);
+        }
+    }
+    result
+}
+
+fn prop_to_descriptor(prop: &Property) -> JsValue {
+    let desc = JsValue::new_object();
+    if prop.is_accessor() {
+        if let Some(ref g) = prop.getter { desc.set_property(String::from("get"), g.clone()); }
+        if let Some(ref s) = prop.setter { desc.set_property(String::from("set"), s.clone()); }
+    } else {
+        desc.set_property(String::from("value"), prop.value.clone());
+        desc.set_property(String::from("writable"), JsValue::Bool(prop.writable));
+    }
+    desc.set_property(String::from("enumerable"), JsValue::Bool(prop.enumerable));
+    desc.set_property(String::from("configurable"), JsValue::Bool(prop.configurable));
+    desc
+}
+
+/// `Object.preventExtensions(obj)`.
+pub fn object_prevent_extensions(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // Mark object as non-extensible (simplified: we set an internal tag)
+    if let Some(JsValue::Object(obj)) = args.first() {
+        let mut o = obj.borrow_mut();
+        if o.internal_tag.is_none() {
+            o.internal_tag = Some(String::from("__sealed__"));
+        }
+    }
+    args.first().cloned().unwrap_or(JsValue::Undefined)
+}
+
+/// `Object.isExtensible(obj)`.
+pub fn object_is_extensible(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match args.first() {
+        Some(JsValue::Object(obj)) => {
+            let o = obj.borrow();
+            let sealed = o.internal_tag.as_deref() == Some("__sealed__") ||
+                         o.internal_tag.as_deref() == Some("__frozen__");
+            JsValue::Bool(!sealed)
+        }
+        _ => JsValue::Bool(false),
+    }
+}
+
+/// `Object.seal(obj)` — make all properties non-configurable.
+pub fn object_seal(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if let Some(JsValue::Object(obj)) = args.first() {
+        let mut o = obj.borrow_mut();
+        let keys: Vec<String> = o.properties.keys().cloned().collect();
+        for key in keys {
+            if let Some(prop) = o.properties.get_mut(&key) {
+                prop.configurable = false;
+            }
+        }
+        o.internal_tag = Some(String::from("__sealed__"));
+    }
+    args.first().cloned().unwrap_or(JsValue::Undefined)
+}
+
+/// `Object.isSealed(obj)`.
+pub fn object_is_sealed(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match args.first() {
+        Some(JsValue::Object(obj)) => {
+            let o = obj.borrow();
+            let all_non_configurable = o.properties.values().all(|p| !p.configurable);
+            JsValue::Bool(all_non_configurable)
+        }
+        _ => JsValue::Bool(true),
+    }
+}
+
+/// `Object.isFrozen(obj)`.
+pub fn object_is_frozen(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match args.first() {
+        Some(JsValue::Object(obj)) => {
+            let o = obj.borrow();
+            let all_frozen = o.properties.values().all(|p| !p.writable && !p.configurable);
+            JsValue::Bool(all_frozen)
+        }
+        _ => JsValue::Bool(true),
+    }
+}
+
+/// `Object.hasOwn(obj, key)` — static version of hasOwnProperty.
+pub fn object_has_own(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    match args.first() {
+        Some(JsValue::Object(obj)) => JsValue::Bool(obj.borrow().has_own(&key)),
+        Some(JsValue::Array(arr)) => {
+            let a = arr.borrow();
+            if let Some(idx) = super::try_parse_index(&key) {
+                JsValue::Bool(idx < a.elements.len())
+            } else {
+                JsValue::Bool(a.properties.contains_key(&key))
+            }
+        }
+        _ => JsValue::Bool(false),
+    }
+}
+
+/// `Object.defineProperties(obj, descriptors)`.
+pub fn object_define_properties(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    if let Some(JsValue::Object(descs)) = args.get(1) {
+        let d = descs.borrow();
+        let keys: Vec<String> = d.keys();
+        drop(d);
+        for key in keys {
+            let desc = descs.borrow().get(&key);
+            object_define_property(vm, &[target.clone(), JsValue::String(key), desc]);
+        }
+    }
+    target
+}
+
+/// `Object.getOwnPropertySymbols(obj)` — stub (returns empty array).
+pub fn object_get_own_property_symbols(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::new_array(Vec::new())
+}
+
 // ── Helpers ──
 
 fn format_usize(n: usize) -> String {

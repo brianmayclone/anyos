@@ -37,6 +37,28 @@ pub fn layout_inline_content(
     line_height: i32,
     viewport_w: i32,
 ) -> Vec<LayoutBox> {
+    layout_inline_content_with_pseudo(
+        dom, styles, pseudo, child_ids, available_width, start_x, images,
+        text_align, line_height, viewport_w, None, None,
+    )
+}
+
+/// Like `layout_inline_content` but also accepts inline before/after pseudo-element styles
+/// from the block parent (these are not reachable through child_ids).
+pub fn layout_inline_content_with_pseudo(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    child_ids: &[NodeId],
+    available_width: i32,
+    start_x: i32,
+    images: &ImageCache,
+    text_align: TextAlignVal,
+    line_height: i32,
+    viewport_w: i32,
+    before_ps: Option<&ComputedStyle>,
+    after_ps: Option<&ComputedStyle>,
+) -> Vec<LayoutBox> {
     // Determine text_indent from the parent style of the first child.
     let text_indent = if let Some(&first_cid) = child_ids.first() {
         let dom_node = dom.get(first_cid);
@@ -47,12 +69,47 @@ pub fn layout_inline_content(
 
     // 1. Flatten all inline children into fragments.
     let mut fragments: Vec<InlineFragment> = Vec::new();
+
+    // Inject parent's ::before pseudo-element as first fragment (inline display only).
+    if let Some(bps) = before_ps {
+        if let Some(ref text) = bps.content {
+            if !text.is_empty() {
+                let fs = if bps.font_size > 0 { bps.font_size } else { 16 };
+                let bold = matches!(bps.font_weight, crate::style::FontWeight::Bold);
+                let italic = matches!(bps.font_style, crate::style::FontStyleVal::Italic);
+                let (tw, th) = measure_text(text, fs, bold);
+                let mut tb = LayoutBox::new_text(text.clone(), fs, bold, italic, bps.color);
+                tb.bg_color = bps.background_color;
+                tb.text_decoration = bps.text_decoration;
+                tb.letter_spacing = bps.letter_spacing;
+                fragments.push(InlineFragment { width: tw, height: th, layout_box: tb, breaks_after: false });
+            }
+        }
+    }
+
     for &cid in child_ids {
         let style = &styles[cid];
         if style.display == Display::None {
             continue;
         }
         collect_inline_fragments(dom, styles, pseudo, cid, &mut fragments, available_width, images, 0, viewport_w);
+    }
+
+    // Inject parent's ::after pseudo-element as last fragment (inline display only).
+    if let Some(aps) = after_ps {
+        if let Some(ref text) = aps.content {
+            if !text.is_empty() {
+                let fs = if aps.font_size > 0 { aps.font_size } else { 16 };
+                let bold = matches!(aps.font_weight, crate::style::FontWeight::Bold);
+                let italic = matches!(aps.font_style, crate::style::FontStyleVal::Italic);
+                let (tw, th) = measure_text(text, fs, bold);
+                let mut tb = LayoutBox::new_text(text.clone(), fs, bold, italic, aps.color);
+                tb.bg_color = aps.background_color;
+                tb.text_decoration = aps.text_decoration;
+                tb.letter_spacing = aps.letter_spacing;
+                fragments.push(InlineFragment { width: tw, height: th, layout_box: tb, breaks_after: false });
+            }
+        }
     }
 
     // 2. Break fragments into lines.
@@ -348,10 +405,41 @@ fn collect_inline_fragments(
                 return;
             }
 
+            // CSS 2.1 §9.2.1.1: Block-level elements inside inline formatting context.
+            // When a block-level box appears inside an inline context, it breaks the
+            // inline formatting and is laid out as a block box on its own "line".
+            // We treat it like an inline-block that fills available width and
+            // forces a line break after.
+            if matches!(style.display, Display::Block | Display::FlowRoot
+                | Display::Flex | Display::Grid | Display::ListItem)
+            {
+                use super::block::build_block;
+                let mut block_box = build_block(dom, styles, pseudo, node_id, available_width, images, viewport_w);
+                let w = block_box.width + block_box.margin.left + block_box.margin.right;
+                let h = block_box.height + block_box.margin.top + block_box.margin.bottom;
+                // Skip empty blocks (no content, no padding/border) to avoid
+                // spurious line breaks from empty containers like <ul></ul>.
+                if h <= 0 && block_box.children.is_empty() {
+                    return;
+                }
+                block_box.box_type = BoxType::InlineBlock;
+                out.push(InlineFragment { width: w, height: h, layout_box: block_box, breaks_after: true });
+                return;
+            }
+
             // Handle display: inline-block / inline-flex — lay out as block, emit as inline fragment.
             if matches!(style.display, Display::InlineBlock | Display::InlineFlex) {
                 use super::block::build_block;
-                let mut block_box = build_block(dom, styles, pseudo, node_id, available_width, images, viewport_w);
+                // Shrink-to-fit: if no explicit width, use max-content so the box is only as
+                // wide as its content (CSS §10.3.9 "Inline replaced elements, block-level
+                // replaced elements in normal flow, and inline-block elements").
+                let stf_w = if style.width.is_some() || style.width_pct.is_some() {
+                    available_width  // explicit width → honour it
+                } else {
+                    super::flex::measure_max_content(dom, styles, pseudo, node_id, images, viewport_w)
+                        .min(available_width).max(1)
+                };
+                let mut block_box = build_block(dom, styles, pseudo, node_id, stf_w, images, viewport_w);
                 block_box.box_type = BoxType::InlineBlock;
                 let w = block_box.width + block_box.margin.left + block_box.margin.right;
                 let h = block_box.height + block_box.margin.top + block_box.margin.bottom;
@@ -392,10 +480,29 @@ fn collect_inline_fragments(
 
             let children: Vec<NodeId> = node.children.iter().copied().collect();
             let child_bg = if style.background_color != 0 { style.background_color } else { inherited_bg };
+
+            // CSS 2.1 §9.2.1.1: When an inline element contains block-level
+            // children, whitespace-only text nodes between blocks are stripped
+            // (they do not generate anonymous inline boxes).
+            let has_block_child = children.iter().any(|&cid| {
+                let cs = &styles[cid];
+                cs.display != Display::None && matches!(cs.display,
+                    Display::Block | Display::FlowRoot | Display::Flex
+                    | Display::Grid | Display::ListItem)
+            });
+
             for &cid in &children {
                 let cs = &styles[cid];
                 if cs.display == Display::None {
                     continue;
+                }
+                // Skip whitespace-only text between block siblings.
+                if has_block_child {
+                    if let NodeType::Text(ref t) = dom.get(cid).node_type {
+                        if t.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')) {
+                            continue;
+                        }
+                    }
                 }
                 collect_inline_fragments(dom, styles, pseudo, cid, out, available_width, images, child_bg, viewport_w);
             }

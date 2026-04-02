@@ -38,7 +38,11 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
     // Try submit button hit (canvas-based submit regions).
     if tab.webview.is_submit_button(ctrl_id) {
         on_form_submit(ctrl_id, _event_type, _userdata);
+        return;
     }
+
+    // Try focusing a form control (text field / textarea) at the click position.
+    tab.webview.focus_form_control_at_canvas(ctrl_id);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -53,10 +57,7 @@ pub(crate) extern "C" fn on_form_submit(ctrl_id: u32, _event_type: u32, _userdat
     let st = crate::state();
     let tab = &st.tabs[st.active_tab];
 
-    if !tab.webview.is_submit_button(ctrl_id) {
-        return;
-    }
-
+    // Works for both submit-button clicks and Enter key in text fields.
     let (action, method) = match tab.webview.form_action_for(ctrl_id) {
         Some(am) => am,
         None => return,

@@ -515,33 +515,86 @@ pub fn tokenize(html: &str) -> Vec<Token> {
 // Phase 2: Tree Builder
 // ---------------------------------------------------------------------------
 
-/// Tags that auto-close `<p>`.
+/// Tags that auto-close `<p>` (HTML spec §13.2.6.4.7 "in body" insertion mode).
+///
+/// When one of these start tags is encountered and there is a `<p>` element
+/// in button scope, the parser closes the `<p>` element first.
 fn closes_p(tag: Tag) -> bool {
     matches!(
         tag,
-        Tag::P
-            | Tag::Div
-            | Tag::Section
+        // §13.2.6.4.7 group: "address", "article", "aside", "blockquote",
+        // "center", "details", "dialog", "dir", "div", "dl", "fieldset",
+        // "figcaption", "figure", "footer", "header", "hgroup", "main",
+        // "menu", "nav", "ol", "p", "search", "section", "summary", "ul"
+        Tag::Address
             | Tag::Article
-            | Tag::Header
-            | Tag::Footer
-            | Tag::Nav
-            | Tag::Main
+            | Tag::Aside
             | Tag::Blockquote
-            | Tag::Pre
-            | Tag::Ul
+            | Tag::Center
+            | Tag::Details
+            | Tag::Dialog
+            | Tag::Div
+            | Tag::Dl
+            | Tag::Fieldset
+            | Tag::Figcaption
+            | Tag::Figure
+            | Tag::Footer
+            | Tag::Header
+            | Tag::Hgroup
+            | Tag::Main
+            | Tag::Nav
             | Tag::Ol
-            | Tag::Li
-            | Tag::Table
+            | Tag::P
+            | Tag::Search
+            | Tag::Section
+            | Tag::Summary
+            | Tag::Ul
+            // Additional groups that also close <p> per spec:
+            // "h1"-"h6", "pre"/"listing", "form", "li", "dd", "dt",
+            // "table", "hr"
             | Tag::H1
             | Tag::H2
             | Tag::H3
             | Tag::H4
             | Tag::H5
             | Tag::H6
-            | Tag::Hr
+            | Tag::Pre
             | Tag::Form
+            | Tag::Li
+            | Tag::Dd
+            | Tag::Dt
+            | Tag::Table
+            | Tag::Hr
     )
+}
+
+/// Check if a tag is a button scope marker (HTML spec §13.2.4.2).
+/// The "button scope" is used when checking for `<p>` elements to auto-close.
+/// Scope markers prevent the search from going further up the stack.
+fn is_button_scope_marker(tag: Tag) -> bool {
+    matches!(
+        tag,
+        Tag::Html | Tag::Table | Tag::Template | Tag::Button
+        // The spec also lists: applet, caption, td, th, marquee, object
+        // We include the ones we support:
+        | Tag::Caption | Tag::Td | Tag::Th | Tag::Object
+    )
+}
+
+/// Check if the stack has a `<p>` element in button scope (HTML spec §13.2.4.2).
+/// Walks the stack from top to bottom, stopping at scope markers.
+fn has_p_in_button_scope(dom: &Dom, stack: &[NodeId]) -> bool {
+    for &id in stack.iter().rev() {
+        if let Some(t) = node_tag(dom, id) {
+            if t == Tag::P {
+                return true;
+            }
+            if is_button_scope_marker(t) {
+                return false;
+            }
+        }
+    }
+    false
 }
 
 /// Collapse whitespace in text: runs of whitespace become a single space.
@@ -755,7 +808,8 @@ pub fn parse(html: &str) -> Dom {
                 }
 
                 // Auto-close <p> when block element opens inside it
-                if closes_p(tag) && stack_has(&dom, &stack, Tag::P) {
+                // (HTML spec §13.2.6.4.7: "if the stack has a p in button scope")
+                if closes_p(tag) && has_p_in_button_scope(&dom, &stack) {
                     pop_to(&dom, &mut stack, Tag::P);
                 }
 
@@ -763,6 +817,40 @@ pub fn parse(html: &str) -> Dom {
                 if tag == Tag::Li {
                     if let Some(&top) = stack.last() {
                         if node_tag(&dom, top) == Some(Tag::Li) {
+                            stack.pop();
+                        }
+                    }
+                }
+
+                // Auto-close <dd>/<dt> when another <dd> or <dt> opens
+                // (HTML spec §13.2.6.4.7: "dd"/"dt" close open dd/dt in scope)
+                if tag == Tag::Dd || tag == Tag::Dt {
+                    // Walk the stack to find an open dd/dt (stop at scope markers)
+                    let mut close_idx = None;
+                    for (si, &sid) in stack.iter().enumerate().rev() {
+                        if let Some(t) = node_tag(&dom, sid) {
+                            if t == Tag::Dd || t == Tag::Dt {
+                                close_idx = Some(si);
+                                break;
+                            }
+                            // Scope markers that stop the search (HTML spec §13.2.4.2)
+                            if matches!(t, Tag::Html | Tag::Table | Tag::Template
+                                | Tag::Caption | Tag::Td | Tag::Th | Tag::Object) {
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(idx) = close_idx {
+                        stack.truncate(idx);
+                    }
+                }
+
+                // Auto-close <dd>/<dt> when <div> opens inside <dl>
+                // (HTML spec allows <div> to wrap <dt>/<dd> pairs in <dl>)
+                if tag == Tag::Div && stack_has(&dom, &stack, Tag::Dl) {
+                    if let Some(&top) = stack.last() {
+                        let top_tag = node_tag(&dom, top);
+                        if top_tag == Some(Tag::Dd) || top_tag == Some(Tag::Dt) {
                             stack.pop();
                         }
                     }

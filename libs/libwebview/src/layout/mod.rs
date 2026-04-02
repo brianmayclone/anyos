@@ -22,15 +22,15 @@ use alloc::vec::Vec;
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
     ComputedStyle, Display, FontWeight, FontStyleVal, TextAlignVal,
-    ListStyle, TextDeco, TextTransform, FloatVal, Position, ClearVal,
-    PseudoStyles,
+    ListStyle, ListStylePosition, TextDeco, TextTransform, FloatVal, Position, ClearVal,
+    OverflowVal, PseudoStyles,
 };
 use crate::ImageCache;
 
 // Re-export sub-module public items.
 pub use form::{FormFieldPos, collect_form_positions};
 use block::build_block;
-use inline::layout_inline_content;
+use inline::{layout_inline_content, layout_inline_content_with_pseudo};
 
 // ---------------------------------------------------------------------------
 // Public data structures
@@ -60,6 +60,7 @@ pub struct LayoutBox {
     pub text_align: TextAlignVal,
     pub link_url: Option<String>,
     pub list_marker: Option<String>,
+    pub list_marker_inside: bool,
     pub is_hr: bool,
     /// Image source URL for `<img>` elements.
     pub image_src: Option<String>,
@@ -116,6 +117,12 @@ pub struct LayoutBox {
     pub letter_spacing: i32,
     /// Z-index for stacking context.
     pub z_index: i32,
+    /// Whether z-index is `auto` (no explicit integer set).
+    pub z_index_auto: bool,
+    /// Whether this box creates a new stacking context (CSS2 §9.9.1).
+    /// True for: positioned elements with explicit z-index, opacity < 1,
+    /// elements with transform, etc.
+    pub creates_stacking_context: bool,
     /// Per-side border styles.
     pub border_top_style: crate::style::BorderStyleVal,
     pub border_right_style: crate::style::BorderStyleVal,
@@ -142,6 +149,9 @@ pub struct LayoutBox {
     pub is_sticky: bool,
     /// The `top` value for sticky positioning (distance from viewport top when stuck).
     pub sticky_top: i32,
+    /// CSS `clip: rect(top, right, bottom, left)` for absolute elements.
+    /// Values are in px relative to the element's own top-left corner.
+    pub clip_rect: Option<[i32; 4]>,
     /// Maximum Y extent of this subtree (relative to parent origin, like `y`).
     /// Computed by `compute_subtree_bottom()` after layout.  Used by the
     /// tile rasterizer to cull entire subtrees that are outside the tile.
@@ -207,6 +217,7 @@ impl LayoutBox {
             text_align: TextAlignVal::Left,
             link_url: None,
             list_marker: None,
+            list_marker_inside: false,
             is_hr: false,
             image_src: None,
             image_width: None,
@@ -240,6 +251,8 @@ impl LayoutBox {
             // Letter spacing
             letter_spacing: 0,
             z_index: 0,
+            z_index_auto: true,
+            creates_stacking_context: false,
             border_top_style: crate::style::BorderStyleVal::None,
             border_right_style: crate::style::BorderStyleVal::None,
             border_bottom_style: crate::style::BorderStyleVal::None,
@@ -255,6 +268,7 @@ impl LayoutBox {
             is_sticky: false,
             sticky_top: 0,
             subtree_bottom: 0,
+            clip_rect: None,
         }
     }
 
@@ -315,50 +329,105 @@ pub(super) fn inherited_link(dom: &Dom, node_id: NodeId) -> Option<String> {
     None
 }
 
+/// Returns `(marker_string, inside)` for a `<li>` node.
+/// `inside` is true when `list-style-position: inside` is set.
 pub(super) fn list_marker_for(dom: &Dom, node_id: NodeId, style: &ComputedStyle) -> Option<String> {
     if dom.tag(node_id) != Some(Tag::Li) {
         return None;
     }
+    let inside = style.list_style_position == ListStylePosition::Inside;
+    // Suffix: space after the marker (wider gap for inside to separate from text)
+    let suffix = if inside { " " } else { " " };
     match style.list_style {
-        ListStyle::Disc => Some(String::from("\u{2022} ")),
-        ListStyle::Circle => Some(String::from("\u{25E6} ")),
-        ListStyle::Square => Some(String::from("\u{25AA} ")),
-        ListStyle::Decimal => {
-            let parent = dom.get(node_id).parent?;
-            let siblings = &dom.get(parent).children;
-            let mut idx = 1;
-            for &sib in siblings {
-                if sib == node_id {
-                    break;
-                }
-                if dom.tag(sib) == Some(Tag::Li) {
-                    idx += 1;
-                }
-            }
+        ListStyle::Disc   => Some(concat_str("\u{2022}", suffix)),  // • BULLET
+        ListStyle::Circle => Some(concat_str("\u{25CB}", suffix)),  // ○ WHITE CIRCLE
+        ListStyle::Square => Some(concat_str("\u{25A0}", suffix)),  // ■ BLACK SQUARE
+        ListStyle::Decimal | ListStyle::LowerAlpha | ListStyle::UpperAlpha
+        | ListStyle::LowerLatin | ListStyle::UpperLatin
+        | ListStyle::LowerRoman | ListStyle::UpperRoman => {
+            let idx = li_index(dom, node_id);
             let mut s = String::new();
-            format_decimal(&mut s, idx);
-            s.push_str(". ");
+            match style.list_style {
+                ListStyle::LowerAlpha | ListStyle::LowerLatin => format_alpha(&mut s, idx, false),
+                ListStyle::UpperAlpha | ListStyle::UpperLatin => format_alpha(&mut s, idx, true),
+                ListStyle::LowerRoman => format_roman(&mut s, idx, false),
+                ListStyle::UpperRoman => format_roman(&mut s, idx, true),
+                _ => format_decimal(&mut s, idx),
+            }
+            s.push('.');
+            s.push_str(suffix);
             Some(s)
         }
         ListStyle::None => None,
     }
 }
 
-fn format_decimal(out: &mut String, mut n: u32) {
-    if n == 0 {
-        out.push('0');
-        return;
+fn concat_str(a: &str, b: &str) -> String {
+    let mut s = String::new();
+    s.push_str(a);
+    s.push_str(b);
+    s
+}
+
+/// Count this `<li>`'s 1-based index among its `<li>` siblings.
+fn li_index(dom: &Dom, node_id: NodeId) -> u32 {
+    let Some(parent) = dom.get(node_id).parent else { return 1; };
+    // Honour the `start` attribute on the parent <ol>.
+    let start: u32 = dom.attr(parent, "start")
+        .and_then(|s| s.parse::<i32>().ok())
+        .map(|v| v.max(1) as u32)
+        .unwrap_or(1);
+    let mut idx = start;
+    for &sib in &dom.get(parent).children {
+        if sib == node_id { break; }
+        if dom.tag(sib) == Some(Tag::Li) { idx += 1; }
     }
+    idx
+}
+
+fn format_decimal(out: &mut String, mut n: u32) {
+    if n == 0 { out.push('0'); return; }
     let mut buf = [0u8; 10];
     let mut i = 0;
-    while n > 0 {
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        i += 1;
+    while n > 0 { buf[i] = b'0' + (n % 10) as u8; n /= 10; i += 1; }
+    while i > 0 { i -= 1; out.push(buf[i] as char); }
+}
+
+/// a–z, then aa–az, ba–bz, … (CSS `lower-alpha` / `lower-latin`)
+fn format_alpha(out: &mut String, n: u32, upper: bool) {
+    if n == 0 { out.push(if upper { 'A' } else { 'a' }); return; }
+    let base: u32 = 26;
+    // Convert to bijective base-26 (1=a, 26=z, 27=aa, …)
+    let mut chars: [u8; 8] = [0; 8];
+    let mut len = 0;
+    let mut v = n;
+    while v > 0 {
+        v -= 1;
+        chars[len] = (v % base) as u8;
+        v /= base;
+        len += 1;
     }
-    while i > 0 {
-        i -= 1;
-        out.push(buf[i] as char);
+    for i in (0..len).rev() {
+        let c = chars[i] + if upper { b'A' } else { b'a' };
+        out.push(c as char);
+    }
+}
+
+/// Standard roman numerals (I–MMMCMXCIX = 1–3999); fallback to decimal beyond that.
+fn format_roman(out: &mut String, n: u32, upper: bool) {
+    if n == 0 || n > 3999 { format_decimal(out, n); return; }
+    const VALS: &[u32]  = &[1000,900,500,400,100,90,50,40,10,9,5,4,1];
+    const SYMS: &[&str] = &["M","CM","D","CD","C","XC","L","XL","X","IX","V","IV","I"];
+    let mut v = n;
+    for (&val, &sym) in VALS.iter().zip(SYMS.iter()) {
+        while v >= val {
+            if upper {
+                out.push_str(sym);
+            } else {
+                for c in sym.chars() { out.push(c.to_ascii_lowercase()); }
+            }
+            v -= val;
+        }
     }
 }
 
@@ -453,14 +522,171 @@ pub(super) fn size_attr_width(dom: &Dom, node_id: NodeId, default: i32) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
+// CSS Counter resolution
+// ---------------------------------------------------------------------------
+
+/// Resolved counter values for each DOM node.
+/// `values[node_id]` is a Vec of `(counter_name, value)` pairs giving the
+/// counter values that are "current" when that node's content is rendered.
+pub struct CounterValues {
+    pub per_node: Vec<Vec<(String, i32)>>,
+}
+
+impl CounterValues {
+    pub fn empty(count: usize) -> Self {
+        let mut per_node = Vec::with_capacity(count);
+        for _ in 0..count { per_node.push(Vec::new()); }
+        CounterValues { per_node }
+    }
+
+    pub fn get(&self, node_id: NodeId, name: &str) -> i32 {
+        if node_id >= self.per_node.len() { return 0; }
+        for &(ref n, v) in self.per_node[node_id].iter().rev() {
+            if n.as_str() == name { return v; }
+        }
+        0
+    }
+}
+
+/// Walk the DOM in document order (pre-order) to compute CSS counter values.
+/// Each node's counter values reflect the state AFTER counter-reset / counter-increment
+/// of that node have been applied.
+pub fn compute_counter_values(dom: &Dom, styles: &[ComputedStyle]) -> CounterValues {
+    let n = dom.nodes.len();
+    let mut cv = CounterValues::empty(n);
+    // Current counter state: list of (name, value). Most recent entry wins.
+    let mut state: Vec<(String, i32)> = Vec::new();
+    walk_counters(dom, styles, 0, &mut state, &mut cv);
+    cv
+}
+
+fn walk_counters(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    node_id: NodeId,
+    state: &mut Vec<(String, i32)>,
+    cv: &mut CounterValues,
+) {
+    if node_id < styles.len() {
+        let style = &styles[node_id];
+
+        // counter-reset: creates/resets counters in current scope
+        if let Some(ref cr) = style.counter_reset {
+            // Format: "name1 [value1] name2 [value2] ..."
+            let parts: Vec<&str> = cr.split_whitespace().collect();
+            let mut i = 0;
+            while i < parts.len() {
+                let name = parts[i].to_ascii_lowercase();
+                let val = if i + 1 < parts.len() {
+                    parts[i + 1].parse::<i32>().unwrap_or(0)
+                } else { 0 };
+                // Find and update existing entry, or add new one
+                let mut found = false;
+                for entry in state.iter_mut().rev() {
+                    if entry.0 == name { entry.1 = val; found = true; break; }
+                }
+                if !found { state.push((name, val)); }
+                i += if i + 1 < parts.len() && parts[i + 1].parse::<i32>().is_ok() { 2 } else { 1 };
+            }
+        }
+
+        // counter-increment: increments counters
+        if let Some(ref ci) = style.counter_increment {
+            let parts: Vec<&str> = ci.split_whitespace().collect();
+            let mut i = 0;
+            while i < parts.len() {
+                let name = parts[i].to_ascii_lowercase();
+                let inc = if i + 1 < parts.len() {
+                    parts[i + 1].parse::<i32>().unwrap_or(1)
+                } else { 1 };
+                let mut found = false;
+                for entry in state.iter_mut().rev() {
+                    if entry.0 == name { entry.1 += inc; found = true; break; }
+                }
+                if !found { state.push((name, inc)); }
+                i += if i + 1 < parts.len() && parts[i + 1].parse::<i32>().is_ok() { 2 } else { 1 };
+            }
+        }
+
+        // Record current state snapshot for this node
+        if node_id < cv.per_node.len() {
+            cv.per_node[node_id] = state.clone();
+        }
+    }
+
+    let children: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
+    for child in children {
+        walk_counters(dom, styles, child, state, cv);
+    }
+}
+
+/// Resolve `\x01COUNTER:name\x01` markers in a content string using counter values.
+pub fn resolve_counters_in_content(text: &str, node_id: NodeId, cv: &CounterValues) -> String {
+    if !text.contains('\x01') { return String::from(text); }
+    let mut out = String::with_capacity(text.len() + 4);
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\x01' {
+            i += 1;
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'\x01' { i += 1; }
+            let marker = core::str::from_utf8(&bytes[start..i]).unwrap_or("");
+            if let Some(name) = marker.strip_prefix("COUNTER:") {
+                let val = cv.get(node_id, name);
+                // Format as decimal
+                let mut num = val;
+                if num == 0 {
+                    out.push('0');
+                } else {
+                    let neg = num < 0;
+                    if neg { num = -num; }
+                    let mut digits = [0u8; 12];
+                    let mut d = 0;
+                    while num > 0 { digits[d] = (num % 10) as u8 + b'0'; num /= 10; d += 1; }
+                    if neg { out.push('-'); }
+                    for k in (0..d).rev() { out.push(digits[k] as char); }
+                }
+            }
+            if i < bytes.len() { i += 1; } // skip closing \x01
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
 /// Build a layout tree from the DOM and computed styles.
-pub fn layout(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, viewport_width: i32, images: &ImageCache) -> LayoutBox {
+pub fn layout(dom: &Dom, styles: &[ComputedStyle], pseudo: &mut PseudoStyles, viewport_width: i32, images: &ImageCache) -> LayoutBox {
     crate::debug_surf!("[layout] layout start: {} nodes, viewport_width={}", dom.nodes.len(), viewport_width);
     #[cfg(feature = "debug_surf")]
     crate::debug_surf!("[layout]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
+
+    // Pre-pass: compute CSS counter values and resolve counter() references in
+    // pseudo-element content strings.
+    let cv = compute_counter_values(dom, styles);
+    let n = pseudo.before.len();
+    for id in 0..n {
+        if let Some(ref mut ps) = pseudo.before[id] {
+            if let Some(ref text) = ps.content.clone() {
+                if text.contains('\x01') {
+                    ps.content = Some(resolve_counters_in_content(text, id, &cv));
+                }
+            }
+        }
+        if let Some(ref mut ps) = pseudo.after[id] {
+            if let Some(ref text) = ps.content.clone() {
+                if text.contains('\x01') {
+                    ps.content = Some(resolve_counters_in_content(text, id, &cv));
+                }
+            }
+        }
+    }
 
     let body_id = dom.find_body().unwrap_or(0);
     let style = &styles[body_id];
@@ -552,11 +778,41 @@ pub(super) fn layout_children(
     images: &ImageCache,
     viewport_w: i32,
 ) -> i32 {
+    layout_children_ex(dom, styles, pseudo, child_ids, available_width, parent,
+        _parent_node, images, viewport_w, None, None)
+}
+
+/// Like `layout_children` but also accepts optional pre-built block pseudo-element boxes
+/// (from the parent's `::before` / `::after`) that must be placed INSIDE the flow.
+pub(super) fn layout_children_ex(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    child_ids: &[NodeId],
+    available_width: i32,
+    parent: &mut LayoutBox,
+    _parent_node: NodeId,
+    images: &ImageCache,
+    viewport_w: i32,
+    before_block: Option<LayoutBox>,
+    after_block: Option<LayoutBox>,
+) -> i32 {
     // Children start after the border and padding on the top-left.
     let bw = parent.border_width;
     let mut cursor_y: i32 = bw + parent.padding.top;
     let mut prev_margin_bottom: i32 = 0;
     let mut float_ctx = FloatContext::new(available_width);
+
+    // Place ::before block pseudo-element at the start of the flow.
+    if let Some(mut b) = before_block {
+        let mt = b.margin.top;
+        let mb = b.margin.bottom;
+        b.x = bw + parent.padding.left + b.margin.left;
+        b.y = cursor_y + mt;
+        cursor_y += b.height + mt + mb;
+        prev_margin_bottom = mb;
+        parent.children.push(b);
+    }
 
     // Collect absolutely/fixed-positioned children to lay out after normal flow.
     let mut deferred_abs: Vec<NodeId> = Vec::new();
@@ -700,6 +956,31 @@ pub(super) fn layout_children(
             }
             let inline_ids: Vec<NodeId> = child_ids[run_start..i].iter().copied().collect();
 
+            // CSS §9.2.1: Whitespace-only text nodes between block-level siblings do NOT
+            // generate boxes and must not advance the block cursor.
+            // Check: if every node in this inline run is either display:none or a
+            // whitespace-only text node, and there are no pseudo-element contributions,
+            // skip the run entirely.
+            {
+                let has_no_pseudo = {
+                    let before_ps = if _parent_node < pseudo.before.len() { pseudo.before[_parent_node].as_ref() } else { None };
+                    let after_ps  = if _parent_node < pseudo.after.len()  { pseudo.after[_parent_node].as_ref()  } else { None };
+                    before_ps.is_none() && after_ps.is_none()
+                };
+                let all_whitespace = inline_ids.iter().all(|&nid| {
+                    if styles[nid].display == Display::None { return true; }
+                    match &dom.get(nid).node_type {
+                        crate::dom::NodeType::Text(t) =>
+                            t.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')),
+                        _ => false,
+                    }
+                });
+                if all_whitespace && has_no_pseudo {
+                    prev_margin_bottom = 0;
+                    continue;
+                }
+            }
+
             // Query float intrusions for inline content.
             let li = float_ctx.left_intrusion_at(cursor_y, 1);
             let ri = float_ctx.right_intrusion_at(cursor_y, 1);
@@ -707,9 +988,32 @@ pub(super) fn layout_children(
 
             let parent_style = &styles[_parent_node];
             let parent_align = parent_style.text_align;
-            let line_boxes = layout_inline_content(
+
+            // Check if parent block node has inline ::before/::after pseudo-elements.
+            // These are only injected into the FIRST inline run (for ::before) and LAST (for ::after).
+            let is_first_run = run_start == 0 || child_ids[..run_start].iter().all(|&id| styles[id].display == Display::None);
+            let is_last_run = i >= child_ids.len() || child_ids[i..].iter().all(|&id| {
+                let s = &styles[id];
+                s.display == Display::None || is_block_level(dom, id, s)
+            });
+
+            let before_inline_ps = if is_first_run && _parent_node < pseudo.before.len() {
+                pseudo.before[_parent_node].as_ref().filter(|ps| {
+                    !matches!(ps.display, Display::Block | Display::FlowRoot | Display::InlineBlock
+                        | Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid)
+                })
+            } else { None };
+            let after_inline_ps = if is_last_run && _parent_node < pseudo.after.len() {
+                pseudo.after[_parent_node].as_ref().filter(|ps| {
+                    !matches!(ps.display, Display::Block | Display::FlowRoot | Display::InlineBlock
+                        | Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid)
+                })
+            } else { None };
+
+            let line_boxes = layout_inline_content_with_pseudo(
                 dom, styles, pseudo, &inline_ids, inline_avail, bw + parent.padding.left + li, images,
                 parent_align, parent_style.line_height, viewport_w,
+                before_inline_ps, after_inline_ps,
             );
             for lb in line_boxes {
                 let h = lb.height;
@@ -779,6 +1083,49 @@ pub(super) fn layout_children(
         parent.children.push(abs_box);
     }
 
+    // Place ::after block pseudo-element at the end of the flow.
+    if let Some(mut b) = after_block {
+        let mt = b.margin.top;
+        let mb = b.margin.bottom;
+        b.x = bw + parent.padding.left + b.margin.left;
+        b.y = cursor_y + mt;
+        cursor_y += b.height + mt + mb;
+        parent.children.push(b);
+    }
+
+    // BFC (Block Formatting Context) containment (CSS2 §9.4.1, CSS Display §3):
+    // Elements that establish a new BFC must contain their own floated children.
+    // If any floats extend below cursor_y, expand cursor_y to cover them.
+    let parent_is_bfc = if _parent_node < styles.len() {
+        let s = &styles[_parent_node];
+        // overflow: hidden/scroll/auto establishes a BFC.
+        let has_overflow_bfc = !matches!(s.overflow_x, OverflowVal::Visible)
+            || !matches!(s.overflow_y, OverflowVal::Visible);
+        // display: flow-root / inline-block / flex / inline-flex / grid / inline-grid.
+        let has_display_bfc = matches!(s.display,
+            Display::FlowRoot | Display::InlineBlock
+            | Display::Flex | Display::InlineFlex
+            | Display::Grid | Display::InlineGrid
+        );
+        // Floated or absolutely positioned elements also establish a BFC.
+        let has_float_bfc = s.float != crate::style::FloatVal::None;
+        let has_pos_bfc = matches!(s.position,
+            crate::style::Position::Absolute | crate::style::Position::Fixed);
+        has_overflow_bfc || has_display_bfc || has_float_bfc || has_pos_bfc
+    } else {
+        false
+    };
+
+    if parent_is_bfc && !float_ctx.floats.is_empty() {
+        let float_bottom = float_ctx.floats.iter()
+            .map(|f| f.y + f.height)
+            .max()
+            .unwrap_or(0);
+        if float_bottom > cursor_y {
+            cursor_y = float_bottom;
+        }
+    }
+
     cursor_y
 }
 
@@ -818,7 +1165,7 @@ pub(super) fn apply_text_transform(text: &str, transform: TextTransform) -> Stri
 
 /// Determine whether a node should generate a block-level box.
 fn is_block_level(dom: &Dom, node_id: NodeId, style: &ComputedStyle) -> bool {
-    if matches!(style.display, Display::Block | Display::Flex | Display::Grid | Display::ListItem) {
+    if matches!(style.display, Display::Block | Display::FlowRoot | Display::Flex | Display::Grid | Display::ListItem) {
         return true;
     }
     if let Some(tag) = dom.tag(node_id) {
@@ -927,8 +1274,84 @@ impl FloatContext {
     }
 }
 
+/// Compute max-content width (natural width with no wrapping) for a DOM node.
+/// Used by `width: max-content`. Delegates to the flex measure helper.
+pub(super) fn intrinsic_width(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    node_id: NodeId,
+    available_width: i32,
+    images: &ImageCache,
+    viewport_w: i32,
+) -> i32 {
+    flex::measure_max_content(dom, styles, pseudo, node_id, images, viewport_w)
+        .min(available_width)
+        .max(0)
+}
+
+/// Compute min-content width (minimum width without breaking words) for a DOM node.
+/// Used by `width: min-content`. Approximated as the longest single text word.
+pub(super) fn intrinsic_min_width(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    node_id: NodeId,
+    images: &ImageCache,
+    viewport_w: i32,
+) -> i32 {
+    measure_min_content(dom, styles, pseudo, node_id, images, viewport_w)
+}
+
+/// Recursively measure the minimum content width (longest unbreakable run).
+fn measure_min_content(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    node_id: NodeId,
+    images: &ImageCache,
+    viewport_w: i32,
+) -> i32 {
+    use crate::dom::NodeType;
+    let st = &styles[node_id];
+    if st.display == Display::None { return 0; }
+
+    // Explicit width → that IS the min-content width.
+    if let Some(w) = st.width { if w > 0 { return w; } }
+    if st.width_min_content || st.width_max_content { return 0; }
+
+    let pad_border = st.padding_left + st.padding_right + st.border_width * 2
+        + st.border_left.width + st.border_right.width;
+
+    if let NodeType::Text(ref text) = dom.nodes[node_id].node_type {
+        // Find the longest word (non-breaking run).
+        let fs = st.font_size.max(1);
+        let bold = matches!(st.font_weight, crate::style::FontWeight::Bold);
+        let mut max_w = 0i32;
+        for word in text.split_whitespace() {
+            let (w, _) = measure_text(word, fs, bold);
+            if w > max_w { max_w = w; }
+        }
+        return max_w;
+    }
+
+    // Image.
+    if dom.tag(node_id) == Some(crate::dom::Tag::Img) {
+        return flex::measure_max_content(dom, styles, pseudo, node_id, images, viewport_w);
+    }
+
+    // Recurse into children.
+    let mut max_child_w = 0i32;
+    for &cid in &dom.nodes[node_id].children {
+        let cw = measure_min_content(dom, styles, pseudo, cid, images, viewport_w);
+        if cw > max_child_w { max_child_w = cw; }
+    }
+    max_child_w + pad_border
+}
+
 /// Compute shrink-to-fit width for a float element.
-/// Uses the child's laid-out width if no explicit width was set.
+/// Per CSS spec, the float's width = min(max-content, max(min-content, available)).
+/// We approximate this as max-content width capped at max_width.
 fn shrink_to_fit_width(
     dom: &Dom,
     styles: &[ComputedStyle],
@@ -943,14 +1366,17 @@ fn shrink_to_fit_width(
     if let Some(w) = style.width {
         if w > 0 { return w.min(max_width); }
     }
-    // Otherwise, lay out with max_width and use the resulting content width.
-    let trial = build_block(dom, styles, pseudo, node_id, max_width, images, viewport_w);
-    // Shrink-to-fit: use the content width (sum of children) capped at max_width.
-    let content_w = trial.children.iter()
-        .map(|c| c.x + c.width + c.margin.right)
-        .max()
-        .unwrap_or(0);
-    let fit_w = content_w + trial.padding.left + trial.padding.right
-        + trial.border_width * 2;
-    fit_w.max(1).min(max_width)
+    // Percentage width.
+    if let Some(pct) = style.width_pct {
+        let w = (max_width as i64 * pct as i64 / 10000) as i32;
+        if w > 0 { return w.min(max_width); }
+    }
+    // Otherwise, use max-content width (natural width without forced line-wrapping).
+    // This is the correct CSS shrink-to-fit algorithm: it prevents block children
+    // (like <figcaption>) from expanding the float to the full container width.
+    let mc = flex::measure_max_content(dom, styles, pseudo, node_id, images, viewport_w);
+    let pad_border = style.padding_left + style.padding_right
+        + style.border_left.width + style.border_right.width
+        + style.border_width * 2;
+    (mc + pad_border).max(1).min(max_width)
 }

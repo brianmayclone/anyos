@@ -30,7 +30,11 @@ pub enum Op {
     /// Store top of stack into a local variable slot.
     StoreLocal(u16),
     /// Load a global variable by name (constant pool index).
+    /// Throws ReferenceError if the variable is not defined.
     LoadGlobal(u16),
+    /// Load a global variable by name, returning undefined if not defined.
+    /// Used by `typeof` to avoid ReferenceError on undeclared variables.
+    LoadGlobalSafe(u16),
     /// Store top of stack into a global variable.
     StoreGlobal(u16),
     /// Load from closure (upvalue) — (upvalue_index).

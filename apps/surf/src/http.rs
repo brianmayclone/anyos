@@ -470,6 +470,22 @@ pub fn resolve_url(base: &Url, relative: &str) -> Url {
         }
     }
 
+    // Protocol-relative URL: //host/path → inherit scheme from base
+    if relative.starts_with("//") {
+        let rest = &relative[2..];
+        let (host, path) = match rest.find('/') {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, "/"),
+        };
+        let port = if base.scheme == "https" { 443 } else { 80 };
+        return Url {
+            scheme: base.scheme.clone(),
+            host: String::from(host),
+            port,
+            path: String::from(path),
+        };
+    }
+
     if relative.starts_with('#') {
         let mut path = base.path.clone();
         if let Some(hash) = path.find('#') {
@@ -1043,7 +1059,7 @@ fn build_request_with_method(url: &Url, method: &str, body: Option<&str>, cookie
         push_u32(&mut req, url.port as u32);
     }
     req.push_str("\r\nUser-Agent: Surf/1.0 (anyOS)");
-    req.push_str("\r\nAccept: text/html,application/xhtml+xml,image/webp,image/avif,image/png,image/svg+xml,*/*");
+    req.push_str("\r\nAccept: text/html,application/xhtml+xml,image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.8");
     req.push_str("\r\nAccept-Encoding: gzip, deflate");
     req.push_str("\r\nConnection: keep-alive");
 

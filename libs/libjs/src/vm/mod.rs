@@ -179,12 +179,17 @@ impl Vm {
         JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 
-    /// Create a `ReferenceError` object (for strict mode undeclared variable access).
+    /// Create a `ReferenceError` object.
     pub fn make_reference_error(&self, message: &str) -> JsValue {
         let mut obj = JsObject::new();
         obj.prototype = Some(self.error_proto.clone());
         obj.set(String::from("name"), JsValue::String(String::from("ReferenceError")));
         obj.set(String::from("message"), JsValue::String(String::from(message)));
+        // Set constructor so assert.throws(ReferenceError, ...) can identify the error type
+        let ctor = self.globals.get("ReferenceError");
+        if !matches!(ctor, JsValue::Undefined) {
+            obj.set(String::from("constructor"), ctor);
+        }
         JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 
@@ -214,9 +219,10 @@ impl Vm {
     pub fn drain_microtasks(&mut self) {
         let mut safety = 0u32;
         while let Some(task) = self.event_loop.pop_microtask() {
-            self.invoke_function(&task.callback, &task.args, JsValue::Undefined);
-            // invoke_function pushes result on stack — pop it
-            self.stack.pop();
+            // Use call_value (not invoke_function) so bytecode callbacks are
+            // executed re-entrantly — invoke_function only pushes a frame
+            // without calling run(), which does nothing after the main loop exits.
+            self.call_value(&task.callback, &task.args, JsValue::Undefined);
             safety += 1;
             if safety > 10000 { break; } // prevent infinite microtask loop
         }
@@ -315,6 +321,19 @@ impl Vm {
                     *locals[slot as usize].borrow_mut() = val;
                 }
                 Op::LoadGlobal(name_idx) => {
+                    let name = self.get_const_string(frame_idx, name_idx);
+                    if self.globals.has(&name) {
+                        let val = self.globals.get(&name);
+                        self.stack.push(val);
+                    } else {
+                        let msg = format!("{} is not defined", name);
+                        let err = self.make_reference_error(&msg);
+                        if !self.handle_exception(err) {
+                            return JsValue::Undefined;
+                        }
+                    }
+                }
+                Op::LoadGlobalSafe(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
                     let val = self.globals.get(&name);
                     self.stack.push(val);
@@ -754,15 +773,26 @@ impl Vm {
                                 let depth_before = self.frames.len();
                                 let sym_iter_key = native_symbol::WELL_KNOWN_ITERATOR;
                                 let iter_fn = self.get_property_with_proto(&src, sym_iter_key);
+                                let mut spread_exc_handled = false;
                                 if matches!(iter_fn, JsValue::Function(_)) {
                                     let iterator = self.call_value(&iter_fn, &[], src.clone());
                                     if self.frames.len() < depth_before {
                                         self.stack.push(tgt);
                                         continue;
                                     }
+                                    // Propagate unhandled exceptions from call_value
+                                    if let Some(exc) = self.last_exception.take() {
+                                        self.pending_exception = Some(exc);
+                                    }
                                     if let Some(exc) = self.pending_exception.take() {
                                         if !self.handle_exception(exc) { return JsValue::Undefined; }
-                                        self.stack.push(tgt);
+                                        // handle_exception already set up the stack for the catch block
+                                        continue;
+                                    }
+                                    // ES spec 7.4.1: if iterator is not an object, throw TypeError
+                                    if !matches!(iterator, JsValue::Object(_) | JsValue::Array(_)) {
+                                        let err = self.make_type_error("Result of the Symbol.iterator method is not an object");
+                                        if !self.handle_exception(err) { return JsValue::Undefined; }
                                         continue;
                                     }
                                     // Call next() repeatedly
@@ -771,18 +801,35 @@ impl Vm {
                                         if !matches!(next_fn, JsValue::Function(_)) { break; }
                                         let next_result = self.call_value(&next_fn, &[], iterator.clone());
                                         if self.frames.len() < depth_before { break; }
+                                        // Propagate unhandled exceptions from call_value
+                                        if let Some(exc) = self.last_exception.take() {
+                                            self.pending_exception = Some(exc);
+                                        }
                                         if let Some(exc) = self.pending_exception.take() {
                                             if !self.handle_exception(exc) { return JsValue::Undefined; }
+                                            // handle_exception already set up the stack for the catch block
+                                            spread_exc_handled = true;
                                             break;
                                         }
-                                        let done = self.get_property_with_proto(&next_result, "done");
-                                        let value = self.get_property_with_proto(&next_result, "value");
+                                        let done = self.get_property_invoking_getter(&next_result, "done");
+                                        if let Some(exc) = self.pending_exception.take() {
+                                            if !self.handle_exception(exc) { return JsValue::Undefined; }
+                                            spread_exc_handled = true;
+                                            break;
+                                        }
                                         if done.to_boolean() {
+                                            break;
+                                        }
+                                        let value = self.get_property_invoking_getter(&next_result, "value");
+                                        if let Some(exc) = self.pending_exception.take() {
+                                            if !self.handle_exception(exc) { return JsValue::Undefined; }
+                                            spread_exc_handled = true;
                                             break;
                                         }
                                         tgt_rc.borrow_mut().elements.push(value);
                                     }
                                 }
+                                if spread_exc_handled { continue; }
                             }
                             _ => {}
                         }
@@ -791,20 +838,27 @@ impl Vm {
                 }
                 Op::ObjectSpread => {
                     // Stack: [..., target_object, source_object]
-                    // Copy all own enumerable properties of source into target.
+                    // CopyDataProperties: copy all own enumerable properties of source into target.
+                    // Getters must be invoked (ES2023 §7.3.25 CopyDataProperties).
                     let src = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let tgt = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
                     if let JsValue::Object(tgt_rc) = &tgt {
                         match &src {
                             JsValue::Object(src_rc) => {
-                                let props: Vec<(String, JsValue)> = src_rc.borrow()
+                                // Collect property keys and their getters/values.
+                                let props: Vec<(String, Option<JsValue>, JsValue)> = src_rc.borrow()
                                     .properties.iter()
                                     .filter(|(_, p)| p.enumerable)
-                                    .map(|(k, p)| (k.clone(), p.value.clone()))
+                                    .map(|(k, p)| (k.clone(), p.getter.clone(), p.value.clone()))
                                     .collect();
-                                let mut t = tgt_rc.borrow_mut();
-                                for (k, v) in props {
-                                    t.set(k, v);
+                                for (k, getter, val) in props {
+                                    let v = if let Some(ref getter_fn) = getter {
+                                        // Invoke getter with source as `this`
+                                        self.call_value(getter_fn, &[], src.clone())
+                                    } else {
+                                        val
+                                    };
+                                    tgt_rc.borrow_mut().set(k, v);
                                 }
                             }
                             _ => {}
@@ -1013,6 +1067,23 @@ impl Vm {
             Constant::String(s) => s.clone(),
             Constant::Number(n) => format_number(*n),
             _ => String::new(),
+        }
+    }
+
+    /// Get a property value, automatically invoking getters if the property is an accessor.
+    /// Unlike `get_property_with_proto` which returns the getter function, this method
+    /// calls the getter and returns its result. Exceptions from getters are propagated
+    /// via `pending_exception` / `last_exception`.
+    pub fn get_property_invoking_getter(&mut self, obj: &JsValue, key: &str) -> JsValue {
+        if let Some(getter) = self.find_getter(obj, key) {
+            let result = self.call_value(&getter, &[], obj.clone());
+            // Propagate unhandled exceptions from getter call
+            if let Some(exc) = self.last_exception.take() {
+                self.pending_exception = Some(exc);
+            }
+            result
+        } else {
+            self.get_property_with_proto(obj, key)
         }
     }
 

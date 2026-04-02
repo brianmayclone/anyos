@@ -446,3 +446,77 @@ pub fn string_concat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn string_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::String(this_string(vm))
 }
+
+// ═══════════════════════════════════════════════════════════
+// String static methods
+// ═══════════════════════════════════════════════════════════
+
+/// `String.fromCharCode(...codes)` — create string from UTF-16 code units.
+pub fn string_from_char_code(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let mut result = String::new();
+    for arg in args {
+        let code = arg.to_number() as u32;
+        if let Some(ch) = char::from_u32(code) {
+            result.push(ch);
+        }
+    }
+    JsValue::String(result)
+}
+
+/// `String.fromCodePoint(...codePoints)` — create string from Unicode code points.
+pub fn string_from_code_point(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let mut result = String::new();
+    for arg in args {
+        let cp = arg.to_number() as u32;
+        if let Some(ch) = char::from_u32(cp) {
+            result.push(ch);
+        } else {
+            let err = vm.make_type_error("Invalid code point");
+            vm.throw_native(err);
+            return JsValue::Undefined;
+        }
+    }
+    JsValue::String(result)
+}
+
+/// `String.raw(template, ...substitutions)` — raw template literal tag.
+pub fn string_raw(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let template = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let raw = match &template {
+        JsValue::Object(obj) => obj.borrow().get("raw"),
+        _ => JsValue::Undefined,
+    };
+    let raw_arr = match &raw {
+        JsValue::Array(arr) => arr.borrow().elements.clone(),
+        _ => return JsValue::String(String::new()),
+    };
+
+    let mut result = String::new();
+    for (i, part) in raw_arr.iter().enumerate() {
+        result.push_str(&part.to_js_string());
+        if i + 1 < raw_arr.len() {
+            if let Some(sub) = args.get(i + 1) {
+                result.push_str(&sub.to_js_string());
+            }
+        }
+    }
+    JsValue::String(result)
+}
+
+/// `String.prototype.normalize([form])` — Unicode normalization (stub: returns self).
+pub fn string_normalize(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    // Full Unicode normalization requires ICU tables — return self as-is.
+    JsValue::String(this_string(vm))
+}
+
+/// `String.prototype.localeCompare(that)` — simplified: byte comparison.
+pub fn string_locale_compare(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let s = this_string(vm);
+    let that = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let cmp = s.cmp(&that);
+    JsValue::Number(match cmp {
+        core::cmp::Ordering::Less => -1.0,
+        core::cmp::Ordering::Equal => 0.0,
+        core::cmp::Ordering::Greater => 1.0,
+    })
+}

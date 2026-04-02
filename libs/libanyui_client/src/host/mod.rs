@@ -68,6 +68,32 @@ fn find_canvas(id: u32) -> Option<&'static mut CanvasData> {
     unsafe { CANVASES.iter_mut().find(|c| c.id == id) }
 }
 
+// ── Control text storage (global) ────────────────────────────────────────────
+// Allows host-mode form controls (TextField, TextArea) to store/retrieve text.
+
+struct ControlText {
+    id: u32,
+    text: Vec<u8>,
+    state: u32, // for checkboxes / radio buttons
+}
+
+static mut CONTROL_TEXTS: Vec<ControlText> = Vec::new();
+
+fn get_control_text(id: u32) -> Option<&'static ControlText> {
+    unsafe { CONTROL_TEXTS.iter().find(|c| c.id == id) }
+}
+
+fn get_control_text_mut(id: u32) -> &'static mut ControlText {
+    unsafe {
+        if let Some(pos) = CONTROL_TEXTS.iter().position(|c| c.id == id) {
+            return &mut CONTROL_TEXTS[pos];
+        }
+        CONTROL_TEXTS.push(ControlText { id, text: Vec::new(), state: 0 });
+        let last = CONTROL_TEXTS.len() - 1;
+        &mut CONTROL_TEXTS[last]
+    }
+}
+
 // ── Control ──────────────────────────────────────────────────────────────────
 
 pub struct Control {
@@ -92,10 +118,26 @@ impl Control {
     pub fn get_position(&self) -> (i32, i32) { (0, 0) }
     pub fn set_visible(&self, _visible: bool) {}
     pub fn set_color(&self, _color: u32) {}
-    pub fn set_text(&self, _text: &str) {}
-    pub fn get_text(&self, _buf: &mut [u8]) -> u32 { 0 }
-    pub fn set_state(&self, _value: u32) {}
-    pub fn get_state(&self) -> u32 { 0 }
+    pub fn set_text(&self, text: &str) {
+        let entry = get_control_text_mut(self.id);
+        entry.text.clear();
+        entry.text.extend_from_slice(text.as_bytes());
+    }
+    pub fn get_text(&self, buf: &mut [u8]) -> u32 {
+        if let Some(entry) = get_control_text(self.id) {
+            let len = entry.text.len().min(buf.len());
+            buf[..len].copy_from_slice(&entry.text[..len]);
+            len as u32
+        } else {
+            0
+        }
+    }
+    pub fn set_state(&self, value: u32) {
+        get_control_text_mut(self.id).state = value;
+    }
+    pub fn get_state(&self) -> u32 {
+        get_control_text(self.id).map(|e| e.state).unwrap_or(0)
+    }
     pub fn add_child(&self, _child_id: u32) {}
     pub fn set_padding(&self, _l: i32, _t: i32, _r: i32, _b: i32) {}
     pub fn set_margin(&self, _l: i32, _t: i32, _r: i32, _b: i32) {}
@@ -111,6 +153,7 @@ impl Control {
     pub fn set_tooltip(&self, _text: &str) {}
     pub fn set_tab_index(&self, _index: u32) {}
     pub fn focus(&self) {}
+    pub fn bring_to_front(&self) {}
     pub fn remove(&self) {}
     pub fn on_event_raw(&self, _event_type: u32, _cb: Callback, _userdata: u64) {}
     pub fn on_click_raw(&self, _cb: Callback, _userdata: u64) {}

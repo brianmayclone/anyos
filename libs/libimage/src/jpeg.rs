@@ -859,7 +859,7 @@ fn clamp_u8(v: i32) -> u8 {
 // Two 1-D transforms: first on rows, then on columns.
 // The input block is in normal (not zig-zag) order, already dequantized.
 
-fn idct(block: &mut [i32; 64]) {
+pub fn idct(block: &mut [i32; 64]) {
     // Row pass
     for row in 0..8 {
         let base = row * 8;
@@ -873,26 +873,43 @@ fn idct(block: &mut [i32; 64]) {
 }
 
 /// 1D IDCT on a row of 8 elements (in-place).
+///
+/// Uses i64 intermediates to avoid overflow: dequantized coefficients can
+/// reach ±522k, and the Q13 fixed-point multiplies can exceed i32 range.
 fn idct_1d_row(block: &mut [i32; 64], base: usize) {
-    let s0 = block[base + 0];
-    let s1 = block[base + 1];
-    let s2 = block[base + 2];
-    let s3 = block[base + 3];
-    let s4 = block[base + 4];
-    let s5 = block[base + 5];
-    let s6 = block[base + 6];
-    let s7 = block[base + 7];
+    let s0 = block[base + 0] as i64;
+    let s1 = block[base + 1] as i64;
+    let s2 = block[base + 2] as i64;
+    let s3 = block[base + 3] as i64;
+    let s4 = block[base + 4] as i64;
+    let s5 = block[base + 5] as i64;
+    let s6 = block[base + 6] as i64;
+    let s7 = block[base + 7] as i64;
 
-    // Prescale: shift left to give more precision for row pass
-    // (column pass will shift right for final result)
-    let s0 = s0 << IDCT_BITS;
-    let s4 = s4 << IDCT_BITS;
+    let fix_0_541 = FIX_0_541 as i64;
+    let fix_0_765 = FIX_0_765 as i64;
+    let fix_1_847 = FIX_1_847 as i64;
+    let fix_1_175 = FIX_1_175 as i64;
+    let fix_0_298 = FIX_0_298 as i64;
+    let fix_2_053 = FIX_2_053 as i64;
+    let fix_3_072 = FIX_3_072 as i64;
+    let fix_1_501 = FIX_1_501 as i64;
+    let fix_0_899 = FIX_0_899 as i64;
+    let fix_2_562 = FIX_2_562 as i64;
+    let fix_1_961 = FIX_1_961 as i64;
+    let fix_0_390 = FIX_0_390 as i64;
+    let half = IDCT_HALF as i64;
+    let bits = IDCT_BITS as i64;
+
+    // Prescale
+    let s0 = s0 << bits;
+    let s4 = s4 << bits;
 
     // Check for all-zero AC (common shortcut)
     if s1 == 0 && s2 == 0 && s3 == 0 && s4 == 0
         && s5 == 0 && s6 == 0 && s7 == 0
     {
-        let dc = s0 + (1 << (IDCT_BITS - 4)); // rounding for later shift
+        let dc = (s0 + (1 << (bits - 4))) as i32;
         block[base + 0] = dc;
         block[base + 1] = dc;
         block[base + 2] = dc;
@@ -905,10 +922,8 @@ fn idct_1d_row(block: &mut [i32; 64], base: usize) {
     }
 
     // Even part
-    let p2 = s2;
-    let p6 = s6;
-    let t2 = (p2 * FIX_0_541 + p6 * (FIX_0_541 - FIX_1_847)) + IDCT_HALF;
-    let t3 = (p2 * (FIX_0_541 + FIX_0_765) + p6 * FIX_0_541) + IDCT_HALF;
+    let t2 = (s2 * fix_0_541 + s6 * (fix_0_541 - fix_1_847)) + half;
+    let t3 = (s2 * (fix_0_541 + fix_0_765) + s6 * fix_0_541) + half;
 
     let t0 = s0 + s4;
     let t1 = s0 - s4;
@@ -928,17 +943,17 @@ fn idct_1d_row(block: &mut [i32; 64], base: usize) {
     let z2 = t1 + t2;
     let z3 = t0 + t2;
     let z4 = t1 + t3;
-    let z5 = (z3 + z4) * FIX_1_175;
+    let z5 = (z3 + z4) * fix_1_175;
 
-    t0 = t0 * FIX_0_298;
-    t1 = t1 * FIX_2_053;
-    t2 = t2 * FIX_3_072;
-    t3 = t3 * FIX_1_501;
+    t0 = t0 * fix_0_298;
+    t1 = t1 * fix_2_053;
+    t2 = t2 * fix_3_072;
+    t3 = t3 * fix_1_501;
 
-    let z1 = z1 * -FIX_0_899;
-    let z2 = z2 * -FIX_2_562;
-    let z3 = z3 * -FIX_1_961 + z5;
-    let z4 = z4 * -FIX_0_390 + z5;
+    let z1 = z1 * -fix_0_899;
+    let z2 = z2 * -fix_2_562;
+    let z3 = z3 * -fix_1_961 + z5;
+    let z4 = z4 * -fix_0_390 + z5;
 
     t0 = t0 + z1 + z3;
     t1 = t1 + z2 + z4;
@@ -946,35 +961,51 @@ fn idct_1d_row(block: &mut [i32; 64], base: usize) {
     t3 = t3 + z1 + z4;
 
     // Final butterfly and descale (row pass keeps IDCT_BITS of precision)
-    block[base + 0] = (e0 + t3) >> (IDCT_BITS - 2);
-    block[base + 7] = (e0 - t3) >> (IDCT_BITS - 2);
-    block[base + 1] = (e1 + t2) >> (IDCT_BITS - 2);
-    block[base + 6] = (e1 - t2) >> (IDCT_BITS - 2);
-    block[base + 2] = (e2 + t1) >> (IDCT_BITS - 2);
-    block[base + 5] = (e2 - t1) >> (IDCT_BITS - 2);
-    block[base + 3] = (e3 + t0) >> (IDCT_BITS - 2);
-    block[base + 4] = (e3 - t0) >> (IDCT_BITS - 2);
+    let shift = bits - 2;
+    block[base + 0] = ((e0 + t3) >> shift) as i32;
+    block[base + 7] = ((e0 - t3) >> shift) as i32;
+    block[base + 1] = ((e1 + t2) >> shift) as i32;
+    block[base + 6] = ((e1 - t2) >> shift) as i32;
+    block[base + 2] = ((e2 + t1) >> shift) as i32;
+    block[base + 5] = ((e2 - t1) >> shift) as i32;
+    block[base + 3] = ((e3 + t0) >> shift) as i32;
+    block[base + 4] = ((e3 - t0) >> shift) as i32;
 }
 
 /// 1D IDCT on a column of 8 elements (in-place).
+///
+/// Uses i64 intermediates to avoid overflow from the row pass output
+/// (values up to ±2^24) multiplied by Q13 fixed-point constants.
 fn idct_1d_col(block: &mut [i32; 64], col: usize) {
-    let s0 = block[0 * 8 + col];
-    let s1 = block[1 * 8 + col];
-    let s2 = block[2 * 8 + col];
-    let s3 = block[3 * 8 + col];
-    let s4 = block[4 * 8 + col];
-    let s5 = block[5 * 8 + col];
-    let s6 = block[6 * 8 + col];
-    let s7 = block[7 * 8 + col];
+    let s0 = block[0 * 8 + col] as i64;
+    let s1 = block[1 * 8 + col] as i64;
+    let s2 = block[2 * 8 + col] as i64;
+    let s3 = block[3 * 8 + col] as i64;
+    let s4 = block[4 * 8 + col] as i64;
+    let s5 = block[5 * 8 + col] as i64;
+    let s6 = block[6 * 8 + col] as i64;
+    let s7 = block[7 * 8 + col] as i64;
+
+    let fix_0_541 = FIX_0_541 as i64;
+    let fix_0_765 = FIX_0_765 as i64;
+    let fix_1_847 = FIX_1_847 as i64;
+    let fix_1_175 = FIX_1_175 as i64;
+    let fix_0_298 = FIX_0_298 as i64;
+    let fix_2_053 = FIX_2_053 as i64;
+    let fix_3_072 = FIX_3_072 as i64;
+    let fix_1_501 = FIX_1_501 as i64;
+    let fix_0_899 = FIX_0_899 as i64;
+    let fix_2_562 = FIX_2_562 as i64;
+    let fix_1_961 = FIX_1_961 as i64;
+    let fix_0_390 = FIX_0_390 as i64;
+    let half = IDCT_HALF as i64;
+    let bits = IDCT_BITS as i64;
 
     // Check for all-zero AC (common shortcut)
     if s1 == 0 && s2 == 0 && s3 == 0 && s4 == 0
         && s5 == 0 && s6 == 0 && s7 == 0
     {
-        // Descale: row pass left IDCT_BITS-2 of extra precision,
-        // column pass needs to remove those plus the row prescale.
-        // Total shift: IDCT_BITS + IDCT_BITS - 2 + 3 = 2*IDCT_BITS + 1
-        let dc = (s0 + (1 << (IDCT_BITS + 1))) >> (IDCT_BITS + 2);
+        let dc = ((s0 + (1 << (bits + 1))) >> (bits + 2)) as i32;
         block[0 * 8 + col] = dc;
         block[1 * 8 + col] = dc;
         block[2 * 8 + col] = dc;
@@ -987,18 +1018,16 @@ fn idct_1d_col(block: &mut [i32; 64], col: usize) {
     }
 
     // Even part
-    let p2 = s2;
-    let p6 = s6;
-    let t2 = p2 * FIX_0_541 + p6 * (FIX_0_541 - FIX_1_847);
-    let t3 = p2 * (FIX_0_541 + FIX_0_765) + p6 * FIX_0_541;
+    let t2 = s2 * fix_0_541 + s6 * (fix_0_541 - fix_1_847);
+    let t3 = s2 * (fix_0_541 + fix_0_765) + s6 * fix_0_541;
 
-    let t0 = (s0 + s4) << IDCT_BITS;
-    let t1 = (s0 - s4) << IDCT_BITS;
+    let t0 = (s0 + s4) << bits;
+    let t1 = (s0 - s4) << bits;
 
-    let e0 = t0 + t3 + IDCT_HALF;
-    let e3 = t0 - t3 + IDCT_HALF;
-    let e1 = t1 + t2 + IDCT_HALF;
-    let e2 = t1 - t2 + IDCT_HALF;
+    let e0 = t0 + t3 + half;
+    let e3 = t0 - t3 + half;
+    let e1 = t1 + t2 + half;
+    let e2 = t1 - t2 + half;
 
     // Odd part
     let mut t0 = s7;
@@ -1010,17 +1039,17 @@ fn idct_1d_col(block: &mut [i32; 64], col: usize) {
     let z2 = t1 + t2;
     let z3 = t0 + t2;
     let z4 = t1 + t3;
-    let z5 = (z3 + z4) * FIX_1_175;
+    let z5 = (z3 + z4) * fix_1_175;
 
-    t0 = t0 * FIX_0_298;
-    t1 = t1 * FIX_2_053;
-    t2 = t2 * FIX_3_072;
-    t3 = t3 * FIX_1_501;
+    t0 = t0 * fix_0_298;
+    t1 = t1 * fix_2_053;
+    t2 = t2 * fix_3_072;
+    t3 = t3 * fix_1_501;
 
-    let z1 = z1 * -FIX_0_899;
-    let z2 = z2 * -FIX_2_562;
-    let z3 = z3 * -FIX_1_961 + z5;
-    let z4 = z4 * -FIX_0_390 + z5;
+    let z1 = z1 * -fix_0_899;
+    let z2 = z2 * -fix_2_562;
+    let z3 = z3 * -fix_1_961 + z5;
+    let z4 = z4 * -fix_0_390 + z5;
 
     t0 = t0 + z1 + z3;
     t1 = t1 + z2 + z4;
@@ -1028,14 +1057,13 @@ fn idct_1d_col(block: &mut [i32; 64], col: usize) {
     t3 = t3 + z1 + z4;
 
     // Final butterfly and descale
-    // The combined descale from row + column pass
-    let shift = IDCT_BITS + 2;
-    block[0 * 8 + col] = (e0 + t3) >> shift;
-    block[7 * 8 + col] = (e0 - t3) >> shift;
-    block[1 * 8 + col] = (e1 + t2) >> shift;
-    block[6 * 8 + col] = (e1 - t2) >> shift;
-    block[2 * 8 + col] = (e2 + t1) >> shift;
-    block[5 * 8 + col] = (e2 - t1) >> shift;
-    block[3 * 8 + col] = (e3 + t0) >> shift;
-    block[4 * 8 + col] = (e3 - t0) >> shift;
+    let shift = bits + 2;
+    block[0 * 8 + col] = ((e0 + t3) >> shift) as i32;
+    block[7 * 8 + col] = ((e0 - t3) >> shift) as i32;
+    block[1 * 8 + col] = ((e1 + t2) >> shift) as i32;
+    block[6 * 8 + col] = ((e1 - t2) >> shift) as i32;
+    block[2 * 8 + col] = ((e2 + t1) >> shift) as i32;
+    block[5 * 8 + col] = ((e2 - t1) >> shift) as i32;
+    block[3 * 8 + col] = ((e3 + t0) >> shift) as i32;
+    block[4 * 8 + col] = ((e3 - t0) >> shift) as i32;
 }

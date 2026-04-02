@@ -9,6 +9,7 @@ libfont_client = { path = "../../libs/libfont_client", features = ["host"] }
 libfont = { path = "../../libs/libfont", features = ["host"], default-features = false }
 libanyui_client = { path = "../../libs/libanyui_client", features = ["host"] }
 anyos_std = { path = "../../libs/stdlib", features = ["host"] }
+libjs = { path = "../../libs/libjs", features = ["host"] }
 
 # Host-native dependencies
 minifb = "0.28"

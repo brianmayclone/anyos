@@ -134,6 +134,11 @@ pub struct FormControl {
     pub kind: FormFieldKind,
     pub name: String,
     seen: bool,
+    /// Document-space position and size (for host-mode hit-testing).
+    pub doc_x: i32,
+    pub doc_y: i32,
+    pub doc_w: i32,
+    pub doc_h: i32,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -144,7 +149,7 @@ pub struct FormControl {
 struct DrawCmd {
     /// Absolute document X.
     x: i32,
-    /// Absolute document Y (sort key).
+    /// Absolute document Y.
     y: i32,
     /// Width of the drawn element.
     w: i32,
@@ -155,8 +160,6 @@ struct DrawCmd {
     /// Optional clip rect (from parent with overflow:hidden).
     /// (clip_x, clip_y, clip_w, clip_h) — commands are clipped to this rect.
     clip: Option<(i32, i32, i32, i32)>,
-    /// Z-index for stacking order (higher = on top).
-    z_index: i32,
 }
 
 enum DrawKind {
@@ -172,35 +175,31 @@ enum DrawKind {
     Image { src: String, object_fit: crate::style::ObjectFit },
 }
 
-/// A display list sorted by (z_index, y) built from the layout tree.
+/// A flat display list built from the layout tree in correct paint order.
 ///
-/// Replacing the recursive `walk_pixels` tree walk with a flat sorted list
-/// allows O(log n + k) tile rasterization (binary search + k visible commands)
-/// instead of O(n) per tile.
+/// Commands are emitted by walking the tree in CSS2 Appendix E stacking
+/// order (negative z-index stacking contexts first, then in-flow content,
+/// then positive z-index stacking contexts).  The resulting command list
+/// is already in back-to-front paint order — no post-hoc sort needed.
 pub(crate) struct DisplayList {
     cmds: Vec<DrawCmd>,
     /// Current clip rect during flatten (None = no clipping).
     clip_stack: Vec<(i32, i32, i32, i32)>,
-    /// Current z-index during flatten.
-    current_z: i32,
     /// Maximum command height seen — used as search margin for binary search.
     max_h: i32,
 }
 
 impl DisplayList {
     pub fn new() -> Self {
-        Self { cmds: Vec::new(), max_h: 0, clip_stack: Vec::new(), current_z: 0 }
+        Self { cmds: Vec::new(), max_h: 0, clip_stack: Vec::new() }
     }
 
-    /// Build the display list from a layout tree.  Walks the tree once,
-    /// emitting DrawCmds for every visible element, then sorts by (z_index, y).
+    /// Build the display list from a layout tree.  Walks the tree once
+    /// in CSS2 Appendix E stacking order, emitting DrawCmds back-to-front.
+    /// The root element always forms the initial stacking context.
     pub fn build(root: &LayoutBox) -> Self {
-        let mut dl = DisplayList { cmds: Vec::new(), max_h: 0, clip_stack: Vec::new(), current_z: 0 };
+        let mut dl = DisplayList { cmds: Vec::new(), max_h: 0, clip_stack: Vec::new() };
         dl.flatten(root, 0, 0);
-        // Primary sort by z-index, secondary by Y for correct stacking.
-        dl.cmds.sort_unstable_by(|a, b| {
-            a.z_index.cmp(&b.z_index).then(a.y.cmp(&b.y))
-        });
         dl
     }
 
@@ -208,11 +207,6 @@ impl DisplayList {
     pub fn clear(&mut self) {
         self.cmds.clear();
         self.max_h = 0;
-    }
-
-    /// Find the first command index whose Y >= `y_min` using binary search.
-    fn search_start(&self, y_min: i32) -> usize {
-        self.cmds.partition_point(|c| c.y < y_min)
     }
 
     /// Rasterize all commands overlapping `[tile_y_start, tile_y_end)` into `buf`.
@@ -225,16 +219,11 @@ impl DisplayList {
         tile_y_start: i32,
         tile_y_end: i32,
     ) {
-        // NOTE: The display list is sorted by (z_index, y), not purely by Y.
-        // Because Y can reset at z-index boundaries, we must scan from the start.
-        // TODO: For better perf, split into per-z-index sublists with binary search.
-        let start = 0;
-
-        for i in start..self.cmds.len() {
+        // Commands are in correct paint order (back-to-front) from the
+        // stacking-context-aware tree walk.  Scan linearly.
+        for i in 0..self.cmds.len() {
             let cmd = &self.cmds[i];
             // Skip commands that don't overlap the tile vertically.
-            // NOTE: cannot `break` here because the display list is sorted by
-            // (z_index, y) — Y can decrease at z-index boundaries.
             if cmd.y >= tile_y_end || cmd.y + cmd.h <= tile_y_start {
                 continue;
             }
@@ -291,6 +280,8 @@ impl DisplayList {
     }
 
     /// Recursively flatten the layout tree into draw commands.
+    /// Children are processed in CSS2 Appendix E stacking order when the
+    /// parent creates a stacking context.
     fn flatten(&mut self, bx: &LayoutBox, offset_x: i32, offset_y: i32) {
         if bx.visibility_hidden {
             return;
@@ -301,12 +292,6 @@ impl DisplayList {
         // rasterizer will clamp the Y at render time based on scroll offset.
         // For the display list, we store the natural position (same as static).
         let abs_y = if bx.is_fixed { bx.y } else { offset_y + bx.y };
-
-        // Set z-index for this stacking context.
-        let prev_z = self.current_z;
-        if bx.z_index != 0 {
-            self.current_z = bx.z_index;
-        }
 
         // Check if we have border-radius.
         let has_radius = bx.border_top_left_radius > 0 || bx.border_top_right_radius > 0
@@ -417,8 +402,21 @@ impl DisplayList {
         if let Some(ref marker) = bx.list_marker {
             let font_size = bx.font_size.max(1) as u16;
             let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
-            self.push(abs_x - 20, abs_y, 20, bx.height,
-                DrawKind::Text { color, font_id: 0, font_size, text: marker.clone() });
+            if bx.list_marker_inside {
+                // inside (CSS list-style-position: inside):
+                // block.rs reserved 20px inside the content area by adding 20 to
+                // padding.left, so inline content starts 20px further right.
+                // Draw the marker at the start of the ORIGINAL content area:
+                //   abs_x + border + padding.left - 20
+                let border = bx.border_width;
+                let marker_x = abs_x + border + bx.padding.left - 20;
+                self.push(marker_x, abs_y, 20, bx.height,
+                    DrawKind::Text { color, font_id: 0, font_size, text: marker.clone() });
+            } else {
+                // outside (default): marker hangs 20px to the left of abs_x.
+                self.push(abs_x - 20, abs_y, 20, bx.height,
+                    DrawKind::Text { color, font_id: 0, font_size, text: marker.clone() });
+            }
         }
 
         // Text fragment.
@@ -473,10 +471,22 @@ impl DisplayList {
             self.push(abs_x, abs_y, dw, dh, DrawKind::Image { src: src.clone(), object_fit: bx.object_fit });
         }
 
-        // Submit/button pixel drawing.
+        // Form control pixel drawing.
         if let Some(kind) = bx.form_field {
-            if matches!(kind, FormFieldKind::Submit | FormFieldKind::ButtonEl) {
-                self.emit_submit(abs_x, abs_y, bx);
+            match kind {
+                FormFieldKind::Submit | FormFieldKind::ButtonEl => {
+                    self.emit_submit(abs_x, abs_y, bx);
+                }
+                FormFieldKind::TextInput | FormFieldKind::Password => {
+                    self.emit_text_input(abs_x, abs_y, bx);
+                }
+                FormFieldKind::Checkbox => {
+                    self.emit_checkbox(abs_x, abs_y, bx);
+                }
+                FormFieldKind::Radio => {
+                    self.emit_radio(abs_x, abs_y, bx);
+                }
+                _ => {}
             }
         }
 
@@ -522,17 +532,65 @@ impl DisplayList {
             false
         };
 
-        for child in &bx.children {
-            let (cx, cy) = if bx.is_fixed { (bx.x, bx.y) } else { (abs_x, abs_y) };
-            self.flatten(child, cx, cy);
+        // Process children in stacking order per CSS2 Appendix E.
+        // We always partition children that create stacking contexts, even if
+        // the current element does not itself create one.  Per spec, positioned
+        // children with explicit z-index participate in the nearest ancestor
+        // stacking context.  Always-partitioning propagates that through
+        // intermediate non-SC boxes (e.g. <body>), so top-level positioned
+        // elements are correctly sorted by z-index even when the root <html>
+        // element has no explicit stacking context properties.
+        let (cx, cy) = if bx.is_fixed { (bx.x, bx.y) } else { (abs_x, abs_y) };
+
+        // Check if any children create stacking contexts at all.
+        let has_sc_children = bx.children.iter().any(|c| c.creates_stacking_context);
+
+        if has_sc_children {
+            // Partition children into three groups:
+            // 1. Child stacking contexts with negative z-index (sorted ascending)
+            // 2. Non-stacking-context children in document order
+            // 3. Child stacking contexts with z-index >= 0 (sorted ascending)
+            let mut neg: Vec<(i32, usize)> = Vec::new();
+            let mut pos: Vec<(i32, usize)> = Vec::new();
+
+            for (i, child) in bx.children.iter().enumerate() {
+                if child.creates_stacking_context {
+                    if child.z_index < 0 {
+                        neg.push((child.z_index, i));
+                    } else {
+                        pos.push((child.z_index, i));
+                    }
+                }
+            }
+
+            // Negative z-index stacking contexts (most negative first)
+            neg.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+            for &(_, idx) in &neg {
+                self.flatten(&bx.children[idx], cx, cy);
+            }
+
+            // Non-stacking-context children in document order
+            for child in &bx.children {
+                if !child.creates_stacking_context {
+                    self.flatten(child, cx, cy);
+                }
+            }
+
+            // Non-negative z-index stacking contexts (ascending)
+            pos.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+            for &(_, idx) in &pos {
+                self.flatten(&bx.children[idx], cx, cy);
+            }
+        } else {
+            // No children create stacking contexts — document order.
+            for child in &bx.children {
+                self.flatten(child, cx, cy);
+            }
         }
 
         if pushed_clip {
             self.clip_stack.pop();
         }
-
-        // Restore previous z-index.
-        self.current_z = prev_z;
     }
 
     /// Emit a border edge with the given style (solid/dashed/dotted).
@@ -765,12 +823,67 @@ impl DisplayList {
             DrawKind::Text { color: text_color, font_id: 0, font_size, text: label_text });
     }
 
+    /// Draw a text input / search / password field as a simple rectangle with border.
+    fn emit_text_input(&mut self, x: i32, y: i32, bx: &LayoutBox) {
+        let bg = if bx.bg_color != 0 { bx.bg_color } else { 0xFFFFFFFF };
+        let border_color = 0xFF767676;
+        // Background fill.
+        self.push(x, y, bx.width, bx.height, DrawKind::Rect { color: bg });
+        // 1px border.
+        self.push(x, y, bx.width, 1, DrawKind::Rect { color: border_color });
+        self.push(x, y + bx.height - 1, bx.width, 1, DrawKind::Rect { color: border_color });
+        self.push(x, y, 1, bx.height, DrawKind::Rect { color: border_color });
+        self.push(x + bx.width - 1, y, 1, bx.height, DrawKind::Rect { color: border_color });
+        // Show placeholder or value text.
+        let text = if let Some(ref v) = bx.form_value {
+            if !v.is_empty() { Some((v.clone(), if bx.color != 0 { bx.color } else { 0xFF000000 })) }
+            else if let Some(ref ph) = bx.form_placeholder { Some((ph.clone(), 0xFF999999)) }
+            else { None }
+        } else if let Some(ref ph) = bx.form_placeholder {
+            Some((ph.clone(), 0xFF999999))
+        } else { None };
+        if let Some((txt, color)) = text {
+            let font_size = bx.font_size.max(1) as u16;
+            let tx = x + 4;
+            let ty = y + (bx.height - font_size as i32) / 2;
+            self.push(tx, ty, bx.width - 8, font_size as i32,
+                DrawKind::Text { color, font_id: 0, font_size, text: txt });
+        }
+    }
+
+    /// Draw a checkbox as a small square box.
+    fn emit_checkbox(&mut self, x: i32, y: i32, bx: &LayoutBox) {
+        let sz = bx.height.min(bx.width).min(16);
+        let cx = x + (bx.width - sz) / 2;
+        let cy = y + (bx.height - sz) / 2;
+        self.push(cx, cy, sz, sz, DrawKind::Rect { color: 0xFFFFFFFF });
+        // Border.
+        self.push(cx, cy, sz, 1, DrawKind::Rect { color: 0xFF767676 });
+        self.push(cx, cy + sz - 1, sz, 1, DrawKind::Rect { color: 0xFF767676 });
+        self.push(cx, cy, 1, sz, DrawKind::Rect { color: 0xFF767676 });
+        self.push(cx + sz - 1, cy, 1, sz, DrawKind::Rect { color: 0xFF767676 });
+    }
+
+    /// Draw a radio button as a rounded rectangle (circle approximation).
+    fn emit_radio(&mut self, x: i32, y: i32, bx: &LayoutBox) {
+        let sz = bx.height.min(bx.width).min(16);
+        let cx = x + (bx.width - sz) / 2;
+        let cy = y + (bx.height - sz) / 2;
+        let r = sz / 2;
+        // Simple circle: rounded rect with radius = half size.
+        self.push(cx, cy, sz, sz, DrawKind::RoundedRect { color: 0xFFFFFFFF, radii: [r, r, r, r] });
+        // Border ring.
+        self.push(cx + 1, cy, sz - 2, 1, DrawKind::Rect { color: 0xFF767676 });
+        self.push(cx + 1, cy + sz - 1, sz - 2, 1, DrawKind::Rect { color: 0xFF767676 });
+        self.push(cx, cy + 1, 1, sz - 2, DrawKind::Rect { color: 0xFF767676 });
+        self.push(cx + sz - 1, cy + 1, 1, sz - 2, DrawKind::Rect { color: 0xFF767676 });
+    }
+
     #[inline]
     fn push(&mut self, x: i32, y: i32, w: i32, h: i32, kind: DrawKind) {
         if h > self.max_h { self.max_h = h; }
         let clip = self.clip_stack.last().copied();
-        let z_index = self.current_z;
-        self.cmds.push(DrawCmd { x, y, w, h, kind, clip, z_index });
+        self.cmds.push(DrawCmd { x, y, w, h, kind, clip });
     }
 }
 
@@ -1040,7 +1153,15 @@ impl Renderer {
             self.create_tile_canvas(row, w, doc_h, parent);
         }
 
-        // 6. GC unseen form controls.
+        // 6. Bring form controls in front of tile canvases so they are
+        //    visible and interactive (canvases were just added on top).
+        for fc in &self.form_controls {
+            if fc.control_id != 0 && fc.seen {
+                ui::Control::from_id(fc.control_id).bring_to_front();
+            }
+        }
+
+        // 7. GC unseen form controls.
         self.form_controls.retain(|fc| {
             if !fc.seen && fc.control_id != 0 {
                 ui::Control::from_id(fc.control_id).remove();
@@ -1105,6 +1226,15 @@ impl Renderer {
             }
 
             self.create_tile_canvas(row, w, doc_h, parent);
+        }
+
+        // Bring form controls in front of newly added tile canvases.
+        if rasterized > 0 {
+            for fc in &self.form_controls {
+                if fc.control_id != 0 && fc.seen {
+                    ui::Control::from_id(fc.control_id).bring_to_front();
+                }
+            }
         }
 
         // Evict distant tile canvases.
@@ -1235,29 +1365,33 @@ impl Renderer {
         x: i32,
         y: i32,
         parent: &ui::View,
-        _submit_cb: Option<ui::Callback>,
-        _submit_cb_ud: u64,
+        submit_cb: Option<ui::Callback>,
+        submit_cb_ud: u64,
     ) {
         let node_id = bx.node_id.unwrap_or(0);
+
+        let w = bx.width;
+        let h = bx.height;
 
         match kind {
             FormFieldKind::TextInput | FormFieldKind::Password => {
                 if let Some(fc) = self.form_controls.iter_mut().find(|fc| fc.node_id == node_id && fc.kind == kind) {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     ctrl.set_position(x, y);
-                    ctrl.set_size(bx.width as u32, bx.height as u32);
+                    ctrl.set_size(w as u32, h as u32);
                     let bg = if bx.bg_color != 0 { bx.bg_color } else { 0xFFFFFFFF };
                     let fg = if bx.color != 0 { bx.color } else { 0xFF000000 };
                     ctrl.set_color(bg);
                     ctrl.set_text_color(fg);
                     fc.seen = true;
+                    fc.doc_x = x; fc.doc_y = y; fc.doc_w = w; fc.doc_h = h;
                 } else {
                     let tf = ui::TextField::new();
                     if kind == FormFieldKind::Password {
                         tf.set_password_mode(true);
                     }
                     tf.set_position(x, y);
-                    tf.set_size(bx.width as u32, bx.height as u32);
+                    tf.set_size(w as u32, h as u32);
                     let bg = if bx.bg_color != 0 { bx.bg_color } else { 0xFFFFFFFF };
                     let fg = if bx.color != 0 { bx.color } else { 0xFF000000 };
                     tf.set_color(bg);
@@ -1268,18 +1402,23 @@ impl Renderer {
                     if let Some(ref val) = bx.form_value {
                         tf.set_text(val);
                     }
+                    // Register Enter key callback for form submission.
+                    if let Some(cb) = submit_cb {
+                        tf.on_submit_raw(cb, submit_cb_ud);
+                    }
                     parent.add(&tf);
                     let id = tf.id();
                     self.form_controls.push(FormControl {
                         control_id: id, node_id, kind,
                         name: String::new(), seen: true,
+                        doc_x: x, doc_y: y, doc_w: w, doc_h: h,
                     });
                 }
             }
 
             FormFieldKind::Submit | FormFieldKind::ButtonEl => {
                 self.hit_regions.push(HitRegion {
-                    x, y, w: bx.width, h: bx.height,
+                    x, y, w, h,
                     kind: HitKind::Submit(node_id),
                 });
             }
@@ -1288,17 +1427,19 @@ impl Renderer {
                 if let Some(fc) = self.form_controls.iter_mut().find(|fc| fc.node_id == node_id && fc.kind == kind) {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     ctrl.set_position(x, y);
-                    ctrl.set_size(bx.width as u32, bx.height as u32);
+                    ctrl.set_size(w as u32, h as u32);
                     fc.seen = true;
+                    fc.doc_x = x; fc.doc_y = y; fc.doc_w = w; fc.doc_h = h;
                 } else {
                     let cb = ui::Checkbox::new("");
                     cb.set_position(x, y);
-                    cb.set_size(bx.width as u32, bx.height as u32);
+                    cb.set_size(w as u32, h as u32);
                     parent.add(&cb);
                     let id = cb.id();
                     self.form_controls.push(FormControl {
                         control_id: id, node_id, kind,
                         name: String::new(), seen: true,
+                        doc_x: x, doc_y: y, doc_w: w, doc_h: h,
                     });
                 }
             }
@@ -1307,17 +1448,19 @@ impl Renderer {
                 if let Some(fc) = self.form_controls.iter_mut().find(|fc| fc.node_id == node_id && fc.kind == kind) {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     ctrl.set_position(x, y);
-                    ctrl.set_size(bx.width as u32, bx.height as u32);
+                    ctrl.set_size(w as u32, h as u32);
                     fc.seen = true;
+                    fc.doc_x = x; fc.doc_y = y; fc.doc_w = w; fc.doc_h = h;
                 } else {
                     let rb = ui::RadioButton::new("");
                     rb.set_position(x, y);
-                    rb.set_size(bx.width as u32, bx.height as u32);
+                    rb.set_size(w as u32, h as u32);
                     parent.add(&rb);
                     let id = rb.id();
                     self.form_controls.push(FormControl {
                         control_id: id, node_id, kind,
                         name: String::new(), seen: true,
+                        doc_x: x, doc_y: y, doc_w: w, doc_h: h,
                     });
                 }
             }
@@ -1326,12 +1469,13 @@ impl Renderer {
                 if let Some(fc) = self.form_controls.iter_mut().find(|fc| fc.node_id == node_id && fc.kind == kind) {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     ctrl.set_position(x, y);
-                    ctrl.set_size(bx.width as u32, bx.height as u32);
+                    ctrl.set_size(w as u32, h as u32);
                     fc.seen = true;
+                    fc.doc_x = x; fc.doc_y = y; fc.doc_w = w; fc.doc_h = h;
                 } else {
                     let ta = ui::TextArea::new();
                     ta.set_position(x, y);
-                    ta.set_size(bx.width as u32, bx.height as u32);
+                    ta.set_size(w as u32, h as u32);
                     ta.set_color(0xFFFFFFFF);
                     ta.set_text_color(0xFF000000);
                     parent.add(&ta);
@@ -1339,6 +1483,7 @@ impl Renderer {
                     self.form_controls.push(FormControl {
                         control_id: id, node_id, kind,
                         name: String::new(), seen: true,
+                        doc_x: x, doc_y: y, doc_w: w, doc_h: h,
                     });
                 }
             }
@@ -1348,6 +1493,7 @@ impl Renderer {
                     self.form_controls.push(FormControl {
                         control_id: 0, node_id, kind,
                         name: String::new(), seen: true,
+                        doc_x: x, doc_y: y, doc_w: w, doc_h: h,
                     });
                 } else {
                     if let Some(fc) = self.form_controls.iter_mut().find(|fc| fc.node_id == node_id && fc.kind == kind) {
@@ -1356,6 +1502,24 @@ impl Renderer {
                 }
             }
         }
+    }
+
+    /// Hit-test for a text/textarea form control at document coordinates.
+    /// Returns the control_id of the first matching TextInput/Password/Textarea control.
+    pub fn hit_test_form_at(&self, x: i32, doc_y: i32) -> Option<u32> {
+        for fc in &self.form_controls {
+            if fc.control_id == 0 { continue; }
+            match fc.kind {
+                FormFieldKind::TextInput | FormFieldKind::Password | FormFieldKind::Textarea => {}
+                _ => continue,
+            }
+            if x >= fc.doc_x && x < fc.doc_x + fc.doc_w
+                && doc_y >= fc.doc_y && doc_y < fc.doc_y + fc.doc_h
+            {
+                return Some(fc.control_id);
+            }
+        }
+        None
     }
 }
 
