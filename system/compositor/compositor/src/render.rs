@@ -137,21 +137,57 @@ pub fn render_thread_entry() {
                 // reflected in the same frame — no extra lock round-trip needed.
                 let has_animations = desktop.tick_animations();
                 desktop.update_clock();
-                desktop.process_deferred_wallpaper();
-                let had_damage = desktop.compose();
+                // NOTE: process_deferred_wallpaper() is intentionally NOT called here.
+                // Wallpaper loading (file I/O + libimage decode) must not run under the
+                // render lock — the management thread uses acquire_lock() (a spinlock) and
+                // would busy-wait at 100% CPU for the entire duration of the wallpaper load,
+                // stalling all input and IPC processing.  The management thread handles it
+                // instead (see management_loop in main.rs).
 
-                // Emit frame ACKs immediately after VSync (compose + flush_gpu).
-                // This is the VSync callback — apps learn their frame is on screen.
+                // Composite frame.  GPU commands are sfenced but NOT submitted yet —
+                // compose_deferred() leaves them in compositor.gpu_cmds so we can drain
+                // them and submit outside the lock (see below).
+                let had_damage = desktop.compose_deferred();
+
+                // ── Drain under lock ────────────────────────────────────────────────
+                // Extract GPU commands and frame ACKs while we still hold the lock.
+                // Both must be drained atomically so the management thread cannot
+                // interleave partial state between the drain and the lock release.
                 let channel = unsafe { COMPOSITOR_CHANNEL };
-                if channel != 0 && !desktop.frame_ack_queue.is_empty() {
-                    for &(sub_id, window_id) in &desktop.frame_ack_queue {
-                        anyos_std::ipc::evt_chan_emit_to(channel, sub_id, &[
-                            crate::ipc_protocol::EVT_FRAME_ACK, window_id, 0, 0, 0,
-                        ]);
-                    }
+
+                // GPU commands: stack-allocate a small inline buffer for the common case
+                // (≤32 commands per frame).  Spill to a heap Vec only when needed.
+                let gpu_cmds = desktop.compositor.drain_gpu_cmds();
+
+                // Frame ACKs: drain into a fixed-size stack buffer — no heap alloc.
+                // 64 slots is far more than any realistic frame will produce.
+                let mut ack_buf = [(0u32, 0u32); 64];
+                let ack_count = if channel != 0 {
+                    let n = desktop.frame_ack_queue.len().min(ack_buf.len());
+                    ack_buf[..n].copy_from_slice(&desktop.frame_ack_queue[..n]);
                     desktop.frame_ack_queue.clear();
-                }
+                    n
+                } else {
+                    desktop.frame_ack_queue.clear();
+                    0
+                };
+
                 release_lock();
+
+                // ── Submit outside lock ─────────────────────────────────────────────
+                // ipc::gpu_command() may block if the VirtIO GPU ring is full.
+                // evt_chan_emit_to() may block if an app's event queue is full (slow app).
+                // Both calls are now outside the lock: the management thread is free to
+                // process input and IPC commands while we wait on the kernel.
+                crate::compositor::Compositor::submit_cmds(gpu_cmds);
+
+                // VSync callback — notify apps that their frame is on screen.
+                for i in 0..ack_count {
+                    let (sub_id, window_id) = ack_buf[i];
+                    anyos_std::ipc::evt_chan_emit_to(channel, sub_id, &[
+                        crate::ipc_protocol::EVT_FRAME_ACK, window_id, 0, 0, 0,
+                    ]);
+                }
 
                 if has_animations { stat_animations += 1; }
                 if had_damage { stat_damage += 1; } else { stat_no_damage += 1; }

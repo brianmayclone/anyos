@@ -858,12 +858,34 @@ impl Desktop {
 
     /// Run the full compose cycle (damage → composite → cursor → flush → collect ACKs).
     /// Returns `true` if actual damage was composited (pixels changed on screen).
+    ///
+    /// This variant submits GPU commands immediately (blocking if the GPU ring is full).
+    /// Use for the initial boot compose and any non-render-thread callers.
+    /// The render thread uses `compose_deferred()` to avoid holding the lock during submission.
     pub fn compose(&mut self) -> bool {
+        let had_damage = self.compose_deferred();
+        // Flush GPU commands that compose_deferred() left queued (sfence was already issued).
+        // This covers all cursor modes and ensures commands reach the GPU before returning.
+        self.compositor.flush_gpu();
+        had_damage
+    }
+
+    /// Compose cycle without final GPU command submission.
+    ///
+    /// Same as `compose()` but leaves pending GPU commands in `compositor.gpu_cmds`
+    /// (sfence has already been issued by the compositor and cursor paths).
+    /// The caller must:
+    ///   1. Call `compositor.drain_gpu_cmds()` to extract the command batch (under lock).
+    ///   2. Release the compositor lock.
+    ///   3. Call `Compositor::submit_cmds(cmds)` outside the lock.
+    ///
+    /// This pattern prevents `ipc::gpu_command()` from ever blocking while the lock
+    /// is held, which would cause the management thread to spin (busy-wait) and
+    /// stall all input + IPC processing for the duration of the GPU round-trip.
+    pub fn compose_deferred(&mut self) -> bool {
         let had_damage = self.compositor.compose();
 
-        if self.compositor.has_hw_cursor() {
-            self.compositor.flush_gpu();
-        } else {
+        if !self.compositor.has_hw_cursor() {
             // Only redraw + flush SW cursor if something changed:
             // cursor moved, or compositing updated the back buffer
             let cursor_moved = self.mouse_x != self.prev_cursor_x
@@ -880,12 +902,16 @@ impl Desktop {
                 .clip_to_screen(self.screen_width, self.screen_height);
                 if !rect.is_empty() {
                     self.compositor.flush_cursor_region(&rect);
+                    // flush_cursor_region() may call flush_gpu() internally for non-double-buffer
+                    // SW-cursor mode.  That is fine: an empty gpu_cmds at the outer flush_gpu()
+                    // call is a no-op, and a non-blocking call with a tiny command set is safe.
                 }
             }
         }
 
         // Collect frame ACKs for windows that presented content in this frame.
-        // The render thread emits these via evt_chan_emit_to after releasing the lock.
+        // The render thread emits these via evt_chan_emit_to AFTER releasing the lock
+        // (see render.rs) so that a full event-channel queue cannot block the render thread.
         if had_damage {
             for win in &mut self.windows {
                 if win.needs_frame_ack && win.owner_tid != 0 {

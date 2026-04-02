@@ -164,7 +164,14 @@ impl Compositor {
             self.compositing_damage.clear();
         }
 
-        self.flush_gpu();
+        // Issue sfence for any VRAM writes done above.  The actual GPU command
+        // submission (ipc::gpu_command) is intentionally deferred: callers that
+        // hold the compositor lock must drain gpu_cmds and submit outside the
+        // lock (via Desktop::compose_deferred + Compositor::submit_cmds) so that
+        // a potentially-blocking kernel call never stalls the management thread.
+        // For callers that do not use the deferred pattern, Desktop::compose()
+        // calls flush_gpu() after this returns, which submits all queued commands.
+        self.prepare_flush();
         true
     }
 
@@ -264,7 +271,8 @@ impl Compositor {
         }
 
         self.compositing_damage.clear();
-        self.flush_gpu();
+        // Same deferred-flush pattern as compose(): sfence now, submit later outside lock.
+        self.prepare_flush();
     }
 
     /// Composite all layers within a damage rect into the back buffer.

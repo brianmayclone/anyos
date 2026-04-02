@@ -405,12 +405,21 @@ fn management_loop(
         // Process input under lock (skip entirely if no events — avoids lock contention)
         if event_count > 0 {
             mgmt_input += 1;
-            acquire_lock();
-            let desktop = unsafe { desktop_ref() };
-            desktop.process_input(&events_buf, event_count);
-            desktop.damage_cursor();
-            desktop.compositor.flush_gpu();
-            release_lock();
+            // Cursor-move GPU commands are drained under lock and submitted outside.
+            // In practice they are tiny (1-2 commands) and ipc::gpu_command() is fast,
+            // but keeping the pattern consistent prevents any possible stall from holding
+            // the spinlock during a kernel call.
+            let cursor_cmds = {
+                acquire_lock();
+                let desktop = unsafe { desktop_ref() };
+                desktop.process_input(&events_buf, event_count);
+                desktop.damage_cursor();
+                desktop.compositor.prepare_flush();
+                let cmds = desktop.compositor.drain_gpu_cmds();
+                release_lock();
+                cmds
+            };
+            crate::compositor::Compositor::submit_cmds(cursor_cmds);
             signal_render();
         }
 
@@ -431,6 +440,40 @@ fn management_loop(
         // ~62.5 times/sec even when idle (both threads at 1-2% for zero work).
         if had_ipc || had_sys || had_mounts {
             signal_render();
+        }
+
+        // ── Deferred wallpaper reload ────────────────────────────────────────────
+        // Handled here (management thread) rather than the render thread.
+        //
+        // Why it must NOT be in the render thread:
+        //   process_deferred_wallpaper() does file I/O + libimage DLL decoding.
+        //   When the render thread holds the render lock during this work, the
+        //   management thread spins at 100% CPU on acquire_lock() (a pure spinlock)
+        //   for the entire duration — typically 100–500 ms per wallpaper.  During
+        //   that window all keyboard/mouse input and IPC commands are dropped, making
+        //   the system appear completely frozen.  Occasionally a libimage crash would
+        //   also kill the render thread entirely, leaving the display frozen forever.
+        //
+        // Why holding the lock here is acceptable:
+        //   The render thread uses try_lock() (non-blocking).  While the management
+        //   thread loads the wallpaper it simply skips frames — no spinning, no CPU
+        //   waste, no dropped input.  The visual hiccup (a few dropped frames while
+        //   the image decodes) is imperceptible to the user.
+        {
+            let wallpaper_pending = {
+                acquire_lock();
+                let desktop = unsafe { desktop_ref() };
+                let p = desktop.wallpaper_pending;
+                release_lock();
+                p
+            };
+            if wallpaper_pending {
+                acquire_lock();
+                let desktop = unsafe { desktop_ref() };
+                desktop.process_deferred_wallpaper();
+                release_lock();
+                signal_render();
+            }
         }
 
         // Drain window events under lock, then emit outside lock.

@@ -95,6 +95,42 @@ impl Compositor {
         }
     }
 
+    /// Step 1 of the deferred-flush pattern: issue sfence for any VRAM writes done so far.
+    ///
+    /// Call this under the compositor lock after all compositing work is complete
+    /// and before `drain_gpu_cmds()`. The sfence must happen while the lock is held
+    /// (while the compositor still owns the VRAM write-combining buffers).
+    pub fn prepare_flush(&mut self) {
+        if self.vram_dirty && !self.gmr_active {
+            #[cfg(target_arch = "x86_64")]
+            unsafe { core::arch::asm!("sfence", options(nostack, preserves_flags)); }
+            #[cfg(target_arch = "aarch64")]
+            unsafe { core::arch::asm!("dsb st", options(nostack, preserves_flags)); }
+            self.vram_dirty = false;
+        }
+    }
+
+    /// Step 2 of the deferred-flush pattern: extract all pending GPU commands.
+    ///
+    /// Call this under the compositor lock after `prepare_flush()`.
+    /// Returns the command batch; the queue is left empty.
+    /// Pass the returned batch to `Compositor::submit_cmds()` *outside* the lock.
+    pub fn drain_gpu_cmds(&mut self) -> alloc::vec::Vec<[u32; 9]> {
+        core::mem::take(&mut self.gpu_cmds)
+    }
+
+    /// Step 3 of the deferred-flush pattern: submit pre-extracted GPU commands.
+    ///
+    /// Call this *outside* the compositor lock. `ipc::gpu_command()` may block
+    /// briefly if the VirtIO GPU ring is full; keeping it outside the lock prevents
+    /// the management thread from spinning (busy-wait on `acquire_lock()`) during
+    /// that wait, which would waste 100% CPU and stall input processing.
+    pub fn submit_cmds(cmds: alloc::vec::Vec<[u32; 9]>) {
+        if !cmds.is_empty() {
+            ipc::gpu_command(&cmds);
+        }
+    }
+
     /// Flush a region from back buffer to the visible framebuffer (no offset).
     pub fn flush_region_pub(&mut self, rect: &Rect) {
         self.flush_region(rect, 0);
