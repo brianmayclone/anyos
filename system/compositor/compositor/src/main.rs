@@ -186,26 +186,21 @@ fn main() {
         desktop.set_menubar_visible(false);
         release_lock();
     } else {
-        println!("compositor: login not found, continuing as root");
+        // /System/login could not be spawned (binary missing or spawn limit hit).
+        // Do NOT spawn the dock here — the compositor is still running as root
+        // and no user has authenticated.  The management loop treats login_pending=false
+        // the same way as a login failure (login_failed stays false so the retried
+        // login path never fires, but dock_spawned stays false too — dock will never
+        // spawn, which is the correct behaviour when no login binary is available).
+        //
+        // If running in a root-only development environment without a login binary,
+        // the operator must set dock_spawned=true and spawn the dock manually via a
+        // config flag or a dedicated "no-auth" build of the compositor.
+        println!("compositor: WARNING — /System/login could not be spawned; waiting for login before activating desktop");
     }
 
     // Service TIDs to kill during logout (dock + autostart programs, NOT login services)
     let mut service_tids: Vec<u32> = Vec::new();
-
-    // Step 9b: If no login needed, spawn dock + conf immediately
-    if !login_pending {
-        acquire_lock();
-        let desktop = unsafe { desktop_ref() };
-        release_lock();
-
-        let dock_tid = process::spawn("/System/compositor/dock", "");
-        if dock_tid != u32::MAX {
-            service_tids.push(dock_tid);
-        }
-        println!("compositor: dock spawned");
-        service_tids.extend(config::launch_autostart());
-        dock_spawned = true;
-    }
 
     println!("compositor: entering main loop (multi-threaded)");
 
@@ -348,8 +343,14 @@ fn management_loop(
                             *login_tid = new_tid;
                             println!("compositor: login re-spawned (TID={})", new_tid);
                         } else {
+                            // Cannot re-spawn login — treat as a fatal login failure.
+                            // login_failed MUST be set here; without it the dock-spawn
+                            // condition (!login_pending && !dock_spawned && !login_failed)
+                            // would fire and spawn the dock without any user being
+                            // authenticated, running it in root context.
                             println!("compositor: FATAL — cannot re-spawn login");
                             *login_pending = false;
+                            login_failed = true;
                         }
                     }
                 } else {
@@ -757,7 +758,12 @@ fn handle_ipc_commands(
                     }
                     i += 1;
                 }
+                // Drain any GPU commands queued during IPC processing (e.g. CMD_FLUSH_DISPLAY).
+                // ipc::gpu_command() may block if the VirtIO GPU ring is full — must run
+                // outside the lock so the render thread is not stalled during submission.
+                let ipc_gpu_cmds = desktop.compositor.drain_gpu_cmds();
                 release_lock();
+                crate::compositor::Compositor::submit_cmds(ipc_gpu_cmds);
             }
         }
     }

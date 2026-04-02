@@ -370,20 +370,21 @@ impl Desktop {
                 // showing the host pointer.  A transparent cursor tricks the host
                 // into thinking a cursor is active while displaying nothing.
                 // NOTE: pixel data must be static — define_hw_cursor captures a
-                // raw pointer that is read later by flush_gpu().
+                // raw pointer that is read later when gpu_cmds are submitted.
                 static TRANSPARENT: [u32; 1] = [0x00000000];
                 self.compositor.define_hw_cursor(1, 1, 0, 0, &TRANSPARENT);
                 self.compositor.gpu_cmds.push([crate::compositor::gpu::GPU_CURSOR_SHOW, 1, 0, 0, 0, 0, 0, 0, 0]);
-                self.compositor.flush_gpu();
+                // Commands are drained by the caller (management thread) outside
+                // the lock via drain_gpu_cmds() + submit_cmds(). No flush here.
                 return;
             }
         }
         // Re-assert cursor position after shape change to ensure visibility.
         // Without this, some GPU backends (VirtIO, VMware SVGA) may briefly
         // hide or misplace the cursor during the shape transition.
+        // Commands are drained by the caller outside the lock — no flush here.
         self.compositor
             .move_hw_cursor(self.mouse_x, self.mouse_y);
-        self.compositor.flush_gpu();
     }
 
     /// Determine the correct cursor shape from a HitTest result.

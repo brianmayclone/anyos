@@ -595,14 +595,19 @@ impl Desktop {
                 }
             }
             proto::CMD_FLUSH_DISPLAY => {
-                // App has direct FB access and wants the GPU to refresh a region
+                // App has direct FB access and wants the GPU to refresh a region.
+                // queue_gpu_update() enqueues a GPU_UPDATE command.
+                // prepare_flush() issues sfence for any prior VRAM writes.
+                // The command is submitted outside the lock by the management
+                // thread via drain_gpu_cmds() + submit_cmds() — this prevents
+                // ipc::gpu_command() from blocking while the spinlock is held.
                 let x = cmd[1];
                 let y = cmd[2];
                 let w = cmd[3];
                 let h = cmd[4];
                 if w > 0 && h > 0 {
                     self.compositor.queue_gpu_update(x, y, w, h);
-                    self.compositor.flush_gpu();
+                    self.compositor.prepare_flush();
                 }
                 None
             }
