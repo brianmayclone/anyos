@@ -6,8 +6,9 @@
 
 **A 64-bit operating system built from scratch in Rust and Assembly**
 
-macOS-inspired desktop with window compositor, network stack, USB support,<br>
-audio playback, TrueType fonts, and an on-disk C compiler — all running bare-metal on x86_64.
+macOS-inspired desktop with window compositor, OpenGL ES 2.0 (hardware-accelerated via VirGL/SVGA3D),<br>
+full network stack, USB 3.0, 7 filesystems, audio, TrueType fonts, a built-in x86 VM,<br>
+and a self-hosted Rust compiler — all running bare-metal on x86_64.
 
 <br>
 
@@ -15,8 +16,8 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 ![NASM](https://img.shields.io/badge/NASM-Assembly-0066B8?style=flat-square)
 ![x86_64](https://img.shields.io/badge/Arch-x86__64-4B7BEC?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/License-MIT-2ecc71?style=flat-square)
-![Programs](https://img.shields.io/badge/Programs-150+-e67e22?style=flat-square)
-![Syscalls](https://img.shields.io/badge/Syscalls-184-9b59b6?style=flat-square)
+![Programs](https://img.shields.io/badge/Programs-177+-e67e22?style=flat-square)
+![Syscalls](https://img.shields.io/badge/Syscalls-232-9b59b6?style=flat-square)
 
 <br>
 
@@ -101,10 +102,10 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **SMP support** — multi-core (up to 16 CPUs) via LAPIC/IOAPIC with per-CPU idle threads and work stealing
 - **Per-process address spaces** with isolated PML4 page directories
 - **Ring 3 user mode** with dual syscall interface: `SYSCALL/SYSRET` (64-bit) and `INT 0x80` (32-bit compat)
-- **184 system calls** across 22 categories (process, file I/O, networking, IPC, display, audio, USB, permissions, signals, debugging, ...)
+- **232 system calls** across 22 categories (process, file I/O, networking, IPC, display, audio, USB, permissions, signals, debugging, hardware virtualization, ...)
 - **Physical + virtual memory manager** with kernel heap allocator
-- **exFAT filesystem** with long filename support, symlinks, mount points, chmod/chown
-- **Storage drivers**: ATA PIO, **AHCI** (SATA DMA), **NVMe** (PCIe), ATAPI (CD-ROM), LSI SCSI
+- **7 filesystems**: exFAT (primary, with symlinks, mount points, chmod/chown), FAT12/16/32, NTFS (read-only), ISO 9660 (Rock Ridge), OverlayFS, SMB/CIFS, devfs
+- **Storage drivers**: ATA PIO, **AHCI** (SATA DMA), **NVMe** (PCIe), ATAPI (CD-ROM), **SDHCI** (SD/SDHC/SDXC cards), LSI SCSI
 - **ELF loader** for user programs (ELF64 native + ELF32 compat)
 - **Loadable kernel drivers** (KDRV format) with PCI device matching and hot-loading from `.ddv` bundles
 - **FPU/SSE support** with lazy save/restore (CR0.TS flag) per context switch
@@ -113,12 +114,21 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 - **Security hardening**: NX-bit / DEP (EFER.NXE + per-segment ELF page flags), ASLR (stack + mmap randomization via RDRAND/TSC), up to 256 FDs per process with separated socket namespace
 - **User identity system** — UID/GID, user accounts, groups, authentication
 - **Runtime app permissions** — per-user capability grants with consent dialog on first launch, reviewable in Settings
+- **Thermal monitoring** — Intel/AMD CPU temperature sensors and LM75/TMP75 external sensors via SMBus
+- **I2C/SMBus support** — device detection, byte/word/block read/write for touchpads, sensors, and other I2C peripherals
 
 ### Graphics & UI
 
-- **VESA VBE** framebuffer (1024x768x32, runtime resolution switching)
+- **VESA VBE** framebuffer (1024x768x32, runtime resolution switching up to 1920x1080)
 - **Double-buffered compositor** with damage-based partial updates and blur effects
-- **GPU drivers**: Bochs VGA (page flipping), VMware SVGA II (2D acceleration, hardware cursor, 3D via SVGA3D), VirtualBox VGA, VirtIO GPU (2D + virgl 3D)
+- **7 GPU drivers** with automatic PCI detection:
+  - **Bochs VGA** (page flipping, VESA modes)
+  - **VMware SVGA II** (2D acceleration, hardware cursor, 3D via SVGA3D)
+  - **VirtualBox VGA** (VBoxVGA and VBoxSVGA auto-detection)
+  - **VirtIO GPU** (2D + virgl 3D acceleration via `VIRTIO_GPU_CMD_SUBMIT_3D`)
+  - **Intel HD/Iris/UHD/Xe** framebuffer (Gen 5+, reads pre-configured display pipe from UEFI GOP)
+  - **AMD Radeon** framebuffer (HD 5000+, RX 400/500, RX 5000–7000 Navi/RDNA)
+  - **NVIDIA GeForce** framebuffer (Kepler 600+ through Ada RTX 4000)
 - **macOS-inspired dark theme** with rounded windows, shadows, and alpha blending
 - **44 UI controls** via the anyui framework (buttons, text fields, code editor, tree view, data grid, toolbars, canvas, expander, flow/stack panels, autocomplete, etc.)
 - **14 shared libraries** — libimage, librender, libcompositor (DLIB format) + libanyui, libfont, libgl, libcorevm, libhttp, libdb, libzip, libsvg, libjs, libwebview, libm (.so format with ELF dynamic linking)
@@ -140,31 +150,49 @@ audio playback, TrueType fonts, and an on-disk C compiler — all running bare-m
 
 ### Networking
 
-- **Intel E1000** NIC driver (MMIO, DMA)
+- **5 NIC drivers** with automatic PCI detection:
+  - **Intel E1000** (82540EM/82545EM, MMIO, DMA)
+  - **Intel IGC** (I225/I226/I210/I211 Gigabit Ethernet)
+  - **Realtek RTL8125** (2.5 Gbps Ethernet, common on gaming boards)
+  - **Realtek RTL8168** (Gigabit Ethernet, most common consumer NIC)
+  - **VirtIO Net** (QEMU/KVM, transitional + modern)
+- **WiFi**: Realtek RTL8188EU USB WiFi adapter support
 - **Protocol stack**: Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS
 - **Loopback interface** (`lo` 127.0.0.1) with own-IP loopback routing
 - **TLS support** via BearSSL
 - **FTP server** (`ftpd`) with PASV/EPSV, user shares, anonymous access, MLSD/FEAT/SIZE/MDTM
 - **SSH server/client** (`sshd`/`ssh`/`scp`)
 - **HTTP server** (`httpd`)
-- Userspace utilities: `ping`, `ifconfig`, `arp`, `dhcp`, `dns`, `wget`, `ftp`, `curl`, `netstat`
+- **NTP time synchronization** (`ntp`/`ntpd`)
+- Userspace utilities: `ping`, `ifconfig`, `arp`, `dhcp`, `dns`, `wget`, `ftp`, `curl`, `netstat`, `wifi`
 
 ### USB
 
-- **UHCI** (USB 1.1) and **EHCI** (USB 2.0) host controller drivers
-- HID keyboard and mouse support
-- Mass storage (bulk-only transport)
+- **UHCI** (USB 1.1), **EHCI** (USB 2.0), and **xHCI** (USB 3.0) host controller drivers
+- HID keyboard, mouse, and digitizer (touch) support
+- Mass storage (bulk-only transport) for USB flash drives
+- CDC ACM (serial devices) and CDC ECM (USB Ethernet adapters)
+- USB Audio devices
+- USB Hub enumeration and port management
 
 ### Audio
 
 - **AC'97** codec driver and **Intel HDA** (High Definition Audio) driver
 - WAV/PCM playback via `play` command
 
+### Input
+
+- **PS/2** keyboard and mouse
+- **I2C-HID** touchpad and touchscreen support
+- **USB HID** keyboard, mouse, and digitizer via UHCI/EHCI/xHCI
+- **5 keyboard layouts**: US, German, French, Swiss, Polish
+- **VMware vmmouse** and **VirtualBox absolute mouse** for seamless pointer integration
+
 ### Hypervisor Integration
 
 - **VirtualBox**: VMMDev guest integration (absolute mouse, host events, capability negotiation)
-- **VMware**: vmmouse absolute mouse input, SVGA II 2D acceleration
-- **QEMU/KVM**: Bochs VGA, E1000, AC'97/HDA, AHCI, NVMe, VirtIO
+- **VMware**: vmmouse absolute mouse input, SVGA II 2D acceleration, SVGA3D hardware 3D
+- **QEMU/KVM**: Bochs VGA, E1000, AC'97/HDA, AHCI, NVMe, VirtIO (GPU, Net, RNG, Balloon, Serial)
 
 ### CoreVM — Built-in Virtual Machine
 
@@ -212,38 +240,59 @@ Four native C99 tools replace all Python build scripts. They compile at the star
 
 All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, enabling self-hosted builds directly on anyOS.
 
-### Boot Methods
+### Bootloader
 
-- **BIOS/MBR** — two-stage bootloader with graphical splash screen, interactive boot menu, and INI-style `boot.cfg` configuration (timeout, multiple entries, kernel parameters, chainloading)
+- **BIOS/MBR** — configurable two-stage bootloader:
+  - **Graphical splash screen** with logo display (2x upscaled, transparency)
+  - **Interactive boot menu** with keyboard navigation (Up/Down + Enter)
+  - **INI-style `boot.cfg`** with up to 8 boot entries, configurable timeout, default entry
+  - **Kernel parameters**: `verbose` (debug logging), `nogui` (text console), `custom` (interactive input)
+  - **Chainloading** — boot other operating systems from any disk/partition
+  - **A20 line** enable via 3 methods (BIOS, keyboard controller, port 0x92)
+  - **VESA VBE** graphics mode setup with fallback chain (1024x768 → 800x600 → 640x480)
+  - **exFAT reader** in the bootloader for HDD boot path
+  - Editable from the running OS via `bcedit` tool
 - **UEFI** — modern firmware boot via Rust EFI application (64 MiB GPT disk, exFAT)
-- **ISO 9660** — CD-ROM/USB boot (El Torito, Rock Ridge extensions)
+- **ISO 9660** — CD-ROM/USB boot (El Torito, Rock Ridge extensions, OverlayFS for writable root)
+
+### Installer
+
+- **Full disk installer** — when booting from ISO, anyOS can be installed to a hard drive:
+  - MBR partition table creation with bootable exFAT partition
+  - Stage 1 + Stage 2 bootloader installation to disk
+  - exFAT filesystem formatting (FAT32 allocation tables, bitmap, upcase table)
+  - Recursive system file copy (`/System`, `/Applications`, `/Users`, `/boot`, `/media`)
+  - Case-fixing for exFAT compatibility
+  - Safety confirmation prompt before erasing disk
+  - Disk listing via `install -l` to enumerate available block devices
 
 ### User Programs
 
-150+ command-line and GUI applications:
+177+ command-line and GUI applications:
 
-**GUI Applications (29):** anyOS Code (IDE), anyMail (email client), anyZilla (FTP client), App Store, Benchmark, Calculator, Clipboard Manager, Clock, Diagnostics, Diff/Merge (Meld-like), Font Viewer, Forger (3D voxel world), FTP Settings, GL Demo (3D), Icon Viewer, Image Viewer, Markdown Viewer, Minesweeper, Notepad, Notifications, Paint, Screenshot, Surf (web browser), Video Player, **VM Manager** (virtual machine), VNC Settings, Web Manager, anyui Demo, Button Demo
+**GUI Applications (33):** anyOS Code (IDE), anyMail (email client), anyZilla (FTP client), App Store, Benchmark, Calculator, Clipboard Manager, Clock, Diagnostics, Diff/Merge (Meld-like), Font Viewer, Forger (3D voxel world), FTP Settings, GL Demo (3D physics), Icon Viewer, Image Viewer, **Installer**, Keyboard, Markdown Viewer, Minesweeper, Notepad, Notifications, Paint, **Runner**, Screenshot, Surf (web browser), **Updater**, Video Player, **VM Manager** (virtual machine), VNC Settings, Web Manager, anyui Demo, Button Demo
 
-**System Services (18):** Init, Login, Compositor, Terminal, Finder, Settings, Activity Monitor, Permission Dialog, Shell (dash), Audio Monitor, Network Monitor, Input Monitor, Event Viewer, Disk Utility, amid (statistics daemon), notifyd (notifications), anybout (about), anytrace (tracing)
+**System Services (22):** Init, Login, Compositor, Terminal, Finder, Settings, Activity Monitor, Permission Dialog, Shell (dash), Audio Monitor, Network Monitor, Input Monitor, Event Viewer, Disk Utility, amid (statistics daemon), notifyd (notifications), anybout (about), anytrace (tracing), crashdialog, desktopd, sessionhost, textmode_console
 
 **Games (2):** DOOM (doomgeneric port), Quake (WinQuake software renderer port)
 
-**CLI Utilities (105):**
+**CLI Utilities (122):**
 
 | Category | Programs |
 |----------|----------|
-| File Management | `ls` `cat` `cp` `mv` `rm` `mkdir` `touch` `ln` `readlink` `find` `stat` `df` `mount` `umount` `fdisk` `zip` `unzip` `tar` `gzip` |
+| File Management | `ls` `cat` `cp` `mv` `rm` `mkdir` `touch` `ln` `readlink` `find` `stat` `df` `mount` `umount` `fdisk` `zip` `unzip` `tar` `gzip` `file` `sdel` |
 | Text Processing | `echo` `grep` `sed` `awk` `wc` `head` `tail` `sort` `uniq` `rev` `strings` `base64` `xargs` `banner` |
-| System Info | `sysinfo` `dmesg` `devlist` `ps` `top` `htop` `free` `uptime` `uname` `hostname` `whoami` `which` `date` `cal` `neofetch` |
-| Networking | `ping` `dhcp` `dns` `ifconfig` `arp` `wget` `ftp` `ftpd` `curl` `netstat` `echoserver` `httpd` `ssh` `sshd` `scp` `vncd` |
-| User Mgmt | `chmod` `chown` `su` `listuser` `listgroups` `adduser` `deluser` `addgroup` `delgroup` `passwd` |
-| Shell & Process | `env` `set` `export` `pwd` `clear` `sleep` `seq` `yes` `true` `false` `nice` `kill` `killall` |
+| System Info | `sysinfo` `dmesg` `devlist` `ps` `top` `htop` `free` `uptime` `uname` `hostname` `whoami` `which` `date` `cal` `neofetch` `mode` |
+| Networking | `ping` `dhcp` `dns` `ifconfig` `arp` `wget` `ftp` `ftpd` `curl` `netstat` `echoserver` `httpd` `ssh` `sshd` `scp` `vncd` `wifi` `ntp` `ntpd` |
+| User Mgmt | `chmod` `chown` `su` `sudo` `listuser` `listgroups` `adduser` `deluser` `addgroup` `delgroup` `passwd` |
+| Shell & Process | `env` `set` `export` `pwd` `clear` `sleep` `seq` `yes` `true` `false` `nice` `kill` `killall` `reboot` |
 | Shell Builtins | `alias` `unalias` `eval` (via dash) |
-| System Admin | `svc` `logd` `crond` `crontab` `ami` `apkg` |
+| System Admin | `svc` `logd` `crond` `crontab` `ami` `apkg` `sync` `bcedit` `install` |
+| Settings Store | `sget` `sstore` `sdel` `ac` |
 | Binary/Hex | `hexdump` `xxd` |
 | Multimedia | `play` `pipes` `jp2a` |
-| Dev Tools | `cc` (TCC) `nasm` `make` `git` `open` `vi` `nvi` `nano` `jscript` |
-| VM/Daemon | `vmd` (CoreVM daemon) |
+| Dev Tools | `cc` (TCC) `nasm` `make` `git` `anyrc` `open` `vi` `nvi` `nano` `jscript` |
+| VM/Daemon | `vmd` (CoreVM daemon) `vmctl` (CLI controller) `vdagent` |
 
 ---
 
@@ -427,16 +476,19 @@ anyos/
     asm/                   Context switch, ISR/IRQ stubs, syscall entry, SMP trampoline
     src/
       arch/x86/            GDT, IDT, APIC, PIT, TSC, paging, CPUID
-      drivers/             PCI, GPU (Bochs/VMware/VBox/VirtIO), keyboard, mouse, vmmouse,
-                           E1000, ATA, AHCI, NVMe, ATAPI, LSI SCSI,
-                           serial, AC'97, HDA audio, UHCI, EHCI, VMMDev, VirtIO
-      fs/                  VFS, exFAT, FAT16, devfs
+      drivers/             PCI, GPU (Bochs/VMware/VBox/VirtIO/Intel/AMD/NVIDIA),
+                           keyboard, mouse, vmmouse, I2C-HID touchpad,
+                           E1000, IGC, RTL8125, RTL8168, VirtIO Net, RTL8188EU WiFi,
+                           ATA, AHCI, NVMe, ATAPI, SDHCI, LSI SCSI,
+                           serial, AC'97, HDA audio, UHCI, EHCI, xHCI,
+                           VMMDev, thermal, SMBus/I2C, watchdog
+      fs/                  VFS, exFAT, FAT12/16/32, NTFS, ISO 9660, OverlayFS, SMB/CIFS, devfs
       graphics/            Framebuffer management
       ipc/                 Pipes, anonymous pipes, event bus, shared memory, message queues, signals
       memory/              Physical allocator, virtual memory, heap
       net/                 Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS
       sync/                Spinlock, mutex
-      syscall/             184 syscall handlers
+      syscall/             232 syscall handlers
       task/                Mach-style scheduler, context switch, ELF loader, DLL loader, KDRV loader
       crypto/              MD5 hash
   drivers/               Userspace GPU drivers (.drv shared libraries)
@@ -480,18 +532,18 @@ anyos/
     libheap/               Heap allocator
     libsyscall/            Low-level syscall interface
     libunwind/             Stack unwinding support
-  bin/                   CLI program sources (105 Rust programs)
+  bin/                   CLI program sources (122 Rust programs)
     vmd/                   CoreVM daemon — VM execution loop, IPC bridge to libcorevm
     ftpd/                  FTP server daemon
     vncd/                  VNC server daemon
     sshd/                  SSH server daemon
-  apps/                  GUI application sources (29 .app bundles)
+  apps/                  GUI application sources (33 .app bundles)
     vmmanager/             VM Manager — GUI for creating, configuring, and running VMs
     anymail/               Email client with IMAP/SMTP, address book, autocomplete
     anyzilla/              FTP client (FileZilla-like, dual-pane, PASV transfers)
     diff/                  Diff/merge tool (Meld-like, syntax highlighting, themes)
     store/                 App Store
-  system/                System programs (18)
+  system/                System programs (22)
     init/                  Init system (PID 1)
     login/                 Login manager
     shell/                 POSIX shell (dash)
@@ -571,7 +623,7 @@ DLIB programs link against lightweight client stub crates (e.g. `libimage_client
 
 - **[Bootloader](docs/bootloader.md)** — BIOS two-stage bootloader, boot.cfg configuration, graphical boot menu, UEFI boot, chainloading
 - **[Architecture Overview](docs/architecture.md)** — Boot process, memory layout, scheduling, IPC, USB, user identity
-- **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 184 system calls
+- **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 232 system calls
 - **[Standard Library API](docs/stdlib-api.md)** — `anyos_std` crate reference for Rust user programs
 - **[anyui Controls API](docs/anyui-api.md)** — anyui framework reference (44 controls, 178 exports)
 - **[C Library API](docs/libc-api.md)** — POSIX libc reference (35 headers) for C programs
@@ -713,10 +765,10 @@ Areas where help is appreciated:
 - Bug fixes and stability improvements
 - New user programs and utilities
 - UI component improvements
-- Filesystem enhancements (FAT32, ext2)
-- Network protocol improvements (full TCP, HTTPS)
+- Filesystem enhancements (ext2/ext4)
+- Network protocol improvements
 - Documentation and tutorials
-- Testing on different QEMU versions and configurations
+- Testing on different QEMU versions, real hardware, and hypervisors
 
 ### Code Style
 

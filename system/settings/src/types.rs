@@ -10,6 +10,7 @@ pub enum BuiltinId {
     General,
     Display,
     Dock,
+    Sound,
     Apps,
     Devices,
     Keyboard,

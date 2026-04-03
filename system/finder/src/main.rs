@@ -52,6 +52,19 @@ struct Location {
     path: String,
 }
 
+/// A mounted volume shown in the sidebar (removable, network, etc.)
+struct Volume {
+    name: String,
+    mount_path: String,
+    fs_type: String,
+    /// True if this is a removable device (USB, SD, hot-plug SATA)
+    removable: bool,
+    /// True if this is a network mount (SMB)
+    network: bool,
+    /// Disk ID for eject (0 = not ejectable)
+    disk_id: u32,
+}
+
 fn load_locations() -> Vec<Location> {
     let mut locations = Vec::new();
 
@@ -118,6 +131,68 @@ fn load_locations() -> Vec<Location> {
     }
 
     locations
+}
+
+/// Discover mounted volumes by reading mount points and disk list.
+/// Returns volumes suitable for sidebar display (excludes root, /dev, /mnt/cdrom).
+fn discover_volumes() -> Vec<Volume> {
+    let mut volumes = Vec::new();
+
+    // Read mount points
+    let mut mount_buf = [0u8; 4096];
+    let n = fs::list_mounts(&mut mount_buf);
+    if n == 0 || n == u32::MAX { return volumes; }
+
+    let mount_str = core::str::from_utf8(&mount_buf[..n as usize]).unwrap_or("");
+    for line in mount_str.split('\n') {
+        if line.is_empty() { continue; }
+        let mut parts = line.split('\t');
+        let path = match parts.next() { Some(p) => p, None => continue };
+        let fstype = parts.next().unwrap_or("");
+
+        // Skip system mounts
+        if path == "/" || path == "/dev" { continue; }
+
+        let is_network = fstype == "smb";
+        let is_removable = path.starts_with("/Volumes/") || path.starts_with("/mnt/");
+        let is_cdrom = path.contains("cdrom");
+
+        // Generate friendly name
+        let name = if is_network {
+            // SMB: //server/share → "share on server"
+            let trimmed = path.trim_start_matches("/mnt/");
+            String::from(if trimmed.is_empty() { path } else { trimmed })
+        } else if path.starts_with("/Volumes/") {
+            let vol_name = path.trim_start_matches("/Volumes/");
+            String::from(if vol_name.is_empty() { "Volume" } else { vol_name })
+        } else if is_cdrom {
+            String::from("CD/DVD")
+        } else {
+            // Use last path component
+            let last = path.rsplit('/').next().unwrap_or(path);
+            String::from(last)
+        };
+
+        // Get disk_id from path (for eject support)
+        let disk_id = if path.starts_with("/Volumes/disk") {
+            // /Volumes/disk2p1 → disk_id = 2
+            let rest = path.trim_start_matches("/Volumes/disk");
+            rest.split('p').next()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0)
+        } else { 0 };
+
+        volumes.push(Volume {
+            name,
+            mount_path: String::from(path),
+            fs_type: String::from(fstype),
+            removable: is_removable || is_cdrom,
+            network: is_network,
+            disk_id,
+        });
+    }
+
+    volumes
 }
 
 // ============================================================================
@@ -223,6 +298,10 @@ struct AppState {
     btn_back: ui::IconButton,
     btn_fwd: ui::IconButton,
     sidebar_item_ids: Vec<u32>,
+    sidebar_panel_id: u32,
+    volumes: Vec<Volume>,
+    volume_item_ids: Vec<u32>,
+    volume_eject_ids: Vec<u32>,
     // Status bar
     sb_items_label: ui::Label,
     sb_sel_label: ui::Label,
@@ -2343,28 +2422,132 @@ fn main() {
     sidebar_panel.set_dock(ui::DOCK_FILL);
     sidebar_panel.set_color(tc.window_bg);
 
-    let sidebar_header = ui::Label::new(i18n::t("LOCATIONS"));
-    sidebar_header.set_dock(ui::DOCK_TOP);
-    sidebar_header.set_size(160, 24);
-    sidebar_header.set_font_size(11);
-    sidebar_header.set_text_color(tc.text_disabled);
-    sidebar_header.set_margin(12, 8, 0, 4);
-    sidebar_panel.add(&sidebar_header);
+    // ── macOS-style sidebar group header: small, gray, uppercase ──
+    fn add_sidebar_section(panel: &ui::View, text: &str, top_margin: i32) {
+        let hdr = ui::Label::new(text);
+        hdr.set_dock(ui::DOCK_TOP);
+        hdr.set_size(160, 18);
+        hdr.set_font_size(10);
+        hdr.set_text_color(0xFF808080); // Gray group header
+        hdr.set_padding(14, 0, 8, 0);
+        hdr.set_margin(0, top_margin, 0, 2);
+        panel.add(&hdr);
+    }
 
+    // ── Quick Access (max 5 items from locations config) ─────────────
+    add_sidebar_section(&sidebar_panel, "Quick Access", 8);
+
+    let max_quick = 5;
     let mut sidebar_item_ids: Vec<u32> = Vec::new();
     for (i, loc) in locations.iter().enumerate() {
+        if i >= max_quick { break; }
         let item = ui::Label::new(&loc.name);
         item.set_dock(ui::DOCK_TOP);
-        item.set_size(160, 30);
+        item.set_size(160, 26);
         item.set_font_size(13);
         item.set_text_color(tc.text);
-        item.set_padding(28, 6, 8, 6);
-        item.set_margin(4, 1, 4, 1);
+        item.set_padding(28, 4, 8, 4);
+        item.set_margin(2, 0, 2, 0);
         item.on_click_raw(sidebar_click_handler, i as u64);
         sidebar_item_ids.push(item.id());
         sidebar_panel.add(&item);
     }
 
+    // ── Drives (removable + local volumes) ───────────────────────────
+    let volumes = discover_volumes();
+    let mut volume_item_ids: Vec<u32> = Vec::new();
+    let mut volume_eject_ids: Vec<u32> = Vec::new();
+
+    let has_network = volumes.iter().any(|v| v.network);
+
+    // Drives section always visible (root drive + removable volumes)
+    {
+        add_sidebar_section(&sidebar_panel, "Drives", 12);
+
+        // Root drive is always shown first
+        let root_label = ui::Label::new("anyOS HD");
+        root_label.set_dock(ui::DOCK_TOP);
+        root_label.set_size(160, 26);
+        root_label.set_font_size(13);
+        root_label.set_text_color(tc.text);
+        root_label.set_padding(28, 4, 8, 4);
+        root_label.set_margin(2, 0, 2, 0);
+        root_label.on_click_raw(sidebar_click_handler, 0 as u64); // index 0 = Root
+        sidebar_panel.add(&root_label);
+
+        for (vi, vol) in volumes.iter().enumerate() {
+            if !vol.removable { continue; }
+
+            // Row: [icon space] Name ... [⏏]
+            let row = ui::View::new();
+            row.set_dock(ui::DOCK_TOP);
+            row.set_size(160, 26);
+            row.set_color(0x00000000);
+
+            let vlabel = ui::Label::new(&vol.name);
+            vlabel.set_dock(ui::DOCK_FILL);
+            vlabel.set_font_size(13);
+            vlabel.set_text_color(tc.text);
+            vlabel.set_padding(28, 4, 4, 4);
+            vlabel.on_click_raw(volume_click_handler, vi as u64);
+            volume_item_ids.push(vlabel.id());
+            row.add(&vlabel);
+
+            // Eject button (⏏)
+            if vol.disk_id > 0 {
+                let eject = ui::Label::new("\u{23CF}");
+                eject.set_dock(ui::DOCK_RIGHT);
+                eject.set_size(22, 26);
+                eject.set_font_size(11);
+                eject.set_text_color(tc.text_disabled);
+                eject.set_padding(4, 4, 4, 4);
+                eject.on_click_raw(eject_click_handler, vol.disk_id as u64);
+                volume_eject_ids.push(eject.id());
+                row.add(&eject);
+            }
+
+            sidebar_panel.add(&row);
+        }
+    }
+
+    // ── Network (SMB shares, with eject/unmount button) ────────────
+    if has_network {
+        add_sidebar_section(&sidebar_panel, "Network", 12);
+
+        for (vi, vol) in volumes.iter().enumerate() {
+            if !vol.network { continue; }
+
+            let row = ui::View::new();
+            row.set_dock(ui::DOCK_TOP);
+            row.set_size(160, 26);
+            row.set_color(0x00000000);
+
+            let vlabel = ui::Label::new(&vol.name);
+            vlabel.set_dock(ui::DOCK_FILL);
+            vlabel.set_font_size(13);
+            vlabel.set_text_color(tc.text);
+            vlabel.set_padding(28, 4, 4, 4);
+            vlabel.on_click_raw(volume_click_handler, vi as u64);
+            volume_item_ids.push(vlabel.id());
+            row.add(&vlabel);
+
+            // Eject (unmount) button for network shares
+            let eject = ui::Label::new("\u{23CF}");
+            eject.set_dock(ui::DOCK_RIGHT);
+            eject.set_size(22, 26);
+            eject.set_font_size(11);
+            eject.set_text_color(tc.text_disabled);
+            eject.set_padding(4, 4, 4, 4);
+            // Use high bit to signal "unmount path" instead of "eject disk_id"
+            eject.on_click_raw(network_eject_handler, vi as u64);
+            volume_eject_ids.push(eject.id());
+            row.add(&eject);
+
+            sidebar_panel.add(&row);
+        }
+    }
+
+    let sidebar_panel_id = sidebar_panel.id();
     split.add(&sidebar_panel);
 
     // ── Right: content area (holds both DataGrid and Canvas) ─────────────
@@ -2432,6 +2615,10 @@ fn main() {
             btn_back,
             btn_fwd,
             sidebar_item_ids,
+            sidebar_panel_id,
+            volumes,
+            volume_item_ids,
+            volume_eject_ids,
             sb_items_label,
             sb_sel_label,
             ctx_menu,
@@ -2665,5 +2852,32 @@ extern "C" fn sidebar_click_handler(_control_id: u32, _event_type: u32, userdata
     if idx < s.locations.len() {
         let path = s.locations[idx].path.clone();
         navigate(&path);
+    }
+}
+
+extern "C" fn volume_click_handler(_control_id: u32, _event_type: u32, userdata: u64) {
+    let idx = userdata as usize;
+    let s = app();
+    if idx < s.volumes.len() {
+        let path = s.volumes[idx].mount_path.clone();
+        navigate(&path);
+    }
+}
+
+extern "C" fn eject_click_handler(_control_id: u32, _event_type: u32, userdata: u64) {
+    let disk_id = userdata as u32;
+    if disk_id > 0 {
+        anyos_std::sys::disk_eject(disk_id);
+        navigate("/");
+    }
+}
+
+extern "C" fn network_eject_handler(_control_id: u32, _event_type: u32, userdata: u64) {
+    let idx = userdata as usize;
+    let s = app();
+    if idx < s.volumes.len() && s.volumes[idx].network {
+        let path = s.volumes[idx].mount_path.clone();
+        fs::umount(&path);
+        navigate("/");
     }
 }

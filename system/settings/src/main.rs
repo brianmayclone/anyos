@@ -14,6 +14,7 @@ mod page_dashboard;
 mod page_general;
 mod page_display;
 mod page_dock;
+mod page_sound;
 mod page_apps;
 mod page_devices;
 mod page_keyboard;
@@ -281,6 +282,7 @@ fn build_page(idx: usize) {
         BuiltinId::General => page_general::build(scroll),
         BuiltinId::Display => page_display::build(scroll),
         BuiltinId::Dock => page_dock::build(scroll),
+        BuiltinId::Sound => page_sound::build(scroll),
         BuiltinId::Apps => page_apps::build(scroll),
         BuiltinId::Devices => page_devices::build(scroll),
         BuiltinId::Keyboard => page_keyboard::build(scroll),

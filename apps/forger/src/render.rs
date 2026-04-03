@@ -41,19 +41,8 @@ void main() {
 ";
 
 const FS_BLOCK: &str =
-"varying vec2 vTexCoord;
-varying vec3 vLighting;
-varying vec3 vDist;
-uniform sampler2D uTexture;
-uniform vec3 uFogColor;
-uniform float uFogStart;
-uniform float uFogEnd;
-void main() {
-    vec4 tex = texture2D(uTexture, vTexCoord);
-    vec3 color = tex.rgb * vLighting;
-    float t = clamp((vDist.x - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
-    color = mix(color, uFogColor, t);
-    gl_FragColor = vec4(color, 1.0);
+"void main() {
+    gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0);
 }
 ";
 
@@ -320,57 +309,11 @@ impl Renderer {
         gl::clear_color(sky_horizon[0], sky_horizon[1], sky_horizon[2], 1.0);
         gl::clear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
 
-        // -- Sky pass --
-        gl::disable(gl::GL_DEPTH_TEST);
-        gl::depth_mask(false);
-        gl::use_program(self.sky_program);
-
-        gl::uniform3f(self.u_sky_top, sky_top[0], sky_top[1], sky_top[2]);
-        gl::uniform3f(self.u_sky_horizon, sky_horizon[0], sky_horizon[1], sky_horizon[2]);
-        gl::uniform3f(self.u_sky_bottom, sky_bottom[0], sky_bottom[1], sky_bottom[2]);
-        gl::uniform3f(self.u_sun_dir, sun_dir[0], sun_dir[1], sun_dir[2]);
-        gl::uniform3f(self.u_sun_color, sun_color[0], sun_color[1], sun_color[2]);
-        // Sun disc angular size (cosine of half-angle; ~0.995 = small disc)
-        let sun_size = if sun_elevation > -0.1 { 0.9985 } else { 2.0 }; // hide below horizon
-        gl::uniform1f(self.u_sun_size, sun_size);
-
-        // Camera basis vectors for sky ray reconstruction
+        // -- Block pass only (sky disabled for HW debug) --
         let aspect = width as f32 / height as f32;
-        let fov_rad = 70.0 * gl::PI / 180.0;
-        let tan_half_fov = gl::tan(fov_rad * 0.5);
 
-        let cy = gl::cos(self.yaw);
-        let sy = gl::sin(self.yaw);
-        let cp = gl::cos(self.pitch);
-        let sp = gl::sin(self.pitch);
-
-        // Forward, right, up vectors (same as look_matrix)
-        let fwd = [sy * cp, -sp, -cy * cp];
-        let right = [cy, 0.0, sy];
-        // up = right × forward
-        let up = [
-            right[1] * fwd[2] - right[2] * fwd[1],
-            right[2] * fwd[0] - right[0] * fwd[2],
-            right[0] * fwd[1] - right[1] * fwd[0],
-        ];
-
-        gl::uniform3f(self.u_cam_fwd, fwd[0], fwd[1], fwd[2]);
-        gl::uniform3f(self.u_cam_right, right[0], right[1], right[2]);
-        gl::uniform3f(self.u_cam_up, up[0], up[1], up[2]);
-        gl::uniform1f(self.u_tan_half_fov, tan_half_fov);
-        gl::uniform1f(self.u_aspect, aspect);
-
-        gl::bind_buffer(gl::GL_ARRAY_BUFFER, self.sky_vbo);
-        gl::enable_vertex_attrib_array(self.a_sky_pos as u32);
-        gl::vertex_attrib_pointer(self.a_sky_pos as u32, 2, gl::GL_FLOAT, false, 8, 0);
-        gl::draw_arrays(gl::GL_TRIANGLES, 0, 6);
-        gl::disable_vertex_attrib_array(self.a_sky_pos as u32);
-
-        // -- Block pass (no blending — all fragments output alpha=1.0) --
-        gl::depth_mask(true);
         gl::enable(gl::GL_DEPTH_TEST);
         gl::depth_func(gl::GL_LESS);
-        gl::disable(gl::GL_BLEND);
 
         gl::use_program(self.block_program);
 

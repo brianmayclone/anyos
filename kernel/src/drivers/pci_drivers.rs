@@ -252,6 +252,90 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
         specificity: 2,
     },
 
+    // ── Intel WiFi (AX200, AX201, AX210, AX211, BE200, AC 9260/9560, AC 8265) ──
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x2723 },
+        factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x2725 },
+        factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x06F0 },
+        factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0xA0F0 },
+        factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x51F0 },
+        factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x54F0 },
+        factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x272B },
+        factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x2526 },
+        factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x9DF0 },
+        factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0xA370 },
+        factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x24FD },
+        factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
+        specificity: 2,
+    },
+
+    // ── Qualcomm Atheros WiFi (QCA6174, QCA9377, QCA6390, WCN6855) ──
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x168C, device: 0x003E },
+        factory: |pci| crate::drivers::network::ath_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x168C, device: 0x0042 },
+        factory: |pci| crate::drivers::network::ath_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x168C, device: 0x0046 },
+        factory: |pci| crate::drivers::network::ath_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x17CB, device: 0x1101 },
+        factory: |pci| crate::drivers::network::ath_wifi::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x17CB, device: 0x1103 },
+        factory: |pci| crate::drivers::network::ath_wifi::probe(pci),
+        specificity: 2,
+    },
+
     // ── Class-based matches (specificity 1) ──
 
     PciDriverEntry {
@@ -279,6 +363,18 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
                 0x8086 => crate::drivers::network::igc::probe(pci)
                     .or_else(|| crate::drivers::network::e1000::probe(pci)),
                 _ => crate::drivers::network::e1000::probe(pci),
+            }
+        },
+        specificity: 1,
+    },
+    // WiFi controllers (PCI class 02:80 = Network controller: Other)
+    PciDriverEntry {
+        match_rule: PciMatch::Class { class: 0x02, subclass: 0x80 },
+        factory: |pci| {
+            match pci.vendor_id {
+                0x8086 => crate::drivers::network::iwl_wifi::probe(pci),
+                0x168C | 0x17CB => crate::drivers::network::ath_wifi::probe(pci),
+                _ => None, // Unknown WiFi vendor
             }
         },
         specificity: 1,

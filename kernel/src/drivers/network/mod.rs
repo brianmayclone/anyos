@@ -7,8 +7,10 @@
 //! Drivers register dynamically via PCI detection in the HAL.
 //! RX polling remains driver-specific (IRQ-driven, not routed through the trait).
 
+pub mod ath_wifi;
 pub mod e1000;
 pub mod igc;
+pub mod iwl_wifi;
 pub mod rtl8125;
 pub mod rtl8168;
 pub mod rtl8188eu;
