@@ -21,36 +21,65 @@ const DAY_CYCLE_MS: u32 = 10 * 60 * 1000;
 // Shaders
 // ---------------------------------------------------------------------------
 
+// Original textured block shaders (kept for when virgl texture upload is fixed):
+//
+// const VS_BLOCK_TEXTURED: &str =
+// "attribute vec3 aPosition;
+// attribute vec2 aTexCoord;
+// attribute float aLight;
+// uniform mat4 uMVP;
+// uniform float uSunBrightness;
+// varying vec2 vTexCoord;
+// varying float vLighting;
+// varying float vDist;
+// void main() {
+//     gl_Position = uMVP * vec4(aPosition, 1.0);
+//     vTexCoord = aTexCoord;
+//     vLighting = aLight * uSunBrightness;
+//     vDist = gl_Position.w;
+// }
+// ";
+//
+// const FS_BLOCK_TEXTURED: &str =
+// "varying vec2 vTexCoord;
+// varying float vLighting;
+// varying float vDist;
+// uniform sampler2D uTexture;
+// uniform vec3 uFogColor;
+// uniform float uFogStart;
+// uniform float uFogEnd;
+// void main() {
+//     vec4 tex = texture2D(uTexture, vTexCoord);
+//     vec3 color = tex.rgb * vLighting;
+//     float t = clamp((vDist - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
+//     color = mix(color, uFogColor, t);
+//     gl_FragColor = vec4(color, 1.0);
+// }
+// ";
+
 const VS_BLOCK: &str =
 "attribute vec3 aPosition;
-attribute vec2 aTexCoord;
-attribute float aLight;
+attribute vec3 aColor;
 uniform mat4 uMVP;
 uniform float uSunBrightness;
-varying vec2 vTexCoord;
-varying float vLighting;
+varying vec3 vColor;
 varying float vDist;
 void main() {
     gl_Position = uMVP * vec4(aPosition, 1.0);
-    vTexCoord = aTexCoord;
-    vLighting = aLight * uSunBrightness;
+    vColor = aColor * uSunBrightness;
     vDist = gl_Position.w;
 }
 ";
 
 const FS_BLOCK: &str =
-"varying vec2 vTexCoord;
-varying float vLighting;
+"varying vec3 vColor;
 varying float vDist;
-uniform sampler2D uTexture;
 uniform vec3 uFogColor;
 uniform float uFogStart;
 uniform float uFogEnd;
 void main() {
-    vec4 tex = texture2D(uTexture, vTexCoord);
-    vec3 color = tex.rgb * vLighting;
     float t = clamp((vDist - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
-    color = mix(color, uFogColor, t);
+    vec3 color = mix(vColor, uFogColor, t);
     gl_FragColor = vec4(color, 1.0);
 }
 ";
@@ -206,8 +235,8 @@ impl Renderer {
         let u_sun_brightness = gl::get_uniform_location(block_program, "uSunBrightness");
 
         let a_position = gl::get_attrib_location(block_program, "aPosition");
-        let a_texcoord = gl::get_attrib_location(block_program, "aTexCoord");
-        let a_light = gl::get_attrib_location(block_program, "aLight");
+        let a_texcoord = gl::get_attrib_location(block_program, "aColor");
+        let a_light = -1i32; // unused in color mode
 
         let u_sky_top = gl::get_uniform_location(sky_program, "uSkyTop");
         let u_sky_horizon = gl::get_uniform_location(sky_program, "uSkyHorizon");
@@ -408,10 +437,6 @@ impl Renderer {
         gl::uniform1f(self.u_fog_end, fog_end);
         gl::uniform1f(self.u_sun_brightness, sun_brightness);
 
-        gl::active_texture(gl::GL_TEXTURE0);
-        gl::bind_texture(gl::GL_TEXTURE_2D, self.atlas_tex);
-        gl::uniform1i(self.u_texture, 0);
-
         // Stride: FLOATS_PER_VERTEX * 4 bytes = 24 bytes (6 floats)
         let stride = (FLOATS_PER_VERTEX * 4) as i32;
 
@@ -444,20 +469,19 @@ impl Renderer {
             gl::enable_vertex_attrib_array(self.a_position as u32);
             gl::vertex_attrib_pointer(self.a_position as u32, 3, gl::GL_FLOAT, false, stride, 0);
 
-            // aTexCoord: vec2 at offset 12
-            gl::enable_vertex_attrib_array(self.a_texcoord as u32);
-            gl::vertex_attrib_pointer(self.a_texcoord as u32, 2, gl::GL_FLOAT, false, stride, 12);
-
-            // aLight: float at offset 20
-            gl::enable_vertex_attrib_array(self.a_light as u32);
-            gl::vertex_attrib_pointer(self.a_light as u32, 1, gl::GL_FLOAT, false, stride, 20);
+            // aColor: vec3 at offset 12 (pre-multiplied block color × face light)
+            if self.a_texcoord >= 0 {
+                gl::enable_vertex_attrib_array(self.a_texcoord as u32);
+                gl::vertex_attrib_pointer(self.a_texcoord as u32, 3, gl::GL_FLOAT, false, stride, 12);
+            }
 
             gl::draw_arrays(gl::GL_TRIANGLES, 0, vert_count as i32);
         }
 
         gl::disable_vertex_attrib_array(self.a_position as u32);
-        gl::disable_vertex_attrib_array(self.a_texcoord as u32);
-        gl::disable_vertex_attrib_array(self.a_light as u32);
+        if self.a_texcoord >= 0 {
+            gl::disable_vertex_attrib_array(self.a_texcoord as u32);
+        }
     }
 
     pub fn adapt_view_distance(&mut self, fps: f32) {
