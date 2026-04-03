@@ -184,6 +184,35 @@ pub fn scan_and_register_partitions(disk_id: u8) {
     }
 }
 
+/// Auto-mount all partitions on a removable disk under /Volumes/.
+/// Called after scan_and_register_partitions() for hot-plugged devices (USB, SD).
+/// Mount point format: /Volumes/disk{disk_id}p{part+1}
+pub fn auto_mount_removable(disk_id: u8) {
+    let devs = DEVICES.lock().clone();
+    for dev in &devs {
+        if dev.disk_id != disk_id || dev.partition.is_none() { continue; }
+        let part_idx = dev.partition.unwrap();
+        let mount_path = alloc::format!("/Volumes/disk{}p{}", disk_id, part_idx + 1);
+
+        // Try mounting as exFAT/FAT (most common for removable media)
+        crate::fs::vfs::set_root_partition_lba(dev.start_lba as u32);
+        let result = crate::fs::vfs::mount_fs(&mount_path, "", 0); // 0 = auto-detect
+        match result {
+            Ok(()) => {
+                crate::serial_println!("  [auto-mount] {} → mounted (disk {} part {})",
+                    mount_path, disk_id, part_idx + 1);
+                crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
+                    crate::ipc::event_bus::EVT_VOLUME_MOUNTED,
+                    disk_id as u32, part_idx as u32, 0, 0,
+                ));
+            }
+            Err(_) => {
+                crate::serial_verbose_println!("  [auto-mount] {} → failed", mount_path);
+            }
+        }
+    }
+}
+
 /// Parse a device path like "/dev/hd0p1" into (disk_id, partition_index).
 ///
 /// Returns `(disk_id, Some(part_idx))` for partitions or `(disk_id, None)` for whole disks.

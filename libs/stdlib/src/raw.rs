@@ -225,6 +225,7 @@ pub(crate) const SYS_DISK_WRITE: u32 = 273;
 pub(crate) const SYS_PARTITION_CREATE: u32 = 274;
 pub(crate) const SYS_PARTITION_DELETE: u32 = 275;
 pub(crate) const SYS_PARTITION_RESCAN: u32 = 276;
+pub(crate) const SYS_DISK_EJECT: u32 = 277;
 
 // Hostname
 pub(crate) const SYS_GET_HOSTNAME: u32 = 280;

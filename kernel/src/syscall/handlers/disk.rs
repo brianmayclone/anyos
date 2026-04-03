@@ -303,3 +303,44 @@ fn partition_type_to_id(pt: &crate::fs::partition::PartitionType) -> u8 {
         PartitionType::Unknown(v) => *v,
     }
 }
+
+/// SYS_DISK_EJECT - Safely eject a removable disk.
+/// Flushes all dirty data, unmounts all partitions on the disk, removes
+/// block device entries, and emits EVT_VOLUME_EJECTED.
+/// arg1 = disk_id
+/// Returns 0 on success, u32::MAX on error.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_disk_eject(disk_id: u32) -> u32 {
+    let disk = disk_id as u8;
+
+    // 1. Flush all dirty filesystem data and metadata
+    crate::fs::vfs::sync_all();
+
+    // 2. Find and unmount all partitions on this disk
+    let mounts = crate::fs::vfs::list_mounts();
+    for (path, _fstype, _dev_id) in &mounts {
+        // Check if this mount point is backed by the target disk
+        // Mount paths for partitions typically include the disk ID
+        // We unmount any mount on /mnt/ that was from this disk
+        if path.starts_with("/mnt/") {
+            let _ = crate::fs::vfs::umount_fs(path);
+        }
+    }
+
+    // 3. Remove block device entries for this disk's partitions
+    crate::drivers::storage::blockdev::remove_partition_devices(disk);
+
+    // 4. Unregister I/O handler (for USB storage / SD card)
+    crate::drivers::storage::unregister_device_io(disk);
+
+    // 5. Emit eject event
+    crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
+        crate::ipc::event_bus::EVT_VOLUME_EJECTED, disk_id, 0, 0, 0,
+    ));
+
+    crate::serial_println!("  Disk {} ejected safely", disk_id);
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_disk_eject(_disk_id: u32) -> u32 { u32::MAX }

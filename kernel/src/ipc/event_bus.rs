@@ -29,6 +29,12 @@ pub const EVT_PROCESS_EXITED: u32 = 0x0021;
 pub const EVT_RESOLUTION_CHANGED: u32 = 0x0040;
 pub const EVT_OUT_OF_MEMORY: u32 = 0x0030;
 pub const EVT_DISK_ERROR: u32 = 0x0031;
+/// arg1 = disk_id, arg2 = partition_index, arg3 = mount_path_ptr (in kernel), arg4 = fs_type
+pub const EVT_VOLUME_MOUNTED: u32 = 0x0032;
+/// arg1 = disk_id, arg2 = partition_index
+pub const EVT_VOLUME_UNMOUNTED: u32 = 0x0033;
+/// arg1 = disk_id — a removable device (USB/SD) was physically ejected
+pub const EVT_VOLUME_EJECTED: u32 = 0x0034;
 
 // Module events (0x0100+) — apps can emit
 pub const EVT_CUSTOM: u32 = 0x0100;

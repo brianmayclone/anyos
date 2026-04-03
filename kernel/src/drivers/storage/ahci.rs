@@ -369,6 +369,7 @@ pub fn process_hotplug() {
                         size_sectors: sectors,
                     });
                     super::blockdev::scan_and_register_partitions(disk_id);
+                    super::blockdev::auto_mount_removable(disk_id);
                     crate::serial_println!("  AHCI hot-plug: disk registered (port={}, {} sectors)",
                         port, sectors);
                 }

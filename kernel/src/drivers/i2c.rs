@@ -61,6 +61,45 @@ pub fn i2c_read_block(dev: &I2cDevice, reg: u8, buf: &mut [u8]) -> Option<usize>
     smbus::read_block(dev.addr, reg, buf)
 }
 
+// ── Multi-Byte I²C Transfers (for I2C-HID) ─────────────────────────────────
+
+/// Write `tx` bytes then read `rx.len()` bytes in a single I²C transaction.
+/// Used by I2C-HID to send a register address and read the response.
+/// Returns true on success.
+pub fn write_then_read(addr: u8, tx: &[u8], rx: &mut [u8]) -> bool {
+    // Use the SMBus block read with the first tx byte as the command
+    if tx.is_empty() { return false; }
+    if tx.len() == 1 {
+        // Simple register read
+        if let Some(n) = smbus::read_block(addr, tx[0], rx) {
+            return n > 0;
+        }
+        return false;
+    }
+    // For 2-byte register addresses (I2C-HID), use the first byte as command
+    // and read block data. This is an approximation — full I2C would need
+    // a repeated-start transaction which requires direct controller access.
+    if let Some(n) = smbus::read_block(addr, tx[0], rx) {
+        return n > 0;
+    }
+    false
+}
+
+/// Write raw bytes to an I²C device.
+pub fn write(addr: u8, data: &[u8]) -> bool {
+    if data.is_empty() { return false; }
+    if data.len() == 2 {
+        return smbus::write_byte(addr, data[0], data[1]);
+    }
+    // For longer writes, write byte-by-byte (limited by SMBus)
+    for chunk in data.chunks(2) {
+        if chunk.len() == 2 {
+            if !smbus::write_byte(addr, chunk[0], chunk[1]) { return false; }
+        }
+    }
+    true
+}
+
 // ── Device Detection ─────────────────────────────────────────────────────────
 
 /// Probe whether an I²C device is present at 7-bit address `addr`.

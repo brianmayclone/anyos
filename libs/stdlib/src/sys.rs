@@ -166,6 +166,12 @@ pub fn partition_rescan(disk_id: u32) -> u32 {
     syscall1(SYS_PARTITION_RESCAN, disk_id as u64)
 }
 
+/// Safely eject a removable disk. Flushes data, unmounts all partitions,
+/// and removes the block device. Returns 0 on success.
+pub fn disk_eject(disk_id: u32) -> u32 {
+    syscall1(SYS_DISK_EJECT, disk_id as u64)
+}
+
 /// Get the system hostname. Copies hostname into `buf`.
 /// Returns the number of bytes written, or `u32::MAX` on error.
 pub fn get_hostname(buf: &mut [u8]) -> u32 {

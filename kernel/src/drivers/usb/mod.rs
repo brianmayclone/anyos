@@ -7,6 +7,7 @@
 pub mod uhci;
 pub mod ehci;
 pub mod xhci;
+pub mod audio;
 pub mod hid;
 pub mod digitizer;
 pub mod storage;

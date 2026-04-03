@@ -275,6 +275,9 @@ pub const SYS_DISK_WRITE: u32 = 273;
 pub const SYS_PARTITION_CREATE: u32 = 274;
 pub const SYS_PARTITION_DELETE: u32 = 275;
 pub const SYS_PARTITION_RESCAN: u32 = 276;
+/// Safely eject a removable disk: flush, unmount all partitions, remove block device.
+/// arg1 = disk_id
+pub const SYS_DISK_EJECT: u32 = 277;
 
 // Hostname
 pub const SYS_GET_HOSTNAME: u32 = 280;
@@ -669,6 +672,7 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         // Disk / partition management
         SYS_DISK_LIST => handlers::sys_disk_list(arg1, arg2),
         SYS_DISK_PARTITIONS => handlers::sys_disk_partitions(arg1, arg2, arg3),
+        SYS_DISK_EJECT => handlers::sys_disk_eject(arg1),
         SYS_DISK_READ => handlers::sys_disk_read(arg1, arg2, arg3, arg4, arg5),
         SYS_DISK_WRITE => handlers::sys_disk_write(arg1, arg2, arg3, arg4, arg5),
         SYS_PARTITION_CREATE => handlers::sys_partition_create(arg1, arg2, arg3),

@@ -28,20 +28,22 @@ attribute float aLight;
 uniform mat4 uMVP;
 uniform float uSunBrightness;
 varying vec2 vTexCoord;
-varying float vLighting;
-varying float vDist;
+varying vec3 vLighting;
+varying vec3 vDist;
 void main() {
     gl_Position = uMVP * vec4(aPosition, 1.0);
     vTexCoord = aTexCoord;
-    vLighting = aLight * uSunBrightness;
-    vDist = gl_Position.w;
+    float L = aLight * uSunBrightness;
+    vLighting = vec3(L, L, L);
+    float d = gl_Position.w;
+    vDist = vec3(d, d, d);
 }
 ";
 
 const FS_BLOCK: &str =
 "varying vec2 vTexCoord;
-varying float vLighting;
-varying float vDist;
+varying vec3 vLighting;
+varying vec3 vDist;
 uniform sampler2D uTexture;
 uniform vec3 uFogColor;
 uniform float uFogStart;
@@ -49,7 +51,7 @@ uniform float uFogEnd;
 void main() {
     vec4 tex = texture2D(uTexture, vTexCoord);
     vec3 color = tex.rgb * vLighting;
-    float t = clamp((vDist - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
+    float t = clamp((vDist.x - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
     color = mix(color, uFogColor, t);
     gl_FragColor = vec4(color, 1.0);
 }

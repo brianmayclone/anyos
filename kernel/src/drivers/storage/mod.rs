@@ -13,6 +13,7 @@ pub mod atapi;
 pub mod blockdev;
 pub mod nvme;
 pub mod lsi_scsi;
+pub mod sdhci;
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};

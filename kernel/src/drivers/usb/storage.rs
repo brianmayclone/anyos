@@ -706,6 +706,9 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         // Scan for partitions (CDROMs don't have MBR/GPT)
         blockdev::scan_and_register_partitions(disk_id);
 
+        // Auto-mount partitions under /Volumes/ (for removable media)
+        blockdev::auto_mount_removable(disk_id);
+
         crate::serial_verbose_println!("  USB Storage: registered as disk {} (hd{})", disk_id, disk_id);
     }
 }

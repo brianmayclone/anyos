@@ -269,7 +269,13 @@ pub fn sys_mount(mount_path_ptr: u32, device_path_ptr: u32, fs_type: u32) -> u32
         String::new()
     };
     match crate::fs::vfs::mount_fs(&mount_path, &device_path, fs_type) {
-        Ok(()) => 0,
+        Ok(()) => {
+            // Emit volume mounted event
+            crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
+                crate::ipc::event_bus::EVT_VOLUME_MOUNTED, fs_type, 0, 0, 0,
+            ));
+            0
+        }
         Err(e) => fs_err(e),
     }
 }
@@ -281,7 +287,13 @@ pub fn sys_umount(mount_path_ptr: u32) -> u32 {
     if mount_path_ptr == 0 { return u32::MAX; }
     let mount_path = resolve_path(unsafe { read_user_str(mount_path_ptr) });
     match crate::fs::vfs::umount_fs(&mount_path) {
-        Ok(()) => 0,
+        Ok(()) => {
+            // Emit volume unmounted event
+            crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
+                crate::ipc::event_bus::EVT_VOLUME_UNMOUNTED, 0, 0, 0, 0,
+            ));
+            0
+        }
         Err(e) => fs_err(e),
     }
 }

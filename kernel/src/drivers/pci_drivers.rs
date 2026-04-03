@@ -181,6 +181,18 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
         specificity: 2,
     },
 
+    // ── Realtek RTL8125 2.5 Gigabit Ethernet (gaming boards since 2020) ──
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x8125 },
+        factory: |pci| crate::drivers::network::rtl8125::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x3000 },
+        factory: |pci| crate::drivers::network::rtl8125::probe(pci),
+        specificity: 2,
+    },
+
     // ── Realtek RTL8168/8111 Gigabit Ethernet (most common consumer NIC) ──
     PciDriverEntry {
         match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x8168 },
@@ -262,7 +274,8 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
         factory: |pci| {
             // Try specific drivers by vendor before falling back to E1000
             match pci.vendor_id {
-                0x10EC => crate::drivers::network::rtl8168::probe(pci),
+                0x10EC => crate::drivers::network::rtl8125::probe(pci)
+                    .or_else(|| crate::drivers::network::rtl8168::probe(pci)),
                 0x8086 => crate::drivers::network::igc::probe(pci)
                     .or_else(|| crate::drivers::network::e1000::probe(pci)),
                 _ => crate::drivers::network::e1000::probe(pci),
@@ -277,6 +290,7 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
             match pci.vendor_id {
                 0x8086 => crate::drivers::gpu::intel_fb::probe(pci),
                 0x1002 => crate::drivers::gpu::amd_fb::probe(pci),
+                0x10DE => crate::drivers::gpu::nvidia_fb::probe(pci),
                 _ => crate::drivers::gpu::generic_vga_probe(pci),
             }
         },
@@ -300,6 +314,12 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
     PciDriverEntry {
         match_rule: PciMatch::Class { class: 0x0C, subclass: 0x05 },
         factory: |pci| crate::drivers::usb::smbus_probe(pci),
+        specificity: 1,
+    },
+    // SD Host Controller (class 08:05) — SD/SDHC/SDXC card readers
+    PciDriverEntry {
+        match_rule: PciMatch::Class { class: 0x08, subclass: 0x05 },
+        factory: |pci| crate::drivers::storage::sdhci::probe(pci),
         specificity: 1,
     },
 ];
