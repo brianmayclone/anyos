@@ -772,16 +772,10 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
                                 let px = bx + col;
                                 let py = by + row;
                                 if px < pw && py < plane_h[c] {
-                                    // Clamp to 0..255
-                                    let val = block[row * 8 + col] + 128;
-                                    let clamped = if val < 0 {
-                                        0u8
-                                    } else if val > 255 {
-                                        255u8
-                                    } else {
-                                        val as u8
-                                    };
-                                    scratch[base + py * pw + px] = clamped;
+                                    // IDCT output already includes +128 level shift.
+                                    // Clamp to 0..255.
+                                    let val = block[row * 8 + col];
+                                    scratch[base + py * pw + px] = clamp_u8(val);
                                 }
                             }
                         }
@@ -850,33 +844,102 @@ fn clamp_u8(v: i32) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
-// Integer IDCT (Loeffler-Ligtenberg-Moschytz, Q13 fixed-point)
-// ---------------------------------------------------------------------------
+// Integer IDCT based on stb_image (Loeffler-Ligtenberg-Moschytz).
+// Columns first, then rows. The column pass uses a DC-only shortcut
+// (multiply DC by 4), and the row pass includes the +128 level shift
+// and final >>17 descale, writing the result clamped to [0, 255].
 //
-// This is the standard LLM algorithm used by libjpeg and many other
-// implementations, adapted for fixed-point integer arithmetic.
-//
-// Two 1-D transforms: first on rows, then on columns.
-// The input block is in normal (not zig-zag) order, already dequantized.
+// After this function, block[i] contains pixel values in [0, 255].
 
 pub fn idct(block: &mut [i32; 64]) {
-    // Row pass
-    for row in 0..8 {
-        let base = row * 8;
-        idct_1d_row(block, base);
+    let mut tmp = [0i32; 64];
+
+    // Column pass (operates on column-stride data in `block`, writes to `tmp`)
+    for col in 0..8 {
+        let d = |r: usize| block[r * 8 + col];
+        if d(1)==0 && d(2)==0 && d(3)==0 && d(4)==0 && d(5)==0 && d(6)==0 && d(7)==0 {
+            let dc = d(0) * 4;
+            for r in 0..8 { tmp[r * 8 + col] = dc; }
+        } else {
+            idct_1d(d(0), d(1), d(2), d(3), d(4), d(5), d(6), d(7), 512, 10,
+                    |i, v| tmp[i * 8 + col] = v);
+        }
     }
 
-    // Column pass
-    for col in 0..8 {
-        idct_1d_col(block, col);
+    // Row pass (operates on `tmp`, writes pixel values back to `block`)
+    let bias = 65536 + (128 << 17); // includes +128 level shift
+    for row in 0..8 {
+        let r = |c: usize| tmp[row * 8 + c];
+        idct_1d(r(0), r(1), r(2), r(3), r(4), r(5), r(6), r(7), bias, 17,
+                |i, v| block[row * 8 + i] = v);
     }
 }
 
-/// 1D IDCT on a row of 8 elements (in-place).
-///
-/// Uses i64 intermediates to avoid overflow: dequantized coefficients can
-/// reach ±522k, and the Q13 fixed-point multiplies can exceed i32 range.
-fn idct_1d_row(block: &mut [i32; 64], base: usize) {
+/// 1D IDCT butterfly (Loeffler-Ligtenberg-Moschytz, integer).
+/// Calls `store(index, value)` for each of the 8 outputs.
+fn idct_1d<F: FnMut(usize, i32)>(
+    s0: i32, s1: i32, s2: i32, s3: i32,
+    s4: i32, s5: i32, s6: i32, s7: i32,
+    bias: i32, shift: u32,
+    mut store: F,
+) {
+    // Even part
+    let p2 = s2 as i64;
+    let p6 = s6 as i64;
+    let p1 = (p2 + p6) * 4433; // FIX(0.541196)
+    let t2 = p1 + p6 * -15137;  // FIX(0.541196 - 1.847759)
+    let t3 = p1 + p2 * 6270;    // FIX(0.541196 + 0.765367)
+
+    let p0 = (s0 as i64 + s4 as i64) << 12;
+    let p4 = (s0 as i64 - s4 as i64) << 12;
+
+    let x0 = p0 + t3;
+    let x3 = p0 - t3;
+    let x1 = p4 + t2;
+    let x2 = p4 - t2;
+
+    // Odd part
+    let mut t0 = s7 as i64;
+    let mut t1 = s5 as i64;
+    let mut t2o = s3 as i64;
+    let mut t3o = s1 as i64;
+
+    let p3 = t0 + t2o;
+    let p4o = t1 + t3o;
+    let p1o = t0 + t3o;
+    let p2o = t1 + t2o;
+    let p5 = (p3 + p4o) * 9633; // FIX(1.175876)
+
+    t0 = t0 * 2446;   // FIX(0.298631)
+    t1 = t1 * 16819;  // FIX(2.053120)
+    t2o = t2o * 25172; // FIX(3.072711)
+    t3o = t3o * 12299; // FIX(1.501321)
+
+    let p1o = p1o * -7373 + p5;  // FIX(-0.899976)
+    let p2o = p2o * -20995 + p5; // FIX(-2.562915)
+    let p3 = p3 * -16069;        // FIX(-1.961571)
+    let p4o = p4o * -3196;       // FIX(-0.390181)
+
+    t0 = t0 + p1o + p3;
+    t1 = t1 + p2o + p4o;
+    t2o = t2o + p2o + p3;
+    t3o = t3o + p1o + p4o;
+
+    let b = bias as i64;
+    store(0, ((x0 + t3o + b) >> shift) as i32);
+    store(7, ((x0 - t3o + b) >> shift) as i32);
+    store(1, ((x1 + t2o + b) >> shift) as i32);
+    store(6, ((x1 - t2o + b) >> shift) as i32);
+    store(2, ((x2 + t1 + b) >> shift) as i32);
+    store(5, ((x2 - t1 + b) >> shift) as i32);
+    store(3, ((x3 + t0 + b) >> shift) as i32);
+    store(4, ((x3 - t0 + b) >> shift) as i32);
+}
+
+// OLD idct_1d_row/col removed — replaced by stb_image-style idct_1d above.
+
+#[allow(dead_code)]
+fn _old_idct_1d_row(block: &mut [i32; 64], base: usize) {
     let s0 = block[base + 0] as i64;
     let s1 = block[base + 1] as i64;
     let s2 = block[base + 2] as i64;
@@ -906,18 +969,23 @@ fn idct_1d_row(block: &mut [i32; 64], base: usize) {
     let s4 = s4 << bits;
 
     // Check for all-zero AC (common shortcut)
+    // NOTE: We must NOT replicate DC to all 8 positions for the row pass!
+    // The row pass output feeds into the column pass as frequency-domain
+    // coefficients. For DC-only, position 0 gets the prescaled DC value
+    // and positions 1-7 must remain 0.
     if s1 == 0 && s2 == 0 && s3 == 0 && s4 == 0
         && s5 == 0 && s6 == 0 && s7 == 0
     {
-        let dc = (s0 + (1 << (bits - 4))) as i32;
-        block[base + 0] = dc;
-        block[base + 1] = dc;
-        block[base + 2] = dc;
-        block[base + 3] = dc;
-        block[base + 4] = dc;
-        block[base + 5] = dc;
-        block[base + 6] = dc;
-        block[base + 7] = dc;
+        // Row-pass DC: prescaled value at position 0 only.
+        // The column pass will distribute it to all 8 pixels.
+        block[base + 0] = s0 as i32;
+        block[base + 1] = 0;
+        block[base + 2] = 0;
+        block[base + 3] = 0;
+        block[base + 4] = 0;
+        block[base + 5] = 0;
+        block[base + 6] = 0;
+        block[base + 7] = 0;
         return;
     }
 
