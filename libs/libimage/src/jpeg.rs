@@ -883,12 +883,12 @@ fn idct_1d<F: FnMut(usize, i32)>(
     bias: i32, shift: u32,
     mut store: F,
 ) {
-    // Even part
+    // Even part (Q12 fixed-point, matching stb_image f2f constants)
     let p2 = s2 as i64;
     let p6 = s6 as i64;
-    let p1 = (p2 + p6) * 4433; // FIX(0.541196)
-    let t2 = p1 + p6 * -15137;  // FIX(0.541196 - 1.847759)
-    let t3 = p1 + p2 * 6270;    // FIX(0.541196 + 0.765367)
+    let p1 = (p2 + p6) * 2217; // f2f(0.5411961)
+    let t2 = p1 + p6 * -7568;  // f2f(-1.847759065)
+    let t3 = p1 + p2 * 3135;   // f2f(0.765366865)
 
     let p0 = (s0 as i64 + s4 as i64) << 12;
     let p4 = (s0 as i64 - s4 as i64) << 12;
@@ -908,17 +908,17 @@ fn idct_1d<F: FnMut(usize, i32)>(
     let p4o = t1 + t3o;
     let p1o = t0 + t3o;
     let p2o = t1 + t2o;
-    let p5 = (p3 + p4o) * 9633; // FIX(1.175876)
+    let p5 = (p3 + p4o) * 4816; // f2f(1.175875602)
 
-    t0 = t0 * 2446;   // FIX(0.298631)
-    t1 = t1 * 16819;  // FIX(2.053120)
-    t2o = t2o * 25172; // FIX(3.072711)
-    t3o = t3o * 12299; // FIX(1.501321)
+    t0 = t0 * 1223;   // f2f(0.298631336)
+    t1 = t1 * 8410;   // f2f(2.053119869)
+    t2o = t2o * 12586; // f2f(3.072711026)
+    t3o = t3o * 6149;  // f2f(1.501321110)
 
-    let p1o = p1o * -7373 + p5;  // FIX(-0.899976)
-    let p2o = p2o * -20995 + p5; // FIX(-2.562915)
-    let p3 = p3 * -16069;        // FIX(-1.961571)
-    let p4o = p4o * -3196;       // FIX(-0.390181)
+    let p1o = p5 + p1o * -3686;  // f2f(-0.899976223)
+    let p2o = p5 + p2o * -10498; // f2f(-2.562915447)
+    let p3 = p3 * -8035;         // f2f(-1.961570560)
+    let p4o = p4o * -1598;       // f2f(-0.390180644)
 
     t0 = t0 + p1o + p3;
     t1 = t1 + p2o + p4o;
