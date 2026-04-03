@@ -53,16 +53,10 @@ void main() {
 }
 ";
 
-/// Fragment shader: trivial — just texture lookup × interpolated vertex lighting.
+/// Fragment shader: constant red — tests basic HW pipeline without varyings/uniforms.
 static FS_SOURCE: &str =
-"varying vec3 vLighting;
-varying vec2 vTexCoord;
-uniform sampler2D uTexture;
-uniform vec4 uMatColor;
-void main() {
-    vec4 texColor = texture2D(uTexture, vTexCoord);
-    vec3 baseColor = texColor.rgb * uMatColor.rgb;
-    gl_FragColor = vec4(vLighting * baseColor, uMatColor.a);
+"void main() {
+    gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
 }
 ";
 
