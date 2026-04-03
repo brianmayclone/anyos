@@ -27,6 +27,7 @@ pub mod pci_drivers;
 pub mod pci_msi;
 #[cfg(target_arch = "x86_64")]
 pub mod rsod;
+pub mod shutdown_screen;
 #[cfg(target_arch = "x86_64")]
 pub mod rtc;
 pub mod serial;

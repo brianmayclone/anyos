@@ -87,7 +87,7 @@ struct AcpiSdtHeader {
 }
 
 /// FADT fields extracted from the ACPI table.
-/// Covers ACPI 1.0 + 2.0 fields needed for P-states, C-states, and sleep.
+/// Covers ACPI 1.0 + 2.0 fields needed for P-states, C-states, sleep, and reset.
 #[derive(Debug, Clone, Copy)]
 pub struct Fadt {
     /// SCI interrupt vector (x86 IRQ line).
@@ -132,6 +132,14 @@ pub struct Fadt {
     pub iapc_boot_arch: u16,
     /// FADT feature flags.
     pub flags: u32,
+    /// FADT table length (from SDT header). Used to check ACPI 2.0+ availability.
+    pub table_length: u32,
+    /// ACPI 2.0+ RESET_REG: address space ID (0 = system memory, 1 = system I/O).
+    pub reset_reg_addr_space: u8,
+    /// ACPI 2.0+ RESET_REG: register address (port or MMIO address).
+    pub reset_reg_address: u64,
+    /// ACPI 2.0+ RESET_VALUE: value to write to trigger platform reset.
+    pub reset_value: u8,
 }
 
 // ── Global State ─────────────────────────────────────────────────────────────
@@ -317,6 +325,9 @@ fn parse_fadt_table(virt: u64) -> Option<Fadt> {
         ($off:expr) => { unsafe { b.add($off).read() } }
     }
 
+    // Read table length from the SDT header (offset 4) for ACPI 2.0+ field bounds check.
+    let table_length   = ru32!(4);
+
     let sci_interrupt  = ru16!(46);
     let smi_cmd        = ru32!(48);
     let acpi_enable    = ru8!(52);
@@ -338,6 +349,31 @@ fn parse_fadt_table(virt: u64) -> Option<Fadt> {
     let duty_width     = ru8!(105);
     let iapc_boot_arch = ru16!(109);
     let flags          = ru32!(112);
+
+    // ACPI 2.0+ RESET_REG (Generic Address Structure at offset 128):
+    //   [116..120] RESET_REG.AddressSpaceId (u8 at 128)
+    //   [128]      AddressSpaceId: 0 = SystemMemory, 1 = SystemIO
+    //   [129]      RegisterBitWidth
+    //   [130]      RegisterBitOffset
+    //   [131]      AccessSize
+    //   [132..140] Address (u64)
+    //   [140]      RESET_VALUE (u8)
+    // Only read if the table is long enough (ACPI 2.0 FADT is >= 244 bytes).
+    let (reset_reg_addr_space, reset_reg_address, reset_value) = if table_length >= 141 {
+        macro_rules! ru64 {
+            ($off:expr) => { unsafe { (b.add($off) as *const u64).read_unaligned() } }
+        }
+        let addr_space = ru8!(128);
+        let address    = ru64!(132);
+        let value      = ru8!(140);
+        crate::serial_verbose_println!(
+            "  ACPI PM: RESET_REG addr_space={} address={:#010x} value={:#04x}",
+            addr_space, address, value
+        );
+        (addr_space, address, value)
+    } else {
+        (0, 0u64, 0u8)
+    };
 
     Some(Fadt {
         sci_interrupt,
@@ -361,6 +397,10 @@ fn parse_fadt_table(virt: u64) -> Option<Fadt> {
         duty_width,
         iapc_boot_arch,
         flags,
+        table_length,
+        reset_reg_addr_space,
+        reset_reg_address,
+        reset_value,
     })
 }
 
@@ -570,6 +610,41 @@ pub fn acpi_poweroff(fadt: &Fadt) {
         if fadt.pm1b_cnt_blk != 0 {
             outw(fadt.pm1b_cnt_blk as u16, value);
         }
+    }
+}
+
+/// Attempt a platform reboot via the ACPI RESET_REG (FADT offset 128+).
+///
+/// Returns `true` if ACPI reset register was found and written (caller should
+/// spin briefly and fall through if it didn't take effect).
+/// Returns `false` if no usable ACPI reset register is available.
+pub fn acpi_reboot() -> bool {
+    let fadt = match get_fadt() {
+        Some(f) => f,
+        None => return false,
+    };
+    // ACPI 2.0+ RESET_REG must have a non-zero address
+    if fadt.reset_reg_address == 0 || fadt.reset_value == 0 {
+        return false;
+    }
+    match fadt.reset_reg_addr_space {
+        1 => {
+            // System I/O space
+            let port = fadt.reset_reg_address as u16;
+            crate::serial_println!("kernel: ACPI reboot via I/O port {:#06x} value {:#04x}",
+                port, fadt.reset_value);
+            unsafe { crate::arch::x86::port::outb(port, fadt.reset_value); }
+            true
+        }
+        0 => {
+            // System Memory space
+            let addr = fadt.reset_reg_address;
+            crate::serial_println!("kernel: ACPI reboot via MMIO {:#010x} value {:#04x}",
+                addr, fadt.reset_value);
+            unsafe { (addr as *mut u8).write_volatile(fadt.reset_value); }
+            true
+        }
+        _ => false,
     }
 }
 

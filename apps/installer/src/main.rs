@@ -58,20 +58,16 @@ struct DiskEntry {
 
 struct InstallerApp {
     win: ui::Window,
-    // Sidebar step indicators
-    sidebar: ui::View,
-    step_labels: [ui::Label; 4],
-    step_dots: [ui::View; 4],
-    // Pages
-    page0: ui::View,
-    page1: ui::View,
-    page2: ui::View,
-    page3: ui::View,
-    // Page 1
+    // Pages: 0=Welcome, 1=License, 2=Select Disk, 3=Installing/Done
+    page0: ui::View,    // Welcome
+    page1: ui::View,    // License Agreement
+    page2: ui::View,    // Select Disk (cards)
+    page3: ui::View,    // Installing → Complete
+    // Page 2 (disk selection)
     disk_grid: ui::DataGrid,
-    // Page 2
-    method_info: ui::Label,
-    // Page 3
+    disk_container_id: u32,
+    disk_card_ids: Vec<u32>,
+    // Page 3 (progress + completion)
     progress_bar: ui::ProgressBar,
     phase_label: ui::Label,
     status_label: ui::Label,
@@ -80,6 +76,12 @@ struct InstallerApp {
     details_card: ui::Card,
     details_log: ui::TextArea,
     details_text: String,
+    progress_card_id: u32,
+    complete_label_id: u32,
+    complete_sub_id: u32,
+    // Bottom bar buttons
+    btn_back_id: u32,
+    btn_next_id: u32,
     // State
     disks: Vec<DiskEntry>,
     selected_disk: Option<usize>,
@@ -87,6 +89,7 @@ struct InstallerApp {
     timer_id: u32,
     details_visible: bool,
     last_copy_seq: u32,
+    license_accepted: bool,
 }
 
 static mut APP: Option<InstallerApp> = None;
@@ -134,22 +137,147 @@ fn format_size(sectors: u64) -> String {
     }
 }
 
-fn populate_disk_grid(grid: &ui::DataGrid, disks: &[DiskEntry]) {
-    let rows: Vec<Vec<&str>> = Vec::new();
-    let mut row_strings: Vec<[String; 4]> = Vec::new();
-    for disk in disks {
-        row_strings.push([
-            format!("Disk {}", disk.disk_id),
-            format_size(disk.size_sectors),
-            format!("{}", disk.partition_count),
-            format!("{}", disk.device_id),
-        ]);
+fn populate_disk_grid(_grid: &ui::DataGrid, _disks: &[DiskEntry]) {
+    // Legacy — now using populate_disk_cards() instead
+}
+
+/// Build macOS-style disk selection cards. Each disk is a large card with
+/// a disk icon, name, size, and partition info. Selected card has blue border.
+fn populate_disk_cards(disks: &[DiskEntry]) {
+    let a = app();
+    let container = ui::Control::from_id(a.disk_container_id);
+
+    // Remove old cards (if refreshing)
+    for &card_id in &a.disk_card_ids {
+        ui::Control::from_id(card_id).set_visible(false);
     }
-    let row_refs: Vec<Vec<&str>> = row_strings.iter().map(|r| {
-        r.iter().map(|s| s.as_str()).collect()
-    }).collect();
-    grid.set_row_count(disks.len() as u32);
-    grid.set_data(&row_refs);
+    a.disk_card_ids.clear();
+
+    let card_w: u32 = 160;
+    let card_h: u32 = 190;
+    let gap: i32 = 16;
+    let max_per_row = 3;
+
+    // Find best default: largest disk that's >= 1 GB
+    let mut best_idx: Option<usize> = None;
+    let mut best_size: u64 = 0;
+    for (i, d) in disks.iter().enumerate() {
+        let bytes = d.size_sectors * 512;
+        if bytes >= 1024 * 1024 * 1024 && bytes > best_size {
+            best_size = bytes;
+            best_idx = Some(i);
+        }
+    }
+    // Fallback: largest disk of any size
+    if best_idx.is_none() && !disks.is_empty() {
+        best_idx = Some(0);
+        for (i, d) in disks.iter().enumerate() {
+            if d.size_sectors > disks[best_idx.unwrap()].size_sectors {
+                best_idx = Some(i);
+            }
+        }
+    }
+    if let Some(idx) = best_idx {
+        a.selected_disk = Some(idx);
+    }
+
+    // Center cards: compute total width and offset
+    let total_cards = disks.len().min(max_per_row);
+    let total_w = total_cards as i32 * card_w as i32 + (total_cards as i32 - 1).max(0) * gap;
+    let container_w = 560i32;
+    let x_offset = (container_w - total_w) / 2;
+
+    for (i, disk) in disks.iter().enumerate() {
+        let col = (i % max_per_row) as i32;
+        let row = (i / max_per_row) as i32;
+        let x = x_offset + col * (card_w as i32 + gap);
+        let y = row * (card_h as i32 + gap);
+
+        let is_selected = a.selected_disk == Some(i);
+        let card_color = if is_selected { 0xFF1A3A5C } else { 0xFF2A2A2E };
+
+        let card = ui::Card::new();
+        card.set_position(x, y);
+        card.set_size(card_w, card_h);
+        card.set_color(card_color);
+
+        // Disk icon from /System/media/icons/devices/generic.ico
+        if let Some(ico) = ui::Icon::load("/System/media/icons/devices/generic.ico", 48) {
+            let iv = ico.into_image_view(48, 48);
+            iv.set_position((card_w as i32 - 48) / 2, 14);
+            card.add(&iv);
+        }
+
+        // Disk name — centered
+        let name = format!("Disk {}", disk.disk_id);
+        let name_label = ui::Label::new(&name);
+        name_label.set_position(0, 76);
+        name_label.set_size(card_w, 20);
+        name_label.set_font_size(14);
+        name_label.set_color(0x00000000);
+        name_label.set_text_color(0xFFFFFFFF);
+        name_label.set_text_align(ui::TEXT_ALIGN_CENTER);
+        card.add(&name_label);
+
+        // Size — centered
+        let size_str = format_size(disk.size_sectors);
+        let size_label = ui::Label::new(&size_str);
+        size_label.set_position(0, 98);
+        size_label.set_size(card_w, 18);
+        size_label.set_font_size(12);
+        size_label.set_color(0x00000000);
+        size_label.set_text_color(0xFFAAAAAA);
+        size_label.set_text_align(ui::TEXT_ALIGN_CENTER);
+        card.add(&size_label);
+
+        // Partition count — centered
+        let part_str = if disk.partition_count == 0 {
+            String::from("Unpartitioned")
+        } else {
+            format!("{} partition{}", disk.partition_count,
+                if disk.partition_count == 1 { "" } else { "s" })
+        };
+        let part_label = ui::Label::new(&part_str);
+        part_label.set_position(0, 118);
+        part_label.set_size(card_w, 16);
+        part_label.set_font_size(11);
+        part_label.set_color(0x00000000);
+        part_label.set_text_color(0xFF777777);
+        part_label.set_text_align(ui::TEXT_ALIGN_CENTER);
+        card.add(&part_label);
+
+        // Selection indicator (blue dot at bottom-center)
+        if is_selected {
+            let dot = ui::View::new();
+            dot.set_position((card_w as i32 - 8) / 2, card_h as i32 - 16);
+            dot.set_size(8, 8);
+            dot.set_color(ACCENT);
+            card.add(&dot);
+        }
+
+        // Clickable overlay (Card doesn't support on_click, so use a transparent label)
+        let disk_idx = i;
+        let click_area = ui::Label::new("");
+        click_area.set_position(0, 0);
+        click_area.set_size(card_w, card_h);
+        click_area.set_color(0x00000000);
+        click_area.on_click_raw(disk_card_click, disk_idx as u64);
+        card.add(&click_area);
+
+        a.disk_card_ids.push(card.id());
+        container.add_child(card.id());
+    }
+
+    if disks.is_empty() {
+        let empty_label = ui::Label::new("No disks detected. Connect a disk and click Refresh.");
+        empty_label.set_position(0, 60);
+        empty_label.set_size(450, 20);
+        empty_label.set_font_size(13);
+        empty_label.set_color(0x00000000);
+        empty_label.set_text_color(0xFF888888);
+        container.add_child(empty_label.id());
+        a.disk_card_ids.push(empty_label.id());
+    }
 }
 
 // ── Sidebar step management ─────────────────────────────────────────────────
@@ -158,23 +286,37 @@ const ACCENT: u32 = 0xFF007AFF;      // Apple blue
 const ACCENT_DIM: u32 = 0xFF3A3A5C;  // Inactive step
 const STEP_DONE: u32 = 0xFF34C759;   // Green checkmark color
 
-fn update_sidebar(step: u32) {
-    let a = app();
-    a.current_step = step;
-    for i in 0..4 {
-        let active = step >= (i + 1) as u32;
-        a.step_dots[i].set_color(if active { ACCENT } else { ACCENT_DIM });
-        a.step_labels[i].set_text_color(if active { 0xFFFFFFFF } else { 0xFF888888 });
-    }
+extern "C" fn disk_card_click(_control_id: u32, _event_type: u32, userdata: u64) {
+    let idx = userdata as usize;
+    app().selected_disk = Some(idx);
+    let disks_copy = detect_disks();
+    populate_disk_cards(&disks_copy);
+    app().disks = disks_copy;
 }
 
 fn show_page(step: u32) {
     let a = app();
+    a.current_step = step;
     a.page0.set_visible(step == 0);
     a.page1.set_visible(step == 1);
     a.page2.set_visible(step == 2);
     a.page3.set_visible(step == 3);
-    update_sidebar(step);
+
+    // Bottom buttons
+    let show_back = step >= 1 && step <= 2;
+    let show_next = step <= 2;
+    unsafe {
+        ui::marshal_set_visible(a.btn_back_id, show_back);
+        ui::marshal_set_visible(a.btn_next_id, show_next);
+    }
+    // Change button text based on page
+    let next_ctrl = ui::Control::from_id(a.btn_next_id);
+    match step {
+        0 => next_ctrl.set_text("Continue"),
+        1 => next_ctrl.set_text("Agree"),
+        2 => next_ctrl.set_text("Install"),
+        _ => {}
+    }
 }
 
 // ── UI construction ─────────────────────────────────────────────────────────
@@ -183,69 +325,13 @@ fn main() {
     if !ui::init() { return; }
 
     let tc = ui::theme::colors();
-    let win = ui::Window::new("anyOS Installer", -1, -1, WIN_W, WIN_H);
+    let win = ui::Window::new("Install anyOS", -1, -1, WIN_W, WIN_H);
 
-    // ── Sidebar (left, step indicators) ──
-    let sidebar = ui::View::new();
-    sidebar.set_dock(ui::DOCK_LEFT);
-    sidebar.set_size(170, WIN_H);
-    sidebar.set_color(ui::theme::darken(tc.window_bg, 15));
-    win.add(&sidebar);
-
-    // App title in sidebar
-    let logo_label = ui::Label::new("anyOS");
-    logo_label.set_position(20, 20);
-    logo_label.set_size(130, 28);
-    logo_label.set_font_size(20);
-    logo_label.set_color(ui::theme::darken(tc.window_bg, 15));
-    logo_label.set_text_color(0xFFFFFFFF);
-    sidebar.add(&logo_label);
-
-    let sub_label = ui::Label::new("Installer");
-    sub_label.set_position(20, 48);
-    sub_label.set_size(130, 18);
-    sub_label.set_font_size(12);
-    sub_label.set_color(ui::theme::darken(tc.window_bg, 15));
-    sub_label.set_text_color(0xFF888888);
-    sidebar.add(&sub_label);
-
-    // Divider
-    let side_div = ui::Divider::new();
-    side_div.set_position(15, 78);
-    side_div.set_size(140, 1);
-    sidebar.add(&side_div);
-
-    // Step indicators (4 steps: Welcome → Select Disk → Method → Install)
-    let step_names = ["Welcome", "Select Disk", "Method", "Install"];
-    let mut step_labels: [ui::Label; 4] = core::array::from_fn(|_| ui::Label::new(""));
-    let mut step_dots: [ui::View; 4] = core::array::from_fn(|_| ui::View::new());
-
-    for (i, &name) in step_names.iter().enumerate() {
-        let y = 95 + i as i32 * 38;
-
-        let dot = ui::View::new();
-        dot.set_position(20, y + 2);
-        dot.set_size(10, 10);
-        dot.set_color(ACCENT_DIM);
-        sidebar.add(&dot);
-
-        let lbl = ui::Label::new(name);
-        lbl.set_position(38, y);
-        lbl.set_size(120, 16);
-        lbl.set_font_size(13);
-        lbl.set_color(ui::theme::darken(tc.window_bg, 15));
-        lbl.set_text_color(0xFF888888);
-        sidebar.add(&lbl);
-
-        step_dots[i] = dot;
-        step_labels[i] = lbl;
-    }
-
-    // ── Bottom bar ──
+    // ── Bottom bar (macOS style: "Go Back" left, "Continue" right, blue) ──
     let bottom = ui::View::new();
     bottom.set_dock(DOCK_BOTTOM);
-    bottom.set_size(WIN_W, 50);
-    bottom.set_color(ui::theme::darken(tc.window_bg, 8));
+    bottom.set_size(WIN_W, 56);
+    bottom.set_color(ui::theme::darken(tc.window_bg, 5));
     win.add(&bottom);
 
     let bottom_div = ui::Divider::new();
@@ -253,24 +339,20 @@ fn main() {
     bottom_div.set_size(WIN_W, 1);
     bottom.add(&bottom_div);
 
-    let btn_back = ui::Button::new("Back");
-    btn_back.set_position(12, 10);
-    btn_back.set_size(80, 30);
+    let btn_back = ui::Button::new("Go Back");
+    btn_back.set_position(20, 13);
+    btn_back.set_size(90, 30);
     btn_back.set_visible(false);
     let btn_back_id = Widget::id(&btn_back);
     bottom.add(&btn_back);
 
     let btn_next = ui::Button::new("Continue");
-    btn_next.set_position(WIN_W as i32 - 170 - 100, 10);
-    btn_next.set_size(90, 30);
+    btn_next.set_position(WIN_W as i32 - 120, 13);
+    btn_next.set_size(100, 30);
+    btn_next.set_color(ACCENT);
+    btn_next.set_text_color(0xFFFFFFFF);
+    let btn_next_id = Widget::id(&btn_next);
     bottom.add(&btn_next);
-
-    let btn_refresh = ui::IconButton::new("");
-    btn_refresh.set_position(WIN_W as i32 - 170 - 140, 10);
-    btn_refresh.set_size(30, 30);
-    btn_refresh.set_system_icon("refresh", ui::IconType::Outline, 0xFFCCCCCC, 18);
-    btn_refresh.set_tooltip("Refresh disk list");
-    bottom.add(&btn_refresh);
 
     // ═══════════════════════════════════════════════════════════════
     // Page 0: Welcome
@@ -281,37 +363,53 @@ fn main() {
     page0.set_color(tc.window_bg);
     win.add(&page0);
 
-    // Large anyOS branding
+    // Centered welcome layout (macOS style)
+    let cx = (WIN_W / 2) as i32; // center x
+
     let welcome_title = ui::Label::new("Welcome to anyOS");
-    welcome_title.set_position(40, 60);
-    welcome_title.set_size(500, 44);
-    welcome_title.set_font_size(28);
+    welcome_title.set_position(0, 100);
+    welcome_title.set_size(WIN_W, 44);
+    welcome_title.set_font_size(30);
     welcome_title.set_color(tc.window_bg);
     welcome_title.set_text_color(0xFFFFFFFF);
+    welcome_title.set_text_align(ui::TEXT_ALIGN_CENTER);
     page0.add(&welcome_title);
 
     let welcome_sub = ui::Label::new(
-        "This assistant will guide you through the installation of anyOS \
-         on your computer. It only takes a few minutes."
+        "This assistant will guide you through the steps needed to install anyOS on your computer."
     );
-    welcome_sub.set_position(40, 116);
-    welcome_sub.set_size(500, 44);
-    welcome_sub.set_font_size(13);
+    welcome_sub.set_position(0, 160);
+    welcome_sub.set_size(WIN_W, 40);
+    welcome_sub.set_font_size(14);
     welcome_sub.set_color(tc.window_bg);
     welcome_sub.set_text_color(0xFFAAAAAA);
+    welcome_sub.set_text_align(ui::TEXT_ALIGN_CENTER);
     page0.add(&welcome_sub);
 
-    // Version info
+    let welcome_hint = ui::Label::new("Click Continue to get started.");
+    welcome_hint.set_position(0, 216);
+    welcome_hint.set_size(WIN_W, 20);
+    welcome_hint.set_font_size(13);
+    welcome_hint.set_color(tc.window_bg);
+    welcome_hint.set_text_color(0xFF888888);
+    welcome_hint.set_text_align(ui::TEXT_ALIGN_CENTER);
+    page0.add(&welcome_hint);
+
     let ver_label = ui::Label::new("anyOS version 0.4");
-    ver_label.set_position(40, 380);
-    ver_label.set_size(300, 18);
+    ver_label.set_position(0, 380);
+    ver_label.set_size(WIN_W, 18);
     ver_label.set_font_size(11);
     ver_label.set_color(tc.window_bg);
-    ver_label.set_text_color(0xFF666666);
+    ver_label.set_text_color(0xFF555555);
+    ver_label.set_text_align(ui::TEXT_ALIGN_CENTER);
     page0.add(&ver_label);
 
     // ═══════════════════════════════════════════════════════════════
-    // Page 1: Select Disk
+    // Page 1: Select Disk (macOS Ventura style — large disk cards)
+    // ═══════════════════════════════════════════════════════════════
+
+    // ═══════════════════════════════════════════════════════════════
+    // Page 1: License Agreement
     // ═══════════════════════════════════════════════════════════════
 
     let page1 = ui::View::new();
@@ -320,50 +418,76 @@ fn main() {
     page1.set_visible(false);
     win.add(&page1);
 
-    let p1_title = ui::Label::new("Select a Destination");
-    p1_title.set_position(24, 16);
-    p1_title.set_size(400, 28);
-    p1_title.set_font_size(18);
-    p1_title.set_color(tc.window_bg);
-    p1_title.set_text_color(0xFFFFFFFF);
-    page1.add(&p1_title);
+    let lic_title = ui::Label::new("Software License Agreement");
+    lic_title.set_position(0, 30);
+    lic_title.set_size(WIN_W, 34);
+    lic_title.set_font_size(24);
+    lic_title.set_color(tc.window_bg);
+    lic_title.set_text_color(0xFFFFFFFF);
+    lic_title.set_text_align(ui::TEXT_ALIGN_CENTER);
+    page1.add(&lic_title);
 
-    let p1_desc = ui::Label::new("Choose the disk where anyOS will be installed.");
-    p1_desc.set_position(24, 46);
-    p1_desc.set_size(420, 18);
-    p1_desc.set_font_size(12);
-    p1_desc.set_color(tc.window_bg);
-    p1_desc.set_text_color(0xFF999999);
-    page1.add(&p1_desc);
+    let lic_desc = ui::Label::new("Please read and agree to the terms before continuing.");
+    lic_desc.set_position(0, 68);
+    lic_desc.set_size(WIN_W, 20);
+    lic_desc.set_font_size(13);
+    lic_desc.set_color(tc.window_bg);
+    lic_desc.set_text_color(0xFF999999);
+    lic_desc.set_text_align(ui::TEXT_ALIGN_CENTER);
+    page1.add(&lic_desc);
 
-    // Disk card
-    let disk_card = ui::Card::new();
-    disk_card.set_position(20, 76);
-    disk_card.set_size(WIN_W - 170 - 44, 260);
-    page1.add(&disk_card);
+    // License text card
+    let lic_card = ui::Card::new();
+    lic_card.set_position(cx - 290, 106);
+    lic_card.set_size(580, 230);
+    page1.add(&lic_card);
 
-    let disk_grid = ui::DataGrid::new(WIN_W - 170 - 54, 220);
-    disk_grid.set_position(5, 5);
-    disk_grid.set_row_height(28);
-    disk_grid.set_header_height(30);
-    disk_grid.set_columns(&[
-        ColumnDef::new("Disk").width(70),
-        ColumnDef::new("Size").width(100).align(ALIGN_RIGHT),
-        ColumnDef::new("Partitions").width(80).align(ALIGN_RIGHT),
-        ColumnDef::new("ID").width(50).align(ALIGN_RIGHT),
-    ]);
-    disk_card.add(&disk_grid);
+    let lic_text = ui::TextArea::new();
+    lic_text.set_position(8, 8);
+    lic_text.set_size(564, 214);
+    lic_text.set_font_size(12);
+    lic_text.set_text(concat!(
+        "anyOS Software License Agreement\n",
+        "MIT License\n\n",
+        "Copyright (c) 2024-2026 Christian Moeller, Mike Stratmann\n\n",
+        "Permission is hereby granted, free of charge, to any person \n",
+        "obtaining a copy of this software and associated documentation \n",
+        "files (the \"Software\"), to deal in the Software without \n",
+        "restriction, including without limitation the rights to use, \n",
+        "copy, modify, merge, publish, distribute, sublicense, and/or \n",
+        "sell copies of the Software, and to permit persons to whom the \n",
+        "Software is furnished to do so, subject to the following \n",
+        "conditions:\n\n",
+        "The above copyright notice and this permission notice shall be \n",
+        "included in all copies or substantial portions of the Software.\n\n",
+        "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, \n",
+        "EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES \n",
+        "OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND \n",
+        "NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT \n",
+        "HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, \n",
+        "WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING \n",
+        "FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR \n",
+        "OTHER DEALINGS IN THE SOFTWARE.\n\n",
+        "By clicking \"Agree\", you accept these terms and conditions.",
+    ));
+    lic_card.add(&lic_text);
 
-    let p1_warn = ui::Label::new("All data on the selected disk may be erased during installation.");
-    p1_warn.set_position(24, 346);
-    p1_warn.set_size(420, 16);
-    p1_warn.set_font_size(11);
-    p1_warn.set_color(tc.window_bg);
-    p1_warn.set_text_color(0xFFFF6B6B);
-    page1.add(&p1_warn);
+    // "I agree" label at bottom
+    let lic_agree_hint = ui::Label::new(
+        "Click \"Agree\" to accept and continue with the installation."
+    );
+    lic_agree_hint.set_position(0, 350);
+    lic_agree_hint.set_size(WIN_W, 18);
+    lic_agree_hint.set_font_size(12);
+    lic_agree_hint.set_color(tc.window_bg);
+    lic_agree_hint.set_text_color(0xFF888888);
+    lic_agree_hint.set_text_align(ui::TEXT_ALIGN_CENTER);
+    page1.add(&lic_agree_hint);
+
+    // (method_info removed — no Install Type page)
 
     // ═══════════════════════════════════════════════════════════════
-    // Page 2: Partition Method
+    // Page 2: Select Disk (macOS-style disk cards)
     // ═══════════════════════════════════════════════════════════════
 
     let page2 = ui::View::new();
@@ -372,94 +496,47 @@ fn main() {
     page2.set_visible(false);
     win.add(&page2);
 
-    let p2_title = ui::Label::new("Installation Type");
-    p2_title.set_position(24, 16);
-    p2_title.set_size(400, 28);
-    p2_title.set_font_size(18);
+    let p2_title = ui::Label::new("Select a Destination");
+    p2_title.set_position(0, 30);
+    p2_title.set_size(WIN_W, 34);
+    p2_title.set_font_size(24);
     p2_title.set_color(tc.window_bg);
     p2_title.set_text_color(0xFFFFFFFF);
+    p2_title.set_text_align(ui::TEXT_ALIGN_CENTER);
     page2.add(&p2_title);
 
-    let method_info = ui::Label::new("");
-    method_info.set_position(24, 48);
-    method_info.set_size(420, 18);
-    method_info.set_font_size(12);
-    method_info.set_color(tc.window_bg);
-    method_info.set_text_color(0xFF999999);
-    page2.add(&method_info);
+    let p2_desc = ui::Label::new("Select the disk where you would like to install anyOS.");
+    p2_desc.set_position(0, 68);
+    p2_desc.set_size(WIN_W, 20);
+    p2_desc.set_font_size(13);
+    p2_desc.set_color(tc.window_bg);
+    p2_desc.set_text_color(0xFF999999);
+    p2_desc.set_text_align(ui::TEXT_ALIGN_CENTER);
+    page2.add(&p2_desc);
 
-    let card_w = WIN_W - 170 - 44;
+    let disk_container = ui::View::new();
+    disk_container.set_position(cx - 280, 110);
+    disk_container.set_size(560, 260);
+    disk_container.set_color(tc.window_bg);
+    page2.add(&disk_container);
 
-    // Option 1: Erase & Install
-    let card_auto = ui::Card::new();
-    card_auto.set_position(20, 80);
-    card_auto.set_size(card_w, 114);
-    page2.add(&card_auto);
+    let disk_grid = ui::DataGrid::new(1, 1);
+    disk_grid.set_visible(false);
+    page2.add(&disk_grid);
 
-    let auto_icon = ui::IconButton::new("");
-    auto_icon.set_position(14, 14);
-    auto_icon.set_size(36, 36);
-    auto_icon.set_system_icon("device-floppy", ui::IconType::Outline, ACCENT, 24);
-    auto_icon.set_enabled(false);
-    card_auto.add(&auto_icon);
-
-    let auto_title = ui::Label::new("Erase disk and install");
-    auto_title.set_position(60, 10);
-    auto_title.set_size(card_w - 70, 20);
-    auto_title.set_font_size(14);
-    auto_title.set_color(tc.window_bg);
-    auto_title.set_text_color(0xFFFFFFFF);
-    card_auto.add(&auto_title);
-
-    let auto_desc = ui::Label::new("Recommended. Erases the entire disk,\ncreates a single partition and installs anyOS.");
-    auto_desc.set_position(60, 32);
-    auto_desc.set_size(card_w - 70, 40);
-    auto_desc.set_font_size(11);
-    auto_desc.set_color(tc.window_bg);
-    auto_desc.set_text_color(0xFF999999);
-    card_auto.add(&auto_desc);
-
-    let btn_auto = ui::Button::new("Erase && Install");
-    btn_auto.set_position(60, 76);
-    btn_auto.set_size(130, 28);
-    card_auto.add(&btn_auto);
-
-    // Option 2: Manual
-    let card_manual = ui::Card::new();
-    card_manual.set_position(20, 208);
-    card_manual.set_size(card_w, 114);
-    page2.add(&card_manual);
-
-    let manual_icon = ui::IconButton::new("");
-    manual_icon.set_position(14, 14);
-    manual_icon.set_size(36, 36);
-    manual_icon.set_system_icon("settings", ui::IconType::Outline, 0xFFCCCCCC, 24);
-    manual_icon.set_enabled(false);
-    card_manual.add(&manual_icon);
-
-    let manual_title = ui::Label::new("Custom partitioning");
-    manual_title.set_position(60, 10);
-    manual_title.set_size(card_w - 70, 20);
-    manual_title.set_font_size(14);
-    manual_title.set_color(tc.window_bg);
-    manual_title.set_text_color(0xFFFFFFFF);
-    card_manual.add(&manual_title);
-
-    let manual_desc = ui::Label::new("Open Disk Utility to create and\nmanage partitions yourself.");
-    manual_desc.set_position(60, 32);
-    manual_desc.set_size(card_w - 70, 40);
-    manual_desc.set_font_size(11);
-    manual_desc.set_color(tc.window_bg);
-    manual_desc.set_text_color(0xFF999999);
-    card_manual.add(&manual_desc);
-
-    let btn_manual = ui::Button::new("Disk Utility...");
-    btn_manual.set_position(60, 76);
-    btn_manual.set_size(130, 28);
-    card_manual.add(&btn_manual);
+    let p2_warn = ui::Label::new(
+        "The selected disk will be erased and anyOS will be installed."
+    );
+    p2_warn.set_position(0, 390);
+    p2_warn.set_size(WIN_W, 16);
+    p2_warn.set_font_size(11);
+    p2_warn.set_color(tc.window_bg);
+    p2_warn.set_text_color(0xFF777777);
+    p2_warn.set_text_align(ui::TEXT_ALIGN_CENTER);
+    page2.add(&p2_warn);
 
     // ═══════════════════════════════════════════════════════════════
-    // Page 3: Installation Progress
+    // Page 3: Installation Progress + Completion
     // ═══════════════════════════════════════════════════════════════
 
     let page3 = ui::View::new();
@@ -469,62 +546,97 @@ fn main() {
     win.add(&page3);
 
     let p3_title = ui::Label::new("Installing anyOS...");
-    p3_title.set_position(24, 16);
-    p3_title.set_size(400, 28);
-    p3_title.set_font_size(18);
+    p3_title.set_position(0, 30);
+    p3_title.set_size(WIN_W, 34);
+    p3_title.set_font_size(24);
     p3_title.set_color(tc.window_bg);
     p3_title.set_text_color(0xFFFFFFFF);
+    p3_title.set_text_align(ui::TEXT_ALIGN_CENTER);
     page3.add(&p3_title);
 
     let phase_label = ui::Label::new("Preparing...");
-    phase_label.set_position(24, 120);
-    phase_label.set_size(400, 22);
+    phase_label.set_position(0, 78);
+    phase_label.set_size(WIN_W, 22);
     phase_label.set_font_size(14);
     phase_label.set_color(tc.window_bg);
-    phase_label.set_text_color(0xFFFFFFFF);
+    phase_label.set_text_color(0xFFCCCCCC);
+    phase_label.set_text_align(ui::TEXT_ALIGN_CENTER);
     page3.add(&phase_label);
 
+    // Progress bar (full width, centered)
+    let bar_w = 560u32;
     let progress_card = ui::Card::new();
-    progress_card.set_position(20, 150);
-    progress_card.set_size(WIN_W - 170 - 44, 50);
+    progress_card.set_position(cx - (bar_w as i32 / 2) - 10, 116);
+    progress_card.set_size(bar_w + 20, 44);
     page3.add(&progress_card);
 
     let progress_bar = ui::ProgressBar::new(0);
-    progress_bar.set_position(10, 15);
-    progress_bar.set_size(WIN_W - 170 - 64, 20);
+    progress_bar.set_position(10, 12);
+    progress_bar.set_size(bar_w, 20);
     progress_card.add(&progress_bar);
 
     let status_label = ui::Label::new("");
-    status_label.set_position(24, 215);
-    status_label.set_size(400, 18);
+    status_label.set_position(0, 175);
+    status_label.set_size(WIN_W, 18);
     status_label.set_font_size(12);
     status_label.set_color(tc.window_bg);
     status_label.set_text_color(0xFF888888);
+    status_label.set_text_align(ui::TEXT_ALIGN_CENTER);
     page3.add(&status_label);
 
+    // Optional details toggle
     let btn_details = ui::Button::new("Show Details");
-    btn_details.set_position(24, 242);
-    btn_details.set_size(110, 26);
+    btn_details.set_position(cx - 60, 204);
+    btn_details.set_size(120, 26);
     page3.add(&btn_details);
 
-    let content_w = WIN_W - 170 - 44;
+    let content_w = bar_w + 20;
     let details_card = ui::Card::new();
-    details_card.set_position(20, 274);
-    details_card.set_size(content_w, 140);
+    details_card.set_position(cx - (content_w as i32 / 2), 240);
+    details_card.set_size(content_w, 130);
     details_card.set_visible(false);
     page3.add(&details_card);
 
     let details_log = ui::TextArea::new();
     details_log.set_position(4, 4);
-    details_log.set_size(content_w - 8, 132);
+    details_log.set_size(content_w - 8, 122);
     details_log.set_font_size(11);
     details_card.add(&details_log);
 
+    // Completion: hidden until done — replaces progress UI
+    let complete_label = ui::Label::new("Installation Complete");
+    complete_label.set_position(0, 200);
+    complete_label.set_size(WIN_W, 36);
+    complete_label.set_font_size(22);
+    complete_label.set_color(tc.window_bg);
+    complete_label.set_text_color(0xFF34C759); // Green
+    complete_label.set_text_align(ui::TEXT_ALIGN_CENTER);
+    complete_label.set_visible(false);
+    page3.add(&complete_label);
+
+    let complete_sub = ui::Label::new(
+        "anyOS has been installed successfully. Please restart your computer to complete the setup."
+    );
+    complete_sub.set_position(0, 244);
+    complete_sub.set_size(WIN_W, 44);
+    complete_sub.set_font_size(14);
+    complete_sub.set_color(tc.window_bg);
+    complete_sub.set_text_color(0xFFAAAAAA);
+    complete_sub.set_text_align(ui::TEXT_ALIGN_CENTER);
+    complete_sub.set_visible(false);
+    page3.add(&complete_sub);
+
     let btn_reboot = ui::Button::new("Restart");
-    btn_reboot.set_position((WIN_W - 170) as i32 / 2 - 60, 420);
-    btn_reboot.set_size(120, 34);
+    btn_reboot.set_position(cx - 65, 310);
+    btn_reboot.set_size(130, 36);
+    btn_reboot.set_color(ACCENT);
+    btn_reboot.set_text_color(0xFFFFFFFF);
     btn_reboot.set_visible(false);
     page3.add(&btn_reboot);
+
+    let progress_card_id = Widget::id(&progress_card);
+    let complete_label_id = Widget::id(&complete_label);
+    let complete_sub_id = Widget::id(&complete_sub);
 
     // ── Marshal IDs for worker thread ──
     unsafe {
@@ -536,17 +648,20 @@ fn main() {
 
     // ── Initial data ──
     let disks = detect_disks();
-    populate_disk_grid(&disk_grid, &disks);
+    // Populate macOS-style disk cards (initial load after APP is set up below)
+    // populate_disk_cards will be called after APP = Some(...)
+    let _ = &disk_grid; // keep disk_grid referenced
 
     unsafe {
         APP = Some(InstallerApp {
             win,
-            sidebar,
-            step_labels,
-            step_dots,
             page0, page1, page2, page3,
+            progress_card_id,
+            complete_label_id,
+            complete_sub_id,
             disk_grid,
-            method_info,
+            disk_container_id: disk_container.id(),
+            disk_card_ids: Vec::new(),
             progress_bar,
             phase_label,
             status_label,
@@ -555,16 +670,26 @@ fn main() {
             details_card,
             details_log,
             details_text: String::new(),
+            btn_back_id,
+            btn_next_id,
             disks,
             selected_disk: None,
             current_step: 0,
             timer_id: 0,
             details_visible: false,
             last_copy_seq: 0,
+            license_accepted: false,
         });
     }
 
-    update_sidebar(0);
+    // Populate disk cards now that APP is initialized
+    {
+        let disks_copy = detect_disks();
+        populate_disk_cards(&disks_copy);
+        app().disks = disks_copy;
+    }
+
+    show_page(0);
 
     // ═══════════════════════════════════════════════════════════════
     // Event Handlers
@@ -574,22 +699,22 @@ fn main() {
         app().selected_disk = Some(e.index as usize);
     });
 
-    btn_refresh.on_click(|_| {
-        let disks = detect_disks();
-        populate_disk_grid(&app().disk_grid, &disks);
-        app().disks = disks;
-        app().selected_disk = None;
-    });
+    // Disk refresh happens automatically when navigating to page 1
 
     btn_next.on_click(move |_| {
         let a = app();
         match a.current_step {
             0 => {
-                // Welcome → Select Disk
+                // Welcome → License
                 show_page(1);
             }
             1 => {
-                // Validate disk selection
+                // License → Accept + go to Disk Selection
+                a.license_accepted = true;
+                show_page(2);
+            }
+            2 => {
+                // Disk Selection → Confirm + Install
                 let idx = match a.selected_disk {
                     Some(i) if i < a.disks.len() => i,
                     _ => {
@@ -603,15 +728,16 @@ fn main() {
                         "Disk is too small (minimum 32 MB).", None);
                     return;
                 }
-                let info = format!(
-                    "Disk {} -- {} -- {} partition(s)",
-                    a.disks[idx].disk_id,
-                    format_size(a.disks[idx].size_sectors),
-                    a.disks[idx].partition_count
+                // Confirmation dialog
+                let msg = format!(
+                    "All data on Disk {} ({}) will be permanently erased \
+                     and anyOS will be installed.",
+                    a.disks[idx].disk_id, format_size(a.disks[idx].size_sectors)
                 );
-                a.method_info.set_text(&info);
-                show_page(2);
-                unsafe { ui::marshal_set_visible(btn_back_id, true); }
+                ui::MessageBox::show(ui::MessageBoxType::Warning, &msg, Some("Install"));
+                INSTALL_DISK_ID.store(a.disks[idx].device_id as u32, Ordering::Release);
+                INSTALL_MODE.store(0, Ordering::Release);
+                start_install();
             }
             _ => {}
         }
@@ -620,41 +746,10 @@ fn main() {
     btn_back.on_click(move |_| {
         let a = app();
         match a.current_step {
-            1 => {
-                show_page(0);
-                unsafe { ui::marshal_set_visible(btn_back_id, false); }
-            }
-            2 => {
-                show_page(1);
-            }
+            1 => show_page(0),
+            2 => show_page(1),
             _ => {}
         }
-    });
-
-    btn_auto.on_click(|_| {
-        let a = app();
-        let idx = a.selected_disk.unwrap();
-        let disk = &a.disks[idx];
-        let msg = format!(
-            "ALL data on Disk {} ({}) will be permanently erased.",
-            disk.disk_id, format_size(disk.size_sectors)
-        );
-        ui::MessageBox::show(ui::MessageBoxType::Warning, &msg, Some("Erase && Install"));
-        INSTALL_DISK_ID.store(disk.device_id as u32, Ordering::Release);
-        INSTALL_MODE.store(0, Ordering::Release);
-        start_install();
-    });
-
-    btn_manual.on_click(|_| {
-        process::spawn("/Applications/Disk Utility.app", "");
-        ui::MessageBox::show(ui::MessageBoxType::Info,
-            "Partition the disk using Disk Utility.\nClick OK when done to continue.",
-            Some("OK -- Continue"));
-        let a = app();
-        let idx = a.selected_disk.unwrap();
-        INSTALL_DISK_ID.store(a.disks[idx].device_id as u32, Ordering::Release);
-        INSTALL_MODE.store(1, Ordering::Release);
-        start_install();
     });
 
     app().btn_details.on_click(|_| {
@@ -908,8 +1003,31 @@ fn poll_worker() {
 
     if WORKER_DONE.load(Ordering::Acquire) {
         ui::kill_timer(a.timer_id);
-        if WORKER_ERROR.load(Ordering::Acquire) {
+        let is_error = WORKER_ERROR.load(Ordering::Acquire);
+
+        // Hide all progress UI
+        ui::Control::from_id(a.progress_card_id).set_visible(false);
+        a.progress_bar.set_visible(false);
+        a.phase_label.set_visible(false);
+        a.status_label.set_visible(false);
+        a.btn_details.set_visible(false);
+        a.details_card.set_visible(false);
+
+        if is_error {
+            // Show error state
             a.btn_reboot.set_text("Close");
+            a.btn_reboot.set_visible(true);
+            ui::Control::from_id(a.complete_label_id).set_text("Installation Failed");
+            ui::Control::from_id(a.complete_label_id).set_text_color(0xFFFF6B6B); // Red
+            ui::Control::from_id(a.complete_label_id).set_visible(true);
+            ui::Control::from_id(a.complete_sub_id).set_text(
+                "An error occurred during installation.\nPlease try again."
+            );
+            ui::Control::from_id(a.complete_sub_id).set_visible(true);
+        } else {
+            // Show success state
+            ui::Control::from_id(a.complete_label_id).set_visible(true);
+            ui::Control::from_id(a.complete_sub_id).set_visible(true);
             a.btn_reboot.set_visible(true);
         }
     }

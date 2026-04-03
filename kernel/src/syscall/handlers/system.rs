@@ -656,12 +656,43 @@ pub fn sys_fsync(fd: u32) -> u32 {
 
 /// 3. Power off (ACPI) or reboot (keyboard controller reset).
 ///
+/// Full shutdown sequence with proper device teardown:
+///   Phase 1: Sync filesystems (while all processes still have valid handles)
+///   Phase 2: Halt all other CPUs (prevents cascade-kills / scheduler interference)
+///   Phase 3: Show shutdown/reboot screen (direct framebuffer write)
+///   Phase 4: Kill all remaining user threads
+///   Phase 5: Final filesystem sync (flush kernel-side caches)
+///   Phase 6: Power off or reboot (with robust fallback chain)
+///
 /// This function does not return.
 pub fn sys_shutdown(mode: u32) -> u32 {
-    let action = if mode == 1 { "reboot" } else { "shutdown" };
+    let is_reboot = mode == 1;
+    let action = if is_reboot { "reboot" } else { "shutdown" };
     crate::serial_println!("kernel: {} requested — beginning shutdown sequence...", action);
 
-    // ── Phase 1: Kill any remaining user threads (safety net) ──
+    // ── Phase 1: First filesystem sync ──
+    // Sync while processes are still alive so their pending writes are flushed.
+    crate::serial_println!("kernel: syncing filesystems...");
+    crate::fs::vfs::sync_all();
+    crate::serial_println!("kernel: filesystems synced");
+
+    // ── Phase 2: Halt all other CPUs ──
+    // Do this BEFORE killing threads so no other CPU can schedule, cascade-kill,
+    // or interfere with our shutdown sequence. After this we are single-threaded.
+    crate::serial_println!("kernel: halting other CPUs...");
+    crate::arch::hal::halt_other_cpus();
+    crate::arch::hal::disable_interrupts();
+
+    // ── Phase 3: Show shutdown/reboot screen ──
+    // Write directly to framebuffer. Other CPUs are halted, compositor is frozen,
+    // so this is safe and the screen will be visible immediately.
+    crate::serial_println!("kernel: displaying {} screen...", action);
+    crate::drivers::shutdown_screen::show(is_reboot);
+
+    // ── Phase 4: Kill all remaining user threads ──
+    // With other CPUs halted and interrupts off, kill_thread cannot cascade-kill
+    // our own thread via the scheduler. We skip our own TID and idle threads
+    // (all_live_tids already filters idle threads).
     let my_tid = crate::task::scheduler::current_tid();
     let tids = crate::task::scheduler::all_live_tids();
     let mut killed = 0u32;
@@ -672,26 +703,20 @@ pub fn sys_shutdown(mode: u32) -> u32 {
         }
     }
     if killed > 0 {
-        crate::serial_println!("kernel: terminated {} remaining threads", killed);
+        crate::serial_println!("kernel: terminated {} threads", killed);
     }
 
-    // ── Phase 2: Halt all other CPUs ──
-    crate::serial_println!("kernel: halting other CPUs...");
-    crate::arch::hal::halt_other_cpus();
-    crate::arch::hal::disable_interrupts();
+    // ── Phase 5: Final filesystem sync ──
+    // Flush any remaining kernel-side block cache and storage write caches.
+    crate::serial_println!("kernel: final filesystem sync...");
+    crate::fs::vfs::sync_all();
+    crate::serial_println!("kernel: done");
 
-    // ── Phase 3: Power off or reboot ──
+    // ── Phase 6: Power off or reboot ──
     #[cfg(target_arch = "x86_64")]
     {
-        if mode == 1 {
-            crate::serial_println!("kernel: rebooting via keyboard controller...");
-            unsafe {
-                let mut timeout = 100_000u32;
-                while crate::arch::x86::port::inb(0x64) & 0x02 != 0 && timeout > 0 {
-                    timeout -= 1;
-                }
-                crate::arch::x86::port::outb(0x64, 0xFE);
-            }
+        if is_reboot {
+            x86_reboot_sequence();
         } else {
             crate::serial_println!("kernel: powering off via ACPI PM...");
             crate::arch::x86::acpi_pm::shutdown();
@@ -699,7 +724,7 @@ pub fn sys_shutdown(mode: u32) -> u32 {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if mode == 1 {
+        if is_reboot {
             crate::serial_println!("kernel: rebooting via PSCI...");
             crate::arch::arm64::power::reset();
         } else {
@@ -711,10 +736,68 @@ pub fn sys_shutdown(mode: u32) -> u32 {
     // Fallback: halt indefinitely if above methods didn't work
     #[allow(unreachable_code)]
     {
-        crate::serial_println!("kernel: halt (shutdown method did not take effect)");
+        crate::serial_println!("kernel: halt (all shutdown/reboot methods exhausted)");
         loop {
             crate::arch::hal::halt();
         }
+    }
+}
+
+/// x86_64 reboot fallback chain — tries every known method in order:
+///   1. 8042 keyboard controller reset (0xFE to port 0x64)
+///   2. ACPI RESET_REG (FADT offset 128+, ACPI 2.0+)
+///   3. PCI CF9 reset (port 0xCF9 — works on most Intel/AMD chipsets)
+///   4. Triple fault (load empty IDT, trigger #UD → CPU reset)
+#[cfg(target_arch = "x86_64")]
+fn x86_reboot_sequence() -> ! {
+    // Spin helper: brief delay to let the hardware react
+    fn spin_brief() {
+        for _ in 0..1_000_000u32 {
+            core::hint::spin_loop();
+        }
+    }
+
+    // ── Method 1: 8042 keyboard controller reset ──
+    crate::serial_println!("kernel: reboot method 1/4 — 8042 keyboard controller (port 0x64)...");
+    unsafe {
+        let mut timeout = 100_000u32;
+        while crate::arch::x86::port::inb(0x64) & 0x02 != 0 && timeout > 0 {
+            timeout -= 1;
+        }
+        crate::arch::x86::port::outb(0x64, 0xFE);
+    }
+    spin_brief();
+
+    // ── Method 2: ACPI Reset Register ──
+    crate::serial_println!("kernel: reboot method 2/4 — ACPI RESET_REG...");
+    if crate::arch::x86::acpi_pm::acpi_reboot() {
+        spin_brief();
+    }
+
+    // ── Method 3: PCI CF9 reset ──
+    // The CF9 register is on the Intel/AMD LPC or PCH. Writing 0x06 triggers
+    // a hard reset (full platform reset), 0x0E triggers a warm reset.
+    crate::serial_println!("kernel: reboot method 3/4 — PCI CF9 reset...");
+    unsafe {
+        // First clear, then write reset type
+        crate::arch::x86::port::outb(0xCF9, 0x02); // set bit 1 (system reset)
+        crate::arch::x86::port::outb(0xCF9, 0x06); // set bit 2 (full reset) + bit 1
+    }
+    spin_brief();
+
+    // ── Method 4: Triple fault ──
+    // Load an empty IDT and trigger an undefined instruction. With no #UD handler,
+    // the CPU double-faults; with no #DF handler, it triple-faults and resets.
+    crate::serial_println!("kernel: reboot method 4/4 — triple fault...");
+    unsafe {
+        // IDTR with limit=0, base=0 → no valid IDT entries
+        let null_idtr: [u8; 10] = [0; 10];
+        core::arch::asm!(
+            "lidt [{}]",
+            "ud2",
+            in(reg) null_idtr.as_ptr(),
+            options(noreturn)
+        );
     }
 }
 
