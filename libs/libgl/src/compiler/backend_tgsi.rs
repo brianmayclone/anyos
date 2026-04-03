@@ -128,7 +128,8 @@ impl<'a> TgsiCtx<'a> {
             pc: 0,
             immediates,
             imm_map,
-            num_temps: prog.num_regs,
+            // +1 extra TEMP for cross product scratch (avoids colliding with IR regs)
+            num_temps: prog.num_regs + 1,
             num_consts,
             const_base,
             sampler_map,
@@ -281,15 +282,13 @@ impl<'a> TgsiCtx<'a> {
             }
 
             Inst::Cross(d, a, b) => {
-                // Cross product: XPD was removed in later TGSI. Use MUL+MAD:
+                // Cross product: XPD was removed in later TGSI. Use MUL+SUB:
                 // dst.xyz = a.yzx * b.zxy - a.zxy * b.yzx
                 let dst = self.dst(*d);
                 let sa = self.src(*a);
                 let sb = self.src(*b);
-                let line = fmt3("MUL", &dst, &swz(&sa, "yzxw"), &swz(&sb, "zxyw"));
-                self.emit(&line);
-                // Use a two-step approach for cross product
-                let tmp_name = format!("TEMP[{}]", self.num_temps.saturating_sub(1));
+                // Use the dedicated scratch TEMP (last register, beyond IR regs)
+                let tmp_name = format!("TEMP[{}]", self.num_temps - 1);
                 let line = fmt3("MUL", &dst, &swz(&sa, "yzxw"), &swz(&sb, "zxyw"));
                 self.emit(&line);
                 let line = fmt3("MUL", &tmp_name, &swz(&sa, "zxyw"), &swz(&sb, "yzxw"));

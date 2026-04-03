@@ -22,3 +22,6 @@ EXPORTS
     drv_finish
     drv_present
     drv_readback
+    drv_resize
+    drv_upload_texture
+    drv_bind_sampler_view

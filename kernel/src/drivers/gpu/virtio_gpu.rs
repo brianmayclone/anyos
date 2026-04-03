@@ -1011,9 +1011,10 @@ impl GpuDriver for VirtioGpu {
 
         let num_pages = (staging_cap + 4095) / 4096;
 
-        // Flush the entire host-side virgl resource once before reading any chunks.
-        // This ensures the host renderer has finalized all pending rendering into the resource.
-        self.cmd_resource_flush(sid, 0, 0, width, height);
+        // Sync the virgl pipeline — ensures the host renderer has finalized all
+        // pending rendering before we read back.  (RESOURCE_FLUSH is a 2D scanout
+        // command and does nothing for 3D virgl resources.)
+        self.sync();
 
         let mut y = 0u32;
         while y < height {
