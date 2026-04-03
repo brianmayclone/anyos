@@ -1478,6 +1478,139 @@ fn decode_block(bd: &mut BoolDecoder, coeffs: &mut [i16; 16],
     has_coefficients
 }
 
+// ── VP8 loop filter helpers (RFC 6386 §15) ──────────────────────────────────
+
+#[inline] fn lf_c(v: i32) -> i32 { v.clamp(-128, 127) }
+#[inline] fn lf_u2s(v: u8) -> i32 { v as i32 - 128 }
+#[inline] fn lf_s2u(v: i32) -> u8 { (lf_c(v) + 128) as u8 }
+
+/// Calculate filter parameters for a macroblock.
+fn calc_filter_params(
+    base_fl: u8, sharpness: u8,
+    seg_enabled: bool, seg_abs_delta: bool, seg_filter: &[i32; 4], seg_id: usize,
+    lf_adj: bool, ref_delta: &[i32; 4], mode_delta: &[i32; 4],
+    is_4x4: bool,
+) -> (u8, u8, u8) {
+    let mut fl = base_fl as i32;
+    if fl == 0 { return (0, 0, 0); }
+    if seg_enabled {
+        if seg_abs_delta { fl = seg_filter[seg_id]; }
+        else { fl += seg_filter[seg_id]; }
+    }
+    fl = fl.clamp(0, 63);
+    if lf_adj {
+        fl += ref_delta[0];
+        if is_4x4 { fl += mode_delta[0]; }
+    }
+    let fl = fl.clamp(0, 63) as u8;
+    let mut il = fl;
+    if sharpness > 0 {
+        il >>= if sharpness > 4 { 2 } else { 1 };
+        if il > 9 - sharpness { il = 9 - sharpness; }
+    }
+    if il == 0 { il = 1; }
+    let hev = if fl >= 40 { 2 } else if fl >= 15 { 1 } else { 0 };
+    (fl, il, hev)
+}
+
+// ── Simple filter (affects 2 pixels per edge) ──
+
+fn lf_simple_threshold_h(limit: i32, p: &[u8]) -> bool {
+    (p[3] as i32 - p[4] as i32).abs() * 2 + (p[2] as i32 - p[5] as i32).abs() / 2 <= limit
+}
+fn lf_simple_threshold_v(limit: i32, p: &[u8], pt: usize, s: usize) -> bool {
+    (p[pt - s] as i32 - p[pt] as i32).abs() * 2 + (p[pt - 2*s] as i32 - p[pt + s] as i32).abs() / 2 <= limit
+}
+
+fn lf_common_adjust_h(outer: bool, p: &mut [u8]) -> i32 {
+    let (p1, p0, q0, q1) = (lf_u2s(p[2]), lf_u2s(p[3]), lf_u2s(p[4]), lf_u2s(p[5]));
+    let o = if outer { lf_c(p1 - q1) } else { 0 };
+    let a = lf_c(o + 3 * (q0 - p0));
+    let b = lf_c(a + 3) >> 3;
+    let a2 = lf_c(a + 4) >> 3;
+    p[4] = lf_s2u(q0 - a2);
+    p[3] = lf_s2u(p0 + b);
+    a2
+}
+fn lf_common_adjust_v(outer: bool, p: &mut [u8], pt: usize, s: usize) -> i32 {
+    let (p1, p0, q0, q1) = (lf_u2s(p[pt-2*s]), lf_u2s(p[pt-s]), lf_u2s(p[pt]), lf_u2s(p[pt+s]));
+    let o = if outer { lf_c(p1 - q1) } else { 0 };
+    let a = lf_c(o + 3 * (q0 - p0));
+    let b = lf_c(a + 3) >> 3;
+    let a2 = lf_c(a + 4) >> 3;
+    p[pt] = lf_s2u(q0 - a2);
+    p[pt - s] = lf_s2u(p0 + b);
+    a2
+}
+
+fn lf_simple_h(limit: u8, p: &mut [u8]) {
+    if lf_simple_threshold_h(limit as i32, p) { lf_common_adjust_h(true, p); }
+}
+fn lf_simple_v(limit: u8, p: &mut [u8], pt: usize, s: usize) {
+    if lf_simple_threshold_v(limit as i32, p, pt, s) { lf_common_adjust_v(true, p, pt, s); }
+}
+
+// ── Normal filter threshold checks ──
+
+fn lf_should_filter_h(il: u8, el: u8, p: &[u8]) -> bool {
+    lf_simple_threshold_h(el as i32, p)
+        && p[0].abs_diff(p[1]) <= il && p[1].abs_diff(p[2]) <= il && p[2].abs_diff(p[3]) <= il
+        && p[7].abs_diff(p[6]) <= il && p[6].abs_diff(p[5]) <= il && p[5].abs_diff(p[4]) <= il
+}
+fn lf_should_filter_v(il: u8, el: u8, p: &[u8], pt: usize, s: usize) -> bool {
+    lf_simple_threshold_v(el as i32, p, pt, s)
+        && p[pt-4*s].abs_diff(p[pt-3*s]) <= il && p[pt-3*s].abs_diff(p[pt-2*s]) <= il
+        && p[pt-2*s].abs_diff(p[pt-s]) <= il
+        && p[pt+3*s].abs_diff(p[pt+2*s]) <= il && p[pt+2*s].abs_diff(p[pt+s]) <= il
+        && p[pt+s].abs_diff(p[pt]) <= il
+}
+fn lf_hev_h(thr: u8, p: &[u8]) -> bool { p[2].abs_diff(p[3]) > thr || p[5].abs_diff(p[4]) > thr }
+fn lf_hev_v(thr: u8, p: &[u8], pt: usize, s: usize) -> bool {
+    p[pt-2*s].abs_diff(p[pt-s]) > thr || p[pt+s].abs_diff(p[pt]) > thr
+}
+
+// ── Macroblock edge filter (normal, up to 6 pixels) ──
+
+fn lf_mb_h(hev_thr: u8, il: u8, el: u8, p: &mut [u8]) {
+    if !lf_should_filter_h(il, el, p) { return; }
+    if !lf_hev_h(hev_thr, p) {
+        let (p2,p1,p0,q0,q1,q2) = (lf_u2s(p[1]),lf_u2s(p[2]),lf_u2s(p[3]),lf_u2s(p[4]),lf_u2s(p[5]),lf_u2s(p[6]));
+        let w = lf_c(lf_c(p1-q1) + 3*(q0-p0));
+        let a = lf_c((27*w+63)>>7); p[4]=lf_s2u(q0-a); p[3]=lf_s2u(p0+a);
+        let a = lf_c((18*w+63)>>7); p[5]=lf_s2u(q1-a); p[2]=lf_s2u(p1+a);
+        let a = lf_c((9*w+63)>>7);  p[6]=lf_s2u(q2-a); p[1]=lf_s2u(p2+a);
+    } else {
+        lf_common_adjust_h(true, p);
+    }
+}
+fn lf_mb_v(hev_thr: u8, il: u8, el: u8, p: &mut [u8], pt: usize, s: usize) {
+    if !lf_should_filter_v(il, el, p, pt, s) { return; }
+    if !lf_hev_v(hev_thr, p, pt, s) {
+        let (p2,p1,p0,q0,q1,q2) = (lf_u2s(p[pt-3*s]),lf_u2s(p[pt-2*s]),lf_u2s(p[pt-s]),lf_u2s(p[pt]),lf_u2s(p[pt+s]),lf_u2s(p[pt+2*s]));
+        let w = lf_c(lf_c(p1-q1) + 3*(q0-p0));
+        let a = lf_c((27*w+63)>>7); p[pt]=lf_s2u(q0-a); p[pt-s]=lf_s2u(p0+a);
+        let a = lf_c((18*w+63)>>7); p[pt+s]=lf_s2u(q1-a); p[pt-2*s]=lf_s2u(p1+a);
+        let a = lf_c((9*w+63)>>7);  p[pt+2*s]=lf_s2u(q2-a); p[pt-3*s]=lf_s2u(p2+a);
+    } else {
+        lf_common_adjust_v(true, p, pt, s);
+    }
+}
+
+// ── Sub-block edge filter (normal, up to 4 pixels) ──
+
+fn lf_sub_h(hev_thr: u8, il: u8, el: u8, p: &mut [u8]) {
+    if !lf_should_filter_h(il, el, p) { return; }
+    let hv = lf_hev_h(hev_thr, p);
+    let a = (lf_common_adjust_h(hv, p) + 1) >> 1;
+    if !hv { p[5] = lf_s2u(lf_u2s(p[5]) - a); p[2] = lf_s2u(lf_u2s(p[2]) + a); }
+}
+fn lf_sub_v(hev_thr: u8, il: u8, el: u8, p: &mut [u8], pt: usize, s: usize) {
+    if !lf_should_filter_v(il, el, p, pt, s) { return; }
+    let hv = lf_hev_v(hev_thr, p, pt, s);
+    let a = (lf_common_adjust_v(hv, p, pt, s) + 1) >> 1;
+    if !hv { p[pt+s] = lf_s2u(lf_u2s(p[pt+s]) - a); p[pt-2*s] = lf_s2u(lf_u2s(p[pt-2*s]) + a); }
+}
+
 // ── Main VP8 lossy decoder ──────────────────────────────────────────────────
 
 fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
@@ -1546,14 +1679,16 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
 
     // Loop filter adjustments
     let lf_adj_enable = bd.read_bool(128);
+    let mut lf_ref_delta = [0i32; 4];
+    let mut lf_mode_delta = [0i32; 4];
     if lf_adj_enable {
         let lf_adj_update = bd.read_bool(128);
         if lf_adj_update {
-            for _ in 0..4 {
-                if bd.read_bool(128) { bd.read_signed(6); }
+            for i in 0..4 {
+                if bd.read_bool(128) { lf_ref_delta[i] = bd.read_signed(6); }
             }
-            for _ in 0..4 {
-                if bd.read_bool(128) { bd.read_signed(6); }
+            for i in 0..4 {
+                if bd.read_bool(128) { lf_mode_delta[i] = bd.read_signed(6); }
             }
         }
     }
@@ -1659,6 +1794,13 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
     let mut u_plane = vec![128u8; (padded_w / 2) * (padded_h / 2)];
     let mut v_plane = vec![128u8; (padded_w / 2) * (padded_h / 2)];
 
+    // Per-MB info for loop filter (filled during decode, used in post-processing)
+    struct MbInfo { seg_id: usize, is_4x4: bool, is_skip: bool, has_nonzero: bool }
+    let mut mb_info = Vec::with_capacity(mb_w * mb_h);
+    for _ in 0..mb_w * mb_h {
+        mb_info.push(MbInfo { seg_id: 0, is_4x4: false, is_skip: false, has_nonzero: false });
+    }
+
     // Above non-zero flags for coefficient context
     let mut above_nz_y = vec![false; mb_w * 4];
     let mut above_nz_u = vec![false; mb_w * 2];
@@ -1695,6 +1837,9 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
             // Read Y prediction mode (keyframe)
             let y_mode = read_kf_y_mode(&mut bd);
             let is_4x4 = y_mode == 4; // B_PRED mode
+
+            // Store per-MB info for loop filter
+            mb_info[mb_y * mb_w + mb_x] = MbInfo { seg_id, is_4x4, is_skip, has_nonzero: false };
 
             // Sub-block modes for intra 4x4
             let mut sub_modes = [[B_DC_PRED; 4]; 4]; // [row][col]
@@ -1937,6 +2082,121 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                 for sy in 0..2 { left_nz_v[sy] = false; }
                 above_nz_dc[mb_x] = false;
                 left_nz_dc = false;
+            }
+            // Update loop filter info: if not skipped, mark has_nonzero
+            mb_info[mb_y * mb_w + mb_x].has_nonzero = !is_skip;
+        }
+    }
+
+    // ── VP8 loop filter (deblocking, RFC 6386 §15) ────────────────────
+    if filter_level > 0 {
+        // Calculate filter parameters per MB and apply.
+        // We stored per-MB info during decode: mb_info[mb_y * mb_w + mb_x].
+        for mby in 0..mb_h {
+            for mbx in 0..mb_w {
+                let mi = &mb_info[mby * mb_w + mbx];
+                let (fl, il, hev_thr) = calc_filter_params(
+                    filter_level as u8, sharpness as u8,
+                    segmentation_enabled, seg_abs_delta,
+                    &seg_filter, mi.seg_id,
+                    lf_adj_enable, &lf_ref_delta, &lf_mode_delta,
+                    mi.is_4x4,
+                );
+                if fl == 0 { continue; }
+                let fl = fl as u8;
+                let mbedge_limit = (fl as u16 + 2) * 2 + il as u16;
+                let sub_bedge_limit = fl as u16 * 2 + il as u16;
+                let mbedge_limit = mbedge_limit.min(255) as u8;
+                let sub_bedge_limit = sub_bedge_limit.min(255) as u8;
+                let do_sub = mi.is_4x4 || (!mi.is_skip && mi.has_nonzero);
+
+                // ── Left MB edge (horizontal filter on vertical edge)
+                if mbx > 0 {
+                    if filter_type == 1 {
+                        for y in 0..16 {
+                            let off = (mby * 16 + y) * y_stride + mbx * 16;
+                            lf_simple_h(mbedge_limit, &mut y_plane[off - 4..off + 4]);
+                        }
+                    } else {
+                        for y in 0..16 {
+                            let off = (mby * 16 + y) * y_stride + mbx * 16;
+                            lf_mb_h(hev_thr, il, mbedge_limit, &mut y_plane[off - 4..off + 4]);
+                        }
+                        for y in 0..8 {
+                            let off = (mby * 8 + y) * uv_stride + mbx * 8;
+                            lf_mb_h(hev_thr, il, mbedge_limit, &mut u_plane[off - 4..off + 4]);
+                            lf_mb_h(hev_thr, il, mbedge_limit, &mut v_plane[off - 4..off + 4]);
+                        }
+                    }
+                }
+
+                // ── Internal vertical sub-block edges
+                if do_sub {
+                    if filter_type == 1 {
+                        for x in (4..13).step_by(4) {
+                            for y in 0..16 {
+                                let off = (mby * 16 + y) * y_stride + mbx * 16 + x;
+                                lf_simple_h(sub_bedge_limit, &mut y_plane[off - 4..off + 4]);
+                            }
+                        }
+                    } else {
+                        for x in (4..13).step_by(4) {
+                            for y in 0..16 {
+                                let off = (mby * 16 + y) * y_stride + mbx * 16 + x;
+                                lf_sub_h(hev_thr, il, sub_bedge_limit, &mut y_plane[off - 4..off + 4]);
+                            }
+                        }
+                        for y in 0..8 {
+                            let off = (mby * 8 + y) * uv_stride + mbx * 8 + 4;
+                            lf_sub_h(hev_thr, il, sub_bedge_limit, &mut u_plane[off - 4..off + 4]);
+                            lf_sub_h(hev_thr, il, sub_bedge_limit, &mut v_plane[off - 4..off + 4]);
+                        }
+                    }
+                }
+
+                // ── Top MB edge (vertical filter on horizontal edge)
+                if mby > 0 {
+                    if filter_type == 1 {
+                        for x in 0..16 {
+                            let pt = mby * 16 * y_stride + mbx * 16 + x;
+                            lf_simple_v(mbedge_limit, &mut y_plane, pt, y_stride);
+                        }
+                    } else {
+                        for x in 0..16 {
+                            let pt = mby * 16 * y_stride + mbx * 16 + x;
+                            lf_mb_v(hev_thr, il, mbedge_limit, &mut y_plane, pt, y_stride);
+                        }
+                        for x in 0..8 {
+                            let pt = mby * 8 * uv_stride + mbx * 8 + x;
+                            lf_mb_v(hev_thr, il, mbedge_limit, &mut u_plane, pt, uv_stride);
+                            lf_mb_v(hev_thr, il, mbedge_limit, &mut v_plane, pt, uv_stride);
+                        }
+                    }
+                }
+
+                // ── Internal horizontal sub-block edges
+                if do_sub {
+                    if filter_type == 1 {
+                        for y in (4..13).step_by(4) {
+                            for x in 0..16 {
+                                let pt = (mby * 16 + y) * y_stride + mbx * 16 + x;
+                                lf_simple_v(sub_bedge_limit, &mut y_plane, pt, y_stride);
+                            }
+                        }
+                    } else {
+                        for y in (4..13).step_by(4) {
+                            for x in 0..16 {
+                                let pt = (mby * 16 + y) * y_stride + mbx * 16 + x;
+                                lf_sub_v(hev_thr, il, sub_bedge_limit, &mut y_plane, pt, y_stride);
+                            }
+                        }
+                        for x in 0..8 {
+                            let pt = (mby * 8 + 4) * uv_stride + mbx * 8 + x;
+                            lf_sub_v(hev_thr, il, sub_bedge_limit, &mut u_plane, pt, uv_stride);
+                            lf_sub_v(hev_thr, il, sub_bedge_limit, &mut v_plane, pt, uv_stride);
+                        }
+                    }
+                }
             }
         }
     }
