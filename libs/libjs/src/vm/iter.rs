@@ -68,7 +68,15 @@ impl Vm {
                 // For-in semantics: iterate over keys
                 obj.borrow().keys().into_iter().map(JsValue::String).collect()
             }
-            _ => Vec::new(),
+            _ => {
+                // ES2023 §7.4.1: non-iterable values throw TypeError
+                let type_str = val.type_of();
+                let val_str = val.to_js_string();
+                let msg = alloc::format!("{} is not iterable", val_str);
+                let exc = self.make_type_error(&msg);
+                self.pending_exception = Some(exc);
+                return self.make_internal_iterator(Vec::new());
+            }
         };
 
         self.make_internal_iterator(items)

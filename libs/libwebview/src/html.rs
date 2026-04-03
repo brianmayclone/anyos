@@ -209,7 +209,7 @@ fn collect_raw_text(bytes: &[u8], pos: &mut usize, tag_name: &str) -> String {
     while *pos < bytes.len() {
         // Check for closing tag (case-insensitive)
         if bytes[*pos] == b'<'
-            && *pos + end_bytes.len() < bytes.len()
+            && *pos + end_bytes.len() <= bytes.len()
             && bytes[*pos..*pos + end_bytes.len()]
                 .iter()
                 .zip(end_bytes.iter())
@@ -484,7 +484,8 @@ pub fn tokenize(html: &str) -> Vec<Token> {
             // For raw text elements, collect content now.
             // SVG is treated as raw text so that its child markup (path, circle,
             // rect, etc.) is preserved verbatim for rasterisation by libsvg.
-            let is_raw = name == "script" || name == "style" || name == "svg";
+            let is_raw = name == "script" || name == "style" || name == "svg"
+                || name == "noscript";
             tokens.push(Token::StartTag {
                 name: name.clone(),
                 attrs,

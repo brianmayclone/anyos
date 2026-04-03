@@ -67,10 +67,19 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
         }
         "className" => {
             if node_id >= 0 {
+                let mut cls = value.to_js_string();
+                // Many sites use an inline script to replace "client-nojs" with
+                // "client-js" on <html>, signalling full JS support.  Our engine
+                // cannot run the complex follow-up scripts these sites expect
+                // (e.g. Wikipedia TOC setup), so keep the nojs class to get the
+                // correct CSS fallback styling.
+                if cls.contains("client-js") {
+                    cls = cls.replace("client-js", "client-nojs");
+                }
                 mutations.push(DomMutation::SetAttribute {
                     node_id: node_id as usize,
                     name: String::from("class"),
-                    value: value.to_js_string(),
+                    value: cls,
                 });
             }
         }

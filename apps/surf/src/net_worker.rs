@@ -54,6 +54,15 @@ pub(crate) enum FetchRequest {
         url: Url,
         generation: u32,
     },
+    /// External `<script src="...">` fetch.
+    Script {
+        tab_index: usize,
+        /// Slot index in the tab's `pending_scripts` array (preserves document order).
+        slot: usize,
+        src: String,
+        url: Url,
+        generation: u32,
+    },
 }
 
 /// A completed fetch result returned by the worker thread.
@@ -91,6 +100,16 @@ pub(crate) enum FetchResult {
         tab_index: usize,
         family: String,
         body: Vec<u8>,
+        generation: u32,
+    },
+    /// External script fetch completed successfully.
+    ScriptDone {
+        tab_index: usize,
+        /// Slot index — matches the request's `slot` so the UI thread can
+        /// place the fetched text at the correct position in document order.
+        slot: usize,
+        body: Vec<u8>,
+        headers: String,
         generation: u32,
     },
 }
@@ -218,7 +237,8 @@ pub(crate) fn new_generation() -> u32 {
                 FetchRequest::Navigate { .. } | FetchRequest::NavigatePost { .. } => true,
                 FetchRequest::Css { generation, .. }
                 | FetchRequest::Image { generation, .. }
-                | FetchRequest::Font { generation, .. } => *generation == gen,
+                | FetchRequest::Font { generation, .. }
+                | FetchRequest::Script { generation, .. } => *generation == gen,
             });
         }
     }
@@ -231,7 +251,8 @@ pub(crate) fn new_generation() -> u32 {
                 FetchResult::NavDone { .. } | FetchResult::NavError { .. } => true,
                 FetchResult::CssDone { generation, .. }
                 | FetchResult::ImageDone { generation, .. }
-                | FetchResult::FontDone { generation, .. } => *generation == gen,
+                | FetchResult::FontDone { generation, .. }
+                | FetchResult::ScriptDone { generation, .. } => *generation == gen,
             });
         }
     }
@@ -514,6 +535,52 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     });
                 }
                 _ => {}
+            }
+        }
+
+        FetchRequest::Script { tab_index, slot, src, url, generation } => {
+            if generation != current_gen {
+                return;
+            }
+
+            let key = cache_key(&url);
+
+            if let Some((body, headers)) = cache.get(&key) {
+                anyos_std::println!("[surf-net] script cache hit: {}", src);
+                enqueue_result(FetchResult::ScriptDone {
+                    tab_index,
+                    slot,
+                    body: body.to_vec(),
+                    headers: String::from(headers),
+                    generation,
+                });
+                return;
+            }
+
+            anyos_std::println!("[surf-net] fetching script: {}", src);
+            match http::fetch(&url, &mut CookieJar::new(), pool) {
+                Ok(resp) if resp.status >= 200 && resp.status < 400 => {
+                    cache.put(key, resp.body.clone(), resp.headers.clone());
+                    enqueue_result(FetchResult::ScriptDone {
+                        tab_index,
+                        slot,
+                        body: resp.body,
+                        headers: resp.headers,
+                        generation,
+                    });
+                }
+                _ => {
+                    anyos_std::println!("[surf-net] script fetch failed: {}", src);
+                    // Send an empty body so the slot is filled and JS execution
+                    // is not blocked forever waiting for this slot.
+                    enqueue_result(FetchResult::ScriptDone {
+                        tab_index,
+                        slot,
+                        body: Vec::new(),
+                        headers: String::new(),
+                        generation,
+                    });
+                }
             }
         }
     }

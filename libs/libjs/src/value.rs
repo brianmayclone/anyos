@@ -625,6 +625,14 @@ impl JsValue {
                 }
             }
             JsValue::Function(f) => {
+                // ES2023 §10.2.4: name and length are non-writable, configurable.
+                // Reject writes to these built-in properties (silent in sloppy mode).
+                if key == "name" || key == "length" {
+                    // Only allow if explicitly set via own_props already (defineProperty path)
+                    if !f.borrow().own_props.contains_key(&key) {
+                        return;
+                    }
+                }
                 f.borrow_mut().own_props.insert(key, value);
             }
             _ => {} // silently ignore

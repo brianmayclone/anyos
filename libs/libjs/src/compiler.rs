@@ -28,6 +28,26 @@ struct UpvalueDesc {
     index: u16,
 }
 
+/// Entry on the label stack, tracking forward jumps for `break label`
+/// and `continue label` (ES2023 §14.13 Labelled Statements).
+struct LabelEntry {
+    name: String,
+    /// Forward-jump indices for `break label` — patched to after the labeled stmt.
+    break_jumps: Vec<usize>,
+    /// Forward-jump indices for `continue label` — patched to the loop head.
+    continue_jumps: Vec<usize>,
+    /// If the labeled statement wraps a loop, this is the continue target
+    /// (loop head offset) once known.  `continue label` on a non-loop label
+    /// is a syntax error per spec, but we gracefully ignore it at runtime.
+    continue_target: Option<usize>,
+    /// True if the labeled body is an iteration statement (while/do-while/for/for-in/for-of).
+    is_iteration: bool,
+    /// Set to true when the entry needs its continue target patched by the
+    /// direct child for-loop.  Cleared after the first patch to prevent
+    /// inner nested for-loops from overwriting the target.
+    needs_continue_patch: bool,
+}
+
 /// Compiler state for a single scope/function.
 struct Scope {
     chunk: Chunk,
@@ -46,6 +66,13 @@ struct Scope {
     /// Stack of finally-block statement lists that must run before any `return`
     /// inside the try body (innermost last).
     pending_finallies: Vec<Vec<Stmt>>,
+    /// Stack of active labels (ES2023 §14.13).  Pushed on entry to a
+    /// `Labeled` statement, popped on exit.  `break label` / `continue label`
+    /// search this stack to find the right jump target.
+    label_stack: Vec<LabelEntry>,
+    /// Set by for-loop compilation to the update-step offset so that
+    /// `compile_labeled` can patch `continue label` forward-jumps.
+    last_for_continue_pos: Option<usize>,
 }
 
 struct Local {
@@ -64,6 +91,8 @@ impl Scope {
             continue_target: None,
             scope_depth: 0,
             pending_finallies: Vec::new(),
+            label_stack: Vec::new(),
+            last_for_continue_pos: None,
         }
     }
 
@@ -112,6 +141,18 @@ impl Compiler {
     /// i.e. not inside any compiled function body.
     fn is_global_scope(&self) -> bool {
         self.scopes.len() == 1
+    }
+
+    /// Set the continue target for the current loop AND propagate it to
+    /// any enclosing label entry that wraps this loop (for `continue label`).
+    fn set_continue_target(&mut self, target: usize) {
+        self.scope_mut().continue_target = Some(target);
+        // If the top of the label stack is an iteration label, set its target too.
+        if let Some(entry) = self.scope_mut().label_stack.last_mut() {
+            if entry.is_iteration {
+                entry.continue_target = Some(target);
+            }
+        }
     }
 
     /// Emit a variable binding for `name`.  If `self.binding_is_global` the
@@ -467,7 +508,7 @@ impl Compiler {
             Stmt::While { condition, body } => {
                 let loop_start = self.offset();
                 let old_continue = self.scope_mut().continue_target.take();
-                self.scope_mut().continue_target = Some(loop_start);
+                self.set_continue_target(loop_start);
                 let old_breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
 
                 self.compile_expr(condition);
@@ -491,13 +532,13 @@ impl Compiler {
                 let old_breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
 
                 let cond_target = self.offset(); // will be updated
-                self.scope_mut().continue_target = Some(cond_target);
+                self.set_continue_target(cond_target);
 
                 self.compile_stmt(body);
 
                 // Update continue target to point here (condition)
                 let cond_pos = self.offset();
-                self.scope_mut().continue_target = Some(cond_pos);
+                self.set_continue_target(cond_pos);
 
                 self.compile_expr(condition);
                 let back = loop_start as i32 - self.offset() as i32 - 1;
@@ -564,6 +605,9 @@ impl Compiler {
                 for cj in &cont_jumps {
                     self.patch_jump_to_pos(*cj, continue_pos);
                 }
+                // Save the continue position so that `compile_labeled` can
+                // patch `continue label` forward-jumps for labeled for-loops.
+                self.scope_mut().last_for_continue_pos = Some(continue_pos);
 
                 // Clone let/const bindings AFTER body, BEFORE update so that each
                 // iteration's closures capture a pre-increment snapshot of the variable.
@@ -615,19 +659,64 @@ impl Compiler {
                 }
                 self.emit(Op::Return);
             }
-            Stmt::Break(_label) => {
-                let idx = self.emit(Op::Jump(0));
-                self.scope_mut().break_jumps.push(idx);
-            }
-            Stmt::Continue(_label) => {
-                if let Some(target) = self.scope().continue_target {
-                    // Known target (while/do-while/for-in/for-of) → backward jump.
-                    let back = target as i32 - self.offset() as i32 - 1;
-                    self.emit(Op::Jump(back));
-                } else {
-                    // Unknown target (for loop update) → forward jump, patched later.
+            Stmt::Break(ref label) => {
+                if let Some(label_name) = label {
+                    // ES2023 §14.9.1 — `break label;` targets the LabelledStatement.
+                    // Search the label stack for the matching label.
                     let idx = self.emit(Op::Jump(0));
-                    self.scope_mut().continue_jumps.push(idx);
+                    let stack = &mut self.scope_mut().label_stack;
+                    if let Some(entry) = stack.iter_mut().rev().find(|e| &e.name == label_name) {
+                        entry.break_jumps.push(idx);
+                    } else {
+                        // Label not found on label_stack — fall back to enclosing
+                        // loop/switch (handles `break label` where the label wraps
+                        // a loop that directly manages break_jumps).
+                        self.scope_mut().break_jumps.push(idx);
+                    }
+                } else {
+                    // Unlabeled `break` — targets nearest loop/switch.
+                    let idx = self.emit(Op::Jump(0));
+                    self.scope_mut().break_jumps.push(idx);
+                }
+            }
+            Stmt::Continue(ref label) => {
+                if let Some(label_name) = label {
+                    // ES2023 §14.8.1 — `continue label;` targets the IterationStatement
+                    // labeled by `label`.  Search the label stack.
+                    let stack = &self.scope().label_stack;
+                    let found = stack.iter().rev().find(|e| &e.name == label_name);
+                    if let Some(entry) = found {
+                        if let Some(target) = entry.continue_target {
+                            let back = target as i32 - self.offset() as i32 - 1;
+                            self.emit(Op::Jump(back));
+                        } else {
+                            // Continue target not yet known (e.g., for-loop update).
+                            // Emit forward jump; it will be patched by the label entry.
+                            let idx = self.emit(Op::Jump(0));
+                            let stack = &mut self.scope_mut().label_stack;
+                            if let Some(entry) = stack.iter_mut().rev().find(|e| &e.name == label_name) {
+                                entry.continue_jumps.push(idx);
+                            }
+                        }
+                    } else {
+                        // Fallback: treat as unlabeled continue.
+                        if let Some(target) = self.scope().continue_target {
+                            let back = target as i32 - self.offset() as i32 - 1;
+                            self.emit(Op::Jump(back));
+                        } else {
+                            let idx = self.emit(Op::Jump(0));
+                            self.scope_mut().continue_jumps.push(idx);
+                        }
+                    }
+                } else {
+                    // Unlabeled `continue` — targets nearest iteration statement.
+                    if let Some(target) = self.scope().continue_target {
+                        let back = target as i32 - self.offset() as i32 - 1;
+                        self.emit(Op::Jump(back));
+                    } else {
+                        let idx = self.emit(Op::Jump(0));
+                        self.scope_mut().continue_jumps.push(idx);
+                    }
                 }
             }
             Stmt::Switch { discriminant, cases } => {
@@ -666,8 +755,8 @@ impl Compiler {
                     self.emit(Op::Pop);
                 }
             }
-            Stmt::Labeled { label: _, body } => {
-                self.compile_stmt(body);
+            Stmt::Labeled { label, body } => {
+                self.compile_labeled(label, body);
             }
             Stmt::Empty | Stmt::Debugger => {
                 self.emit(Op::Nop);
@@ -1059,7 +1148,7 @@ impl Compiler {
             }
         }
 
-        self.scope_mut().continue_target = Some(loop_start);
+        self.set_continue_target(loop_start);
         self.compile_stmt(body);
 
         let back = loop_start as i32 - self.offset() as i32 - 1;
@@ -1128,6 +1217,66 @@ impl Compiler {
             self.patch_jump(b);
         }
         self.scope_mut().break_jumps = old_breaks;
+    }
+
+    /// Compile a labeled statement (ES2023 §14.13).
+    ///
+    /// `break label` jumps past the labeled statement.
+    /// `continue label` is valid only when the labeled body is an iteration
+    /// statement — it jumps to the loop's continue point.
+    ///
+    /// Implementation: push a LabelEntry onto the label stack, compile the body,
+    /// then patch all break/continue jumps collected by the entry.
+    fn compile_labeled(&mut self, label: &str, body: &Stmt) {
+        // Determine if the body is an iteration statement (ES2023 §14.1.1).
+        let is_iteration = matches!(
+            body,
+            Stmt::While { .. }
+                | Stmt::DoWhile { .. }
+                | Stmt::For { .. }
+                | Stmt::ForIn { .. }
+                | Stmt::ForOf { .. }
+        );
+
+        self.scope_mut().label_stack.push(LabelEntry {
+            name: String::from(label),
+            break_jumps: Vec::new(),
+            continue_jumps: Vec::new(),
+            continue_target: None,
+            is_iteration,
+            needs_continue_patch: is_iteration,
+        });
+
+        // Clear last_for_continue_pos so we can detect if the body sets it.
+        self.scope_mut().last_for_continue_pos = None;
+
+        // Compile the body.
+        self.compile_stmt(body);
+
+        // Capture the for-loop's continue position (set by the for-loop compiler).
+        let for_continue_pos = self.scope().last_for_continue_pos;
+
+        // Pop the label entry and patch jumps.
+        let entry = self.scope_mut().label_stack.pop().unwrap();
+
+        // Patch `break label` jumps to here (after the labeled statement).
+        let here = self.offset();
+        for b in &entry.break_jumps {
+            self.patch_jump_to_pos(*b, here);
+        }
+
+        // Patch `continue label` forward-jumps.  The continue target is:
+        // - For while/do-while/for-in/for-of: entry.continue_target (set by
+        //   set_continue_target during loop compilation).
+        // - For for-loops: last_for_continue_pos (the update-step offset).
+        if is_iteration && !entry.continue_jumps.is_empty() {
+            let ct = entry.continue_target
+                .or(for_continue_pos)
+                .unwrap_or(here);
+            for cj in &entry.continue_jumps {
+                self.patch_jump_to_pos(*cj, ct);
+            }
+        }
     }
 
     fn compile_try(
@@ -1324,6 +1473,13 @@ impl Compiler {
                 }
             }
         }
+
+        // Save and reset binding_is_global — inside a function body,
+        // all bindings (params, var decls, destructuring) must be local,
+        // not global.  Without this, destructuring params like ([e,t,n,r])
+        // in a top-level arrow would emit StoreGlobal instead of StoreLocal.
+        let prev_binding_is_global = self.binding_is_global;
+        self.binding_is_global = false;
 
         let mut func_scope = Scope::new();
         func_scope.chunk.name = name.cloned();
@@ -1562,6 +1718,9 @@ impl Compiler {
                 self.emit(Op::Pop);
             }
         }
+
+        // Restore binding_is_global to the value before entering this function.
+        self.binding_is_global = prev_binding_is_global;
     }
 
     fn compile_class(
@@ -1993,10 +2152,11 @@ impl Compiler {
                             self.compile_expr_with_name(&prop.value, &accessor_name); // [obj, obj, fn]
                             let ci = self.add_const(Constant::String(name.clone()));
                             if prop.kind == PropKind::Get {
-                                self.emit(Op::DefineGetter(ci)); // [obj]
+                                self.emit(Op::DefineGetter(ci)); // [obj, obj] (pops fn, peeks obj)
                             } else {
-                                self.emit(Op::DefineSetter(ci)); // [obj]
+                                self.emit(Op::DefineSetter(ci)); // [obj, obj]
                             }
+                            self.emit(Op::Pop);              // [obj] — pop the Dup'd reference
                         }
                         continue;
                     }
@@ -2434,54 +2594,83 @@ impl Compiler {
             }
             Expr::Array(elements) if *op == AssignOp::Assign => {
                 // Array destructuring assignment: [x, y, z] = expr
+                // ES2023: must use iterator protocol (Symbol.iterator)
                 self.compile_expr(right);
                 self.emit(Op::Dup); // keep RHS value as result of the assignment expression
-                for (i, elem) in elements.iter().enumerate() {
-                    if let Some(expr) = elem {
-                        match expr {
-                            Expr::Spread(inner) => {
-                                // Rest element: ...x = arr.slice(i)
-                                self.emit(Op::Dup);
-                                self.emit(Op::Dup);
-                                let slice_ci = self.add_const(Constant::String(String::from("slice")));
-                                self.emit(Op::GetPropNamed(slice_ci));
-                                let i_ci = self.add_const(Constant::Number(i as f64));
-                                self.emit(Op::LoadConst(i_ci));
-                                self.emit(Op::CallMethod(1));
-                                self.compile_assign_target(inner);
-                            }
-                            Expr::Assign { op: AssignOp::Assign, left, right: default } => {
-                                // Element with default: [x = default] = arr
-                                self.emit(Op::Dup);
-                                let idx = self.add_const(Constant::Number(i as f64));
-                                self.emit(Op::LoadConst(idx));
-                                self.emit(Op::GetProp);
-                                // If undefined, use default
-                                self.emit(Op::Dup);
-                                self.emit(Op::LoadUndefined);
-                                self.emit(Op::StrictEq);
-                                let skip = self.emit(Op::JumpIfFalse(0));
-                                self.emit(Op::Pop);
-                                self.compile_expr(default);
-                                self.patch_jump(skip);
-                                self.compile_assign_target(left);
-                            }
-                            _ => {
-                                self.emit(Op::Dup);
-                                let idx = self.add_const(Constant::Number(i as f64));
-                                self.emit(Op::LoadConst(idx));
-                                self.emit(Op::GetProp);
-                                self.compile_assign_target(expr);
+                self.emit(Op::GetIterator); // convert to iterator
+                // Stack: [..., rhs_value, iterator]
+                for elem in elements.iter() {
+                    match elem {
+                        None => {
+                            // Elision: [,] — advance iterator without binding
+                            self.emit(Op::Dup);
+                            self.emit(Op::IterNext);
+                            self.emit(Op::Pop); // pop has_more
+                            self.emit(Op::Pop); // pop value
+                        }
+                        Some(expr) => {
+                            match expr {
+                                Expr::Spread(inner) => {
+                                    // Rest element: [...x] — collect remaining into array
+                                    let result_arr = self.scope_mut().add_local(String::from("__dstr_rest__"));
+                                    self.emit(Op::NewArray(0));
+                                    self.emit(Op::StoreLocal(result_arr));
+                                    self.emit(Op::Pop);
+                                    let loop_top = self.offset();
+                                    self.emit(Op::Dup); // dup iterator
+                                    self.emit(Op::IterNext); // value, has_more
+                                    let exit = self.emit(Op::JumpIfFalse(0));
+                                    // has_more=true: push value into array
+                                    let tmp = self.scope_mut().add_local(String::from("__dstr_tmp__"));
+                                    self.emit(Op::StoreLocal(tmp));
+                                    self.emit(Op::Pop);
+                                    self.emit(Op::LoadLocal(result_arr));
+                                    self.emit(Op::LoadLocal(tmp));
+                                    self.emit(Op::ArrayPush);
+                                    self.emit(Op::Pop);
+                                    self.emit(Op::Jump(loop_top as i32 - self.offset() as i32 - 1));
+                                    self.patch_jump(exit);
+                                    self.emit(Op::Pop); // pop value (undefined when done)
+                                    self.emit(Op::LoadLocal(result_arr));
+                                    self.compile_assign_target(inner);
+                                }
+                                Expr::Assign { op: AssignOp::Assign, left, right: default } => {
+                                    // Element with default: [x = default] = arr
+                                    self.emit(Op::Dup);
+                                    self.emit(Op::IterNext); // value, has_more
+                                    self.emit(Op::Pop); // pop has_more
+                                    // If undefined, use default
+                                    self.emit(Op::Dup);
+                                    self.emit(Op::LoadUndefined);
+                                    self.emit(Op::StrictEq);
+                                    let skip = self.emit(Op::JumpIfFalse(0));
+                                    self.emit(Op::Pop);
+                                    self.compile_expr(default);
+                                    self.patch_jump(skip);
+                                    self.compile_assign_target(left);
+                                }
+                                _ => {
+                                    self.emit(Op::Dup);
+                                    self.emit(Op::IterNext); // value, has_more
+                                    self.emit(Op::Pop); // pop has_more
+                                    self.compile_assign_target(expr);
+                                }
                             }
                         }
                     }
                 }
-                self.emit(Op::Pop); // pop the dup'd array, leave original RHS as result
+                self.emit(Op::Pop); // pop the iterator
+                // Stack: [..., rhs_value] — original RHS is the result
             }
             Expr::Object(props) if *op == AssignOp::Assign => {
-                // Object destructuring assignment: {a, b} = expr
+                // Object destructuring assignment: {a, b, ...rest} = expr
                 self.compile_expr(right);
                 self.emit(Op::Dup); // keep RHS value as result
+
+                // Collect excluded keys for rest element
+                let mut excluded_keys: Vec<String> = Vec::new();
+                let mut has_rest = false;
+                let mut rest_target: Option<&Expr> = None;
                 for prop in props {
                     let key_name = match &prop.key {
                         PropKey::Ident(k) | PropKey::String(k) => k.clone(),
@@ -2489,7 +2678,21 @@ impl Compiler {
                         PropKey::Computed(_) => continue,
                     };
                     if key_name == "..." {
-                        // Rest element in object destructuring — skip for now
+                        has_rest = true;
+                        rest_target = Some(&prop.value);
+                    } else {
+                        excluded_keys.push(key_name);
+                    }
+                }
+
+                // Emit normal property extractions
+                for prop in props {
+                    let key_name = match &prop.key {
+                        PropKey::Ident(k) | PropKey::String(k) => k.clone(),
+                        PropKey::Number(n) => format!("{}", n),
+                        PropKey::Computed(_) => continue,
+                    };
+                    if key_name == "..." {
                         continue;
                     }
                     self.emit(Op::Dup);
@@ -2509,6 +2712,21 @@ impl Compiler {
                         self.compile_assign_target(&prop.value);
                     }
                 }
+
+                // Emit rest element if present
+                if has_rest {
+                    if let Some(target) = rest_target {
+                        self.emit(Op::Dup);
+                        for key in &excluded_keys {
+                            let ki = self.add_const(Constant::String(key.clone()));
+                            self.emit(Op::LoadConst(ki));
+                        }
+                        let n = excluded_keys.len() as u8;
+                        self.emit(Op::ObjectRest(n));
+                        self.compile_assign_target(target);
+                    }
+                }
+
                 self.emit(Op::Pop); // pop dup'd object, leave RHS as result
             }
             _ => {
@@ -2526,50 +2744,141 @@ impl Compiler {
                 self.emit(Op::Pop); // emit_store_name leaves value on stack
             }
             Expr::Member { object, property, .. } => {
-                // obj.prop = value: need to put obj below value
-                // Stack: [value]
-                self.compile_expr(object); // [value, obj]
-                // Swap needed — use store approach instead
-                // Actually: compile_expr(object), then swap is hard.
-                // Simpler: store in temp, compile obj, load temp, SetPropNamed
-                // For now: pop value into a temp approach isn't great.
-                // Actually SetPropNamed expects [obj, value] on stack.
-                // We have [value]. We need [obj, value].
-                // Emit object first would require we had the value saved.
-                // Use Dup trick: the value is already there. We can use SetProp
-                // by pushing obj and property manually.
-                // Wait — we have [value] on stack. We need [obj, value].
-                // Can't easily do this without Swap.
-                // Fallback: just store via name if object is an ident
+                // obj.prop = value — Stack: [value]
+                // Save value to temp, compile object, load value, SetPropNamed
+                let tmp = self.scope_mut().add_local(String::from("__assign_tmp__"));
+                self.emit(Op::StoreLocal(tmp)); // save value
+                self.emit(Op::Pop); // StoreLocal peeks, pop value
+                self.compile_expr(object); // [obj]
+                self.emit(Op::LoadLocal(tmp)); // [obj, value]
                 let ci = self.add_const(Constant::String(property.clone()));
-                self.emit(Op::SetPropNamed(ci)); // expects [obj, value]... won't work.
-                // For now, skip complex member destructuring targets
+                self.emit(Op::SetPropNamed(ci)); // [value]
+                self.emit(Op::Pop); // pop result
+            }
+            Expr::Index { object, index } => {
+                // obj[key] = value — Stack: [value]
+                let tmp = self.scope_mut().add_local(String::from("__assign_tmp__"));
+                self.emit(Op::StoreLocal(tmp));
+                self.emit(Op::Pop);
+                self.compile_expr(object); // [obj]
+                self.compile_expr(index); // [obj, key]
+                self.emit(Op::LoadLocal(tmp)); // [obj, key, value]
+                self.emit(Op::SetProp); // [value]
+                self.emit(Op::Pop);
             }
             Expr::Array(elements) => {
                 // Nested array destructuring: [[a, b]] = [[1, 2]]
-                for (i, elem) in elements.iter().enumerate() {
-                    if let Some(e) = elem {
-                        self.emit(Op::Dup);
-                        let idx = self.add_const(Constant::Number(i as f64));
-                        self.emit(Op::LoadConst(idx));
-                        self.emit(Op::GetProp);
-                        self.compile_assign_target(e);
+                // Use iterator protocol
+                self.emit(Op::GetIterator);
+                for elem in elements.iter() {
+                    match elem {
+                        None => {
+                            self.emit(Op::Dup);
+                            self.emit(Op::IterNext);
+                            self.emit(Op::Pop);
+                            self.emit(Op::Pop);
+                        }
+                        Some(Expr::Spread(inner)) => {
+                            let result_arr = self.scope_mut().add_local(String::from("__dstr_rest__"));
+                            self.emit(Op::NewArray(0));
+                            self.emit(Op::StoreLocal(result_arr));
+                            self.emit(Op::Pop);
+                            let loop_top = self.offset();
+                            self.emit(Op::Dup);
+                            self.emit(Op::IterNext);
+                            let exit = self.emit(Op::JumpIfFalse(0));
+                            let tmp = self.scope_mut().add_local(String::from("__dstr_tmp__"));
+                            self.emit(Op::StoreLocal(tmp));
+                            self.emit(Op::Pop);
+                            self.emit(Op::LoadLocal(result_arr));
+                            self.emit(Op::LoadLocal(tmp));
+                            self.emit(Op::ArrayPush);
+                            self.emit(Op::Pop);
+                            self.emit(Op::Jump(loop_top as i32 - self.offset() as i32 - 1));
+                            self.patch_jump(exit);
+                            self.emit(Op::Pop);
+                            self.emit(Op::LoadLocal(result_arr));
+                            self.compile_assign_target(inner);
+                        }
+                        Some(Expr::Assign { op: AssignOp::Assign, left, right: default }) => {
+                            self.emit(Op::Dup);
+                            self.emit(Op::IterNext);
+                            self.emit(Op::Pop);
+                            self.emit(Op::Dup);
+                            self.emit(Op::LoadUndefined);
+                            self.emit(Op::StrictEq);
+                            let skip = self.emit(Op::JumpIfFalse(0));
+                            self.emit(Op::Pop);
+                            self.compile_expr(default);
+                            self.patch_jump(skip);
+                            self.compile_assign_target(left);
+                        }
+                        Some(e) => {
+                            self.emit(Op::Dup);
+                            self.emit(Op::IterNext);
+                            self.emit(Op::Pop);
+                            self.compile_assign_target(e);
+                        }
                     }
                 }
-                self.emit(Op::Pop);
+                self.emit(Op::Pop); // pop iterator
             }
             Expr::Object(props) => {
                 // Nested object destructuring
+                // Collect excluded keys for rest
+                let mut excluded_keys: Vec<String> = Vec::new();
+                let mut has_rest = false;
+                let mut rest_idx = 0;
+                for (i, prop) in props.iter().enumerate() {
+                    let key_name = match &prop.key {
+                        PropKey::Ident(k) | PropKey::String(k) => k.clone(),
+                        PropKey::Number(n) => format!("{}", n),
+                        PropKey::Computed(_) => continue,
+                    };
+                    if key_name == "..." {
+                        has_rest = true;
+                        rest_idx = i;
+                    } else {
+                        excluded_keys.push(key_name);
+                    }
+                }
+
                 for prop in props {
                     let key_name = match &prop.key {
                         PropKey::Ident(k) | PropKey::String(k) => k.clone(),
                         PropKey::Number(n) => format!("{}", n),
                         PropKey::Computed(_) => continue,
                     };
+                    if key_name == "..." {
+                        continue;
+                    }
                     self.emit(Op::Dup);
                     let ci = self.add_const(Constant::String(key_name));
                     self.emit(Op::GetPropNamed(ci));
-                    self.compile_assign_target(&prop.value);
+                    if let Expr::Assign { op: AssignOp::Assign, left, right: default } = &prop.value {
+                        self.emit(Op::Dup);
+                        self.emit(Op::LoadUndefined);
+                        self.emit(Op::StrictEq);
+                        let skip = self.emit(Op::JumpIfFalse(0));
+                        self.emit(Op::Pop);
+                        self.compile_expr(default);
+                        self.patch_jump(skip);
+                        self.compile_assign_target(left);
+                    } else {
+                        self.compile_assign_target(&prop.value);
+                    }
+                }
+                if has_rest {
+                    if let Some(prop) = props.get(rest_idx) {
+                        self.emit(Op::Dup);
+                        for key in &excluded_keys {
+                            let ki = self.add_const(Constant::String(key.clone()));
+                            self.emit(Op::LoadConst(ki));
+                        }
+                        let n = excluded_keys.len() as u8;
+                        self.emit(Op::ObjectRest(n));
+                        self.compile_assign_target(&prop.value);
+                    }
                 }
                 self.emit(Op::Pop);
             }

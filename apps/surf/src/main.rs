@@ -301,6 +301,9 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     mark_relayout_dirty(tab_index);
                 }
             }
+            net_worker::FetchResult::ScriptDone { tab_index, slot, body, headers, generation } => {
+                handle_script_done(tab_index, slot, body, headers, generation);
+            }
         }
     }
 }
@@ -402,12 +405,46 @@ fn handle_nav_done(
         st.tabs[tab_idx].webview.js_runtime().set_cookies("");
     }
 
-    // Parse and render the HTML document.
-    st.tabs[tab_idx].webview.set_html(&body_text);
+    // Parse and render the HTML document (without JS — scripts are executed
+    // after external scripts have been fetched, matching the surf-host flow).
+    st.tabs[tab_idx].webview.set_html_no_js(&body_text);
 
-    // Flush JS console output to serial log.
-    for line in st.tabs[tab_idx].webview.js_console() {
-        anyos_std::println!("[surf-js] {}", line);
+    // Collect script entries (inline + external) in document order.
+    // Inline scripts are stored immediately; external scripts are queued
+    // for async fetch via the net_worker.  Once all external fetches
+    // complete, scripts are executed in document order via execute_js().
+    let generation = st.tabs[tab_idx].nav_generation;
+    {
+        let entries = st.tabs[tab_idx].webview.script_entries();
+        let mut pending = Vec::with_capacity(entries.len());
+        let mut ext_count = 0usize;
+        for (slot, entry) in entries.iter().enumerate() {
+            match entry {
+                libwebview::js::ScriptEntry::Inline(text) => {
+                    pending.push(Some(text.clone()));
+                }
+                libwebview::js::ScriptEntry::External(src_url) => {
+                    let full_url = http::resolve_url(&base_url, src_url);
+                    anyos_std::println!("[surf] queuing script fetch [{}]: {}", slot, src_url);
+                    net_worker::submit(net_worker::FetchRequest::Script {
+                        tab_index: tab_idx,
+                        slot,
+                        src: src_url.clone(),
+                        url: full_url,
+                        generation,
+                    });
+                    pending.push(None); // placeholder — filled when fetch completes
+                    ext_count += 1;
+                }
+            }
+        }
+        st.tabs[tab_idx].pending_scripts = pending;
+        st.tabs[tab_idx].pending_script_count = ext_count;
+
+        // If there are no external scripts, execute immediately.
+        if ext_count == 0 && !entries.is_empty() {
+            execute_pending_scripts(tab_idx);
+        }
     }
 
     // Extract page title.
@@ -574,6 +611,69 @@ fn handle_image_done(
         resources::decode_raster_no_relayout(&body, &src, tab_index);
     }
     true
+}
+
+/// Handle a completed external script fetch.
+///
+/// Places the fetched text into the tab's `pending_scripts` slot.
+/// When all slots are filled, executes all scripts in document order.
+fn handle_script_done(
+    tab_index: usize,
+    slot: usize,
+    body: Vec<u8>,
+    headers: String,
+    generation: u32,
+) {
+    let st = state();
+    if tab_index >= st.tabs.len() { return; }
+    if st.tabs[tab_index].nav_generation != generation { return; }
+    if slot >= st.tabs[tab_index].pending_scripts.len() { return; }
+
+    let text = resources::decode_http_body(&body, &headers);
+    anyos_std::println!("[surf] script [{}] fetched: {} bytes", slot, text.len());
+    st.tabs[tab_index].pending_scripts[slot] = Some(text);
+
+    if st.tabs[tab_index].pending_script_count > 0 {
+        st.tabs[tab_index].pending_script_count -= 1;
+    }
+
+    // All external scripts fetched — execute everything in document order.
+    if st.tabs[tab_index].pending_script_count == 0 {
+        execute_pending_scripts(tab_index);
+    }
+}
+
+/// Execute all pending scripts for a tab in document order.
+///
+/// Called when all external script fetches have completed (or immediately
+/// if the page has only inline scripts).
+fn execute_pending_scripts(tab_index: usize) {
+    let st = state();
+    if tab_index >= st.tabs.len() { return; }
+
+    let scripts: Vec<String> = st.tabs[tab_index].pending_scripts
+        .iter()
+        .filter_map(|s| s.clone())
+        .collect();
+    // Clear pending state.
+    st.tabs[tab_index].pending_scripts.clear();
+    st.tabs[tab_index].pending_script_count = 0;
+
+    if scripts.is_empty() { return; }
+
+    anyos_std::println!("[surf] executing {} scripts in document order", scripts.len());
+    st.tabs[tab_index].webview.execute_js(&scripts);
+
+    // Flush JS console output.
+    for line in st.tabs[tab_index].webview.js_console() {
+        anyos_std::println!("[surf-js] {}", line);
+    }
+
+    // JS may have requested WebSocket connections.
+    connect_pending_ws(tab_index);
+
+    // Relayout to reflect DOM mutations from JS.
+    mark_relayout_dirty(tab_index);
 }
 
 /// Merge cookies returned by the worker thread into the main cookie jar.

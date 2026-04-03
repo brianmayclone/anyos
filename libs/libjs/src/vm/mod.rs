@@ -346,7 +346,15 @@ impl Vm {
                 }
                 Op::LoadGlobal(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
-                    if self.globals.has(&name) {
+                    if name == "globalThis" {
+                        // ES2020: globalThis — create a snapshot object of global scope
+                        let mut obj = JsObject::new();
+                        obj.prototype = Some(self.object_proto.clone());
+                        for (k, prop) in &self.globals.properties {
+                            obj.properties.insert(k.clone(), prop.clone());
+                        }
+                        self.stack.push(JsValue::Object(Rc::new(RefCell::new(obj))));
+                    } else if self.globals.has(&name) {
                         let val = self.globals.get(&name);
                         self.stack.push(val);
                     } else {
@@ -359,8 +367,17 @@ impl Vm {
                 }
                 Op::LoadGlobalSafe(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
-                    let val = self.globals.get(&name);
-                    self.stack.push(val);
+                    if name == "globalThis" {
+                        let mut obj = JsObject::new();
+                        obj.prototype = Some(self.object_proto.clone());
+                        for (k, prop) in &self.globals.properties {
+                            obj.properties.insert(k.clone(), prop.clone());
+                        }
+                        self.stack.push(JsValue::Object(Rc::new(RefCell::new(obj))));
+                    } else {
+                        let val = self.globals.get(&name);
+                        self.stack.push(val);
+                    }
                 }
                 Op::StoreGlobal(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
@@ -410,9 +427,12 @@ impl Vm {
                         result
                     } else { b };
 
-                    // Note: Symbol + anything → TypeError in spec, but our symbols
-                    // are strings with a __symbol__ prefix, so addition already works
-                    // as string concatenation — no TypeError needed.
+                    // Symbol + anything → TypeError (ES2023 §13.15.3)
+                    if is_symbol_value(&a_prim) || is_symbol_value(&b_prim) {
+                        let err = self.make_type_error("Cannot convert a Symbol value to a number");
+                        if !self.handle_exception(err) { return JsValue::Undefined; }
+                        continue;
+                    }
 
                     // Perform addition
                     let result = match (&a_prim, &b_prim) {
@@ -782,6 +802,10 @@ impl Vm {
                 Op::GetIterator => {
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let iter_obj = self.create_iterator(&val);
+                    if let Some(exc) = self.pending_exception.take() {
+                        if !self.handle_exception(exc) { return JsValue::Undefined; }
+                        continue;
+                    }
                     self.stack.push(iter_obj);
                 }
                 Op::IterNext => {
@@ -1411,6 +1435,10 @@ impl Vm {
                     return JsValue::Number(func.params.len() as f64);
                 }
                 if key == "prototype" {
+                    // Arrow functions have no .prototype (ES2023 §14.2.17)
+                    if func.kind.is_arrow() {
+                        return JsValue::Undefined;
+                    }
                     // Return the stored prototype object (shared across new calls).
                     if let Some(ref proto) = func.prototype {
                         return JsValue::Object(proto.clone());

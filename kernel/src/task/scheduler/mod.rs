@@ -793,10 +793,16 @@ fn schedule_inner(from_timer: bool) {
         PER_CPU_IN_SCHEDULER[cpu_id_early].store(true, Ordering::Release);
     }
 
-    // Restore interrupts for voluntary path (needed for spin loop below)
-    if !from_timer {
-        crate::arch::hal::restore_interrupt_state(saved_flags);
-    }
+    // IMPORTANT: Do NOT restore interrupts here for the voluntary path!
+    // Re-enabling interrupts before the scheduler lock is acquired creates a
+    // race window where a timer IRQ can preempt this CPU and migrate the
+    // current thread to a different CPU — while it's still executing on its
+    // original kernel stack.  The new CPU's PERCPU.kernel_rsp gets updated to
+    // this stack, and a subsequent SYSCALL on that CPU would load the same
+    // kernel stack, causing two threads to share one stack → corruption.
+    // Interrupts stay disabled until the lock is held (the spin loop below
+    // is safe: the lock holder is on a *different* CPU and doesn't need our
+    // timer to release it).
 
     // Drain deferred PD destruction queue BEFORE acquiring the scheduler lock.
     // destroy_user_page_directory is slow (page-table walk + hundreds of

@@ -179,6 +179,22 @@ impl Vm {
             JsValue::Function(func_rc) => {
                 let kind = func_rc.borrow().kind.clone();
 
+                // ES2023 §14.2.17: Arrow functions are not constructable
+                let is_arrow = match &kind {
+                    FnKind::Bytecode(chunk) => chunk.is_arrow,
+                    _ => false,
+                };
+                if is_arrow {
+                    let name = func_rc.borrow().name.clone().unwrap_or_default();
+                    let msg = alloc::format!("{} is not a constructor", if name.is_empty() { "(intermediate value)".into() } else { name });
+                    let exc = self.make_type_error(&msg);
+                    if !self.handle_exception(exc) {
+                        self.stack.push(JsValue::Undefined);
+                        return;
+                    }
+                    return;
+                }
+
                 // Use Constructor.prototype as the new object's prototype (JS spec).
                 // Prefer own_props["prototype"] (set by `Dog.prototype = ...` assignments)
                 // over the internal prototype field.

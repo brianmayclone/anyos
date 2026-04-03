@@ -260,13 +260,6 @@ impl Parser {
             }
             if self.pos == before { self.pos += 1; }
         }
-        // Debug: log large block bodies
-        #[cfg(feature = "host")]
-        if stmts.len() > 50 {
-            let span = if self.pos < self.tokens.len() { self.tokens[self.pos].span.start } else { 0 };
-            eprintln!("[parser] block_body: {} stmts, exit at token[{}] span_byte={}", 
-                stmts.len(), self.pos, span);
-        }
         stmts
     }
 

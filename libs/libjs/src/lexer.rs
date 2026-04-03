@@ -641,7 +641,9 @@ impl<'a> Lexer<'a> {
                 }
             }
             b'?' => {
-                if self.peek() == b'.' {
+                if self.peek() == b'.' && !self.peek2().is_ascii_digit() {
+                    // `?.` is optional chaining only when NOT followed by a digit.
+                    // `?.5` must be tokenized as `?` + `.5` (ternary + number).
                     self.pos += 1;
                     TokenKind::QuestionDot
                 } else if self.peek() == b'?' {

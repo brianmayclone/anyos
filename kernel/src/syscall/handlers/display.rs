@@ -357,6 +357,7 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
         return 0;
     }
 
+
     let count = cmd_count.min(256) as usize; // Cap at 256 commands per call
     let byte_size = count * 36; // 9 u32s * 4 bytes each
     if !is_valid_user_ptr(cmd_buf_ptr as u64, byte_size as u64) {

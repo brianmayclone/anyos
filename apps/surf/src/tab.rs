@@ -39,6 +39,11 @@ pub(crate) struct TabState {
     pub(crate) nav_generation: u32,
     /// Whether this tab is currently loading (navigation in progress).
     pub(crate) is_loading: bool,
+    /// Pending script slots — one entry per `<script>` tag in document order.
+    /// `Some(text)` = inline or already-fetched, `None` = external fetch pending.
+    pub(crate) pending_scripts: Vec<Option<String>>,
+    /// Number of external script fetches still outstanding.
+    pub(crate) pending_script_count: usize,
 }
 
 impl TabState {
@@ -54,6 +59,8 @@ impl TabState {
             status_text: String::from("Ready"),
             nav_generation: 0,
             is_loading: false,
+            pending_scripts: Vec::new(),
+            pending_script_count: 0,
         }
     }
 

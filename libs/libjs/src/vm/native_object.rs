@@ -475,6 +475,10 @@ pub fn object_is_extensible(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                          o.internal_tag.as_deref() == Some("__frozen__");
             JsValue::Bool(!sealed)
         }
+        Some(JsValue::Function(_)) => {
+            // Functions are extensible by default (ES2023 §10.2.4)
+            JsValue::Bool(true)
+        }
         _ => JsValue::Bool(false),
     }
 }

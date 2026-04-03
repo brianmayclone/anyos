@@ -444,7 +444,29 @@ pub fn string_concat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::String(this_string(vm))
+    let s = this_string(vm);
+    // Symbol.prototype.toString() → "Symbol(description)"
+    if super::is_symbol_value(&JsValue::String(s.clone())) {
+        return JsValue::String(symbol_display_name(&s));
+    }
+    JsValue::String(s)
+}
+
+/// Convert internal symbol representation to "Symbol(description)" display format.
+fn symbol_display_name(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix("__symbol__") {
+        if let Some(idx) = rest.find('_') {
+            let desc = &rest[idx + 1..];
+            if desc.is_empty() {
+                return String::from("Symbol()");
+            }
+            return alloc::format!("Symbol({})", desc);
+        }
+    }
+    if let Some(rest) = s.strip_prefix("__symbol_global__") {
+        return alloc::format!("Symbol({})", rest);
+    }
+    String::from("Symbol()")
 }
 
 // ═══════════════════════════════════════════════════════════

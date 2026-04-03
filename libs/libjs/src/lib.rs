@@ -64,17 +64,6 @@ impl JsEngine {
         let mut parser = parser::Parser::new(tokens);
         let program = parser.parse_program();
 
-        #[cfg(feature = "host")]
-        if source.len() > 50000 {
-            let stmt_count = program.body.len();
-            let fn_decls = program.body.iter().filter(|s| matches!(s, ast::Stmt::FunctionDecl { .. })).count();
-            let var_decls: usize = program.body.iter().filter_map(|s| {
-                if let ast::Stmt::VarDecl { decls, .. } = s { Some(decls.len()) } else { None }
-            }).sum();
-            eprintln!("[libjs] parsed {} bytes → {} stmts ({} fn-decls, {} var-decls), {} errors",
-                source.len(), stmt_count, fn_decls, var_decls, parser.errors.len());
-        }
-
         // If there were parse errors, store a SyntaxError as last_exception
         if !parser.errors.is_empty() {
             let err = self.vm.make_syntax_error(&parser.errors[0]);
