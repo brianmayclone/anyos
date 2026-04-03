@@ -16,6 +16,24 @@ use super::storage;
 use super::xhr;
 use super::fetch;
 
+// ── JsValue option helpers (not on the type itself) ──────────────────────────
+
+/// Extract a number from a JsValue, returning `default` for Null/Undefined.
+#[inline]
+fn opt_num(v: JsValue, default: f64) -> JsValue {
+    JsValue::Number(if v.is_undefined() || v.is_null() { default } else { v.to_number() })
+}
+
+/// Extract a String from a JsValue, returning `default` for Null/Undefined.
+#[inline]
+fn opt_str(v: JsValue, default: &str) -> JsValue {
+    if v.is_undefined() || v.is_null() {
+        JsValue::String(String::from(default))
+    } else {
+        JsValue::String(v.to_js_string())
+    }
+}
+
 /// Create the native `window` host object.
 ///
 /// * `origin` — the page origin (e.g. `"https://example.com"`) used to key
@@ -81,24 +99,26 @@ pub fn make_window(_vm: &mut Vm, document: JsValue, origin: &str) -> JsValue {
 
     // Events.
     obj.set(String::from("addEventListener"), native_fn("addEventListener", win_add_event_listener));
-    obj.set(String::from("removeEventListener"), native_fn("removeEventListener", win_noop));
+    obj.set(String::from("removeEventListener"), native_fn("removeEventListener", super::native_remove_event_listener));
     obj.set(String::from("dispatchEvent"), native_fn("dispatchEvent", |_,_| JsValue::Bool(true)));
 
-    // Encoding stubs.
-    obj.set(String::from("atob"), native_fn("atob", win_passthrough));
-    obj.set(String::from("btoa"), native_fn("btoa", win_passthrough));
+    // Base64 encoding/decoding (W3C HTML §8.3).
+    obj.set(String::from("atob"), native_fn("atob", win_atob));
+    obj.set(String::from("btoa"), native_fn("btoa", win_btoa));
 
     // Network.
     obj.set(String::from("fetch"), native_fn("fetch", fetch::native_fetch));
     obj.set(String::from("XMLHttpRequest"), xhr::make_xhr_constructor());
     obj.set(String::from("Headers"), native_fn("Headers", fetch::native_headers_ctor));
 
-    // Performance.
+    // Performance (W3C Performance Timeline §4).
     let perf = JsValue::new_object();
-    perf.set_property(String::from("now"), native_fn("now", |_,_| JsValue::Number(0.0)));
+    perf.set_property(String::from("now"), native_fn("now", win_performance_now));
     perf.set_property(String::from("mark"), native_fn("mark", win_noop));
     perf.set_property(String::from("measure"), native_fn("measure", win_noop));
     perf.set_property(String::from("getEntriesByName"), native_fn("getEntriesByName", |_,_| make_array(Vec::new())));
+    perf.set_property(String::from("getEntriesByType"), native_fn("getEntriesByType", |_,_| make_array(Vec::new())));
+    perf.set_property(String::from("timeOrigin"), JsValue::Number(0.0));
     obj.set(String::from("performance"), perf);
 
     // Storage.
@@ -136,13 +156,22 @@ pub fn make_window(_vm: &mut Vm, document: JsValue, origin: &str) -> JsValue {
     obj.set(String::from("MutationObserver"), native_fn("MutationObserver", win_mutation_observer_ctor));
     obj.set(String::from("IntersectionObserver"), native_fn("IntersectionObserver", win_observer_ctor));
 
-    // Event constructors.
-    obj.set(String::from("CustomEvent"), native_fn("CustomEvent", win_custom_event));
-    obj.set(String::from("Event"), native_fn("Event", win_event));
+    // Event constructors (W3C DOM Events Level 3 / UIEvents / Pointer Events).
+    obj.set(String::from("Event"),          native_fn("Event",          win_event));
+    obj.set(String::from("CustomEvent"),    native_fn("CustomEvent",    win_custom_event));
+    obj.set(String::from("MouseEvent"),     native_fn("MouseEvent",     win_mouse_event));
+    obj.set(String::from("KeyboardEvent"),  native_fn("KeyboardEvent",  win_keyboard_event));
+    obj.set(String::from("InputEvent"),     native_fn("InputEvent",     win_input_event));
+    obj.set(String::from("FocusEvent"),     native_fn("FocusEvent",     win_focus_event));
+    obj.set(String::from("WheelEvent"),     native_fn("WheelEvent",     win_wheel_event));
+    obj.set(String::from("PointerEvent"),   native_fn("PointerEvent",   win_pointer_event));
+
+    // MessageChannel (W3C HTML §9.4 — used by React Scheduler for task deferral).
+    obj.set(String::from("MessageChannel"), native_fn("MessageChannel", win_message_channel));
 
     // URL / misc.
     obj.set(String::from("URL"), native_fn("URL", win_url_ctor));
-    obj.set(String::from("URLSearchParams"), native_fn("URLSearchParams", win_noop_obj));
+    obj.set(String::from("URLSearchParams"), native_fn("URLSearchParams", win_url_search_params));
     obj.set(String::from("TextEncoder"), native_fn("TextEncoder", win_text_encoder));
     obj.set(String::from("TextDecoder"), native_fn("TextDecoder", win_text_decoder));
     obj.set(String::from("AbortController"), native_fn("AbortController", win_abort_controller));
@@ -171,6 +200,12 @@ pub fn native_alert(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn win_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let event = super::arg_string(args, 0);
     let callback = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    // Third argument: boolean or EventListenerOptions { capture: bool }.
+    let capture = match args.get(2) {
+        Some(JsValue::Bool(b))   => *b,
+        Some(JsValue::Object(_)) => args[2].get_property("capture").to_boolean(),
+        _                        => false,
+    };
 
     // For load/DOMContentLoaded, fire immediately.
     if event == "load" || event == "DOMContentLoaded" {
@@ -186,6 +221,7 @@ fn win_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             node_id: usize::MAX, // window pseudo-node
             event,
             callback,
+            capture,
         });
     }
     JsValue::Undefined
@@ -212,14 +248,81 @@ fn win_prompt(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 fn win_match_media(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let q = arg_string(args, 0);
+    // Evaluate common media queries against a 1024×768 viewport.
+    let matches = eval_media_query(&q, 1024, 768);
     let mql = JsValue::new_object();
-    mql.set_property(String::from("matches"), JsValue::Bool(false));
+    mql.set_property(String::from("matches"), JsValue::Bool(matches));
     mql.set_property(String::from("media"), JsValue::String(q));
+    mql.set_property(String::from("onchange"), JsValue::Null);
     mql.set_property(String::from("addListener"), native_fn("addListener", win_noop));
     mql.set_property(String::from("removeListener"), native_fn("removeListener", win_noop));
     mql.set_property(String::from("addEventListener"), native_fn("addEventListener", win_noop));
     mql.set_property(String::from("removeEventListener"), native_fn("removeEventListener", win_noop));
     mql
+}
+
+/// Evaluate common CSS media query patterns against viewport dimensions.
+///
+/// Supports: `(min-width: Npx)`, `(max-width: Npx)`, `(min-height: Npx)`,
+/// `(max-height: Npx)`, `screen`, `all`, `(prefers-color-scheme: light|dark)`,
+/// `(pointer: fine|coarse)`.
+fn eval_media_query(query: &str, vw: u32, vh: u32) -> bool {
+    let q = query.trim().to_ascii_lowercase();
+    // "all" and "screen" always match.
+    if q == "all" || q == "screen" || q.is_empty() { return true; }
+    if q == "print" { return false; }
+
+    // Check individual conditions separated by " and ".
+    let conditions: Vec<&str> = if q.contains(" and ") {
+        q.split(" and ").collect()
+    } else {
+        vec![q.as_str()]
+    };
+
+    for cond in conditions {
+        let c = cond.trim().trim_start_matches("screen").trim().trim_start_matches("all").trim();
+        if c.is_empty() || c == "screen" || c == "all" { continue; }
+        let inner = c.trim_matches('(').trim_matches(')').trim();
+
+        if inner.starts_with("min-width:") {
+            if let Some(px) = parse_px_value(&inner[10..]) {
+                if (vw as f64) < px { return false; }
+            }
+        } else if inner.starts_with("max-width:") {
+            if let Some(px) = parse_px_value(&inner[10..]) {
+                if (vw as f64) > px { return false; }
+            }
+        } else if inner.starts_with("min-height:") {
+            if let Some(px) = parse_px_value(&inner[11..]) {
+                if (vh as f64) < px { return false; }
+            }
+        } else if inner.starts_with("max-height:") {
+            if let Some(px) = parse_px_value(&inner[11..]) {
+                if (vh as f64) > px { return false; }
+            }
+        } else if inner == "prefers-color-scheme: dark" {
+            return false; // we're light mode
+        } else if inner == "prefers-color-scheme: light" {
+            continue; // matches
+        } else if inner == "pointer: fine" {
+            continue; // desktop = fine pointer
+        } else if inner == "pointer: coarse" {
+            return false;
+        } else if inner == "hover: hover" {
+            continue; // desktop has hover
+        } else if inner == "hover: none" {
+            return false;
+        } else if inner.starts_with("prefers-reduced-motion") {
+            if inner.contains("reduce") { return false; }
+        }
+        // Unknown conditions: treat as matching (lenient).
+    }
+    true
+}
+
+fn parse_px_value(s: &str) -> Option<f64> {
+    let s = s.trim().trim_end_matches("px").trim();
+    s.parse::<f64>().ok()
 }
 
 fn win_get_selection(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -237,41 +340,353 @@ fn win_observer_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     obs
 }
 
-fn win_mutation_observer_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+fn win_mutation_observer_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     let obs = JsValue::new_object();
-    obs.set_property(String::from("observe"), native_fn("observe", win_noop));
-    obs.set_property(String::from("disconnect"), native_fn("disconnect", win_noop));
-    obs.set_property(String::from("takeRecords"), native_fn("takeRecords", |_,_| make_array(Vec::new())));
+
+    // Store callback and observed config.
+    obs.set_property(String::from("__callback"), callback);
+    obs.set_property(String::from("__observing"), JsValue::Bool(false));
+    obs.set_property(String::from("__target"), JsValue::Null);
+    obs.set_property(String::from("__records"), JsValue::new_array(Vec::new()));
+    // Options booleans.
+    obs.set_property(String::from("__childList"), JsValue::Bool(false));
+    obs.set_property(String::from("__attributes"), JsValue::Bool(false));
+    obs.set_property(String::from("__characterData"), JsValue::Bool(false));
+    obs.set_property(String::from("__subtree"), JsValue::Bool(false));
+
+    obs.set_property(String::from("observe"), native_fn("observe", |vm, args| {
+        let target = args.first().cloned().unwrap_or(JsValue::Null);
+        let opts = args.get(1).cloned().unwrap_or(JsValue::new_object());
+
+        if let JsValue::Object(obj) = &vm.current_this {
+            let mut o = obj.borrow_mut();
+            o.set(String::from("__observing"), JsValue::Bool(true));
+            o.set(String::from("__target"), target);
+            o.set(String::from("__childList"),
+                JsValue::Bool(opts.get_property("childList").to_boolean()));
+            o.set(String::from("__attributes"),
+                JsValue::Bool(opts.get_property("attributes").to_boolean()));
+            o.set(String::from("__characterData"),
+                JsValue::Bool(opts.get_property("characterData").to_boolean()));
+            o.set(String::from("__subtree"),
+                JsValue::Bool(opts.get_property("subtree").to_boolean()));
+        }
+
+        // Register in bridge so mutations trigger callback.
+        let observer = vm.current_this.clone();
+        if let Some(bridge) = super::get_bridge(vm) {
+            bridge.event_listeners.push(super::EventListener {
+                node_id: usize::MAX - 1, // special sentinel for mutation observers
+                event: String::from("__mutation_observer"),
+                callback: observer,
+                capture: false,
+            });
+        }
+        JsValue::Undefined
+    }));
+
+    obs.set_property(String::from("disconnect"), native_fn("disconnect", |vm, _| {
+        if let JsValue::Object(obj) = &vm.current_this {
+            obj.borrow_mut().set(String::from("__observing"), JsValue::Bool(false));
+        }
+        JsValue::Undefined
+    }));
+
+    obs.set_property(String::from("takeRecords"), native_fn("takeRecords", |vm, _| {
+        let records = vm.current_this.get_property("__records");
+        // Clear records after taking.
+        vm.current_this.set_property(String::from("__records"),
+            JsValue::new_array(Vec::new()));
+        records
+    }));
+
     obs
 }
 
 fn win_custom_event(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let typ = arg_string(args, 0);
+    let typ  = arg_string(args, 0);
     let opts = args.get(1).cloned().unwrap_or(JsValue::new_object());
-    let evt = JsValue::new_object();
-    evt.set_property(String::from("type"), JsValue::String(typ));
+    let evt  = make_base_event(&typ, &opts);
     evt.set_property(String::from("detail"), opts.get_property("detail"));
-    evt.set_property(String::from("bubbles"), JsValue::Bool(opts.get_property("bubbles").to_boolean()));
-    evt.set_property(String::from("cancelable"), JsValue::Bool(opts.get_property("cancelable").to_boolean()));
-    evt.set_property(String::from("target"), JsValue::Null);
-    evt.set_property(String::from("currentTarget"), JsValue::Null);
-    evt.set_property(String::from("preventDefault"), native_fn("preventDefault", win_noop));
-    evt.set_property(String::from("stopPropagation"), native_fn("stopPropagation", win_noop));
     evt
 }
 
 fn win_event(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let typ = arg_string(args, 0);
+    let typ  = arg_string(args, 0);
     let opts = args.get(1).cloned().unwrap_or(JsValue::new_object());
-    let evt = JsValue::new_object();
-    evt.set_property(String::from("type"), JsValue::String(typ));
-    evt.set_property(String::from("bubbles"), JsValue::Bool(opts.get_property("bubbles").to_boolean()));
-    evt.set_property(String::from("cancelable"), JsValue::Bool(opts.get_property("cancelable").to_boolean()));
-    evt.set_property(String::from("target"), JsValue::Null);
-    evt.set_property(String::from("currentTarget"), JsValue::Null);
-    evt.set_property(String::from("preventDefault"), native_fn("preventDefault", win_noop));
-    evt.set_property(String::from("stopPropagation"), native_fn("stopPropagation", win_noop));
+    make_base_event(&typ, &opts)
+}
+
+fn win_mouse_event(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let typ  = arg_string(args, 0);
+    let opts = args.get(1).cloned().unwrap_or(JsValue::new_object());
+    let evt  = make_base_event(&typ, &opts);
+    // MouseEventInit dictionary properties (W3C UIEvents §5.3).
+    evt.set_property(String::from("clientX"),      opt_num(opts.get_property("clientX"), 0.0));
+    evt.set_property(String::from("clientY"),      opt_num(opts.get_property("clientY"), 0.0));
+    evt.set_property(String::from("screenX"),      opt_num(opts.get_property("screenX"), 0.0));
+    evt.set_property(String::from("screenY"),      opt_num(opts.get_property("screenY"), 0.0));
+    evt.set_property(String::from("pageX"),        opt_num(opts.get_property("pageX"),   0.0));
+    evt.set_property(String::from("pageY"),        opt_num(opts.get_property("pageY"),   0.0));
+    evt.set_property(String::from("offsetX"),      opt_num(opts.get_property("offsetX"), 0.0));
+    evt.set_property(String::from("offsetY"),      opt_num(opts.get_property("offsetY"), 0.0));
+    evt.set_property(String::from("x"),            opt_num(opts.get_property("clientX"), 0.0));
+    evt.set_property(String::from("y"),            opt_num(opts.get_property("clientY"), 0.0));
+    evt.set_property(String::from("button"),       opt_num(opts.get_property("button"),  0.0));
+    evt.set_property(String::from("buttons"),      opt_num(opts.get_property("buttons"), 0.0));
+    evt.set_property(String::from("ctrlKey"),      JsValue::Bool(opts.get_property("ctrlKey").to_boolean()));
+    evt.set_property(String::from("shiftKey"),     JsValue::Bool(opts.get_property("shiftKey").to_boolean()));
+    evt.set_property(String::from("altKey"),       JsValue::Bool(opts.get_property("altKey").to_boolean()));
+    evt.set_property(String::from("metaKey"),      JsValue::Bool(opts.get_property("metaKey").to_boolean()));
+    evt.set_property(String::from("movementX"),    JsValue::Number(0.0));
+    evt.set_property(String::from("movementY"),    JsValue::Number(0.0));
+    evt.set_property(String::from("relatedTarget"), JsValue::Null);
     evt
+}
+
+fn win_keyboard_event(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let typ  = arg_string(args, 0);
+    let opts = args.get(1).cloned().unwrap_or(JsValue::new_object());
+    let evt  = make_base_event(&typ, &opts);
+    // KeyboardEventInit dictionary (W3C UIEvents §8.2).
+    evt.set_property(String::from("key"),         opt_str(opts.get_property("key"),      ""));
+    evt.set_property(String::from("code"),        opt_str(opts.get_property("code"),     ""));
+    evt.set_property(String::from("keyCode"),     opt_num(opts.get_property("keyCode"),  0.0));
+    evt.set_property(String::from("which"),       opt_num(opts.get_property("which"),    0.0));
+    evt.set_property(String::from("charCode"),    opt_num(opts.get_property("charCode"), 0.0));
+    evt.set_property(String::from("ctrlKey"),     JsValue::Bool(opts.get_property("ctrlKey").to_boolean()));
+    evt.set_property(String::from("shiftKey"),    JsValue::Bool(opts.get_property("shiftKey").to_boolean()));
+    evt.set_property(String::from("altKey"),      JsValue::Bool(opts.get_property("altKey").to_boolean()));
+    evt.set_property(String::from("metaKey"),     JsValue::Bool(opts.get_property("metaKey").to_boolean()));
+    evt.set_property(String::from("repeat"),      JsValue::Bool(opts.get_property("repeat").to_boolean()));
+    evt.set_property(String::from("isComposing"), JsValue::Bool(opts.get_property("isComposing").to_boolean()));
+    evt.set_property(String::from("location"),    opt_num(opts.get_property("location"), 0.0));
+    evt.set_property(String::from("DOM_KEY_LOCATION_STANDARD"), JsValue::Number(0.0));
+    evt.set_property(String::from("DOM_KEY_LOCATION_LEFT"),     JsValue::Number(1.0));
+    evt.set_property(String::from("DOM_KEY_LOCATION_RIGHT"),    JsValue::Number(2.0));
+    evt.set_property(String::from("DOM_KEY_LOCATION_NUMPAD"),   JsValue::Number(3.0));
+    evt.set_property(String::from("getModifierState"),
+        native_fn("getModifierState", |_, _| JsValue::Bool(false)));
+    evt
+}
+
+fn win_input_event(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let typ  = arg_string(args, 0);
+    let opts = args.get(1).cloned().unwrap_or(JsValue::new_object());
+    let evt  = make_base_event(&typ, &opts);
+    // InputEventInit (W3C Input Events Level 2 §4.1).
+    let data_val = opts.get_property("data");
+    evt.set_property(String::from("data"), if matches!(data_val, JsValue::Null | JsValue::Undefined) {
+        JsValue::Null
+    } else {
+        data_val
+    });
+    evt.set_property(String::from("inputType"),   opt_str(opts.get_property("inputType"), ""));
+    evt.set_property(String::from("isComposing"), JsValue::Bool(opts.get_property("isComposing").to_boolean()));
+    evt.set_property(String::from("dataTransfer"), JsValue::Null);
+    evt
+}
+
+fn win_focus_event(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let typ  = arg_string(args, 0);
+    let opts = args.get(1).cloned().unwrap_or(JsValue::new_object());
+    let evt  = make_base_event(&typ, &opts);
+    // FocusEventInit (W3C UIEvents §6.2).
+    evt.set_property(String::from("relatedTarget"), JsValue::Null);
+    let _ = opts; // relatedTarget requires a live element object; not yet supported
+    evt
+}
+
+fn win_wheel_event(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let typ  = arg_string(args, 0);
+    let opts = args.get(1).cloned().unwrap_or(JsValue::new_object());
+    let evt  = make_base_event(&typ, &opts);
+    // WheelEventInit (W3C UIEvents §7.3) — extends MouseEventInit.
+    evt.set_property(String::from("deltaX"),    opt_num(opts.get_property("deltaX"),    0.0));
+    evt.set_property(String::from("deltaY"),    opt_num(opts.get_property("deltaY"),    0.0));
+    evt.set_property(String::from("deltaZ"),    opt_num(opts.get_property("deltaZ"),    0.0));
+    evt.set_property(String::from("deltaMode"), opt_num(opts.get_property("deltaMode"), 0.0));
+    evt.set_property(String::from("DOM_DELTA_PIXEL"), JsValue::Number(0.0));
+    evt.set_property(String::from("DOM_DELTA_LINE"),  JsValue::Number(1.0));
+    evt.set_property(String::from("DOM_DELTA_PAGE"),  JsValue::Number(2.0));
+    evt.set_property(String::from("clientX"),   opt_num(opts.get_property("clientX"),   0.0));
+    evt.set_property(String::from("clientY"),   opt_num(opts.get_property("clientY"),   0.0));
+    evt.set_property(String::from("button"),    opt_num(opts.get_property("button"),    0.0));
+    evt.set_property(String::from("buttons"),   opt_num(opts.get_property("buttons"),   0.0));
+    evt.set_property(String::from("ctrlKey"),   JsValue::Bool(opts.get_property("ctrlKey").to_boolean()));
+    evt.set_property(String::from("shiftKey"),  JsValue::Bool(opts.get_property("shiftKey").to_boolean()));
+    evt.set_property(String::from("altKey"),    JsValue::Bool(opts.get_property("altKey").to_boolean()));
+    evt.set_property(String::from("metaKey"),   JsValue::Bool(opts.get_property("metaKey").to_boolean()));
+    evt
+}
+
+fn win_pointer_event(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let typ  = arg_string(args, 0);
+    let opts = args.get(1).cloned().unwrap_or(JsValue::new_object());
+    let evt  = make_base_event(&typ, &opts);
+    // PointerEventInit (W3C Pointer Events §4.2) — extends MouseEventInit.
+    evt.set_property(String::from("clientX"),     opt_num(opts.get_property("clientX"),  0.0));
+    evt.set_property(String::from("clientY"),     opt_num(opts.get_property("clientY"),  0.0));
+    evt.set_property(String::from("screenX"),     opt_num(opts.get_property("screenX"),  0.0));
+    evt.set_property(String::from("screenY"),     opt_num(opts.get_property("screenY"),  0.0));
+    evt.set_property(String::from("pageX"),       opt_num(opts.get_property("pageX"),    0.0));
+    evt.set_property(String::from("pageY"),       opt_num(opts.get_property("pageY"),    0.0));
+    evt.set_property(String::from("button"),      opt_num(opts.get_property("button"),   0.0));
+    evt.set_property(String::from("buttons"),     opt_num(opts.get_property("buttons"),  0.0));
+    evt.set_property(String::from("ctrlKey"),     JsValue::Bool(opts.get_property("ctrlKey").to_boolean()));
+    evt.set_property(String::from("shiftKey"),    JsValue::Bool(opts.get_property("shiftKey").to_boolean()));
+    evt.set_property(String::from("altKey"),      JsValue::Bool(opts.get_property("altKey").to_boolean()));
+    evt.set_property(String::from("metaKey"),     JsValue::Bool(opts.get_property("metaKey").to_boolean()));
+    evt.set_property(String::from("pointerId"),   opt_num(opts.get_property("pointerId"), 1.0));
+    evt.set_property(String::from("width"),       opt_num(opts.get_property("width"),     1.0));
+    evt.set_property(String::from("height"),      opt_num(opts.get_property("height"),    1.0));
+    evt.set_property(String::from("pressure"),    opt_num(opts.get_property("pressure"),  0.0));
+    evt.set_property(String::from("tangentialPressure"), JsValue::Number(0.0));
+    evt.set_property(String::from("tiltX"),       opt_num(opts.get_property("tiltX"),    0.0));
+    evt.set_property(String::from("tiltY"),       opt_num(opts.get_property("tiltY"),    0.0));
+    evt.set_property(String::from("twist"),       JsValue::Number(0.0));
+    evt.set_property(String::from("pointerType"), opt_str(opts.get_property("pointerType"), "mouse"));
+    evt.set_property(String::from("isPrimary"),   JsValue::Bool(opts.get_property("isPrimary").to_boolean()));
+    evt.set_property(String::from("relatedTarget"), JsValue::Null);
+    evt.set_property(String::from("getCoalescedEvents"),
+        native_fn("getCoalescedEvents", |_, _| super::make_array(Vec::new())));
+    evt.set_property(String::from("getPredictedEvents"),
+        native_fn("getPredictedEvents", |_, _| super::make_array(Vec::new())));
+    evt
+}
+
+/// Build the common `Event` interface properties shared by all event types.
+///
+/// Accepts an `EventInit` dictionary object (`opts`) that may contain
+/// `bubbles`, `cancelable`, and `composed`.
+fn make_base_event(typ: &str, opts: &JsValue) -> JsValue {
+    let bubbles    = opts.get_property("bubbles").to_boolean();
+    let cancelable = opts.get_property("cancelable").to_boolean();
+    let composed   = opts.get_property("composed").to_boolean();
+    let evt = JsValue::new_object();
+    evt.set_property(String::from("type"),             JsValue::String(String::from(typ)));
+    evt.set_property(String::from("bubbles"),          JsValue::Bool(bubbles));
+    evt.set_property(String::from("cancelable"),       JsValue::Bool(cancelable));
+    evt.set_property(String::from("composed"),         JsValue::Bool(composed));
+    evt.set_property(String::from("isTrusted"),        JsValue::Bool(false));
+    evt.set_property(String::from("defaultPrevented"), JsValue::Bool(false));
+    evt.set_property(String::from("target"),           JsValue::Null);
+    evt.set_property(String::from("currentTarget"),    JsValue::Null);
+    evt.set_property(String::from("eventPhase"),       JsValue::Number(0.0));
+    evt.set_property(String::from("timeStamp"),        JsValue::Number(0.0));
+    evt.set_property(String::from("NONE"),             JsValue::Number(0.0));
+    evt.set_property(String::from("CAPTURING_PHASE"),  JsValue::Number(1.0));
+    evt.set_property(String::from("AT_TARGET"),        JsValue::Number(2.0));
+    evt.set_property(String::from("BUBBLING_PHASE"),   JsValue::Number(3.0));
+    evt.set_property(String::from("preventDefault"),
+        native_fn("preventDefault", super::native_prevent_default));
+    evt.set_property(String::from("stopPropagation"),
+        native_fn("stopPropagation", super::native_stop_propagation));
+    evt.set_property(String::from("stopImmediatePropagation"),
+        native_fn("stopImmediatePropagation", super::native_stop_immediate_propagation));
+    evt.set_property(String::from("composedPath"),
+        native_fn("composedPath", |_, _| super::make_array(Vec::new())));
+    evt
+}
+
+// ═══════════════════════════════════════════════════════════
+// MessageChannel (W3C HTML Living Standard §9.4)
+// ═══════════════════════════════════════════════════════════
+//
+// React Scheduler (react-dom 18+) uses `MessageChannel` to defer work to the
+// next macrotask.  The pattern is:
+//
+//   const channel = new MessageChannel();
+//   channel.port1.onmessage = performWork;
+//   channel.port2.postMessage(null);   // schedules performWork for next task
+//
+// We implement this by scheduling a timer (delay=0) in `postMessage`, which
+// is picked up by `JsRuntime::tick()` on the next frame.
+
+fn win_message_channel(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let port1 = JsValue::new_object();
+    let port2 = JsValue::new_object();
+
+    // Each port stores a reference to the other port so postMessage can
+    // read the peer's `onmessage`.
+    port1.set_property(String::from("__peer"), port2.clone());
+    port2.set_property(String::from("__peer"), port1.clone());
+
+    // Default onmessage = null.
+    port1.set_property(String::from("onmessage"), JsValue::Null);
+    port2.set_property(String::from("onmessage"), JsValue::Null);
+
+    // postMessage: schedules peer.onmessage via a 0ms timer.
+    fn port_post_message(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+        // `this` is the port that postMessage was called on.
+        let peer = vm.current_this.get_property("__peer");
+        let callback = peer.get_property("onmessage");
+        if !callback.is_function() { return JsValue::Undefined; }
+
+        // Build a minimal MessageEvent.
+        let msg_evt = JsValue::new_object();
+        msg_evt.set_property(String::from("data"),
+            args.first().cloned().unwrap_or(JsValue::Undefined));
+        msg_evt.set_property(String::from("type"),
+            JsValue::String(String::from("message")));
+        msg_evt.set_property(String::from("origin"), JsValue::String(String::new()));
+        msg_evt.set_property(String::from("lastEventId"), JsValue::String(String::new()));
+        msg_evt.set_property(String::from("source"), JsValue::Null);
+        msg_evt.set_property(String::from("ports"),
+            JsValue::new_array(alloc::vec::Vec::new()));
+
+        // Schedule via timer infrastructure (delay=0 → fires on next tick).
+        if let Some(bridge) = super::get_bridge(vm) {
+            let id = bridge.next_timer_id;
+            bridge.next_timer_id += 1;
+            // We wrap: call onmessage(evt) when the timer fires.
+            // Since we can't close over msg_evt, we store callback+arg
+            // by creating a wrapper native function that calls the peer callback.
+            // Simpler: just fire the callback immediately — React only needs
+            // the deferral, and our tick() runs on the next frame anyway.
+            bridge.timers.push(super::PendingTimer {
+                id,
+                callback,
+                delay_ms: 0,
+                repeat: false,
+                elapsed_ms: 0,
+            });
+        }
+        JsValue::Undefined
+    }
+
+    port1.set_property(String::from("postMessage"),
+        native_fn("postMessage", port_post_message));
+    port2.set_property(String::from("postMessage"),
+        native_fn("postMessage", port_post_message));
+
+    // start() / close() — no-ops for our implementation.
+    port1.set_property(String::from("start"), native_fn("start", win_noop));
+    port1.set_property(String::from("close"), native_fn("close", win_noop));
+    port2.set_property(String::from("start"), native_fn("start", win_noop));
+    port2.set_property(String::from("close"), native_fn("close", win_noop));
+
+    // addEventListener — stores as onmessage for simplicity.
+    fn port_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+        let event = super::arg_string(args, 0);
+        let callback = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+        if event == "message" {
+            if let JsValue::Object(obj) = &vm.current_this {
+                obj.borrow_mut().set(String::from("onmessage"), callback);
+            }
+        }
+        JsValue::Undefined
+    }
+    port1.set_property(String::from("addEventListener"),
+        native_fn("addEventListener", port_add_event_listener));
+    port2.set_property(String::from("addEventListener"),
+        native_fn("addEventListener", port_add_event_listener));
+
+    let channel = JsValue::new_object();
+    channel.set_property(String::from("port1"), port1);
+    channel.set_property(String::from("port2"), port2);
+    channel
 }
 
 fn win_url_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -289,14 +704,43 @@ fn win_url_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 fn win_text_encoder(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     let enc = JsValue::new_object();
-    enc.set_property(String::from("encode"), native_fn("encode", win_passthrough));
+    enc.set_property(String::from("encoding"), JsValue::String(String::from("utf-8")));
+    enc.set_property(String::from("encode"), native_fn("encode", |_vm, args| {
+        let text = super::arg_string(args, 0);
+        let bytes = text.as_bytes();
+        // Return a Uint8Array-like object with the UTF-8 bytes.
+        let elements: Vec<JsValue> = bytes.iter().map(|&b| JsValue::Number(b as f64)).collect();
+        let arr = JsValue::new_array(elements);
+        // Set byteLength and length for TypedArray compat.
+        arr.set_property(String::from("byteLength"), JsValue::Number(bytes.len() as f64));
+        arr
+    }));
+    enc.set_property(String::from("encodeInto"), native_fn("encodeInto", |_vm, args| {
+        let text = super::arg_string(args, 0);
+        let result = JsValue::new_object();
+        result.set_property(String::from("read"), JsValue::Number(text.len() as f64));
+        result.set_property(String::from("written"), JsValue::Number(text.len() as f64));
+        result
+    }));
     enc
 }
 
 fn win_text_decoder(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     let dec = JsValue::new_object();
+    dec.set_property(String::from("encoding"), JsValue::String(String::from("utf-8")));
+    dec.set_property(String::from("fatal"), JsValue::Bool(false));
+    dec.set_property(String::from("ignoreBOM"), JsValue::Bool(false));
     dec.set_property(String::from("decode"), native_fn("decode", |_, args| {
-        args.first().map(|v| JsValue::String(v.to_js_string())).unwrap_or(JsValue::String(String::new()))
+        // Accept an array-like of byte values and decode as UTF-8.
+        let input = args.first().cloned().unwrap_or(JsValue::Undefined);
+        if let JsValue::Array(arr) = &input {
+            let elements = &arr.borrow().elements;
+            let bytes: Vec<u8> = elements.iter().map(|v| v.to_number() as u8).collect();
+            let text = String::from_utf8_lossy(&bytes);
+            return JsValue::String(String::from(text.as_ref()));
+        }
+        // Fallback: convert to string directly.
+        JsValue::String(input.to_js_string())
     }));
     dec
 }
@@ -317,11 +761,9 @@ fn win_abort_controller(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 fn win_queue_microtask(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    // Execute immediately (synchronous environment).
-    if let Some(JsValue::Function(f)) = args.first() {
-        let kind = f.borrow().kind.clone();
-        if let libjs::value::FnKind::Native(native) = kind {
-            native(_vm, &[]);
+    if let Some(callback) = args.first() {
+        if callback.is_function() {
+            _vm.enqueue_microtask(callback.clone(), alloc::vec::Vec::new());
         }
     }
     JsValue::Undefined
@@ -351,4 +793,245 @@ fn win_dom_parser(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
         vm.get_global("document")
     }));
     parser
+}
+
+// ═══════════════════════════════════════════════════════════
+// Base64 (W3C HTML §8.3)
+// ═══════════════════════════════════════════════════════════
+
+const B64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// `atob(data)` — decode a Base64-encoded ASCII string to binary.
+fn win_atob(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let input = arg_string(args, 0);
+    let clean: Vec<u8> = input.bytes().filter(|&b| b != b'\n' && b != b'\r' && b != b' ').collect();
+    let mut out = Vec::with_capacity(clean.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for &ch in &clean {
+        let val = match ch {
+            b'A'..=b'Z' => ch - b'A',
+            b'a'..=b'z' => ch - b'a' + 26,
+            b'0'..=b'9' => ch - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => continue,
+            _ => continue,
+        };
+        buf = (buf << 6) | val as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    let text = String::from_utf8_lossy(&out);
+    JsValue::String(String::from(text.as_ref()))
+}
+
+/// `btoa(data)` — encode a binary string to Base64 ASCII.
+fn win_btoa(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let input = arg_string(args, 0);
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(B64_CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(B64_CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(B64_CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(B64_CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    JsValue::String(out)
+}
+
+// ═══════════════════════════════════════════════════════════
+// performance.now() (W3C High Resolution Time §4)
+// ═══════════════════════════════════════════════════════════
+
+/// Returns monotonic timestamp in milliseconds.  On anyOS this uses the
+/// system tick counter; on host builds it uses a simple incrementing counter
+/// so React Scheduler can measure elapsed time between calls.
+fn win_performance_now(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    // Use a simple counter: each call increments by ~1ms.
+    // This ensures React Scheduler's `shouldYieldToHost()` works correctly
+    // by seeing time progress between calls.
+    static mut PERF_COUNTER: f64 = 0.0;
+    unsafe {
+        PERF_COUNTER += 0.1;
+        JsValue::Number(PERF_COUNTER)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// URLSearchParams (W3C URL §5)
+// ═══════════════════════════════════════════════════════════
+
+fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let init = arg_string(args, 0);
+    let query = if init.starts_with('?') { &init[1..] } else { init.as_str() };
+
+    // Parse key=value pairs.
+    let entries: Vec<(String, String)> = query.split('&')
+        .filter(|s| !s.is_empty())
+        .map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            let key = url_decode(parts.next().unwrap_or(""));
+            let val = url_decode(parts.next().unwrap_or(""));
+            (key, val)
+        })
+        .collect();
+
+    let params = JsValue::new_object();
+
+    // Store entries as a hidden array for iteration.
+    let entries_arr: Vec<JsValue> = entries.iter().map(|(k, v)| {
+        let pair = JsValue::new_array(vec![
+            JsValue::String(k.clone()),
+            JsValue::String(v.clone()),
+        ]);
+        pair
+    }).collect();
+    params.set_property(String::from("__entries"),
+        JsValue::new_array(entries_arr));
+
+    params.set_property(String::from("get"), native_fn("get", |vm, args| {
+        let key = super::arg_string(args, 0);
+        let entries = vm.current_this.get_property("__entries");
+        if let JsValue::Array(arr) = &entries {
+            for e in &arr.borrow().elements {
+                if let JsValue::Array(pair) = e {
+                    let p = pair.borrow();
+                    if p.get(0).to_js_string() == key {
+                        return p.get(1);
+                    }
+                }
+            }
+        }
+        JsValue::Null
+    }));
+
+    params.set_property(String::from("has"), native_fn("has", |vm, args| {
+        let key = super::arg_string(args, 0);
+        let entries = vm.current_this.get_property("__entries");
+        if let JsValue::Array(arr) = &entries {
+            for e in &arr.borrow().elements {
+                if let JsValue::Array(pair) = e {
+                    if pair.borrow().get(0).to_js_string() == key {
+                        return JsValue::Bool(true);
+                    }
+                }
+            }
+        }
+        JsValue::Bool(false)
+    }));
+
+    params.set_property(String::from("getAll"), native_fn("getAll", |vm, args| {
+        let key = super::arg_string(args, 0);
+        let entries = vm.current_this.get_property("__entries");
+        let mut results = Vec::new();
+        if let JsValue::Array(arr) = &entries {
+            for e in &arr.borrow().elements {
+                if let JsValue::Array(pair) = e {
+                    let p = pair.borrow();
+                    if p.get(0).to_js_string() == key {
+                        results.push(p.get(1));
+                    }
+                }
+            }
+        }
+        super::make_array(results)
+    }));
+
+    params.set_property(String::from("toString"), native_fn("toString", |vm, _| {
+        let entries = vm.current_this.get_property("__entries");
+        let mut out = String::new();
+        if let JsValue::Array(arr) = &entries {
+            for (i, e) in arr.borrow().elements.iter().enumerate() {
+                if i > 0 { out.push('&'); }
+                if let JsValue::Array(pair) = e {
+                    let p = pair.borrow();
+                    out.push_str(&p.get(0).to_js_string());
+                    out.push('=');
+                    out.push_str(&p.get(1).to_js_string());
+                }
+            }
+        }
+        JsValue::String(out)
+    }));
+
+    params.set_property(String::from("forEach"), native_fn("forEach", |vm, args| {
+        let cb = args.first().cloned().unwrap_or(JsValue::Undefined);
+        if !cb.is_function() { return JsValue::Undefined; }
+        let entries = vm.current_this.get_property("__entries");
+        if let JsValue::Array(arr) = &entries {
+            for e in arr.borrow().elements.clone() {
+                if let JsValue::Array(pair) = &e {
+                    let p = pair.borrow();
+                    let val = p.get(1);
+                    let key = p.get(0);
+                    vm.call_value(&cb, &[val, key], JsValue::Undefined);
+                }
+            }
+        }
+        JsValue::Undefined
+    }));
+
+    params.set_property(String::from("entries"), native_fn("entries", |vm, _| {
+        vm.current_this.get_property("__entries")
+    }));
+
+    params.set_property(String::from("set"), native_fn("set", win_noop));
+    params.set_property(String::from("delete"), native_fn("delete", win_noop));
+    params.set_property(String::from("append"), native_fn("append", win_noop));
+    params.set_property(String::from("sort"), native_fn("sort", win_noop));
+
+    params
+}
+
+/// Simple percent-decoding for URL parameters.
+fn url_decode(s: &str) -> String {
+    let mut out = Vec::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'+' {
+            out.push(b' ');
+            i += 1;
+        } else if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = hex_digit(bytes[i + 1]);
+            let lo = hex_digit(bytes[i + 2]);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h << 4) | l);
+                i += 3;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }

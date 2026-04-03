@@ -27,6 +27,8 @@ mod ttf_rasterizer;
 pub(crate) mod inflate;
 pub(crate) mod png_decode;
 pub(crate) mod font_manager;
+pub(crate) mod brotli;
+pub(crate) mod woff2;
 
 // ── Embedded system fonts (.rodata — shared across all processes) ────
 

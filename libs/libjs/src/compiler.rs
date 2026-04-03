@@ -4,6 +4,7 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::ast::*;
@@ -611,7 +612,7 @@ impl Compiler {
         match &decl.name {
             Pattern::Ident(name) => {
                 if let Some(init) = &decl.init {
-                    self.compile_expr(init);
+                    self.compile_expr_with_name(init, name);
                 } else {
                     self.emit(Op::LoadUndefined);
                 }
@@ -652,35 +653,84 @@ impl Compiler {
     }
 
     fn compile_array_destructure(&mut self, elements: &[Option<Pattern>]) {
-        // Array is on top of stack.
-        for (i, elem) in elements.iter().enumerate() {
-            if let Some(pat) = elem {
-                match pat {
-                    Pattern::Rest(inner) => {
-                        // Call arr.slice(i) to get remaining elements.
-                        // Need: [..., arr, arr, slice_fn, i] for CallMethod(1).
-                        // First Dup keeps `arr` on stack for the final Pop.
-                        // Second Dup is the `this` for CallMethod.
-                        self.emit(Op::Dup); // arr stays for final Pop
-                        self.emit(Op::Dup); // this for CallMethod
-                        let slice_ci = self.add_const(Constant::String(String::from("slice")));
-                        self.emit(Op::GetPropNamed(slice_ci)); // [..., arr, slice_fn]
-                        let i_ci = self.add_const(Constant::Number(i as f64));
-                        self.emit(Op::LoadConst(i_ci));        // [..., arr, slice_fn, i]
-                        self.emit(Op::CallMethod(1));           // [..., arr, rest_array]
-                        self.compile_pattern_binding(inner);
-                    }
-                    _ => {
-                        self.emit(Op::Dup);
-                        let idx = self.add_const(Constant::Number(i as f64));
-                        self.emit(Op::LoadConst(idx));
-                        self.emit(Op::GetProp);
-                        self.compile_pattern_binding(pat);
-                    }
+        // Stack: [..., iterable]
+        // Convert to iterator using GetIterator (calls Symbol.iterator).
+        self.emit(Op::GetIterator);
+        // Stack: [..., iterator]
+
+        for elem in elements.iter() {
+            match elem {
+                None => {
+                    // Elision: [,] — advance iterator without binding
+                    self.emit(Op::Dup);       // [..., iter, iter]
+                    self.emit(Op::IterNext);   // [..., iter, value, has_more]
+                    self.emit(Op::Pop);        // [..., iter, value]
+                    self.emit(Op::Pop);        // [..., iter]
+                }
+                Some(Pattern::Rest(inner)) => {
+                    // Rest element: [...rest] — collect remaining into array
+                    // Stack: [..., iterator]
+                    self.emit(Op::NewArray(0)); // [..., iter, result_arr]
+                    let loop_start = self.offset();
+                    // Dup iterator (under the array): need [iter, arr, iter]
+                    // Use: load iter from below arr
+                    // Simpler: swap iter and arr, dup iter, swap back
+                    // Actually: just emit a loop that calls IterNext
+                    self.emit(Op::Dup);       // [..., iter, arr, arr] -- wrong, need iter
+                    // This is tricky with stack. Let me use a different approach:
+                    // Store the array in a local, iterate, push elements.
+                    // Actually, simplest: just use IterCollectRest or inline loop.
+                    self.emit(Op::Pop);        // undo the Dup
+                    // Approach: swap(iter, arr), dup iter, IterNext, if done break, else push to arr
+                    // But we don't have Swap. Let me use a simpler approach:
+                    // Pop the empty array, use iterator directly, collect into new array.
+                    self.emit(Op::Pop);        // pop empty array
+                    // Stack: [..., iterator]
+                    // Emit: collect remaining from iterator into array
+                    // We'll use a loop: dup iter, IterNext, check has_more, push to array
+                    let result_arr = self.scope_mut().add_local(String::from("__rest_arr__"));
+                    self.emit(Op::NewArray(0));
+                    self.emit(Op::StoreLocal(result_arr));
+                    self.emit(Op::Pop);
+                    // Loop
+                    let loop_top = self.offset();
+                    self.emit(Op::Dup);        // dup iterator
+                    self.emit(Op::IterNext);   // value, has_more
+                    let exit = self.emit(Op::JumpIfFalse(0)); // if !has_more, exit
+                    // Push value into array
+                    self.emit(Op::LoadLocal(result_arr));
+                    // Stack: [..., iter, value, arr]
+                    // Need to swap value and arr... no Swap op.
+                    // Use StoreLocal to save value temporarily
+                    let tmp = self.scope_mut().add_local(String::from("__rest_tmp__"));
+                    // Stack: [..., iter, value, arr]
+                    self.emit(Op::Pop); // pop arr
+                    self.emit(Op::StoreLocal(tmp)); // save value
+                    self.emit(Op::Pop); // pop value (StoreLocal peeks)
+                    self.emit(Op::LoadLocal(result_arr)); // load arr
+                    self.emit(Op::LoadLocal(tmp));         // load value
+                    self.emit(Op::ArrayPush);              // arr.push(value)
+                    self.emit(Op::Pop);                    // pop arr
+                    self.emit(Op::Jump(loop_top as i32 - self.offset() as i32 - 1));
+                    self.patch_jump(exit);
+                    self.emit(Op::Pop); // pop the value (undefined when done)
+                    // Stack: [..., iterator]
+                    self.emit(Op::LoadLocal(result_arr));
+                    // Stack: [..., iterator, rest_array]
+                    self.compile_pattern_binding(inner);
+                    // Stack: [..., iterator]
+                }
+                Some(pat) => {
+                    // Normal element: get next value from iterator
+                    self.emit(Op::Dup);       // [..., iter, iter]
+                    self.emit(Op::IterNext);   // [..., iter, value, has_more]
+                    self.emit(Op::Pop);        // [..., iter, value]  (drop has_more flag)
+                    self.compile_pattern_binding(pat);
+                    // Stack: [..., iter]
                 }
             }
         }
-        self.emit(Op::Pop); // pop the array
+        self.emit(Op::Pop); // pop the iterator
     }
 
     fn compile_object_destructure(&mut self, props: &[ObjPatProp]) {
@@ -741,7 +791,12 @@ impl Compiler {
                 self.emit(Op::StrictEq);
                 let skip = self.emit(Op::JumpIfFalse(0));
                 self.emit(Op::Pop); // pop undefined
-                self.compile_expr(default);
+                // ES2023 §14.1.20: infer function name from binding identifier
+                if let Pattern::Ident(ref name) = **inner {
+                    self.compile_expr_with_name(default, name);
+                } else {
+                    self.compile_expr(default);
+                }
                 self.patch_jump(skip);
                 self.compile_pattern_binding(inner);
             }
@@ -964,6 +1019,37 @@ impl Compiler {
         }
     }
 
+    /// Compile an expression, inferring a name for anonymous functions/arrows/classes.
+    /// ES2023 §14.1.20 — function name inference from variable or property assignment.
+    fn compile_expr_with_name(&mut self, expr: &Expr, inferred_name: &str) {
+        match expr {
+            Expr::FunctionExpr { name: None, params, body, is_async, is_generator } => {
+                let n = String::from(inferred_name);
+                self.compile_function_gen(Some(&n), params, body, *is_async, *is_generator);
+            }
+            Expr::Arrow { params, body, is_async } => {
+                let n = String::from(inferred_name);
+                match body {
+                    ArrowBody::Block(stmts) => {
+                        self.compile_function(Some(&n), params, stmts, *is_async);
+                    }
+                    ArrowBody::Expr(e) => {
+                        let return_stmt = Stmt::Return(Some(e.as_ref().clone()));
+                        self.compile_function(Some(&n), params, &[return_stmt], *is_async);
+                    }
+                }
+            }
+            Expr::ClassExpr { name: None, super_class, body } => {
+                let n = String::from(inferred_name);
+                let sc = super_class.as_ref().map(|b| *b.clone());
+                self.compile_class(Some(&n), &sc, body);
+            }
+            _ => {
+                self.compile_expr(expr);
+            }
+        }
+    }
+
     fn compile_function(
         &mut self,
         name: Option<&String>,
@@ -1015,10 +1101,38 @@ impl Compiler {
         named_expr: bool,
         is_generator: bool,
     ) {
+        self.compile_function_impl(name, params, body, is_async, named_expr, is_generator, false);
+    }
+
+    fn compile_arrow(
+        &mut self,
+        params: &[Param],
+        body: &[Stmt],
+        is_async: bool,
+    ) {
+        self.compile_function_impl(None, params, body, is_async, false, false, true);
+    }
+
+    fn compile_function_impl(
+        &mut self,
+        name: Option<&String>,
+        params: &[Param],
+        body: &[Stmt],
+        is_async: bool,
+        named_expr: bool,
+        is_generator: bool,
+        is_arrow: bool,
+    ) {
         let mut func_scope = Scope::new();
         func_scope.chunk.name = name.cloned();
         func_scope.chunk.is_generator = is_generator;
-        func_scope.chunk.param_count = params.len() as u16;
+        func_scope.chunk.is_arrow = is_arrow;
+        // ES2023 §10.2.8: function.length = number of params before the first
+        // one with a default value, excluding rest parameters.
+        let formal_length = params.iter()
+            .take_while(|p| !p.is_rest && p.default.is_none())
+            .count();
+        func_scope.chunk.param_count = formal_length as u16;
 
         // Find the rest parameter (last param with is_rest=true), if any.
         let rest_param_idx = params.iter().position(|p| p.is_rest);
@@ -1098,7 +1212,12 @@ impl Compiler {
                 self.emit(Op::LoadUndefined);
                 self.emit(Op::StrictEq);
                 let skip = self.emit(Op::JumpIfFalse(0));
-                self.compile_expr(default);
+                // Infer function name from parameter name
+                if let Pattern::Ident(ref pname) = param.pattern {
+                    self.compile_expr_with_name(default, pname);
+                } else {
+                    self.compile_expr(default);
+                }
                 self.emit(Op::StoreLocal(i as u16));
                 self.emit(Op::Pop);
                 self.patch_jump(skip);
@@ -1123,7 +1242,11 @@ impl Compiler {
                     self.emit(Op::StrictEq);
                     let skip = self.emit(Op::JumpIfFalse(0));
                     self.emit(Op::Pop); // pop undefined value
-                    self.compile_expr(default);
+                    if let Pattern::Ident(ref name) = **inner {
+                        self.compile_expr_with_name(default, name);
+                    } else {
+                        self.compile_expr(default);
+                    }
                     self.patch_jump(skip);
                     self.compile_pattern_binding(inner);
                 }
@@ -1207,19 +1330,42 @@ impl Compiler {
         for member in body {
             if member.is_static { continue; }
             if let ClassMemberKind::Property { ref value } = member.kind {
-                let key_name = match &member.key {
-                    PropKey::Ident(s) | PropKey::String(s) => s.clone(),
-                    _ => continue,
-                };
-                // Generate: this.<key> = <value>;
-                let init_expr = Expr::Assign {
-                    op: AssignOp::Assign,
-                    left: Box::new(Expr::Member {
-                        object: Box::new(Expr::This),
-                        property: key_name,
-                        computed: false,
-                    }),
-                    right: Box::new(value.clone().unwrap_or(Expr::Undefined)),
+                let rhs = Box::new(value.clone().unwrap_or(Expr::Undefined));
+                let init_expr = match &member.key {
+                    PropKey::Ident(s) | PropKey::String(s) => {
+                        // Generate: this.<key> = <value>;
+                        Expr::Assign {
+                            op: AssignOp::Assign,
+                            left: Box::new(Expr::Member {
+                                object: Box::new(Expr::This),
+                                property: s.clone(),
+                                computed: false,
+                            }),
+                            right: rhs,
+                        }
+                    }
+                    PropKey::Number(n) => {
+                        // Generate: this[<number>] = <value>;
+                        Expr::Assign {
+                            op: AssignOp::Assign,
+                            left: Box::new(Expr::Index {
+                                object: Box::new(Expr::This),
+                                index: Box::new(Expr::Number(*n)),
+                            }),
+                            right: rhs,
+                        }
+                    }
+                    PropKey::Computed(expr) => {
+                        // Generate: this[<expr>] = <value>;
+                        Expr::Assign {
+                            op: AssignOp::Assign,
+                            left: Box::new(Expr::Index {
+                                object: Box::new(Expr::This),
+                                index: expr.clone(),
+                            }),
+                            right: rhs,
+                        }
+                    }
                 };
                 instance_inits.push(Stmt::Expr(init_expr));
             }
@@ -1272,47 +1418,113 @@ impl Compiler {
                     continue;
                 }
             }
+            // Resolve the member key: named keys get a string, computed keys
+            // are evaluated at runtime via SetProp.
             let key_name = match &member.key {
-                PropKey::Ident(s) | PropKey::String(s) => s.clone(),
-                _ => String::from("_member_"),
+                PropKey::Ident(s) | PropKey::String(s) => Some(s.clone()),
+                PropKey::Number(n) => {
+                    let mut s = alloc::format!("{}", n);
+                    // Strip trailing ".0" for integer numbers (e.g. 10.0 → "10")
+                    if s.ends_with(".0") { s.truncate(s.len() - 2); }
+                    Some(s)
+                }
+                PropKey::Computed(_) => None,
             };
+            // Helper: for computed keys, push the computed key expression onto
+            // the stack BEFORE pushing the value.  SetProp expects [obj, key, val].
+            // For named keys, we push key after value via SetPropNamed(idx).
+            let is_computed = matches!(member.key, PropKey::Computed(_));
+            let fn_name = key_name.clone().unwrap_or_else(|| String::new());
             if member.is_static {
-                // Static methods/properties: set directly on Constructor.
+                // Static methods/properties/accessors: set directly on Constructor.
                 match &member.kind {
-                    ClassMemberKind::Method { params, body } => {
-                        self.emit(Op::Dup); // dup Constructor
-                        self.compile_function(Some(&key_name), params, body, false);
-                        let ki = self.add_const(Constant::String(key_name));
-                        self.emit(Op::SetPropNamed(ki));
+                    ClassMemberKind::Method { params, body, is_generator } => {
+                        self.emit(Op::Dup); // [Ctor, Ctor]
+                        if is_computed { if let PropKey::Computed(ref e) = member.key { self.compile_expr(e); } }
+                        self.compile_function_gen(Some(&fn_name), params, body, false, *is_generator);
+                        if is_computed {
+                            self.emit(Op::SetProp);
+                        } else {
+                            let ki = self.add_const(Constant::String(fn_name.clone()));
+                            self.emit(Op::DefineMethod(ki));
+                        }
                         self.emit(Op::Pop);
                     }
                     ClassMemberKind::Property { value } => {
                         self.emit(Op::Dup);
+                        if is_computed { if let PropKey::Computed(ref e) = member.key { self.compile_expr(e); } }
                         if let Some(v) = value { self.compile_expr(v); } else { self.emit(Op::LoadUndefined); }
-                        let ki = self.add_const(Constant::String(key_name));
-                        self.emit(Op::SetPropNamed(ki));
+                        if is_computed {
+                            self.emit(Op::SetProp);
+                        } else {
+                            let ki = self.add_const(Constant::String(fn_name.clone()));
+                            self.emit(Op::SetPropNamed(ki));
+                        }
                         self.emit(Op::Pop);
+                    }
+                    ClassMemberKind::Getter { body } => {
+                        self.emit(Op::Dup);
+                        let getter_name = alloc::format!("get {}", fn_name);
+                        self.compile_function(Some(&getter_name), &[], body, false);
+                        if let Some(ref kn) = key_name {
+                            let ki = self.add_const(Constant::String(kn.clone()));
+                            self.emit(Op::DefineGetter(ki));
+                        }
+                    }
+                    ClassMemberKind::Setter { param, body } => {
+                        self.emit(Op::Dup);
+                        let setter_name = alloc::format!("set {}", fn_name);
+                        let p = vec![Param { pattern: Pattern::Ident(param.clone()), default: None, is_rest: false }];
+                        self.compile_function(Some(&setter_name), &p, body, false);
+                        if let Some(ref kn) = key_name {
+                            let ki = self.add_const(Constant::String(kn.clone()));
+                            self.emit(Op::DefineSetter(ki));
+                        }
                     }
                     _ => {}
                 }
             } else {
-                // Instance methods: set on Constructor.prototype.
+                // Instance methods/accessors: set on Constructor.prototype.
                 match &member.kind {
-                    ClassMemberKind::Method { params, body } => {
-                        // Stack before: [..., Constructor]
-                        self.emit(Op::Dup); // [..., Constructor, Constructor]
+                    ClassMemberKind::Method { params, body, is_generator } => {
+                        self.emit(Op::Dup);
                         let proto_idx = self.add_const(Constant::String(String::from("prototype")));
                         self.emit(Op::GetPropNamed(proto_idx));
-                        // GetPropNamed pops Constructor-dup, pushes prototype
                         // Stack: [..., Constructor, Constructor.prototype]
-                        self.compile_function(Some(&key_name), params, body, false);
-                        // Stack: [..., Constructor, Constructor.prototype, methodFn]
-                        let ki = self.add_const(Constant::String(key_name));
-                        self.emit(Op::SetPropNamed(ki));
-                        // SetPropNamed pops methodFn+prototype, sets prop, pushes methodFn
-                        // Stack: [..., Constructor, methodFn]
-                        self.emit(Op::Pop); // pop methodFn
-                        // Stack: [..., Constructor]
+                        if is_computed { if let PropKey::Computed(ref e) = member.key { self.compile_expr(e); } }
+                        self.compile_function_gen(Some(&fn_name), params, body, false, *is_generator);
+                        if is_computed {
+                            self.emit(Op::SetProp); // TODO: non-enum for computed methods
+                        } else {
+                            let ki = self.add_const(Constant::String(fn_name.clone()));
+                            self.emit(Op::DefineMethod(ki));
+                        }
+                        self.emit(Op::Pop);
+                    }
+                    ClassMemberKind::Getter { body } => {
+                        self.emit(Op::Dup);
+                        let proto_idx = self.add_const(Constant::String(String::from("prototype")));
+                        self.emit(Op::GetPropNamed(proto_idx));
+                        let getter_name = alloc::format!("get {}", fn_name);
+                        self.compile_function(Some(&getter_name), &[], body, false);
+                        if let Some(ref kn) = key_name {
+                            let ki = self.add_const(Constant::String(kn.clone()));
+                            self.emit(Op::DefineGetter(ki));
+                        }
+                        self.emit(Op::Pop);
+                    }
+                    ClassMemberKind::Setter { param, body } => {
+                        self.emit(Op::Dup);
+                        let proto_idx = self.add_const(Constant::String(String::from("prototype")));
+                        self.emit(Op::GetPropNamed(proto_idx));
+                        let setter_name = alloc::format!("set {}", fn_name);
+                        let p = vec![Param { pattern: Pattern::Ident(param.clone()), default: None, is_rest: false }];
+                        self.compile_function(Some(&setter_name), &p, body, false);
+                        if let Some(ref kn) = key_name {
+                            let ki = self.add_const(Constant::String(kn.clone()));
+                            self.emit(Op::DefineSetter(ki));
+                        }
+                        self.emit(Op::Pop);
                     }
                     _ => {}
                 }
@@ -1479,7 +1691,12 @@ impl Compiler {
                     if prop.kind == PropKind::Get || prop.kind == PropKind::Set {
                         if let PropKey::Ident(name) | PropKey::String(name) = &prop.key {
                             self.emit(Op::Dup);              // [obj, obj]
-                            self.compile_expr(&prop.value);  // [obj, obj, fn]
+                            let accessor_name = if prop.kind == PropKind::Get {
+                                alloc::format!("get {}", name)
+                            } else {
+                                alloc::format!("set {}", name)
+                            };
+                            self.compile_expr_with_name(&prop.value, &accessor_name); // [obj, obj, fn]
                             let ci = self.add_const(Constant::String(name.clone()));
                             if prop.kind == PropKind::Get {
                                 self.emit(Op::DefineGetter(ci)); // [obj]
@@ -1493,7 +1710,7 @@ impl Compiler {
                     match &prop.key {
                         PropKey::Ident(name) | PropKey::String(name) => {
                             self.emit(Op::Dup);           // [obj, obj]
-                            self.compile_expr(&prop.value); // [obj, obj, val]
+                            self.compile_expr_with_name(&prop.value, name); // [obj, obj, val]
                             let ci = self.add_const(Constant::String(name.clone()));
                             self.emit(Op::SetPropNamed(ci)); // [obj, val]
                             self.emit(Op::Pop);             // [obj]
@@ -1700,12 +1917,11 @@ impl Compiler {
             Expr::Arrow { params, body, is_async } => {
                 match body {
                     ArrowBody::Block(stmts) => {
-                        self.compile_function(None, params, stmts, *is_async);
+                        self.compile_arrow(params, stmts, *is_async);
                     }
                     ArrowBody::Expr(expr) => {
-                        // Convert expression body to return statement
                         let return_stmt = Stmt::Return(Some(expr.as_ref().clone()));
-                        self.compile_function(None, params, &[return_stmt], *is_async);
+                        self.compile_arrow(params, &[return_stmt], *is_async);
                     }
                 }
             }

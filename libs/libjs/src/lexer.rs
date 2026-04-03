@@ -27,6 +27,39 @@ impl<'a> Lexer<'a> {
         let mut lexer = Lexer::new(source);
         let mut tokens = Vec::new();
         loop {
+            // Before reading the next token, check if `/` should start a regex.
+            // A `/` is a regex literal start when it does NOT follow a token that
+            // could end an expression (identifier, number, `)`, `]`, `++`, `--`,
+            // template literal, `this`, `true`, `false`, `null`).
+            lexer.skip_whitespace_and_comments();
+            if lexer.pos < lexer.src.len() && lexer.src[lexer.pos] == b'/' {
+                let slash_is_regex = match tokens.last().map(|t: &Token| &t.kind) {
+                    None => true, // start of file
+                    Some(TokenKind::RParen) => false,
+                    Some(TokenKind::RBracket) => false,
+                    Some(TokenKind::RBrace) => false,
+                    Some(TokenKind::PlusPlus) => false,
+                    Some(TokenKind::MinusMinus) => false,
+                    Some(TokenKind::Number(_)) => false,
+                    Some(TokenKind::String(_)) => false,
+                    Some(TokenKind::Template(_)) => false,
+                    Some(TokenKind::RegExp(_, _)) => false,
+                    Some(TokenKind::Ident(name)) => {
+                        // Most identifiers end an expression → / is division.
+                        // Only certain keywords introduce an expression → / is regex.
+                        matches!(name.as_str(),
+                            "return" | "case" | "typeof" | "void" | "delete" |
+                            "throw" | "new" | "in" | "instanceof" | "of" | "yield" | "await")
+                    }
+                    // After any operator, `(`, `[`, `{`, `,`, `;`, etc. → regex
+                    _ => true,
+                };
+                if slash_is_regex {
+                    let tok = lexer.read_regex();
+                    tokens.push(tok);
+                    continue;
+                }
+            }
             let tok = lexer.next_token();
             let is_eof = tok.kind == TokenKind::Eof;
             tokens.push(tok);
@@ -266,6 +299,76 @@ impl<'a> Lexer<'a> {
                         b'{' => depth += 1,
                         b'}' => depth -= 1,
                         b'\n' => self.line += 1,
+                        // Skip string literals inside expressions so their contents
+                        // (especially backticks and braces) don't confuse depth tracking.
+                        b'\'' | b'"' => {
+                            let quote = self.src[self.pos];
+                            s.push(quote as char);
+                            self.pos += 1;
+                            while self.pos < self.src.len() && self.src[self.pos] != quote {
+                                if self.src[self.pos] == b'\\' && self.pos + 1 < self.src.len() {
+                                    s.push(self.src[self.pos] as char);
+                                    self.pos += 1;
+                                    s.push(self.src[self.pos] as char);
+                                    self.pos += 1;
+                                } else {
+                                    if self.src[self.pos] == b'\n' { self.line += 1; }
+                                    s.push(self.src[self.pos] as char);
+                                    self.pos += 1;
+                                }
+                            }
+                            if self.pos < self.src.len() {
+                                s.push(quote as char);
+                                self.pos += 1;
+                            }
+                            continue;
+                        }
+                        // Nested template literals inside ${} — recursively skip.
+                        b'`' => {
+                            s.push('`');
+                            self.pos += 1;
+                            while self.pos < self.src.len() && self.src[self.pos] != b'`' {
+                                if self.src[self.pos] == b'\\' && self.pos + 1 < self.src.len() {
+                                    s.push(self.src[self.pos] as char);
+                                    self.pos += 1;
+                                    s.push(self.src[self.pos] as char);
+                                    self.pos += 1;
+                                } else if self.src[self.pos] == b'$'
+                                    && self.pos + 1 < self.src.len()
+                                    && self.src[self.pos + 1] == b'{'
+                                {
+                                    // Nested ${} inside nested template — track brace depth
+                                    s.push('$');
+                                    s.push('{');
+                                    self.pos += 2;
+                                    let mut inner_depth = 1u32;
+                                    while self.pos < self.src.len() && inner_depth > 0 {
+                                        match self.src[self.pos] {
+                                            b'{' => inner_depth += 1,
+                                            b'}' => inner_depth -= 1,
+                                            b'\n' => self.line += 1,
+                                            _ => {}
+                                        }
+                                        if inner_depth > 0 {
+                                            s.push(self.src[self.pos] as char);
+                                            self.pos += 1;
+                                        } else {
+                                            s.push('}');
+                                            self.pos += 1;
+                                        }
+                                    }
+                                } else {
+                                    if self.src[self.pos] == b'\n' { self.line += 1; }
+                                    s.push(self.src[self.pos] as char);
+                                    self.pos += 1;
+                                }
+                            }
+                            if self.pos < self.src.len() {
+                                s.push('`');
+                                self.pos += 1; // skip closing `
+                            }
+                            continue;
+                        }
                         _ => {}
                     }
                     if depth > 0 {
@@ -291,6 +394,51 @@ impl<'a> Lexer<'a> {
 
         Token {
             kind: TokenKind::Template(s),
+            span: Span { start, end: self.pos as u32, line },
+        }
+    }
+
+    /// Read a regex literal: `/pattern/flags`.
+    fn read_regex(&mut self) -> Token {
+        let start = self.pos as u32;
+        let line = self.line;
+        self.pos += 1; // skip opening /
+
+        let mut pattern = String::new();
+        let mut in_class = false; // inside [...]
+        while self.pos < self.src.len() {
+            let ch = self.src[self.pos];
+            if ch == b'\\' && self.pos + 1 < self.src.len() {
+                // Escaped character — include both \ and next char
+                pattern.push(ch as char);
+                self.pos += 1;
+                pattern.push(self.src[self.pos] as char);
+                self.pos += 1;
+                continue;
+            }
+            if ch == b'[' { in_class = true; }
+            if ch == b']' { in_class = false; }
+            if ch == b'/' && !in_class {
+                self.pos += 1; // skip closing /
+                break;
+            }
+            if ch == b'\n' {
+                // Regex can't span lines — bail out
+                break;
+            }
+            pattern.push(ch as char);
+            self.pos += 1;
+        }
+
+        // Read flags (g, i, m, s, u, y, d)
+        let mut flags = String::new();
+        while self.pos < self.src.len() && self.src[self.pos].is_ascii_alphabetic() {
+            flags.push(self.src[self.pos] as char);
+            self.pos += 1;
+        }
+
+        Token {
+            kind: TokenKind::RegExp(pattern, flags),
             span: Span { start, end: self.pos as u32, line },
         }
     }

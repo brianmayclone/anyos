@@ -677,14 +677,38 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
                                 family = val.trim().trim_matches('"').trim_matches('\'').into();
                             }
                             "src" => {
-                                // Extract url(...) from src value
+                                // Parse comma-separated url() entries with optional format() hints.
+                                // Prefer non-WOFF2 sources (TTF, OTF, WOFF) since WOFF2 (Brotli)
+                                // is not yet supported.  Fall back to WOFF2 if nothing else.
                                 let v = val.trim();
-                                if let Some(url_start) = v.find("url(") {
-                                    let after = &v[url_start + 4..];
+                                let mut best_url = String::new();
+                                let mut best_is_woff2 = true;
+                                let mut search = v;
+                                while let Some(url_start) = search.find("url(") {
+                                    let after = &search[url_start + 4..];
                                     let url_end = after.find(')').unwrap_or(after.len());
                                     let url = after[..url_end].trim().trim_matches('"').trim_matches('\'');
-                                    src_url = String::from(url);
+                                    // Check for format('woff2') hint after the url()
+                                    let rest = &after[url_end..];
+                                    let is_woff2 = rest.contains("format('woff2')")
+                                        || rest.contains("format(\"woff2\")")
+                                        || url.ends_with(".woff2");
+                                    if best_url.is_empty() || (best_is_woff2 && !is_woff2) {
+                                        best_url = String::from(url);
+                                        best_is_woff2 = is_woff2;
+                                    }
+                                    // Advance past this url() entry
+                                    let consumed = url_start + 4 + url_end;
+                                    if consumed >= search.len() { break; }
+                                    search = &search[consumed..];
+                                    // Skip to next comma-separated entry
+                                    if let Some(comma) = search.find(',') {
+                                        search = &search[comma + 1..];
+                                    } else {
+                                        break;
+                                    }
                                 }
+                                src_url = best_url;
                             }
                             "font-weight" => {
                                 let v = val.trim();

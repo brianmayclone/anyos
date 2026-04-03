@@ -213,17 +213,83 @@ pub fn generator_return(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 /// `Generator.prototype.throw(exception)`
+///
+/// Resumes the generator at the yield point and throws the exception there,
+/// so that try-catch inside the generator can catch it (ES2023 §27.5.3.4).
 pub fn generator_throw(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
     let err = args.first().cloned().unwrap_or(JsValue::Undefined);
 
-    if let Some(gen_id) = get_gen_id(&this) {
-        if let Some(frame) = get_frame(gen_id) {
-            frame.state = GeneratorState::Completed;
+    let gen_id = match get_gen_id(&this) {
+        Some(id) => id,
+        None => {
+            vm.throw_native(err);
+            return JsValue::Undefined;
+        }
+    };
+
+    let frame = match get_frame(gen_id) {
+        Some(f) => f,
+        None => {
+            vm.throw_native(err);
+            return JsValue::Undefined;
+        }
+    };
+
+    match frame.state {
+        GeneratorState::Completed => {
+            // Already completed — propagate as unhandled.
+            vm.throw_native(err);
+            return JsValue::Undefined;
+        }
+        GeneratorState::Executing => {
+            vm.throw_native(err);
+            return JsValue::Undefined;
+        }
+        GeneratorState::Suspended => {}
+    }
+
+    // Resume the generator, but pre-set pending_exception so the VM will
+    // throw at the yield resume point, giving try-catch a chance to catch it.
+    frame.state = GeneratorState::Executing;
+    let chunk = frame.chunk.clone();
+    let ip = frame.ip;
+    let locals = frame.locals.clone();
+    let upvalue_cells = frame.upvalue_cells.clone();
+    let this_val = frame.this_val.clone();
+    let stack_snapshot = frame.stack_snapshot.clone();
+
+    // Set the exception BEFORE resuming so the VM picks it up immediately.
+    vm.pending_exception = Some(err);
+
+    let result = vm.run_generator_step(
+        chunk, ip, locals, upvalue_cells, this_val, stack_snapshot, JsValue::Undefined,
+    );
+
+    match result {
+        GeneratorResult::Yielded { value, ip: new_ip, locals: new_locals, stack: new_stack } => {
+            if let Some(frame) = get_frame(gen_id) {
+                frame.ip = new_ip;
+                frame.locals = new_locals;
+                frame.stack_snapshot = new_stack;
+                frame.state = GeneratorState::Suspended;
+            }
+            iter_result(vm, value, false)
+        }
+        GeneratorResult::Returned(value) => {
+            if let Some(frame) = get_frame(gen_id) {
+                frame.state = GeneratorState::Completed;
+            }
+            iter_result(vm, value, true)
+        }
+        GeneratorResult::Threw(thrown) => {
+            if let Some(frame) = get_frame(gen_id) {
+                frame.state = GeneratorState::Completed;
+            }
+            vm.throw_native(thrown);
+            JsValue::Undefined
         }
     }
-    vm.throw_native(err);
-    JsValue::Undefined
 }
 
 /// Result of running a generator step.

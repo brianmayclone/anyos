@@ -122,8 +122,14 @@ struct DomBridge {
     timers: Vec<PendingTimer>,
     /// Next timer ID.
     next_timer_id: u32,
-    /// Set by `stopPropagation()` during event dispatch to halt bubbling.
+    /// Set by `stopPropagation()` — halts moving to the next node, but
+    /// remaining listeners on the *current* node still fire.
     propagation_stopped: bool,
+    /// Set by `stopImmediatePropagation()` — halts all further listeners,
+    /// including remaining ones on the current node.
+    immediate_stopped: bool,
+    /// Set by `preventDefault()` — signals that the default action is cancelled.
+    prevented: bool,
     /// Pending WebSocket connect requests from `new WebSocket(url)`.
     pending_ws_connects: Vec<PendingWsConnect>,
     /// Pending WebSocket send requests from `ws.send(data)`.
@@ -132,6 +138,8 @@ struct DomBridge {
     pending_ws_closes: Vec<PendingWsClose>,
     /// Live WebSocket objects: (ws_id → JsValue clone) for callback delivery.
     ws_registry: Vec<(u64, JsValue)>,
+    /// Pending removeEventListener requests: (node_id, event_name, callback, capture).
+    remove_listeners: Vec<(usize, String, JsValue, bool)>,
 }
 
 impl DomBridge {
@@ -207,11 +215,100 @@ pub struct PendingHttpRequest {
 }
 
 /// An event listener registered from JavaScript.
+///
+/// `capture` corresponds to the third argument of `addEventListener()`:
+/// - `true`  → listener fires during the capture phase (root → target).
+/// - `false` → listener fires during the bubble phase  (target → root).
 #[derive(Clone)]
 pub struct EventListener {
     pub node_id: usize,
     pub event: String,
     pub callback: JsValue,
+    /// True when registered with `{ capture: true }` or a bare `true` third arg.
+    pub capture: bool,
+}
+
+// ═══════════════════════════════════════════════════════════
+// EventData — typed event payload (W3C DOM Events Level 3)
+// ═══════════════════════════════════════════════════════════
+
+/// Event-specific properties passed to [`JsRuntime::dispatch_event`].
+///
+/// Each variant maps directly to the matching W3C interface:
+/// - [`EventData::Mouse`]   → [MouseEvent](https://www.w3.org/TR/uievents/#mouseevent)
+/// - [`EventData::Keyboard`] → [KeyboardEvent](https://www.w3.org/TR/uievents/#keyboardevent)
+/// - [`EventData::Input`]   → [InputEvent](https://www.w3.org/TR/input-events-2/)
+/// - [`EventData::Focus`]   → [FocusEvent](https://www.w3.org/TR/uievents/#focusevent)
+/// - [`EventData::Wheel`]   → [WheelEvent](https://www.w3.org/TR/uievents/#wheelevent)
+/// - [`EventData::Pointer`] → [PointerEvent](https://www.w3.org/TR/pointerevents3/)
+#[derive(Clone)]
+pub enum EventData {
+    /// Plain Event — no extra properties.
+    None,
+    /// MouseEvent (click, mousedown, mouseup, mousemove, mouseover, mouseout, mouseenter, mouseleave).
+    Mouse {
+        client_x: f64, client_y: f64,
+        page_x: f64,   page_y: f64,
+        screen_x: f64, screen_y: f64,
+        offset_x: f64, offset_y: f64,
+        /// 0=main, 1=aux, 2=secondary
+        button: u8,
+        /// Bitmask of currently pressed buttons.
+        buttons: u8,
+        ctrl_key: bool, shift_key: bool, alt_key: bool, meta_key: bool,
+    },
+    /// KeyboardEvent (keydown, keyup, keypress).
+    Keyboard {
+        /// Printable character or key name per W3C key values spec.
+        key: String,
+        /// Physical key code (e.g. "KeyA", "ArrowLeft").
+        code: String,
+        /// Legacy keyCode for compatibility.
+        key_code: u32,
+        /// Legacy which (same as key_code for most keys).
+        which: u32,
+        /// Legacy charCode (only meaningful for keypress).
+        char_code: u32,
+        ctrl_key: bool, shift_key: bool, alt_key: bool, meta_key: bool,
+        /// True when the key is held down and auto-repeat fires.
+        repeat: bool,
+        is_composing: bool,
+    },
+    /// InputEvent (input, beforeinput).
+    Input {
+        /// The inserted/deleted characters, or None for non-printable actions.
+        data: Option<String>,
+        /// W3C inputType (e.g. "insertText", "deleteContentBackward").
+        input_type: String,
+        is_composing: bool,
+    },
+    /// FocusEvent (focus, blur, focusin, focusout).
+    Focus {
+        /// node_id of the element losing/gaining focus, if any.
+        related_target_id: Option<usize>,
+    },
+    /// WheelEvent (wheel).
+    Wheel {
+        delta_x: f64, delta_y: f64, delta_z: f64,
+        /// 0=pixel, 1=line, 2=page
+        delta_mode: u32,
+        client_x: f64, client_y: f64,
+        ctrl_key: bool, shift_key: bool, alt_key: bool, meta_key: bool,
+    },
+    /// PointerEvent (pointerdown, pointerup, pointermove, etc.).
+    Pointer {
+        client_x: f64, client_y: f64,
+        page_x: f64,   page_y: f64,
+        screen_x: f64, screen_y: f64,
+        pointer_id: i32,
+        /// "mouse", "pen", or "touch".
+        pointer_type: String,
+        pressure: f64,
+        tilt_x: f64, tilt_y: f64,
+        is_primary: bool,
+        button: u8, buttons: u8,
+        ctrl_key: bool, shift_key: bool, alt_key: bool, meta_key: bool,
+    },
 }
 
 /// A `new WebSocket(url)` call from JavaScript — the host must open the
@@ -409,13 +506,15 @@ impl JsRuntime {
         anyos_std::println!("[js] {} script(s) to execute, {} bytes total",
             scripts.len(), total_bytes);
 
-        // Cap large pages: skip very large scripts (>256 KiB) and limit total
-        // number of scripts to avoid blocking the UI thread for too long.
+        // Cap large pages: limit total number of scripts.
+        // Script size limit raised to 4 MiB to support modern bundlers (Vite, webpack)
+        // that produce single bundles larger than 256 KiB (e.g. React apps at ~400+ KiB).
         const MAX_SCRIPTS: usize = 32;
-        const MAX_SCRIPT_BYTES: usize = 256 * 1024;
+        const MAX_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
 
         // Per-script step limit to keep pages responsive.
-        self.engine.set_step_limit(2_000_000);
+        // Raised to 20 M to allow React's initial render tree to complete.
+        self.engine.set_step_limit(20_000_000);
 
         // Set up DOM bridge via userdata.
         let mut bridge = DomBridge {
@@ -428,10 +527,13 @@ impl JsRuntime {
             timers: Vec::new(),
             next_timer_id: self.next_timer_id,
             propagation_stopped: false,
+            immediate_stopped: false,
+            prevented: false,
             pending_ws_connects: Vec::new(),
             pending_ws_sends: Vec::new(),
             pending_ws_closes: Vec::new(),
             ws_registry: Vec::new(),
+            remove_listeners: Vec::new(),
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
 
@@ -518,7 +620,30 @@ impl JsRuntime {
         let win = window::make_window(vm, doc, &origin);
         vm.set_global("window", win.clone());
         vm.set_global("self", win.clone());
-        vm.set_global("globalThis", win);
+        vm.set_global("globalThis", win.clone());
+
+        // In browsers, window IS the global object — properties on window are directly
+        // accessible as global variables (e.g. `MutationObserver` === `window.MutationObserver`).
+        // Explicitly mirror all window constructors/functions as top-level globals so that
+        // modern bundlers (Vite/React) that reference them without the `window.` prefix work.
+        for key in &[
+            "MutationObserver", "ResizeObserver", "IntersectionObserver",
+            "AbortController", "queueMicrotask",
+            "TextEncoder", "TextDecoder",
+            "URL", "URLSearchParams",
+            "CustomEvent", "Event",
+            "structuredClone", "DOMParser",
+            "performance", "history", "location",
+            "localStorage", "sessionStorage",
+            "matchMedia", "getSelection",
+            "scrollTo", "scrollBy",
+            "confirm", "prompt",
+        ] {
+            let val = win.get_property(key);
+            if !val.is_undefined() {
+                vm.set_global(key, val);
+            }
+        }
 
         // Top-level constructors/functions from window.
         vm.set_global("alert", native_fn("alert", window::native_alert));
@@ -557,10 +682,13 @@ impl JsRuntime {
             timers: Vec::new(),
             next_timer_id: self.next_timer_id,
             propagation_stopped: false,
+            immediate_stopped: false,
+            prevented: false,
             pending_ws_connects: Vec::new(),
             pending_ws_sends: Vec::new(),
             pending_ws_closes: Vec::new(),
             ws_registry: Vec::new(),
+            remove_listeners: Vec::new(),
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
 
@@ -574,6 +702,7 @@ impl JsRuntime {
         self.engine.clear_console();
         self.mutations.extend(bridge.mutations);
         self.event_listeners.extend(bridge.event_listeners);
+        self.apply_remove_listeners(&bridge.remove_listeners);
         self.pending_http_requests.extend(bridge.pending_http_requests);
         self.next_timer_id = bridge.next_timer_id;
         self.timers.extend(bridge.timers);
@@ -583,6 +712,26 @@ impl JsRuntime {
 
     pub fn get_console(&self) -> &[String] { &self.console }
     pub fn clear_console(&mut self) { self.console.clear(); }
+
+    /// Reset the entire JS runtime for a new page navigation.
+    /// Creates a fresh JS engine and clears all accumulated state
+    /// (timers, event listeners, WebSocket connections, animations).
+    pub fn reset(&mut self) {
+        self.engine = JsEngine::new();
+        self.console.clear();
+        self.mutations.clear();
+        self.event_listeners.clear();
+        self.pending_http_requests.clear();
+        self.timers.clear();
+        self.next_timer_id = 1;
+        self.cookies.clear();
+        self.pending_ws_connects.clear();
+        self.pending_ws_sends.clear();
+        self.pending_ws_closes.clear();
+        self.ws_registry.clear();
+        self.active_animations.clear();
+        self.active_transitions.clear();
+    }
 
     pub fn take_mutations(&mut self) -> Vec<DomMutation> {
         core::mem::take(&mut self.mutations)
@@ -802,43 +951,58 @@ impl JsRuntime {
         id_map
     }
 
-    /// Dispatch an event to matching listeners, bubbling up the DOM ancestor chain.
+    /// Dispatch an event per the W3C DOM Events Level 3 algorithm (§10.3).
     ///
-    /// Fires the event at `node_id` first (target phase), then walks up through
-    /// parent nodes (bubble phase).  A listener calling `event.stopPropagation()`
-    /// halts the walk.
-    pub fn dispatch_event(&mut self, dom: &Dom, node_id: usize, event_name: &str) {
-        // Build the ancestor chain for bubbling: [target, parent, grandparent, …]
-        let ancestors: Vec<usize> = {
+    /// Three phases in order:
+    /// 1. **Capture** (eventPhase=1) — listeners registered with `capture:true`,
+    ///    fired from the document root down to the parent of `node_id`.
+    /// 2. **At-target** (eventPhase=2) — all listeners on `node_id` itself,
+    ///    regardless of the capture flag.
+    /// 3. **Bubble** (eventPhase=3) — listeners registered with `capture:false`,
+    ///    fired from the parent of `node_id` up to the root.
+    ///    Skipped when `bubbles` is false (focus, blur, scroll, load, …).
+    ///
+    /// Returns `true` when the default action should proceed (`preventDefault()`
+    /// was not called), `false` when it was cancelled.
+    pub fn dispatch_event(
+        &mut self,
+        dom: &Dom,
+        node_id: usize,
+        event_name: &str,
+        data: &EventData,
+    ) -> bool {
+        // Build the event path root-first: [root, …, parent, target].
+        // Per spec §10.3 step 3 this is the "event path" used for all three phases.
+        let path: Vec<usize> = {
             let mut chain = Vec::new();
             let mut cur = Some(node_id);
             while let Some(id) = cur {
                 chain.push(id);
                 cur = dom.nodes.get(id).and_then(|n| n.parent);
             }
+            chain.reverse(); // now root → target
             chain
         };
+        let target_idx = path.len().saturating_sub(1);
 
-        // Fast exit: skip if no listener in the entire ancestor chain.
-        let has_any = ancestors.iter().any(|&nid|
+        // Fast exit: skip work entirely when no registered listener matches.
+        let has_any = path.iter().any(|&nid|
             self.event_listeners.iter().any(|l| l.node_id == nid && l.event == event_name)
         );
-        if !has_any { return; }
+        if !has_any { return true; }
 
-        // Create event object.
-        let evt = JsValue::new_object();
-        evt.set_property(String::from("type"), JsValue::String(String::from(event_name)));
+        // Whether this event type bubbles by default.
+        // (focus/blur/scroll/load do not bubble — they have focused-capture semantics.)
+        let bubbles = !matches!(event_name,
+            "focus" | "blur" | "scroll" | "load" | "unload" | "error"
+        );
+        let cancelable = !matches!(event_name, "scroll" | "load" | "unload");
+
+        // Build the event object with full W3C properties.
         let target_el = element::make_element(self.engine.vm(), node_id as i64);
-        evt.set_property(String::from("target"), target_el.clone());
-        evt.set_property(String::from("currentTarget"), target_el);
-        evt.set_property(String::from("preventDefault"), native_fn("preventDefault", |_,_| JsValue::Undefined));
-        // stopPropagation sets the bridge flag, halting the bubble walk.
-        evt.set_property(String::from("stopPropagation"), native_fn("stopPropagation", native_stop_propagation));
-        evt.set_property(String::from("stopImmediatePropagation"), native_fn("stopImmediatePropagation", native_stop_propagation));
-        evt.set_property(String::from("bubbles"), JsValue::Bool(true));
-        evt.set_property(String::from("cancelable"), JsValue::Bool(true));
+        let evt = build_event_object(event_name, data, target_el, bubbles, cancelable);
 
-        // Set up bridge for DOM access during callbacks.
+        // Set up bridge so DOM-access and event-control native functions work.
         let mut bridge = DomBridge {
             dom: dom as *const Dom,
             mutations: Vec::new(),
@@ -849,44 +1013,99 @@ impl JsRuntime {
             timers: Vec::new(),
             next_timer_id: self.next_timer_id,
             propagation_stopped: false,
+            immediate_stopped: false,
+            prevented: false,
             pending_ws_connects: Vec::new(),
             pending_ws_sends: Vec::new(),
             pending_ws_closes: Vec::new(),
             ws_registry: Vec::new(),
+            remove_listeners: Vec::new(),
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
         unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
 
-        // Fire at target then bubble up.
-        'bubble: for &nid in &ancestors {
-            // Update currentTarget so listeners can distinguish target vs ancestor.
+        // ── Phase 1: CAPTURE (eventPhase = 1) ───────────────────────────────
+        // Fire capture-listeners from root down to (but not including) the target.
+        'capture: for i in 0..target_idx {
+            if bridge.propagation_stopped || bridge.immediate_stopped { break; }
+            let nid = path[i];
             let cur_el = element::make_element(self.engine.vm(), nid as i64);
             evt.set_property(String::from("currentTarget"), cur_el);
+            evt.set_property(String::from("eventPhase"), JsValue::Number(1.0));
 
             let matching: Vec<JsValue> = self.event_listeners.iter()
-                .filter(|l| l.node_id == nid && l.event == event_name)
+                .filter(|l| l.node_id == nid && l.event == event_name && l.capture)
                 .map(|l| l.callback.clone())
                 .collect();
 
             for cb in &matching {
                 self.engine.vm().call_value(cb, &[evt.clone()], JsValue::Undefined);
-                if bridge.propagation_stopped { break 'bubble; }
+                evt.set_property(String::from("defaultPrevented"), JsValue::Bool(bridge.prevented));
+                if bridge.immediate_stopped { break 'capture; }
+                if bridge.propagation_stopped { break 'capture; }
+            }
+        }
+
+        // ── Phase 2: AT TARGET (eventPhase = 2) ─────────────────────────────
+        // All listeners on the target node fire, both capture and bubble.
+        if !bridge.propagation_stopped && !bridge.immediate_stopped {
+            let cur_el = element::make_element(self.engine.vm(), node_id as i64);
+            evt.set_property(String::from("currentTarget"), cur_el);
+            evt.set_property(String::from("eventPhase"), JsValue::Number(2.0));
+
+            let matching: Vec<JsValue> = self.event_listeners.iter()
+                .filter(|l| l.node_id == node_id && l.event == event_name)
+                .map(|l| l.callback.clone())
+                .collect();
+
+            'target: for cb in &matching {
+                self.engine.vm().call_value(cb, &[evt.clone()], JsValue::Undefined);
+                evt.set_property(String::from("defaultPrevented"), JsValue::Bool(bridge.prevented));
+                if bridge.immediate_stopped { break 'target; }
+                // stopPropagation at target does NOT prevent remaining at-target
+                // listeners per spec §10.3 step 6.3.  Only stopImmediatePropagation does.
+            }
+        }
+
+        // ── Phase 3: BUBBLE (eventPhase = 3) ────────────────────────────────
+        // Bubble-listeners from parent up to root.  Skipped for non-bubbling events.
+        if bubbles && !bridge.propagation_stopped && !bridge.immediate_stopped && target_idx > 0 {
+            'bubble: for i in (0..target_idx).rev() {
+                let nid = path[i];
+                let cur_el = element::make_element(self.engine.vm(), nid as i64);
+                evt.set_property(String::from("currentTarget"), cur_el);
+                evt.set_property(String::from("eventPhase"), JsValue::Number(3.0));
+
+                let matching: Vec<JsValue> = self.event_listeners.iter()
+                    .filter(|l| l.node_id == nid && l.event == event_name && !l.capture)
+                    .map(|l| l.callback.clone())
+                    .collect();
+
+                for cb in &matching {
+                    self.engine.vm().call_value(cb, &[evt.clone()], JsValue::Undefined);
+                    evt.set_property(String::from("defaultPrevented"), JsValue::Bool(bridge.prevented));
+                    if bridge.immediate_stopped || bridge.propagation_stopped { break 'bubble; }
+                }
             }
         }
 
         unsafe { MUTATION_TARGET = core::ptr::null_mut(); }
 
-        // Capture side effects.
+        // Collect all side-effects from the dispatch.
         for msg in self.engine.console_output() {
             self.console.push(msg.clone());
         }
         self.engine.clear_console();
         self.mutations.extend(bridge.mutations);
         self.event_listeners.extend(bridge.event_listeners);
+        self.apply_remove_listeners(&bridge.remove_listeners);
         self.pending_http_requests.extend(bridge.pending_http_requests);
         self.next_timer_id = bridge.next_timer_id;
         self.timers.extend(bridge.timers);
         self.engine.vm().userdata = core::ptr::null_mut();
+
+        // Return true when preventDefault() was NOT called (default action proceeds).
+        !bridge.prevented
     }
 
     /// Advance timers by `delta_ms` and execute any that are due.
@@ -913,10 +1132,13 @@ impl JsRuntime {
                     timers: Vec::new(),
                     next_timer_id: self.next_timer_id,
                     propagation_stopped: false,
+            immediate_stopped: false,
+            prevented: false,
             pending_ws_connects: Vec::new(),
             pending_ws_sends: Vec::new(),
             pending_ws_closes: Vec::new(),
             ws_registry: Vec::new(),
+            remove_listeners: Vec::new(),
                 };
                 self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
                 unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
@@ -950,6 +1172,20 @@ impl JsRuntime {
         }
         self.timers = keep;
         fired
+    }
+
+    /// Apply pending removeEventListener requests collected during JS execution.
+    fn apply_remove_listeners(&mut self, removals: &[(usize, String, JsValue, bool)]) {
+        for (node_id, event, callback, capture) in removals {
+            if let Some(pos) = self.event_listeners.iter().position(|l|
+                l.node_id == *node_id
+                && l.event == *event
+                && l.capture == *capture
+                && l.callback.strict_eq(callback)
+            ) {
+                self.event_listeners.remove(pos);
+            }
+        }
     }
 
     pub fn engine(&mut self) -> &mut JsEngine { &mut self.engine }
@@ -1294,14 +1530,244 @@ fn make_close_event(code: u16, reason: &str, was_clean: bool) -> JsValue {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Native event functions
+// Event object builder
 // ═══════════════════════════════════════════════════════════
 
-/// Native `stopPropagation()` / `stopImmediatePropagation()` handler.
-/// Sets `DomBridge.propagation_stopped` so `dispatch_event` halts bubbling.
+/// Build a fully-populated W3C event object for `dispatch_event`.
+///
+/// Sets the common `Event` interface properties and then overlays the
+/// type-specific properties from `data` (MouseEvent, KeyboardEvent, …).
+fn build_event_object(
+    event_name: &str,
+    data: &EventData,
+    target: JsValue,
+    bubbles: bool,
+    cancelable: bool,
+) -> JsValue {
+    let evt = JsValue::new_object();
+
+    // ── W3C Event interface (common to all events) ───────────────────────
+    evt.set_property(String::from("type"),             JsValue::String(String::from(event_name)));
+    evt.set_property(String::from("target"),           target.clone());
+    evt.set_property(String::from("currentTarget"),    target);
+    evt.set_property(String::from("bubbles"),          JsValue::Bool(bubbles));
+    evt.set_property(String::from("cancelable"),       JsValue::Bool(cancelable));
+    evt.set_property(String::from("defaultPrevented"), JsValue::Bool(false));
+    evt.set_property(String::from("composed"),         JsValue::Bool(true));
+    evt.set_property(String::from("isTrusted"),        JsValue::Bool(true));
+    evt.set_property(String::from("timeStamp"),        JsValue::Number(0.0));
+    // eventPhase: 0=NONE before dispatch; updated per phase inside dispatch_event.
+    evt.set_property(String::from("eventPhase"),       JsValue::Number(0.0));
+    evt.set_property(String::from("NONE"),             JsValue::Number(0.0));
+    evt.set_property(String::from("CAPTURING_PHASE"),  JsValue::Number(1.0));
+    evt.set_property(String::from("AT_TARGET"),        JsValue::Number(2.0));
+    evt.set_property(String::from("BUBBLING_PHASE"),   JsValue::Number(3.0));
+
+    // Control methods — implementations read/write DomBridge via vm.userdata.
+    evt.set_property(String::from("preventDefault"),
+        native_fn("preventDefault", native_prevent_default));
+    evt.set_property(String::from("stopPropagation"),
+        native_fn("stopPropagation", native_stop_propagation));
+    evt.set_property(String::from("stopImmediatePropagation"),
+        native_fn("stopImmediatePropagation", native_stop_immediate_propagation));
+    evt.set_property(String::from("composedPath"),
+        native_fn("composedPath", |_, _| make_array(Vec::new())));
+
+    // ── Type-specific properties ─────────────────────────────────────────
+    match data {
+        EventData::None => {}
+
+        EventData::Mouse {
+            client_x, client_y, page_x, page_y,
+            screen_x, screen_y, offset_x, offset_y,
+            button, buttons,
+            ctrl_key, shift_key, alt_key, meta_key,
+        } => {
+            evt.set_property(String::from("clientX"),   JsValue::Number(*client_x));
+            evt.set_property(String::from("clientY"),   JsValue::Number(*client_y));
+            evt.set_property(String::from("pageX"),     JsValue::Number(*page_x));
+            evt.set_property(String::from("pageY"),     JsValue::Number(*page_y));
+            evt.set_property(String::from("screenX"),   JsValue::Number(*screen_x));
+            evt.set_property(String::from("screenY"),   JsValue::Number(*screen_y));
+            evt.set_property(String::from("offsetX"),   JsValue::Number(*offset_x));
+            evt.set_property(String::from("offsetY"),   JsValue::Number(*offset_y));
+            evt.set_property(String::from("x"),         JsValue::Number(*client_x));
+            evt.set_property(String::from("y"),         JsValue::Number(*client_y));
+            evt.set_property(String::from("button"),    JsValue::Number(*button as f64));
+            evt.set_property(String::from("buttons"),   JsValue::Number(*buttons as f64));
+            evt.set_property(String::from("ctrlKey"),   JsValue::Bool(*ctrl_key));
+            evt.set_property(String::from("shiftKey"),  JsValue::Bool(*shift_key));
+            evt.set_property(String::from("altKey"),    JsValue::Bool(*alt_key));
+            evt.set_property(String::from("metaKey"),   JsValue::Bool(*meta_key));
+            evt.set_property(String::from("movementX"), JsValue::Number(0.0));
+            evt.set_property(String::from("movementY"), JsValue::Number(0.0));
+            evt.set_property(String::from("relatedTarget"), JsValue::Null);
+        }
+
+        EventData::Keyboard {
+            key, code, key_code, which, char_code,
+            ctrl_key, shift_key, alt_key, meta_key,
+            repeat, is_composing,
+        } => {
+            evt.set_property(String::from("key"),          JsValue::String(key.clone()));
+            evt.set_property(String::from("code"),         JsValue::String(code.clone()));
+            evt.set_property(String::from("keyCode"),      JsValue::Number(*key_code as f64));
+            evt.set_property(String::from("which"),        JsValue::Number(*which as f64));
+            evt.set_property(String::from("charCode"),     JsValue::Number(*char_code as f64));
+            evt.set_property(String::from("ctrlKey"),      JsValue::Bool(*ctrl_key));
+            evt.set_property(String::from("shiftKey"),     JsValue::Bool(*shift_key));
+            evt.set_property(String::from("altKey"),       JsValue::Bool(*alt_key));
+            evt.set_property(String::from("metaKey"),      JsValue::Bool(*meta_key));
+            evt.set_property(String::from("repeat"),       JsValue::Bool(*repeat));
+            evt.set_property(String::from("isComposing"),  JsValue::Bool(*is_composing));
+            evt.set_property(String::from("location"),     JsValue::Number(0.0));
+            evt.set_property(String::from("DOM_KEY_LOCATION_STANDARD"), JsValue::Number(0.0));
+            evt.set_property(String::from("DOM_KEY_LOCATION_LEFT"),     JsValue::Number(1.0));
+            evt.set_property(String::from("DOM_KEY_LOCATION_RIGHT"),    JsValue::Number(2.0));
+            evt.set_property(String::from("DOM_KEY_LOCATION_NUMPAD"),   JsValue::Number(3.0));
+            // getModifierState stub.
+            evt.set_property(String::from("getModifierState"),
+                native_fn("getModifierState", |_, _| JsValue::Bool(false)));
+        }
+
+        EventData::Input { data: input_data, input_type, is_composing } => {
+            evt.set_property(String::from("data"),
+                match input_data {
+                    Some(s) => JsValue::String(s.clone()),
+                    None    => JsValue::Null,
+                });
+            evt.set_property(String::from("inputType"),   JsValue::String(input_type.clone()));
+            evt.set_property(String::from("isComposing"), JsValue::Bool(*is_composing));
+            // dataTransfer is null for plain text input.
+            evt.set_property(String::from("dataTransfer"), JsValue::Null);
+        }
+
+        EventData::Focus { related_target_id } => {
+            // relatedTarget is the element losing focus (focusin) or gaining it (focusout).
+            evt.set_property(String::from("relatedTarget"), JsValue::Null);
+            let _ = related_target_id; // exposed as Null for now; caller may set via DOM
+        }
+
+        EventData::Wheel {
+            delta_x, delta_y, delta_z, delta_mode,
+            client_x, client_y,
+            ctrl_key, shift_key, alt_key, meta_key,
+        } => {
+            evt.set_property(String::from("deltaX"),    JsValue::Number(*delta_x));
+            evt.set_property(String::from("deltaY"),    JsValue::Number(*delta_y));
+            evt.set_property(String::from("deltaZ"),    JsValue::Number(*delta_z));
+            evt.set_property(String::from("deltaMode"), JsValue::Number(*delta_mode as f64));
+            evt.set_property(String::from("DOM_DELTA_PIXEL"), JsValue::Number(0.0));
+            evt.set_property(String::from("DOM_DELTA_LINE"),  JsValue::Number(1.0));
+            evt.set_property(String::from("DOM_DELTA_PAGE"),  JsValue::Number(2.0));
+            // WheelEvent extends MouseEvent.
+            evt.set_property(String::from("clientX"),   JsValue::Number(*client_x));
+            evt.set_property(String::from("clientY"),   JsValue::Number(*client_y));
+            evt.set_property(String::from("ctrlKey"),   JsValue::Bool(*ctrl_key));
+            evt.set_property(String::from("shiftKey"),  JsValue::Bool(*shift_key));
+            evt.set_property(String::from("altKey"),    JsValue::Bool(*alt_key));
+            evt.set_property(String::from("metaKey"),   JsValue::Bool(*meta_key));
+            evt.set_property(String::from("button"),    JsValue::Number(0.0));
+            evt.set_property(String::from("buttons"),   JsValue::Number(0.0));
+        }
+
+        EventData::Pointer {
+            client_x, client_y, page_x, page_y,
+            screen_x, screen_y,
+            pointer_id, pointer_type, pressure,
+            tilt_x, tilt_y, is_primary,
+            button, buttons,
+            ctrl_key, shift_key, alt_key, meta_key,
+        } => {
+            // PointerEvent extends MouseEvent.
+            evt.set_property(String::from("clientX"),     JsValue::Number(*client_x));
+            evt.set_property(String::from("clientY"),     JsValue::Number(*client_y));
+            evt.set_property(String::from("pageX"),       JsValue::Number(*page_x));
+            evt.set_property(String::from("pageY"),       JsValue::Number(*page_y));
+            evt.set_property(String::from("screenX"),     JsValue::Number(*screen_x));
+            evt.set_property(String::from("screenY"),     JsValue::Number(*screen_y));
+            evt.set_property(String::from("button"),      JsValue::Number(*button as f64));
+            evt.set_property(String::from("buttons"),     JsValue::Number(*buttons as f64));
+            evt.set_property(String::from("ctrlKey"),     JsValue::Bool(*ctrl_key));
+            evt.set_property(String::from("shiftKey"),    JsValue::Bool(*shift_key));
+            evt.set_property(String::from("altKey"),      JsValue::Bool(*alt_key));
+            evt.set_property(String::from("metaKey"),     JsValue::Bool(*meta_key));
+            // PointerEvent-specific.
+            evt.set_property(String::from("pointerId"),   JsValue::Number(*pointer_id as f64));
+            evt.set_property(String::from("pointerType"), JsValue::String(pointer_type.clone()));
+            evt.set_property(String::from("pressure"),    JsValue::Number(*pressure));
+            evt.set_property(String::from("tangentialPressure"), JsValue::Number(0.0));
+            evt.set_property(String::from("tiltX"),       JsValue::Number(*tilt_x));
+            evt.set_property(String::from("tiltY"),       JsValue::Number(*tilt_y));
+            evt.set_property(String::from("twist"),       JsValue::Number(0.0));
+            evt.set_property(String::from("isPrimary"),   JsValue::Bool(*is_primary));
+            evt.set_property(String::from("width"),       JsValue::Number(1.0));
+            evt.set_property(String::from("height"),      JsValue::Number(1.0));
+            evt.set_property(String::from("relatedTarget"), JsValue::Null);
+            evt.set_property(String::from("getCoalescedEvents"),
+                native_fn("getCoalescedEvents", |_, _| make_array(Vec::new())));
+            evt.set_property(String::from("getPredictedEvents"),
+                native_fn("getPredictedEvents", |_, _| make_array(Vec::new())));
+        }
+    }
+
+    evt
+}
+
+// ═══════════════════════════════════════════════════════════
+// Native event control functions
+// ═══════════════════════════════════════════════════════════
+
+/// `event.preventDefault()` — marks the event as cancelled.
+///
+/// Sets `DomBridge.prevented = true` so `dispatch_event` returns `false`
+/// and the caller knows not to execute the default browser action.
+fn native_prevent_default(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    if let Some(bridge) = get_bridge(vm) {
+        bridge.prevented = true;
+    }
+    JsValue::Undefined
+}
+
+/// `event.stopPropagation()` — stops the event from moving to the next node.
+///
+/// Remaining listeners on the *current* node still fire.
+/// Per W3C DOM Events §10.3 step 6.3.
 fn native_stop_propagation(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     if let Some(bridge) = get_bridge(vm) {
         bridge.propagation_stopped = true;
+    }
+    JsValue::Undefined
+}
+
+/// Generic `removeEventListener(event, callback [, capture])` native function.
+///
+/// Schedules removal via `DomBridge.remove_listeners`.  The actual removal
+/// from `JsRuntime.event_listeners` happens after execution completes.
+fn native_remove_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let event = arg_string(args, 0);
+    let callback = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let capture = match args.get(2) {
+        Some(JsValue::Bool(b))   => *b,
+        Some(JsValue::Object(_)) => args[2].get_property("capture").to_boolean(),
+        _                        => false,
+    };
+    let nid = this_node_id(vm);
+    let node_id = if nid >= 0 { nid as usize } else { usize::MAX };
+    if let Some(bridge) = get_bridge(vm) {
+        bridge.remove_listeners.push((node_id, event, callback, capture));
+    }
+    JsValue::Undefined
+}
+
+/// `event.stopImmediatePropagation()` — stops all further listeners immediately.
+///
+/// Unlike `stopPropagation`, this also prevents remaining listeners on the
+/// *current* node from being called.  Per W3C DOM Events §10.3 step 6.4.
+fn native_stop_immediate_propagation(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    if let Some(bridge) = get_bridge(vm) {
+        bridge.propagation_stopped = true;
+        bridge.immediate_stopped   = true;
     }
     JsValue::Undefined
 }

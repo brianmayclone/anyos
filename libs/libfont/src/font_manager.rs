@@ -496,13 +496,31 @@ pub fn load_font(path: &[u8]) -> u32 {
     }
 }
 
-/// Load a font from raw TTF data in memory. Returns font_id or u32::MAX.
+/// Load a font from raw data in memory.
+///
+/// Supports TTF/OTF (direct) and WOFF2 (Brotli-decompressed + reconstructed).
+/// Returns font_id or u32::MAX on failure.
 pub fn load_font_data(data: alloc::vec::Vec<u8>) -> u32 {
     let mgr = match ensure_init() {
         Some(m) => m,
         None => return u32::MAX,
     };
-    match TtfFont::parse(data) {
+
+    // Detect format by magic bytes
+    let ttf_data = if data.len() >= 4 && &data[..4] == b"wOF2" {
+        // WOFF2 → decompress and reconstruct TTF
+        match crate::woff2::convert_to_ttf(&data) {
+            Some(ttf) => ttf,
+            None => return u32::MAX,
+        }
+    } else if data.len() >= 4 && &data[..4] == b"wOFF" {
+        // WOFF 1.0 — not yet supported
+        return u32::MAX;
+    } else {
+        data
+    };
+
+    match TtfFont::parse(ttf_data) {
         Some(ttf) => mgr.add_font(ttf) as u32,
         None => u32::MAX,
     }

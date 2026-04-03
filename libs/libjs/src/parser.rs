@@ -783,19 +783,28 @@ impl Parser {
                 false
             };
 
-            // Private field/method: #name or #name = value
+            // Private field/method: #name, * #name(), or #name = value
+            // Check for generator star before private ident: `* #method()`
+            let priv_is_generator = if matches!(self.peek(), TokenKind::Star)
+                && matches!(self.peek2(), TokenKind::PrivateIdent(_))
+            {
+                self.pos += 1; // consume *
+                true
+            } else {
+                false
+            };
             if let TokenKind::PrivateIdent(ref name) = self.peek().clone() {
                 let priv_name = name.clone(); // e.g. "#count"
                 self.pos += 1;
                 if matches!(self.peek(), TokenKind::LParen) {
-                    // Private method: #method() { }
+                    // Private method: #method() { } or * #method() { }
                     let params = self.parse_params();
                     self.expect(&TokenKind::LBrace);
                     let body = self.parse_block_body();
                     self.expect(&TokenKind::RBrace);
                     members.push(ClassMember {
                         key: PropKey::Ident(priv_name),
-                        kind: ClassMemberKind::Method { params, body },
+                        kind: ClassMemberKind::Method { params, body, is_generator: priv_is_generator },
                         is_static,
                     });
                 } else {
@@ -815,34 +824,41 @@ impl Parser {
                 continue;
             }
 
-            // Check for get/set accessor in class body
+            // Check for get/set accessor in class body (ES spec §14.3)
             let is_get = matches!(self.peek(), TokenKind::Ident(ref s) if s == "get");
             let is_set = matches!(self.peek(), TokenKind::Ident(ref s) if s == "set");
             if (is_get || is_set) && !matches!(self.peek2(), TokenKind::LParen | TokenKind::Eq | TokenKind::Semicolon) {
-                let _accessor = if is_get { "get" } else { "set" };
                 self.pos += 1; // skip 'get'/'set'
                 let key = self.parse_prop_key();
-                let params = self.parse_params();
-                self.expect(&TokenKind::LBrace);
-                let body = self.parse_block_body();
-                self.expect(&TokenKind::RBrace);
-                // Store as a Method but with a special key prefix so the compiler can detect it
-                members.push(ClassMember {
-                    key: match key {
-                        PropKey::Ident(ref name) => {
-                            if is_get {
-                                PropKey::Ident(alloc::format!("__get_{}", name))
-                            } else {
-                                PropKey::Ident(alloc::format!("__set_{}", name))
-                            }
-                        }
-                        _ => key,
-                    },
-                    kind: ClassMemberKind::Method { params, body },
-                    is_static,
-                });
+                if is_get {
+                    self.expect(&TokenKind::LParen);
+                    self.expect(&TokenKind::RParen);
+                    self.expect(&TokenKind::LBrace);
+                    let body = self.parse_block_body();
+                    self.expect(&TokenKind::RBrace);
+                    members.push(ClassMember {
+                        key,
+                        kind: ClassMemberKind::Getter { body },
+                        is_static,
+                    });
+                } else {
+                    self.expect(&TokenKind::LParen);
+                    let param = self.ident_str();
+                    self.expect(&TokenKind::RParen);
+                    self.expect(&TokenKind::LBrace);
+                    let body = self.parse_block_body();
+                    self.expect(&TokenKind::RBrace);
+                    members.push(ClassMember {
+                        key,
+                        kind: ClassMemberKind::Setter { param, body },
+                        is_static,
+                    });
+                }
                 continue;
             }
+
+            // Generator method: * name() { ... }
+            let is_generator = self.eat(&TokenKind::Star);
 
             let key = self.parse_prop_key();
 
@@ -857,7 +873,7 @@ impl Parser {
                 let kind = if is_ctor {
                     ClassMemberKind::Constructor { params, body }
                 } else {
-                    ClassMemberKind::Method { params, body }
+                    ClassMemberKind::Method { params, body, is_generator }
                 };
                 members.push(ClassMember { key, kind, is_static });
             } else {
@@ -891,19 +907,8 @@ impl Parser {
                 PropKey::Computed(Box::new(expr))
             }
             _ => {
-                // Use keyword as identifier name
-                let s = match self.peek() {
-                    TokenKind::Default | TokenKind::New |
-                    TokenKind::Delete | TokenKind::In | TokenKind::Return |
-                    TokenKind::Class | TokenKind::Super | TokenKind::This => {
-                        self.pos += 1;
-                        String::from("_kw_")
-                    }
-                    _ => {
-                        self.pos += 1;
-                        String::from("_error_")
-                    }
-                };
+                // Per ES spec §12.1.1, all keywords are valid as property names.
+                let s = self.ident_str();
                 PropKey::Ident(s)
             }
         }

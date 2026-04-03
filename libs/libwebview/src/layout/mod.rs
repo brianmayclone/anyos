@@ -828,7 +828,10 @@ pub(super) fn layout_children_ex(
         }
 
         // display: contents — skip the element box, promote children.
-        if style.display == Display::Contents {
+        // Exception: SVG elements must NOT promote their children, because the
+        // HTML parser stores SVG inner markup as a raw Text node.  Promoting
+        // that text would render it as visible characters on the page.
+        if style.display == Display::Contents && dom.tag(cid) != Some(Tag::Svg) {
             let grandchildren: Vec<NodeId> = dom.get(cid).children.iter().copied().collect();
             let h = layout_children(dom, styles, pseudo, &grandchildren, available_width,
                 parent, cid, images, viewport_w);

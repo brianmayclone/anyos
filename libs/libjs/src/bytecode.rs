@@ -224,6 +224,12 @@ pub enum Op {
     /// Stack after:  [..., object]
     DefineSetter(u16),  // name constant index
 
+    /// Define a method on an object (non-enumerable, writable, configurable).
+    /// Like SetPropNamed but creates a non-enumerable property (ES2023 §14.5.14).
+    /// Stack before: [..., object, method_fn]
+    /// Stack after:  [..., method_fn]
+    DefineMethod(u16),  // name constant index
+
     /// Replace local slot `slot` with a fresh `Rc<RefCell<JsValue>>` cell containing
     /// the same value.  Used for per-iteration `let` binding in `for` loops so that
     /// closures created in each iteration capture their own cell.
@@ -259,6 +265,10 @@ pub struct Chunk {
     pub strict: bool,
     /// True if this is a generator function (`function*`).
     pub is_generator: bool,
+    /// True if this is an arrow function.
+    /// Arrow functions lexically capture `this` from their enclosing scope
+    /// (ES6 §14.2.16) — they do NOT have their own `this` binding.
+    pub is_arrow: bool,
 }
 
 impl Chunk {
@@ -272,6 +282,7 @@ impl Chunk {
             upvalues: Vec::new(),
             strict: false,
             is_generator: false,
+            is_arrow: false,
         }
     }
 

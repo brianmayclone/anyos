@@ -1,22 +1,23 @@
 //! Table layout: implements CSS table layout for `<table>`, `<tr>`, `<td>`, `<th>`.
 //!
 //! Supports:
-//! - Automatic column width distribution
+//! - `table-layout: auto` — column widths sized to content (CSS Table §17.5.2.2)
+//! - `table-layout: fixed` — column widths from first row only (CSS Table §17.5.2.1)
 //! - `colspan` attribute
 //! - `cellpadding` / `cellspacing` attributes
 //! - `width` attribute on `<table>`, `<td>`, `<th>`
 //! - `align` attribute on `<td>`, `<th>`, `<table>`
+//! - `vertical-align: top/middle/bottom/baseline` on `<td>`, `<th>` (CSS + HTML `valign`)
 //! - `<thead>`, `<tbody>`, `<tfoot>` section grouping
 //! - `<caption>` element
 //! - `border` attribute
-//! - `valign` attribute
 
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
-use crate::style::{ComputedStyle, Display, TextAlignVal, PseudoStyles};
+use crate::style::{ComputedStyle, Display, TextAlignVal, PseudoStyles, VerticalAlign};
 use crate::ImageCache;
 
 use super::{
@@ -189,17 +190,32 @@ pub fn layout_table(
     let cell_border_overhead = if is_collapsed { 1i32 } else if table_border > 0 { 2i32 } else { 0i32 };
     let cell_overhead = cell_pad + cell_border_overhead;
 
-    // Phase 1: Compute minimum/preferred column widths.
+    // Phase 1: Compute column widths.
+    //
+    // `table-layout: fixed` (CSS Table §17.5.2.1):
+    //   Column widths are determined by explicit widths on cells in the FIRST ROW only.
+    //   Remaining space is distributed evenly among unsized columns.
+    //   Cells in subsequent rows do not affect column widths (faster rendering).
+    //
+    // `table-layout: auto` (CSS Table §17.5.2.2, default):
+    //   All cells are measured; columns sized to content.
+    let table_layout_fixed = style.table_layout_fixed;
+
     let mut col_min_widths  = vec![0i32;  max_cols];
     let mut col_pref_widths = vec![0i32;  max_cols];
     let mut col_fixed_widths = vec![0i32; max_cols];
     let mut col_has_fixed   = vec![false; max_cols];
+
+    // Determine which rows to scan for column sizing.
+    // For `fixed`, only consider cells in the first row (row 0).
+    let first_row_only = table_layout_fixed;
 
     for cp in &grid_cells {
         let col_idx = cp.col;
         let colspan = cp.colspan;
         let cell_id = cp.node_id;
         if col_idx >= max_cols { continue; }
+        if first_row_only && cp.row != 0 { continue; }
 
         let cell_style = &styles[cell_id];
 
@@ -212,28 +228,48 @@ pub fn layout_table(
             parse_int_attr(dom, cell_id, "width")
         };
 
-        // Max-content width for this cell (natural width without line-breaking).
-        let pref_w = flex::measure_max_content(dom, styles, pseudo, cell_id, images, viewport_w)
-            + cell_overhead;
-
-        if colspan == 1 {
-            if let Some(ew) = explicit_w {
-                let ew = ew.max(0);
-                col_fixed_widths[col_idx] = ew.max(col_fixed_widths[col_idx]);
-                col_has_fixed[col_idx] = true;
-            }
-            let min_w = super::intrinsic_min_width(dom, styles, pseudo, cell_id, images, viewport_w)
-                + cell_overhead;
-            col_min_widths[col_idx] = col_min_widths[col_idx].max(min_w.max(10));
-            col_pref_widths[col_idx] = col_pref_widths[col_idx].max(pref_w.max(col_min_widths[col_idx]));
-        } else {
-            // Distribute explicit width of multi-column cells across the spanned columns.
-            if let Some(ew) = explicit_w {
-                let per_col = ew / colspan as i32;
+        if table_layout_fixed {
+            // Fixed layout: use explicit widths only — no content measurement.
+            if colspan == 1 {
+                if let Some(ew) = explicit_w {
+                    let ew = ew.max(0);
+                    col_fixed_widths[col_idx] = ew.max(col_fixed_widths[col_idx]);
+                    col_has_fixed[col_idx] = true;
+                }
+            } else if let Some(ew) = explicit_w {
+                let per_col = (ew / colspan as i32).max(0);
                 for c in col_idx..col_idx + colspan {
                     if c < max_cols && !col_has_fixed[c] {
                         col_fixed_widths[c] = per_col.max(col_fixed_widths[c]);
                         col_has_fixed[c] = true;
+                    }
+                }
+            }
+        } else {
+            // Auto layout: measure content for preferred/minimum widths.
+            // Max-content width for this cell (natural width without line-breaking).
+            let pref_w = flex::measure_max_content(dom, styles, pseudo, cell_id, images, viewport_w)
+                + cell_overhead;
+
+            if colspan == 1 {
+                if let Some(ew) = explicit_w {
+                    let ew = ew.max(0);
+                    col_fixed_widths[col_idx] = ew.max(col_fixed_widths[col_idx]);
+                    col_has_fixed[col_idx] = true;
+                }
+                let min_w = super::intrinsic_min_width(dom, styles, pseudo, cell_id, images, viewport_w)
+                    + cell_overhead;
+                col_min_widths[col_idx] = col_min_widths[col_idx].max(min_w.max(10));
+                col_pref_widths[col_idx] = col_pref_widths[col_idx].max(pref_w.max(col_min_widths[col_idx]));
+            } else {
+                // Distribute explicit width of multi-column cells across the spanned columns.
+                if let Some(ew) = explicit_w {
+                    let per_col = ew / colspan as i32;
+                    for c in col_idx..col_idx + colspan {
+                        if c < max_cols && !col_has_fixed[c] {
+                            col_fixed_widths[c] = per_col.max(col_fixed_widths[c]);
+                            col_has_fixed[c] = true;
+                        }
                     }
                 }
             }
@@ -304,7 +340,8 @@ pub fn layout_table(
         let row_id = rows[row_num];
         let row_style = &styles[row_id];
         let mut row_height = 0i32;
-        let mut cell_boxes: Vec<(LayoutBox, usize, usize)> = Vec::new(); // (box, col_start, colspan)
+        // (box, col_start, colspan, content_height) — content_height before row-stretch.
+        let mut cell_boxes: Vec<(LayoutBox, usize, usize, i32)> = Vec::new();
         let is_last_row = row_num + 1 == num_rows;
 
         for cp in grid_cells.iter().filter(|cp| cp.row == row_num) {
@@ -330,12 +367,12 @@ pub fn layout_table(
             let ch = cell_box.height;
             if ch > row_height { row_height = ch; }
 
-            cell_boxes.push((cell_box, col_idx, colspan));
+            cell_boxes.push((cell_box, col_idx, colspan, ch));
         }
 
         // Position cells in the row.
         let row_y = cursor_y;
-        for (mut cell_box, col_start, _colspan) in cell_boxes {
+        for (mut cell_box, col_start, _colspan, content_h) in cell_boxes {
             let mut cell_x = bx.padding.left + cellspacing;
             for c in 0..col_start {
                 cell_x += col_widths[c] + cellspacing;
@@ -345,6 +382,27 @@ pub fn layout_table(
             cell_box.y = row_y;
             // Stretch cell height to match row height.
             cell_box.height = row_height;
+
+            // Apply vertical alignment within the cell (CSS Table §17.5.3).
+            // Reads the CSS `vertical-align` or HTML `valign` attribute.
+            let cell_id = cell_box.node_id.unwrap_or(0);
+            let css_valign = styles[cell_id].vertical_align;
+            let html_valign = dom.attr(cell_id, "valign").unwrap_or("");
+            let y_offset: i32 = match css_valign {
+                VerticalAlign::Middle => (row_height - content_h).max(0) / 2,
+                VerticalAlign::Bottom | VerticalAlign::TextBottom => (row_height - content_h).max(0),
+                VerticalAlign::Baseline | VerticalAlign::Top | VerticalAlign::TextTop => 0,
+                _ => match html_valign {
+                    "middle" => (row_height - content_h).max(0) / 2,
+                    "bottom"  => (row_height - content_h).max(0),
+                    _ => 0,
+                },
+            };
+            if y_offset > 0 {
+                for child in &mut cell_box.children {
+                    child.y += y_offset;
+                }
+            }
 
             // Apply row background color if cell has none.
             if cell_box.bg_color == 0 && row_style.background_color != 0 {

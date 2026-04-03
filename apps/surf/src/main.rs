@@ -390,8 +390,8 @@ fn handle_nav_done(
     let base_url = response.final_url.unwrap_or(original_url);
     let url_str = ui::format_url(&base_url);
 
-    // Clear stylesheets from the previous page.
-    st.tabs[tab_idx].webview.clear_stylesheets();
+    // Clear all state from the previous page (DOM, layout, images, JS, CSS).
+    st.tabs[tab_idx].webview.navigate_clear();
 
     // Set URL and cookies on the JS runtime before rendering.
     st.tabs[tab_idx].webview.set_url(&url_str);
@@ -542,7 +542,7 @@ fn handle_font_done(
     if tab_index >= st.tabs.len() { return false; }
     if st.tabs[tab_index].nav_generation != generation { return false; }
 
-    // Try loading the font data (supports TTF, possibly WOFF if headers match).
+    // Try loading the font data (supports TTF/OTF and WOFF2 via Brotli decompression).
     if let Some(font_id) = libfont_client::load_data(&body) {
         st.tabs[tab_index].webview.register_web_font(&family, font_id);
         anyos_std::println!("[surf] loaded web font '{}' -> id {}", family, font_id);

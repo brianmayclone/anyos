@@ -440,12 +440,20 @@ pub enum ClassMemberKind {
     Method {
         params: Vec<Param>,
         body: Vec<Stmt>,
+        is_generator: bool,
     },
     Property {
         value: Option<Expr>,
     },
     Constructor {
         params: Vec<Param>,
+        body: Vec<Stmt>,
+    },
+    Getter {
+        body: Vec<Stmt>,
+    },
+    Setter {
+        param: String,
         body: Vec<Stmt>,
     },
 }

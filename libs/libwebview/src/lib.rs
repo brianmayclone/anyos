@@ -291,6 +291,31 @@ impl WebView {
         self.inline_sheets_dirty = true;
     }
 
+    /// Full cleanup for page navigation.
+    /// Clears DOM, layout, images, renderer controls, stylesheets, web fonts,
+    /// and resets the JS runtime so the new page starts with a clean slate.
+    pub fn navigate_clear(&mut self) {
+        // Clear rendered UI controls.
+        self.renderer.clear_all();
+        // Clear cached images.
+        self.images.clear();
+        // Clear DOM and layout tree.
+        self.dom_val = None;
+        self.layout_root = None;
+        self.total_height_val = 0;
+        self.last_render_scroll_y = 0;
+        self.content_view.set_size(self.viewport_width as u32, 1);
+        // Clear all stylesheets (external + inline).
+        self.external_sheets.clear();
+        self.inline_sheets.clear();
+        self.inline_sheets_dirty = true;
+        self.inline_style_cache.clear();
+        // Clear web fonts from the previous page.
+        self.web_fonts.clear();
+        // Reset JS runtime (fresh engine, no timers/listeners/websockets).
+        self.js_runtime.reset();
+    }
+
     /// Add a decoded image to the cache. Will be displayed on next render.
     pub fn add_image(&mut self, src: &str, pixels: Vec<u32>, w: u32, h: u32) {
         self.images.add(String::from(src), pixels, w, h);

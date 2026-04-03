@@ -113,6 +113,11 @@ fn main() {
 
         // Build test source: harness + includes + test
         let mut full_source = String::new();
+        // Insert "use strict" for onlyStrict tests (before harness)
+        let is_only_strict = meta.get("flags").map(|f| f.contains("onlyStrict")).unwrap_or(false);
+        if is_only_strict {
+            full_source.push_str("\"use strict\";\n");
+        }
         full_source.push_str(&sta_js);
         full_source.push('\n');
         full_source.push_str(&assert_js);

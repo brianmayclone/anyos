@@ -1,7 +1,9 @@
 //! Prototype initialization and global object setup.
 
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::string::String;
+use core::cell::RefCell;
 
 use crate::value::*;
 use super::{Vm, native_fn};
@@ -77,6 +79,8 @@ impl Vm {
             p.set(String::from("values"), native_fn("values", native_array::array_values));
             p.set(String::from("at"), native_fn("at", native_array::array_at));
             p.set(String::from("toString"), native_fn("toString", native_array::array_to_string));
+            // Symbol.iterator — returns an array iterator
+            p.set(String::from(native_symbol::WELL_KNOWN_ITERATOR), native_fn("[Symbol.iterator]", array_symbol_iterator));
             // ES2023+
             p.set(String::from("findLast"), native_fn("findLast", native_es2024::array_find_last));
             p.set(String::from("findLastIndex"), native_fn("findLastIndex", native_es2024::array_find_last_index));
@@ -120,6 +124,8 @@ impl Vm {
             p.set(String::from("match"), native_fn("match", native_regexp::string_match));
             p.set(String::from("matchAll"), native_fn("matchAll", native_regexp::string_match_all));
             p.set(String::from("search"), native_fn("search", native_regexp::string_search));
+            // Symbol.iterator — returns a string character iterator
+            p.set(String::from(native_symbol::WELL_KNOWN_ITERATOR), native_fn("[Symbol.iterator]", string_symbol_iterator));
             // ES2024
             p.set(String::from("isWellFormed"), native_fn("isWellFormed", native_es2024::string_is_well_formed));
             p.set(String::from("toWellFormed"), native_fn("toWellFormed", native_es2024::string_to_well_formed));
@@ -534,6 +540,7 @@ impl Vm {
             ctor.set_property(String::from("all"), native_fn("all", native_promise::promise_all));
             ctor.set_property(String::from("allSettled"), native_fn("allSettled", native_promise::promise_all_settled));
             ctor.set_property(String::from("race"), native_fn("race", native_promise::promise_race));
+            ctor.set_property(String::from("any"), native_fn("any", native_promise::promise_any));
         }
     }
 
@@ -622,4 +629,85 @@ fn global_eval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         JsValue::Undefined,
     );
     result
+}
+
+// ═══════════════════════════════════════════════════════
+// Symbol.iterator implementations
+// ═══════════════════════════════════════════════════════
+
+/// `Array.prototype[Symbol.iterator]()` — returns an array iterator.
+/// The iterator has a `.next()` method that yields `{ value, done }`.
+fn array_symbol_iterator(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let this = vm.current_this.clone();
+    // Collect elements from the array
+    let items: alloc::vec::Vec<JsValue> = match &this {
+        JsValue::Array(arr) => arr.borrow().elements.clone(),
+        _ => alloc::vec::Vec::new(),
+    };
+    make_value_iterator(vm, items)
+}
+
+/// `String.prototype[Symbol.iterator]()` — returns a string character iterator.
+fn string_symbol_iterator(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let this = vm.current_this.clone();
+    let s = this.to_js_string();
+    let items: alloc::vec::Vec<JsValue> = s.chars().map(|c| {
+        let mut buf = alloc::string::String::new();
+        buf.push(c);
+        JsValue::String(buf)
+    }).collect();
+    make_value_iterator(vm, items)
+}
+
+/// Create a spec-compliant iterator object with a `.next()` method.
+/// The iterator yields `{ value, done }` result objects.
+fn make_value_iterator(vm: &Vm, items: alloc::vec::Vec<JsValue>) -> JsValue {
+    let items_arr = JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(items))));
+    let iter_obj = JsValue::new_object();
+    iter_obj.set_property(alloc::string::String::from("__items__"), items_arr);
+    iter_obj.set_property(alloc::string::String::from("__index__"), JsValue::Number(0.0));
+    // Add .next() method
+    iter_obj.set_property(alloc::string::String::from("next"), native_fn("next", iterator_next));
+    // Generators return `this` for Symbol.iterator (so for-of can re-iterate)
+    iter_obj.set_property(
+        alloc::string::String::from(native_symbol::WELL_KNOWN_ITERATOR),
+        native_fn("[Symbol.iterator]", iterator_self),
+    );
+    iter_obj
+}
+
+/// `Iterator.prototype.next()` — advances the iterator.
+fn iterator_next(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let this = vm.current_this.clone();
+    if let JsValue::Object(obj) = &this {
+        let mut o = obj.borrow_mut();
+        let index = o.get("__index__").to_number() as usize;
+        let items = o.get("__items__");
+        if let JsValue::Array(arr) = &items {
+            let a = arr.borrow();
+            if index < a.elements.len() {
+                let val = a.elements[index].clone();
+                o.properties.insert(
+                    alloc::string::String::from("__index__"),
+                    Property::data(JsValue::Number((index + 1) as f64)),
+                );
+                drop(o);
+                // Return { value, done: false }
+                let result = JsValue::new_object();
+                result.set_property(alloc::string::String::from("value"), val);
+                result.set_property(alloc::string::String::from("done"), JsValue::Bool(false));
+                return result;
+            }
+        }
+    }
+    // Done
+    let result = JsValue::new_object();
+    result.set_property(alloc::string::String::from("value"), JsValue::Undefined);
+    result.set_property(alloc::string::String::from("done"), JsValue::Bool(true));
+    result
+}
+
+/// `iterator[Symbol.iterator]()` — returns itself.
+fn iterator_self(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    vm.current_this.clone()
 }

@@ -176,8 +176,10 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set(String::from("previousElementSibling"), prev_sib);
     obj.set(String::from("nextElementSibling"), next_sib);
 
-    // Style and dataset.
-    obj.set(String::from("style"), JsValue::Object(Rc::new(RefCell::new(JsObject::new()))));
+    // Style — CSSStyleDeclaration (W3C CSSOM §6.7.2).
+    // Properties set on this object trigger SetStyleProperty mutations via set_hook.
+    let style_obj = make_css_style_declaration(node_id);
+    obj.set(String::from("style"), style_obj);
     obj.set(String::from("dataset"), JsValue::Object(Rc::new(RefCell::new(JsObject::new()))));
 
     // classList.
@@ -190,7 +192,7 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set(String::from("removeAttribute"), native_fn("removeAttribute", el_remove_attribute));
     obj.set(String::from("hasAttribute"), native_fn("hasAttribute", el_has_attribute));
     obj.set(String::from("addEventListener"), native_fn("addEventListener", el_add_event_listener));
-    obj.set(String::from("removeEventListener"), native_fn("removeEventListener", el_noop));
+    obj.set(String::from("removeEventListener"), native_fn("removeEventListener", super::native_remove_event_listener));
     obj.set(String::from("dispatchEvent"), native_fn("dispatchEvent", el_dispatch_event));
 
     // Query.
@@ -199,7 +201,7 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set(String::from("getElementsByTagName"), native_fn("getElementsByTagName", el_get_elements_by_tag_name));
     obj.set(String::from("getElementsByClassName"), native_fn("getElementsByClassName", el_get_elements_by_class_name));
 
-    // Tree manipulation.
+    // Tree manipulation (Node interface).
     obj.set(String::from("appendChild"), native_fn("appendChild", el_append_child));
     obj.set(String::from("removeChild"), native_fn("removeChild", el_remove_child));
     obj.set(String::from("insertBefore"), native_fn("insertBefore", el_insert_before));
@@ -208,17 +210,56 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set(String::from("contains"), native_fn("contains", el_contains));
     obj.set(String::from("remove"), native_fn("remove", el_remove));
 
+    // ParentNode interface (W3C DOM §4.2.6).
+    obj.set(String::from("prepend"), native_fn("prepend", el_prepend));
+    obj.set(String::from("append"), native_fn("append", el_append));
+    obj.set(String::from("replaceChildren"), native_fn("replaceChildren", el_replace_children));
+
+    // ChildNode interface (W3C DOM §4.2.7).
+    obj.set(String::from("before"), native_fn("before", el_before));
+    obj.set(String::from("after"), native_fn("after", el_after));
+    obj.set(String::from("replaceWith"), native_fn("replaceWith", el_replace_with));
+
+    // insertAdjacentHTML / insertAdjacentElement (W3C DOM Parsing §4).
+    obj.set(String::from("insertAdjacentHTML"), native_fn("insertAdjacentHTML", el_insert_adjacent_html));
+    obj.set(String::from("insertAdjacentElement"), native_fn("insertAdjacentElement", el_insert_adjacent_element));
+    obj.set(String::from("insertAdjacentText"), native_fn("insertAdjacentText", el_insert_adjacent_text));
+
     // Content setters (since we can't intercept property writes).
     obj.set(String::from("setTextContent"), native_fn("setTextContent", el_set_text_content));
     obj.set(String::from("setInnerHTML"), native_fn("setInnerHTML", el_set_inner_html));
     obj.set(String::from("setStyle"), native_fn("setStyle", el_set_style));
 
+    // Node properties (W3C DOM §4.4).
+    obj.set(String::from("isConnected"), JsValue::Bool(node_id >= 0));
+    obj.set(String::from("getRootNode"), native_fn("getRootNode", el_get_root_node));
+    obj.set(String::from("ownerDocument"), JsValue::Null); // set by document setup
+
+    // outerHTML (W3C DOM Parsing §3).
+    obj.set(String::from("outerHTML"), JsValue::String(String::new())); // placeholder, set_hook handles writes
+
+    // Geometry (W3C CSSOM View §6).
+    obj.set(String::from("offsetWidth"),  JsValue::Number(0.0));
+    obj.set(String::from("offsetHeight"), JsValue::Number(0.0));
+    obj.set(String::from("offsetTop"),    JsValue::Number(0.0));
+    obj.set(String::from("offsetLeft"),   JsValue::Number(0.0));
+    obj.set(String::from("offsetParent"), JsValue::Null);
+    obj.set(String::from("clientWidth"),  JsValue::Number(0.0));
+    obj.set(String::from("clientHeight"), JsValue::Number(0.0));
+    obj.set(String::from("clientTop"),    JsValue::Number(0.0));
+    obj.set(String::from("clientLeft"),   JsValue::Number(0.0));
+    obj.set(String::from("scrollWidth"),  JsValue::Number(0.0));
+    obj.set(String::from("scrollHeight"), JsValue::Number(0.0));
+    obj.set(String::from("scrollTop"),    JsValue::Number(0.0));
+    obj.set(String::from("scrollLeft"),   JsValue::Number(0.0));
+
     // Misc.
-    obj.set(String::from("matches"), native_fn("matches", el_noop_false));
-    obj.set(String::from("closest"), native_fn("closest", el_noop_null));
+    obj.set(String::from("matches"), native_fn("matches", el_matches));
+    obj.set(String::from("closest"), native_fn("closest", el_closest));
     obj.set(String::from("focus"), native_fn("focus", el_noop));
     obj.set(String::from("blur"), native_fn("blur", el_noop));
     obj.set(String::from("click"), native_fn("click", el_noop));
+    obj.set(String::from("scrollIntoView"), native_fn("scrollIntoView", el_noop));
     obj.set(String::from("getBoundingClientRect"), native_fn("getBoundingClientRect", el_get_bounding_rect));
     obj.set(String::from("getClientRects"), native_fn("getClientRects", el_get_client_rects));
     obj.set(String::from("toString"), native_fn("toString", el_to_string));
@@ -305,11 +346,19 @@ fn el_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let nid = this_node_id(vm);
     let event = arg_string(args, 0);
     let callback = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    // Third argument: boolean or EventListenerOptions { capture: bool }.
+    // Per W3C DOM §2.9 — defaults to false (bubble phase).
+    let capture = match args.get(2) {
+        Some(JsValue::Bool(b))   => *b,
+        Some(JsValue::Object(_)) => args[2].get_property("capture").to_boolean(),
+        _                        => false,
+    };
     if let Some(bridge) = get_bridge(vm) {
         bridge.event_listeners.push(super::EventListener {
             node_id: if nid >= 0 { nid as usize } else { usize::MAX },
             event,
             callback,
+            capture,
         });
     }
     JsValue::Undefined
@@ -541,12 +590,22 @@ fn el_clone_node(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     make_element(vm, nid)
 }
 
-fn el_contains(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    // Simplified: check JS children array recursively.
+fn el_contains(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
     let other = args.first().cloned().unwrap_or(JsValue::Null);
     let other_id = extract_node_id(&other);
-    if other_id == -9999 { return JsValue::Bool(false); }
-    // A full implementation would walk the subtree; for now return false.
+    if other_id == -9999 || nid < 0 || other_id < 0 { return JsValue::Bool(false); }
+    // A node contains itself (per W3C DOM §4.4).
+    if nid == other_id { return JsValue::Bool(true); }
+    // Walk from other_id up to the root, checking if we reach nid.
+    if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        let mut cur = Some(other_id as usize);
+        while let Some(id) = cur {
+            if id == nid as usize { return JsValue::Bool(true); }
+            cur = dom.nodes.get(id).and_then(|n| n.parent);
+        }
+    }
     JsValue::Bool(false)
 }
 
@@ -638,13 +697,518 @@ fn el_to_string(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::String(String::from("[object HTMLElement]"))
 }
 
+// ── ParentNode: prepend / append / replaceChildren (W3C DOM §4.2.6) ──
+
+fn el_prepend(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let parent_id = this_node_id(vm);
+    for arg in args {
+        let child_id = extract_node_id(arg);
+        if let Some(bridge) = get_bridge(vm) {
+            // InsertBefore the first child — we use the first child as ref.
+            // If no first child, this degrades to AppendChild.
+            let first_child_id = if parent_id >= 0 {
+                bridge.dom().nodes.get(parent_id as usize)
+                    .and_then(|n| n.children.first().copied())
+                    .map(|id| id as i64)
+            } else {
+                bridge.get_virtual(parent_id).and_then(|vn| vn.child_ids.first().copied())
+            };
+            if let Some(ref_id) = first_child_id {
+                bridge.mutations.push(DomMutation::InsertBefore {
+                    parent_id, new_child_id: child_id, ref_child_id: ref_id,
+                });
+            } else {
+                bridge.mutations.push(DomMutation::AppendChild { parent_id, child_id });
+            }
+        }
+    }
+    JsValue::Undefined
+}
+
+fn el_append(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let parent_id = this_node_id(vm);
+    for arg in args {
+        let child_id = extract_node_id(arg);
+        if let Some(bridge) = get_bridge(vm) {
+            bridge.mutations.push(DomMutation::AppendChild { parent_id, child_id });
+            if parent_id < 0 {
+                if let Some(vn) = bridge.get_virtual_mut(parent_id) {
+                    vn.child_ids.push(child_id);
+                }
+            }
+        }
+    }
+    JsValue::Undefined
+}
+
+fn el_replace_children(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let parent_id = this_node_id(vm);
+    if let Some(bridge) = get_bridge(vm) {
+        // Remove all existing children.
+        let child_ids: Vec<i64> = if parent_id >= 0 {
+            bridge.dom().nodes.get(parent_id as usize)
+                .map(|n| n.children.iter().map(|&id| id as i64).collect())
+                .unwrap_or_default()
+        } else {
+            bridge.get_virtual(parent_id)
+                .map(|vn| vn.child_ids.clone())
+                .unwrap_or_default()
+        };
+        for cid in &child_ids {
+            bridge.mutations.push(DomMutation::RemoveChild { parent_id, child_id: *cid });
+        }
+        // Append new children.
+        for arg in args {
+            let child_id = extract_node_id(arg);
+            bridge.mutations.push(DomMutation::AppendChild { parent_id, child_id });
+        }
+    }
+    JsValue::Undefined
+}
+
+// ── ChildNode: before / after / replaceWith (W3C DOM §4.2.7) ──
+
+fn el_before(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    if let Some(bridge) = get_bridge(vm) {
+        let parent_id = if nid >= 0 {
+            bridge.dom().nodes.get(nid as usize).and_then(|n| n.parent).map(|p| p as i64)
+        } else {
+            bridge.get_virtual(nid).and_then(|vn| vn.parent_id)
+        };
+        if let Some(pid) = parent_id {
+            for arg in args {
+                let child_id = extract_node_id(arg);
+                bridge.mutations.push(DomMutation::InsertBefore {
+                    parent_id: pid, new_child_id: child_id, ref_child_id: nid,
+                });
+            }
+        }
+    }
+    JsValue::Undefined
+}
+
+fn el_after(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    if let Some(bridge) = get_bridge(vm) {
+        let parent_id = if nid >= 0 {
+            bridge.dom().nodes.get(nid as usize).and_then(|n| n.parent).map(|p| p as i64)
+        } else {
+            bridge.get_virtual(nid).and_then(|vn| vn.parent_id)
+        };
+        if let Some(pid) = parent_id {
+            // Find next sibling for InsertBefore, or AppendChild if last.
+            let next_sib_id = if nid >= 0 {
+                let dom = bridge.dom();
+                if let Some(parent) = dom.nodes.get(pid as usize) {
+                    let pos = parent.children.iter().position(|&c| c == nid as usize);
+                    pos.and_then(|p| parent.children.get(p + 1).map(|&c| c as i64))
+                } else { None }
+            } else { None };
+
+            for arg in args {
+                let child_id = extract_node_id(arg);
+                if let Some(ref_id) = next_sib_id {
+                    bridge.mutations.push(DomMutation::InsertBefore {
+                        parent_id: pid, new_child_id: child_id, ref_child_id: ref_id,
+                    });
+                } else {
+                    bridge.mutations.push(DomMutation::AppendChild { parent_id: pid, child_id });
+                }
+            }
+        }
+    }
+    JsValue::Undefined
+}
+
+fn el_replace_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    if let Some(bridge) = get_bridge(vm) {
+        let parent_id = if nid >= 0 {
+            bridge.dom().nodes.get(nid as usize).and_then(|n| n.parent).map(|p| p as i64)
+        } else {
+            bridge.get_virtual(nid).and_then(|vn| vn.parent_id)
+        };
+        if let Some(pid) = parent_id {
+            // Insert each new node before this, then remove this.
+            for arg in args {
+                let child_id = extract_node_id(arg);
+                bridge.mutations.push(DomMutation::InsertBefore {
+                    parent_id: pid, new_child_id: child_id, ref_child_id: nid,
+                });
+            }
+            bridge.mutations.push(DomMutation::RemoveChild { parent_id: pid, child_id: nid });
+        }
+    }
+    JsValue::Undefined
+}
+
+// ── insertAdjacentHTML / Element / Text (W3C DOM Parsing §4) ──
+
+fn el_insert_adjacent_html(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    let position = arg_string(args, 0).to_ascii_lowercase();
+    let html = arg_string(args, 1);
+    if let Some(bridge) = get_bridge(vm) {
+        // Create a virtual fragment to hold the parsed HTML.
+        let frag_id = bridge.alloc_virtual_id();
+        bridge.mutations.push(DomMutation::CreateElement { virtual_id: frag_id, tag: String::from("div") });
+        bridge.mutations.push(DomMutation::SetInnerHTML { node_id: frag_id, html });
+
+        let parent_id = if nid >= 0 {
+            bridge.dom().nodes.get(nid as usize).and_then(|n| n.parent).map(|p| p as i64)
+        } else {
+            bridge.get_virtual(nid).and_then(|vn| vn.parent_id)
+        };
+
+        match position.as_str() {
+            "beforebegin" => {
+                // Before the element itself.
+                if let Some(pid) = parent_id {
+                    bridge.mutations.push(DomMutation::InsertBefore {
+                        parent_id: pid, new_child_id: frag_id, ref_child_id: nid,
+                    });
+                }
+            }
+            "afterbegin" => {
+                // Inside the element, before its first child.
+                let first_child_id = if nid >= 0 {
+                    bridge.dom().nodes.get(nid as usize)
+                        .and_then(|n| n.children.first().copied())
+                        .map(|id| id as i64)
+                } else { None };
+                if let Some(ref_id) = first_child_id {
+                    bridge.mutations.push(DomMutation::InsertBefore {
+                        parent_id: nid, new_child_id: frag_id, ref_child_id: ref_id,
+                    });
+                } else {
+                    bridge.mutations.push(DomMutation::AppendChild { parent_id: nid, child_id: frag_id });
+                }
+            }
+            "beforeend" => {
+                // Inside the element, after its last child.
+                bridge.mutations.push(DomMutation::AppendChild { parent_id: nid, child_id: frag_id });
+            }
+            "afterend" => {
+                // After the element itself.
+                if let Some(pid) = parent_id {
+                    let next_sib_id = if nid >= 0 {
+                        let dom = bridge.dom();
+                        if let Some(parent) = dom.nodes.get(pid as usize) {
+                            let pos = parent.children.iter().position(|&c| c == nid as usize);
+                            pos.and_then(|p| parent.children.get(p + 1).map(|&c| c as i64))
+                        } else { None }
+                    } else { None };
+                    if let Some(ref_id) = next_sib_id {
+                        bridge.mutations.push(DomMutation::InsertBefore {
+                            parent_id: pid, new_child_id: frag_id, ref_child_id: ref_id,
+                        });
+                    } else {
+                        bridge.mutations.push(DomMutation::AppendChild { parent_id: pid, child_id: frag_id });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    JsValue::Undefined
+}
+
+fn el_insert_adjacent_element(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    let position = arg_string(args, 0).to_ascii_lowercase();
+    let element = args.get(1).cloned().unwrap_or(JsValue::Null);
+    let child_id = extract_node_id(&element);
+    if child_id == -9999 { return JsValue::Null; }
+
+    if let Some(bridge) = get_bridge(vm) {
+        let parent_id = if nid >= 0 {
+            bridge.dom().nodes.get(nid as usize).and_then(|n| n.parent).map(|p| p as i64)
+        } else {
+            bridge.get_virtual(nid).and_then(|vn| vn.parent_id)
+        };
+
+        match position.as_str() {
+            "beforebegin" => {
+                if let Some(pid) = parent_id {
+                    bridge.mutations.push(DomMutation::InsertBefore {
+                        parent_id: pid, new_child_id: child_id, ref_child_id: nid,
+                    });
+                }
+            }
+            "afterbegin" => {
+                let first = if nid >= 0 {
+                    bridge.dom().nodes.get(nid as usize)
+                        .and_then(|n| n.children.first().copied())
+                        .map(|id| id as i64)
+                } else { None };
+                if let Some(ref_id) = first {
+                    bridge.mutations.push(DomMutation::InsertBefore {
+                        parent_id: nid, new_child_id: child_id, ref_child_id: ref_id,
+                    });
+                } else {
+                    bridge.mutations.push(DomMutation::AppendChild { parent_id: nid, child_id });
+                }
+            }
+            "beforeend" => {
+                bridge.mutations.push(DomMutation::AppendChild { parent_id: nid, child_id });
+            }
+            "afterend" => {
+                if let Some(pid) = parent_id {
+                    let next = if nid >= 0 {
+                        let dom = bridge.dom();
+                        dom.nodes.get(pid as usize).and_then(|p| {
+                            let pos = p.children.iter().position(|&c| c == nid as usize);
+                            pos.and_then(|i| p.children.get(i + 1).map(|&c| c as i64))
+                        })
+                    } else { None };
+                    if let Some(ref_id) = next {
+                        bridge.mutations.push(DomMutation::InsertBefore {
+                            parent_id: pid, new_child_id: child_id, ref_child_id: ref_id,
+                        });
+                    } else {
+                        bridge.mutations.push(DomMutation::AppendChild { parent_id: pid, child_id });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    element
+}
+
+fn el_insert_adjacent_text(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // Create a text node and use insertAdjacentElement logic.
+    let position = arg_string(args, 0);
+    let text = arg_string(args, 1);
+    if let Some(bridge) = get_bridge(vm) {
+        let text_id = bridge.alloc_virtual_id();
+        bridge.virtual_nodes.push(super::VirtualNode {
+            id: text_id,
+            tag: String::from("#text"),
+            attrs: Vec::new(),
+            text_content: text,
+            child_ids: Vec::new(),
+            parent_id: None,
+        });
+        bridge.mutations.push(DomMutation::CreateElement { virtual_id: text_id, tag: String::from("#text") });
+        // Re-call with the created text node.
+        let text_el = make_element(vm, text_id);
+        let pos_val = JsValue::String(position);
+        return el_insert_adjacent_element(vm, &[pos_val, text_el]);
+    }
+    JsValue::Undefined
+}
+
+// ── matches / closest (W3C DOM §4.4) ──
+
+fn el_matches(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    if nid < 0 { return JsValue::Bool(false); }
+    let sel = arg_string(args, 0);
+    if sel.is_empty() { return JsValue::Bool(false); }
+    if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        let ids = selector::find_all(dom, &sel);
+        return JsValue::Bool(ids.contains(&(nid as usize)));
+    }
+    JsValue::Bool(false)
+}
+
+fn el_closest(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    if nid < 0 { return JsValue::Null; }
+    let sel = arg_string(args, 0);
+    if sel.is_empty() { return JsValue::Null; }
+    if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        let matching_ids = selector::find_all(dom, &sel);
+        // Walk from this node upward through ancestors.
+        let mut cur = Some(nid as usize);
+        while let Some(id) = cur {
+            if matching_ids.contains(&id) {
+                return make_element(vm, id as i64);
+            }
+            cur = dom.nodes.get(id).and_then(|n| n.parent);
+        }
+    }
+    JsValue::Null
+}
+
+// ── getRootNode (W3C DOM §4.4.3) ──
+
+fn el_get_root_node(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    if nid < 0 { return vm.current_this.clone(); }
+    if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        let mut cur = nid as usize;
+        while let Some(parent) = dom.nodes.get(cur).and_then(|n| n.parent) {
+            cur = parent;
+        }
+        return make_element(vm, cur as i64);
+    }
+    vm.current_this.clone()
+}
+
 fn el_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Undefined }
-fn el_noop_false(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Bool(false) }
-fn el_noop_null(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Null }
+
+// ═══════════════════════════════════════════════════════════
+// CSSStyleDeclaration (W3C CSSOM §6.7.2)
+// ═══════════════════════════════════════════════════════════
+
+/// Create a CSSStyleDeclaration object for an element.
+///
+/// This object acts like `element.style` with:
+/// - `setProperty(name, value)` / `getPropertyValue(name)` / `removeProperty(name)`
+/// - `cssText` getter
+/// - Direct property assignment (`style.color = "red"`) via set_hook
+fn make_css_style_declaration(node_id: i64) -> JsValue {
+    let mut sobj = JsObject::new();
+
+    // `__nodeId` so native methods can find the element.
+    sobj.set(String::from("__nodeId"), JsValue::Number(node_id as f64));
+
+    // setProperty(propertyName, value [, priority])
+    sobj.set(String::from("setProperty"), native_fn("setProperty", style_set_property));
+    // getPropertyValue(propertyName)
+    sobj.set(String::from("getPropertyValue"), native_fn("getPropertyValue", style_get_property_value));
+    // removeProperty(propertyName) — returns old value
+    sobj.set(String::from("removeProperty"), native_fn("removeProperty", style_remove_property));
+    // getPropertyPriority(propertyName)
+    sobj.set(String::from("getPropertyPriority"), native_fn("getPropertyPriority", |_, _| JsValue::String(String::new())));
+    // cssText
+    sobj.set(String::from("cssText"), JsValue::String(String::new()));
+    // length
+    sobj.set(String::from("length"), JsValue::Number(0.0));
+    // item(index)
+    sobj.set(String::from("item"), native_fn("item", |_, _| JsValue::String(String::new())));
+
+    // set_hook: intercepts `style.color = "red"` and generates SetStyleProperty mutations.
+    sobj.set_hook = Some(style_property_hook);
+    sobj.set_hook_data = node_id as usize as *mut u8;
+
+    JsValue::Object(Rc::new(RefCell::new(sobj)))
+}
+
+/// setProperty(name, value) — sets a CSS property and emits a SetStyleProperty mutation.
+fn style_set_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let prop = css_prop_from_camel(&arg_string(args, 0));
+    let val = arg_string(args, 1);
+
+    // Update on the style object itself.
+    let camel = camel_case(&prop);
+    if let JsValue::Object(obj) = &vm.current_this {
+        obj.borrow_mut().set(camel, JsValue::String(val.clone()));
+    }
+
+    // Emit mutation.
+    let nid = super::this_node_id(vm);
+    if let Some(bridge) = get_bridge(vm) {
+        bridge.mutations.push(DomMutation::SetStyleProperty {
+            node_id: nid, property: prop, value: val,
+        });
+    }
+    JsValue::Undefined
+}
+
+/// getPropertyValue(name) — returns the current value of a CSS property.
+fn style_get_property_value(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let prop = arg_string(args, 0);
+    let camel = camel_case(&prop);
+    if let JsValue::Object(obj) = &vm.current_this {
+        let val = obj.borrow().get(&camel);
+        if !val.is_undefined() && !val.is_null() {
+            return JsValue::String(val.to_js_string());
+        }
+    }
+    JsValue::String(String::new())
+}
+
+/// removeProperty(name) — removes a CSS property, returns old value.
+fn style_remove_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let prop = css_prop_from_camel(&arg_string(args, 0));
+    let camel = camel_case(&prop);
+    let old = if let JsValue::Object(obj) = &vm.current_this {
+        let old_val = obj.borrow().get(&camel);
+        obj.borrow_mut().delete(&camel);
+        old_val
+    } else {
+        JsValue::String(String::new())
+    };
+
+    let nid = super::this_node_id(vm);
+    if let Some(bridge) = get_bridge(vm) {
+        bridge.mutations.push(DomMutation::SetStyleProperty {
+            node_id: nid, property: prop, value: String::new(),
+        });
+    }
+    old
+}
+
+/// Hook for direct property assignment on style objects (`style.color = "red"`).
+/// Converts camelCase to kebab-case and emits a SetStyleProperty mutation.
+fn style_property_hook(data: *mut u8, key: &str, value: &JsValue) {
+    // Skip internal properties.
+    match key {
+        "__nodeId" | "setProperty" | "getPropertyValue" | "removeProperty"
+        | "getPropertyPriority" | "cssText" | "length" | "item" => return,
+        _ => {}
+    }
+    let mutations = unsafe {
+        if super::MUTATION_TARGET.is_null() { return; }
+        &mut *super::MUTATION_TARGET
+    };
+    let node_id = data as usize as i64;
+    let css_prop = css_prop_from_camel(key);
+    mutations.push(DomMutation::SetStyleProperty {
+        node_id, property: css_prop, value: value.to_js_string(),
+    });
+}
+
+/// Convert camelCase CSS property name to kebab-case.
+/// e.g. `backgroundColor` → `background-color`, `cssFloat` → `float`
+fn css_prop_from_camel(name: &str) -> String {
+    if name == "cssFloat" { return String::from("float"); }
+    if name.contains('-') { return String::from(name); } // already kebab
+    let mut out = String::with_capacity(name.len() + 4);
+    for ch in name.chars() {
+        if ch.is_ascii_uppercase() {
+            out.push('-');
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Convert kebab-case CSS property to camelCase.
+/// e.g. `background-color` → `backgroundColor`, `float` → `cssFloat`
+fn camel_case(name: &str) -> String {
+    if name == "float" { return String::from("cssFloat"); }
+    if !name.contains('-') { return String::from(name); }
+    let mut out = String::with_capacity(name.len());
+    let mut capitalize_next = false;
+    for ch in name.chars() {
+        if ch == '-' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            out.push(ch.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
 
 // ═══════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════
+
+/// Extract `__nodeId` from a JsValue element object (public for sibling modules).
+pub fn extract_node_id_pub(val: &JsValue) -> i64 { extract_node_id(val) }
 
 /// Extract __nodeId from a JsValue (element object).
 fn extract_node_id(val: &JsValue) -> i64 {

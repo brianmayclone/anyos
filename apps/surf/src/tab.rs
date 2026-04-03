@@ -220,8 +220,8 @@ fn navigate_file(path: &str) {
         path: String::from(path),
     };
 
-    // Clear previous page state.
-    st.tabs[tab_idx].webview.clear_stylesheets();
+    // Clear all state from the previous page (DOM, layout, images, JS, CSS).
+    st.tabs[tab_idx].webview.navigate_clear();
     st.tabs[tab_idx].webview.set_url(&url_str);
 
     // Render the HTML.

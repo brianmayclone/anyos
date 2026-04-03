@@ -518,6 +518,7 @@ pub struct ComputedStyle {
     // Table
     pub border_collapse: bool,  // true = collapse, false = separate
     pub border_spacing: i32,    // px (CSS border-spacing)
+    pub table_layout_fixed: bool, // true = fixed, false = auto (CSS table-layout)
     // Float
     pub float: FloatVal,
     pub clear: ClearVal,
@@ -718,6 +719,7 @@ pub fn default_style() -> ComputedStyle {
         // Table
         border_collapse: false,
         border_spacing: 2,
+        table_layout_fixed: false,
         // Float
         float: FloatVal::None,
         clear: ClearVal::None,
@@ -3269,6 +3271,11 @@ pub fn apply_declaration(
                 style.border_spacing = px;
             }
         }
+        Property::TableLayout => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.table_layout_fixed = kw == "fixed";
+            }
+        }
         // Filter
         Property::Filter => {
             if matches!(decl.value, CssValue::None) {
@@ -3391,7 +3398,6 @@ pub fn apply_declaration(
         Property::BorderStyle
         | Property::Flex
         | Property::Gap | Property::Cursor
-        | Property::TableLayout
         | Property::Outline => {}
         // Grid container properties
         Property::GridTemplateColumns => {

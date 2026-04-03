@@ -645,6 +645,8 @@ fn pop_to(dom: &Dom, stack: &mut Vec<NodeId>, tag: Tag) {
 /// Check if we are inside a `<pre>` element.
 fn in_pre(dom: &Dom, stack: &[NodeId]) -> bool {
     stack_has(dom, stack, Tag::Pre)
+        || stack_has(dom, stack, Tag::Script)
+        || stack_has(dom, stack, Tag::Style)
 }
 
 pub fn parse(html: &str) -> Dom {

@@ -207,6 +207,18 @@ impl JsObject {
         if let Some(hook) = self.set_hook {
             hook(self.set_hook_data, &key, &value);
         }
+        // If the property already exists and is non-writable, reject the write
+        // (ES2023 §10.1.2.1 OrdinarySet step 3).  Skip for accessor properties.
+        if let Some(existing) = self.properties.get(&key) {
+            if !existing.writable && existing.getter.is_none() {
+                return;
+            }
+            // Preserve the existing descriptor flags, only update the value.
+            let mut updated = existing.clone();
+            updated.value = value;
+            self.properties.insert(key, updated);
+            return;
+        }
         self.properties.insert(key, Property::data(value));
     }
 
@@ -396,7 +408,14 @@ impl JsValue {
             JsValue::Bool(false) => 0.0,
             JsValue::Number(n) => *n,
             JsValue::String(s) => parse_js_float(s),
-            JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => f64::NAN,
+            JsValue::Object(obj) => {
+                // Wrapper objects (new Number/String/Boolean) — unwrap primitive value.
+                if let Some(prim) = &obj.borrow().primitive_value {
+                    return prim.to_number();
+                }
+                f64::NAN
+            }
+            JsValue::Array(_) | JsValue::Function(_) => f64::NAN,
         }
     }
 

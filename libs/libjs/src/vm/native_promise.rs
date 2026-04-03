@@ -412,6 +412,47 @@ pub fn promise_race(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     promise_resolve(vm, &[JsValue::Undefined])
 }
 
+/// `Promise.any(iterable)` — resolves with the first fulfilled value.
+///
+/// If all promises are rejected, rejects with an `AggregateError` containing
+/// all rejection reasons (ES2021 §27.2.4.1).
+pub fn promise_any(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let iterable = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let promises = match &iterable {
+        JsValue::Array(arr) => arr.borrow().elements.clone(),
+        _ => Vec::new(),
+    };
+    let mut errors: Vec<JsValue> = Vec::new();
+    for p in &promises {
+        if let JsValue::Object(obj) = p {
+            let o = obj.borrow();
+            if o.internal_tag.as_deref() == Some("__promise__") {
+                let state = o.get("__state").to_js_string();
+                if state == "fulfilled" {
+                    let val = o.get("__value");
+                    drop(o);
+                    return promise_resolve(vm, &[val]);
+                } else if state == "rejected" {
+                    let val = o.get("__value");
+                    errors.push(val);
+                }
+                continue;
+            }
+        }
+        // Non-promise values: treat as fulfilled.
+        return promise_resolve(vm, &[p.clone()]);
+    }
+    // All rejected — create AggregateError.
+    let err = JsValue::new_object();
+    err.set_property(alloc::string::String::from("name"),
+        JsValue::String(alloc::string::String::from("AggregateError")));
+    err.set_property(alloc::string::String::from("message"),
+        JsValue::String(alloc::string::String::from("All promises were rejected")));
+    err.set_property(alloc::string::String::from("errors"),
+        JsValue::new_array(errors));
+    promise_reject(vm, &[err])
+}
+
 // ═══════════════════════════════════════════════════════════
 // Helper
 // ═══════════════════════════════════════════════════════════

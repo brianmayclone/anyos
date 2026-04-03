@@ -128,7 +128,7 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     // Properties.
     obj.set(String::from("title"), JsValue::String(title));
     obj.set(String::from("documentElement"), doc_el);
-    obj.set(String::from("body"), body_el);
+    obj.set(String::from("body"), body_el.clone());
     obj.set(String::from("head"), head_el);
     // cookie — readable; writes are intercepted by doc_property_hook
     obj.set(String::from("cookie"), JsValue::String(String::from(cookies)));
@@ -173,7 +173,17 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     obj.set(String::from("createComment"), native_fn("createComment", doc_create_comment));
     obj.set(String::from("createEvent"), native_fn("createEvent", doc_create_event));
     obj.set(String::from("addEventListener"), native_fn("addEventListener", doc_add_event_listener));
-    obj.set(String::from("removeEventListener"), native_fn("removeEventListener", doc_noop));
+    obj.set(String::from("removeEventListener"), native_fn("removeEventListener", super::native_remove_event_listener));
+    obj.set(String::from("dispatchEvent"), native_fn("dispatchEvent", |_,_| JsValue::Bool(true)));
+
+    // W3C DOM: activeElement defaults to <body>.
+    obj.set(String::from("activeElement"), body_el.clone());
+    // createTreeWalker / createRange stubs (used by React hydration).
+    obj.set(String::from("createTreeWalker"), native_fn("createTreeWalker", doc_create_tree_walker));
+    obj.set(String::from("createRange"), native_fn("createRange", doc_create_range));
+    // hidden (used by some React checks).
+    obj.set(String::from("hidden"), JsValue::Bool(false));
+    obj.set(String::from("visibilityState"), JsValue::String(String::from("visible")));
 
     // Install property-write hook to intercept `document.cookie = "..."`.
     obj.set_hook = Some(doc_property_hook);
@@ -332,6 +342,11 @@ fn doc_create_event(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn doc_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let event = arg_string(args, 0);
     let callback = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let capture = match args.get(2) {
+        Some(JsValue::Bool(b))   => *b,
+        Some(JsValue::Object(_)) => args[2].get_property("capture").to_boolean(),
+        _                        => false,
+    };
 
     // For DOMContentLoaded/load, fire immediately since doc is already loaded.
     if event == "DOMContentLoaded" || event == "load" || event == "readystatechange" {
@@ -347,12 +362,142 @@ fn doc_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             node_id: 0,
             event,
             callback,
+            capture,
         });
     }
     JsValue::Undefined
 }
 
 fn doc_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Undefined }
+
+/// createTreeWalker (W3C DOM §5.2) — traverses the DOM tree depth-first.
+///
+/// Supports `whatToShow` filter:
+/// - `NodeFilter.SHOW_ALL`     (0xFFFFFFFF)
+/// - `NodeFilter.SHOW_ELEMENT` (0x1)
+/// - `NodeFilter.SHOW_TEXT`    (0x4)
+///
+/// `nextNode()` does a depth-first pre-order traversal starting from root.
+fn doc_create_tree_walker(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let root = args.first().cloned().unwrap_or(JsValue::Null);
+    let what_to_show = args.get(1).map(|v| v.to_number() as u32).unwrap_or(0xFFFFFFFF);
+    let root_id = super::element::extract_node_id_pub(&root);
+
+    // Pre-build a flat list of all matching descendant node_ids in document order.
+    let mut node_ids: Vec<i64> = Vec::new();
+    if root_id >= 0 {
+        if let Some(bridge) = get_bridge(vm) {
+            let dom = bridge.dom();
+            collect_tree_nodes(dom, root_id as usize, what_to_show, &mut node_ids);
+        }
+    }
+
+    // Store as a JS array of numbers for the walker methods to iterate.
+    let ids_arr: Vec<JsValue> = node_ids.iter().map(|&id| JsValue::Number(id as f64)).collect();
+    let walker = JsValue::new_object();
+    walker.set_property(String::from("root"), root.clone());
+    walker.set_property(String::from("currentNode"), root);
+    walker.set_property(String::from("whatToShow"), JsValue::Number(what_to_show as f64));
+    walker.set_property(String::from("__ids"), JsValue::new_array(ids_arr));
+    walker.set_property(String::from("__pos"), JsValue::Number(-1.0));
+
+    walker.set_property(String::from("nextNode"), native_fn("nextNode", |vm, _| {
+        let pos = vm.current_this.get_property("__pos").to_number() as i64;
+        let ids = vm.current_this.get_property("__ids");
+        let next_pos = pos + 1;
+        if let JsValue::Array(arr) = &ids {
+            let a = arr.borrow();
+            if (next_pos as usize) < a.elements.len() {
+                vm.current_this.set_property(
+                    String::from("__pos"), JsValue::Number(next_pos as f64));
+                let nid = a.elements[next_pos as usize].to_number() as i64;
+                let el = super::element::make_element(vm, nid);
+                vm.current_this.set_property(String::from("currentNode"), el.clone());
+                return el;
+            }
+        }
+        JsValue::Null
+    }));
+
+    walker.set_property(String::from("previousNode"), native_fn("previousNode", |vm, _| {
+        let pos = vm.current_this.get_property("__pos").to_number() as i64;
+        let ids = vm.current_this.get_property("__ids");
+        let prev_pos = pos - 1;
+        if prev_pos >= 0 {
+            if let JsValue::Array(arr) = &ids {
+                let a = arr.borrow();
+                if (prev_pos as usize) < a.elements.len() {
+                    vm.current_this.set_property(
+                        String::from("__pos"), JsValue::Number(prev_pos as f64));
+                    let nid = a.elements[prev_pos as usize].to_number() as i64;
+                    let el = super::element::make_element(vm, nid);
+                    vm.current_this.set_property(String::from("currentNode"), el.clone());
+                    return el;
+                }
+            }
+        }
+        JsValue::Null
+    }));
+
+    walker.set_property(String::from("firstChild"), native_fn("firstChild", |_, _| JsValue::Null));
+    walker.set_property(String::from("lastChild"), native_fn("lastChild", |_, _| JsValue::Null));
+    walker.set_property(String::from("parentNode"), native_fn("parentNode", |_, _| JsValue::Null));
+
+    walker
+}
+
+/// Collect all node IDs matching `what_to_show` in document order (pre-order DFS).
+fn collect_tree_nodes(
+    dom: &crate::dom::Dom,
+    node_id: usize,
+    what_to_show: u32,
+    out: &mut Vec<i64>,
+) {
+    if let Some(node) = dom.nodes.get(node_id) {
+        let include = match &node.node_type {
+            crate::dom::NodeType::Element { .. } => (what_to_show & 0x1) != 0,
+            crate::dom::NodeType::Text(_) => (what_to_show & 0x4) != 0,
+            _ => (what_to_show & 0xFFFFFFFF) == 0xFFFFFFFF,
+        };
+        if include {
+            out.push(node_id as i64);
+        }
+        for &child_id in &node.children {
+            collect_tree_nodes(dom, child_id, what_to_show, out);
+        }
+    }
+}
+
+/// createRange stub — returns a minimal Range object.
+fn doc_create_range(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let range = JsValue::new_object();
+    range.set_property(String::from("startContainer"), JsValue::Null);
+    range.set_property(String::from("startOffset"), JsValue::Number(0.0));
+    range.set_property(String::from("endContainer"), JsValue::Null);
+    range.set_property(String::from("endOffset"), JsValue::Number(0.0));
+    range.set_property(String::from("collapsed"), JsValue::Bool(true));
+    range.set_property(String::from("setStart"),
+        native_fn("setStart", doc_noop));
+    range.set_property(String::from("setEnd"),
+        native_fn("setEnd", doc_noop));
+    range.set_property(String::from("selectNode"),
+        native_fn("selectNode", doc_noop));
+    range.set_property(String::from("selectNodeContents"),
+        native_fn("selectNodeContents", doc_noop));
+    range.set_property(String::from("collapse"),
+        native_fn("collapse", doc_noop));
+    range.set_property(String::from("cloneRange"),
+        native_fn("cloneRange", doc_create_range));
+    range.set_property(String::from("getBoundingClientRect"),
+        native_fn("getBoundingClientRect", |_, _| {
+            let rect = JsValue::new_object();
+            for k in &["top","left","bottom","right","width","height","x","y"] {
+                rect.set_property(String::from(*k), JsValue::Number(0.0));
+            }
+            rect
+        }));
+    range
+}
 
 // ── DocumentFragment helpers ──
 
