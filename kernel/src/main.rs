@@ -42,6 +42,10 @@ pub static GPU_HW_CURSOR: AtomicBool = AtomicBool::new(false);
 /// Skips compositor and init; starts textmode_console instead.
 pub static NOGUI: AtomicBool = AtomicBool::new(false);
 
+/// Set when the kernel is booted with "setup" parameter (ISO installer mode).
+/// Starts compositor + installer directly, skipping login/dock/init.
+pub static SETUP_MODE: AtomicBool = AtomicBool::new(false);
+
 /// Get the boot mode (0 = BIOS, 1 = UEFI).
 pub fn boot_mode() -> u8 {
     BOOT_MODE.load(AtomicOrdering::Relaxed)
@@ -103,6 +107,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
                         } else if token == "nogui" {
                             NOGUI.store(true, AtomicOrdering::Relaxed);
                             serial_println!("No-GUI mode enabled via boot params (textmode_console)");
+                        } else if token == "setup" {
+                            SETUP_MODE.store(true, AtomicOrdering::Relaxed);
+                            serial_println!("Setup mode enabled (ISO installer)");
                         } else if let Some(res) = token.strip_prefix("res=") {
                             // Parse "res=WxH"
                             if let Some((w_str, h_str)) = res.split_once('x') {
@@ -385,6 +392,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
                 fs::vfs::mount("/", fs::vfs::FsType::Iso9660, 0);
                 // Enable OverlayFS: writable RAM layer over the read-only ISO
                 fs::vfs::enable_overlay();
+                // CD-ROM boot = setup mode (run installer directly)
+                SETUP_MODE.store(true, core::sync::atomic::Ordering::Relaxed);
+                serial_println!("  CD-ROM boot detected — entering setup mode");
             }
         }
 
@@ -501,15 +511,32 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
                     serial_println!("[OK] Pre-compositor GPU flush ({}x{})", w, h);
                 }
 
-                match task::loader::load_and_run("/System/compositor/compositor", "compositor") {
-                    Ok(tid) => serial_println!("[OK] Userspace compositor spawned (TID={})", tid),
-                    Err(e) => serial_println!("  WARN: Failed to load compositor: {}", e),
+                let setup = SETUP_MODE.load(AtomicOrdering::Relaxed);
+                if setup {
+                    match task::loader::load_and_run_with_args(
+                        "/System/compositor/compositor", "compositor", "compositor setupmode") {
+                        Ok(tid) => serial_println!("[OK] Compositor spawned in setup mode (TID={})", tid),
+                        Err(e) => serial_println!("  WARN: Failed to load compositor: {}", e),
+                    }
+                } else {
+                    match task::loader::load_and_run("/System/compositor/compositor", "compositor") {
+                        Ok(tid) => serial_println!("[OK] Userspace compositor spawned (TID={})", tid),
+                        Err(e) => serial_println!("  WARN: Failed to load compositor: {}", e),
+                    }
                 }
-                match task::loader::load_and_run("/System/init", "init") {
-                    Ok(tid) => serial_println!("[OK] Init spawned (TID={})", tid),
-                    Err(e) => serial_println!("  WARN: Failed to load /System/init: {}", e),
+
+                if setup {
+                    // --- ISO Installer mode ---
+                    // Compositor handles everything: no login, spawns installer itself
+                    serial_println!("[SETUP] Setup mode — compositor will launch installer");
+                } else {
+                    // --- Normal boot: init → login → dock → desktop ---
+                    match task::loader::load_and_run("/System/init", "init") {
+                        Ok(tid) => serial_println!("[OK] Init spawned (TID={})", tid),
+                        Err(e) => serial_println!("  WARN: Failed to load /System/init: {}", e),
+                    }
                 }
-                serial_println!("Userspace compositor and init spawned, entering scheduler...");
+                serial_println!("Userspace started, entering scheduler...");
             }
 
             task::scheduler::run();

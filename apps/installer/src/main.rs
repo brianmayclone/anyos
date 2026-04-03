@@ -110,7 +110,7 @@ fn detect_disks() -> Vec<DiskEntry> {
             buf[off+12], buf[off+13], buf[off+14], buf[off+15],
             buf[off+16], buf[off+17], buf[off+18], buf[off+19],
         ]);
-        if partition == 0xFF {
+        if partition == 0xFF && size_sectors > 0 {
             let part_count = (0..count as usize)
                 .filter(|&j| {
                     let jo = j * 32;
@@ -158,27 +158,26 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
     let gap: i32 = 16;
     let max_per_row = 3;
 
-    // Find best default: largest disk that's >= 1 GB
+    // Minimum disk size: 256 MiB (512K sectors × 512 bytes)
+    const MIN_SECTORS: u64 = 256 * 1024 * 1024 / 512;
+
+    // Find best default: largest disk that meets minimum size
     let mut best_idx: Option<usize> = None;
     let mut best_size: u64 = 0;
+    let mut any_suitable = false;
     for (i, d) in disks.iter().enumerate() {
-        let bytes = d.size_sectors * 512;
-        if bytes >= 1024 * 1024 * 1024 && bytes > best_size {
-            best_size = bytes;
-            best_idx = Some(i);
-        }
-    }
-    // Fallback: largest disk of any size
-    if best_idx.is_none() && !disks.is_empty() {
-        best_idx = Some(0);
-        for (i, d) in disks.iter().enumerate() {
-            if d.size_sectors > disks[best_idx.unwrap()].size_sectors {
+        if d.size_sectors >= MIN_SECTORS {
+            any_suitable = true;
+            if d.size_sectors > best_size {
+                best_size = d.size_sectors;
                 best_idx = Some(i);
             }
         }
     }
     if let Some(idx) = best_idx {
         a.selected_disk = Some(idx);
+    } else {
+        a.selected_disk = None;
     }
 
     // Center cards: compute total width and offset
@@ -194,44 +193,51 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
         let y = row * (card_h as i32 + gap);
 
         let is_selected = a.selected_disk == Some(i);
-        let card_color = if is_selected { 0xFF1A3A5C } else { 0xFF2A2A2E };
+        let too_small = disk.size_sectors < MIN_SECTORS;
+        let card_color = if too_small { 0xFF222225 }
+            else if is_selected { 0xFF1A3A5C }
+            else { 0xFF2A2A2E };
+        let text_color = if too_small { 0xFF555555 } else { 0xFFFFFFFF };
+        let dim_color = if too_small { 0xFF444444 } else { 0xFFAAAAAA };
 
         let card = ui::Card::new();
         card.set_position(x, y);
         card.set_size(card_w, card_h);
         card.set_color(card_color);
 
-        // Disk icon from /System/media/icons/devices/generic.ico
+        // Disk icon
         if let Some(ico) = ui::Icon::load("/System/media/icons/devices/generic.ico", 48) {
             let iv = ico.into_image_view(48, 48);
             iv.set_position((card_w as i32 - 48) / 2, 14);
             card.add(&iv);
         }
 
-        // Disk name — centered
+        // Disk name
         let name = format!("Disk {}", disk.disk_id);
         let name_label = ui::Label::new(&name);
         name_label.set_position(0, 76);
         name_label.set_size(card_w, 20);
         name_label.set_font_size(14);
         name_label.set_color(0x00000000);
-        name_label.set_text_color(0xFFFFFFFF);
+        name_label.set_text_color(text_color);
         name_label.set_text_align(ui::TEXT_ALIGN_CENTER);
         card.add(&name_label);
 
-        // Size — centered
+        // Size
         let size_str = format_size(disk.size_sectors);
         let size_label = ui::Label::new(&size_str);
         size_label.set_position(0, 98);
         size_label.set_size(card_w, 18);
         size_label.set_font_size(12);
         size_label.set_color(0x00000000);
-        size_label.set_text_color(0xFFAAAAAA);
+        size_label.set_text_color(dim_color);
         size_label.set_text_align(ui::TEXT_ALIGN_CENTER);
         card.add(&size_label);
 
-        // Partition count — centered
-        let part_str = if disk.partition_count == 0 {
+        // Status line: partition count or "Too small"
+        let part_str = if too_small {
+            String::from("Too small")
+        } else if disk.partition_count == 0 {
             String::from("Unpartitioned")
         } else {
             format!("{} partition{}", disk.partition_count,
@@ -242,12 +248,12 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
         part_label.set_size(card_w, 16);
         part_label.set_font_size(11);
         part_label.set_color(0x00000000);
-        part_label.set_text_color(0xFF777777);
+        part_label.set_text_color(if too_small { 0xFF663333 } else { 0xFF777777 });
         part_label.set_text_align(ui::TEXT_ALIGN_CENTER);
         card.add(&part_label);
 
-        // Selection indicator (blue dot at bottom-center)
-        if is_selected {
+        // Selection indicator
+        if is_selected && !too_small {
             let dot = ui::View::new();
             dot.set_position((card_w as i32 - 8) / 2, card_h as i32 - 16);
             dot.set_size(8, 8);
@@ -255,28 +261,54 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
             card.add(&dot);
         }
 
-        // Clickable overlay (Card doesn't support on_click, so use a transparent label)
-        let disk_idx = i;
-        let click_area = ui::Label::new("");
-        click_area.set_position(0, 0);
-        click_area.set_size(card_w, card_h);
-        click_area.set_color(0x00000000);
-        click_area.on_click_raw(disk_card_click, disk_idx as u64);
-        card.add(&click_area);
+        // Only clickable if disk is large enough
+        if !too_small {
+            let disk_idx = i;
+            let click_area = ui::Label::new("");
+            click_area.set_position(0, 0);
+            click_area.set_size(card_w, card_h);
+            click_area.set_color(0x00000000);
+            click_area.on_click_raw(disk_card_click, disk_idx as u64);
+            card.add(&click_area);
+        }
 
         a.disk_card_ids.push(card.id());
         container.add_child(card.id());
     }
 
     if disks.is_empty() {
-        let empty_label = ui::Label::new("No disks detected. Connect a disk and click Refresh.");
-        empty_label.set_position(0, 60);
-        empty_label.set_size(450, 20);
+        let empty_label = ui::Label::new("No disks detected.");
+        empty_label.set_position(0, 80);
+        empty_label.set_size(560, 20);
         empty_label.set_font_size(13);
         empty_label.set_color(0x00000000);
         empty_label.set_text_color(0xFF888888);
+        empty_label.set_text_align(ui::TEXT_ALIGN_CENTER);
         container.add_child(empty_label.id());
         a.disk_card_ids.push(empty_label.id());
+    } else if !any_suitable {
+        // All disks too small
+        let warn_label = ui::Label::new(
+            "No suitable disk found. anyOS requires at least 256 MB of disk space."
+        );
+        warn_label.set_position(0, card_h as i32 + 20);
+        warn_label.set_size(560, 20);
+        warn_label.set_font_size(12);
+        warn_label.set_color(0x00000000);
+        warn_label.set_text_color(0xFFFF6B6B);
+        warn_label.set_text_align(ui::TEXT_ALIGN_CENTER);
+        container.add_child(warn_label.id());
+        a.disk_card_ids.push(warn_label.id());
+    }
+
+    // Disable/enable the Install button based on disk selection
+    let btn = ui::Control::from_id(a.btn_next_id);
+    if any_suitable && a.selected_disk.is_some() {
+        btn.set_enabled(true);
+        btn.set_color(ACCENT);
+    } else {
+        btn.set_enabled(false);
+        btn.set_color(0xFF555555);
     }
 }
 
@@ -309,12 +341,26 @@ fn show_page(step: u32) {
         ui::marshal_set_visible(a.btn_back_id, show_back);
         ui::marshal_set_visible(a.btn_next_id, show_next);
     }
-    // Change button text based on page
+    // Change button text + state based on page
     let next_ctrl = ui::Control::from_id(a.btn_next_id);
     match step {
-        0 => next_ctrl.set_text("Continue"),
-        1 => next_ctrl.set_text("Agree"),
-        2 => next_ctrl.set_text("Install"),
+        0 => {
+            next_ctrl.set_text("Continue");
+            next_ctrl.set_enabled(true);
+            next_ctrl.set_color(ACCENT);
+        }
+        1 => {
+            next_ctrl.set_text("Agree");
+            next_ctrl.set_enabled(true);
+            next_ctrl.set_color(ACCENT);
+        }
+        2 => {
+            next_ctrl.set_text("Install");
+            // Enable/disable based on disk selection (set by populate_disk_cards)
+            let has_selection = a.selected_disk.is_some();
+            next_ctrl.set_enabled(has_selection);
+            next_ctrl.set_color(if has_selection { ACCENT } else { 0xFF555555 });
+        }
         _ => {}
     }
 }
@@ -845,10 +891,13 @@ fn install_worker() {
 
     if total_sectors == 0 {
         set_phase(99, "Error: Disk not found");
+        set_status(&format!("Block device {} could not be read.", dev_id));
         WORKER_ERROR.store(true, Ordering::Release);
         WORKER_DONE.store(true, Ordering::Release);
         return;
     }
+
+    anyos_std::println!("installer: dev_id={} disk_id={} total_sectors={}", dev_id, disk_id, total_sectors);
 
     // dev_id = block device ID (for sys::disk_write — raw I/O on the whole disk)
     // disk_id = physical disk number (for partition_create, partition_rescan, disk_list lookup)
@@ -908,7 +957,7 @@ fn install_worker() {
         Some(id) => id,
         None => {
             set_phase(99, "Error: No partition found after format");
-            set_status("Partition table may not have been written correctly.");
+            set_status(&format!("Disk {} has no partition after rescan. Format may have failed.", disk_id));
             WORKER_ERROR.store(true, Ordering::Release);
             WORKER_DONE.store(true, Ordering::Release);
             return;
@@ -917,8 +966,8 @@ fn install_worker() {
 
     let dev_str = format!("{}", part_id);
     if fs::mount("/mnt/target", &dev_str, FS_TYPE_EXFAT) != 0 {
-        set_phase(99, "Error: Could not mount target");
-        set_status("Is the partition formatted as exFAT?");
+        set_phase(99, "Error: Could not mount target filesystem");
+        set_status(&format!("Mount failed for partition {} (dev {}). exFAT format may be invalid.", part_id, dev_str));
         WORKER_ERROR.store(true, Ordering::Release);
         WORKER_DONE.store(true, Ordering::Release);
         return;
@@ -961,6 +1010,34 @@ fn install_worker() {
 
     set_phase(6, "Finishing...");
     set_progress(98);
+
+    // Write a clean boot.cfg WITHOUT the setup entry (normal boot default=0)
+    let clean_boot_cfg = concat!(
+        "# anyOS Boot Configuration\n",
+        "timeout=5\n",
+        "default=0\n",
+        "\n",
+        "[anyOS]\n",
+        "kernel=0\n",
+        "description=anyOS with default settings\n",
+        "\n",
+        "[anyOS (Verbose)]\n",
+        "kernel=0\n",
+        "params=verbose\n",
+        "description=anyOS with verbose kernel logging\n",
+        "\n",
+        "[anyOS (Textmode)]\n",
+        "kernel=0\n",
+        "params=nogui\n",
+        "description=anyOS without compositor (text console login)\n",
+        "\n",
+        "[anyOS (Custom)]\n",
+        "kernel=0\n",
+        "params=custom\n",
+        "description=anyOS with custom boot parameters\n",
+    );
+    let _ = fs::write_bytes("/mnt/target/boot/boot.cfg", clean_boot_cfg.as_bytes());
+
     fs::umount("/mnt/target");
 
     let total_bytes = COPY_BYTES_TOTAL.load(Ordering::Relaxed);
@@ -1020,9 +1097,9 @@ fn poll_worker() {
             ui::Control::from_id(a.complete_label_id).set_text("Installation Failed");
             ui::Control::from_id(a.complete_label_id).set_text_color(0xFFFF6B6B); // Red
             ui::Control::from_id(a.complete_label_id).set_visible(true);
-            ui::Control::from_id(a.complete_sub_id).set_text(
-                "An error occurred during installation.\nPlease try again."
-            );
+            // Keep the phase/status labels visible so user can see what went wrong
+            a.phase_label.set_visible(true);
+            a.status_label.set_visible(true);
             ui::Control::from_id(a.complete_sub_id).set_visible(true);
         } else {
             // Show success state
@@ -1050,10 +1127,10 @@ fn disk_write_sector(dev: u32, lba: u32, data: &[u8; 512]) {
     sys::disk_write(dev, lba as u64, 1, data);
 }
 
-fn write_cluster(dev: u32, fs_start: u32, heap_off: u32, cluster: u32, data: &[u8]) {
-    let lba = fs_start + heap_off + (cluster - 2) * SPC;
+fn write_cluster(dev: u32, fs_start: u32, heap_off: u32, cluster: u32, spc: u32, data: &[u8]) {
+    let lba = fs_start + heap_off + (cluster - 2) * spc;
     let sectors = (data.len() as u32 + SECTOR_SIZE - 1) / SECTOR_SIZE;
-    for s in 0..sectors.min(SPC) {
+    for s in 0..sectors.min(spc) {
         let off = (s * SECTOR_SIZE) as usize;
         let mut sector = [0u8; 512];
         let end = (off + 512).min(data.len());
@@ -1063,10 +1140,19 @@ fn write_cluster(dev: u32, fs_start: u32, heap_off: u32, cluster: u32, data: &[u
 }
 
 fn format_exfat(dev_id: u32, fs_start: u32, fs_sectors: u32) {
-    let est_clusters = (fs_sectors - FAT_OFFSET) / SPC;
+    // Auto-select cluster size: keep cluster count under 65536 to avoid
+    // compatibility issues with the bootloader and some exFAT implementations.
+    let (spc, spc_shift): (u32, u8) = if fs_sectors > 512 * 1024 {
+        (16, 4) // 8 KiB clusters for disks > 256 MiB
+    } else {
+        (SPC, SPC_SHIFT)
+    };
+    let cluster_size = spc * SECTOR_SIZE;
+
+    let est_clusters = (fs_sectors - FAT_OFFSET) / spc;
     let fat_length = ((est_clusters + 2) * 4 + SECTOR_SIZE - 1) / SECTOR_SIZE;
     let cluster_heap_offset = FAT_OFFSET + fat_length;
-    let cluster_count = (fs_sectors - cluster_heap_offset) / SPC;
+    let cluster_count = (fs_sectors - cluster_heap_offset) / spc;
     let fat_length = ((cluster_count + 2) * 4 + SECTOR_SIZE - 1) / SECTOR_SIZE;
     let cluster_heap_offset = FAT_OFFSET + fat_length;
     let root_cluster: u32 = 4;
@@ -1085,7 +1171,7 @@ fn format_exfat(dev_id: u32, fs_start: u32, fs_sectors: u32) {
     write_le32(&mut vbr, 96, root_cluster);
     write_le32(&mut vbr, 100, 0x414E594F);
     write_le16(&mut vbr, 104, 0x0100);
-    vbr[108] = 9; vbr[109] = SPC_SHIFT; vbr[110] = 1; vbr[111] = 0x80; vbr[112] = 0xFF;
+    vbr[108] = 9; vbr[109] = spc_shift; vbr[110] = 1; vbr[111] = 0x80; vbr[112] = 0xFF;
     vbr[510] = 0x55; vbr[511] = 0xAA;
 
     let mut ext = [0u8; 512]; ext[510] = 0x55; ext[511] = 0xAA;
@@ -1133,7 +1219,7 @@ fn format_exfat(dev_id: u32, fs_start: u32, fs_sectors: u32) {
     }
 
     // Upcase table (cluster 3)
-    let csz = CLUSTER_SIZE as usize;
+    let csz = cluster_size as usize;
     let mut upcase = anyos_std::vec![0u8; csz];
     for i in 0u16..128 {
         let u = if i >= 0x61 && i <= 0x7A { i - 0x20 } else { i };
@@ -1142,7 +1228,7 @@ fn format_exfat(dev_id: u32, fs_start: u32, fs_sectors: u32) {
     let upcase_len: u32 = 256;
     let mut uc: u32 = 0;
     for i in 0..upcase_len as usize { uc = uc.rotate_right(1).wrapping_add(upcase[i] as u32); }
-    write_cluster(dev, fs_start, cluster_heap_offset, 3, &upcase);
+    write_cluster(dev, fs_start, cluster_heap_offset, 3, spc, &upcase);
 
     // Root dir (cluster 4)
     let mut root = anyos_std::vec![0u8; csz];
@@ -1156,12 +1242,12 @@ fn format_exfat(dev_id: u32, fs_start: u32, fs_sectors: u32) {
     write_le64(&mut root, 56, upcase_len as u64);
     root[64] = 0x83; root[65] = 5;
     for (i, &ch) in b"anyOS".iter().enumerate() { write_le16(&mut root, 66 + i * 2, ch as u16); }
-    write_cluster(dev, fs_start, cluster_heap_offset, 4, &root);
+    write_cluster(dev, fs_start, cluster_heap_offset, 4, spc, &root);
 
     // Bitmap (cluster 2)
     let mut bitmap = anyos_std::vec![0u8; csz];
     bitmap[0] = 0x07;
-    write_cluster(dev, fs_start, cluster_heap_offset, 2, &bitmap);
+    write_cluster(dev, fs_start, cluster_heap_offset, 2, spc, &bitmap);
 
     // Zero padding
     let zero = [0u8; 512];

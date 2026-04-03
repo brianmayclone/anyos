@@ -36,6 +36,19 @@ anyos_std::entry!(main);
 fn main() {
     println!("compositor: starting userspace compositor...");
 
+    // Parse arguments: "setupmode" = ISO installer mode (no login, no dock)
+    let mut setup_mode = false;
+    {
+        let mut args_buf = [0u8; 256];
+        let args_str = anyos_std::process::args(&mut args_buf);
+        for token in args_str.split_ascii_whitespace() {
+            if token == "setupmode" {
+                setup_mode = true;
+                println!("compositor: SETUP MODE — no login, no dock");
+            }
+        }
+    }
+
     // Mark this process as critical — kernel RSP recovery will NOT kill it
     anyos_std::sys::set_critical();
 
@@ -70,7 +83,11 @@ fn main() {
     let mut desktop = alloc::boxed::Box::new(desktop::Desktop::new(
         fb_ptr, width, height, fb_info.pitch,
     ));
-    desktop.init();
+    if setup_mode {
+        desktop.init_no_wallpaper();
+    } else {
+        desktop.init();
+    }
 
     // Step 4b: Restore saved resolution from compositor.conf (if different from current).
     // Done AFTER Desktop::new so the well-tested handle_resolution_change() path
@@ -173,13 +190,26 @@ fn main() {
     // pick up the damage_all() set above, ensuring a reliable initial render.
 
     // Step 8: Launch login-time services (e.g. inputmon for keyboard layout)
-    config::launch_login_services();
+    if !setup_mode {
+        config::launch_login_services();
+    }
 
     // Step 9: Spawn login window — authentication happens in main loop
-    let mut login_tid = process::spawn("/System/login", "");
+    // In setup mode: skip login entirely, go straight to desktop
+    let mut login_tid = if setup_mode { u32::MAX } else { process::spawn("/System/login", "") };
     let mut login_pending = login_tid != u32::MAX;
-    let mut dock_spawned = false;
-    if login_pending {
+    let mut dock_spawned = setup_mode; // In setup mode, never spawn dock
+    if setup_mode {
+        // Setup mode: show menubar, setup wallpaper, launch installer directly
+        println!("compositor: setup mode — loading setup wallpaper, launching installer");
+        acquire_lock();
+        let desktop = unsafe { desktop_ref() };
+        desktop.set_menubar_visible(true);
+        desktop.load_wallpaper("/media/wallpapers/setup.png");
+        release_lock();
+        // Spawn installer (replaces login in setup mode)
+        process::spawn("/Applications/Installer.app/Installer", "");
+    } else if login_pending {
         println!("compositor: login window spawned, waiting for authentication...");
         acquire_lock();
         let desktop = unsafe { desktop_ref() };

@@ -312,9 +312,21 @@ impl Desktop {
     /// Draw the initial desktop (background + menubar).
     pub fn init(&mut self) {
         self.load_menu_logos();
-        self.load_user_wallpaper();
+        self.load_default_wallpaper();
         self.draw_menubar();
         self.compositor.damage_all();
+    }
+
+    /// Init without loading any wallpaper (for setup mode — wallpaper set later).
+    pub fn init_no_wallpaper(&mut self) {
+        self.load_menu_logos();
+        self.draw_gradient_background();
+        self.draw_menubar();
+        self.compositor.damage_all();
+    }
+
+    fn load_default_wallpaper(&mut self) {
+        self.load_user_wallpaper();
     }
 
     /// Reload wallpaper (used after wallpaper changes or resolution change).

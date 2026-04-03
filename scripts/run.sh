@@ -36,6 +36,8 @@
 # ── Storage ───────────────────────────────────────────────────────────────────
 #   --ide         Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
 #   --cdrom       Boot from ISO image (CD-ROM) instead of hard drive
+#   --tempdisk    Attach a fresh 1 GB empty hard disk (recreated each start).
+#                   Useful for testing ISO installations: --cdrom --tempdisk
 #   --uefi        Boot via UEFI (OVMF firmware) instead of BIOS
 #
 # ── CPU / Acceleration ────────────────────────────────────────────────────────
@@ -97,6 +99,7 @@ BRIDGE_IFACE=""
 EXPECT_BRIDGE=false
 WIFI_FLAGS=""
 WIFI_LABEL=""
+TEMPDISK=false
 VMWARE_WS=false
 ARM64_MODE=false
 MIN_RES_W=1024
@@ -230,6 +233,9 @@ for arg in "$@"; do
         --cdrom)
             CDROM_MODE=true
             ;;
+        --tempdisk)
+            TEMPDISK=true
+            ;;
         --audio)
             if [ "$(uname -s)" = "Darwin" ]; then
                 AUDIO_FLAGS="-device AC97,audiodev=audio0 -audiodev coreaudio,id=audio0"
@@ -299,7 +305,7 @@ for arg in "$@"; do
             ARM64_MODE=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--arm64]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--arm64]"
             exit 1
             ;;
     esac
@@ -539,6 +545,19 @@ if [ -n "$RESOLUTION" ]; then
     fi
 fi
 
+# ── Temp disk for ISO install testing ─────────────────────────────────────────
+TEMPDISK_FLAGS=""
+TEMPDISK_LABEL=""
+if [ "$TEMPDISK" = true ]; then
+    TEMPDISK_FILE="${SCRIPT_DIR}/../build/tempdisk.img"
+    echo "Creating 256 MB temp disk: $TEMPDISK_FILE"
+    rm -f "$TEMPDISK_FILE"
+    qemu-img create -f raw "$TEMPDISK_FILE" 256M >/dev/null 2>&1
+    # Attach as AHCI disk (works alongside IDE CD-ROM)
+    TEMPDISK_FLAGS="-device ich9-ahci,id=tempdisk-ahci -drive file=$TEMPDISK_FILE,format=raw,if=none,id=tempdisk -device ide-hd,drive=tempdisk,bus=tempdisk-ahci.0"
+    TEMPDISK_LABEL=", tempdisk: 256 MB"
+fi
+
 if [ "$CDROM_MODE" = true ]; then
     IMAGE="${SCRIPT_DIR}/../build/anyos.iso"
     BIOS_FLAGS=""
@@ -723,7 +742,7 @@ if [ "$VGA" = "virgl" ]; then
     export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 fi
 
-echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL"
+echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$TEMPDISK_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL"
 
 
 QEMU_CMD="$QEMU_BIN_ESC \
@@ -731,6 +750,7 @@ QEMU_CMD="$QEMU_BIN_ESC \
     $KVM_FLAGS \
     $BIOS_FLAGS \
     $DRIVE_FLAGS \
+    $TEMPDISK_FLAGS \
     -m 4096M \
     -smp cpus=4 \
     -serial stdio \
