@@ -44,8 +44,8 @@ const SPC_SHIFT: u8 = 3;
 const CLUSTER_SIZE: u32 = SPC * SECTOR_SIZE;
 const FS_TYPE_EXFAT: u32 = 7;
 
-const WIN_W: u32 = 640;
-const WIN_H: u32 = 480;
+const WIN_W: u32 = 780;
+const WIN_H: u32 = 520;
 
 // ── Data ────────────────────────────────────────────────────────────────────
 
@@ -60,9 +60,10 @@ struct InstallerApp {
     win: ui::Window,
     // Sidebar step indicators
     sidebar: ui::View,
-    step_labels: [ui::Label; 3],
-    step_dots: [ui::View; 3],
+    step_labels: [ui::Label; 4],
+    step_dots: [ui::View; 4],
     // Pages
+    page0: ui::View,
     page1: ui::View,
     page2: ui::View,
     page3: ui::View,
@@ -214,10 +215,10 @@ fn main() {
     side_div.set_size(140, 1);
     sidebar.add(&side_div);
 
-    // Step indicators
-    let step_names = ["Select Disk", "Partition", "Install"];
-    let mut step_labels: [ui::Label; 3] = core::array::from_fn(|_| ui::Label::new(""));
-    let mut step_dots: [ui::View; 3] = core::array::from_fn(|_| ui::View::new());
+    // Step indicators (4 steps: Welcome → Select Disk → Method → Install)
+    let step_names = ["Welcome", "Select Disk", "Method", "Install"];
+    let mut step_labels: [ui::Label; 4] = core::array::from_fn(|_| ui::Label::new(""));
+    let mut step_dots: [ui::View; 4] = core::array::from_fn(|_| ui::View::new());
 
     for (i, &name) in step_names.iter().enumerate() {
         let y = 95 + i as i32 * 38;

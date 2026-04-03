@@ -156,7 +156,10 @@ and a self-hosted Rust compiler — all running bare-metal on x86_64.
   - **Realtek RTL8125** (2.5 Gbps Ethernet, common on gaming boards)
   - **Realtek RTL8168** (Gigabit Ethernet, most common consumer NIC)
   - **VirtIO Net** (QEMU/KVM, transitional + modern)
-- **WiFi**: Realtek RTL8188EU USB WiFi adapter support
+- **3 WiFi drivers**:
+  - **Intel iwlwifi** (AX200/AX201/AX210/AX211/BE200, Wireless-AC 9260/9560/8265) — most common laptop WiFi (~60% market share)
+  - **Qualcomm Atheros** (QCA6174, QCA9377, QCA6390, WCN6855) — 802.11ac/WiFi 6/6E
+  - **Realtek RTL8188EU** (USB nano dongles, D-Link DWA-131, Edimax EW-7811Un) — 802.11n USB WiFi
 - **Protocol stack**: Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS
 - **Loopback interface** (`lo` 127.0.0.1) with own-IP loopback routing
 - **TLS support** via BearSSL
@@ -478,7 +481,8 @@ anyos/
       arch/x86/            GDT, IDT, APIC, PIT, TSC, paging, CPUID
       drivers/             PCI, GPU (Bochs/VMware/VBox/VirtIO/Intel/AMD/NVIDIA),
                            keyboard, mouse, vmmouse, I2C-HID touchpad,
-                           E1000, IGC, RTL8125, RTL8168, VirtIO Net, RTL8188EU WiFi,
+                           E1000, IGC, RTL8125, RTL8168, VirtIO Net,
+                           WiFi (Intel iwlwifi, Qualcomm Atheros, Realtek RTL8188EU),
                            ATA, AHCI, NVMe, ATAPI, SDHCI, LSI SCSI,
                            serial, AC'97, HDA audio, UHCI, EHCI, xHCI,
                            VMMDev, thermal, SMBus/I2C, watchdog
