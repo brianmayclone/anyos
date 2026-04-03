@@ -937,6 +937,10 @@ fn install_worker() {
         }
     }
 
+    // Flush write-back cache to disk before rescan — ensures MBR + exFAT
+    // data written by create_partition/format_exfat is physically on disk.
+    fs::sync();
+
     set_phase(4, "Mounting target filesystem...");
     set_progress(20);
     anyos_std::println!("installer: partition_rescan(disk_id={})", disk_id);

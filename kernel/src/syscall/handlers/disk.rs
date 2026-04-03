@@ -152,11 +152,27 @@ pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u32, buf_si
     };
 
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, needed as usize) };
-    if dev.write_sectors(lba, count, buf) {
-        count
-    } else {
-        u32::MAX
-    }
+    // Use direct write (bypass write-back cache) for raw disk I/O syscalls.
+    // The write-back cache is keyed by disk_id=0 and flushes through the
+    // default storage backend, which may not be the correct disk (e.g. during
+    // CD-ROM boot the default backend is IDE/CD, not the AHCI install target).
+    let abs_lba = dev.start_lba as u32 + lba;
+    let ok = {
+        let overrides = crate::drivers::storage::IO_OVERRIDES.lock();
+        if let Some(handler) = overrides.iter().find(|h| h.disk_id == dev.disk_id) {
+            let f = handler.write_fn;
+            let did = dev.disk_id;
+            drop(overrides);
+            f(did, abs_lba, count, buf)
+        } else {
+            drop(overrides);
+            // Direct write bypassing cache
+            crate::drivers::storage::write_sectors_direct(abs_lba, count, buf)
+        }
+    };
+    // Invalidate any cached copies of these sectors
+    crate::fs::blockcache::invalidate(0, abs_lba, count);
+    if ok { count } else { u32::MAX }
 }
 
 #[cfg(target_arch = "aarch64")]

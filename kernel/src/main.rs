@@ -394,7 +394,8 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
                 fs::vfs::enable_overlay();
                 // CD-ROM boot = setup mode (run installer directly)
                 SETUP_MODE.store(true, core::sync::atomic::Ordering::Relaxed);
-                serial_println!("  CD-ROM boot detected — entering setup mode");
+                crate::drivers::serial::set_verbose(true);
+                serial_println!("  CD-ROM boot detected — entering setup mode (verbose enabled)");
             }
         }
 

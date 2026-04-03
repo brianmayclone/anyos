@@ -553,8 +553,8 @@ if [ "$TEMPDISK" = true ]; then
     echo "Creating 256 MB temp disk: $TEMPDISK_FILE"
     rm -f "$TEMPDISK_FILE"
     qemu-img create -f raw "$TEMPDISK_FILE" 256M >/dev/null 2>&1
-    # Attach as AHCI disk (works alongside IDE CD-ROM)
-    TEMPDISK_FLAGS="-device ich9-ahci,id=tempdisk-ahci -drive file=$TEMPDISK_FILE,format=raw,if=none,id=tempdisk -device ide-hd,drive=tempdisk,bus=tempdisk-ahci.0"
+    # Attach as SATA disk via dedicated AHCI controller (detected by anyOS AHCI driver)
+    TEMPDISK_FLAGS="-device ahci,id=tempdisk-ahci -drive file=$TEMPDISK_FILE,format=raw,if=none,id=tempdrive -device ide-hd,drive=tempdrive,bus=tempdisk-ahci.0"
     TEMPDISK_LABEL=", tempdisk: 256 MB"
 fi
 
