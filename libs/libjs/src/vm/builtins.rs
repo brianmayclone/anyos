@@ -281,9 +281,43 @@ impl Vm {
         self.set_global("Promise", native_fn("Promise", native_promise::ctor_promise));
         self.init_promise_statics();
 
-        // ── Map & Set ──
-        self.set_global("Map", native_fn("Map", native_map::ctor_map));
-        self.set_global("Set", native_fn("Set", native_map::ctor_set));
+        // ── Map ──
+        {
+            let ctor = native_fn("Map", native_map::ctor_map);
+            let proto = JsValue::new_object();
+            proto.set_property(String::from("set"), native_fn("set", native_map::map_set));
+            proto.set_property(String::from("get"), native_fn("get", native_map::map_get));
+            proto.set_property(String::from("has"), native_fn("has", native_map::map_has));
+            proto.set_property(String::from("delete"), native_fn("delete", native_map::map_delete));
+            proto.set_property(String::from("clear"), native_fn("clear", native_map::map_clear));
+            proto.set_property(String::from("keys"), native_fn("keys", native_map::map_keys));
+            proto.set_property(String::from("values"), native_fn("values", native_map::map_values));
+            proto.set_property(String::from("entries"), native_fn("entries", native_map::map_entries));
+            proto.set_property(String::from("forEach"), native_fn("forEach", native_map::map_for_each));
+            // Symbol.iterator → entries (ES2023 §24.1.3.12)
+            proto.set_property(String::from(native_symbol::WELL_KNOWN_ITERATOR),
+                native_fn("[Symbol.iterator]", native_map::map_entries));
+            ctor.set_property(String::from("prototype"), proto);
+            self.set_global("Map", ctor);
+        }
+        // ── Set ──
+        {
+            let ctor = native_fn("Set", native_map::ctor_set);
+            let proto = JsValue::new_object();
+            proto.set_property(String::from("add"), native_fn("add", native_map::set_add));
+            proto.set_property(String::from("has"), native_fn("has", native_map::set_has));
+            proto.set_property(String::from("delete"), native_fn("delete", native_map::set_delete));
+            proto.set_property(String::from("clear"), native_fn("clear", native_map::set_clear));
+            proto.set_property(String::from("keys"), native_fn("keys", native_map::set_values));
+            proto.set_property(String::from("values"), native_fn("values", native_map::set_values));
+            proto.set_property(String::from("entries"), native_fn("entries", native_map::set_entries));
+            proto.set_property(String::from("forEach"), native_fn("forEach", native_map::set_for_each));
+            // Symbol.iterator → values (ES2023 §24.2.3.10)
+            proto.set_property(String::from(native_symbol::WELL_KNOWN_ITERATOR),
+                native_fn("[Symbol.iterator]", native_map::set_values));
+            ctor.set_property(String::from("prototype"), proto);
+            self.set_global("Set", ctor);
+        }
 
         // ── Date ──
         self.set_global("Date", native_fn("Date", native_date::ctor_date));

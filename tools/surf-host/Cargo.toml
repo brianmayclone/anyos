@@ -25,3 +25,7 @@ resvg = "0.45"
 [[bin]]
 name = "webp-compare"
 path = "src/webp_compare.rs"
+
+[[bin]]
+name = "parse-test"
+path = "src/parse_test.rs"

@@ -323,8 +323,9 @@ pub fn object_get_own_property_names(_vm: &mut Vm, args: &[JsValue]) -> JsValue 
     match args.first() {
         Some(JsValue::Object(obj)) => {
             let o = obj.borrow();
-            let keys: Vec<JsValue> = o.properties.keys()
-                .map(|k| JsValue::String(k.clone()))
+            let keys: Vec<JsValue> = o.own_property_names()
+                .into_iter()
+                .map(JsValue::String)
                 .collect();
             JsValue::new_array(keys)
         }
@@ -549,9 +550,19 @@ pub fn object_define_properties(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     target
 }
 
-/// `Object.getOwnPropertySymbols(obj)` — stub (returns empty array).
-pub fn object_get_own_property_symbols(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::new_array(Vec::new())
+/// `Object.getOwnPropertySymbols(obj)` — returns symbol-keyed property names.
+pub fn object_get_own_property_symbols(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match args.first() {
+        Some(JsValue::Object(obj)) => {
+            let o = obj.borrow();
+            let syms: Vec<JsValue> = o.own_symbol_keys()
+                .into_iter()
+                .map(JsValue::String)
+                .collect();
+            JsValue::new_array(syms)
+        }
+        _ => JsValue::new_array(Vec::new()),
+    }
 }
 
 // ── Helpers ──

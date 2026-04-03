@@ -215,11 +215,13 @@ fn main() {
 
 /// Allocate a stack and spawn the render thread at priority 127.
 fn spawn_render_thread() {
-    // Allocate render thread stack (128 KiB) via the heap allocator.
+    // Allocate render thread stack via the heap allocator.
     // CRITICAL: Do NOT use raw process::sbrk() here — that bypasses the bump
     // allocator, leaving HEAP_POS/HEAP_END stale. Subsequent heap allocations
     // would return pointers inside the render stack, corrupting it.
-    let render_stack_size: usize = 128 * 1024;
+    // 512 KiB: compose path (composite_rect → draw_shadow_to_bb →
+    // compute_shadow_cache + blur) can exceed 128 KiB during window resize.
+    let render_stack_size: usize = 512 * 1024;
     let render_stack_vec = alloc::vec![0u8; render_stack_size];
     let render_stack_base = render_stack_vec.as_ptr() as usize;
     core::mem::forget(render_stack_vec); // Leak — render thread runs forever

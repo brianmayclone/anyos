@@ -12,23 +12,41 @@ use super::{Vm, native_fn};
 // Map constructor and prototype
 // ═══════════════════════════════════════════════════════════
 
-pub fn ctor_map(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let mut obj = JsObject::new();
-    obj.internal_tag = Some(String::from("__map__"));
-    obj.set(String::from("__keys"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("__values"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("size"), JsValue::Number(0.0));
-    // Install methods
-    obj.set(String::from("set"), native_fn("set", map_set));
-    obj.set(String::from("get"), native_fn("get", map_get));
-    obj.set(String::from("has"), native_fn("has", map_has));
-    obj.set(String::from("delete"), native_fn("delete", map_delete));
-    obj.set(String::from("clear"), native_fn("clear", map_clear));
-    obj.set(String::from("keys"), native_fn("keys", map_keys));
-    obj.set(String::from("values"), native_fn("values", map_values));
-    obj.set(String::from("entries"), native_fn("entries", map_entries));
-    obj.set(String::from("forEach"), native_fn("forEach", map_for_each));
-    JsValue::Object(Rc::new(RefCell::new(obj)))
+pub fn ctor_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // Tag `this` (created by `new_object` with the correct prototype chain).
+    if let JsValue::Object(obj_rc) = &vm.current_this {
+        let mut o = obj_rc.borrow_mut();
+        o.internal_tag = Some(String::from("__map__"));
+        o.set(String::from("__keys"), JsValue::new_array(Vec::new()));
+        o.set(String::from("__values"), JsValue::new_array(Vec::new()));
+        o.set(String::from("size"), JsValue::Number(0.0));
+    }
+    // Handle iterable argument: new Map([[k1,v1],[k2,v2]])
+    if let Some(iterable) = args.first() {
+        if let JsValue::Array(arr) = iterable {
+            let entries = arr.borrow().elements.clone();
+            for entry in &entries {
+                if let JsValue::Array(pair) = entry {
+                    let p = pair.borrow();
+                    let key = p.elements.first().cloned().unwrap_or(JsValue::Undefined);
+                    let val = p.elements.get(1).cloned().unwrap_or(JsValue::Undefined);
+                    // Use map_set logic directly on this
+                    if let JsValue::Object(obj_rc) = &vm.current_this {
+                        let (keys_arr, vals_arr) = {
+                            let ob = obj_rc.borrow();
+                            (ob.get("__keys"), ob.get("__values"))
+                        };
+                        if let (JsValue::Array(keys), JsValue::Array(vals)) = (keys_arr, vals_arr) {
+                            keys.borrow_mut().elements.push(key);
+                            vals.borrow_mut().elements.push(val);
+                        }
+                        update_size(obj_rc);
+                    }
+                }
+            }
+        }
+    }
+    JsValue::Undefined // Return undefined → new_object uses this
 }
 
 fn map_find_index(obj: &JsObject, key: &JsValue) -> Option<usize> {
@@ -190,35 +208,32 @@ pub fn map_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 // Set constructor and prototype
 // ═══════════════════════════════════════════════════════════
 
-pub fn ctor_set(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let mut obj = JsObject::new();
-    obj.internal_tag = Some(String::from("__set__"));
+pub fn ctor_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if let JsValue::Object(obj_rc) = &vm.current_this {
+        let mut o = obj_rc.borrow_mut();
+        o.internal_tag = Some(String::from("__set__"));
+        o.set(String::from("__items"), JsValue::new_array(Vec::new()));
+        o.set(String::from("size"), JsValue::Number(0.0));
+    }
     // Pre-populate from iterable argument (array) if provided.
-    let initial: Vec<JsValue> = match args.first() {
-        Some(JsValue::Array(arr)) => {
-            let a = arr.borrow();
-            let mut seen: Vec<JsValue> = Vec::new();
-            for v in &a.elements {
-                if !seen.iter().any(|s| s.strict_eq(v)) {
-                    seen.push(v.clone());
+    if let Some(JsValue::Array(arr)) = args.first() {
+        let elements = arr.borrow().elements.clone();
+        for v in &elements {
+            if let JsValue::Object(obj_rc) = &vm.current_this {
+                if let JsValue::Array(items) = obj_rc.borrow().get("__items") {
+                    let mut items_mut = items.borrow_mut();
+                    if !items_mut.elements.iter().any(|s| s.strict_eq(v)) {
+                        items_mut.elements.push(v.clone());
+                    }
                 }
+                let size = if let JsValue::Array(items) = obj_rc.borrow().get("__items") {
+                    items.borrow().elements.len() as f64
+                } else { 0.0 };
+                obj_rc.borrow_mut().set(String::from("size"), JsValue::Number(size));
             }
-            seen
         }
-        _ => Vec::new(),
-    };
-    let size = initial.len() as f64;
-    obj.set(String::from("__items"), JsValue::new_array(initial));
-    obj.set(String::from("size"), JsValue::Number(size));
-    obj.set(String::from("add"), native_fn("add", set_add));
-    obj.set(String::from("has"), native_fn("has", set_has));
-    obj.set(String::from("delete"), native_fn("delete", set_delete));
-    obj.set(String::from("clear"), native_fn("clear", set_clear));
-    obj.set(String::from("keys"), native_fn("keys", set_values));
-    obj.set(String::from("values"), native_fn("values", set_values));
-    obj.set(String::from("entries"), native_fn("entries", set_entries));
-    obj.set(String::from("forEach"), native_fn("forEach", set_for_each));
-    JsValue::Object(Rc::new(RefCell::new(obj)))
+    }
+    JsValue::Undefined
 }
 
 fn set_find_index(obj: &JsObject, value: &JsValue) -> Option<usize> {

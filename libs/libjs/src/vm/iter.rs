@@ -27,7 +27,29 @@ impl Vm {
         if iter_fn.is_function() {
             // Call val[Symbol.iterator]() with this=val
             let iterator = self.call_value(&iter_fn, &[], val.clone());
-            return iterator;
+            // If the result is a proper iterator (has .next method), use it directly.
+            // Otherwise (e.g. Array returned from Map.entries), wrap in internal iterator.
+            match &iterator {
+                JsValue::Object(obj) => {
+                    let has_next = {
+                        let o = obj.borrow();
+                        matches!(o.get("next"), JsValue::Function(_))
+                    };
+                    let is_internal = obj.borrow().internal_tag.as_deref() == Some("__iterator__");
+                    if has_next || is_internal {
+                        return iterator;
+                    }
+                    // Object without .next — not a spec-compliant iterator, wrap it
+                    let items = obj.borrow().keys().into_iter().map(JsValue::String).collect();
+                    return self.make_internal_iterator(items);
+                }
+                JsValue::Array(arr) => {
+                    // Array returned — convert to internal iterator over elements
+                    let items = arr.borrow().elements.clone();
+                    return self.make_internal_iterator(items);
+                }
+                _ => return iterator,
+            }
         }
 
         // 2. Fallback: create internal iterator for built-in types

@@ -39,7 +39,12 @@ extern "C" {
 /// safety margin in case of unexpected memory pressure.
 #[repr(C)]
 struct FrameAllocator {
+    /// Actual usable physical frames (sum of all E820 usable regions).
+    /// Used for reporting total memory to userspace.
     total_frames: usize,
+    /// Highest frame index in the address space (covers MMIO holes).
+    /// Used for bitmap sizing and allocation search bounds.
+    address_frames: usize,
     free_frames: usize,
     next_search: usize,
     bitmap: [u8; BITMAP_SIZE],
@@ -62,6 +67,7 @@ impl FrameAllocator {
 static ALLOCATOR: Spinlock<FrameAllocator> = Spinlock::new(FrameAllocator {
     bitmap:    [0; BITMAP_SIZE], // Zero-init → lives in BSS
     total_frames: 0,
+    address_frames: 0,
     free_frames: 0,
     next_search: 0,
 });
@@ -93,13 +99,26 @@ pub fn init(boot_info: &BootInfo) {
         max_usable_addr = MAX_MEMORY as u64;
     }
 
-    alloc.total_frames = (max_usable_addr as usize) / FRAME_SIZE;
+    // address_frames covers the full address range (including MMIO holes)
+    // for bitmap sizing and allocation search bounds.
+    alloc.address_frames = (max_usable_addr as usize) / FRAME_SIZE;
+
+    // total_frames is the actual sum of usable memory (excludes MMIO holes).
+    let mut total_usable_bytes: u64 = 0;
+    for entry in memory_map {
+        if entry.entry_type == E820_TYPE_USABLE {
+            let end = entry.base_addr + entry.length;
+            let capped = if end > max_usable_addr { max_usable_addr - entry.base_addr } else { entry.length };
+            total_usable_bytes += capped;
+        }
+    }
+    alloc.total_frames = ((total_usable_bytes as usize) + FRAME_SIZE - 1) / FRAME_SIZE;
     alloc.free_frames = 0;
 
-    // Fill bitmap with 0xFF (all used) for the actual RAM range only.
+    // Fill bitmap with 0xFF (all used) for the actual address range.
     // The bitmap is zero-initialized in BSS — we only touch the bytes
-    // corresponding to real physical memory, not the full 2 MiB.
-    let bitmap_bytes_needed = (alloc.total_frames + 7) / 8;
+    // corresponding to the physical address space, not the full 2 MiB.
+    let bitmap_bytes_needed = (alloc.address_frames + 7) / 8;
     for byte in alloc.bitmap[..bitmap_bytes_needed].iter_mut() {
         *byte = 0xFF;
     }
@@ -178,7 +197,7 @@ pub fn init(boot_info: &BootInfo) {
 /// This makes sequential allocations O(1) amortized instead of O(n).
 pub fn alloc_frame() -> Option<PhysAddr> {
     let mut alloc = ALLOCATOR.lock();
-    let total = alloc.total_frames;
+    let total = alloc.address_frames;
     if alloc.free_frames == 0 {
         return None;
     }
@@ -259,7 +278,7 @@ pub fn alloc_frame_low() -> Option<PhysAddr> {
     if alloc.free_frames == 0 {
         return None;
     }
-    let limit = alloc.total_frames.min(CONTIGUOUS_MAX_FRAME);
+    let limit = alloc.address_frames.min(CONTIGUOUS_MAX_FRAME);
     for i in 0..limit {
         if !alloc.is_used(i) {
             alloc.set_used(i);
@@ -295,7 +314,7 @@ pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
         return None;
     }
     let mut alloc = ALLOCATOR.lock();
-    let limit = alloc.total_frames.min(CONTIGUOUS_MAX_FRAME);
+    let limit = alloc.address_frames.min(CONTIGUOUS_MAX_FRAME);
     let mut run_start = 0usize;
     let mut run_len = 0usize;
     for i in 0..limit {
@@ -352,7 +371,8 @@ pub fn init_arm64(ram_base: u64, ram_size: u64) {
 
     let mut alloc = ALLOCATOR.lock();
 
-    alloc.total_frames = end_frame;
+    alloc.total_frames = (ram_size as usize) / FRAME_SIZE;
+    alloc.address_frames = end_frame;
     alloc.free_frames = 0;
 
     // Mark everything up to end_frame as used (0xFF = all bits set).

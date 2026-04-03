@@ -1264,6 +1264,10 @@ impl JsRuntime {
                     self.console.push(msg.clone());
                 }
                 self.engine.clear_console();
+                // Print engine log from timer callback for diagnostics
+                for log_msg in self.engine.vm().engine_log.iter() {
+                    anyos_std::println!("[js] timer: {}", log_msg);
+                }
                 self.engine.vm().engine_log.clear();
                 self.mutations.extend(bridge.mutations);
                 self.event_listeners.extend(bridge.event_listeners);

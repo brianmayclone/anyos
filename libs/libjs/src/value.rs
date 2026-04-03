@@ -249,11 +249,33 @@ impl JsObject {
         self.properties.remove(key).is_some()
     }
 
+    /// Enumerable string-keyed property names (excludes symbol-like keys).
+    /// Used for `for...in`, `Object.keys()`, `Object.values()`, `Object.entries()`.
     pub fn keys(&self) -> Vec<String> {
         self.properties
             .iter()
-            .filter(|(_, p)| p.enumerable)
+            .filter(|(k, p)| p.enumerable && !k.starts_with("__symbol_"))
             .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    /// All own string-keyed property names (excludes symbol-like keys).
+    /// Used for `Object.getOwnPropertyNames()`.
+    pub fn own_property_names(&self) -> Vec<String> {
+        self.properties
+            .keys()
+            .filter(|k| !k.starts_with("__symbol_"))
+            .cloned()
+            .collect()
+    }
+
+    /// Own symbol-keyed property names only.
+    /// Used for `Object.getOwnPropertySymbols()`.
+    pub fn own_symbol_keys(&self) -> Vec<String> {
+        self.properties
+            .keys()
+            .filter(|k| k.starts_with("__symbol_"))
+            .cloned()
             .collect()
     }
 }

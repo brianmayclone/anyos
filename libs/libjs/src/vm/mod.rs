@@ -828,7 +828,12 @@ impl Vm {
                         if fi > 0 { stack_info.push_str(" <- "); }
                         stack_info.push_str(fname);
                     }
-                    self.log_engine(&format!("[libjs] exception thrown: {} [{}]", detail, stack_info));
+                    // Log with extra detail for non-Error thrown values (like `false`)
+                    if matches!(&val, JsValue::Bool(_) | JsValue::Number(_) | JsValue::Null) {
+                        self.log_engine(&format!("[libjs] exception thrown NON-ERROR: {:?} [{}]", val, stack_info));
+                    } else {
+                        self.log_engine(&format!("[libjs] exception thrown: {} [{}]", detail, stack_info));
+                    }
                     if !self.handle_exception(val) {
                         return JsValue::Undefined;
                     }
@@ -1576,6 +1581,16 @@ impl Vm {
     }
 
     fn handle_exception(&mut self, val: JsValue) -> bool {
+        // Log boolean/null/number exceptions — unusual and likely a bug indicator
+        if matches!(&val, JsValue::Bool(_) | JsValue::Null) {
+            let mut stack_info = String::new();
+            for (fi, frame) in self.frames.iter().rev().take(8).enumerate() {
+                let fname = frame.chunk.name.as_deref().unwrap_or("(anon)");
+                if fi > 0 { stack_info.push_str(" <- "); }
+                stack_info.push_str(fname);
+            }
+            self.log_engine(&format!("[libjs] UNUSUAL exception: {:?} [{}]", val, stack_info));
+        }
         // Only use try handlers that belong to the current run scope.
         // Handlers with frame_depth <= run_target_depth belong to a parent
         // call_value context and must not catch exceptions from this scope

@@ -453,12 +453,17 @@ impl Compositor {
 
         let x = rect.x.max(0) as usize;
         let y = rect.y.max(0) as usize;
-        let w = (rect.width as usize).min(self.fb_width as usize - x);
-        let h = (rect.height as usize).min(self.fb_height as usize - y);
+        let fb_w = self.fb_width as usize;
+        let fb_h = self.fb_height as usize;
+        if x >= fb_w || y >= fb_h { return; }
+        let w = (rect.width as usize).min(fb_w - x);
+        let h = (rect.height as usize).min(fb_h - y);
+        if w == 0 || h == 0 { return; }
 
         for row in 0..h {
             let src_off = (y + row) * bb_stride + x;
             let dst_off = (y + row + y_offset as usize) * fb_stride + x;
+            if src_off + w > self.back_buffer.len() { break; }
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     self.back_buffer.as_ptr().add(src_off),

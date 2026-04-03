@@ -731,7 +731,7 @@ QEMU_CMD="$QEMU_BIN_ESC \
     $KVM_FLAGS \
     $BIOS_FLAGS \
     $DRIVE_FLAGS \
-    -m 1024M \
+    -m 4096M \
     -smp cpus=4 \
     -serial stdio \
     $VGA_FLAGS \

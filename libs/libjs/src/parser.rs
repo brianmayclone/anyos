@@ -252,10 +252,20 @@ impl Parser {
 
     fn parse_block_body(&mut self) -> Vec<Stmt> {
         let mut stmts = Vec::new();
+        let entry_pos = self.pos;
         while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
+            let before = self.pos;
             if let Some(stmt) = self.parse_statement() {
                 stmts.push(stmt);
             }
+            if self.pos == before { self.pos += 1; }
+        }
+        // Debug: log large block bodies
+        #[cfg(feature = "host")]
+        if stmts.len() > 50 {
+            let span = if self.pos < self.tokens.len() { self.tokens[self.pos].span.start } else { 0 };
+            eprintln!("[parser] block_body: {} stmts, exit at token[{}] span_byte={}", 
+                stmts.len(), self.pos, span);
         }
         stmts
     }

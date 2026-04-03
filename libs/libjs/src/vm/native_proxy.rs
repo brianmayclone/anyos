@@ -205,12 +205,14 @@ pub fn reflect_delete_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Bool(target.delete_property(&key))
 }
 
-pub fn reflect_own_keys(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn reflect_own_keys(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
     if let JsValue::Object(obj) = &target {
-        let keys: Vec<JsValue> = obj.borrow().keys().into_iter()
-            .map(|k| JsValue::String(k))
-            .collect();
+        // Reflect.ownKeys returns ALL own keys: string + symbol (ES2023 §26.1.11)
+        let o = obj.borrow();
+        let mut keys: Vec<JsValue> = o.own_property_names()
+            .into_iter().map(JsValue::String).collect();
+        keys.extend(o.own_symbol_keys().into_iter().map(JsValue::String));
         JsValue::new_array(keys)
     } else {
         JsValue::new_array(Vec::new())

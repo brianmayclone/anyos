@@ -25,6 +25,15 @@ pub fn console_warn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn console_error(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut msg = String::from("[ERROR] ");
     msg.push_str(&format_args_to_string(args));
+    // Add call stack for debugging
+    let mut stack = String::from(" [at: ");
+    for (fi, frame) in vm.frames.iter().rev().take(6).enumerate() {
+        let fname = frame.chunk.name.as_deref().unwrap_or("(anon)");
+        if fi > 0 { stack.push_str(" <- "); }
+        stack.push_str(fname);
+    }
+    stack.push(']');
+    msg.push_str(&stack);
     vm.console_output.push(msg);
     JsValue::Undefined
 }
