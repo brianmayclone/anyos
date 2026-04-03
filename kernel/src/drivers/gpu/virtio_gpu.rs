@@ -961,37 +961,53 @@ impl GpuDriver for VirtioGpu {
     fn dma_surface_upload(&mut self, sid: u32, data: &[u8], width: u32, height: u32) -> bool {
         if !self.virgl_capable { return false; }
 
-        // Attach backing store, transfer to host, detach
-        let num_pages = (data.len() + 4095) / 4096;
-        // We need physical pages for the data — use cmd_3d_buf as staging
-        if data.len() > 64 * 1024 { return false; }
-
-        unsafe {
-            core::ptr::copy_nonoverlapping(data.as_ptr(), self.cmd_3d_buf as *mut u8, data.len());
-        }
-
         let ctx_id = self.virgl_ctx_id;
-        if !self.cmd_attach_backing(sid, self.cmd_3d_buf, num_pages) {
-            return false;
+        let row_bytes = (width * 4) as usize;
+        let staging_cap = 64 * 1024usize;
+        let rows_per_chunk = (staging_cap / row_bytes).max(1) as u32;
+        let num_pages = (staging_cap + 4095) / 4096;
+
+        let mut y = 0u32;
+        while y < height {
+            let chunk_h = rows_per_chunk.min(height - y);
+            let chunk_bytes = (chunk_h as usize) * row_bytes;
+            let data_offset = (y as usize) * row_bytes;
+
+            if data_offset + chunk_bytes > data.len() { return false; }
+
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    data.as_ptr().add(data_offset),
+                    self.cmd_3d_buf as *mut u8,
+                    chunk_bytes,
+                );
+            }
+
+            if !self.cmd_attach_backing(sid, self.cmd_3d_buf, num_pages) {
+                return false;
+            }
+
+            let ok = self.cmd_transfer_to_host_3d(
+                sid, 0, y, 0, width, chunk_h, 1,
+                0, 0, row_bytes as u32, 0, ctx_id,
+            );
+
+            // Detach backing
+            let detach = ResourceDetachBacking {
+                hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING),
+                resource_id: sid,
+                padding: 0,
+            };
+            let bytes = unsafe {
+                core::slice::from_raw_parts(&detach as *const _ as *const u8, core::mem::size_of::<ResourceDetachBacking>())
+            };
+            self.send_ctrl_cmd(bytes);
+
+            if !ok { return false; }
+            y += chunk_h;
         }
 
-        let ok = self.cmd_transfer_to_host_3d(
-            sid, 0, 0, 0, width, height, 1,
-            0, 0, 0, 0, ctx_id,
-        );
-
-        // Detach backing
-        let detach = ResourceDetachBacking {
-            hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING),
-            resource_id: sid,
-            padding: 0,
-        };
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&detach as *const _ as *const u8, core::mem::size_of::<ResourceDetachBacking>())
-        };
-        self.send_ctrl_cmd(bytes);
-
-        ok
+        true
     }
 
     fn dma_surface_download(&mut self, sid: u32, buf: &mut [u8], width: u32, height: u32) -> bool {

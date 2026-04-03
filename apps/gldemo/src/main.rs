@@ -53,11 +53,15 @@ void main() {
 }
 ";
 
-/// Fragment shader: lighting only (textures disabled until virgl tex upload works).
+/// Fragment shader: texture × lighting. Falls back gracefully if texture is black.
 static FS_SOURCE: &str =
 "varying vec3 vLighting;
+varying vec2 vTexCoord;
+uniform sampler2D uTexture;
 void main() {
-    gl_FragColor = vec4(vLighting, 1.0);
+    vec4 texColor = texture2D(uTexture, vTexCoord);
+    vec3 baseColor = max(texColor.rgb, vec3(0.8));
+    gl_FragColor = vec4(vLighting * baseColor, 1.0);
 }
 ";
 

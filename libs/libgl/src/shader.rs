@@ -337,11 +337,11 @@ impl ShaderStore {
             None => return 0,
         };
 
-        // Count sampler uniforms in FS
+        // Count sampler uniforms in FS (0 if no texture sampling)
         let fs_samplers = fs_ir.instructions.iter().filter(|i| {
             matches!(i, compiler::ir::Inst::TexSample(_, _, _))
         }).count() as u32;
-        let num_samplers = fs_samplers.max(1).min(8);
+        let num_samplers = fs_samplers.min(8);
 
         // Compute VS constant buffer slot count (mat4=4, others=1) so FS TGSI can
         // reference its uniforms at the correct offset in the shared combined buffer.
