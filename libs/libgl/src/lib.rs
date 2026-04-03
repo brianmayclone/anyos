@@ -178,9 +178,25 @@ pub extern "C" fn gl_swap_buffers() -> *const u32 {
                 };
                 readback(buf.as_mut_ptr(), buf.len() as u32);
 
-                // Force alpha to 0xFF (opaque) — the compositor blends with
-                // the desktop when alpha < 0xFF, and the GPU readback may not
-                // preserve alpha reliably (host GL context / virgl details).
+                // Diagnostic: dump first non-zero pixel values (first 3 frames)
+                let frame = unsafe { DIAG_FRAME };
+                if frame < 3 {
+                    // Find first pixel that differs from pixel[0] (likely clear vs object)
+                    let p0 = c.default_fb.color[0];
+                    let mut sample = p0;
+                    let mid = c.default_fb.color.len() / 2;
+                    for i in mid..c.default_fb.color.len().min(mid + 1000) {
+                        if c.default_fb.color[i] != p0 {
+                            sample = c.default_fb.color[i];
+                            break;
+                        }
+                    }
+                    serial_println!("[libgl] readback frame {}: pixel[0]={:#010x} sample={:#010x} w={} h={}",
+                        frame, p0, sample, c.default_fb.width, c.default_fb.height);
+                    unsafe { DIAG_FRAME += 1; }
+                }
+
+                // Force alpha to 0xFF (opaque)
                 for pixel in c.default_fb.color.iter_mut() {
                     *pixel |= 0xFF000000;
                 }

@@ -91,6 +91,38 @@ impl<'a> TgsiCtx<'a> {
             }
         }
 
+        // Remove registers from imm_map if they are written by any instruction
+        // other than LoadConst (e.g. WriteMask modifies the register in-place,
+        // so it can no longer be referenced as an IMM literal).
+        for inst in &prog.instructions {
+            let dst = match inst {
+                Inst::LoadConst(_, _) => continue,
+                Inst::StorePosition(_) | Inst::StoreFragColor(_)
+                | Inst::StorePointSize(_) | Inst::StoreVarying(_, _)
+                | Inst::Discard => continue,
+                Inst::Mov(d, _) | Inst::Neg(d, _) | Inst::Abs(d, _)
+                | Inst::Floor(d, _) | Inst::Fract(d, _) | Inst::Sqrt(d, _)
+                | Inst::Rsqrt(d, _) | Inst::Sin(d, _) | Inst::Cos(d, _)
+                | Inst::Normalize(d, _) | Inst::Length(d, _)
+                | Inst::IntToFloat(d, _) | Inst::FloatToInt(d, _)
+                | Inst::LoadVarying(d, _) | Inst::LoadUniform(d, _)
+                | Inst::LoadAttribute(d, _) => *d,
+                Inst::Add(d, _, _) | Inst::Sub(d, _, _) | Inst::Mul(d, _, _)
+                | Inst::Div(d, _, _) | Inst::Dp3(d, _, _) | Inst::Dp4(d, _, _)
+                | Inst::Cross(d, _, _) | Inst::Min(d, _, _) | Inst::Max(d, _, _)
+                | Inst::Pow(d, _, _) | Inst::Reflect(d, _, _)
+                | Inst::TexSample(d, _, _) | Inst::MatMul4(d, _, _)
+                | Inst::MatMul3(d, _, _) | Inst::CmpLt(d, _, _)
+                | Inst::CmpEq(d, _, _) => *d,
+                Inst::Swizzle(d, _, _, _) | Inst::WriteMask(d, _, _) => *d,
+                Inst::Clamp(d, _, _, _) | Inst::Mix(d, _, _, _)
+                | Inst::Select(d, _, _, _) => *d,
+            };
+            if (dst as usize) < imm_map.len() {
+                imm_map[dst as usize] = None;
+            }
+        }
+
         // Find the actual max CONST index referenced by LoadUniform instructions
         let mut max_const_idx = 0u32;
         let mut has_const = false;

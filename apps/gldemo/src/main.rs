@@ -53,10 +53,12 @@ void main() {
 }
 ";
 
-/// Fragment shader: constant red — tests basic HW pipeline without varyings/uniforms.
+/// Fragment shader: material × lighting (textures disabled until virgl tex upload works).
 static FS_SOURCE: &str =
-"void main() {
-    gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+"varying vec3 vLighting;
+uniform vec4 uMatColor;
+void main() {
+    gl_FragColor = vec4(vLighting * uMatColor.rgb, 1.0);
 }
 ";
 
