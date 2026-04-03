@@ -3,9 +3,17 @@ name = "libimage"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "libimage"
+path = "src/lib.rs"
+
+[features]
+default = []
+host = []
+
 [dependencies]
-libheap = { path = "../libheap" }
-libsyscall = { path = "../libsyscall" }
+libheap = { path = "../libheap", optional = true }
+libsyscall = { path = "../libsyscall", optional = true }
 
 [profile.dev]
 panic = "abort"

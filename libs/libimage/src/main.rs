@@ -1,9 +1,10 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-#![no_std]
-#![no_main]
+#![cfg_attr(not(feature = "host"), no_std)]
+#![cfg_attr(not(feature = "host"), no_main)]
 
+#[cfg(not(feature = "host"))]
 extern crate alloc;
 
 pub mod types;
@@ -21,15 +22,19 @@ pub mod video;
 pub mod scale;
 pub mod iconpack;
 pub mod svg_raster;
+#[cfg(not(feature = "host"))]
 mod syscall;
+#[cfg(not(feature = "host"))]
 libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
 
 /// Dummy entry point (never called — DLL has no entry).
+#[cfg(not(feature = "host"))]
 #[no_mangle]
 pub extern "C" fn _dll_start() -> ! {
     loop {}
 }
 
+#[cfg(not(feature = "host"))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     syscall::write(1, b"PANIC [libimage]: ");
@@ -45,6 +50,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 /// Format a u32 as decimal into a buffer, returning the used slice.
+#[cfg(not(feature = "host"))]
 fn fmt_u32(mut val: u32, buf: &mut [u8; 10]) -> &[u8] {
     if val == 0 {
         buf[9] = b'0';
