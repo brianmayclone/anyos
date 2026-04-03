@@ -84,7 +84,6 @@ fn main() {
     }
     anyos_std::println!("forger: libgl loaded, canvas={}x{} render={}x{}", canvas_w, canvas_h, fb_w, fb_h);
     gl::gl_init(fb_w, fb_h);
-    gl::set_hw_backend(false);
     gl::enable(gl::GL_DEPTH_TEST);
     gl::depth_func(gl::GL_LESS);
     gl::enable(gl::GL_CULL_FACE);
