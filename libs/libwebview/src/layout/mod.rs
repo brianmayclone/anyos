@@ -152,10 +152,22 @@ pub struct LayoutBox {
     /// CSS `clip: rect(top, right, bottom, left)` for absolute elements.
     /// Values are in px relative to the element's own top-left corner.
     pub clip_rect: Option<[i32; 4]>,
+    /// CSS transform scale X (×1000 fixed-point, 1000 = 1.0).
+    pub transform_sx: i32,
+    /// CSS transform scale Y (×1000 fixed-point, 1000 = 1.0).
+    pub transform_sy: i32,
+    /// CSS transform rotation in degrees (×100 fixed-point).
+    pub transform_rotate: i32,
+    /// CSS backdrop-filter blur radius (px).  0 = no effect.
+    pub backdrop_filter_blur: i32,
     /// Maximum Y extent of this subtree (relative to parent origin, like `y`).
     /// Computed by `compute_subtree_bottom()` after layout.  Used by the
     /// tile rasterizer to cull entire subtrees that are outside the tile.
     pub subtree_bottom: i32,
+    /// Scroll offset for overflow:auto/scroll containers (set via JS scrollTop).
+    pub scroll_top: i32,
+    /// Scroll offset for overflow:auto/scroll containers (set via JS scrollLeft).
+    pub scroll_left: i32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -178,6 +190,9 @@ pub enum FormFieldKind {
     Hidden,
     ButtonEl,
     Textarea,
+    Range,
+    Progress,
+    Select,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -267,8 +282,14 @@ impl LayoutBox {
             custom_font_id: 0,
             is_sticky: false,
             sticky_top: 0,
+            backdrop_filter_blur: 0,
             subtree_bottom: 0,
             clip_rect: None,
+            transform_sx: 1000,
+            transform_sy: 1000,
+            transform_rotate: 0,
+            scroll_top: 0,
+            scroll_left: 0,
         }
     }
 

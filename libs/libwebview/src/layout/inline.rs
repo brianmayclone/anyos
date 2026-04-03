@@ -409,10 +409,76 @@ fn collect_inline_fragments(
 
             // Handle <select>
             if *tag == Tag::Select {
-                let w = 150;
+                // Find the selected <option> text (first with `selected` attr,
+                // or the first <option> child if none is marked).
+                let mut selected_text = String::new();
+                let children = &dom.get(node_id).children.clone();
+                for &cid in children {
+                    if dom.tag(cid) == Some(Tag::Option) {
+                        let txt = dom.text_content(cid);
+                        let txt = txt.trim();
+                        // Pick the first option with `selected` attribute, or the very first option.
+                        if dom.attr(cid, "selected").is_some() {
+                            selected_text = String::from(txt);
+                            break;
+                        }
+                        if selected_text.is_empty() {
+                            selected_text = String::from(txt);
+                        }
+                    }
+                }
+                if selected_text.is_empty() {
+                    selected_text = String::from("\u{00a0}"); // non-breaking space placeholder
+                }
+                let fs = font_size_px(style);
+                let bold = is_bold(style);
+                let (tw, _) = measure_text(&selected_text, fs, bold);
+                // Width: text width + padding (12 left + 24 right for dropdown arrow)
+                let w = (tw + 36).max(80).min(400);
                 let mut sel = LayoutBox::new(Some(node_id), BoxType::Inline);
-                sel.form_field = Some(FormFieldKind::TextInput);
+                sel.form_field = Some(FormFieldKind::Select);
+                sel.text = Some(selected_text);
+                sel.font_size = fs;
+                sel.bold = bold;
+                if node_id < styles.len() {
+                    sel.bg_color = styles[node_id].background_color;
+                    sel.color = styles[node_id].color;
+                }
                 out.push(InlineFragment { width: w, height: 28, layout_box: sel, breaks_after: false });
+                return;
+            }
+
+            // Handle <progress>
+            if *tag == Tag::Progress {
+                let max_val: f32 = dom.attr(node_id, "max")
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(1.0);
+                let cur_val: f32 = dom.attr(node_id, "value")
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let pct = if max_val > 0.0 { (cur_val / max_val).min(1.0).max(0.0) } else { 0.0 };
+
+                let w = 200;
+                let h = 20;
+
+                // Store the percentage in form_value as an integer 0..1000
+                // (fixed-point with 1 decimal, avoids format! / float-to-string).
+                let pct_i = (pct * 1000.0) as i32;
+                let mut pb = LayoutBox::new(Some(node_id), BoxType::Inline);
+                pb.form_field = Some(FormFieldKind::Progress);
+                pb.width = w;
+                pb.height = h;
+                // Encode pct in form_value as "NNN" (0..1000).
+                let mut val_str = String::new();
+                let digits = [
+                    (b'0' + (pct_i / 100 % 10) as u8) as char,
+                    (b'0' + (pct_i / 10 % 10) as u8) as char,
+                    (b'0' + (pct_i % 10) as u8) as char,
+                ];
+                for &d in &digits { val_str.push(d); }
+                if pct_i >= 1000 { val_str.clear(); val_str.push('X'); } // 100%
+                pb.form_value = Some(val_str);
+                out.push(InlineFragment { width: w, height: h, layout_box: pb, breaks_after: false });
                 return;
             }
 
@@ -643,6 +709,39 @@ fn emit_input_fragment(
             tf.bg_color = css_bg;
             tf.color = css_fg;
             out.push(InlineFragment { width: w, height: 28, layout_box: tf, breaks_after: false });
+        }
+        "range" => {
+            // HTML5 range slider.
+            let min_val: f32 = dom.attr(node_id, "min")
+                .and_then(|s| s.parse::<f32>().ok())
+                .unwrap_or(0.0);
+            let max_val: f32 = dom.attr(node_id, "max")
+                .and_then(|s| s.parse::<f32>().ok())
+                .unwrap_or(100.0);
+            let cur_val: f32 = dom.attr(node_id, "value")
+                .and_then(|s| s.parse::<f32>().ok())
+                .unwrap_or(50.0);
+            let pct = if max_val > min_val {
+                ((cur_val - min_val) / (max_val - min_val)).min(1.0).max(0.0)
+            } else { 0.5 };
+
+            let w = 200;
+            let h = 28;
+            // Encode percentage as integer 0..1000 in form_value.
+            let pct_i = (pct * 1000.0) as i32;
+            let mut val_str = String::new();
+            let digits = [
+                (b'0' + (pct_i / 100 % 10) as u8) as char,
+                (b'0' + (pct_i / 10 % 10) as u8) as char,
+                (b'0' + (pct_i % 10) as u8) as char,
+            ];
+            for &d in &digits { val_str.push(d); }
+            if pct_i >= 1000 { val_str.clear(); val_str.push('X'); } // 100%
+            let mut rng = LayoutBox::new(Some(node_id), BoxType::Inline);
+            rng.form_field = Some(FormFieldKind::Range);
+            rng.form_value = Some(val_str);
+            rng.bg_color = css_bg;
+            out.push(InlineFragment { width: w, height: h, layout_box: rng, breaks_after: false });
         }
         _ => {
             let w = size_attr_width(dom, node_id, 200);

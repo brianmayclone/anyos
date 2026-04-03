@@ -11,6 +11,8 @@ libanyui_client = { path = "../../libs/libanyui_client", features = ["host"] }
 anyos_std = { path = "../../libs/stdlib", features = ["host"] }
 libjs = { path = "../../libs/libjs", features = ["host"] }
 
+libimage = { path = "../../libs/libimage", features = ["host"] }
+
 # Host-native dependencies
 minifb = "0.28"
 ureq = { version = "2", features = ["tls"] }
@@ -19,3 +21,7 @@ resvg = "0.45"
 
 # Standalone project — not part of the anyOS workspace.
 # Build with: cargo +stable build --release
+
+[[bin]]
+name = "webp-compare"
+path = "src/webp_compare.rs"

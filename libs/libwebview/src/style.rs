@@ -430,6 +430,20 @@ pub enum BackgroundRepeatVal {
     NoRepeat,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PointerEventsVal {
+    Auto,
+    None,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UserSelectVal {
+    Auto,
+    None,
+    Text,
+    All,
+}
+
 // ---------------------------------------------------------------------------
 // ComputedStyle
 // ---------------------------------------------------------------------------
@@ -604,6 +618,17 @@ pub struct ComputedStyle {
     pub transitions: Vec<TransitionDef>,
     // Animations
     pub animations: Vec<AnimationDef>,
+    // Pointer events (CSS Pointer Events §3)
+    pub pointer_events: PointerEventsVal,
+    // User select (CSS User Select §3)
+    pub user_select: UserSelectVal,
+    // Backdrop filter (CSS Filter Effects §3)
+    pub backdrop_filter: FilterVal,
+    // CSS transform — scale factors (×1000 fixed-point, 1.0 = 1000).
+    pub transform_sx: i32,
+    pub transform_sy: i32,
+    // CSS transform — rotation in degrees (×100 fixed-point).
+    pub transform_rotate: i32,
 }
 
 // ---------------------------------------------------------------------------
@@ -798,6 +823,14 @@ pub fn default_style() -> ComputedStyle {
         // Transitions & Animations
         transitions: Vec::new(),
         animations: Vec::new(),
+        // Pointer events / User select / Backdrop filter
+        pointer_events: PointerEventsVal::Auto,
+        user_select: UserSelectVal::Auto,
+        backdrop_filter: FilterVal::none(),
+        // Transform scale & rotate
+        transform_sx: 1000,
+        transform_sy: 1000,
+        transform_rotate: 0,
     }
 }
 
@@ -3198,6 +3231,9 @@ pub fn apply_declaration(
             if matches!(decl.value, CssValue::None) || matches!(decl.value, CssValue::Keyword(ref k) if k == "none") {
                 style.transform_tx = 0;
                 style.transform_ty = 0;
+                style.transform_sx = 1000;
+                style.transform_sy = 1000;
+                style.transform_rotate = 0;
             } else if let CssValue::Keyword(ref kw) = decl.value {
                 let s = kw.as_str();
                 let mut tx = 0i32;
@@ -3235,7 +3271,46 @@ pub fn apply_declaration(
                                     ty += parse_transform_length(parts[1].trim(), parent_fs);
                                 }
                             }
-                            _ => {} // scale, rotate, etc. — not yet supported
+                            "scale" => {
+                                // scale(sx) or scale(sx, sy)
+                                let parts: Vec<&str> = args.split(',').collect();
+                                if let Some(sx_str) = parts.first() {
+                                    if let Ok(sx) = sx_str.trim().parse::<f32>() {
+                                        style.transform_sx = (sx * 1000.0) as i32;
+                                        style.transform_sy = if let Some(sy_str) = parts.get(1) {
+                                            if let Ok(sy) = sy_str.trim().parse::<f32>() {
+                                                (sy * 1000.0) as i32
+                                            } else { style.transform_sx }
+                                        } else { style.transform_sx };
+                                    }
+                                }
+                            }
+                            "scaleX" | "scalex" => {
+                                if let Ok(sx) = args.trim().parse::<f32>() {
+                                    style.transform_sx = (sx * 1000.0) as i32;
+                                }
+                            }
+                            "scaleY" | "scaley" => {
+                                if let Ok(sy) = args.trim().parse::<f32>() {
+                                    style.transform_sy = (sy * 1000.0) as i32;
+                                }
+                            }
+                            "rotate" => {
+                                let s = args.trim();
+                                let deg = if s.ends_with("deg") {
+                                    s.trim_end_matches("deg").parse::<f32>().ok()
+                                } else if s.ends_with("rad") {
+                                    s.trim_end_matches("rad").parse::<f32>().ok().map(|r| r * 180.0 / 3.14159265)
+                                } else if s.ends_with("turn") {
+                                    s.trim_end_matches("turn").parse::<f32>().ok().map(|t| t * 360.0)
+                                } else {
+                                    s.parse::<f32>().ok()
+                                };
+                                if let Some(d) = deg {
+                                    style.transform_rotate = (d * 100.0) as i32;
+                                }
+                            }
+                            _ => {}
                         }
                     } else {
                         break;
@@ -3497,6 +3572,31 @@ pub fn apply_declaration(
         }
         Property::MaskImage => {
             // Recognized for @supports evaluation but not visually applied.
+        }
+        Property::PointerEvents => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                match kw.as_str() {
+                    "none" => style.pointer_events = PointerEventsVal::None,
+                    _ => style.pointer_events = PointerEventsVal::Auto,
+                }
+            }
+        }
+        Property::UserSelect => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                match kw.as_str() {
+                    "none" => style.user_select = UserSelectVal::None,
+                    "text" => style.user_select = UserSelectVal::Text,
+                    "all" => style.user_select = UserSelectVal::All,
+                    _ => style.user_select = UserSelectVal::Auto,
+                }
+            }
+        }
+        Property::BackdropFilter => {
+            if matches!(decl.value, CssValue::None) {
+                style.backdrop_filter = FilterVal::none();
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                style.backdrop_filter = parse_filter_value(kw, parent_fs, root_fs);
+            }
         }
     }
 }

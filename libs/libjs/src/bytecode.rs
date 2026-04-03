@@ -219,10 +219,20 @@ pub enum Op {
     /// Stack after:  [..., object]
     DefineGetter(u16),  // name constant index
 
+    /// Define a getter on an object with a computed key.
+    /// Stack before: [..., object, key, getter_fn]
+    /// Stack after:  [..., object]
+    DefineGetterComputed,
+
     /// Define a setter on an object.
     /// Stack before: [..., object, setter_fn]
     /// Stack after:  [..., object]
     DefineSetter(u16),  // name constant index
+
+    /// Define a setter on an object with a computed key.
+    /// Stack before: [..., object, key, setter_fn]
+    /// Stack after:  [..., object]
+    DefineSetterComputed,
 
     /// Define a method on an object (non-enumerable, writable, configurable).
     /// Like SetPropNamed but creates a non-enumerable property (ES2023 §14.5.14).
@@ -234,6 +244,16 @@ pub enum Op {
     /// the same value.  Used for per-iteration `let` binding in `for` loops so that
     /// closures created in each iteration capture their own cell.
     CloneLocal(u16),
+
+    /// Push the `new.target` meta-property value.
+    /// Inside a constructor call (`new Foo()`), pushes the constructor function.
+    /// Outside a constructor, pushes `undefined`.
+    NewTarget,
+
+    /// Call super constructor: `super(args)` in a derived class constructor.
+    /// Stack before: [..., SuperClass, arg1, ..., argN]
+    /// Sets `is_constructor = true` and forwards `new.target` from the current frame.
+    SuperCall(u8),
 }
 
 /// Describes how a compiled function captures one upvalue from its enclosing scope.

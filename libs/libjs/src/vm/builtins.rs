@@ -621,6 +621,7 @@ fn global_eval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             params: alloc::vec::Vec::new(),
             kind: crate::value::FnKind::Bytecode(chunk),
             this_binding: None,
+            bound_args: alloc::vec::Vec::new(),
             upvalues: alloc::vec::Vec::new(),
             prototype: None,
             own_props: alloc::collections::BTreeMap::new(),

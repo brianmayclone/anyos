@@ -16,11 +16,28 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     pub errors: Vec<String>,
+    /// When true, the `in` keyword is NOT treated as a binary operator in
+    /// relational expressions.  This implements the [~In] grammar parameter
+    /// required by the ECMAScript spec for `for` loop initializers.
+    no_in: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0, errors: Vec::new() }
+        Parser { tokens, pos: 0, errors: Vec::new(), no_in: false }
+    }
+
+    /// Return the number of tokens that were NOT consumed by parse_program().
+    pub fn remaining_tokens(&self) -> usize {
+        if self.pos >= self.tokens.len() { 0 } else { self.tokens.len() - self.pos }
+    }
+
+    /// Current token index (for diagnostics).
+    pub fn current_pos(&self) -> usize { self.pos }
+
+    /// Get token at a specific index (for diagnostics).
+    pub fn token_at(&self, idx: usize) -> Option<&Token> {
+        self.tokens.get(idx)
     }
 
     fn syntax_error(&mut self, msg: &str) {
@@ -56,6 +73,14 @@ impl Parser {
         }
     }
 
+    fn peek3(&self) -> &TokenKind {
+        if self.pos + 2 < self.tokens.len() {
+            &self.tokens[self.pos + 2].kind
+        } else {
+            &TokenKind::Eof
+        }
+    }
+
     fn advance(&mut self) -> &Token {
         let tok = &self.tokens[self.pos.min(self.tokens.len() - 1)];
         if self.pos < self.tokens.len() {
@@ -86,6 +111,21 @@ impl Parser {
 
     fn eat_semicolon(&mut self) {
         self.eat(&TokenKind::Semicolon);
+    }
+
+    /// Check if a token is a contextual keyword that can be used as an identifier
+    /// (function name, variable name, etc.).  These are NOT reserved words per
+    /// ECMAScript — they only have special meaning in specific syntactic contexts
+    /// (e.g. `import ... as ...`, `for ... of ...`).
+    fn is_contextual_keyword(&self, kind: &TokenKind) -> bool {
+        matches!(kind,
+            TokenKind::As | TokenKind::From | TokenKind::Of |
+            TokenKind::Async | TokenKind::Yield | TokenKind::Await |
+            TokenKind::Let | TokenKind::With |
+            // Some keywords used as identifiers in minified bundles
+            TokenKind::Catch | TokenKind::Finally | TokenKind::Extends |
+            TokenKind::Export | TokenKind::Import | TokenKind::Default
+        )
     }
 
     fn ident_str(&mut self) -> String {
@@ -162,7 +202,7 @@ impl Parser {
             TokenKind::Throw => Some(self.parse_throw()),
             TokenKind::Try => Some(self.parse_try()),
             TokenKind::Function => {
-                if matches!(self.peek2(), TokenKind::Ident(_) | TokenKind::Star) {
+                if matches!(self.peek2(), TokenKind::Ident(_) | TokenKind::Star) || self.is_contextual_keyword(self.peek2()) {
                     Some(self.parse_function_decl(false))
                 } else {
                     Some(self.parse_expr_stmt())
@@ -404,6 +444,8 @@ impl Parser {
                         body,
                     };
                 }
+                // Use [~In] for var-init expressions per ES spec
+                self.no_in = true;
                 let init_val = if self.eat(&TokenKind::Eq) {
                     Some(self.parse_assignment_expr())
                 } else {
@@ -419,10 +461,16 @@ impl Parser {
                     };
                     decls.push(VarDeclarator { name: n, init: i });
                 }
+                self.no_in = false;
                 Some(Box::new(ForInit::VarDecl { kind, decls }))
             }
             _ => {
+                // Parse with [~In] to prevent `in` being consumed as a
+                // binary operator — this is required by the ES spec so that
+                // `for(x in obj)` is correctly recognised as for-in.
+                self.no_in = true;
                 let expr = self.parse_expression();
+                self.no_in = false;
                 // Check for for-in / for-of
                 if matches!(self.peek(), TokenKind::In) {
                     self.pos += 1;
@@ -783,6 +831,19 @@ impl Parser {
                 false
             };
 
+            // Static block: static { ... } (ES2022)
+            if is_static && matches!(self.peek(), TokenKind::LBrace) {
+                self.pos += 1; // consume '{'
+                let body = self.parse_block_body();
+                self.expect(&TokenKind::RBrace);
+                members.push(ClassMember {
+                    key: PropKey::Ident(String::from("")),
+                    kind: ClassMemberKind::StaticBlock { body },
+                    is_static: true,
+                });
+                continue;
+            }
+
             // Private field/method: #name, * #name(), or #name = value
             // Check for generator star before private ident: `* #method()`
             let priv_is_generator = if matches!(self.peek(), TokenKind::Star)
@@ -804,7 +865,7 @@ impl Parser {
                     self.expect(&TokenKind::RBrace);
                     members.push(ClassMember {
                         key: PropKey::Ident(priv_name),
-                        kind: ClassMemberKind::Method { params, body, is_generator: priv_is_generator },
+                        kind: ClassMemberKind::Method { params, body, is_generator: priv_is_generator, is_async: false },
                         is_static,
                     });
                 } else {
@@ -827,7 +888,7 @@ impl Parser {
             // Check for get/set accessor in class body (ES spec §14.3)
             let is_get = matches!(self.peek(), TokenKind::Ident(ref s) if s == "get");
             let is_set = matches!(self.peek(), TokenKind::Ident(ref s) if s == "set");
-            if (is_get || is_set) && !matches!(self.peek2(), TokenKind::LParen | TokenKind::Eq | TokenKind::Semicolon) {
+            if (is_get || is_set) && !matches!(self.peek2(), TokenKind::LParen | TokenKind::Eq | TokenKind::Semicolon | TokenKind::RBrace) {
                 self.pos += 1; // skip 'get'/'set'
                 let key = self.parse_prop_key();
                 if is_get {
@@ -857,6 +918,16 @@ impl Parser {
                 continue;
             }
 
+            // Check for async method: async name() { ... } or async * name() { ... }
+            let is_async = if matches!(self.peek(), TokenKind::Async)
+                && !matches!(self.peek2(), TokenKind::LParen | TokenKind::Eq | TokenKind::Semicolon | TokenKind::Colon | TokenKind::RBrace)
+            {
+                self.pos += 1; // skip 'async'
+                true
+            } else {
+                false
+            };
+
             // Generator method: * name() { ... }
             let is_generator = self.eat(&TokenKind::Star);
 
@@ -873,7 +944,7 @@ impl Parser {
                 let kind = if is_ctor {
                     ClassMemberKind::Constructor { params, body }
                 } else {
-                    ClassMemberKind::Method { params, body, is_generator }
+                    ClassMemberKind::Method { params, body, is_generator, is_async }
                 };
                 members.push(ClassMember { key, kind, is_static });
             } else {
@@ -966,6 +1037,12 @@ impl Parser {
             return self.parse_arrow_function(false);
         }
 
+        // Async arrow function: async (params) => body  or  async ident => body
+        if self.is_async_arrow_function() {
+            self.pos += 1; // skip 'async'
+            return self.parse_arrow_function(true);
+        }
+
         let left = self.parse_conditional_expr();
 
         if let Some(op) = self.assignment_op() {
@@ -997,6 +1074,51 @@ impl Parser {
                         depth -= 1;
                         if depth == 0 {
                             // Check if next is =>
+                            if i + 1 < self.tokens.len()
+                                && matches!(self.tokens[i + 1].kind, TokenKind::Arrow)
+                            {
+                                return true;
+                            }
+                            break;
+                        }
+                    }
+                    TokenKind::Eof => break,
+                    _ => {}
+                }
+                i += 1;
+            }
+        }
+        false
+    }
+
+    /// Check if current position is `async (params) => ...` or `async ident => ...`.
+    fn is_async_arrow_function(&self) -> bool {
+        if !matches!(self.peek(), TokenKind::Async) {
+            return false;
+        }
+        let next = if self.pos + 1 < self.tokens.len() {
+            &self.tokens[self.pos + 1].kind
+        } else {
+            return false;
+        };
+        // async ident => ...
+        if matches!(next, TokenKind::Ident(_)) {
+            if self.pos + 2 < self.tokens.len()
+                && matches!(self.tokens[self.pos + 2].kind, TokenKind::Arrow)
+            {
+                return true;
+            }
+        }
+        // async (params) => ...
+        if matches!(next, TokenKind::LParen) {
+            let mut depth = 0;
+            let mut i = self.pos + 1;
+            while i < self.tokens.len() {
+                match &self.tokens[i].kind {
+                    TokenKind::LParen => depth += 1,
+                    TokenKind::RParen => {
+                        depth -= 1;
+                        if depth == 0 {
                             if i + 1 < self.tokens.len()
                                 && matches!(self.tokens[i + 1].kind, TokenKind::Arrow)
                             {
@@ -1189,7 +1311,7 @@ impl Parser {
                 TokenKind::LtEq => BinaryOp::Le,
                 TokenKind::GtEq => BinaryOp::Ge,
                 TokenKind::Instanceof => BinaryOp::InstanceOf,
-                TokenKind::In => BinaryOp::In,
+                TokenKind::In if !self.no_in => BinaryOp::In,
                 _ => break,
             };
             self.pos += 1;
@@ -1411,11 +1533,30 @@ impl Parser {
                 }
                 TokenKind::QuestionDot => {
                     self.pos += 1;
-                    let prop = self.ident_str();
-                    expr = Expr::OptionalChain {
-                        object: Box::new(expr),
-                        property: prop,
-                    };
+                    if matches!(self.peek(), TokenKind::LParen) {
+                        // Optional call: expr?.(args)
+                        let args = self.parse_arguments();
+                        expr = Expr::OptionalCall {
+                            callee: Box::new(expr),
+                            arguments: args,
+                        };
+                    } else if matches!(self.peek(), TokenKind::LBracket) {
+                        // Optional computed access: expr?.[key]
+                        self.pos += 1;
+                        let index = self.parse_expression();
+                        self.expect(&TokenKind::RBracket);
+                        expr = Expr::Index {
+                            object: Box::new(expr),
+                            index: Box::new(index),
+                        };
+                    } else {
+                        // Optional property access: expr?.prop
+                        let prop = self.ident_str();
+                        expr = Expr::OptionalChain {
+                            object: Box::new(expr),
+                            property: prop,
+                        };
+                    }
                 }
                 TokenKind::LBracket => {
                     self.pos += 1;
@@ -1451,7 +1592,19 @@ impl Parser {
     }
 
     fn parse_left_hand_side_expr(&mut self) -> Expr {
-        if matches!(self.peek(), TokenKind::New) && !matches!(self.peek2(), TokenKind::Dot) {
+        if matches!(self.peek(), TokenKind::New) {
+            if matches!(self.peek2(), TokenKind::Dot) {
+                // `new.target` meta-property
+                self.pos += 1; // consume `new`
+                self.pos += 1; // consume `.`
+                let ident = self.ident_str();
+                if ident == "target" {
+                    return Expr::NewTarget;
+                }
+                // Invalid: `new.<something>` other than `target`
+                self.syntax_error("expected 'target' after 'new.'");
+                return Expr::Undefined;
+            }
             self.pos += 1;
             let callee = self.parse_left_hand_side_expr();
             let arguments = if matches!(self.peek(), TokenKind::LParen) {
@@ -1581,6 +1734,36 @@ impl Parser {
                     key: PropKey::Ident(String::from("...")),
                     value: expr,
                     kind: PropKind::Init,
+                    shorthand: false,
+                });
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+                continue;
+            }
+
+            // Check for async method shorthand: { async foo() { } }
+            // async is a modifier when followed by an identifier/keyword + '(' (not colon/comma)
+            let is_async_method = matches!(self.peek(), TokenKind::Async)
+                && !matches!(self.peek2(), TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace | TokenKind::LParen);
+            if is_async_method {
+                self.pos += 1; // skip 'async'
+                let is_generator = self.eat(&TokenKind::Star);
+                let key = self.parse_prop_key();
+                let params = self.parse_params();
+                self.expect(&TokenKind::LBrace);
+                let body = self.parse_block_body();
+                self.expect(&TokenKind::RBrace);
+                props.push(ObjProp {
+                    key,
+                    value: Expr::FunctionExpr {
+                        name: None,
+                        params,
+                        body,
+                        is_async: true,
+                        is_generator,
+                    },
+                    kind: PropKind::Method,
                     shorthand: false,
                 });
                 if !self.eat(&TokenKind::Comma) {

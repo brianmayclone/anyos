@@ -26,6 +26,24 @@ use super::selector;
 // Sibling helpers
 // ═══════════════════════════════════════════════════════════
 
+/// Convert a `data-*` attribute suffix to camelCase for the `dataset` API.
+/// e.g. "foo-bar" → "fooBar", "my-value" → "myValue".
+fn data_attr_to_camel(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut capitalize_next = false;
+    for c in s.chars() {
+        if c == '-' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(c.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 /// Compute the previous and next sibling node IDs for the given real DOM node.
 /// Returns `(prev_element_id, next_element_id, prev_any_id, next_any_id)`,
 /// where `*_element_id` skips text nodes and `*_any_id` includes all node types.
@@ -91,6 +109,7 @@ pub fn make_element(vm: &mut Vm, node_id: i64) -> JsValue {
 fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsValue {
     // Read properties from DOM or virtual node store.
     let tag_name = read_tag_name(vm, node_id);
+    let is_template = tag_name == "TEMPLATE";
     let text = read_text_content(vm, node_id);
     let node_type = read_node_type(vm, node_id);
     let inner_html = read_inner_html(vm, node_id);
@@ -146,6 +165,8 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set(String::from("name"), JsValue::String(name_val));
     obj.set(String::from("checked"), JsValue::Bool(checked));
     obj.set(String::from("disabled"), JsValue::Bool(disabled));
+    obj.set(String::from("namespaceURI"), JsValue::String(String::from("http://www.w3.org/1999/xhtml")));
+    obj.set(String::from("nodeValue"), JsValue::Null);
 
     // Sibling references — computed one level deep for real DOM nodes.
     // When `include_siblings` is false (we're already building a sibling object)
@@ -180,7 +201,25 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     // Properties set on this object trigger SetStyleProperty mutations via set_hook.
     let style_obj = make_css_style_declaration(node_id);
     obj.set(String::from("style"), style_obj);
-    obj.set(String::from("dataset"), JsValue::Object(Rc::new(RefCell::new(JsObject::new()))));
+    // dataset — DOMStringMap from data-* attributes (W3C HTML §3.2.6.1).
+    let mut dataset_obj = JsObject::new();
+    if node_id >= 0 {
+        if let Some(bridge) = get_bridge(vm) {
+            let dom = bridge.dom();
+            let nid = node_id as usize;
+            if nid < dom.nodes.len() {
+                if let crate::dom::NodeType::Element { ref attrs, .. } = dom.nodes[nid].node_type {
+                    for attr in attrs {
+                        if attr.name.starts_with("data-") {
+                            let key = data_attr_to_camel(&attr.name[5..]);
+                            dataset_obj.set(key, JsValue::String(attr.value.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    obj.set(String::from("dataset"), JsValue::Object(Rc::new(RefCell::new(dataset_obj))));
 
     // classList.
     let cl = classlist::make_class_list(node_id, &class_name);
@@ -260,6 +299,8 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set(String::from("blur"), native_fn("blur", el_noop));
     obj.set(String::from("click"), native_fn("click", el_noop));
     obj.set(String::from("scrollIntoView"), native_fn("scrollIntoView", el_noop));
+    obj.set(String::from("scrollTo"), native_fn("scrollTo", el_scroll_to));
+    obj.set(String::from("scrollBy"), native_fn("scrollBy", el_scroll_by));
     obj.set(String::from("getBoundingClientRect"), native_fn("getBoundingClientRect", el_get_bounding_rect));
     obj.set(String::from("getClientRects"), native_fn("getClientRects", el_get_client_rects));
     obj.set(String::from("toString"), native_fn("toString", el_to_string));
@@ -269,7 +310,321 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set_hook = Some(dom_property_hook);
     obj.set_hook_data = node_id as usize as *mut u8;
 
-    JsValue::Object(Rc::new(RefCell::new(obj)))
+    let result = JsValue::Object(Rc::new(RefCell::new(obj)));
+
+    // HTML <template> element: expose .content as a DocumentFragment-like
+    // object whose children are the template's DOM children.  This allows
+    // `template.content.cloneNode(true)` to work as specified in the HTML
+    // Living Standard (§4.12.3).
+    if is_template {
+        let content_obj = make_template_content(vm, node_id);
+        if let JsValue::Object(ref obj_rc) = result {
+            obj_rc.borrow_mut().set(String::from("content"), content_obj);
+        }
+    }
+
+    result
+}
+
+// ═══════════════════════════════════════════════════════════
+// HTML <template> element — DocumentFragment .content
+// ═══════════════════════════════════════════════════════════
+
+/// Build a DocumentFragment-like JsObject for `<template>.content`.
+///
+/// The fragment exposes `children`, `childNodes`, `firstChild`, `lastChild`,
+/// `querySelector`, `querySelectorAll`, `getElementById`, and `cloneNode`.
+fn make_template_content(vm: &mut Vm, template_node_id: i64) -> JsValue {
+    let mut frag = JsObject::new();
+    frag.set(String::from("nodeType"), JsValue::Number(11.0)); // DOCUMENT_FRAGMENT_NODE
+    frag.set(String::from("nodeName"), JsValue::String(String::from("#document-fragment")));
+    frag.set(String::from("__templateNodeId"), JsValue::Number(template_node_id as f64));
+
+    // Build children array from the template's DOM children (elements only,
+    // matching `read_child_ids` semantics).
+    let child_ids = read_child_ids(vm, template_node_id);
+    let children: Vec<JsValue> = child_ids.iter().map(|&id| make_element(vm, id)).collect();
+    let child_count = children.len();
+
+    let first = children.first().cloned().unwrap_or(JsValue::Null);
+    let last = children.last().cloned().unwrap_or(JsValue::Null);
+
+    frag.set(String::from("children"), make_array(children.clone()));
+    frag.set(String::from("childNodes"), make_array(children));
+    frag.set(String::from("childElementCount"), JsValue::Number(child_count as f64));
+    frag.set(String::from("firstChild"), first.clone());
+    frag.set(String::from("lastChild"), last);
+    frag.set(String::from("firstElementChild"), first);
+
+    // Query methods delegate to the template node's subtree.
+    frag.set(String::from("querySelector"), native_fn("querySelector", el_query_selector));
+    frag.set(String::from("querySelectorAll"), native_fn("querySelectorAll", el_query_selector_all));
+    frag.set(String::from("getElementById"), native_fn("getElementById", frag_get_element_by_id));
+
+    // cloneNode(deep) — the critical method for template instantiation.
+    frag.set(String::from("cloneNode"), native_fn("cloneNode", frag_clone_node));
+
+    // appendChild — so scripts can append to the fragment before inserting.
+    frag.set(String::from("appendChild"), native_fn("appendChild", el_append_child));
+
+    // Store the template node ID so cloneNode can find the children.
+    frag.set_hook_data = template_node_id as usize as *mut u8;
+
+    JsValue::Object(Rc::new(RefCell::new(frag)))
+}
+
+/// getElementById scoped to the full DOM (template children are real DOM nodes).
+fn frag_get_element_by_id(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let id = arg_string(args, 0);
+    if id.is_empty() { return JsValue::Null; }
+    if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        for i in 0..dom.nodes.len() {
+            if let crate::dom::NodeType::Element { ref attrs, .. } = dom.nodes[i].node_type {
+                for attr in attrs {
+                    if attr.name == "id" && attr.value == id {
+                        return make_element(vm, i as i64);
+                    }
+                }
+            }
+        }
+    }
+    JsValue::Null
+}
+
+/// Deep-clone the template content fragment.  Creates new virtual nodes
+/// for each child subtree so the caller gets independent DOM nodes.
+fn frag_clone_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let deep = args.first().map(|v| v.to_boolean()).unwrap_or(false);
+
+    // Get the template node ID from `this.__templateNodeId`.
+    let template_id = if let JsValue::Object(ref obj) = vm.current_this {
+        let o = obj.borrow();
+        match o.get("__templateNodeId") {
+            JsValue::Number(n) => n as i64,
+            _ => return JsValue::Null,
+        }
+    } else {
+        return JsValue::Null;
+    };
+
+    if !deep {
+        // Shallow clone: return empty fragment.
+        let mut frag = JsObject::new();
+        frag.set(String::from("nodeType"), JsValue::Number(11.0));
+        frag.set(String::from("nodeName"), JsValue::String(String::from("#document-fragment")));
+        frag.set(String::from("children"), make_array(Vec::new()));
+        frag.set(String::from("childNodes"), make_array(Vec::new()));
+        frag.set(String::from("childElementCount"), JsValue::Number(0.0));
+        frag.set(String::from("firstChild"), JsValue::Null);
+        frag.set(String::from("lastChild"), JsValue::Null);
+        frag.set(String::from("firstElementChild"), JsValue::Null);
+        return JsValue::Object(Rc::new(RefCell::new(frag)));
+    }
+
+    // Deep clone: read ALL children of the template node (including text
+    // nodes) and recursively clone each as a new virtual node.
+    let all_child_ids = read_all_child_ids(vm, template_id);
+    let mut cloned_children = Vec::new();
+    for &child_id in &all_child_ids {
+        let cloned = deep_clone_node(vm, child_id);
+        cloned_children.push(cloned);
+    }
+
+    let child_count = cloned_children.len();
+    let first = cloned_children.first().cloned().unwrap_or(JsValue::Null);
+    let last = cloned_children.last().cloned().unwrap_or(JsValue::Null);
+
+    let mut frag = JsObject::new();
+    frag.set(String::from("nodeType"), JsValue::Number(11.0));
+    frag.set(String::from("nodeName"), JsValue::String(String::from("#document-fragment")));
+    frag.set(String::from("children"), make_array(cloned_children.clone()));
+    frag.set(String::from("childNodes"), make_array(cloned_children));
+    frag.set(String::from("childElementCount"), JsValue::Number(child_count as f64));
+    frag.set(String::from("firstChild"), first.clone());
+    frag.set(String::from("lastChild"), last);
+    frag.set(String::from("firstElementChild"), first);
+    frag.set(String::from("querySelector"), native_fn("querySelector", el_query_selector));
+    frag.set(String::from("querySelectorAll"), native_fn("querySelectorAll", el_query_selector_all));
+    frag.set(String::from("getElementById"), native_fn("getElementById", frag_get_element_by_id));
+    frag.set(String::from("cloneNode"), native_fn("cloneNode", frag_clone_node));
+    frag.set(String::from("appendChild"), native_fn("appendChild", el_append_child));
+
+    JsValue::Object(Rc::new(RefCell::new(frag)))
+}
+
+/// Read ALL child node IDs of a real DOM node (elements + text nodes).
+/// Unlike `read_child_ids` which filters to elements only, this returns
+/// every child so that deep cloning preserves text nodes.
+fn read_all_child_ids(vm: &mut Vm, node_id: i64) -> Vec<i64> {
+    if let Some(bridge) = get_bridge(vm) {
+        if node_id >= 0 {
+            let dom = bridge.dom();
+            let nid = node_id as usize;
+            if nid < dom.nodes.len() {
+                return dom.nodes[nid].children.iter().map(|&cid| cid as i64).collect();
+            }
+        } else if let Some(vn) = bridge.get_virtual(node_id) {
+            return vn.child_ids.clone();
+        }
+    }
+    Vec::new()
+}
+
+/// Recursively deep-clone a DOM node (real or virtual) as a new virtual node.
+/// Returns a JsValue element/text-node that can be appended to other elements.
+fn deep_clone_node(vm: &mut Vm, node_id: i64) -> JsValue {
+    if node_id < 0 {
+        // Virtual node — clone its tag/attrs/text.
+        if let Some(bridge) = get_bridge(vm) {
+            if let Some(vn) = bridge.get_virtual(node_id) {
+                let tag = vn.tag.clone();
+                let attrs = vn.attrs.clone();
+                let text_content = vn.text_content.clone();
+                let child_ids = vn.child_ids.clone();
+
+                let new_id = bridge.alloc_virtual_id();
+                bridge.virtual_nodes.push(super::VirtualNode {
+                    id: new_id,
+                    tag: tag.clone(),
+                    attrs: attrs.clone(),
+                    text_content,
+                    child_ids: Vec::new(),
+                    parent_id: None,
+                });
+                bridge.mutations.push(DomMutation::CreateElement {
+                    virtual_id: new_id, tag,
+                });
+                for (name, value) in &attrs {
+                    bridge.mutations.push(DomMutation::SetAttribute {
+                        node_id: new_id as usize, name: name.clone(), value: value.clone(),
+                    });
+                }
+
+                // Recursively clone children.
+                for &cid in &child_ids {
+                    let child_val = deep_clone_node(vm, cid);
+                    let child_nid = extract_node_id(&child_val);
+                    if child_nid != -9999 {
+                        if let Some(b) = get_bridge(vm) {
+                            b.mutations.push(DomMutation::AppendChild {
+                                parent_id: new_id, child_id: child_nid,
+                            });
+                            if let Some(vn2) = b.get_virtual_mut(new_id) {
+                                vn2.child_ids.push(child_nid);
+                            }
+                        }
+                    }
+                }
+
+                return make_element(vm, new_id);
+            }
+        }
+        return JsValue::Null;
+    }
+
+    // Real DOM node — read its type and clone accordingly.
+    let node_info = if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        let nid = node_id as usize;
+        if nid < dom.nodes.len() {
+            match &dom.nodes[nid].node_type {
+                crate::dom::NodeType::Element { tag, attrs } => {
+                    let tag_str = String::from(tag.tag_name());
+                    let attr_pairs: Vec<(String, String)> = attrs.iter()
+                        .map(|a| (a.name.clone(), a.value.clone()))
+                        .collect();
+                    let child_ids: Vec<i64> = dom.nodes[nid].children.iter()
+                        .map(|&cid| cid as i64).collect();
+                    Some((tag_str, attr_pairs, None, child_ids))
+                }
+                crate::dom::NodeType::Text(text) => {
+                    Some((String::from("#text"), Vec::new(), Some(text.clone()), Vec::new()))
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some((tag, attrs, text_opt, child_ids)) = node_info {
+        if let Some(text) = text_opt {
+            // Clone as virtual text node.
+            if let Some(bridge) = get_bridge(vm) {
+                let new_id = bridge.alloc_virtual_id();
+                bridge.virtual_nodes.push(super::VirtualNode {
+                    id: new_id,
+                    tag: String::from("#text"),
+                    attrs: Vec::new(),
+                    text_content: text.clone(),
+                    child_ids: Vec::new(),
+                    parent_id: None,
+                });
+                bridge.mutations.push(DomMutation::CreateElement {
+                    virtual_id: new_id, tag: String::from("#text"),
+                });
+
+                let mut obj = JsObject::new();
+                obj.set(String::from("__nodeId"), JsValue::Number(new_id as f64));
+                obj.set(String::from("nodeType"), JsValue::Number(3.0));
+                obj.set(String::from("nodeName"), JsValue::String(String::from("#text")));
+                obj.set(String::from("textContent"), JsValue::String(text));
+                obj.set_hook = Some(dom_property_hook);
+                obj.set_hook_data = new_id as usize as *mut u8;
+                return JsValue::Object(Rc::new(RefCell::new(obj)));
+            }
+        } else {
+            // Clone as virtual element.
+            if let Some(bridge) = get_bridge(vm) {
+                let new_id = bridge.alloc_virtual_id();
+                bridge.virtual_nodes.push(super::VirtualNode {
+                    id: new_id,
+                    tag: tag.clone(),
+                    attrs: attrs.clone(),
+                    text_content: String::new(),
+                    child_ids: Vec::new(),
+                    parent_id: None,
+                });
+                bridge.mutations.push(DomMutation::CreateElement {
+                    virtual_id: new_id, tag,
+                });
+                for (name, value) in &attrs {
+                    bridge.mutations.push(DomMutation::SetAttribute {
+                        node_id: new_id as usize, name: name.clone(), value: value.clone(),
+                    });
+                }
+            }
+
+            // Recursively clone children.
+            let new_id = if let Some(bridge) = get_bridge(vm) {
+                // The virtual node we just pushed is the last one; get its ID.
+                bridge.virtual_nodes.last().map(|v| v.id).unwrap_or(-9999)
+            } else {
+                -9999
+            };
+
+            for &cid in &child_ids {
+                let child_val = deep_clone_node(vm, cid);
+                let child_nid = extract_node_id(&child_val);
+                if child_nid != -9999 {
+                    if let Some(b) = get_bridge(vm) {
+                        b.mutations.push(DomMutation::AppendChild {
+                            parent_id: new_id, child_id: child_nid,
+                        });
+                        if let Some(vn) = b.get_virtual_mut(new_id) {
+                            vn.child_ids.push(child_nid);
+                        }
+                    }
+                }
+            }
+
+            return make_element(vm, new_id);
+        }
+    }
+
+    JsValue::Null
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1052,6 +1407,110 @@ fn el_get_root_node(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 fn el_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Undefined }
+
+/// `element.scrollTo(x, y)` or `element.scrollTo({ top, left })`.
+/// Sets both scrollTop and scrollLeft on the element via DomMutations.
+fn el_scroll_to(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    if nid < 0 { return JsValue::Undefined; }
+    let (sx, sy) = parse_scroll_args(args);
+    if let Some(bridge) = get_bridge(vm) {
+        bridge.mutations.push(DomMutation::SetScrollTop {
+            node_id: nid as usize,
+            value: sy.max(0.0) as i32,
+        });
+        bridge.mutations.push(DomMutation::SetScrollLeft {
+            node_id: nid as usize,
+            value: sx.max(0.0) as i32,
+        });
+    }
+    JsValue::Undefined
+}
+
+/// `element.scrollBy(x, y)` or `element.scrollBy({ top, left })`.
+/// Adjusts scrollTop/scrollLeft relative to current values.
+/// Since we don't have the current scroll position in JS, we approximate
+/// by emitting an additive mutation.  The host will clamp to valid range.
+fn el_scroll_by(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // scrollBy is equivalent to scrollTo with the deltas added to current.
+    // Since the JS property objects report 0 for scrollTop/scrollLeft,
+    // we read the current values from the property and add.
+    let nid = this_node_id(vm);
+    if nid < 0 { return JsValue::Undefined; }
+    let (dx, dy) = parse_scroll_args(args);
+
+    // Read current scrollTop/scrollLeft from the JS object.
+    let (cur_top, cur_left) = {
+        let this = vm.current_this.clone();
+        let st = match &this {
+            JsValue::Object(o) => {
+                let obj = o.borrow();
+                match obj.get("scrollTop") {
+                    JsValue::Number(n) => n,
+                    _ => 0.0,
+                }
+            }
+            _ => 0.0,
+        };
+        let sl = match &this {
+            JsValue::Object(o) => {
+                let obj = o.borrow();
+                match obj.get("scrollLeft") {
+                    JsValue::Number(n) => n,
+                    _ => 0.0,
+                }
+            }
+            _ => 0.0,
+        };
+        (st, sl)
+    };
+
+    let new_top = ((cur_top + dy) as i32).max(0);
+    let new_left = ((cur_left + dx) as i32).max(0);
+
+    if let Some(bridge) = get_bridge(vm) {
+        bridge.mutations.push(DomMutation::SetScrollTop {
+            node_id: nid as usize,
+            value: new_top,
+        });
+        bridge.mutations.push(DomMutation::SetScrollLeft {
+            node_id: nid as usize,
+            value: new_left,
+        });
+    }
+    JsValue::Undefined
+}
+
+/// Parse scrollTo/scrollBy arguments: either `(x, y)` or `({ top, left })`.
+fn parse_scroll_args(args: &[JsValue]) -> (f64, f64) {
+    if args.is_empty() { return (0.0, 0.0); }
+    match &args[0] {
+        JsValue::Object(o) => {
+            let obj = o.borrow();
+            let top = match obj.get("top") {
+                JsValue::Number(n) => n,
+                _ => 0.0,
+            };
+            let left = match obj.get("left") {
+                JsValue::Number(n) => n,
+                _ => 0.0,
+            };
+            (left, top)
+        }
+        JsValue::Number(x) => {
+            let y = if args.len() > 1 {
+                match &args[1] {
+                    JsValue::Number(n) => *n,
+                    _ => 0.0,
+                }
+            } else {
+                0.0
+            };
+            (*x, y)
+        }
+        _ => (0.0, 0.0),
+    }
+}
 
 // ═══════════════════════════════════════════════════════════
 // CSSStyleDeclaration (W3C CSSOM §6.7.2)

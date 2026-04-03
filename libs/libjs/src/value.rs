@@ -307,6 +307,9 @@ pub struct JsFunction {
     pub params: Vec<String>,
     pub kind: FnKind,
     pub this_binding: Option<JsValue>,
+    /// Arguments pre-bound via `Function.prototype.bind()` — prepended to
+    /// the actual call arguments (ES2023 §10.4.1.1 [[Call]]).
+    pub bound_args: Vec<JsValue>,
     /// Captured upvalue cells — shared `Rc<RefCell<JsValue>>` for each closed-over variable.
     pub upvalues: Vec<Rc<RefCell<JsValue>>>,
     /// The function's `.prototype` object (instance methods for classes, shared across `new` calls).
@@ -326,6 +329,16 @@ impl fmt::Debug for JsFunction {
 pub enum FnKind {
     Bytecode(Chunk),
     Native(fn(&mut crate::vm::Vm, &[JsValue]) -> JsValue),
+}
+
+impl FnKind {
+    /// Returns true if this is an arrow function (no own `prototype`).
+    pub fn is_arrow(&self) -> bool {
+        match self {
+            FnKind::Bytecode(ch) => ch.is_arrow,
+            FnKind::Native(_) => false,
+        }
+    }
 }
 
 // ── Constructors ──
@@ -460,8 +473,9 @@ impl JsValue {
             JsValue::Bool(_) => "boolean",
             JsValue::Number(_) => "number",
             JsValue::String(s) => {
-                // Symbols are represented as strings with "__symbol__" prefix
-                if s.starts_with("__symbol__") { "symbol" } else { "string" }
+                // Symbols are represented as strings with "__symbol__" or
+                // "__symbol_global__" prefix (for Symbol.for() values).
+                if s.starts_with("__symbol_") { "symbol" } else { "string" }
             }
             JsValue::Object(obj) => {
                 let o = obj.borrow();

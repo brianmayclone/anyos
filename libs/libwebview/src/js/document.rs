@@ -302,8 +302,14 @@ fn doc_create_text_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut obj = JsObject::new();
     obj.set(String::from("__nodeId"), JsValue::Number(virtual_id as f64));
     obj.set(String::from("nodeType"), JsValue::Number(3.0));
+    obj.set(String::from("nodeName"), JsValue::String(String::from("#text")));
     obj.set(String::from("textContent"), JsValue::String(text.clone()));
+    obj.set(String::from("nodeValue"), JsValue::String(text.clone()));
+    obj.set(String::from("data"), JsValue::String(text.clone()));
     obj.set(String::from("innerText"), JsValue::String(text));
+    obj.set(String::from("parentNode"), JsValue::Null);
+    obj.set(String::from("nextSibling"), JsValue::Null);
+    obj.set(String::from("previousSibling"), JsValue::Null);
     obj.set_hook = Some(dom_property_hook);
     obj.set_hook_data = virtual_id as usize as *mut u8;
     JsValue::Object(Rc::new(RefCell::new(obj)))
@@ -312,12 +318,23 @@ fn doc_create_text_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn doc_create_document_fragment(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     let mut obj = JsObject::new();
     obj.set(String::from("nodeType"), JsValue::Number(11.0));
+    obj.set(String::from("nodeName"), JsValue::String(String::from("#document-fragment")));
     obj.set(String::from("children"), JsValue::Array(Rc::new(RefCell::new(JsArray::new()))));
     obj.set(String::from("childNodes"), JsValue::Array(Rc::new(RefCell::new(JsArray::new()))));
+    obj.set(String::from("firstChild"), JsValue::Null);
+    obj.set(String::from("lastChild"), JsValue::Null);
+    obj.set(String::from("childElementCount"), JsValue::Number(0.0));
+    obj.set(String::from("textContent"), JsValue::String(String::new()));
     obj.set(String::from("appendChild"), native_fn("appendChild", frag_append_child));
     obj.set(String::from("removeChild"), native_fn("removeChild", frag_remove_child));
-    obj.set(String::from("querySelector"), native_fn("querySelector", |_,_| JsValue::Null));
-    obj.set(String::from("querySelectorAll"), native_fn("querySelectorAll", |_,_| make_array(Vec::new())));
+    obj.set(String::from("insertBefore"), native_fn("insertBefore", frag_insert_before));
+    obj.set(String::from("cloneNode"), native_fn("cloneNode", frag_clone_node));
+    obj.set(String::from("querySelector"), native_fn("querySelector", frag_query_selector));
+    obj.set(String::from("querySelectorAll"), native_fn("querySelectorAll", frag_query_selector_all));
+    obj.set(String::from("getElementById"), native_fn("getElementById", frag_get_element_by_id));
+    obj.set(String::from("append"), native_fn("append", frag_append_child));
+    obj.set(String::from("prepend"), native_fn("prepend", frag_prepend));
+    obj.set(String::from("replaceChildren"), native_fn("replaceChildren", frag_replace_children));
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
@@ -532,6 +549,147 @@ fn frag_remove_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
     }
     child
+}
+
+/// insertBefore(newChild, refChild) on a DocumentFragment.
+fn frag_insert_before(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let new_child = args.first().cloned().unwrap_or(JsValue::Null);
+    let ref_child = args.get(1).cloned().unwrap_or(JsValue::Null);
+    if let JsValue::Object(obj) = &vm.current_this {
+        let o = obj.borrow();
+        if let Some(p) = o.properties.get("children") {
+            if let JsValue::Array(arr) = &p.value {
+                let mut arr_mut = arr.borrow_mut();
+                if ref_child.is_null() || ref_child.is_undefined() {
+                    arr_mut.elements.push(new_child.clone());
+                } else {
+                    let ref_id = ref_child.get_property("__nodeId").to_number() as i64;
+                    let pos = arr_mut.elements.iter().position(|el| {
+                        el.get_property("__nodeId").to_number() as i64 == ref_id
+                    });
+                    if let Some(idx) = pos {
+                        arr_mut.elements.insert(idx, new_child.clone());
+                    } else {
+                        arr_mut.elements.push(new_child.clone());
+                    }
+                }
+            }
+        }
+    }
+    new_child
+}
+
+/// cloneNode(deep) on a DocumentFragment — returns a new empty fragment
+/// (deep cloning of virtual children is not supported yet).
+fn frag_clone_node(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    doc_create_document_fragment(_vm, _args)
+}
+
+/// querySelector on a DocumentFragment — searches children by tag/id/class.
+fn frag_query_selector(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let sel = arg_string(args, 0);
+    if let JsValue::Object(obj) = &vm.current_this {
+        let o = obj.borrow();
+        if let Some(p) = o.properties.get("children") {
+            if let JsValue::Array(arr) = &p.value {
+                for child in &arr.borrow().elements {
+                    if frag_matches_selector(child, &sel) {
+                        return child.clone();
+                    }
+                }
+            }
+        }
+    }
+    JsValue::Null
+}
+
+/// querySelectorAll on a DocumentFragment.
+fn frag_query_selector_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let sel = arg_string(args, 0);
+    let mut results = Vec::new();
+    if let JsValue::Object(obj) = &vm.current_this {
+        let o = obj.borrow();
+        if let Some(p) = o.properties.get("children") {
+            if let JsValue::Array(arr) = &p.value {
+                for child in &arr.borrow().elements {
+                    if frag_matches_selector(child, &sel) {
+                        results.push(child.clone());
+                    }
+                }
+            }
+        }
+    }
+    make_array(results)
+}
+
+/// getElementById on a DocumentFragment.
+fn frag_get_element_by_id(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let id = arg_string(args, 0);
+    if id.is_empty() { return JsValue::Null; }
+    if let JsValue::Object(obj) = &vm.current_this {
+        let o = obj.borrow();
+        if let Some(p) = o.properties.get("children") {
+            if let JsValue::Array(arr) = &p.value {
+                for child in &arr.borrow().elements {
+                    let child_id = child.get_property("id").to_js_string();
+                    if child_id == id {
+                        return child.clone();
+                    }
+                }
+            }
+        }
+    }
+    JsValue::Null
+}
+
+/// prepend(child) on a DocumentFragment — inserts at the beginning.
+fn frag_prepend(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let child = args.first().cloned().unwrap_or(JsValue::Null);
+    if let JsValue::Object(obj) = &vm.current_this {
+        let o = obj.borrow();
+        if let Some(p) = o.properties.get("children") {
+            if let JsValue::Array(arr) = &p.value {
+                arr.borrow_mut().elements.insert(0, child.clone());
+            }
+        }
+    }
+    JsValue::Undefined
+}
+
+/// replaceChildren(...nodes) on a DocumentFragment — removes all children then appends args.
+fn frag_replace_children(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if let JsValue::Object(obj) = &vm.current_this {
+        let o = obj.borrow();
+        if let Some(p) = o.properties.get("children") {
+            if let JsValue::Array(arr) = &p.value {
+                let mut arr_mut = arr.borrow_mut();
+                arr_mut.elements.clear();
+                for arg in args {
+                    arr_mut.elements.push(arg.clone());
+                }
+            }
+        }
+    }
+    JsValue::Undefined
+}
+
+/// Simple selector matching for DocumentFragment children.
+/// Supports: tag name, #id, .class (shallow, single-level only).
+fn frag_matches_selector(el: &JsValue, sel: &str) -> bool {
+    let sel = sel.trim();
+    if sel.is_empty() { return false; }
+    if sel.starts_with('#') {
+        let id = el.get_property("id").to_js_string();
+        return id == &sel[1..];
+    }
+    if sel.starts_with('.') {
+        let class = el.get_property("className").to_js_string();
+        let target = &sel[1..];
+        return class.split_whitespace().any(|c| c == target);
+    }
+    // Tag name match (case-insensitive).
+    let tag = el.get_property("tagName").to_js_string();
+    tag.eq_ignore_ascii_case(sel)
 }
 
 /// Image constructor: `new Image()` → `document.createElement('img')`.

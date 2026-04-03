@@ -159,19 +159,22 @@ impl Vm {
 
     /// Create a `TypeError` object (for use in native function throws).
     pub fn make_syntax_error(&self, message: &str) -> JsValue {
+        let stack_str = self.make_stack_trace("SyntaxError", message);
         let mut obj = JsObject::new();
         obj.prototype = Some(self.error_proto.clone());
         obj.set(String::from("name"), JsValue::String(String::from("SyntaxError")));
         obj.set(String::from("message"), JsValue::String(String::from(message)));
+        obj.set(String::from("stack"), JsValue::String(stack_str));
         JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 
     pub fn make_type_error(&self, message: &str) -> JsValue {
+        let stack_str = self.make_stack_trace("TypeError", message);
         let mut obj = JsObject::new();
         obj.prototype = Some(self.error_proto.clone());
         obj.set(String::from("name"), JsValue::String(String::from("TypeError")));
         obj.set(String::from("message"), JsValue::String(String::from(message)));
-        // Set constructor so assert.throws(TypeError, ...) can identify the error type
+        obj.set(String::from("stack"), JsValue::String(stack_str));
         let ctor = self.globals.get("TypeError");
         if !matches!(ctor, JsValue::Undefined) {
             obj.set(String::from("constructor"), ctor);
@@ -181,16 +184,28 @@ impl Vm {
 
     /// Create a `ReferenceError` object.
     pub fn make_reference_error(&self, message: &str) -> JsValue {
+        let stack_str = self.make_stack_trace("ReferenceError", message);
         let mut obj = JsObject::new();
         obj.prototype = Some(self.error_proto.clone());
         obj.set(String::from("name"), JsValue::String(String::from("ReferenceError")));
         obj.set(String::from("message"), JsValue::String(String::from(message)));
-        // Set constructor so assert.throws(ReferenceError, ...) can identify the error type
+        obj.set(String::from("stack"), JsValue::String(stack_str));
         let ctor = self.globals.get("ReferenceError");
         if !matches!(ctor, JsValue::Undefined) {
             obj.set(String::from("constructor"), ctor);
         }
         JsValue::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Build a V8-style stack trace string from the current call frames.
+    fn make_stack_trace(&self, error_name: &str, message: &str) -> String {
+        let mut s = format!("{}: {}", error_name, message);
+        for frame in self.frames.iter().rev().take(10) {
+            let fname = frame.chunk.name.as_deref().unwrap_or("<anonymous>");
+            s.push_str("\n    at ");
+            s.push_str(fname);
+        }
+        s
     }
 
     pub fn execute(&mut self, chunk: Chunk) -> JsValue {
@@ -247,6 +262,7 @@ impl Vm {
             params: Vec::new(),
             kind: FnKind::Native(func),
             this_binding: None,
+            bound_args: Vec::new(),
             upvalues: Vec::new(),
             prototype: None,
             own_props: BTreeMap::new(),
@@ -576,6 +592,7 @@ impl Vm {
                         params: param_stubs,
                         kind: FnKind::Bytecode(chunk),
                         this_binding,
+                        bound_args: Vec::new(),
                         upvalues: upvalue_cells,
                         prototype: None,
                         own_props: BTreeMap::new(),
@@ -717,6 +734,9 @@ impl Vm {
                 Op::New(argc) => {
                     self.new_object(argc as usize);
                 }
+                Op::SuperCall(argc) => {
+                    self.super_call(argc as usize);
+                }
 
                 // ── Special operators ──
                 Op::Typeof => {
@@ -784,7 +804,31 @@ impl Vm {
                 }
                 Op::Throw => {
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    self.log_engine(&format!("[libjs] exception thrown: {:?}", val));
+                    // Extract message from Error objects for better diagnostics
+                    let detail = match &val {
+                        JsValue::Object(obj) => {
+                            let o = obj.borrow();
+                            let name = match o.get("name") {
+                                JsValue::String(s) => s,
+                                _ => String::from("Error"),
+                            };
+                            let msg = match o.get("message") {
+                                JsValue::String(s) => s,
+                                _ => String::from("(no message)"),
+                            };
+                            format!("{}: {}", name, msg)
+                        }
+                        JsValue::String(s) => s.clone(),
+                        other => format!("{:?}", other),
+                    };
+                    // Include call stack depth and function names for debugging
+                    let mut stack_info = String::new();
+                    for (fi, frame) in self.frames.iter().rev().take(6).enumerate() {
+                        let fname = frame.chunk.name.as_deref().unwrap_or("(anon)");
+                        if fi > 0 { stack_info.push_str(" <- "); }
+                        stack_info.push_str(fname);
+                    }
+                    self.log_engine(&format!("[libjs] exception thrown: {} [{}]", detail, stack_info));
                     if !self.handle_exception(val) {
                         return JsValue::Undefined;
                     }
@@ -945,6 +989,33 @@ impl Vm {
                     let self_val = self.frames[frame_idx].self_ref.clone();
                     self.stack.push(self_val);
                 }
+                Op::NewTarget => {
+                    // Walk up call frames to find the nearest constructor call.
+                    // Arrow functions lexically inherit new.target (ES2023 §15.3).
+                    let mut target = JsValue::Undefined;
+                    for fi in (0..self.frames.len()).rev() {
+                        let f = &self.frames[fi];
+                        if f.is_constructor {
+                            target = f.self_ref.clone();
+                            break;
+                        }
+                        // Check if this frame is an arrow function — arrows inherit new.target.
+                        let is_arrow_frame = if let JsValue::Function(ref func_rc) = f.self_ref {
+                            let borrowed = func_rc.borrow();
+                            if let FnKind::Bytecode(ref ch) = borrowed.kind {
+                                ch.is_arrow
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        if !is_arrow_frame {
+                            break; // Non-arrow, non-constructor → new.target is undefined
+                        }
+                    }
+                    self.stack.push(target);
+                }
                 Op::CallSpread => {
                     // Stack: [..., callee, args_array]
                     let args_val = self.stack.pop().unwrap_or(JsValue::Undefined);
@@ -1094,9 +1165,40 @@ impl Vm {
                         f.own_props.insert(alloc::format!("__get_{}", name), getter_fn);
                     }
                 }
+                Op::DefineGetterComputed => {
+                    let getter_fn = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let key_val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let name = key_val.to_js_string();
+                    let obj = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    if let JsValue::Object(obj_rc) = &obj {
+                        let mut o = obj_rc.borrow_mut();
+                        let existing_setter = o.properties.get(&name)
+                            .and_then(|p| p.setter.clone());
+                        o.properties.insert(name, Property::accessor(Some(getter_fn), existing_setter));
+                    } else if let JsValue::Function(fn_rc) = &obj {
+                        let mut f = fn_rc.borrow_mut();
+                        f.own_props.remove(&name);
+                        f.own_props.insert(alloc::format!("__get_{}", name), getter_fn);
+                    }
+                }
                 Op::DefineSetter(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
                     let setter_fn = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let obj = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    if let JsValue::Object(obj_rc) = &obj {
+                        let mut o = obj_rc.borrow_mut();
+                        let existing_getter = o.properties.get(&name)
+                            .and_then(|p| p.getter.clone());
+                        o.properties.insert(name, Property::accessor(existing_getter, Some(setter_fn)));
+                    } else if let JsValue::Function(fn_rc) = &obj {
+                        let mut f = fn_rc.borrow_mut();
+                        f.own_props.insert(alloc::format!("__set_{}", name), setter_fn);
+                    }
+                }
+                Op::DefineSetterComputed => {
+                    let setter_fn = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let key_val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let name = key_val.to_js_string();
                     let obj = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
                     if let JsValue::Object(obj_rc) = &obj {
                         let mut o = obj_rc.borrow_mut();
@@ -1147,6 +1249,7 @@ impl Vm {
                     params: param_stubs,
                     kind: FnKind::Bytecode(chunk.clone()),
                     this_binding: None,
+                    bound_args: Vec::new(),
                     upvalues: Vec::new(),
                     prototype: None,
                     own_props: BTreeMap::new(),
@@ -1593,6 +1696,7 @@ pub fn native_fn(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue) -> JsValue {
         params: Vec::new(),
         kind: FnKind::Native(f),
         this_binding: None,
+        bound_args: Vec::new(),
         upvalues: Vec::new(),
         prototype: None,
         own_props: BTreeMap::new(),

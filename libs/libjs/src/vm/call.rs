@@ -53,9 +53,20 @@ impl Vm {
                 let kind = func_rc.borrow().kind.clone();
                 let this_bind = func_rc.borrow().this_binding.clone();
                 let captured_upvalues = func_rc.borrow().upvalues.clone();
+                let bound_args = func_rc.borrow().bound_args.clone();
 
                 let effective_this = this_bind.unwrap_or(this_val);
                 self.current_this = effective_this.clone();
+
+                // Prepend bound arguments (from Function.prototype.bind) to call args
+                // per ES2023 §10.4.1.1 [[Call]].
+                let effective_args: Vec<JsValue>;
+                let args = if bound_args.is_empty() {
+                    args
+                } else {
+                    effective_args = bound_args.into_iter().chain(args.iter().cloned()).collect();
+                    &effective_args
+                };
 
                 match kind {
                     FnKind::Native(native_fn) => {
@@ -108,8 +119,44 @@ impl Vm {
                     }
                 }
             }
-            _ => {
-                self.log_engine("[libjs] WARN: attempted to call non-function");
+            _other => {
+                // Try to extract the method name from the current call frame's bytecode
+                let mut context = alloc::string::String::new();
+                if let Some(frame) = self.frames.last() {
+                    let ip = frame.ip;
+                    // Look backward through bytecode for the property name that was loaded
+                    let code = &frame.chunk.code;
+                    let consts = &frame.chunk.constants;
+                    if ip >= 2 {
+                        for back in 1..ip.min(10) {
+                            let check_ip = ip - back;
+                            if check_ip < code.len() {
+                                if let crate::bytecode::Op::GetPropNamed(ci) = &code[check_ip] {
+                                    if let Some(crate::bytecode::Constant::String(s)) = consts.get(*ci as usize) {
+                                        context = alloc::format!(" prop=.{}", s);
+                                        break;
+                                    }
+                                }
+                                if let crate::bytecode::Op::LoadGlobal(ci) = &code[check_ip] {
+                                    if let Some(crate::bytecode::Constant::String(s)) = consts.get(*ci as usize) {
+                                        context = alloc::format!(" global={}", s);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Include call stack for debugging
+                let mut stack = alloc::string::String::new();
+                for (fi, frame) in self.frames.iter().rev().take(6).enumerate() {
+                    let fname = frame.chunk.name.as_deref().unwrap_or("(anon)");
+                    if fi > 0 { stack.push_str(" <- "); }
+                    stack.push_str(fname);
+                }
+                self.log_engine(&alloc::format!(
+                    "[libjs] WARN: attempted to call non-function{} [{}]", context, stack
+                ));
                 self.stack.push(JsValue::Undefined);
             }
         }
@@ -234,6 +281,85 @@ impl Vm {
         // (e.g. step limit, empty frames, exception).
         self.stack.truncate(stack_before);
         result
+    }
+
+    /// `super(args)` — call parent constructor, forwarding new.target from the
+    /// current (derived) constructor frame.  Stack: [..., SuperClass, arg1..argN]
+    pub fn super_call(&mut self, argc: usize) {
+        if self.stack.len() < argc + 1 {
+            self.stack.push(JsValue::Undefined);
+            return;
+        }
+        let args_start = self.stack.len() - argc;
+        let ctor_idx = args_start - 1;
+
+        let super_ctor = self.stack[ctor_idx].clone();
+        let args: Vec<JsValue> = self.stack[args_start..].to_vec();
+        self.stack.truncate(ctor_idx);
+
+        // Find the current new.target from the enclosing constructor frame.
+        let mut new_target = JsValue::Undefined;
+        for f in self.frames.iter().rev() {
+            if f.is_constructor {
+                new_target = f.self_ref.clone();
+                break;
+            }
+        }
+
+        // Get `this` from the current constructor frame.
+        let this_val = self.frames.last()
+            .map(|f| f.this_val.clone())
+            .unwrap_or(JsValue::Undefined);
+
+        match super_ctor {
+            JsValue::Function(func_rc) => {
+                let kind = func_rc.borrow().kind.clone();
+                let captured_upvalues = func_rc.borrow().upvalues.clone();
+
+                self.current_this = this_val.clone();
+
+                match kind {
+                    FnKind::Native(native_fn) => {
+                        let result = native_fn(self, &args);
+                        if let Some(exc) = self.pending_exception.take() {
+                            if !self.handle_exception(exc) {
+                                self.stack.push(JsValue::Undefined);
+                            }
+                        } else {
+                            self.stack.push(result);
+                        }
+                    }
+                    FnKind::Bytecode(chunk) => {
+                        let local_count = chunk.local_count as usize;
+                        let mut locals: Vec<Rc<RefCell<JsValue>>> = (0..local_count)
+                            .map(|_| Rc::new(RefCell::new(JsValue::Undefined)))
+                            .collect();
+                        for (i, arg) in args.iter().enumerate() {
+                            if i < local_count {
+                                *locals[i].borrow_mut() = arg.clone();
+                            }
+                        }
+                        let frame = CallFrame {
+                            chunk,
+                            ip: 0,
+                            stack_base: self.stack.len(),
+                            locals,
+                            upvalue_cells: captured_upvalues,
+                            this_val,
+                            is_constructor: true,
+                            all_args: args.to_vec(),
+                            // new.target is forwarded from the derived constructor.
+                            self_ref: new_target,
+                        };
+                        self.frames.push(frame);
+                    }
+                }
+            }
+            _ => {
+                self.log_engine("[libjs] WARN: super() called on non-function");
+                self.stack.push(JsValue::Undefined);
+            }
+        }
     }
 
     /// Simplified instanceof check.

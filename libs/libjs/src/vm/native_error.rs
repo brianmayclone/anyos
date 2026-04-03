@@ -29,10 +29,22 @@ pub fn ctor_error(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
     });
 
+    // Build a minimal stack trace string (V8-style).
+    let stack_str = {
+        let mut s = alloc::format!("Error: {}", message);
+        for frame in vm.frames.iter().rev().take(8) {
+            let fname = frame.chunk.name.as_deref().unwrap_or("<anonymous>");
+            s.push_str("\n    at ");
+            s.push_str(fname);
+        }
+        s
+    };
+
     if let JsValue::Object(obj_rc) = &vm.current_this.clone() {
         let mut o = obj_rc.borrow_mut();
         o.set(String::from("message"), JsValue::String(message));
         o.set(String::from("name"), JsValue::String(String::from("Error")));
+        o.set(String::from("stack"), JsValue::String(stack_str));
         if let Some(cause_val) = cause {
             o.set(String::from("cause"), cause_val);
         }
@@ -46,6 +58,7 @@ pub fn ctor_error(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     obj.prototype = Some(vm.error_proto.clone());
     obj.set(String::from("message"), JsValue::String(message));
     obj.set(String::from("name"), JsValue::String(String::from("Error")));
+    obj.set(String::from("stack"), JsValue::String(stack_str));
     if let Some(cause_val) = cause {
         obj.set(String::from("cause"), cause_val);
     }
@@ -68,13 +81,23 @@ fn ctor_error_with_name(vm: &mut Vm, args: &[JsValue], type_name: &str) -> JsVal
         }
     });
 
+    let stack_str = {
+        let mut s = alloc::format!("{}: {}", type_name, message);
+        for frame in vm.frames.iter().rev().take(8) {
+            let fname = frame.chunk.name.as_deref().unwrap_or("<anonymous>");
+            s.push_str("\n    at ");
+            s.push_str(fname);
+        }
+        s
+    };
+
     if let JsValue::Object(obj_rc) = &vm.current_this.clone() {
         let mut o = obj_rc.borrow_mut();
         o.set(String::from("message"), JsValue::String(message));
         o.set(String::from("name"), JsValue::String(String::from(type_name)));
+        o.set(String::from("stack"), JsValue::String(stack_str));
         if let Some(cause_val) = cause { o.set(String::from("cause"), cause_val); }
         if o.prototype.is_none() { o.prototype = Some(vm.error_proto.clone()); }
-        // Set constructor reference for instanceof checks
         let ctor = vm.globals.get(type_name);
         if !matches!(ctor, JsValue::Undefined) { o.set(String::from("constructor"), ctor); }
         drop(o);
@@ -84,6 +107,7 @@ fn ctor_error_with_name(vm: &mut Vm, args: &[JsValue], type_name: &str) -> JsVal
     obj.prototype = Some(vm.error_proto.clone());
     obj.set(String::from("message"), JsValue::String(message));
     obj.set(String::from("name"), JsValue::String(String::from(type_name)));
+    obj.set(String::from("stack"), JsValue::String(stack_str));
     if let Some(cause_val) = cause { obj.set(String::from("cause"), cause_val); }
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }

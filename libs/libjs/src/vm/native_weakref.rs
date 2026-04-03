@@ -23,11 +23,14 @@ pub const WEAKMAP_TAG: &str = "__weakmap__";
 
 /// `new WeakMap()`
 pub fn ctor_weakmap(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    // We store entries as a Vec of (key_ptr, value) pairs.
-    // key_ptr is the Rc raw pointer cast to usize, used for identity comparison.
-    let mut obj = JsObject::with_tag(WEAKMAP_TAG);
-    obj.prototype = Some(vm.object_proto.clone());
-    JsValue::Object(Rc::new(RefCell::new(obj)))
+    // Tag `this` as a WeakMap so that set/get/has/delete can identify it.
+    // The `new_object` mechanism already set the correct prototype chain
+    // (WeakMap.prototype with set/get/has/delete methods).
+    if let JsValue::Object(obj) = &vm.current_this {
+        obj.borrow_mut().internal_tag = Some(String::from(WEAKMAP_TAG));
+    }
+    // Return undefined so `new_object` uses `this` (which has the right prototype).
+    JsValue::Undefined
 }
 
 fn obj_ptr(val: &JsValue) -> Option<usize> {
@@ -99,9 +102,10 @@ pub const WEAKSET_TAG: &str = "__weakset__";
 
 /// `new WeakSet()`
 pub fn ctor_weakset(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let mut obj = JsObject::with_tag(WEAKSET_TAG);
-    obj.prototype = Some(vm.object_proto.clone());
-    JsValue::Object(Rc::new(RefCell::new(obj)))
+    if let JsValue::Object(obj) = &vm.current_this {
+        obj.borrow_mut().internal_tag = Some(String::from(WEAKSET_TAG));
+    }
+    JsValue::Undefined
 }
 
 /// `WeakSet.prototype.add(value)`
@@ -146,10 +150,12 @@ pub const WEAKREF_TAG: &str = "__weakref__";
 /// `new WeakRef(target)`
 pub fn ctor_weakref(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let mut obj = JsObject::with_tag(WEAKREF_TAG);
-    obj.prototype = Some(vm.object_proto.clone());
-    obj.set(String::from("__target"), target);
-    JsValue::Object(Rc::new(RefCell::new(obj)))
+    if let JsValue::Object(obj) = &vm.current_this {
+        let mut o = obj.borrow_mut();
+        o.internal_tag = Some(String::from(WEAKREF_TAG));
+        o.set(String::from("__target"), target);
+    }
+    JsValue::Undefined
 }
 
 /// `WeakRef.prototype.deref()`

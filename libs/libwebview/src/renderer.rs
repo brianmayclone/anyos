@@ -287,11 +287,40 @@ impl DisplayList {
             return;
         }
 
-        let abs_x = if bx.is_fixed { bx.x } else { offset_x + bx.x };
-        // For sticky elements, record the natural flow position.  The tile
-        // rasterizer will clamp the Y at render time based on scroll offset.
-        // For the display list, we store the natural position (same as static).
-        let abs_y = if bx.is_fixed { bx.y } else { offset_y + bx.y };
+        let orig_abs_x = if bx.is_fixed { bx.x } else { offset_x + bx.x };
+        let orig_abs_y = if bx.is_fixed { bx.y } else { offset_y + bx.y };
+
+        // Position: sticky — clamp Y so the element doesn't scroll above its
+        // sticky threshold (top offset from the viewport top).  The element
+        // stays in normal flow until scrolling would move it past the threshold,
+        // then it "sticks" at that position.
+        let orig_abs_y = if bx.is_sticky {
+            let viewport_top = 0; // TODO: adjust for nested scroll containers
+            let sticky_threshold = viewport_top + bx.sticky_top;
+            if orig_abs_y < sticky_threshold {
+                sticky_threshold
+            } else {
+                orig_abs_y
+            }
+        } else {
+            orig_abs_y
+        };
+
+        // Apply CSS transform: scale.
+        // Scale dimensions around the box center (transform-origin: center center).
+        let (abs_x, abs_y, draw_w, draw_h) = if bx.transform_sx != 1000 || bx.transform_sy != 1000 {
+            let sx = bx.transform_sx as f32 / 1000.0;
+            let sy = bx.transform_sy as f32 / 1000.0;
+            let cx = orig_abs_x + bx.width / 2;
+            let cy = orig_abs_y + bx.height / 2;
+            let new_w = (bx.width as f32 * sx) as i32;
+            let new_h = (bx.height as f32 * sy) as i32;
+            let new_x = cx - new_w / 2;
+            let new_y = cy - new_h / 2;
+            (new_x, new_y, new_w, new_h)
+        } else {
+            (orig_abs_x, orig_abs_y, bx.width, bx.height)
+        };
 
         // Check if we have border-radius.
         let has_radius = bx.border_top_left_radius > 0 || bx.border_top_right_radius > 0
@@ -304,8 +333,8 @@ impl DisplayList {
             if !shadow.inset {
                 let sx = abs_x + shadow.offset_x - shadow.spread;
                 let sy = abs_y + shadow.offset_y - shadow.spread;
-                let sw = bx.width + shadow.spread * 2;
-                let sh = bx.height + shadow.spread * 2;
+                let sw = draw_w + shadow.spread * 2;
+                let sh = draw_h + shadow.spread * 2;
                 // Multi-pass blur approximation: draw progressively larger/fainter rects.
                 if shadow.blur > 0 {
                     let steps = (shadow.blur / 2).max(1).min(6);
@@ -326,13 +355,26 @@ impl DisplayList {
             }
         }
 
+        // Backdrop-filter approximation: frosted glass overlay behind the element.
+        if bx.backdrop_filter_blur > 0 {
+            let blur_strength = (bx.backdrop_filter_blur as u32).min(20);
+            let overlay_alpha = (blur_strength * 8).min(160) as u32;
+            let overlay_color = 0x00FFFFFF | (overlay_alpha << 24);
+            if has_radius {
+                self.push(abs_x, abs_y, draw_w, draw_h,
+                    DrawKind::RoundedRect { color: overlay_color, radii });
+            } else {
+                self.push(abs_x, abs_y, draw_w, draw_h, DrawKind::Rect { color: overlay_color });
+            }
+        }
+
         // Background.
         if bx.bg_color != 0 && bx.bg_color != 0x00000000 {
             if has_radius {
-                self.push(abs_x, abs_y, bx.width, bx.height,
+                self.push(abs_x, abs_y, draw_w, draw_h,
                     DrawKind::RoundedRect { color: bx.bg_color, radii });
             } else {
-                self.push(abs_x, abs_y, bx.width, bx.height, DrawKind::Rect { color: bx.bg_color });
+                self.push(abs_x, abs_y, draw_w, draw_h, DrawKind::Rect { color: bx.bg_color });
             }
         }
 
@@ -344,10 +386,10 @@ impl DisplayList {
             if shadow.inset {
                 let s = shadow.spread.max(1);
                 let c = shadow.color;
-                self.push(abs_x, abs_y, bx.width, s, DrawKind::Rect { color: c });
-                self.push(abs_x, abs_y + bx.height - s, bx.width, s, DrawKind::Rect { color: c });
-                self.push(abs_x, abs_y + s, s, (bx.height - s * 2).max(0), DrawKind::Rect { color: c });
-                self.push(abs_x + bx.width - s, abs_y + s, s, (bx.height - s * 2).max(0), DrawKind::Rect { color: c });
+                self.push(abs_x, abs_y, draw_w, s, DrawKind::Rect { color: c });
+                self.push(abs_x, abs_y + draw_h - s, draw_w, s, DrawKind::Rect { color: c });
+                self.push(abs_x, abs_y + s, s, (draw_h - s * 2).max(0), DrawKind::Rect { color: c });
+                self.push(abs_x + draw_w - s, abs_y + s, s, (draw_h - s * 2).max(0), DrawKind::Rect { color: c });
             }
         }
 
@@ -355,8 +397,8 @@ impl DisplayList {
         let has_per_side = bx.border_top_width > 0 || bx.border_right_width > 0
             || bx.border_bottom_width > 0 || bx.border_left_width > 0;
         if has_per_side {
-            let w = bx.width;
-            let h = bx.height;
+            let w = draw_w;
+            let h = draw_h;
             // Determine border styles from the node style (fallback: Solid).
             let (ts, rs, bs, ls) = self.border_styles_for(bx);
             // Top border
@@ -384,8 +426,8 @@ impl DisplayList {
         } else if bx.border_width > 0 && bx.border_color != 0 && bx.border_color != 0x00000000 {
             // Fallback: unified border (legacy path)
             let bw = bx.border_width;
-            let w = bx.width;
-            let h = bx.height;
+            let w = draw_w;
+            let h = draw_h;
             self.push(abs_x, abs_y, w, bw, DrawKind::Rect { color: bx.border_color });
             self.push(abs_x, abs_y + h - bw, w, bw, DrawKind::Rect { color: bx.border_color });
             let inner_h = (h - bw * 2).max(0);
@@ -395,7 +437,7 @@ impl DisplayList {
 
         // Horizontal rule.
         if bx.is_hr {
-            self.push(abs_x, abs_y, bx.width, 1, DrawKind::Rect { color: 0xFF999999 });
+            self.push(abs_x, abs_y, draw_w, 1, DrawKind::Rect { color: 0xFF999999 });
         }
 
         // List marker.
@@ -410,11 +452,11 @@ impl DisplayList {
                 //   abs_x + border + padding.left - 20
                 let border = bx.border_width;
                 let marker_x = abs_x + border + bx.padding.left - 20;
-                self.push(marker_x, abs_y, 20, bx.height,
+                self.push(marker_x, abs_y, 20, draw_h,
                     DrawKind::Text { color, font_id: 0, font_size, text: marker.clone() });
             } else {
                 // outside (default): marker hangs 20px to the left of abs_x.
-                self.push(abs_x - 20, abs_y, 20, bx.height,
+                self.push(abs_x - 20, abs_y, 20, draw_h,
                     DrawKind::Text { color, font_id: 0, font_size, text: marker.clone() });
             }
         }
@@ -430,11 +472,11 @@ impl DisplayList {
 
                 // Text shadows (behind the text).
                 for ts in &bx.text_shadows {
-                    self.push(abs_x + ts.offset_x, abs_y + ts.offset_y, bx.width, bx.height,
+                    self.push(abs_x + ts.offset_x, abs_y + ts.offset_y, draw_w, draw_h,
                         DrawKind::Text { color: ts.color, font_id, font_size, text: text.clone() });
                 }
 
-                self.push(abs_x, abs_y, bx.width, bx.height,
+                self.push(abs_x, abs_y, draw_w, draw_h,
                     DrawKind::Text { color, font_id, font_size, text: text.clone() });
 
                 // Text decorations with sub-property support.
@@ -444,21 +486,21 @@ impl DisplayList {
 
                 // Overline.
                 if bx.text_decoration == TextDeco::Overline {
-                    self.emit_text_deco_line(abs_x, abs_y, bx.width, deco_thick,
+                    self.emit_text_deco_line(abs_x, abs_y, draw_w, deco_thick,
                         deco_color, bx.text_decoration_style);
                 }
 
                 // Underline — only if text-decoration says so (not just because it's a link).
                 // Per CSS spec, `text-decoration: none` on a link suppresses the underline.
                 if bx.text_decoration == TextDeco::Underline {
-                    let y_pos = abs_y + bx.height - deco_thick + deco_offset;
-                    self.emit_text_deco_line(abs_x, y_pos, bx.width, deco_thick,
+                    let y_pos = abs_y + draw_h - deco_thick + deco_offset;
+                    self.emit_text_deco_line(abs_x, y_pos, draw_w, deco_thick,
                         deco_color, bx.text_decoration_style);
                 }
 
                 // Line-through.
                 if bx.text_decoration == TextDeco::LineThrough {
-                    self.emit_text_deco_line(abs_x, abs_y + bx.height / 2, bx.width, deco_thick,
+                    self.emit_text_deco_line(abs_x, abs_y + draw_h / 2, draw_w, deco_thick,
                         deco_color, bx.text_decoration_style);
                 }
             }
@@ -466,8 +508,8 @@ impl DisplayList {
 
         // Image.
         if let Some(ref src) = bx.image_src {
-            let dw = bx.image_width.unwrap_or(bx.width);
-            let dh = bx.image_height.unwrap_or(bx.height);
+            let dw = bx.image_width.unwrap_or(draw_w);
+            let dh = bx.image_height.unwrap_or(draw_h);
             self.push(abs_x, abs_y, dw, dh, DrawKind::Image { src: src.clone(), object_fit: bx.object_fit });
         }
 
@@ -486,6 +528,15 @@ impl DisplayList {
                 FormFieldKind::Radio => {
                     self.emit_radio(abs_x, abs_y, bx);
                 }
+                FormFieldKind::Range => {
+                    self.emit_range(abs_x, abs_y, bx);
+                }
+                FormFieldKind::Progress => {
+                    self.emit_progress(abs_x, abs_y, bx);
+                }
+                FormFieldKind::Select => {
+                    self.emit_select(abs_x, abs_y, bx);
+                }
                 _ => {}
             }
         }
@@ -496,8 +547,8 @@ impl DisplayList {
             let off = bx.outline_offset;
             let ox = abs_x - ow - off;
             let oy = abs_y - ow - off;
-            let ow_total = bx.width + (ow + off) * 2;
-            let oh_total = bx.height + (ow + off) * 2;
+            let ow_total = draw_w + (ow + off) * 2;
+            let oh_total = draw_h + (ow + off) * 2;
             // Top
             self.push(ox, oy, ow_total, ow, DrawKind::Rect { color: bx.outline_color });
             // Bottom
@@ -510,14 +561,14 @@ impl DisplayList {
         }
 
         // Recurse into children, with optional clip rect for overflow:hidden.
-        let pushed_clip = if bx.overflow_hidden && bx.width > 0 && bx.height > 0 {
+        let pushed_clip = if bx.overflow_hidden && draw_w > 0 && draw_h > 0 {
             // Intersect with any existing clip rect.
-            let new_clip = (abs_x, abs_y, bx.width, bx.height);
+            let new_clip = (abs_x, abs_y, draw_w, draw_h);
             let clip = if let Some(&(cx, cy, cw, ch)) = self.clip_stack.last() {
                 let x0 = abs_x.max(cx);
                 let y0 = abs_y.max(cy);
-                let x1 = (abs_x + bx.width).min(cx + cw);
-                let y1 = (abs_y + bx.height).min(cy + ch);
+                let x1 = (abs_x + draw_w).min(cx + cw);
+                let y1 = (abs_y + draw_h).min(cy + ch);
                 if x1 > x0 && y1 > y0 {
                     (x0, y0, x1 - x0, y1 - y0)
                 } else {
@@ -540,7 +591,13 @@ impl DisplayList {
         // intermediate non-SC boxes (e.g. <body>), so top-level positioned
         // elements are correctly sorted by z-index even when the root <html>
         // element has no explicit stacking context properties.
-        let (cx, cy) = if bx.is_fixed { (bx.x, bx.y) } else { (abs_x, abs_y) };
+        // Apply scroll offsets for overflow:auto/scroll containers.
+        // Children are shifted by -scroll_top/-scroll_left so content scrolls.
+        let (cx, cy) = if bx.is_fixed {
+            (bx.x, bx.y)
+        } else {
+            (abs_x - bx.scroll_left, abs_y - bx.scroll_top)
+        };
 
         // Check if any children create stacking contexts at all.
         let has_sc_children = bx.children.iter().any(|c| c.creates_stacking_context);
@@ -877,6 +934,112 @@ impl DisplayList {
         self.push(cx + 1, cy + sz - 1, sz - 2, 1, DrawKind::Rect { color: 0xFF767676 });
         self.push(cx, cy + 1, 1, sz - 2, DrawKind::Rect { color: 0xFF767676 });
         self.push(cx + sz - 1, cy + 1, 1, sz - 2, DrawKind::Rect { color: 0xFF767676 });
+    }
+
+    /// Draw an `<input type="range">` as a track with a thumb indicator.
+    fn emit_range(&mut self, x: i32, y: i32, bx: &LayoutBox) {
+        // Decode percentage from form_value (encoded as 0..1000 or "X" for 100%).
+        let pct = if let Some(ref v) = bx.form_value {
+            if v == "X" { 1.0f32 }
+            else {
+                let bytes = v.as_bytes();
+                let n = bytes.iter().fold(0i32, |acc, &b| acc * 10 + (b - b'0') as i32);
+                (n as f32) / 1000.0
+            }
+        } else { 0.5 };
+
+        let w = bx.width;
+        let h = bx.height;
+        let track_h = 6;
+        let track_y = y + (h - track_h) / 2;
+        let r = track_h / 2;
+
+        // Track background (light gray, rounded).
+        self.push(x, track_y, w, track_h, DrawKind::RoundedRect { color: 0xFFE0E0E0, radii: [r, r, r, r] });
+
+        // Filled portion (blue).
+        let fill_w = ((w as f32) * pct) as i32;
+        if fill_w > 0 {
+            self.push(x, track_y, fill_w, track_h, DrawKind::RoundedRect { color: 0xFF4A90D9, radii: [r, r, r, r] });
+        }
+
+        // Thumb circle.
+        let thumb_sz = 16;
+        let thumb_r = thumb_sz / 2;
+        let thumb_x = x + fill_w - thumb_r;
+        let thumb_y = y + (h - thumb_sz) / 2;
+        self.push(thumb_x, thumb_y, thumb_sz, thumb_sz, DrawKind::RoundedRect { color: 0xFF4A90D9, radii: [thumb_r, thumb_r, thumb_r, thumb_r] });
+        // Thumb border.
+        self.push(thumb_x + 1, thumb_y, thumb_sz - 2, 1, DrawKind::Rect { color: 0xFF3A7BC8 });
+        self.push(thumb_x + 1, thumb_y + thumb_sz - 1, thumb_sz - 2, 1, DrawKind::Rect { color: 0xFF3A7BC8 });
+        self.push(thumb_x, thumb_y + 1, 1, thumb_sz - 2, DrawKind::Rect { color: 0xFF3A7BC8 });
+        self.push(thumb_x + thumb_sz - 1, thumb_y + 1, 1, thumb_sz - 2, DrawKind::Rect { color: 0xFF3A7BC8 });
+    }
+
+    /// Draw a `<progress>` element as a track with a colored fill bar.
+    fn emit_progress(&mut self, x: i32, y: i32, bx: &LayoutBox) {
+        // Decode percentage from form_value (encoded as 0..1000 or "X" for 100%).
+        let pct = if let Some(ref v) = bx.form_value {
+            if v == "X" { 1.0f32 }
+            else {
+                let bytes = v.as_bytes();
+                let n = bytes.iter().fold(0i32, |acc, &b| acc * 10 + (b - b'0') as i32);
+                (n as f32) / 1000.0
+            }
+        } else { 0.0 };
+
+        let w = bx.width;
+        let h = bx.height;
+        let r = 4;
+
+        // Track background (light gray, rounded).
+        self.push(x, y, w, h, DrawKind::RoundedRect { color: 0xFFE0E0E0, radii: [r, r, r, r] });
+
+        // Fill bar (blue).
+        let fill_w = ((w as f32) * pct) as i32;
+        if fill_w > 0 {
+            let fr = if pct >= 0.99 { r } else { 0 };
+            self.push(x, y, fill_w, h, DrawKind::RoundedRect {
+                color: 0xFF4A90D9,
+                radii: [r, fr, fr, r],
+            });
+        }
+    }
+
+    /// Draw a `<select>` dropdown as a text field with a dropdown arrow.
+    fn emit_select(&mut self, x: i32, y: i32, bx: &LayoutBox) {
+        let bg = if bx.bg_color != 0 { bx.bg_color } else { 0xFFFFFFFF };
+        let border_color = 0xFF767676;
+
+        // Background fill.
+        self.push(x, y, bx.width, bx.height, DrawKind::Rect { color: bg });
+        // 1px border.
+        self.push(x, y, bx.width, 1, DrawKind::Rect { color: border_color });
+        self.push(x, y + bx.height - 1, bx.width, 1, DrawKind::Rect { color: border_color });
+        self.push(x, y, 1, bx.height, DrawKind::Rect { color: border_color });
+        self.push(x + bx.width - 1, y, 1, bx.height, DrawKind::Rect { color: border_color });
+
+        // Draw the selected option text.
+        if let Some(ref txt) = bx.text {
+            let font_size = bx.font_size.max(1) as u16;
+            let text_color = if bx.color != 0 { bx.color } else { 0xFF000000 };
+            let tx = x + 6;
+            let ty = y + (bx.height - font_size as i32) / 2;
+            self.push(tx, ty, bx.width - 30, font_size as i32,
+                DrawKind::Text { color: text_color, font_id: 0, font_size, text: txt.clone() });
+        }
+
+        // Dropdown arrow indicator (small downward-pointing triangle).
+        let arrow_x = x + bx.width - 20;
+        let arrow_y = y + bx.height / 2 - 2;
+        // Draw a simple 8x5 downward triangle using horizontal lines.
+        for i in 0..5i32 {
+            let lx = arrow_x + i;
+            let lw = (8 - i * 2).max(0);
+            if lw > 0 {
+                self.push(lx, arrow_y + i, lw, 1, DrawKind::Rect { color: 0xFF555555 });
+            }
+        }
     }
 
     #[inline]
@@ -1501,6 +1664,10 @@ impl Renderer {
                     }
                 }
             }
+
+            // Range, Progress, Select — no native anyui widget; rendered as
+            // painted rects by the display-list path.  Nothing to do here.
+            FormFieldKind::Range | FormFieldKind::Progress | FormFieldKind::Select => {}
         }
     }
 

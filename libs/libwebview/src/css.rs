@@ -370,11 +370,17 @@ pub enum Property {
     GridArea,
     // Mask (parsed but not visually applied — makes @supports queries work)
     MaskImage,
+    // Pointer events
+    PointerEvents,
+    // User interaction
+    UserSelect,
+    // Backdrop filter
+    BackdropFilter,
     /// CSS custom property (--name). Value stored in Declaration.value as Keyword.
     CustomProperty(String),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum CssValue {
     Keyword(String),
     Color(u32),
@@ -2187,6 +2193,12 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "grid-area"             => Some(Property::GridArea),
         // Mask (parsed for @supports evaluation, not visually applied)
         "mask-image" | "-webkit-mask-image" | "mask" | "-webkit-mask" => Some(Property::MaskImage),
+        // Pointer events
+        "pointer-events" => Some(Property::PointerEvents),
+        // User interaction
+        "user-select" | "-webkit-user-select" | "-moz-user-select" | "-ms-user-select" => Some(Property::UserSelect),
+        // Backdrop filter
+        "backdrop-filter" | "-webkit-backdrop-filter" => Some(Property::BackdropFilter),
         _ => Option::None,
     }
 }

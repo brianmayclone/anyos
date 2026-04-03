@@ -189,6 +189,7 @@ fn enqueue_promise_reaction(vm: &mut Vm, callback: JsValue, value: JsValue, new_
         params: Vec::new(),
         kind: FnKind::Native(promise_reaction_runner),
         this_binding: None,
+        bound_args: Vec::new(),
         upvalues: Vec::new(),
         prototype: None,
         own_props: alloc::collections::BTreeMap::new(),

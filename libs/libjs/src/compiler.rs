@@ -130,6 +130,23 @@ impl Compiler {
         }
     }
 
+    /// Like `bind_ident`, but reuses an existing local slot if available.
+    /// Used for `var` declarations which may have been pre-allocated by
+    /// var-hoisting.  `let`/`const` must NOT use this (they need fresh slots
+    /// for block scoping and TDZ).
+    fn bind_ident_var(&mut self, name: &str) {
+        if self.binding_is_global {
+            let ci = self.add_const(Constant::String(name.to_string()));
+            self.emit(Op::StoreGlobal(ci));
+            self.emit(Op::Pop);
+        } else {
+            let slot = self.scope().resolve_local(name)
+                .unwrap_or_else(|| self.scope_mut().add_local(name.to_string()));
+            self.emit(Op::StoreLocal(slot));
+            self.emit(Op::Pop);
+        }
+    }
+
     /// Compile a program into a top-level chunk.
     pub fn compile(&mut self, program: &Program) -> Chunk {
         self.compile_program(program, false)
@@ -151,8 +168,20 @@ impl Compiler {
             }
         }
 
+        // ES2023 §10.2.1 — hoist function declarations: compile all top-level
+        // FunctionDecl statements first so they are available before any other
+        // code executes (function hoisting in the global scope).
+        for stmt in &program.body {
+            if let Stmt::FunctionDecl { .. } = stmt {
+                self.compile_stmt(stmt);
+            }
+        }
+
         let body_len = program.body.len();
         for (i, stmt) in program.body.iter().enumerate() {
+            // Skip FunctionDecl — already compiled above.
+            if let Stmt::FunctionDecl { .. } = stmt { continue; }
+
             let is_last = i == body_len - 1;
             if is_eval && is_last {
                 // For eval: if the last statement is an expression statement,
@@ -210,6 +239,113 @@ impl Compiler {
     /// Does not look into `scopes[0]` (the top-level script scope) as a local
     /// capture target — its `var` bindings are globals, but `let`/`const` there
     /// can still be captured.
+    /// Collect all `var`-declared names from a statement list (for hoisting).
+    /// Recurses into blocks, if/else, for, while, switch, try/catch etc.
+    /// Does NOT recurse into nested function bodies (they have their own scope).
+    fn collect_var_names(stmts: &[Stmt], out: &mut Vec<String>) {
+        for stmt in stmts {
+            Self::collect_var_names_stmt(stmt, out);
+        }
+    }
+
+    fn collect_var_names_stmt(stmt: &Stmt, out: &mut Vec<String>) {
+        match stmt {
+            Stmt::VarDecl { kind, decls } if *kind == VarKind::Var => {
+                for decl in decls {
+                    Self::collect_pattern_names(&decl.name, out);
+                }
+            }
+            // Function declarations are also hoisted (ES2023 §10.2.11 step 28).
+            Stmt::FunctionDecl { name, .. } => {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+            Stmt::Block(stmts) => {
+                Self::collect_var_names(stmts, out);
+            }
+            Stmt::If { consequent, alternate, .. } => {
+                Self::collect_var_names_stmt(consequent, out);
+                if let Some(alt) = alternate {
+                    Self::collect_var_names_stmt(alt, out);
+                }
+            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+                Self::collect_var_names_stmt(body, out);
+            }
+            Stmt::For { init, body, .. } => {
+                if let Some(init) = init {
+                    if let ForInit::VarDecl { kind, decls } = init.as_ref() {
+                        if *kind == VarKind::Var {
+                            for decl in decls {
+                                Self::collect_pattern_names(&decl.name, out);
+                            }
+                        }
+                    }
+                }
+                Self::collect_var_names_stmt(body, out);
+            }
+            Stmt::ForIn { left, body, .. } | Stmt::ForOf { left, body, .. } => {
+                if let ForInit::VarDecl { kind, decls } = left.as_ref() {
+                    if *kind == VarKind::Var {
+                        for decl in decls {
+                            Self::collect_pattern_names(&decl.name, out);
+                        }
+                    }
+                }
+                Self::collect_var_names_stmt(body, out);
+            }
+            Stmt::Switch { cases, .. } => {
+                for case in cases {
+                    Self::collect_var_names(&case.consequent, out);
+                }
+            }
+            Stmt::Try { block, catch, finally } => {
+                Self::collect_var_names(block, out);
+                if let Some(c) = catch {
+                    Self::collect_var_names(&c.body, out);
+                }
+                if let Some(f) = finally {
+                    Self::collect_var_names(f, out);
+                }
+            }
+            Stmt::Labeled { body, .. } => {
+                Self::collect_var_names_stmt(body, out);
+            }
+            // Function declarations are hoisted separately (already handled).
+            // Do NOT recurse into function bodies.
+            _ => {}
+        }
+    }
+
+    fn collect_pattern_names(pattern: &Pattern, out: &mut Vec<String>) {
+        match pattern {
+            Pattern::Ident(name) => {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+            Pattern::Array(elements) => {
+                for elem in elements {
+                    if let Some(p) = elem {
+                        Self::collect_pattern_names(p, out);
+                    }
+                }
+            }
+            Pattern::Object(props) => {
+                for prop in props {
+                    Self::collect_pattern_names(&prop.value, out);
+                }
+            }
+            Pattern::Assign(inner, _) => {
+                Self::collect_pattern_names(inner, out);
+            }
+            Pattern::Rest(inner) => {
+                Self::collect_pattern_names(inner, out);
+            }
+        }
+    }
+
     fn resolve_upvalue_in_scope(&mut self, scope_idx: usize, name: &str) -> Option<u16> {
         if scope_idx == 0 {
             return None; // nothing above global scope
@@ -298,9 +434,14 @@ impl Compiler {
                 self.emit(Op::Pop);
             }
             Stmt::VarDecl { kind, decls } => {
-                let is_global = *kind == VarKind::Var && self.is_global_scope();
+                // In a browser, top-level var/let/const all create bindings
+                // visible to subsequent <script> tags.  We mirror this by
+                // storing ALL top-level declarations as globals so that
+                // separate eval() calls (one per <script>) share them.
+                let is_global = self.is_global_scope();
+                let is_var = *kind == VarKind::Var;
                 for decl in decls {
-                    self.compile_var_decl(decl, is_global);
+                    self.compile_var_decl(decl, is_global, is_var);
                 }
             }
             Stmt::Block(stmts) => {
@@ -378,11 +519,12 @@ impl Compiler {
                     match init.as_ref() {
                         ForInit::VarDecl { kind, decls } => {
                             let is_global = *kind == VarKind::Var && self.is_global_scope();
+                            let for_is_var = *kind == VarKind::Var;
                             if *kind != VarKind::Var && !is_global {
                                 // Record slot indices before and after to find new let/const bindings.
                                 let before = self.scope().locals.len() as u16;
                                 for d in decls {
-                                    self.compile_var_decl(d, false);
+                                    self.compile_var_decl(d, false, false);
                                 }
                                 let after = self.scope().locals.len() as u16;
                                 for slot in before..after {
@@ -390,7 +532,7 @@ impl Compiler {
                                 }
                             } else {
                                 for d in decls {
-                                    self.compile_var_decl(d, is_global);
+                                    self.compile_var_decl(d, is_global, for_is_var);
                                 }
                             }
                         }
@@ -499,16 +641,17 @@ impl Compiler {
                 self.compile_try(block, catch, finally);
             }
             Stmt::FunctionDecl { name, params, body, is_async, is_generator } => {
-                self.compile_function_gen(Some(name), params, body, *is_async, *is_generator);
-                // At the global scope function declarations are global bindings.
                 if self.is_global_scope() {
+                    // At the global scope function declarations are global bindings.
+                    self.compile_function_gen(Some(name), params, body, *is_async, *is_generator);
                     let ci = self.add_const(Constant::String(name.clone()));
                     self.emit(Op::StoreGlobal(ci));
                     self.emit(Op::Pop);
                 } else {
-                    let slot = self.scope_mut().add_local(name.clone());
-                    self.emit(Op::StoreLocal(slot));
-                    self.emit(Op::Pop);
+                    // In non-global scopes, function declarations are fully hoisted:
+                    // the closure was already compiled and stored during the function
+                    // value hoisting pass in compile_function_impl.  Emit a no-op here.
+                    self.emit(Op::Nop);
                 }
             }
             Stmt::ClassDecl { name, super_class, body } => {
@@ -606,18 +749,44 @@ impl Compiler {
         }
     }
 
-    fn compile_var_decl(&mut self, decl: &VarDeclarator, is_global_var: bool) {
+    fn compile_var_decl(&mut self, decl: &VarDeclarator, is_global_var: bool, is_var: bool) {
         let prev = self.binding_is_global;
         self.binding_is_global = is_global_var;
         match &decl.name {
             Pattern::Ident(name) => {
+                // For let/const (non-var, non-global): ensure the local slot exists
+                // BEFORE compiling the initializer.  This is essential so that the
+                // variable name is visible during the initializer compilation — e.g.
+                //   const r = function(x) { return r(x-1); };
+                // Without this, the inner function can't capture `r` as an upvalue
+                // because the local doesn't exist yet when the function expr is compiled.
+                // (For `var`, hoisting already handles this in compile_function_impl.)
+                // The slot may already exist if pre-allocated by function-level
+                // let/const name scanning (for function declaration hoisting).
+                let prealloc_slot = if !is_var && !is_global_var {
+                    let slot = self.scope().resolve_local(name)
+                        .unwrap_or_else(|| self.scope_mut().add_local(name.clone()));
+                    Some(slot)
+                } else {
+                    None
+                };
                 if let Some(init) = &decl.init {
                     self.compile_expr_with_name(init, name);
                 } else {
                     self.emit(Op::LoadUndefined);
                 }
-                let name_clone = name.clone();
-                self.bind_ident(&name_clone);
+                if let Some(slot) = prealloc_slot {
+                    // Local was pre-allocated; just store into it.
+                    self.emit(Op::StoreLocal(slot));
+                    self.emit(Op::Pop);
+                } else {
+                    let name_clone = name.clone();
+                    if is_var {
+                        self.bind_ident_var(&name_clone);
+                    } else {
+                        self.bind_ident(&name_clone);
+                    }
+                }
             }
             Pattern::Array(elements) => {
                 if let Some(init) = &decl.init {
@@ -1031,11 +1200,11 @@ impl Compiler {
                 let n = String::from(inferred_name);
                 match body {
                     ArrowBody::Block(stmts) => {
-                        self.compile_function(Some(&n), params, stmts, *is_async);
+                        self.compile_function_impl(Some(&n), params, stmts, *is_async, false, false, true);
                     }
                     ArrowBody::Expr(e) => {
                         let return_stmt = Stmt::Return(Some(e.as_ref().clone()));
-                        self.compile_function(Some(&n), params, &[return_stmt], *is_async);
+                        self.compile_function_impl(Some(&n), params, &[return_stmt], *is_async, false, false, true);
                     }
                 }
             }
@@ -1123,6 +1292,39 @@ impl Compiler {
         is_generator: bool,
         is_arrow: bool,
     ) {
+        // Detect strict mode early (before param validation) — check if body
+        // starts with "use strict" directive (ES2023 §10.2.1 step 4).
+        let fn_strict = self.is_strict || matches!(
+            body.first(),
+            Some(Stmt::Expr(Expr::String(ref s))) if s == "use strict"
+        );
+
+        // ES2023 §14.1.2 Static Semantics: Early Errors — strict mode param checks.
+        // These are Early Errors: the script must fail at parse/compile time.
+        if fn_strict {
+            let mut seen_params: Vec<String> = Vec::new();
+            for param in params {
+                let names = Self::collect_param_names(&param.pattern);
+                for pname in &names {
+                    if seen_params.contains(pname) {
+                        // Emit throw in the OUTER scope (Early Error).
+                        let msg = alloc::format!("Duplicate parameter name '{}' not allowed in strict mode", pname);
+                        self.emit_throw_syntax_error(&msg);
+                        // Still need to push something on the stack for the Closure slot.
+                        self.emit(Op::LoadUndefined);
+                        return;
+                    }
+                    if pname == "eval" || pname == "arguments" {
+                        let msg = alloc::format!("'{}' cannot be used as a parameter name in strict mode", pname);
+                        self.emit_throw_syntax_error(&msg);
+                        self.emit(Op::LoadUndefined);
+                        return;
+                    }
+                    seen_params.push(pname.clone());
+                }
+            }
+        }
+
         let mut func_scope = Scope::new();
         func_scope.chunk.name = name.cloned();
         func_scope.chunk.is_generator = is_generator;
@@ -1261,6 +1463,63 @@ impl Compiler {
         if let Some(Stmt::Expr(Expr::String(ref s))) = body.first() {
             if s == "use strict" {
                 self.is_strict = true;
+            }
+        }
+
+        // ── Var hoisting (ES2023 §10.2.11) ──
+        // Pre-scan the body for `var` declarations and register their names as
+        // locals BEFORE compiling the body.  This ensures that nested functions
+        // (which may reference these variables before the `var` statement is
+        // reached) resolve them as upvalues instead of globals.
+        // `let`/`const` are NOT hoisted this way (they use TDZ semantics).
+        {
+            let mut hoisted: Vec<String> = Vec::new();
+            Self::collect_var_names(body, &mut hoisted);
+            for name in &hoisted {
+                // Only add if not already a local (e.g. param with the same name).
+                if self.scope().resolve_local(name).is_none() {
+                    self.scope_mut().add_local(name.clone());
+                }
+            }
+        }
+
+        // ── let/const name pre-allocation ──
+        // Pre-allocate locals for top-level `let`/`const` declarations in this
+        // function body.  While let/const are NOT value-hoisted (TDZ semantics),
+        // their NAMES must be registered before function declaration hoisting so
+        // that hoisted function bodies can capture them as upvalues.
+        // Example:  const x = 42; function f() { return x; }
+        // Without this, the hoisted `f` can't see `x` as a local/upvalue.
+        // Only top-level declarations (not nested in blocks) are pre-allocated,
+        // matching function declaration hoisting scope.
+        for s in body.iter() {
+            if let Stmt::VarDecl { kind, decls } = s {
+                if *kind == VarKind::Let || *kind == VarKind::Const {
+                    for decl in decls {
+                        let mut names: Vec<String> = Vec::new();
+                        Self::collect_pattern_names(&decl.name, &mut names);
+                        for name in names {
+                            if self.scope().resolve_local(&name).is_none() {
+                                self.scope_mut().add_local(name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Function declaration value hoisting (ES2023 §10.2.11 step 28) ──
+        // Function declarations are fully hoisted: both name AND value are
+        // available from the start of the scope.  Compile them first so that
+        // code appearing before the declaration can call the function.
+        for s in body.iter() {
+            if let Stmt::FunctionDecl { name, params, body: fn_body, is_async, is_generator } = s {
+                self.compile_function_gen(Some(name), params, fn_body, *is_async, *is_generator);
+                // Store into the pre-allocated hoisted slot.
+                let slot = self.scope().resolve_local(name)
+                    .unwrap_or_else(|| self.scope_mut().add_local(name.clone()));
+                self.emit(Op::StoreLocal(slot));
+                self.emit(Op::Pop);
             }
         }
 
@@ -1407,9 +1666,32 @@ impl Compiler {
             self.emit(Op::Pop);                          // [..., Constructor]
         }
 
+        // Step 3b: If the class has a name and contains static blocks, temporarily
+        // bind the constructor to a local so that static blocks can reference the class.
+        let class_name_slot: Option<u16> = if let Some(n) = name {
+            if body.iter().any(|m| matches!(m.kind, ClassMemberKind::StaticBlock { .. })) {
+                self.emit(Op::Dup);
+                let slot = self.scope_mut().add_local(n.clone());
+                self.emit(Op::StoreLocal(slot));
+                self.emit(Op::Pop);
+                Some(slot)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Step 4: add instance methods and static members to Constructor/prototype.
         for member in body {
             if matches!(member.kind, ClassMemberKind::Constructor { .. }) {
+                continue;
+            }
+            // Static block: compile body statements inline (ES2022 §14.7)
+            if let ClassMemberKind::StaticBlock { ref body } = member.kind {
+                for stmt in body {
+                    self.compile_stmt(stmt);
+                }
                 continue;
             }
             // Skip non-static properties — they are initialized in the constructor.
@@ -1438,10 +1720,10 @@ impl Compiler {
             if member.is_static {
                 // Static methods/properties/accessors: set directly on Constructor.
                 match &member.kind {
-                    ClassMemberKind::Method { params, body, is_generator } => {
+                    ClassMemberKind::Method { params, body, is_generator, is_async } => {
                         self.emit(Op::Dup); // [Ctor, Ctor]
                         if is_computed { if let PropKey::Computed(ref e) = member.key { self.compile_expr(e); } }
-                        self.compile_function_gen(Some(&fn_name), params, body, false, *is_generator);
+                        self.compile_function_gen(Some(&fn_name), params, body, *is_async, *is_generator);
                         if is_computed {
                             self.emit(Op::SetProp);
                         } else {
@@ -1464,19 +1746,25 @@ impl Compiler {
                     }
                     ClassMemberKind::Getter { body } => {
                         self.emit(Op::Dup);
+                        if is_computed { if let PropKey::Computed(ref e) = member.key { self.compile_expr(e); } }
                         let getter_name = alloc::format!("get {}", fn_name);
                         self.compile_function(Some(&getter_name), &[], body, false);
-                        if let Some(ref kn) = key_name {
+                        if is_computed {
+                            self.emit(Op::DefineGetterComputed);
+                        } else if let Some(ref kn) = key_name {
                             let ki = self.add_const(Constant::String(kn.clone()));
                             self.emit(Op::DefineGetter(ki));
                         }
                     }
                     ClassMemberKind::Setter { param, body } => {
                         self.emit(Op::Dup);
+                        if is_computed { if let PropKey::Computed(ref e) = member.key { self.compile_expr(e); } }
                         let setter_name = alloc::format!("set {}", fn_name);
                         let p = vec![Param { pattern: Pattern::Ident(param.clone()), default: None, is_rest: false }];
                         self.compile_function(Some(&setter_name), &p, body, false);
-                        if let Some(ref kn) = key_name {
+                        if is_computed {
+                            self.emit(Op::DefineSetterComputed);
+                        } else if let Some(ref kn) = key_name {
                             let ki = self.add_const(Constant::String(kn.clone()));
                             self.emit(Op::DefineSetter(ki));
                         }
@@ -1486,13 +1774,13 @@ impl Compiler {
             } else {
                 // Instance methods/accessors: set on Constructor.prototype.
                 match &member.kind {
-                    ClassMemberKind::Method { params, body, is_generator } => {
+                    ClassMemberKind::Method { params, body, is_generator, is_async } => {
                         self.emit(Op::Dup);
                         let proto_idx = self.add_const(Constant::String(String::from("prototype")));
                         self.emit(Op::GetPropNamed(proto_idx));
                         // Stack: [..., Constructor, Constructor.prototype]
                         if is_computed { if let PropKey::Computed(ref e) = member.key { self.compile_expr(e); } }
-                        self.compile_function_gen(Some(&fn_name), params, body, false, *is_generator);
+                        self.compile_function_gen(Some(&fn_name), params, body, *is_async, *is_generator);
                         if is_computed {
                             self.emit(Op::SetProp); // TODO: non-enum for computed methods
                         } else {
@@ -1505,9 +1793,12 @@ impl Compiler {
                         self.emit(Op::Dup);
                         let proto_idx = self.add_const(Constant::String(String::from("prototype")));
                         self.emit(Op::GetPropNamed(proto_idx));
+                        if is_computed { if let PropKey::Computed(ref e) = member.key { self.compile_expr(e); } }
                         let getter_name = alloc::format!("get {}", fn_name);
                         self.compile_function(Some(&getter_name), &[], body, false);
-                        if let Some(ref kn) = key_name {
+                        if is_computed {
+                            self.emit(Op::DefineGetterComputed);
+                        } else if let Some(ref kn) = key_name {
                             let ki = self.add_const(Constant::String(kn.clone()));
                             self.emit(Op::DefineGetter(ki));
                         }
@@ -1517,10 +1808,13 @@ impl Compiler {
                         self.emit(Op::Dup);
                         let proto_idx = self.add_const(Constant::String(String::from("prototype")));
                         self.emit(Op::GetPropNamed(proto_idx));
+                        if is_computed { if let PropKey::Computed(ref e) = member.key { self.compile_expr(e); } }
                         let setter_name = alloc::format!("set {}", fn_name);
                         let p = vec![Param { pattern: Pattern::Ident(param.clone()), default: None, is_rest: false }];
                         self.compile_function(Some(&setter_name), &p, body, false);
-                        if let Some(ref kn) = key_name {
+                        if is_computed {
+                            self.emit(Op::DefineSetterComputed);
+                        } else if let Some(ref kn) = key_name {
                             let ki = self.add_const(Constant::String(kn.clone()));
                             self.emit(Op::DefineSetter(ki));
                         }
@@ -1750,11 +2044,11 @@ impl Compiler {
                 match callee.as_ref() {
                     Expr::Ident(name) if name == "super" => {
                         // super(args) — call parent constructor with current `this`.
-                        // Stack layout for CallMethod: [..., this, SuperClass, arg1..argN]
-                        self.emit(Op::LoadThis);
+                        // Uses SuperCall to forward new.target from the derived constructor.
+                        // Stack layout: [..., SuperClass, arg1..argN]
                         self.emit_load_name("$$super$$");
                         for arg in arguments { self.compile_expr(arg); }
-                        self.emit(Op::CallMethod(arguments.len() as u8));
+                        self.emit(Op::SuperCall(arguments.len() as u8));
                     }
                     Expr::Member { object, property, .. }
                         if matches!(object.as_ref(), Expr::Ident(n) if n == "super") =>
@@ -1962,6 +2256,12 @@ impl Compiler {
                         self.compile_expr(index);
                         self.emit(Op::Delete);
                     }
+                    Expr::Ident(ref name) if self.is_strict => {
+                        // ES2023 §13.5.1.1: delete of plain identifier in strict mode is SyntaxError.
+                        self.emit_throw_syntax_error(
+                            &alloc::format!("Delete of an unqualified identifier '{}' in strict mode", name)
+                        );
+                    }
                     _ => {
                         self.emit(Op::LoadTrue);
                     }
@@ -1999,6 +2299,19 @@ impl Compiler {
                 self.emit(Op::LoadUndefined);
                 self.patch_jump(end);
             }
+            Expr::OptionalCall { callee, arguments } => {
+                // expr?.(args) — if expr is nullish, short-circuit to undefined.
+                self.compile_expr(callee);
+                self.emit(Op::Dup);
+                let skip = self.emit(Op::JumpIfNullish(0));
+                for arg in arguments { self.compile_expr(arg); }
+                self.emit(Op::Call(arguments.len() as u8));
+                let end = self.emit(Op::Jump(0));
+                self.patch_jump(skip);
+                self.emit(Op::Pop);
+                self.emit(Op::LoadUndefined);
+                self.patch_jump(end);
+            }
             Expr::TaggedTemplate { tag, template } => {
                 self.compile_expr(tag);
                 let ci = self.add_const(Constant::String(template.clone()));
@@ -2010,6 +2323,9 @@ impl Compiler {
                 let pi = self.add_const(Constant::String(pattern.clone()));
                 let fi = self.add_const(Constant::String(flags.clone()));
                 self.emit(Op::NewRegExp(pi, fi));
+            }
+            Expr::NewTarget => {
+                self.emit(Op::NewTarget);
             }
         }
     }
@@ -2399,5 +2715,41 @@ impl Compiler {
             self.scope_mut().locals.pop();
         }
         self.scope_mut().scope_depth -= 1;
+    }
+
+    /// Collect all binding names from a parameter pattern.
+    fn collect_param_names(pat: &Pattern) -> Vec<String> {
+        let mut names = Vec::new();
+        Self::collect_names_inner(pat, &mut names);
+        names
+    }
+
+    fn collect_names_inner(pat: &Pattern, out: &mut Vec<String>) {
+        match pat {
+            Pattern::Ident(n) => out.push(n.clone()),
+            Pattern::Array(elems) => {
+                for e in elems.iter().flatten() {
+                    Self::collect_names_inner(e, out);
+                }
+            }
+            Pattern::Object(props) => {
+                for prop in props {
+                    Self::collect_names_inner(&prop.value, out);
+                }
+            }
+            Pattern::Assign(inner, _) => Self::collect_names_inner(inner, out),
+            Pattern::Rest(inner) => Self::collect_names_inner(inner, out),
+        }
+    }
+
+    /// Emit bytecode that creates and throws a SyntaxError.
+    fn emit_throw_syntax_error(&mut self, msg: &str) {
+        // Build: throw new SyntaxError("<msg>")
+        let se_idx = self.add_const(Constant::String(String::from("SyntaxError")));
+        self.emit(Op::LoadGlobal(se_idx));
+        let msg_idx = self.add_const(Constant::String(String::from(msg)));
+        self.emit(Op::LoadConst(msg_idx));
+        self.emit(Op::New(1));
+        self.emit(Op::Throw);
     }
 }

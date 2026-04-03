@@ -352,6 +352,76 @@ pub fn object_get_own_property_descriptor(_vm: &mut Vm, args: &[JsValue]) -> JsV
                 JsValue::Undefined
             }
         }
+        Some(JsValue::Function(fn_rc)) => {
+            fn_get_own_property_descriptor(fn_rc, &key)
+        }
+        _ => JsValue::Undefined,
+    }
+}
+
+/// Get own property descriptor for Function objects.
+/// Handles built-in properties (`name`, `length`, `prototype`) and own_props
+/// including static accessor workaround keys (`__get_`/`__set_`).
+fn fn_get_own_property_descriptor(fn_rc: &Rc<RefCell<JsFunction>>, key: &str) -> JsValue {
+    let func = fn_rc.borrow();
+    // Check for static accessor (stored as __get_<name> / __set_<name>)
+    let get_key = alloc::format!("__get_{}", key);
+    let set_key = alloc::format!("__set_{}", key);
+    let has_getter = func.own_props.contains_key(&get_key);
+    let has_setter = func.own_props.contains_key(&set_key);
+    if has_getter || has_setter {
+        let getter = func.own_props.get(&get_key).cloned();
+        let setter = func.own_props.get(&set_key).cloned();
+        return prop_to_descriptor(&Property::accessor(getter, setter));
+    }
+    // Check regular own_props first
+    if let Some(val) = func.own_props.get(key) {
+        return prop_to_descriptor(&Property::data(val.clone()));
+    }
+    // Built-in function properties (ES2023 §10.2.4, §20.2.4)
+    match key {
+        "name" => {
+            let name_val = func.name.as_ref()
+                .map(|n| JsValue::String(n.clone()))
+                .unwrap_or(JsValue::String(String::new()));
+            prop_to_descriptor(&Property {
+                value: name_val,
+                writable: false,
+                enumerable: false,
+                configurable: true,
+                getter: None,
+                setter: None,
+            })
+        }
+        "length" => {
+            prop_to_descriptor(&Property {
+                value: JsValue::Number(func.params.len() as f64),
+                writable: false,
+                enumerable: false,
+                configurable: true,
+                getter: None,
+                setter: None,
+            })
+        }
+        "prototype" => {
+            if func.kind.is_arrow() {
+                return JsValue::Undefined; // Arrow functions have no .prototype
+            }
+            let proto_val = if let Some(ref proto) = func.prototype {
+                JsValue::Object(proto.clone())
+            } else {
+                // Don't auto-create prototype here; just report what exists.
+                return JsValue::Undefined;
+            };
+            prop_to_descriptor(&Property {
+                value: proto_val,
+                writable: true,
+                enumerable: false,
+                configurable: false,
+                getter: None,
+                setter: None,
+            })
+        }
         _ => JsValue::Undefined,
     }
 }

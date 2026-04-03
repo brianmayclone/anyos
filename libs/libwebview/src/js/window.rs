@@ -11,10 +11,11 @@ use libjs::Vm;
 use libjs::value::JsObject;
 use libjs::vm::native_fn;
 
-use super::{make_array, arg_string};
+use super::{make_array, arg_string, get_bridge};
 use super::storage;
 use super::xhr;
 use super::fetch;
+use crate::dom::NodeType;
 
 // ── JsValue option helpers (not on the type itself) ──────────────────────────
 
@@ -234,12 +235,168 @@ fn win_passthrough(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     args.first().cloned().unwrap_or(JsValue::String(String::new()))
 }
 
-fn win_get_computed_style(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    // Return the element's style object.
-    if let Some(el) = args.first() {
-        return el.get_property("style");
+fn win_get_computed_style(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // Build a CSSStyleDeclaration-like object with computed values.
+    let el = match args.first() {
+        Some(el) => el,
+        None => return JsValue::new_object(),
+    };
+
+    let mut obj = JsObject::new();
+
+    // Copy all properties from the element's inline style object.
+    let style = el.get_property("style");
+    if let JsValue::Object(ref s) = style {
+        let s_borrowed = s.borrow();
+        for (key, prop) in &s_borrowed.properties {
+            obj.set(key.clone(), prop.value.clone());
+        }
     }
-    JsValue::new_object()
+
+    // Try to read computed styles from the layout engine via the DOM bridge.
+    let node_id = el.get_property("__nodeId").to_number() as i64;
+    if node_id >= 0 {
+        if let Some(bridge) = get_bridge(vm) {
+            let dom = bridge.dom();
+            let nid = node_id as usize;
+            if nid < dom.nodes.len() {
+                // Read inline style attribute values as additional computed properties.
+                if let NodeType::Element { ref attrs, .. } = dom.nodes[nid].node_type {
+                    for attr in attrs {
+                        if attr.name == "style" {
+                            // Parse inline style string into individual properties.
+                            for decl in attr.value.split(';') {
+                                let decl = decl.trim();
+                                if let Some(colon) = decl.find(':') {
+                                    let prop = decl[..colon].trim();
+                                    let val = decl[colon + 1..].trim();
+                                    if !prop.is_empty() && !val.is_empty() {
+                                        let camel = css_to_camel(prop);
+                                        // Don't overwrite properties already set from style object.
+                                        let existing = obj.get(&camel);
+                                        if existing.is_undefined() || existing.is_null() {
+                                            obj.set(camel, JsValue::String(String::from(val)));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Add getPropertyValue method.
+    obj.set(String::from("getPropertyValue"), native_fn("getPropertyValue", computed_get_property_value));
+    // setProperty (no-op for computed styles, but scripts expect it to exist).
+    obj.set(String::from("setProperty"), native_fn("setProperty", |_, _| JsValue::Undefined));
+    // removeProperty (no-op).
+    obj.set(String::from("removeProperty"), native_fn("removeProperty", |_, _| JsValue::String(String::new())));
+
+    // Set default values for commonly queried CSS properties if not already set.
+    let defaults: &[(&str, &str)] = &[
+        ("display", "block"),
+        ("visibility", "visible"),
+        ("opacity", "1"),
+        ("position", "static"),
+        ("overflow", "visible"),
+        ("pointerEvents", "auto"),
+        ("userSelect", "auto"),
+        ("float", "none"),
+        ("clear", "none"),
+        ("boxSizing", "content-box"),
+        ("zIndex", "auto"),
+        ("cursor", "auto"),
+        ("textAlign", "start"),
+        ("textDecoration", "none"),
+        ("textTransform", "none"),
+        ("whiteSpace", "normal"),
+        ("wordBreak", "normal"),
+        ("overflowWrap", "normal"),
+        ("lineHeight", "normal"),
+        ("fontStyle", "normal"),
+        ("fontWeight", "400"),
+        ("fontSize", "16px"),
+        ("fontFamily", "serif"),
+        ("color", "rgb(0, 0, 0)"),
+        ("backgroundColor", "rgba(0, 0, 0, 0)"),
+        ("margin", "0px"),
+        ("marginTop", "0px"),
+        ("marginRight", "0px"),
+        ("marginBottom", "0px"),
+        ("marginLeft", "0px"),
+        ("padding", "0px"),
+        ("paddingTop", "0px"),
+        ("paddingRight", "0px"),
+        ("paddingBottom", "0px"),
+        ("paddingLeft", "0px"),
+        ("borderStyle", "none"),
+        ("borderWidth", "0px"),
+        ("borderColor", "rgb(0, 0, 0)"),
+        ("width", "auto"),
+        ("height", "auto"),
+        ("maxWidth", "none"),
+        ("maxHeight", "none"),
+        ("minWidth", "0px"),
+        ("minHeight", "0px"),
+        ("top", "auto"),
+        ("right", "auto"),
+        ("bottom", "auto"),
+        ("left", "auto"),
+        ("transform", "none"),
+        ("transition", "all 0s ease 0s"),
+        ("verticalAlign", "baseline"),
+    ];
+    for &(prop, default) in defaults {
+        let existing = obj.get(prop);
+        if existing.is_undefined() || existing.is_null() {
+            obj.set(String::from(prop), JsValue::String(String::from(default)));
+        }
+    }
+
+    JsValue::Object(Rc::new(RefCell::new(obj)))
+}
+
+/// `getPropertyValue(name)` on a computed style object.
+/// Looks up both camelCase and kebab-case variants.
+fn computed_get_property_value(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let prop = arg_string(args, 0);
+    let camel = css_to_camel(&prop);
+    if let JsValue::Object(obj) = &vm.current_this {
+        let o = obj.borrow();
+        // Try camelCase first.
+        let val = o.get(&camel);
+        if !val.is_undefined() && !val.is_null() {
+            return JsValue::String(val.to_js_string());
+        }
+        // Try the raw property name (kebab-case).
+        let val = o.get(&prop);
+        if !val.is_undefined() && !val.is_null() {
+            return JsValue::String(val.to_js_string());
+        }
+    }
+    JsValue::String(String::new())
+}
+
+/// Convert a CSS kebab-case property name to camelCase.
+/// e.g. "background-color" → "backgroundColor", "pointer-events" → "pointerEvents".
+fn css_to_camel(name: &str) -> String {
+    if name == "float" { return String::from("cssFloat"); }
+    if !name.contains('-') { return String::from(name); }
+    let mut out = String::with_capacity(name.len());
+    let mut capitalize_next = false;
+    for ch in name.chars() {
+        if ch == '-' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            out.push(ch.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn win_prompt(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -651,6 +808,7 @@ fn win_message_channel(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
                 delay_ms: 0,
                 repeat: false,
                 elapsed_ms: 0,
+                is_raf: false,
             });
         }
         JsValue::Undefined

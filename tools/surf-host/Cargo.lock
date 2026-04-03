@@ -661,6 +661,14 @@ name = "libheap"
 version = "0.1.0"
 
 [[package]]
+name = "libimage"
+version = "0.1.0"
+dependencies = [
+ "libheap",
+ "libsyscall",
+]
+
+[[package]]
 name = "libimage_client"
 version = "0.1.0"
 
@@ -1242,6 +1250,7 @@ dependencies = [
  "libanyui_client",
  "libfont",
  "libfont_client",
+ "libimage",
  "libjs",
  "libwebview",
  "minifb",

@@ -119,6 +119,8 @@ pub struct WebView {
     inline_sheets: Vec<css::Stylesheet>,
     /// Whether inline sheets need re-parsing (set by JS mutations, cleared after parse).
     inline_sheets_dirty: bool,
+    /// Whether the keyframes collection needs rebuilding from sheets.
+    keyframes_dirty: bool,
     /// Cached parsed inline `style="..."` declarations per node_id.
     /// Avoids re-parsing the same style attribute on every relayout.
     inline_style_cache: Vec<(usize, Vec<css::Declaration>)>,
@@ -146,6 +148,15 @@ pub struct WebView {
     bg_color_cached: u32,
     /// Web font mapping: (family_name_lowercase, font_id from libfont).
     web_fonts: Vec<(String, u32)>,
+    /// Previous resolved styles — kept for CSS transition change detection.
+    prev_styles: Vec<style::ComputedStyle>,
+    /// Pending animation/transition overrides to apply during the next relayout.
+    /// Each entry is (node_id, declarations_to_overlay).
+    anim_overrides: Vec<(usize, Vec<css::Declaration>)>,
+    /// Per-node scroll offsets set via JS `element.scrollTop`/`scrollLeft`.
+    /// Stored as (node_id, scroll_top, scroll_left).  Applied to LayoutBoxes
+    /// after layout so overflow containers shift their children.
+    scroll_offsets: Vec<(usize, i32, i32)>,
 }
 
 impl WebView {
@@ -171,6 +182,7 @@ impl WebView {
             external_sheets: Vec::new(),
             inline_sheets: Vec::new(),
             inline_sheets_dirty: true,
+            keyframes_dirty: true,
             inline_style_cache: Vec::new(),
             images: ImageCache::new(),
             viewport_width: w as i32,
@@ -187,6 +199,9 @@ impl WebView {
             last_render_scroll_y: 0,
             bg_color_cached: 0xFFFFFFFF,
             web_fonts: Vec::new(),
+            prev_styles: Vec::new(),
+            anim_overrides: Vec::new(),
+            scroll_offsets: Vec::new(),
         }
     }
 
@@ -228,6 +243,7 @@ impl WebView {
     /// hundreds of kilobytes of CSS text on every image or resource load.
     pub fn add_stylesheet(&mut self, css_text: &str) {
         self.external_sheets.push(css::parse_stylesheet(css_text));
+        self.keyframes_dirty = true;
     }
 
     /// Return `@import` URLs from the most recently added external stylesheet.
@@ -289,6 +305,7 @@ impl WebView {
         self.external_sheets.clear();
         self.inline_sheets.clear();
         self.inline_sheets_dirty = true;
+        self.keyframes_dirty = true;
     }
 
     /// Full cleanup for page navigation.
@@ -309,6 +326,7 @@ impl WebView {
         self.external_sheets.clear();
         self.inline_sheets.clear();
         self.inline_sheets_dirty = true;
+        self.keyframes_dirty = true;
         self.inline_style_cache.clear();
         // Clear web fonts from the previous page.
         self.web_fonts.clear();
@@ -330,6 +348,9 @@ impl WebView {
             let heap0 = debug_heap_pos();
             anyos_std::println!("[webview] set_html: RSP=0x{:X} heap=0x{:X}", rsp0, heap0);
         }
+
+        // Clear per-node scroll offsets from previous page.
+        self.scroll_offsets.clear();
 
         // Parse HTML → DOM.
         debug_surf!("[webview] html::parse start");
@@ -363,6 +384,7 @@ impl WebView {
         // and re-layout so the mutated content becomes visible.
         if !self.js_runtime.mutations.is_empty() {
             debug_surf!("[webview] applying {} JS mutations + relayout", self.js_runtime.mutations.len());
+            self.extract_scroll_offsets();
             self.js_runtime.apply_mutations(&mut parsed_dom);
             self.inline_sheets_dirty = true; // JS may have altered <style> tags
             self.inline_style_cache.clear(); // JS may have altered style="..." attrs
@@ -430,6 +452,7 @@ impl WebView {
         if !self.js_runtime.mutations.is_empty() {
             let n = self.js_runtime.mutations.len();
             debug_surf!("[webview] applying {} JS mutations + relayout", n);
+            self.extract_scroll_offsets();
             self.js_runtime.apply_mutations(&mut dom);
             self.inline_sheets_dirty = true;
             self.inline_style_cache.clear();
@@ -452,6 +475,7 @@ impl WebView {
         // Apply mutations if timers fired.
         let mut dom = dom;
         if !self.js_runtime.mutations.is_empty() {
+            self.extract_scroll_offsets();
             self.js_runtime.apply_mutations(&mut dom);
             self.inline_sheets_dirty = true;
             self.inline_style_cache.clear();
@@ -470,6 +494,11 @@ impl WebView {
     /// Check if there are active JS timers.
     pub fn has_timers(&self) -> bool {
         !self.js_runtime.timers.is_empty()
+    }
+
+    /// Number of active JS timers.
+    pub fn timer_count(&self) -> usize {
+        self.js_runtime.timers.len()
     }
 
     /// Get the page title from the current DOM (if any).
@@ -500,6 +529,10 @@ impl WebView {
 
     /// Resize the viewport and re-layout.
     pub fn resize(&mut self, w: u32, h: u32) {
+        // Skip if dimensions haven't changed — avoids redundant relayouts.
+        if self.viewport_width == w as i32 && self.viewport_height == h {
+            return;
+        }
         self.viewport_width = w as i32;
         self.viewport_height = h;
         self.scroll_view.set_size(w, h);
@@ -516,6 +549,7 @@ impl WebView {
         if let Some(mut d) = self.dom_val.take() {
             // Apply any pending JS mutations before re-rendering.
             if !self.js_runtime.mutations.is_empty() {
+                self.extract_scroll_offsets();
                 self.js_runtime.apply_mutations(&mut d);
                 // JS may have modified <style> tags or style="..." attributes.
                 self.inline_sheets_dirty = true;
@@ -543,18 +577,26 @@ impl WebView {
             self.dom_val = dom_opt;
         }
 
-        // ── 2. CSS animations — DISABLED for performance investigation. ──────────
-        // TODO: re-enable once the idle-loop root cause is confirmed fixed.
-        // if !self.js_runtime.active_animations.is_empty()
-        //     || !self.js_runtime.active_transitions.is_empty()
-        // {
-        //     let (any_active, _overrides) =
-        //         self.js_runtime.advance_animations(delta_ms, &self.keyframes);
-        //     if any_active {
-        //         self.relayout();
-        //         changed = true;
-        //     }
-        // }
+        // ── 2. CSS animations & transitions ──────────────────────────────────────
+        if !self.js_runtime.active_animations.is_empty()
+            || !self.js_runtime.active_transitions.is_empty()
+        {
+            let (any_active, overrides) =
+                self.js_runtime.advance_animations(delta_ms, &self.keyframes);
+            if !overrides.is_empty() {
+                // Store overrides; they will be applied on top of computed
+                // styles inside `do_layout_and_render`.
+                self.anim_overrides = overrides;
+                self.relayout();
+                self.anim_overrides.clear();
+                changed = true;
+            }
+            if any_active && !changed {
+                // Even if no overrides this tick (e.g. in delay phase), keep
+                // the animation loop alive.
+                changed = true;
+            }
+        }
 
         // ── 3. Scroll-based tile management (compositor-driven). ─────────────────
         // Per-tile canvases are positioned in the content_view.  The compositor
@@ -788,6 +830,46 @@ impl WebView {
         data
     }
 
+    /// Extract scroll offset mutations from the pending mutation list and merge
+    /// them into `self.scroll_offsets`.  Must be called *before* `apply_mutations`
+    /// which consumes the mutation vec via `mem::take`.
+    fn extract_scroll_offsets(&mut self) {
+        for m in &self.js_runtime.mutations {
+            match m {
+                js::DomMutation::SetScrollTop { node_id, value } => {
+                    if let Some(entry) = self.scroll_offsets.iter_mut().find(|(id, _, _)| *id == *node_id) {
+                        entry.1 = *value;
+                    } else {
+                        self.scroll_offsets.push((*node_id, *value, 0));
+                    }
+                }
+                js::DomMutation::SetScrollLeft { node_id, value } => {
+                    if let Some(entry) = self.scroll_offsets.iter_mut().find(|(id, _, _)| *id == *node_id) {
+                        entry.2 = *value;
+                    } else {
+                        self.scroll_offsets.push((*node_id, 0, *value));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Recursively apply stored scroll offsets to LayoutBoxes that match node IDs.
+    fn apply_scroll_offsets_to_layout(offsets: &[(usize, i32, i32)], bx: &mut layout::LayoutBox) {
+        if let Some(nid) = bx.node_id {
+            if bx.overflow_hidden {
+                if let Some(&(_, st, sl)) = offsets.iter().find(|(id, _, _)| *id == nid) {
+                    bx.scroll_top = st;
+                    bx.scroll_left = sl;
+                }
+            }
+        }
+        for child in &mut bx.children {
+            Self::apply_scroll_offsets_to_layout(offsets, child);
+        }
+    }
+
     /// Internal: collect stylesheets, resolve styles, layout, and render controls.
     fn do_layout_and_render(&mut self, d: &dom::Dom) {
         debug_surf!("[webview] do_layout_and_render: {} DOM nodes", d.nodes.len());
@@ -818,6 +900,7 @@ impl WebView {
                 }
             }
             self.inline_sheets_dirty = false;
+            self.keyframes_dirty = true;
             debug_surf!("[webview] parsed {} inline <style> blocks", inline_count);
         }
 
@@ -829,7 +912,7 @@ impl WebView {
         let vw = self.viewport_width;
         let vh = if self.viewport_height > 0 { self.viewport_height as i32 } else { self.viewport_width };
         debug_surf!("[webview] resolve_styles start ({} nodes)", d.nodes.len());
-        let (styles, mut pseudo_styles) = {
+        let (mut styles, mut pseudo_styles) = {
             let mut all_sheets: Vec<&css::Stylesheet> = Vec::with_capacity(
                 1 + self.external_sheets.len() + self.inline_sheets.len()
             );
@@ -840,9 +923,54 @@ impl WebView {
         };
         debug_surf!("[webview] resolve_styles done: {} styles", styles.len());
 
+        // Collect @keyframes blocks from all stylesheets so the animation
+        // tick loop can look them up by name.  Only rebuild when sheets change.
+        if self.keyframes_dirty {
+            self.keyframes.clear();
+            for kf in &self.default_sheet.keyframes {
+                self.keyframes.push(kf.clone());
+            }
+            for sheet in &self.external_sheets {
+                for kf in &sheet.keyframes {
+                    self.keyframes.push(kf.clone());
+                }
+            }
+            for sheet in &self.inline_sheets {
+                for kf in &sheet.keyframes {
+                    self.keyframes.push(kf.clone());
+                }
+            }
+            self.keyframes_dirty = false;
+        }
+
         // Register new @keyframe animations for nodes that request them.
-        // DISABLED: CSS animations are disabled for performance investigation.
-        // self.js_runtime.start_animations(&styles);
+        self.js_runtime.start_animations(&styles);
+
+        // Detect CSS property changes and start transitions.
+        if !self.prev_styles.is_empty() {
+            self.js_runtime.start_transitions(&self.prev_styles, &styles);
+        }
+        // Save a snapshot of resolved styles *before* animation overrides
+        // so transition detection compares the base styles next time.
+        self.prev_styles = styles.clone();
+
+        // Apply pending animation/transition overrides on top of the
+        // resolved styles so layout uses the interpolated values.
+        if !self.anim_overrides.is_empty() {
+            let root_fs = if !styles.is_empty() { styles[0].font_size } else { 16 };
+            for (node_id, decls) in &self.anim_overrides {
+                if *node_id < styles.len() {
+                    let parent_fs = {
+                        let pid = d.nodes.get(*node_id).and_then(|n| n.parent).unwrap_or(0);
+                        if pid < styles.len() { styles[pid].font_size } else { root_fs }
+                    };
+                    for decl in decls {
+                        style::apply_declaration(&mut styles[*node_id], decl, parent_fs, root_fs);
+                    }
+                }
+            }
+        }
+
         #[cfg(feature = "debug_surf")]
         debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
 
@@ -854,7 +982,11 @@ impl WebView {
         debug_surf!("[webview] layout start (viewport_width={})", self.viewport_width);
         // Set web font map for renderer access.
         unsafe { WEB_FONT_MAP = &self.web_fonts as *const _; }
-        let root = layout::layout(d, &styles, &mut pseudo_styles, self.viewport_width, &self.images);
+        let mut root = layout::layout(d, &styles, &mut pseudo_styles, self.viewport_width, &self.images);
+        // Apply JS scroll offsets (element.scrollTop/scrollLeft) to layout boxes.
+        if !self.scroll_offsets.is_empty() {
+            Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut root);
+        }
         self.total_height_val = calc_total_height(&root);
         #[cfg(feature = "debug_surf")]
         {

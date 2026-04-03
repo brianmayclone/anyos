@@ -300,6 +300,9 @@ pub enum Expr {
     /// Await: `await expr`
     Await(Box<Expr>),
 
+    /// `new.target` meta-property
+    NewTarget,
+
     /// Class expression
     ClassExpr {
         name: Option<String>,
@@ -311,6 +314,12 @@ pub enum Expr {
     OptionalChain {
         object: Box<Expr>,
         property: String,
+    },
+
+    /// Optional call: `a?.(args)`
+    OptionalCall {
+        callee: Box<Expr>,
+        arguments: Vec<Expr>,
     },
 
     /// Tagged template: tag`template`
@@ -441,6 +450,7 @@ pub enum ClassMemberKind {
         params: Vec<Param>,
         body: Vec<Stmt>,
         is_generator: bool,
+        is_async: bool,
     },
     Property {
         value: Option<Expr>,
@@ -454,6 +464,9 @@ pub enum ClassMemberKind {
     },
     Setter {
         param: String,
+        body: Vec<Stmt>,
+    },
+    StaticBlock {
         body: Vec<Stmt>,
     },
 }
@@ -531,4 +544,60 @@ pub enum AssignOp {
     AndAssign,    // &&=
     OrAssign,     // ||=
     NullishAssign, // ??=
+}
+
+/// Return a summary of an expression tree (for diagnostics). Depth-limited.
+pub fn expr_summary(expr: &Expr, depth: usize) -> String {
+    if depth > 5 { return String::from("..."); }
+    match expr {
+        Expr::Number(n) => alloc::format!("Number({})", n),
+        Expr::String(s) => alloc::format!("String({:?})", &s[..s.len().min(30)]),
+        Expr::Bool(b) => alloc::format!("Bool({})", b),
+        Expr::Null => String::from("Null"),
+        Expr::Undefined => String::from("Undefined"),
+        Expr::Ident(name) => alloc::format!("Ident({})", name),
+        Expr::Unary { op, argument, .. } => alloc::format!("Unary({:?}, {})", op, expr_summary(argument, depth+1)),
+        Expr::Binary { op, left, right } => alloc::format!("Binary({:?}, {}, {})", op, expr_summary(left, depth+1), expr_summary(right, depth+1)),
+        Expr::Call { callee, arguments } => alloc::format!("Call({}, {} args)", expr_summary(callee, depth+1), arguments.len()),
+        Expr::FunctionExpr { name, params, .. } => alloc::format!("FunctionExpr({}, {} params)", name.as_deref().unwrap_or("anon"), params.len()),
+        Expr::Arrow { params, .. } => alloc::format!("Arrow({} params)", params.len()),
+        Expr::Member { object, property, computed } => {
+            if *computed {
+                alloc::format!("Member({}, [computed])", expr_summary(object, depth+1))
+            } else {
+                alloc::format!("Member({}, .{})", expr_summary(object, depth+1), property)
+            }
+        }
+        Expr::Assign { op, left, right } => alloc::format!("Assign({:?}, {}, {})", op, expr_summary(left, depth+1), expr_summary(right, depth+1)),
+        Expr::Sequence(exprs) => alloc::format!("Sequence({} exprs)", exprs.len()),
+        _ => alloc::format!("{:?}", core::mem::discriminant(expr)),
+    }
+}
+
+/// Return a short string naming the Stmt variant (for diagnostics).
+pub fn stmt_variant_name(stmt: &Stmt) -> &'static str {
+    match stmt {
+        Stmt::Expr(_) => "Expr",
+        Stmt::VarDecl { .. } => "VarDecl",
+        Stmt::Block(_) => "Block",
+        Stmt::If { .. } => "If",
+        Stmt::While { .. } => "While",
+        Stmt::DoWhile { .. } => "DoWhile",
+        Stmt::For { .. } => "For",
+        Stmt::ForIn { .. } => "ForIn",
+        Stmt::ForOf { .. } => "ForOf",
+        Stmt::Return(_) => "Return",
+        Stmt::Break(_) => "Break",
+        Stmt::Continue(_) => "Continue",
+        Stmt::Switch { .. } => "Switch",
+        Stmt::Throw(_) => "Throw",
+        Stmt::Try { .. } => "Try",
+        Stmt::FunctionDecl { .. } => "FunctionDecl",
+        Stmt::ClassDecl { .. } => "ClassDecl",
+        Stmt::Labeled { .. } => "Labeled",
+        Stmt::Empty => "Empty",
+        Stmt::Debugger => "Debugger",
+        Stmt::Import { .. } => "Import",
+        Stmt::Export(_) => "Export",
+    }
 }

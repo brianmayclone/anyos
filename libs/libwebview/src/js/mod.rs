@@ -99,6 +99,30 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
                 }
             }
         }
+        "scrollTop" => {
+            if node_id >= 0 {
+                let n = match value {
+                    JsValue::Number(f) => *f as i32,
+                    _ => 0,
+                };
+                mutations.push(DomMutation::SetScrollTop {
+                    node_id: node_id as usize,
+                    value: n.max(0),
+                });
+            }
+        }
+        "scrollLeft" => {
+            if node_id >= 0 {
+                let n = match value {
+                    JsValue::Number(f) => *f as i32,
+                    _ => 0,
+                };
+                mutations.push(DomMutation::SetScrollLeft {
+                    node_id: node_id as usize,
+                    value: n.max(0),
+                });
+            }
+        }
         // Ignore internal properties and methods.
         _ => {}
     }
@@ -202,6 +226,10 @@ pub enum DomMutation {
     /// The host application should parse this Set-Cookie string and update its
     /// cookie jar accordingly.
     SetCookie { value: String },
+    /// Set the vertical scroll offset on an overflow container (JS `element.scrollTop = n`).
+    SetScrollTop { node_id: usize, value: i32 },
+    /// Set the horizontal scroll offset on an overflow container (JS `element.scrollLeft = n`).
+    SetScrollLeft { node_id: usize, value: i32 },
 }
 
 /// A pending HTTP request from XMLHttpRequest / fetch.
@@ -356,6 +384,8 @@ pub struct PendingTimer {
     pub repeat: bool,
     /// Accumulated time since creation/last fire.
     pub elapsed_ms: u64,
+    /// True for requestAnimationFrame timers — callback receives a DOMHighResTimeStamp.
+    pub is_raf: bool,
 }
 
 /// A script entry found in the DOM — either inline text or an external URL.
@@ -426,6 +456,8 @@ pub struct JsRuntime {
     pub active_animations: Vec<ActiveAnimation>,
     /// Currently running CSS transitions.
     pub active_transitions: Vec<ActiveTransition>,
+    /// Total elapsed time since page load (ms) — used as DOMHighResTimeStamp for rAF callbacks.
+    total_elapsed_ms: u64,
 }
 
 impl JsRuntime {
@@ -446,6 +478,7 @@ impl JsRuntime {
             ws_registry: Vec::new(),
             active_animations: Vec::new(),
             active_transitions: Vec::new(),
+            total_elapsed_ms: 0,
         }
     }
 
@@ -550,8 +583,75 @@ impl JsRuntime {
                 anyos_std::println!("[js] skipping script #{} ({} bytes — too large)", idx, script.len());
                 continue;
             }
-            anyos_std::println!("[js] eval #{}: {} bytes", idx, script.len());
-            self.engine.eval(script);
+            // Reset step counter and engine state before each script so each gets the full budget.
+            self.engine.vm().steps = 0;
+            self.engine.vm().last_exception = None;
+            self.engine.set_step_limit(20_000_000);
+            // Clear any leftover call frames from aborted scripts (e.g. step-limit abort).
+            self.engine.vm().frames.clear();
+            self.engine.vm().stack.clear();
+            anyos_std::println!("[js] eval #{}: {} bytes (frames={} stack={})",
+                idx, script.len(), self.engine.vm().frames.len(), self.engine.vm().stack.len());
+            let result = self.engine.eval(script);
+
+            // --- Per-script diagnostics ---
+            let steps_used = self.engine.vm().steps;
+            let hit_limit = steps_used > self.engine.vm().step_limit;
+            if hit_limit {
+                anyos_std::println!("[js] !! script #{} HIT STEP LIMIT ({}/{}) — execution aborted",
+                    idx, steps_used, self.engine.vm().step_limit);
+            } else {
+                anyos_std::println!("[js] script #{} completed: {} steps (limit {})",
+                    idx, steps_used, self.engine.vm().step_limit);
+            }
+
+            // Check for unhandled exceptions.
+            if let Some(ref exc) = self.engine.vm().last_exception {
+                let exc_str = match exc {
+                    JsValue::String(s) => s.clone(),
+                    JsValue::Object(obj) => {
+                        let o = obj.borrow();
+                        let name = match o.get("name") {
+                            JsValue::String(s) => s,
+                            _ => String::from("Error"),
+                        };
+                        let msg = match o.get("message") {
+                            JsValue::String(s) => s,
+                            _ => String::from("(no message)"),
+                        };
+                        alloc::format!("{}: {}", name, msg)
+                    }
+                    other => alloc::format!("{:?}", other),
+                };
+                anyos_std::println!("[js] !! script #{} EXCEPTION: {}", idx, exc_str);
+                // Clear last_exception so next script can run fresh.
+                self.engine.vm().last_exception = None;
+            }
+
+            // Print engine log messages from this script.
+            {
+                let logs = &self.engine.vm().engine_log;
+                if !logs.is_empty() {
+                    for log_msg in logs.iter() {
+                        anyos_std::println!("[js] engine #{}: {}", idx, log_msg);
+                    }
+                    self.engine.vm().engine_log.clear();
+                }
+            }
+
+            // Flush console output after each script.
+            for msg in self.engine.console_output() {
+                anyos_std::println!("[js] console #{}: {}", idx, msg);
+                self.console.push(msg.clone());
+            }
+            self.engine.clear_console();
+
+            // Print first 80 chars of result if not undefined.
+            if !matches!(result, JsValue::Undefined) {
+                let r = alloc::format!("{:?}", result);
+                let truncated = if r.len() > 80 { &r[..80] } else { &r };
+                anyos_std::println!("[js] result #{}: {}", idx, truncated);
+            }
         }
         if scripts.len() > script_count {
             anyos_std::println!("[js] skipped {} script(s) (limit={})",
@@ -560,12 +660,6 @@ impl JsRuntime {
 
         // Disable interception.
         unsafe { MUTATION_TARGET = core::ptr::null_mut(); }
-
-        // Capture output.
-        for msg in self.engine.console_output() {
-            self.console.push(msg.clone());
-        }
-        self.engine.clear_console();
 
         self.mutations = bridge.mutations;
         self.event_listeners = bridge.event_listeners;
@@ -635,6 +729,7 @@ impl JsRuntime {
             "structuredClone", "DOMParser",
             "performance", "history", "location",
             "localStorage", "sessionStorage",
+            "navigator", "screen",
             "matchMedia", "getSelection",
             "scrollTo", "scrollBy",
             "confirm", "prompt",
@@ -946,6 +1041,11 @@ impl JsRuntime {
                     // The host application (e.g. surf) reads these via
                     // `take_mutations()` and updates its cookie jar.
                 }
+                DomMutation::SetScrollTop { .. } | DomMutation::SetScrollLeft { .. } => {
+                    // Scroll offset mutations do not modify the DOM tree.
+                    // They are consumed by WebView::apply_scroll_offsets()
+                    // and applied to LayoutBox.scroll_top/scroll_left before rendering.
+                }
             }
         }
         id_map
@@ -1111,6 +1211,8 @@ impl JsRuntime {
     /// Advance timers by `delta_ms` and execute any that are due.
     /// Returns the number of timers fired.
     pub fn tick(&mut self, dom: &Dom, delta_ms: u64) -> usize {
+        self.total_elapsed_ms += delta_ms;
+
         // Short-circuit: no allocation or work when there are no timers.
         if self.timers.is_empty() { return 0; }
 
@@ -1143,15 +1245,26 @@ impl JsRuntime {
                 self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
                 unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
 
-                // Timer callbacks get a smaller step budget to keep ticks fast.
-                self.engine.set_step_limit(500_000);
-                self.engine.vm().call_value(&t.callback, &[], JsValue::Undefined);
+                // Timer callbacks get a generous step budget for React initial renders.
+                self.engine.set_step_limit(5_000_000);
+                self.engine.vm().steps = 0;
+                // rAF callbacks receive a DOMHighResTimeStamp (W3C spec).
+                let cb_args: Vec<JsValue> = if t.is_raf {
+                    vec![JsValue::Number(self.total_elapsed_ms as f64)]
+                } else {
+                    Vec::new()
+                };
+                self.engine.vm().call_value(&t.callback, &cb_args, JsValue::Undefined);
+
+                // Clear any timer callback exceptions so next timer can run fresh.
+                self.engine.vm().last_exception = None;
 
                 unsafe { MUTATION_TARGET = core::ptr::null_mut(); }
                 for msg in self.engine.console_output() {
                     self.console.push(msg.clone());
                 }
                 self.engine.clear_console();
+                self.engine.vm().engine_log.clear();
                 self.mutations.extend(bridge.mutations);
                 self.event_listeners.extend(bridge.event_listeners);
                 self.pending_http_requests.extend(bridge.pending_http_requests);
@@ -1189,6 +1302,73 @@ impl JsRuntime {
     }
 
     pub fn engine(&mut self) -> &mut JsEngine { &mut self.engine }
+
+    /// Detect CSS property changes between old and new computed styles and
+    /// start `ActiveTransition` entries for properties that have a
+    /// `transition` definition and whose values changed.
+    ///
+    /// Call this after re-resolving styles, passing both old and new style
+    /// arrays.  Only nodes present in both arrays are compared.
+    pub fn start_transitions(
+        &mut self,
+        old_styles: &[crate::style::ComputedStyle],
+        new_styles: &[crate::style::ComputedStyle],
+    ) {
+        let count = old_styles.len().min(new_styles.len());
+        for node_id in 0..count {
+            let old_s = &old_styles[node_id];
+            let new_s = &new_styles[node_id];
+            if new_s.transitions.is_empty() { continue; }
+
+            // For each transition definition on this node, check if the
+            // corresponding property changed between old and new styles.
+            for tdef in &new_s.transitions {
+                if tdef.duration_ms == 0 { continue; }
+
+                // "all" means every animatable property.
+                let props: Vec<Property> = if tdef.property == "all" {
+                    ANIMATABLE_PROPERTIES.to_vec()
+                } else if let Some(p) = crate::css::parse_property(&tdef.property) {
+                    vec![p]
+                } else {
+                    continue;
+                };
+
+                for prop in &props {
+                    let old_decl = computed_style_to_decl(old_s, prop);
+                    let new_decl = computed_style_to_decl(new_s, prop);
+
+                    // Both must exist and differ.
+                    let (from, to) = match (old_decl, new_decl) {
+                        (Some(f), Some(t)) => {
+                            if f.value == t.value { continue; }
+                            (f, t)
+                        }
+                        _ => continue,
+                    };
+
+                    // Don't start a duplicate transition for the same node + property.
+                    let dominated = core::mem::discriminant(&to.property);
+                    let already = self.active_transitions.iter().any(|tr| {
+                        tr.node_id == node_id
+                            && core::mem::discriminant(&tr.to_decl.property) == dominated
+                    });
+                    if already { continue; }
+
+                    self.active_transitions.push(ActiveTransition {
+                        node_id,
+                        property: tdef.property.clone(),
+                        duration_ms: tdef.duration_ms,
+                        timing: tdef.timing,
+                        delay_ms: tdef.delay_ms,
+                        elapsed_ms: 0,
+                        from_decl: Some(from),
+                        to_decl: to,
+                    });
+                }
+            }
+        }
+    }
 
     /// Register `@keyframes` animation starts for every node whose computed
     /// style requests an animation that is not already running.
@@ -1269,12 +1449,13 @@ impl JsRuntime {
                 }
             }
 
-            let finished = if anim_elapsed >= dur {
-                anim.current_iteration += 1;
-                anim.iteration_count != 0 && anim.current_iteration >= anim.iteration_count
-            } else {
-                false
-            };
+            // Derive the current iteration from total elapsed time.
+            let new_iter = (anim_elapsed / dur) as u32;
+            if new_iter > anim.current_iteration {
+                anim.current_iteration = new_iter;
+            }
+            let finished = anim.iteration_count != 0
+                && anim.current_iteration >= anim.iteration_count;
 
             if !finished {
                 any_active = true;
@@ -1815,6 +1996,7 @@ fn native_set_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             delay_ms: delay,
             repeat: false,
             elapsed_ms: 0,
+            is_raf: false,
         });
         return JsValue::Number(id as f64);
     }
@@ -1833,6 +2015,7 @@ fn native_set_interval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             delay_ms: delay,
             repeat: true,
             elapsed_ms: 0,
+            is_raf: false,
         });
         return JsValue::Number(id as f64);
     }
@@ -1852,7 +2035,7 @@ fn native_clear_interval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 fn native_request_animation_frame(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    // Treat as a ~16ms setTimeout (60fps).
+    // Treat as a ~16ms setTimeout (60fps) with DOMHighResTimeStamp callback.
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     if let Some(bridge) = get_bridge(vm) {
         let id = bridge.next_timer_id;
@@ -1863,6 +2046,7 @@ fn native_request_animation_frame(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             delay_ms: 16,
             repeat: false,
             elapsed_ms: 0,
+            is_raf: true,
         });
         return JsValue::Number(id as f64);
     }
@@ -1971,4 +2155,126 @@ fn lerp_color(a: u32, b: u32, t: i32) -> u32 {
         out = (out << 8) | (v.clamp(0, 255) as u32);
     }
     out
+}
+
+// ═══════════════════════════════════════════════════════════
+// CSS Transition helpers
+// ═══════════════════════════════════════════════════════════
+
+use crate::css::{CssValue, Property, Unit};
+
+/// Properties that are commonly animatable via CSS transitions.
+/// When `transition-property: all` is used, we check these.
+const ANIMATABLE_PROPERTIES: &[Property] = &[
+    Property::Opacity,
+    Property::Color,
+    Property::BackgroundColor,
+    Property::BorderColor,
+    Property::Width,
+    Property::Height,
+    Property::MaxWidth,
+    Property::MaxHeight,
+    Property::MinWidth,
+    Property::MinHeight,
+    Property::MarginTop,
+    Property::MarginRight,
+    Property::MarginBottom,
+    Property::MarginLeft,
+    Property::PaddingTop,
+    Property::PaddingRight,
+    Property::PaddingBottom,
+    Property::PaddingLeft,
+    Property::BorderWidth,
+    Property::BorderRadius,
+    Property::FontSize,
+    Property::LineHeight,
+    Property::Top,
+    Property::Right,
+    Property::Bottom,
+    Property::Left,
+    Property::FlexGrow,
+    Property::FlexShrink,
+    Property::LetterSpacing,
+    Property::WordSpacing,
+    Property::TextIndent,
+    Property::RowGap,
+    Property::ColumnGap,
+    Property::Order,
+    Property::ZIndex,
+];
+
+/// Extract a `Declaration` from a `ComputedStyle` for a given `Property`.
+///
+/// Returns `None` for properties we don't track / can't interpolate.
+fn computed_style_to_decl(
+    s: &crate::style::ComputedStyle,
+    prop: &Property,
+) -> Option<crate::css::Declaration> {
+    let value = match prop {
+        Property::Opacity => CssValue::Number(s.opacity),
+        Property::Color => CssValue::Color(s.color),
+        Property::BackgroundColor => CssValue::Color(s.background_color),
+        Property::BorderColor => CssValue::Color(s.border_color),
+        Property::Width => match s.width {
+            Some(v) => CssValue::Length(v * 100, Unit::Px),
+            None => return None,
+        },
+        Property::Height => match s.height {
+            Some(v) => CssValue::Length(v * 100, Unit::Px),
+            None => return None,
+        },
+        Property::MaxWidth => match s.max_width {
+            Some(v) => CssValue::Length(v * 100, Unit::Px),
+            None => return None,
+        },
+        Property::MaxHeight => match s.max_height {
+            Some(v) => CssValue::Length(v * 100, Unit::Px),
+            None => return None,
+        },
+        Property::MinWidth => CssValue::Length(s.min_width * 100, Unit::Px),
+        Property::MinHeight => CssValue::Length(s.min_height * 100, Unit::Px),
+        Property::MarginTop => CssValue::Length(s.margin_top * 100, Unit::Px),
+        Property::MarginRight => CssValue::Length(s.margin_right * 100, Unit::Px),
+        Property::MarginBottom => CssValue::Length(s.margin_bottom * 100, Unit::Px),
+        Property::MarginLeft => CssValue::Length(s.margin_left * 100, Unit::Px),
+        Property::PaddingTop => CssValue::Length(s.padding_top * 100, Unit::Px),
+        Property::PaddingRight => CssValue::Length(s.padding_right * 100, Unit::Px),
+        Property::PaddingBottom => CssValue::Length(s.padding_bottom * 100, Unit::Px),
+        Property::PaddingLeft => CssValue::Length(s.padding_left * 100, Unit::Px),
+        Property::BorderWidth => CssValue::Length(s.border_width * 100, Unit::Px),
+        Property::BorderRadius => CssValue::Length(s.border_radius * 100, Unit::Px),
+        Property::FontSize => CssValue::Length(s.font_size * 100, Unit::Px),
+        Property::LineHeight => CssValue::Length(s.line_height * 100, Unit::Px),
+        Property::Top => match s.top {
+            Some(v) => CssValue::Length(v * 100, Unit::Px),
+            None => return None,
+        },
+        Property::Right => match s.right_offset {
+            Some(v) => CssValue::Length(v * 100, Unit::Px),
+            None => return None,
+        },
+        Property::Bottom => match s.bottom_offset {
+            Some(v) => CssValue::Length(v * 100, Unit::Px),
+            None => return None,
+        },
+        Property::Left => match s.left_offset {
+            Some(v) => CssValue::Length(v * 100, Unit::Px),
+            None => return None,
+        },
+        Property::FlexGrow => CssValue::Number(s.flex_grow),
+        Property::FlexShrink => CssValue::Number(s.flex_shrink),
+        Property::LetterSpacing => CssValue::Length(s.letter_spacing * 100, Unit::Px),
+        Property::WordSpacing => CssValue::Length(s.word_spacing * 100, Unit::Px),
+        Property::TextIndent => CssValue::Length(s.text_indent * 100, Unit::Px),
+        Property::RowGap => CssValue::Length(s.row_gap * 100, Unit::Px),
+        Property::ColumnGap => CssValue::Length(s.column_gap * 100, Unit::Px),
+        Property::Order => CssValue::Number(s.order),
+        Property::ZIndex => CssValue::Number(s.z_index),
+        _ => return None,
+    };
+    Some(crate::css::Declaration {
+        property: prop.clone(),
+        value,
+        important: false,
+    })
 }

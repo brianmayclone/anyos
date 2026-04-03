@@ -200,7 +200,7 @@ fn load_page(wv: &mut libwebview::WebView, url: &str) -> PendingImages {
     load_resources(wv, &base_url);         // CSS, fonts, SVGs (sync) + initial relayout
     let pending = start_image_loading(wv, &base_url);  // images (async, parallel threads)
     run_javascript(wv, &base_url);
-    run_js_timers(wv, 500);
+    run_js_timers(wv, 5000);
     pending
 }
 
@@ -240,8 +240,26 @@ fn main() {
     // ── Screenshot-only mode ─────────────────────────────────────────────
     if let Some(ref path) = args.screenshot {
         if args.delay_ms > 0 {
-            eprintln!("[surf-host] waiting {}ms before screenshot...", args.delay_ms);
-            std::thread::sleep(std::time::Duration::from_millis(args.delay_ms));
+            eprintln!("[surf-host] waiting {}ms before screenshot (running timers)...", args.delay_ms);
+            // Run timers in steps during the wait period so setTimeout/setInterval
+            // callbacks fire (e.g. boot sequences, animations).
+            let step = 50u64;
+            let mut waited = 0u64;
+            while waited < args.delay_ms {
+                if wv.has_timers() {
+                    wv.run_timers(step);
+                }
+                wv.tick(step);
+                waited += step;
+                // Sleep a small amount to avoid 100% CPU
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            // Final relayout after timers
+            wv.relayout();
+            // Print any console output from timer callbacks
+            for line in wv.js_console() {
+                eprintln!("[js:console:timer] {}", line);
+            }
         }
         if let Some((y_start, y_end)) = args.y_range {
             save_range_screenshot(&mut wv, width, y_start, y_end, path);
@@ -1251,12 +1269,16 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str) {
 /// This lets setTimeout(fn, 0) and short-delay timers fire.
 fn run_js_timers(wv: &mut libwebview::WebView, total_ms: u64) {
     if !wv.has_timers() { return; }
-    eprintln!("[js] running timers for {}ms...", total_ms);
+    eprintln!("[js] running timers for {}ms ({} timers pending)...", total_ms, wv.timer_count());
     let step = 50u64;
     let mut elapsed = 0u64;
     while elapsed < total_ms && wv.has_timers() {
         wv.run_timers(step);
         elapsed += step;
+        // Print console output from timer callbacks
+        for line in wv.js_console() {
+            eprintln!("[js:console] {}", line);
+        }
     }
     eprintln!("[js] timer loop done ({} ms elapsed, timers remaining: {})",
         elapsed, wv.has_timers());

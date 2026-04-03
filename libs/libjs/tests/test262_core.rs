@@ -972,3 +972,69 @@ fn labeled_break() {
         console.log(found);
     "#), "true");
 }
+
+// ═══════════════════════════════════════════════════════════
+// §14.7/§14.8 — Async Methods (object literal + class)
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn async_method_object_literal() {
+    // async method shorthand in object literal must parse without error
+    assert_eq!(eval_console(r#"
+        const obj = {
+            async init() { return 42; },
+            async play(code) { return code + 1; },
+            normal() { return 10; }
+        };
+        console.log(typeof obj.init);
+        console.log(typeof obj.play);
+        console.log(obj.normal());
+    "#), "function\nfunction\n10");
+}
+
+#[test]
+fn async_method_class() {
+    // async method in class body
+    assert_eq!(eval_console(r#"
+        class MyClass {
+            async fetchData() { return 99; }
+            sync_method() { return 1; }
+        }
+        var mc = new MyClass();
+        console.log(typeof mc.fetchData);
+        console.log(mc.sync_method());
+    "#), "function\n1");
+}
+
+#[test]
+fn async_as_property_name() {
+    // 'async' used as a normal property name (not a method modifier)
+    assert_eq!(eval_str(r#"
+        const obj = { async: true };
+        obj.async
+    "#), "true");
+}
+
+#[test]
+fn async_method_strudel_pattern() {
+    // Real-world pattern from strudel.js
+    assert_eq!(eval_console(r#"
+        const StrudelPlayer = {
+            isPlaying: false,
+            async init() {
+                this.isPlaying = false;
+                return true;
+            },
+            async play(code, onLog) {
+                return "playing";
+            },
+            stop() {
+                this.isPlaying = false;
+            }
+        };
+        console.log(StrudelPlayer.isPlaying);
+        console.log(typeof StrudelPlayer.init);
+        console.log(typeof StrudelPlayer.play);
+        console.log(typeof StrudelPlayer.stop);
+    "#), "false\nfunction\nfunction\nfunction");
+}

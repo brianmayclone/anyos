@@ -42,7 +42,7 @@ pub fn function_apply(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn function_bind(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let func = vm.current_this.clone();
     let bound_this = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let _bound_args: Vec<JsValue> = if args.len() > 1 {
+    let bound_args: Vec<JsValue> = if args.len() > 1 {
         args[1..].to_vec()
     } else {
         Vec::new()
@@ -65,6 +65,7 @@ pub fn function_bind(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 params: original.params.clone(),
                 kind: original.kind.clone(),
                 this_binding: Some(bound_this),
+                bound_args: bound_args,
                 upvalues: original.upvalues.clone(),
                 prototype: original.prototype.clone(),
                 own_props: original.own_props.clone(),

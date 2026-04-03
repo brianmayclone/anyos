@@ -54,6 +54,7 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
         || !matches!(style.overflow_y, OverflowVal::Visible);
     bx.visibility_hidden = matches!(style.visibility, Visibility::Hidden | Visibility::Collapse);
     bx.opacity = style.opacity;
+    bx.backdrop_filter_blur = style.backdrop_filter.blur_px;
     // Per-side borders (litehtml-style)
     bx.border_top_width = style.border_top.width;
     bx.border_right_width = style.border_right.width;
@@ -96,7 +97,10 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
         (style.position != Position::Static && !style.z_index_auto)
         || style.opacity < 255
         || style.transform_tx != 0
-        || style.transform_ty != 0;
+        || style.transform_ty != 0
+        || style.transform_sx != 1000
+        || style.transform_sy != 1000
+        || style.transform_rotate != 0;
     // Per-side border styles
     bx.border_top_style = style.border_top.style;
     bx.border_right_style = style.border_right.style;
@@ -299,6 +303,31 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
                 bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
                 bx.form_field = Some(FormFieldKind::Password);
                 bx.form_placeholder = dom.attr(node_id, "placeholder").map(|s| String::from(s));
+            }
+            "range" => {
+                let input_h = if let Some(h) = style.height { h } else { 28 };
+                bx.width = if let Some(w) = style.width { w } else { 200 };
+                bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
+                bx.form_field = Some(FormFieldKind::Range);
+                // Compute percentage and encode as 0..1000 in form_value.
+                let min_v: f32 = dom.attr(node_id, "min")
+                    .and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+                let max_v: f32 = dom.attr(node_id, "max")
+                    .and_then(|s| s.parse::<f32>().ok()).unwrap_or(100.0);
+                let cur_v: f32 = dom.attr(node_id, "value")
+                    .and_then(|s| s.parse::<f32>().ok()).unwrap_or(50.0);
+                let pct = if max_v > min_v {
+                    ((cur_v - min_v) / (max_v - min_v)).min(1.0).max(0.0)
+                } else { 0.5 };
+                let pct_i = (pct * 1000.0) as i32;
+                let mut val_str = String::new();
+                if pct_i >= 1000 { val_str.push('X'); }
+                else {
+                    val_str.push((b'0' + (pct_i / 100 % 10) as u8) as char);
+                    val_str.push((b'0' + (pct_i / 10 % 10) as u8) as char);
+                    val_str.push((b'0' + (pct_i % 10) as u8) as char);
+                }
+                bx.form_value = Some(val_str);
             }
             _ => {
                 // text, search, email, url, tel, number, etc.
@@ -517,6 +546,11 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
         bx.x += style.transform_tx;
         bx.y += style.transform_ty;
     }
+
+    // Apply CSS transform: scale and rotate.
+    bx.transform_sx = style.transform_sx;
+    bx.transform_sy = style.transform_sy;
+    bx.transform_rotate = style.transform_rotate;
 
     bx
 }
