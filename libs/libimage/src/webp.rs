@@ -810,44 +810,65 @@ impl<T> OptionExt<T> for Option<T> {
 
 // ── Boolean arithmetic decoder (RFC 6386 §7) ────────────────────────────────
 
+/// VP8 boolean arithmetic decoder.
+///
+/// Uses a 64-bit value window with a dynamic bit_count for the split
+/// comparison, matching the approach from libwebp/image-webp.
+/// The key difference from the RFC 6386 pseudocode is that `value` is NOT
+/// shifted during renormalization — instead, only `bit_count` is decremented
+/// and `bigsplit` is scaled by `bit_count` at comparison time.
 struct BoolDecoder<'a> {
     data: &'a [u8],
     pos: usize,
     range: u32,
-    value: u32,
-    bits_left: i32,
+    value: u64,
+    bit_count: i32,
 }
 
 impl<'a> BoolDecoder<'a> {
     fn new(data: &'a [u8]) -> Self {
-        if data.len() < 2 { return BoolDecoder { data, pos: 2, range: 255, value: 0, bits_left: 0 }; }
-        let value = ((data[0] as u32) << 8) | (data[1] as u32);
-        BoolDecoder { data, pos: 2, range: 255, value, bits_left: 0 }
+        // Start with value=0, bit_count=-8. The first read_bit will trigger
+        // a fill that loads the initial 4 bytes. This matches the image-webp
+        // reference decoder which does NOT pre-load data in the constructor.
+        BoolDecoder { data, pos: 0, range: 255, value: 0, bit_count: -8 }
+    }
+
+    /// Load 4 bytes into the value window (big-endian).
+    fn load_chunk(&mut self) {
+        let mut v = 0u32;
+        for _ in 0..4 {
+            let byte = if self.pos < self.data.len() {
+                let b = self.data[self.pos]; self.pos += 1; b
+            } else { 0 };
+            v = (v << 8) | byte as u32;
+        }
+        self.value <<= 32;
+        self.value |= v as u64;
+        self.bit_count += 32;
     }
 
     fn read_bit(&mut self, prob: u8) -> u32 {
+        if self.bit_count < 0 {
+            self.load_chunk();
+        }
         let split = 1 + (((self.range - 1) * prob as u32) >> 8);
-        let bigsplit = split << 8; // Compare on the same scale as value
-        let big = self.value >= bigsplit;
-        if big {
+        let bigsplit = (split as u64) << (self.bit_count as u64);
+
+        let big = if let Some(new_value) = self.value.checked_sub(bigsplit) {
             self.range -= split;
-            self.value -= bigsplit;
+            self.value = new_value;
+            true
         } else {
             self.range = split;
-        }
-        // Renormalize
-        while self.range < 128 {
-            self.value <<= 1;
-            self.range <<= 1;
-            self.bits_left += 1;
-            if self.bits_left == 8 {
-                self.bits_left = 0;
-                if self.pos < self.data.len() {
-                    self.value |= self.data[self.pos] as u32;
-                    self.pos += 1;
-                }
-            }
-        }
+            false
+        };
+
+        // Renormalize range to [128..255]. Do NOT shift value —
+        // instead decrement bit_count so the next bigsplit is correctly scaled.
+        let shift = self.range.leading_zeros().saturating_sub(24);
+        self.range <<= shift;
+        self.bit_count -= shift as i32;
+
         big as u32
     }
 
@@ -1830,6 +1851,12 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                     // Inverse WHT → 16 DC values
                     let mut dc16 = [0i16; 16];
                     iwht4x4(&y2_coeffs, &mut dc16);
+
+                    #[cfg(feature = "host")]
+                    if mb_x == 0 && mb_y == 0 {
+                        extern crate std;
+                        std::eprintln!("[vp8] Y2 dequant: {:?}  dc16: {:?}", y2_coeffs, dc16);
+                    }
 
                     // Decode 16 Y sub-blocks (AC only, DC from WHT)
                     for sb in 0..16 {
