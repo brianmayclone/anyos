@@ -232,6 +232,15 @@ unsafe fn start_port(base: u64, port: u32) {
 
 // ── IRQ Handler ─────────────────────────────────────
 
+/// Port Interrupt Status bit for PhyRdy Change (device connect/disconnect).
+const PORT_IS_PRCS: u32 = 1 << 22;
+/// Port Interrupt Status bit for device-to-host register FIS (command completion).
+const PORT_IS_DHRS: u32 = 1 << 0;
+
+/// Atomically tracks ports with pending hot-plug events.
+/// Each bit corresponds to a port number (0-31). Checked by a deferred handler.
+static HOTPLUG_PENDING: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 fn ahci_irq_handler(_irq: u8) {
     use core::sync::atomic::Ordering;
 
@@ -245,6 +254,26 @@ fn ahci_irq_handler(_irq: u8) {
         let hba_is = mmio_read32(ahci.mmio_base, REG_IS);
         if hba_is == 0 {
             return;
+        }
+
+        // ── Hot-plug detection on ALL implemented ports ─────────────
+        // Check every port that triggered an interrupt for PhyRdy Change (PRCS).
+        let pi = mmio_read32(ahci.mmio_base, REG_PI);
+        for port in 0..32u32 {
+            if pi & (1 << port) == 0 || hba_is & (1 << port) == 0 {
+                continue;
+            }
+            let pis = port_read(ahci.mmio_base, port, PORT_IS);
+            if pis & PORT_IS_PRCS != 0 {
+                // Clear PhyRdy Change Status
+                port_write(ahci.mmio_base, port, PORT_IS, PORT_IS_PRCS);
+                // Clear SERR.DIAG.N (PhyRdy change bit in error register)
+                let serr = port_read(ahci.mmio_base, port, PORT_SERR);
+                port_write(ahci.mmio_base, port, PORT_SERR, serr);
+                // Mark port for deferred hot-plug processing
+                HOTPLUG_PENDING.fetch_or(1 << port, Ordering::Release);
+                crate::serial_println!("  AHCI: hot-plug event on port {}", port);
+            }
         }
 
         // Clear ATAPI port interrupt (polled, just ack it)
@@ -294,6 +323,93 @@ fn ahci_irq_handler(_irq: u8) {
             crate::task::scheduler::deferred_wake(tid);
         }
     }
+}
+
+/// MSI handler — identical logic to ahci_irq_handler but called via MSI vector.
+/// MSI doesn't require EOI to IOAPIC (LAPIC EOI is handled by the IDT stub).
+fn ahci_msi_handler(_vector: u8) {
+    ahci_irq_handler(0);
+}
+
+/// Process deferred hot-plug events. Called from a non-IRQ context
+/// (e.g. periodic task or on next I/O operation).
+/// Detects newly connected or disconnected SATA devices and updates the
+/// block device registry.
+pub fn process_hotplug() {
+    use core::sync::atomic::Ordering;
+
+    let pending = HOTPLUG_PENDING.swap(0, Ordering::AcqRel);
+    if pending == 0 { return; }
+
+    let ahci = match unsafe { AHCI.as_ref() } {
+        Some(a) => a,
+        None => return,
+    };
+
+    for port in 0..32u32 {
+        if pending & (1 << port) == 0 { continue; }
+
+        let ssts = unsafe { port_read(ahci.mmio_base, port, PORT_SSTS) };
+        let det = ssts & 0x0F;
+
+        if det == 3 {
+            // Device connected — check signature
+            let sig = unsafe { port_read(ahci.mmio_base, port, PORT_SIG) };
+            if sig == SATA_SIG_ATA {
+                crate::serial_println!("  AHCI hot-plug: SATA disk connected on port {}", port);
+                // Identify the disk to get capacity
+                let sectors = unsafe { identify_disk_on_port(ahci, port) };
+                if sectors > 0 {
+                    let disk_id = (port + 1) as u8; // disk_id 0 = primary, 1+ = hot-plugged
+                    super::blockdev::register_device(super::blockdev::BlockDevice {
+                        id: 0, // auto-assigned
+                        disk_id,
+                        partition: None,
+                        start_lba: 0,
+                        size_sectors: sectors,
+                    });
+                    super::blockdev::scan_and_register_partitions(disk_id);
+                    crate::serial_println!("  AHCI hot-plug: disk registered (port={}, {} sectors)",
+                        port, sectors);
+                }
+            } else if sig == SATA_SIG_ATAPI {
+                crate::serial_println!("  AHCI hot-plug: ATAPI device connected on port {}", port);
+            }
+        } else {
+            // Device disconnected
+            crate::serial_println!("  AHCI hot-plug: device disconnected from port {} (det={})", port, det);
+            // Note: full hot-unplug (removing blockdev entries, unmounting) is left
+            // for future work — we only log the event for now.
+        }
+    }
+}
+
+/// Issue IDENTIFY DEVICE on a specific port to get disk capacity.
+/// Returns total sectors (0 on failure).
+unsafe fn identify_disk_on_port(ahci: &AhciController, port: u32) -> u64 {
+    // For hot-plugged disks we use the bounce buffer (serialized by IO_LOCK)
+    let identify_buf = ahci.bounce_virt as *mut u8;
+    core::ptr::write_bytes(identify_buf, 0, 512);
+
+    let ok = issue_command(
+        ahci,
+        ATA_CMD_IDENTIFY,
+        0, 0,
+        ahci.bounce_phys,
+        512,
+        false,
+    );
+
+    if !ok { return 0; }
+
+    // LBA48 capacity at words 100-103 (offset 200-207)
+    let word100 = core::ptr::read_unaligned((ahci.bounce_virt + 200) as *const u64);
+    if word100 > 0 {
+        return word100;
+    }
+    // LBA28 capacity at words 60-61 (offset 120-123)
+    let word60 = core::ptr::read_unaligned((ahci.bounce_virt + 120) as *const u32);
+    word60 as u64
 }
 
 // ── Command Issue (IRQ-driven, slot 0 only) ─────────
@@ -801,7 +917,7 @@ pub fn init_and_register(pci: &PciDevice) {
         start_port(mmio_base, active_port);
 
         // Get PCI interrupt line for IRQ-driven I/O
-        let irq = pci.interrupt_line;
+        let mut irq = pci.interrupt_line;
 
         // ── ATAPI port setup (if CD-ROM detected) ──
         let mut atapi_clb_phys = 0u64;
@@ -908,29 +1024,44 @@ pub fn init_and_register(pci: &PciDevice) {
             crate::serial_verbose_println!("  AHCI: IDENTIFY DEVICE failed");
         }
 
-        // Enable interrupt-driven I/O
-        if irq > 0 && irq < 32 {
-            // Only enable command-completion + error interrupts
-            // (NOT PIO Setup / DMA Setup which fire mid-transfer)
+        // Enable interrupt-driven I/O — prefer MSI over legacy IRQ
+        {
+            // Enable command-completion, error, and hot-plug interrupts on port
             let port_ie = (1u32 << 0)  // D2H Register FIS Interrupt (command complete)
+                        | (1 << 22)    // PhyRdy Change Status (hot-plug)
                         | (1 << 30)    // Task File Error Status
                         | (1 << 31);   // Host Bus Fatal Error
             port_write(mmio_base, active_port, PORT_IE, port_ie);
+
+            // Enable hot-plug interrupts on ALL implemented ports (not just active)
+            for hp_port in 0..32u32 {
+                if pi & (1 << hp_port) != 0 && hp_port != active_port {
+                    port_write(mmio_base, hp_port, PORT_IE, 1 << 22); // PRCS only
+                }
+            }
 
             // Enable HBA global interrupts
             let ghc = mmio_read32(mmio_base, REG_GHC);
             mmio_write32(mmio_base, REG_GHC, ghc | GHC_IE);
 
-            // Register shared IRQ handler (IRQ 11 may be shared with E1000)
-            crate::arch::x86::irq::register_irq_chain(irq, ahci_irq_handler);
-            if crate::arch::x86::apic::is_initialized() {
-                crate::arch::x86::ioapic::unmask_irq(irq);
+            // Try MSI first — dedicated vector, no IRQ sharing
+            let msi_vector = crate::drivers::pci_msi::enable_msi(pci);
+            if let Some(vec) = msi_vector {
+                crate::drivers::pci_msi::register_msi_handler(vec, ahci_msi_handler);
+                irq = vec; // Store for diagnostics
+                crate::serial_println!("  AHCI: MSI vector {} registered (dedicated interrupt)", vec);
+            } else if irq > 0 && irq < 32 {
+                // Fallback: legacy IRQ via IOAPIC
+                crate::arch::x86::irq::register_irq_chain(irq, ahci_irq_handler);
+                if crate::arch::x86::apic::is_initialized() {
+                    crate::arch::x86::ioapic::unmask_irq(irq);
+                } else {
+                    crate::arch::x86::pic::unmask(irq);
+                }
+                crate::serial_println!("  AHCI: legacy IRQ {} registered (shared interrupt)", irq);
             } else {
-                crate::arch::x86::pic::unmask(irq);
+                crate::serial_verbose_println!("  AHCI: No valid IRQ ({}), using polled I/O", irq);
             }
-            crate::serial_verbose_println!("  AHCI: IRQ {} registered (interrupt-driven I/O)", irq);
-        } else {
-            crate::serial_verbose_println!("  AHCI: No valid IRQ ({}), using polled I/O", irq);
         }
 
         // Switch storage backend to AHCI

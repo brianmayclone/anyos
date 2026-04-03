@@ -6,6 +6,8 @@
 // x86-only hardware drivers
 #[cfg(target_arch = "x86_64")]
 pub mod audio;
+#[cfg(target_arch = "x86_64")]
+pub mod bluetooth;
 pub mod boot_console;
 pub mod framebuffer;
 #[cfg(target_arch = "x86_64")]
@@ -21,6 +23,8 @@ pub mod network;
 pub mod pci;
 #[cfg(target_arch = "x86_64")]
 pub mod pci_drivers;
+#[cfg(target_arch = "x86_64")]
+pub mod pci_msi;
 #[cfg(target_arch = "x86_64")]
 pub mod rsod;
 #[cfg(target_arch = "x86_64")]

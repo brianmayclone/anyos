@@ -187,6 +187,11 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             arch::x86::smp::register_halt_ipi();
             arch::x86::smp::register_tlb_shootdown_ipi();
             arch::x86::syscall_msr::init_bsp();
+
+            // Initialize PCIe ECAM from MCFG table (if available)
+            for seg in &info.mcfg_segments {
+                drivers::pci_msi::set_ecam_base(seg.base_address, seg.start_bus, seg.end_bus);
+            }
         } else {
             serial_println!("  ACPI not found, using legacy PIC");
         }

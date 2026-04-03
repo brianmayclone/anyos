@@ -597,8 +597,9 @@ impl ExFatFs {
         // Clear bitmap dirty bits
         for b in &mut self.bitmap_dirty { *b = 0; }
 
-        // Flush drive write cache to ensure metadata is on persistent storage
-        crate::drivers::storage::flush();
+        // Note: we do NOT call storage::flush() here (AHCI FLUSH CACHE EXT is
+        // extremely expensive — 10-100ms). The drive's own write cache handles
+        // ordering. An explicit storage::flush() is only done on sync()/shutdown.
 
         Ok(())
     }

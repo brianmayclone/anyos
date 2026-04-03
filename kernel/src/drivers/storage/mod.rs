@@ -252,18 +252,31 @@ fn read_sectors_raw(lba: u32, count: u32, buf: &mut [u8]) -> bool {
 
 /// Write `count` sectors starting at `lba` from `buf`.
 ///
-/// Dispatches to the active backend. After a successful write, the affected
-/// sectors are updated in the block cache (write-through) so subsequent reads
-/// see the new data without hitting the disk.
+/// Uses write-back caching: data is stored in the block cache as dirty sectors
+/// and written to disk lazily during writeback. This makes writes extremely fast
+/// (RAM speed) while maintaining read coherency.
+///
+/// For large writes (>256 sectors / 128 KiB), data goes directly to disk to
+/// avoid flooding the cache and evicting useful read-cache entries.
 pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
     if count == 0 { return true; }
     IO_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
+
+    let cache_active = crate::fs::blockcache::is_ready();
+    let data_len = count as usize * 512;
+
+    // Write-back path: small writes go to cache, large writes bypass
+    if cache_active && count <= 256 && buf.len() >= data_len {
+        crate::fs::blockcache::write_back(0, lba, count, &buf[..data_len]);
+        return true;
+    }
+
+    // Large write or no cache: go directly to disk
     io_lock_acquire();
     let result = write_sectors_raw(lba, count, buf);
     io_lock_release();
-    if result && crate::fs::blockcache::is_ready() {
-        // Write-through: update cache with written data so reads stay coherent
-        let data_len = count as usize * 512;
+    if result && cache_active {
+        // Update cache so reads see the new data
         if buf.len() >= data_len {
             crate::fs::blockcache::populate(0, lba, count, &buf[..data_len]);
         } else {
@@ -295,6 +308,16 @@ fn write_sectors_raw(lba: u32, count: u32, buf: &[u8]) -> bool {
         StorageBackend::Nvme => nvme::write_sectors(lba, count, buf),
         StorageBackend::LsiScsi => lsi_scsi::write_sectors(lba, count, buf),
     }
+}
+
+/// Write sectors directly to disk, bypassing the block cache.
+/// Used by the cache writeback mechanism itself to avoid recursion.
+pub fn write_sectors_direct(lba: u32, count: u32, buf: &[u8]) -> bool {
+    if count == 0 { return true; }
+    io_lock_acquire();
+    let result = write_sectors_raw(lba, count, buf);
+    io_lock_release();
+    result
 }
 
 /// Flush storage write cache to persistent media.

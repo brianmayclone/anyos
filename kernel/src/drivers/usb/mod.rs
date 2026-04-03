@@ -8,6 +8,7 @@ pub mod uhci;
 pub mod ehci;
 pub mod xhci;
 pub mod hid;
+pub mod digitizer;
 pub mod storage;
 pub mod hub;
 pub mod cdc_acm;

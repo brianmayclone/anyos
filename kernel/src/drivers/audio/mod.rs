@@ -9,6 +9,7 @@
 
 pub mod ac97;
 pub mod hda;
+pub mod mixer;
 
 use alloc::boxed::Box;
 use crate::sync::spinlock::Spinlock;

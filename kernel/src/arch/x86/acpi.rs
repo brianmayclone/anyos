@@ -30,7 +30,16 @@ pub struct IsoInfo {
     pub flags: u16,
 }
 
-/// Parsed ACPI information extracted from the MADT.
+/// PCIe ECAM segment information (from MCFG table).
+#[derive(Debug, Clone, Copy)]
+pub struct McfgSegment {
+    pub base_address: u64,
+    pub segment_group: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+}
+
+/// Parsed ACPI information extracted from MADT and MCFG.
 pub struct AcpiInfo {
     /// Physical base address of the Local APIC MMIO registers.
     pub lapic_address: u32,
@@ -40,6 +49,8 @@ pub struct AcpiInfo {
     pub io_apics: Vec<IoApicInfo>,
     /// Interrupt Source Overrides (ISA IRQ remappings).
     pub isos: Vec<IsoInfo>,
+    /// PCIe ECAM segments (from MCFG table). Empty if no MCFG found.
+    pub mcfg_segments: Vec<McfgSegment>,
 }
 
 // RSDP signature: "RSD PTR "
@@ -157,6 +168,9 @@ pub fn init(rsdp_hint: u32) -> Option<AcpiInfo> {
     // Now we can safely remap the ACPI window for each table
     acpi_unmap(16);
 
+    let mut acpi_info: Option<AcpiInfo> = None;
+    let mut mcfg_segments: Vec<McfgSegment> = Vec::new();
+
     for i in 0..count {
         let table_phys = table_addrs[i];
         if table_phys == 0 {
@@ -170,19 +184,27 @@ pub fn init(rsdp_hint: u32) -> Option<AcpiInfo> {
         if &table_sig == b"APIC" {
             let table_len = unsafe { core::ptr::addr_of!((*table).length).read_unaligned() };
             crate::serial_verbose_println!("  ACPI: MADT found at phys {:#010x} (len={})", table_phys, table_len);
-
-            // Remap to ensure the full MADT is accessible
             let madt_virt = acpi_map(table_phys, table_len);
-            let result = parse_madt(madt_virt, table_len);
-            acpi_unmap(ACPI_MAP_PAGES);
-            return result;
+            acpi_info = parse_madt(madt_virt, table_len);
+        } else if &table_sig == b"MCFG" {
+            let table_len = unsafe { core::ptr::addr_of!((*table).length).read_unaligned() };
+            crate::serial_verbose_println!("  ACPI: MCFG found at phys {:#010x} (len={})", table_phys, table_len);
+            let mcfg_virt = acpi_map(table_phys, table_len);
+            mcfg_segments = parse_mcfg(mcfg_virt, table_len);
         }
 
-        acpi_unmap(1);
+        acpi_unmap(ACPI_MAP_PAGES);
     }
 
-    crate::serial_verbose_println!("  ACPI: MADT not found");
-    None
+    // Attach MCFG segments to acpi_info
+    if let Some(ref mut info) = acpi_info {
+        info.mcfg_segments = mcfg_segments;
+    }
+
+    if acpi_info.is_none() {
+        crate::serial_verbose_println!("  ACPI: MADT not found");
+    }
+    acpi_info
 }
 
 /// Search for the RSDP structure.
@@ -330,5 +352,40 @@ fn parse_madt(madt_virt: u64, table_len: u32) -> Option<AcpiInfo> {
         processors,
         io_apics,
         isos,
+        mcfg_segments: Vec::new(), // Populated by caller from MCFG table
     })
+}
+
+/// Parse MCFG (Memory-mapped Configuration Space) ACPI table.
+/// Returns a list of PCIe ECAM segments with base addresses and bus ranges.
+fn parse_mcfg(mcfg_virt: u64, table_len: u32) -> Vec<McfgSegment> {
+    let header_size = core::mem::size_of::<AcpiSdtHeader>() as u64;
+    let mut segments = Vec::new();
+
+    // MCFG has 8 bytes of reserved space after the SDT header, then
+    // 16-byte entries: [base_address(8), segment_group(2), start_bus(1), end_bus(1), reserved(4)]
+    let entries_start = header_size + 8; // Skip reserved
+    let entry_size = 16u64;
+    let data_len = table_len as u64 - entries_start;
+    let num_entries = data_len / entry_size;
+
+    for i in 0..num_entries {
+        let entry_base = mcfg_virt + entries_start + i * entry_size;
+        let base_address = unsafe { (entry_base as *const u64).read_unaligned() };
+        let segment_group = unsafe { ((entry_base + 8) as *const u16).read_unaligned() };
+        let start_bus = unsafe { *((entry_base + 10) as *const u8) };
+        let end_bus = unsafe { *((entry_base + 11) as *const u8) };
+
+        crate::serial_println!("  PCIe ECAM segment {}: base={:#014x} buses {}-{}",
+            segment_group, base_address, start_bus, end_bus);
+
+        segments.push(McfgSegment {
+            base_address,
+            segment_group,
+            start_bus,
+            end_bus,
+        });
+    }
+
+    segments
 }
