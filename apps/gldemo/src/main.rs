@@ -53,12 +53,11 @@ void main() {
 }
 ";
 
-/// Fragment shader: material × lighting (textures disabled until virgl tex upload works).
+/// Fragment shader: lighting only (textures disabled until virgl tex upload works).
 static FS_SOURCE: &str =
 "varying vec3 vLighting;
-uniform vec4 uMatColor;
 void main() {
-    gl_FragColor = vec4(vLighting * uMatColor.rgb, 1.0);
+    gl_FragColor = vec4(vLighting, 1.0);
 }
 ";
 
@@ -200,46 +199,64 @@ fn generate_sphere(rings: u32, sectors: u32) -> (Vec<f32>, Vec<u16>) {
     let mut verts = Vec::new();
     let mut indices = Vec::new();
 
-    for r in 0..=rings {
-        let phi = pi * r as f32 / rings as f32; // 0..PI
+    // Vertex 0: north pole
+    verts.extend_from_slice(&[0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.0]);
+
+    // Middle rings (1..rings-1) — no degenerate poles
+    for r in 1..rings {
+        let phi = pi * r as f32 / rings as f32;
         let sp = gl::sin(phi);
         let cp = gl::cos(phi);
 
-        for s in 0..=sectors {
-            let theta = 2.0 * pi * s as f32 / sectors as f32; // 0..2PI
-            let st = gl::sin(theta);
-            let ct = gl::cos(theta);
-
-            // Position (unit sphere)
-            let x = sp * ct;
+        for s in 0..sectors {
+            let theta = 2.0 * pi * s as f32 / sectors as f32;
+            let x = sp * gl::cos(theta);
             let y = cp;
-            let z = sp * st;
+            let z = sp * gl::sin(theta);
 
-            // Normal = position (unit sphere)
-            let nx = x;
-            let ny = y;
-            let nz = z;
-
-            // UV
             let u = s as f32 / sectors as f32;
             let v = r as f32 / rings as f32;
 
-            verts.extend_from_slice(&[x, y, z, nx, ny, nz, u, v]);
+            // Normal = position for unit sphere
+            verts.extend_from_slice(&[x, y, z, x, y, z, u, v]);
         }
     }
 
-    // Indices (two triangles per quad)
-    let row_len = sectors + 1;
-    for r in 0..rings {
+    // Last vertex: south pole
+    let south_idx = (1 + (rings - 1) * sectors) as u16;
+    verts.extend_from_slice(&[0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.5, 1.0]);
+
+    // North pole triangle fan: pole(0) → ring 1
+    for s in 0..sectors {
+        let next = (s + 1) % sectors;
+        indices.extend_from_slice(&[0, 1 + s as u16, 1 + next as u16]);
+    }
+
+    // Middle quad strips: ring r → ring r+1
+    for r in 0..(rings - 2) {
+        let base = 1 + r * sectors;
+        let next_base = base + sectors;
         for s in 0..sectors {
-            let i0 = (r * row_len + s) as u16;
-            let i1 = (r * row_len + s + 1) as u16;
-            let i2 = ((r + 1) * row_len + s) as u16;
-            let i3 = ((r + 1) * row_len + s + 1) as u16;
+            let s1 = (s + 1) % sectors;
+            let i0 = (base + s) as u16;
+            let i1 = (base + s1) as u16;
+            let i2 = (next_base + s) as u16;
+            let i3 = (next_base + s1) as u16;
 
             indices.extend_from_slice(&[i0, i1, i2]);
             indices.extend_from_slice(&[i1, i3, i2]);
         }
+    }
+
+    // South pole triangle fan: last ring → pole
+    let last_ring_base = 1 + (rings - 2) * sectors;
+    for s in 0..sectors {
+        let next = (s + 1) % sectors;
+        indices.extend_from_slice(&[
+            (last_ring_base + s) as u16,
+            (last_ring_base + next) as u16,
+            south_idx,
+        ]);
     }
 
     (verts, indices)
@@ -839,7 +856,7 @@ fn main() {
         loc_mvp, loc_model, loc_light_pos0, loc_eye_pos, loc_texture, loc_mat_color);
 
     // ── Generate sphere geometry ─────────────────────────────────────────
-    let (sphere_verts, sphere_indices) = generate_sphere(10, 16);
+    let (sphere_verts, sphere_indices) = generate_sphere(24, 32);
     let sphere_num_indices = sphere_indices.len() as i32;
 
     let mut sphere_vbo = [0u32; 1];
