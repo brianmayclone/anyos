@@ -8,6 +8,8 @@
 //! RX polling remains driver-specific (IRQ-driven, not routed through the trait).
 
 pub mod e1000;
+pub mod igc;
+pub mod rtl8168;
 pub mod rtl8188eu;
 pub mod virtio_net;
 

@@ -181,6 +181,65 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
         specificity: 2,
     },
 
+    // ── Realtek RTL8168/8111 Gigabit Ethernet (most common consumer NIC) ──
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x8168 },
+        factory: |pci| crate::drivers::network::rtl8168::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x8136 },
+        factory: |pci| crate::drivers::network::rtl8168::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x8161 },
+        factory: |pci| crate::drivers::network::rtl8168::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x8167 },
+        factory: |pci| crate::drivers::network::rtl8168::probe(pci),
+        specificity: 2,
+    },
+
+    // ── Intel I225/I226/I210/I211 Ethernet ──
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x15F3 },
+        factory: |pci| crate::drivers::network::igc::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x15F2 },
+        factory: |pci| crate::drivers::network::igc::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x1533 },
+        factory: |pci| crate::drivers::network::igc::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x1539 },
+        factory: |pci| crate::drivers::network::igc::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x15B7 },
+        factory: |pci| crate::drivers::network::igc::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x15B8 },
+        factory: |pci| crate::drivers::network::igc::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x15F9 },
+        factory: |pci| crate::drivers::network::igc::probe(pci),
+        specificity: 2,
+    },
+
     // ── Class-based matches (specificity 1) ──
 
     PciDriverEntry {
@@ -200,12 +259,27 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
     },
     PciDriverEntry {
         match_rule: PciMatch::Class { class: 0x02, subclass: 0x00 },
-        factory: |pci| crate::drivers::network::e1000::probe(pci),
+        factory: |pci| {
+            // Try specific drivers by vendor before falling back to E1000
+            match pci.vendor_id {
+                0x10EC => crate::drivers::network::rtl8168::probe(pci),
+                0x8086 => crate::drivers::network::igc::probe(pci)
+                    .or_else(|| crate::drivers::network::e1000::probe(pci)),
+                _ => crate::drivers::network::e1000::probe(pci),
+            }
+        },
         specificity: 1,
     },
     PciDriverEntry {
         match_rule: PciMatch::Class { class: 0x03, subclass: 0x00 },
-        factory: |pci| crate::drivers::gpu::generic_vga_probe(pci),
+        factory: |pci| {
+            // Try vendor-specific GPU drivers before generic VGA
+            match pci.vendor_id {
+                0x8086 => crate::drivers::gpu::intel_fb::probe(pci),
+                0x1002 => crate::drivers::gpu::amd_fb::probe(pci),
+                _ => crate::drivers::gpu::generic_vga_probe(pci),
+            }
+        },
         specificity: 1,
     },
     PciDriverEntry {

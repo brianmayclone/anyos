@@ -4,7 +4,9 @@
 //! with support for 2D acceleration, hardware cursor, double-buffering, and runtime
 //! resolution changes. Drivers are registered dynamically via PCI detection in the HAL.
 
+pub mod amd_fb;
 pub mod bochs_vga;
+pub mod intel_fb;
 pub mod vbox_vga;
 pub mod virtio_gpu;
 pub mod vmware_svga;
