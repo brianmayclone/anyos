@@ -12,8 +12,8 @@ default = []
 host = []
 
 [dependencies]
-libheap = { path = "../libheap", optional = true }
-libsyscall = { path = "../libsyscall", optional = true }
+libheap = { path = "../libheap" }
+libsyscall = { path = "../libsyscall" }
 
 [profile.dev]
 panic = "abort"

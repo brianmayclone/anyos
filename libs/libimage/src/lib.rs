@@ -18,6 +18,8 @@ pub mod lzw;
 pub mod video;
 pub mod scale;
 #[cfg(not(feature = "host"))]
+mod syscall;
+#[cfg(not(feature = "host"))]
 pub mod iconpack;
 pub mod svg_raster;
 
