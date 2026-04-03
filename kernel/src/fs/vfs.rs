@@ -12,9 +12,16 @@ use crate::fs::file::{DirEntry, FileDescriptor, FileFlags, FileType, OpenFile};
 use crate::sync::mutex::Mutex;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Maximum number of simultaneously open file descriptors (system-wide).
 const MAX_OPEN_FILES: usize = 1024;
+
+/// Counter for write operations — triggers periodic metadata flush.
+/// After every FLUSH_INTERVAL writes, dirty metadata is flushed to disk.
+/// This prevents data loss without slowing down every individual write.
+static WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
+const FLUSH_INTERVAL: u32 = 64;
 
 /// Default partition start sector (used when no MBR/GPT partition table is found).
 /// Must match mkimage.py --fs-start for backward compatibility.
@@ -1009,8 +1016,27 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
         if file.refcount > 1 {
             file.refcount -= 1;
         } else {
+            let fs_id = file.fs_id;
+            let was_writable = file.flags.write;
             *entry = None;
             state.free_slots.push(slot_id as u32);
+
+            // Flush deferred metadata on last close of a writable file
+            if was_writable {
+                if fs_id == 3 {
+                    if let Some(ref mut exfat) = state.exfat_fs {
+                        if exfat.metadata_dirty {
+                            let _ = exfat.flush_metadata();
+                        }
+                    }
+                } else if fs_id == 6 {
+                    for (_path, exfat) in &mut state.mounted_exfat {
+                        if exfat.metadata_dirty {
+                            let _ = exfat.flush_metadata();
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     } else {
@@ -1029,7 +1055,8 @@ pub fn incref(slot_id: u32) {
 }
 
 /// Decrement the reference count on a global open file slot (for close/exit).
-/// Frees the slot if refcount drops to 0.
+/// Frees the slot if refcount drops to 0. On last close of a writable exFAT
+/// file, flushes deferred metadata to disk.
 pub fn decref(slot_id: u32) {
     let mut vfs = VFS.lock();
     if let Some(state) = vfs.as_mut() {
@@ -1038,8 +1065,27 @@ pub fn decref(slot_id: u32) {
                 if file.refcount > 1 {
                     file.refcount -= 1;
                 } else {
+                    let fs_id = file.fs_id;
+                    let was_writable = file.flags.write;
                     *entry = None;
                     state.free_slots.push(slot_id);
+
+                    // Flush deferred metadata on last close of a writable file
+                    if was_writable {
+                        if fs_id == 3 {
+                            if let Some(ref mut exfat) = state.exfat_fs {
+                                if exfat.metadata_dirty {
+                                    let _ = exfat.flush_metadata();
+                                }
+                            }
+                        } else if fs_id == 6 {
+                            for (_path, exfat) in &mut state.mounted_exfat {
+                                if exfat.metadata_dirty {
+                                    let _ = exfat.flush_metadata();
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1300,6 +1346,22 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         file.inode = new_cluster;
         file.size = new_size;
         file.position = position + buf.len() as u32;
+    }
+
+    // Periodic metadata flush: every FLUSH_INTERVAL writes, flush dirty metadata
+    // to disk. This bounds the data-loss window without penalizing every write.
+    let wc = WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    if wc % FLUSH_INTERVAL == FLUSH_INTERVAL - 1 {
+        if let Some(ref mut exfat) = state.exfat_fs {
+            if exfat.metadata_dirty {
+                let _ = exfat.flush_metadata();
+            }
+        }
+        for (_path, exfat) in &mut state.mounted_exfat {
+            if exfat.metadata_dirty {
+                let _ = exfat.flush_metadata();
+            }
+        }
     }
 
     Ok(buf.len())
@@ -2116,7 +2178,42 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
     }
 }
 
-/// Unmount a filesystem at the given path.
+/// Flush metadata for a specific open file to disk (fsync semantics).
+/// Ensures all deferred FAT/bitmap writes for the file's filesystem are persisted.
+pub fn fsync(slot_id: FileDescriptor) -> Result<(), FsError> {
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+    let file = state.open_files.get(slot_id as usize)
+        .and_then(|e| e.as_ref())
+        .ok_or(FsError::BadFd)?;
+
+    let fs_id = file.fs_id;
+
+    match fs_id {
+        3 => {
+            if let Some(ref mut exfat) = state.exfat_fs {
+                if exfat.metadata_dirty {
+                    exfat.flush_metadata()?;
+                }
+            }
+        }
+        6 => {
+            for (_path, exfat) in &mut state.mounted_exfat {
+                if exfat.metadata_dirty {
+                    let _ = exfat.flush_metadata();
+                }
+            }
+        }
+        _ => {} // Other filesystems flush synchronously already
+    }
+
+    // Also flush the storage write cache
+    drop(vfs);
+    crate::drivers::storage::flush();
+    Ok(())
+}
+
 /// Flush all dirty filesystem metadata and storage write caches.
 pub fn sync_all() {
     let mut vfs = VFS.lock();

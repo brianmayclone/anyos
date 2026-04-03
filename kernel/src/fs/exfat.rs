@@ -334,6 +334,10 @@ pub struct ExFatFs {
     /// requiring `&mut self`.  Safe because `ExFatFs` is always accessed while
     /// the VFS `Mutex` is held — at most one CPU touches this at a time.
     cluster_cache: core::cell::UnsafeCell<ClusterCache>,
+    /// True when FAT/bitmap metadata has been modified but not yet flushed to disk.
+    /// Set by write_file/alloc_cluster/free_chain, cleared by flush_metadata.
+    /// Allows deferring expensive metadata flushes until fsync/close/sync.
+    pub metadata_dirty: bool,
 }
 
 /// Pre-computed read plan for exFAT files (matches FAT16 FileReadPlan pattern).
@@ -474,6 +478,7 @@ impl ExFatFs {
             bitmap_contiguous: true,
             alloc_hint: 0,
             cluster_cache: core::cell::UnsafeCell::new(ClusterCache::new()),
+            metadata_dirty: false,
         };
 
         // Scan root directory for the allocation bitmap entry
@@ -517,8 +522,10 @@ impl ExFatFs {
     // =================================================================
 
     /// Flush all dirty FAT sectors and bitmap sectors to disk.
-    /// Call this after a batch of writes (e.g. after write_file, after create_entry).
+    /// Called on fsync, close, sync, or when metadata_dirty is set and a
+    /// structural operation (create/delete/rename) needs consistency.
     pub fn flush_metadata(&mut self) -> Result<(), FsError> {
+        self.metadata_dirty = false;
         // Flush dirty FAT sectors — coalesce runs of consecutive dirty sectors
         let fat_sectors = self.fat_length as usize;
         let mut i = 0;
@@ -1692,8 +1699,8 @@ impl ExFatFs {
             }
         }
 
-        // Flush deferred FAT + bitmap writes
-        self.flush_metadata()?;
+        // Mark metadata as dirty — deferred flush on fsync/close/sync
+        self.metadata_dirty = true;
 
         let new_size = (offset + data.len() as u32).max(old_size);
         Ok((first, new_size))

@@ -3,8 +3,9 @@
 //! Routes read/write requests to the active storage backend (ATA PIO or AHCI DMA).
 //! The backend is selected at boot based on hardware detection.
 //!
-//! All I/O is serialized via `IO_LOCK` — ATA PIO and AHCI both use a single
-//! channel that cannot handle concurrent commands from multiple CPUs.
+//! All I/O is serialized via `IO_LOCK` — a yielding lock that gives up the CPU
+//! time slice instead of busy-spinning when contended.  Reads are accelerated
+//! by the global block cache (`fs::blockcache`).
 
 pub mod ata;
 pub mod ahci;
@@ -14,7 +15,7 @@ pub mod nvme;
 pub mod lsi_scsi;
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::sync::spinlock::Spinlock;
 
 // ── Per-Device I/O Override ──────────────────────────────────────────────────
@@ -63,17 +64,54 @@ enum StorageBackend {
 
 static mut BACKEND: StorageBackend = StorageBackend::Ata;
 
-/// Spinlock for serializing all disk I/O.  Does NOT disable interrupts —
-/// disk operations may take milliseconds and we must not miss timer ticks.
+/// Yielding lock for serializing disk I/O.  Does NOT disable interrupts.
+/// When contended, yields the CPU time slice instead of busy-spinning,
+/// allowing other threads to make progress while waiting for I/O.
 static IO_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// Counter for I/O operations in progress (for statistics).
+static IO_OPS_TOTAL: AtomicU32 = AtomicU32::new(0);
+
+/// Adaptive readahead state — tracks the last read position to detect
+/// sequential access patterns and scale readahead accordingly.
+static LAST_READ_END_LBA: AtomicU32 = AtomicU32::new(0);
+/// Current readahead level (in sectors). Doubles on sequential hits,
+/// resets to minimum on random access. Range: 16..512 sectors (8-256 KiB).
+static READAHEAD_LEVEL: AtomicU32 = AtomicU32::new(64);
+const READAHEAD_MIN: u32 = 16;   //   8 KiB
+const READAHEAD_MAX: u32 = 512;  // 256 KiB
 
 #[inline]
 fn io_lock_acquire() {
-    while IO_LOCK
+    // Fast path: try once without yielding
+    if IO_LOCK
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
+        .is_ok()
     {
-        core::hint::spin_loop();
+        return;
+    }
+    // Slow path: yield between attempts (avoids burning CPU cycles)
+    io_lock_acquire_slow();
+}
+
+#[cold]
+fn io_lock_acquire_slow() {
+    let can_yield = crate::task::scheduler::current_tid() > 0;
+    loop {
+        // Brief spin (8 iterations) before yielding — handles very short holds
+        for _ in 0..8 {
+            if IO_LOCK
+                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                return;
+            }
+            core::hint::spin_loop();
+        }
+        // Yield CPU time slice so other threads can run (only if scheduler is active)
+        if can_yield {
+            crate::task::scheduler::schedule();
+        }
     }
 }
 
@@ -99,74 +137,164 @@ pub fn set_backend_lsi() {
 
 /// Read `count` sectors starting at `lba` into `buf`.
 ///
-/// Dispatches to the active backend. For ATA, automatically batches into
-/// 255-sector chunks. For AHCI, uses DMA with a bounce buffer.
+/// First checks the global block cache — sectors already in RAM are served
+/// directly without touching the disk.  Cache misses are read from the backend
+/// and then populated into the cache for future reads.
+///
+/// For sequential access patterns, extra sectors are read ahead (up to 128
+/// sectors / 64 KiB) to amortize disk latency.
 pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
-    crate::debug_println!("  [storage] read_sectors: lba={} count={} (acquiring io_lock)", lba, count);
-    io_lock_acquire();
-    crate::debug_println!("  [storage] read_sectors: io_lock acquired, dispatching");
-    let result = match unsafe { BACKEND } {
+    if count == 0 { return true; }
+    crate::debug_println!("  [storage] read_sectors: lba={} count={}", lba, count);
+    IO_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
+
+    // ── Check if block cache is available ──────────────────────────────
+    let cache_active = crate::fs::blockcache::is_ready();
+
+    // ── Fast path: try to serve entirely from block cache ──────────────
+    let cached = if cache_active {
+        crate::fs::blockcache::cached_read(0, lba, count, buf)
+    } else { 0 };
+    if cached == count {
+        crate::debug_println!("  [storage] read_sectors: fully cached lba={} count={}", lba, count);
+        return true;
+    }
+
+    // ── Partial or full miss: read remaining sectors from disk ─────────
+    let miss_lba = lba + cached;
+    let miss_count = count - cached;
+    let miss_offset = cached as usize * 512;
+
+    // Adaptive readahead (only when cache is active)
+    let readahead = if cache_active && miss_count <= 64 {
+        let last_end = LAST_READ_END_LBA.load(Ordering::Relaxed);
+        let is_sequential = miss_lba == last_end || (miss_lba > 0 && miss_lba <= last_end + 8);
+        if is_sequential {
+            let level = READAHEAD_LEVEL.load(Ordering::Relaxed);
+            let new_level = (level * 2).min(READAHEAD_MAX);
+            READAHEAD_LEVEL.store(new_level, Ordering::Relaxed);
+            new_level
+        } else {
+            READAHEAD_LEVEL.store(READAHEAD_MIN, Ordering::Relaxed);
+            READAHEAD_MIN
+        }
+    } else {
+        0
+    };
+
+    let total_fetch = miss_count + readahead;
+    let fetch_bytes = total_fetch as usize * 512;
+    if cache_active {
+        LAST_READ_END_LBA.store(miss_lba + total_fetch, Ordering::Relaxed);
+    }
+
+    // We need a potentially larger buffer for readahead
+    let result = if readahead > 0 {
+        let mut big_buf = alloc::vec![0u8; fetch_bytes];
+        io_lock_acquire();
+        let ok = read_sectors_raw(miss_lba, total_fetch, &mut big_buf);
+        io_lock_release();
+        if ok {
+            // Copy requested portion to caller buffer
+            let needed = miss_count as usize * 512;
+            let copy_end = needed.min(buf.len() - miss_offset);
+            buf[miss_offset..miss_offset + copy_end]
+                .copy_from_slice(&big_buf[..copy_end]);
+            // Populate cache with ALL fetched sectors (requested + readahead)
+            crate::fs::blockcache::populate(0, miss_lba, total_fetch, &big_buf);
+            true
+        } else {
+            false
+        }
+    } else {
+        // No readahead: read directly into caller buffer
+        io_lock_acquire();
+        let ok = read_sectors_raw(miss_lba, miss_count, &mut buf[miss_offset..]);
+        io_lock_release();
+        if ok && cache_active {
+            // Populate cache with fetched sectors
+            let fetched_bytes = miss_count as usize * 512;
+            if buf.len() >= miss_offset + fetched_bytes {
+                crate::fs::blockcache::populate(0, miss_lba, miss_count,
+                    &buf[miss_offset..miss_offset + fetched_bytes]);
+            }
+        }
+        ok
+    };
+
+    crate::debug_println!("  [storage] read_sectors: done result={}", result);
+    result
+}
+
+/// Raw read without cache — dispatches to the active backend.
+fn read_sectors_raw(lba: u32, count: u32, buf: &mut [u8]) -> bool {
+    match unsafe { BACKEND } {
         StorageBackend::Ata => {
             let mut offset = 0usize;
             let mut remaining = count;
             let mut cur_lba = lba;
-            let mut ok = true;
             while remaining > 0 {
                 let batch = remaining.min(255) as u8;
-                crate::debug_println!("  [storage] ATA batch: lba={} count={} remaining={}", cur_lba, batch, remaining);
                 if !ata::read_sectors(cur_lba, batch, &mut buf[offset..]) {
-                    crate::debug_println!("  [storage] ATA batch FAILED: lba={} count={}", cur_lba, batch);
-                    ok = false;
-                    break;
+                    return false;
                 }
-                crate::debug_println!("  [storage] ATA batch OK: lba={} count={}", cur_lba, batch);
                 offset += batch as usize * 512;
                 cur_lba += batch as u32;
                 remaining -= batch as u32;
             }
-            ok
+            true
         }
         StorageBackend::Ahci => ahci::read_sectors(lba, count, buf),
         StorageBackend::Nvme => nvme::read_sectors(lba, count, buf),
         StorageBackend::LsiScsi => lsi_scsi::read_sectors(lba, count, buf),
-
-    };
-    crate::debug_println!("  [storage] read_sectors: done result={} releasing io_lock", result);
-    io_lock_release();
-    result
+    }
 }
 
 /// Write `count` sectors starting at `lba` from `buf`.
 ///
-/// Dispatches to the active backend. For ATA, automatically batches into
-/// 255-sector chunks. For AHCI, uses DMA with a bounce buffer.
+/// Dispatches to the active backend. After a successful write, the affected
+/// sectors are updated in the block cache (write-through) so subsequent reads
+/// see the new data without hitting the disk.
 pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
+    if count == 0 { return true; }
+    IO_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
     io_lock_acquire();
-    let result = match unsafe { BACKEND } {
+    let result = write_sectors_raw(lba, count, buf);
+    io_lock_release();
+    if result && crate::fs::blockcache::is_ready() {
+        // Write-through: update cache with written data so reads stay coherent
+        let data_len = count as usize * 512;
+        if buf.len() >= data_len {
+            crate::fs::blockcache::populate(0, lba, count, &buf[..data_len]);
+        } else {
+            crate::fs::blockcache::invalidate(0, lba, count);
+        }
+    }
+    result
+}
+
+/// Raw write without cache — dispatches to the active backend.
+fn write_sectors_raw(lba: u32, count: u32, buf: &[u8]) -> bool {
+    match unsafe { BACKEND } {
         StorageBackend::Ata => {
             let mut offset = 0usize;
             let mut remaining = count;
             let mut cur_lba = lba;
-            let mut ok = true;
             while remaining > 0 {
                 let batch = remaining.min(255) as u8;
                 if !ata::write_sectors(cur_lba, batch, &buf[offset..]) {
-                    ok = false;
-                    break;
+                    return false;
                 }
                 offset += batch as usize * 512;
                 cur_lba += batch as u32;
                 remaining -= batch as u32;
             }
-            ok
+            true
         }
         StorageBackend::Ahci => ahci::write_sectors(lba, count, buf),
         StorageBackend::Nvme => nvme::write_sectors(lba, count, buf),
         StorageBackend::LsiScsi => lsi_scsi::write_sectors(lba, count, buf),
-
-    };
-    io_lock_release();
-    result
+    }
 }
 
 /// Flush storage write cache to persistent media.

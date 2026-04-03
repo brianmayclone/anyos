@@ -258,6 +258,13 @@ pub fn sync() {
     syscall0(SYS_SYNC);
 }
 
+/// Flush deferred metadata for a specific open file to disk.
+/// Similar to POSIX fsync() — ensures all data and metadata for the file
+/// referenced by `fd` is written to persistent storage.
+pub fn fsync(fd: i32) -> bool {
+    syscall1(SYS_FSYNC, fd as u64) == 0
+}
+
 /// List all mount points. Writes tab-separated "path\tfstype\n" entries to buf.
 /// Returns bytes written, or u32::MAX on error.
 pub fn list_mounts(buf: &mut [u8]) -> u32 {

@@ -361,6 +361,8 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             }
         }
 
+        fs::blockcache::init();
+        serial_println!("  Block cache initialized (8 MiB, 16384 sectors)");
         fs::vfs::init();
         fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
         fs::vfs::mount_devfs();

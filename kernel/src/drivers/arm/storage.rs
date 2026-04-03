@@ -49,6 +49,7 @@ pub fn init_filesystem() {
         crate::serial_verbose_println!("  [ARM64] No MBR signature found — trying raw FAT at LBA 0");
         // No partition table — try mounting entire disk as FAT
         fs::vfs::set_root_partition_lba(0);
+        fs::blockcache::init();
         fs::vfs::init();
         fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
         fs::vfs::mount_devfs();
@@ -93,7 +94,8 @@ pub fn init_filesystem() {
     crate::serial_verbose_println!("  [ARM64] Root partition LBA: {}", root_lba);
     fs::vfs::set_root_partition_lba(root_lba);
 
-    // Initialize VFS
+    // Initialize block cache and VFS
+    fs::blockcache::init();
     fs::vfs::init();
 
     // Mount root as FAT (auto-detects exFAT/NTFS via VBR)

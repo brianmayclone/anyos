@@ -285,6 +285,7 @@ pub const SYS_SHUTDOWN: u32 = 282;
 
 // Filesystem sync
 pub const SYS_SYNC: u32 = 284;
+pub const SYS_FSYNC: u32 = 285;
 
 // Kernel debug settings
 pub const SYS_SET_SERIAL_VERBOSE: u32 = 283;
@@ -691,6 +692,7 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         // Power management
         SYS_SHUTDOWN => handlers::sys_shutdown(arg1),
         SYS_SYNC => handlers::sys_sync(),
+        SYS_FSYNC => handlers::sys_fsync(arg1),
 
         // Kernel debug settings
         SYS_SET_SERIAL_VERBOSE => handlers::sys_set_serial_verbose(arg1),

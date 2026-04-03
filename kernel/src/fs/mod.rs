@@ -1,5 +1,6 @@
 //! Filesystem subsystem -- FAT, exFAT, NTFS, device filesystem, VFS layer, and path utilities.
 
+pub mod blockcache;
 pub mod devfs;
 pub mod exfat;
 pub mod fat;

@@ -633,6 +633,27 @@ pub fn sys_sync() -> u32 {
     0
 }
 
+/// SYS_FSYNC — Flush deferred metadata for a specific open file to disk.
+/// arg1 = local file descriptor
+pub fn sys_fsync(fd: u32) -> u32 {
+    use crate::fs::fd_table::FdKind;
+
+    match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => {
+            match entry.kind {
+                FdKind::File { global_id } => {
+                    match crate::fs::vfs::fsync(global_id) {
+                        Ok(()) => 0,
+                        Err(_) => u32::MAX, // EIO
+                    }
+                }
+                _ => 0, // Pipes/TTY: nothing to flush, succeed silently
+            }
+        }
+        None => u32::MAX, // EBADF
+    }
+}
+
 /// 3. Power off (ACPI) or reboot (keyboard controller reset).
 ///
 /// This function does not return.

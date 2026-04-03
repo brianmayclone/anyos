@@ -233,6 +233,7 @@ pub(crate) const SYS_SET_HOSTNAME: u32 = 281;
 // Power management
 pub(crate) const SYS_SHUTDOWN: u32 = 282;
 pub(crate) const SYS_SYNC: u32 = 284;
+pub(crate) const SYS_FSYNC: u32 = 285;
 
 // Kernel debug settings
 pub(crate) const SYS_SET_SERIAL_VERBOSE: u32 = 283;

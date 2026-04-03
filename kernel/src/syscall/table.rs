@@ -121,6 +121,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_SET_HOSTNAME, "set_hostname"),
     (SYS_SHUTDOWN, "shutdown"),
     (SYS_SYNC, "sync"),
+    (SYS_FSYNC, "fsync"),
     (SYS_SET_SERIAL_VERBOSE, "set_serial_verbose"),
     (SYS_CON_WRITE, "con_write"),
     (SYS_CON_READ, "con_read"),
