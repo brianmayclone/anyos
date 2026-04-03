@@ -2,6 +2,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::block;
+use crate::textures::{self, Face};
 use crate::world::World;
 
 pub const FLOATS_PER_VERTEX: usize = 6;
@@ -59,25 +60,36 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
                         continue;
                     }
 
-                    let is_top = face == 0;
-                    let is_bottom = face == 1;
-                    let (cr, cg, cb) = block::block_color(id, is_top, is_bottom);
+                    let tex_face = match face {
+                        0 => Face::Top,
+                        1 => Face::Bottom,
+                        2 => Face::East,
+                        3 => Face::West,
+                        4 => Face::South,
+                        _ => Face::North,
+                    };
+
+                    let tex_id = textures::face_block_id(id, tex_face);
+                    let (u0, v0, u1, v1) = textures::block_uv(tex_id);
 
                     let positions = face_vertices(face, wx as f32, wy as f32, wz as f32);
+                    let uvs = [
+                        (u0, v0),
+                        (u1, v0),
+                        (u1, v1),
+                        (u0, v0),
+                        (u1, v1),
+                        (u0, v1),
+                    ];
                     let light = FACE_LIGHT[face];
-
-                    // Pre-multiply block color × face light
-                    let r = cr * light;
-                    let g = cg * light;
-                    let b = cb * light;
 
                     for i in 0..6 {
                         vertices.push(positions[i][0]);
                         vertices.push(positions[i][1]);
                         vertices.push(positions[i][2]);
-                        vertices.push(r);
-                        vertices.push(g);
-                        vertices.push(b);
+                        vertices.push(uvs[i].0);
+                        vertices.push(uvs[i].1);
+                        vertices.push(light);
                     }
                     vertex_count += 6;
                 }
