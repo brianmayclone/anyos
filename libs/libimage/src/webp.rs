@@ -1941,17 +1941,18 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
         }
     }
 
-    // ── YUV 4:2:0 → ARGB conversion ────────────────────────────────────
+    // ── YUV 4:2:0 → ARGB conversion (libwebp formula) ─────────────────
     for py in 0..h {
         for px in 0..w {
-            let y_val = y_plane[py * y_stride + px] as i32;
-            let u_val = u_plane[(py / 2) * uv_stride + (px / 2)] as i32 - 128;
-            let v_val = v_plane[(py / 2) * uv_stride + (px / 2)] as i32 - 128;
+            let y = y_plane[py * y_stride + px] as u32;
+            let u = u_plane[(py / 2) * uv_stride + (px / 2)] as u32;
+            let v = v_plane[(py / 2) * uv_stride + (px / 2)] as u32;
 
-            // BT.601 conversion
-            let r = (y_val + ((91881 * v_val + 32768) >> 16)).clamp(0, 255) as u32;
-            let g = (y_val - ((22554 * u_val + 46802 * v_val + 32768) >> 16)).clamp(0, 255) as u32;
-            let b = (y_val + ((116130 * u_val + 32768) >> 16)).clamp(0, 255) as u32;
+            // mulhi(a,b) = (a * b) >> 8, clip(x) = (x >> 6).clamp(0,255)
+            let yc = (y * 19077) >> 8;
+            let r = ((yc + ((v * 26149) >> 8)).wrapping_sub(14234) as i32 >> 6).clamp(0, 255) as u32;
+            let g = ((yc.wrapping_sub((u * 6419) >> 8).wrapping_sub((v * 13320) >> 8)).wrapping_add(8708) as i32 >> 6).clamp(0, 255) as u32;
+            let b = ((yc + ((u * 33050) >> 8)).wrapping_sub(17685) as i32 >> 6).clamp(0, 255) as u32;
 
             out[py * w + px] = 0xFF000000 | (r << 16) | (g << 8) | b;
         }
