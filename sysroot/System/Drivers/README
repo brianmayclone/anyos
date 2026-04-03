@@ -1,0 +1,42 @@
+anyOS Hardware Firmware Directory
+=================================
+
+This directory contains firmware blobs required by hardware drivers.
+These are proprietary binaries provided by hardware vendors under
+redistributable licenses.
+
+Source: Linux Firmware Repository
+  git://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git
+  https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/
+
+On a Linux system, firmware files are typically found at /lib/firmware/.
+
+
+wifi/
+-----
+  Intel WiFi (iwlwifi):
+    iwlwifi-cc-a0-77.ucode          - AX200
+    iwlwifi-ty-a0-gf-a0-77.ucode    - AX210/AX211
+    iwlwifi-so-a0-gf-a0-77.ucode    - AX201
+    iwlwifi-9260-th-b0-jf-b0-46.ucode - AC 9260
+
+  Qualcomm Atheros (ath10k/ath11k):
+    ath10k_QCA6174_hw3.0_firmware-6.bin
+    ath10k_QCA6174_hw3.0_board.bin
+
+  Realtek USB WiFi:
+    rtl8188eu.bin                    - RTL8188EU/EUS
+
+gpu/
+----
+  (reserved for future GPU firmware, e.g. AMD Radeon microcode)
+
+bluetooth/
+----------
+  Intel Bluetooth:
+    ibt-20-1-3.sfi                   - AX200/AX201 BT firmware
+  (reserved for future Bluetooth firmware)
+
+
+To populate: Copy the required files from /lib/firmware/ on any
+Linux installation, or download from the git repository above.

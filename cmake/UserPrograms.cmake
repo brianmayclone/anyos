@@ -911,6 +911,25 @@ if(NOT EXISTS "${SYSROOT_DIR}/System/etc/ftpd/shares.conf")
   file(COPY "${CMAKE_SOURCE_DIR}/defaults/System/etc/ftpd/shares.conf"
        DESTINATION "${SYSROOT_DIR}/System/etc/ftpd")
 endif()
+# ── Hardware firmware blobs (WiFi, Bluetooth) ──────────────────────────────
+# Copy firmware files from sysroot/ source tree into the build sysroot.
+# These are vendor-provided blobs required at runtime for WiFi/BT adapters.
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/wifi")
+file(GLOB _FW_WIFI "${CMAKE_SOURCE_DIR}/sysroot/System/Drivers/wifi/*")
+foreach(_fw ${_FW_WIFI})
+  get_filename_component(_fname "${_fw}" NAME)
+  if(NOT EXISTS "${SYSROOT_DIR}/System/Drivers/wifi/${_fname}")
+    file(COPY "${_fw}" DESTINATION "${SYSROOT_DIR}/System/Drivers/wifi")
+  endif()
+endforeach()
+if(EXISTS "${CMAKE_SOURCE_DIR}/sysroot/System/Drivers/README")
+  file(COPY "${CMAKE_SOURCE_DIR}/sysroot/System/Drivers/README"
+       DESTINATION "${SYSROOT_DIR}/System/Drivers")
+endif()
+
+# WiFi credential storage directory
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/etc/wifi")
+
 # FTP public share directory with a test file for download verification.
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/users/shared/ftp")
 if(NOT EXISTS "${SYSROOT_DIR}/users/shared/ftp/README.txt")

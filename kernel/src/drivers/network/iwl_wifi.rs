@@ -75,11 +75,12 @@ const SCD_BASE: u32 = 0x0A00;
 
 // ── Firmware paths ──────────────────────────────────────────────────────────
 
+/// Firmware search paths (tried in order). All under /System/Drivers/wifi/.
 const FW_PATHS: &[&str] = &[
-    "/System/Drivers/wifi/iwlwifi-cc-a0-77.ucode",
-    "/System/Drivers/wifi/iwlwifi-ty-a0-gf-a0-77.ucode",
-    "/System/Drivers/wifi/iwlwifi-so-a0-gf-a0-77.ucode",
-    "/System/Drivers/wifi/iwlwifi-9260-th-b0-jf-b0-46.ucode",
+    "/System/Drivers/wifi/iwlwifi-cc-a0-77.ucode",       // AX200
+    "/System/Drivers/wifi/iwlwifi-ty-a0-gf-a0-77.ucode", // AX210/AX211
+    "/System/Drivers/wifi/iwlwifi-so-a0-gf-a0-77.ucode", // AX201
+    "/System/Drivers/wifi/iwlwifi-9260-th-b0-jf-b0-46.ucode", // AC 9260
 ];
 
 // ── Driver State ────────────────────────────────────────────────────────────
