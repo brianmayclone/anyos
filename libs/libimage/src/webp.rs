@@ -893,7 +893,7 @@ const B_HU_PRED: u8 = 9;
 
 /// Default probabilities for the coefficient token tree.
 /// Indexed by [plane_type][coeff_band][ctx][token_node]
-/// plane_type: 0=Y-after-Y2/chroma, 1=Y2, 2=Y-with-full-intra-4x4, 3=UV
+/// plane_type: 0=Y-AC(16x16 mode), 1=Y2, 2=UV(chroma), 3=Y-DC(B_PRED 4x4 mode)
 /// Simplified: we use 4 types × 8 bands × 3 ctx × 11 probabilities
 static DEFAULT_COEFF_PROBS: [[[[u8; 11]; 3]; 8]; 4] = [
     // Type 0: Y (after Y2 DC) — used for AC coefficients of luma
@@ -1043,8 +1043,8 @@ fn build_quant(base_qp: i32, y_dc_delta: i32, y2_dc_delta: i32, y2_ac_delta: i32
         y_dc:  DC_QUANT[clamp_qp(base_qp + y_dc_delta)],
         y_ac:  AC_QUANT[clamp_qp(base_qp)],
         y2_dc: DC_QUANT[clamp_qp(base_qp + y2_dc_delta)] * 2,
-        y2_ac: AC_QUANT[clamp_qp(base_qp + y2_ac_delta)].saturating_mul(155).wrapping_div(100).max(8),
-        uv_dc: DC_QUANT[clamp_qp(base_qp + uv_dc_delta)],
+        y2_ac: ((AC_QUANT[clamp_qp(base_qp + y2_ac_delta)] as i32 * 155 / 100) as i16).max(8),
+        uv_dc: DC_QUANT[clamp_qp(base_qp + uv_dc_delta)].min(132),
         uv_ac: AC_QUANT[clamp_qp(base_qp + uv_ac_delta)],
     }
 }
@@ -1436,13 +1436,15 @@ fn read_coeff(bd: &mut BoolDecoder, probs: &[u8; 11], skip_eob: bool) -> (i16, b
 }
 
 /// Decode one 4×4 block of DCT coefficients.
-/// Returns the number of non-zero coefficients decoded.
+/// Returns `true` if any non-EOB token was decoded (including zero coefficients).
+/// This matches the `has_coefficients` semantics of the VP8 reference decoder,
+/// which is needed for correct above/left non-zero context propagation.
 fn decode_block(bd: &mut BoolDecoder, coeffs: &mut [i16; 16],
                 plane_type: usize, first_coeff: usize,
                 coeff_probs: &[[[[u8; 11]; 3]; 8]; 4],
-                above_nz: bool, left_nz: bool) -> u32 {
+                above_nz: bool, left_nz: bool) -> bool {
     let ctx = above_nz as usize + left_nz as usize; // 0, 1, or 2
-    let mut nonzero_count = 0u32;
+    let mut has_coefficients = false;
     let mut prev_token_ctx: usize = 0; // 0=zero/none, 1=one, 2=more
     let mut skip_eob = false; // Skip EOB check after a zero token (RFC 6386 §13.2)
 
@@ -1454,22 +1456,21 @@ fn decode_block(bd: &mut BoolDecoder, coeffs: &mut [i16; 16],
 
         let (val, eob) = read_coeff(bd, probs, skip_eob);
         if eob { break; }
+        has_coefficients = true;
         coeffs[ZIGZAG[i]] = val;
         let abs_val = val.unsigned_abs() as usize;
         if abs_val == 0 {
             prev_token_ctx = 0;
             skip_eob = true;
         } else if abs_val == 1 {
-            nonzero_count += 1;
             prev_token_ctx = 1;
             skip_eob = false;
         } else {
-            nonzero_count += 1;
             prev_token_ctx = 2;
             skip_eob = false;
         }
     }
-    nonzero_count
+    has_coefficients
 }
 
 // ── Main VP8 lossy decoder ──────────────────────────────────────────────────
@@ -1819,8 +1820,8 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                     let mut y2_coeffs = [0i16; 16];
                     let nz = decode_block(&mut token_decoders[tp], &mut y2_coeffs, 1, 0,
                                          &coeff_probs, above_nz_dc[mb_x], left_nz_dc);
-                    above_nz_dc[mb_x] = nz > 0;
-                    left_nz_dc = nz > 0;
+                    above_nz_dc[mb_x] = nz;
+                    left_nz_dc = nz;
 
                     // Dequantize Y2
                     y2_coeffs[0] = y2_coeffs[0].wrapping_mul(seg_quant_params[seg_id].y2_dc);
@@ -1840,9 +1841,11 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                                              &coeff_probs,
                                              above_nz_y[mb_x * 4 + sx],
                                              left_nz_y[sy]);
-                        let has_nz = nz > 0 || coeffs[0] != 0;
-                        above_nz_y[mb_x * 4 + sx] = has_nz;
-                        left_nz_y[sy] = has_nz;
+                        // Context propagation uses only AC decode result (not WHT DC).
+                        // RFC 6386: the non-zero context for the next sub-block is based
+                        // on whether THIS sub-block's AC coefficients were non-zero.
+                        above_nz_y[mb_x * 4 + sx] = nz;
+                        left_nz_y[sy] = nz;
 
                         // Dequantize
                         // DC already dequantized via WHT path
@@ -1863,12 +1866,12 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                         let sy = sb / 4;
                         let sx = sb % 4;
                         let mut coeffs = [0i16; 16];
-                        let nz = decode_block(&mut token_decoders[tp], &mut coeffs, 2, 0,
+                        let nz = decode_block(&mut token_decoders[tp], &mut coeffs, 3, 0,
                                              &coeff_probs,
                                              above_nz_y[mb_x * 4 + sx],
                                              left_nz_y[sy]);
-                        above_nz_y[mb_x * 4 + sx] = nz > 0;
-                        left_nz_y[sy] = nz > 0;
+                        above_nz_y[mb_x * 4 + sx] = nz;
+                        left_nz_y[sy] = nz;
 
                         // Dequantize
                         coeffs[0] = coeffs[0].wrapping_mul(seg_quant_params[seg_id].y_dc);
@@ -1885,12 +1888,12 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                     let sy = sb / 2;
                     let sx = sb % 2;
                     let mut coeffs = [0i16; 16];
-                    let nz = decode_block(&mut token_decoders[tp], &mut coeffs, 3, 0,
+                    let nz = decode_block(&mut token_decoders[tp], &mut coeffs, 2, 0,
                                          &coeff_probs,
                                          above_nz_u[mb_x * 2 + sx],
                                          left_nz_u[sy]);
-                    above_nz_u[mb_x * 2 + sx] = nz > 0;
-                    left_nz_u[sy] = nz > 0;
+                    above_nz_u[mb_x * 2 + sx] = nz;
+                    left_nz_u[sy] = nz;
 
                     coeffs[0] = coeffs[0].wrapping_mul(seg_quant_params[seg_id].uv_dc);
                     for i in 1..16 { coeffs[i] = coeffs[i].wrapping_mul(seg_quant_params[seg_id].uv_ac); }
@@ -1905,12 +1908,12 @@ fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
                     let sy = sb / 2;
                     let sx = sb % 2;
                     let mut coeffs = [0i16; 16];
-                    let nz = decode_block(&mut token_decoders[tp], &mut coeffs, 3, 0,
+                    let nz = decode_block(&mut token_decoders[tp], &mut coeffs, 2, 0,
                                          &coeff_probs,
                                          above_nz_v[mb_x * 2 + sx],
                                          left_nz_v[sy]);
-                    above_nz_v[mb_x * 2 + sx] = nz > 0;
-                    left_nz_v[sy] = nz > 0;
+                    above_nz_v[mb_x * 2 + sx] = nz;
+                    left_nz_v[sy] = nz;
 
                     coeffs[0] = coeffs[0].wrapping_mul(seg_quant_params[seg_id].uv_dc);
                     for i in 1..16 { coeffs[i] = coeffs[i].wrapping_mul(seg_quant_params[seg_id].uv_ac); }
