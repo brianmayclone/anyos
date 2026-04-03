@@ -939,17 +939,26 @@ fn install_worker() {
 
     set_phase(4, "Mounting target filesystem...");
     set_progress(20);
+    anyos_std::println!("installer: partition_rescan(disk_id={})", disk_id);
     sys::partition_rescan(disk_id as u32);
-    process::sleep(500);
+    process::sleep(1000);
 
     // Find the new partition on this disk
     let mut part_dev_id: Option<u8> = None;
     let count2 = sys::disk_list(&mut buf);
+    anyos_std::println!("installer: disk_list after rescan: {} devices", count2);
     for i in 0..count2 as usize {
         let off = i * 32;
+        let d_id = buf[off];
+        let d_disk = buf[off + 1];
+        let d_part = buf[off + 2];
+        let d_size = u64::from_le_bytes([
+            buf[off+12], buf[off+13], buf[off+14], buf[off+15],
+            buf[off+16], buf[off+17], buf[off+18], buf[off+19],
+        ]);
+        anyos_std::println!("  dev={} disk={} part={:#04x} size={}", d_id, d_disk, d_part, d_size);
         if buf[off + 1] == disk_id && buf[off + 2] != 0xFF {
             part_dev_id = Some(buf[off]);
-            break;
         }
     }
 
