@@ -176,15 +176,13 @@ pub extern "C" fn gl_swap_buffers() -> *const u32 {
                         c.default_fb.color.len() * 4,
                     )
                 };
-                let rb_result = readback(buf.as_mut_ptr(), buf.len() as u32);
+                readback(buf.as_mut_ptr(), buf.len() as u32);
 
-                // Diagnostic: log readback status for first 3 frames
-                let frame = unsafe { DIAG_FRAME };
-                if frame < 3 {
-                    let nonzero = c.default_fb.color.iter().filter(|&&p| p != 0).count();
-                    serial_println!("[libgl] HW readback frame {}: result={}, buf_len={}, nonzero_pixels={}/{}",
-                        frame, rb_result, buf.len(), nonzero, c.default_fb.color.len());
-                    unsafe { DIAG_FRAME += 1; }
+                // Force alpha to 0xFF (opaque) — the compositor blends with
+                // the desktop when alpha < 0xFF, and the GPU readback may not
+                // preserve alpha reliably (host GL context / virgl details).
+                for pixel in c.default_fb.color.iter_mut() {
+                    *pixel |= 0xFF000000;
                 }
 
                 return c.default_fb.color.as_ptr();
