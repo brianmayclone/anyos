@@ -7,7 +7,7 @@
 **A 64-bit operating system built from scratch in Rust and Assembly**
 
 macOS-inspired desktop with window compositor, OpenGL ES 2.0 (hardware-accelerated via VirGL/SVGA3D),<br>
-full network stack, USB 3.0, 7 filesystems, audio, TrueType fonts, a built-in x86 VM,<br>
+full network stack, USB 3.0, 7 filesystems, audio, TrueType fonts,<br>
 and a self-hosted Rust compiler — all running bare-metal on x86_64.
 
 <br>
@@ -16,7 +16,7 @@ and a self-hosted Rust compiler — all running bare-metal on x86_64.
 ![NASM](https://img.shields.io/badge/NASM-Assembly-0066B8?style=flat-square)
 ![x86_64](https://img.shields.io/badge/Arch-x86__64-4B7BEC?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/License-MIT-2ecc71?style=flat-square)
-![Programs](https://img.shields.io/badge/Programs-177+-e67e22?style=flat-square)
+![Programs](https://img.shields.io/badge/Programs-174+-e67e22?style=flat-square)
 ![Syscalls](https://img.shields.io/badge/Syscalls-232-9b59b6?style=flat-square)
 
 <br>
@@ -131,7 +131,7 @@ and a self-hosted Rust compiler — all running bare-metal on x86_64.
   - **NVIDIA GeForce** framebuffer (Kepler 600+ through Ada RTX 4000)
 - **macOS-inspired dark theme** with rounded windows, shadows, and alpha blending
 - **44 UI controls** via the anyui framework (buttons, text fields, code editor, tree view, data grid, toolbars, canvas, expander, flow/stack panels, autocomplete, etc.)
-- **14 shared libraries** — libimage, librender, libcompositor (DLIB format) + libanyui, libfont, libgl, libcorevm, libhttp, libdb, libzip, libsvg, libjs, libwebview, libm (.so format with ELF dynamic linking)
+- **13 shared libraries** — libimage, librender, libcompositor (DLIB format) + libanyui, libfont, libgl, libhttp, libdb, libzip, libsvg, libjs, libwebview, libm (.so format with ELF dynamic linking)
 - **TrueType font rendering** with gamma-corrected subpixel LCD anti-aliasing and size-adaptive smoothing (SF Pro family)
 
 ### 3D Graphics
@@ -197,19 +197,9 @@ and a self-hosted Rust compiler — all running bare-metal on x86_64.
 - **VMware**: vmmouse absolute mouse input, SVGA II 2D acceleration, SVGA3D hardware 3D
 - **QEMU/KVM**: Bochs VGA, E1000, AC'97/HDA, AHCI, NVMe, VirtIO (GPU, Net, RNG, Balloon, Serial)
 
-### CoreVM — Built-in Virtual Machine
+### CoreVM (standalone project)
 
-anyOS includes **CoreVM**, a pure-software x86 virtual machine built entirely in Rust and NASM assembly, running in userspace. No hardware virtualization (VT-x/AMD-V) required — every instruction is decoded and executed in software.
-
-- **Full x86 ISA** — 16-bit real mode, 32-bit protected mode, 64-bit long mode
-- **Complete PC hardware emulation** — dual 8259A PIC, 8254 PIT, PS/2 keyboard/mouse, CMOS RTC, 16550 UART, VGA/SVGA framebuffer, ATA/IDE disk controller, Intel E1000 NIC, PCI bus
-- **Built-in BIOS** — custom 64 KB NASM BIOS with INT 10h/13h/15h/16h/19h/1Ah services, El Torito CD boot; SeaBIOS also supported
-- **JIT compiler** — two-phase acceleration: decode cache for hot basic blocks + native x86-64 code compilation
-- **Paging support** — 2-level (32-bit), PAE (3-level), and 4-level (long mode) page table walks with NX, WP, U/S enforcement
-- **VM Manager GUI** — create, configure, and run VMs with live VGA display, settings dialog, and disk image creation
-- **58 C ABI exports** via `libcorevm.so` + typed Rust client wrapper (`libcorevm_client`)
-
-See **[CoreVM API Reference](docs/corevm-api.md)** for the complete documentation.
+> **Note:** CoreVM has been spun off into its own standalone product — a full x86 KVM hypervisor platform. It is no longer bundled with anyOS. Visit the [CoreVM repository](https://github.com/nicosommelier/corevm) for more information.
 
 ### anyrc — Self-Hosted Rust Compiler
 
@@ -271,9 +261,9 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 
 ### User Programs
 
-177+ command-line and GUI applications:
+174+ command-line and GUI applications:
 
-**GUI Applications (33):** anyOS Code (IDE), anyMail (email client), anyZilla (FTP client), App Store, Benchmark, Calculator, Clipboard Manager, Clock, Diagnostics, Diff/Merge (Meld-like), Font Viewer, Forger (3D voxel world), FTP Settings, GL Demo (3D physics), Icon Viewer, Image Viewer, **Installer**, Keyboard, Markdown Viewer, Minesweeper, Notepad, Notifications, Paint, **Runner**, Screenshot, Surf (web browser), **Updater**, Video Player, **VM Manager** (virtual machine), VNC Settings, Web Manager, anyui Demo, Button Demo
+**GUI Applications (32):** anyOS Code (IDE), anyMail (email client), anyZilla (FTP client), App Store, Benchmark, Calculator, Clipboard Manager, Clock, Diagnostics, Diff/Merge (Meld-like), Font Viewer, Forger (3D voxel world), FTP Settings, GL Demo (3D physics), Icon Viewer, Image Viewer, **Installer**, Keyboard, Markdown Viewer, Minesweeper, Notepad, Notifications, Paint, **Runner**, Screenshot, Surf (web browser), **Updater**, Video Player, VNC Settings, Web Manager, anyui Demo, Button Demo
 
 **System Services (22):** Init, Login, Compositor, Terminal, Finder, Settings, Activity Monitor, Permission Dialog, Shell (dash), Audio Monitor, Network Monitor, Input Monitor, Event Viewer, Disk Utility, amid (statistics daemon), notifyd (notifications), anybout (about), anytrace (tracing), crashdialog, desktopd, sessionhost, textmode_console
 
@@ -295,7 +285,7 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 | Binary/Hex | `hexdump` `xxd` |
 | Multimedia | `play` `pipes` `jp2a` |
 | Dev Tools | `cc` (TCC) `nasm` `make` `git` `anyrc` `open` `vi` `nvi` `nano` `jscript` |
-| VM/Daemon | `vmd` (CoreVM daemon) `vmctl` (CLI controller) `vdagent` |
+| System | `vdagent` |
 
 ---
 
@@ -512,8 +502,6 @@ anyos/
     libfont_client/        Client crate for libfont (dynlink-based)
     libgl/                 libgl.so — OpenGL ES 2.0 3D engine (GLSL compiler + SW rasterizer)
     libgl_client/          Client crate for libgl (dynlink-based)
-    libcorevm/             libcorevm.so — CoreVM x86 virtual machine engine (CPU, devices, JIT, BIOS)
-    libcorevm_client/      Client crate for libcorevm (dynlink-based)
     libhttp/               libhttp.so — HTTP client/server library
     libhttp_client/        Client crate for libhttp
     libdb/                 libdb.so — Key-value database
@@ -537,12 +525,10 @@ anyos/
     libsyscall/            Low-level syscall interface
     libunwind/             Stack unwinding support
   bin/                   CLI program sources (122 Rust programs)
-    vmd/                   CoreVM daemon — VM execution loop, IPC bridge to libcorevm
     ftpd/                  FTP server daemon
     vncd/                  VNC server daemon
     sshd/                  SSH server daemon
   apps/                  GUI application sources (33 .app bundles)
-    vmmanager/             VM Manager — GUI for creating, configuring, and running VMs
     anymail/               Email client with IMAP/SMTP, address book, autocomplete
     anyzilla/              FTP client (FileZilla-like, dual-pane, PASV transfers)
     diff/                  Diff/merge tool (Meld-like, syntax highlighting, themes)
@@ -610,7 +596,6 @@ All new libraries use the `.so` format. The DLIB format is maintained for backwa
 | libanyui | .so | 178 | anyui UI framework (44 controls, Windows Forms-style) |
 | libfont | .so | 7 | TrueType font rendering with LCD subpixel AA (system fonts embedded in .rodata) |
 | libgl | .so | 105 | OpenGL ES 2.0 3D engine with GLSL compiler, software rasterizer, and physics engine |
-| libcorevm | .so | 58 | CoreVM x86 virtual machine engine (CPU emulator, devices, JIT, BIOS) |
 | libm | .so | 56 | Hardware-accelerated math (SSE2 + x87 FPU) |
 | libhttp | .so | — | HTTP client/server library |
 | libdb | .so | — | Key-value database |
@@ -638,7 +623,6 @@ DLIB programs link against lightweight client stub crates (e.g. `libimage_client
 - **[libcompositor API](docs/libcompositor-api.md)** — Window management and compositor IPC
 - **[libgl API](docs/libgl-api.md)** — OpenGL ES 2.0 3D engine with GLSL compiler, software rasterizer, and physics engine (105 exports)
 - **[libm API](docs/libm-api.md)** — Hardware-accelerated math (SSE2 + x87 FPU, 56 exports)
-- **[CoreVM API](docs/corevm-api.md)** — Pure-software x86 virtual machine (CPU emulator, JIT, 11 devices, BIOS, 58 exports)
 - **[libdb API](docs/libdb-api.md)** — Key-value database
 - **[libzip API](docs/libzip-api.md)** — ZIP/TAR/GZIP archive handling
 - **[libsvg API](docs/libsvg-api.md)** — SVG rasterizer

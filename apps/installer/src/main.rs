@@ -161,20 +161,20 @@ const STEP_DONE: u32 = 0xFF34C759;   // Green checkmark color
 fn update_sidebar(step: u32) {
     let a = app();
     a.current_step = step;
-    let colors = [
-        if step >= 1 { ACCENT } else { ACCENT_DIM },
-        if step >= 2 { ACCENT } else { ACCENT_DIM },
-        if step >= 3 { ACCENT } else { ACCENT_DIM },
-    ];
-    let text_colors = [
-        if step >= 1 { 0xFFFFFFFF } else { 0xFF888888 },
-        if step >= 2 { 0xFFFFFFFF } else { 0xFF888888 },
-        if step >= 3 { 0xFFFFFFFF } else { 0xFF888888 },
-    ];
-    for i in 0..3 {
-        a.step_dots[i].set_color(colors[i]);
-        a.step_labels[i].set_text_color(text_colors[i]);
+    for i in 0..4 {
+        let active = step >= (i + 1) as u32;
+        a.step_dots[i].set_color(if active { ACCENT } else { ACCENT_DIM });
+        a.step_labels[i].set_text_color(if active { 0xFFFFFFFF } else { 0xFF888888 });
     }
+}
+
+fn show_page(step: u32) {
+    let a = app();
+    a.page0.set_visible(step == 0);
+    a.page1.set_visible(step == 1);
+    a.page2.set_visible(step == 2);
+    a.page3.set_visible(step == 3);
+    update_sidebar(step);
 }
 
 // ── UI construction ─────────────────────────────────────────────────────────
@@ -273,12 +273,51 @@ fn main() {
     bottom.add(&btn_refresh);
 
     // ═══════════════════════════════════════════════════════════════
+    // Page 0: Welcome
+    // ═══════════════════════════════════════════════════════════════
+
+    let page0 = ui::View::new();
+    page0.set_dock(DOCK_FILL);
+    page0.set_color(tc.window_bg);
+    win.add(&page0);
+
+    // Large anyOS branding
+    let welcome_title = ui::Label::new("Welcome to anyOS");
+    welcome_title.set_position(40, 60);
+    welcome_title.set_size(500, 44);
+    welcome_title.set_font_size(28);
+    welcome_title.set_color(tc.window_bg);
+    welcome_title.set_text_color(0xFFFFFFFF);
+    page0.add(&welcome_title);
+
+    let welcome_sub = ui::Label::new(
+        "This assistant will guide you through the installation of anyOS \
+         on your computer. It only takes a few minutes."
+    );
+    welcome_sub.set_position(40, 116);
+    welcome_sub.set_size(500, 44);
+    welcome_sub.set_font_size(13);
+    welcome_sub.set_color(tc.window_bg);
+    welcome_sub.set_text_color(0xFFAAAAAA);
+    page0.add(&welcome_sub);
+
+    // Version info
+    let ver_label = ui::Label::new("anyOS version 0.4");
+    ver_label.set_position(40, 380);
+    ver_label.set_size(300, 18);
+    ver_label.set_font_size(11);
+    ver_label.set_color(tc.window_bg);
+    ver_label.set_text_color(0xFF666666);
+    page0.add(&ver_label);
+
+    // ═══════════════════════════════════════════════════════════════
     // Page 1: Select Disk
     // ═══════════════════════════════════════════════════════════════
 
     let page1 = ui::View::new();
     page1.set_dock(DOCK_FILL);
     page1.set_color(tc.window_bg);
+    page1.set_visible(false);
     win.add(&page1);
 
     let p1_title = ui::Label::new("Select a Destination");
@@ -505,7 +544,7 @@ fn main() {
             sidebar,
             step_labels,
             step_dots,
-            page1, page2, page3,
+            page0, page1, page2, page3,
             disk_grid,
             method_info,
             progress_bar,
@@ -518,14 +557,14 @@ fn main() {
             details_text: String::new(),
             disks,
             selected_disk: None,
-            current_step: 1,
+            current_step: 0,
             timer_id: 0,
             details_visible: false,
             last_copy_seq: 0,
         });
     }
 
-    update_sidebar(1);
+    update_sidebar(0);
 
     // ═══════════════════════════════════════════════════════════════
     // Event Handlers
@@ -545,6 +584,10 @@ fn main() {
     btn_next.on_click(move |_| {
         let a = app();
         match a.current_step {
+            0 => {
+                // Welcome → Select Disk
+                show_page(1);
+            }
             1 => {
                 // Validate disk selection
                 let idx = match a.selected_disk {
@@ -567,10 +610,8 @@ fn main() {
                     a.disks[idx].partition_count
                 );
                 a.method_info.set_text(&info);
-                a.page1.set_visible(false);
-                a.page2.set_visible(true);
+                show_page(2);
                 unsafe { ui::marshal_set_visible(btn_back_id, true); }
-                update_sidebar(2);
             }
             _ => {}
         }
@@ -579,11 +620,12 @@ fn main() {
     btn_back.on_click(move |_| {
         let a = app();
         match a.current_step {
-            2 => {
-                a.page2.set_visible(false);
-                a.page1.set_visible(true);
+            1 => {
+                show_page(0);
                 unsafe { ui::marshal_set_visible(btn_back_id, false); }
-                update_sidebar(1);
+            }
+            2 => {
+                show_page(1);
             }
             _ => {}
         }
@@ -631,10 +673,7 @@ fn main() {
 // ── Install flow ────────────────────────────────────────────────────────────
 
 fn start_install() {
-    let a = app();
-    a.page2.set_visible(false);
-    a.page3.set_visible(true);
-    update_sidebar(3);
+    show_page(3);
 
     WORKER_ACTIVE.store(true, Ordering::Release);
     WORKER_DONE.store(false, Ordering::Release);
@@ -644,7 +683,7 @@ fn start_install() {
     if let Ok(h) = process::Thread::spawn_with_stack(install_worker, 256 * 1024, "installer") {
         core::mem::forget(h);
     }
-    a.timer_id = ui::set_timer(200, || { poll_worker(); });
+    app().timer_id = ui::set_timer(200, || { poll_worker(); });
 }
 
 fn signal_copy_file(path: &str) {
