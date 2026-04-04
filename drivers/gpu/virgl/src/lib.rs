@@ -783,37 +783,43 @@ fn ensure_ibo(s: &mut VirglState, size: u32) {
     s.ibo_size = size;
 }
 
-/// Upload raw bytes to a resource via DMA transfer (attach backing → transfer → detach).
-/// Works for any size — no command buffer size limit.
-fn dma_upload(res_handle: u32, data: &[u8]) {
-    libsyscall::gpu_3d_surface_dma(res_handle, data, data.len() as u32, 1);
-}
+/// Upload raw bytes to a resource via RESOURCE_INLINE_WRITE.
+/// Automatically splits into chunks and submits each to stay within
+/// the 64 KiB kernel command buffer limit.
+fn inline_write(cmd: &mut CmdBuf, res_handle: u32, data: &[u8]) {
+    const MAX_CHUNK: usize = 48 * 1024;
+    let mut offset = 0usize;
 
-/// Small inline write for data that fits in a single command submission (< 48K).
-/// Used for constant buffers and other small uploads.
-fn inline_write_small(cmd: &mut CmdBuf, res_handle: u32, data: &[u8]) {
-    let data_words = (data.len() + 3) / 4;
-    cmd.push_cmd(VIRGL_CCMD_RESOURCE_INLINE_WRITE, 0, 11 + data_words as u32);
-    cmd.push(res_handle);
-    cmd.push(0); // level
-    cmd.push(0); // usage
-    cmd.push(0); // stride
-    cmd.push(0); // layer_stride
-    cmd.push(0); // x
-    cmd.push(0); // y
-    cmd.push(0); // z
-    cmd.push(data.len() as u32); // width
-    cmd.push(1); // height
-    cmd.push(1); // depth
-    for i in 0..data_words {
-        let base = i * 4;
-        let mut word = 0u32;
-        for j in 0..4 {
-            if base + j < data.len() {
-                word |= (data[base + j] as u32) << (j * 8);
+    while offset < data.len() {
+        let chunk_len = (data.len() - offset).min(MAX_CHUNK);
+        let chunk_words = (chunk_len + 3) / 4;
+
+        cmd.push_cmd(VIRGL_CCMD_RESOURCE_INLINE_WRITE, 0, 11 + chunk_words as u32);
+        cmd.push(res_handle);
+        cmd.push(0);                  // level
+        cmd.push(0);                  // usage
+        cmd.push(0);                  // stride
+        cmd.push(0);                  // layer_stride
+        cmd.push(offset as u32);      // x = byte offset
+        cmd.push(0);                  // y
+        cmd.push(0);                  // z
+        cmd.push(chunk_len as u32);   // width = byte count
+        cmd.push(1);                  // height
+        cmd.push(1);                  // depth
+
+        for i in 0..chunk_words {
+            let base = offset + i * 4;
+            let mut word = 0u32;
+            for j in 0..4 {
+                if base + j < data.len() {
+                    word |= (data[base + j] as u32) << (j * 8);
+                }
             }
+            cmd.push(word);
         }
-        cmd.push(word);
+
+        cmd.submit();
+        offset += chunk_len;
     }
 }
 
@@ -884,7 +890,7 @@ pub extern "C" fn drv_draw_arrays(
 
     // 1. Create/reuse VBO resource and upload vertex data
     ensure_vbo(s, vdata_len as u32);
-    dma_upload(s.vbo_res_id, vdata);
+    inline_write(&mut s.cmd, s.vbo_res_id, vdata);
 
     // 2. Create vertex elements object
     setup_vertex_elements(s, attrs);
@@ -959,11 +965,11 @@ pub extern "C" fn drv_draw_elements(
 
     // 1. Upload vertex data
     ensure_vbo(s, vbo_bytes);
-    dma_upload(s.vbo_res_id, vdata);
+    inline_write(&mut s.cmd, s.vbo_res_id, vdata);
 
     // 2. Upload index data
     ensure_ibo(s, index_data_len);
-    dma_upload(s.ibo_res_id, idata);
+    inline_write(&mut s.cmd, s.ibo_res_id, idata);
 
     // 3. Setup vertex elements + bind
     setup_vertex_elements(s, attrs);
