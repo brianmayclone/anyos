@@ -72,6 +72,9 @@ pub const GL_CCW: GLenum = 0x0901;
 pub const GL_CW: GLenum = 0x0900;
 pub const GL_FRAMEBUFFER: GLenum = 0x8D40;
 pub const GL_FRAMEBUFFER_COMPLETE: GLenum = 0x8CD5;
+pub const GL_COLOR_ATTACHMENT0: GLenum = 0x8CE0;
+pub const GL_DEPTH_ATTACHMENT: GLenum = 0x8D00;
+pub const GL_DEPTH_COMPONENT: GLenum = 0x1902;
 pub const GL_TEXTURE_WRAP_S: GLenum = 0x2802;
 pub const GL_TEXTURE_WRAP_T: GLenum = 0x2803;
 pub const GL_REPEAT: GLenum = 0x2901;
@@ -631,6 +634,26 @@ pub fn get_hw_backend() -> bool { (lib().get_hw_backend)() != 0 }
 
 /// Query whether SVGA3D hardware is available (even if not currently in use).
 pub fn has_hw_backend() -> bool { (lib().has_hw_backend)() != 0 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Framebuffer Objects (ES 2.0 FBO + GL_OES_depth_texture)
+// ══════════════════════════════════════════════════════════════════════════════
+
+pub fn gen_framebuffers(n: i32, fbs: &mut [u32]) {
+    (lib().gen_framebuffers)(n, fbs.as_mut_ptr());
+}
+pub fn delete_framebuffers(n: i32, fbs: &[u32]) {
+    (lib().delete_framebuffers)(n, fbs.as_ptr());
+}
+pub fn bind_framebuffer(target: u32, framebuffer: u32) {
+    (lib().bind_framebuffer)(target, framebuffer);
+}
+pub fn framebuffer_texture_2d(target: u32, attachment: u32, textarget: u32, texture: u32, level: i32) {
+    (lib().framebuffer_texture_2d)(target, attachment, textarget, texture, level);
+}
+pub fn check_framebuffer_status(target: u32) -> u32 {
+    (lib().check_framebuffer_status)(target)
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Math Functions (FPU/SSE accelerated via libgl)

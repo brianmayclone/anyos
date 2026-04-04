@@ -1080,31 +1080,98 @@ pub extern "C" fn glDrawElements(
 #[no_mangle]
 pub extern "C" fn glGenFramebuffers(n: GLsizei, framebuffers: *mut GLuint) {
     if n <= 0 || framebuffers.is_null() { return; }
-    // Phase 1: minimal FBO support — just return sequential IDs
+    let c = ctx();
     for i in 0..n as usize {
-        unsafe { *framebuffers.add(i) = (i + 1) as u32; }
+        let id = c.next_fbo_id;
+        c.next_fbo_id += 1;
+        c.fbos.push(state::FboState {
+            id,
+            color_tex: 0,
+            depth_tex: 0,
+            depth_renderbuffer: 0,
+            width: 0,
+            height: 0,
+        });
+        unsafe { *framebuffers.add(i) = id; }
     }
 }
 
 /// Delete framebuffer objects.
 #[no_mangle]
-pub extern "C" fn glDeleteFramebuffers(_n: GLsizei, _framebuffers: *const GLuint) {
-    // Phase 1: no-op
+pub extern "C" fn glDeleteFramebuffers(n: GLsizei, framebuffers: *const GLuint) {
+    if n <= 0 || framebuffers.is_null() { return; }
+    let c = ctx();
+    for i in 0..n as usize {
+        let id = unsafe { *framebuffers.add(i) };
+        c.fbos.retain(|f| f.id != id);
+        if c.bound_framebuffer == id {
+            c.bound_framebuffer = 0;
+        }
+    }
 }
 
-/// Bind a framebuffer.
+/// Bind a framebuffer (0 = default framebuffer).
+///
+/// In HW mode, binding a non-zero FBO with a depth texture attachment
+/// switches the virgl render target to the shadow depth FBO.
+/// Binding 0 restores the main color+depth render target.
 #[no_mangle]
 pub extern "C" fn glBindFramebuffer(_target: GLenum, framebuffer: GLuint) {
-    ctx().bound_framebuffer = framebuffer;
+    let c = ctx();
+    let prev = c.bound_framebuffer;
+    c.bound_framebuffer = framebuffer;
+
+    if unsafe { USE_HW_BACKEND } {
+        if let Some(drv) = drv_loader::drv() {
+            if framebuffer != 0 {
+                // Binding a custom FBO — check if it has a depth texture (shadow pass)
+                if let Some(fbo) = c.fbos.iter().find(|f| f.id == framebuffer) {
+                    if fbo.depth_tex != 0 && fbo.width > 0 {
+                        if let Some(begin_fn) = drv.drv_shadow_begin {
+                            begin_fn(fbo.width, fbo.height);
+                        }
+                    }
+                }
+            } else if prev != 0 {
+                // Restoring default FBO — end shadow pass
+                if let Some(end_fn) = drv.drv_shadow_end {
+                    end_fn();
+                }
+            }
+        }
+    }
 }
 
 /// Attach a texture to a framebuffer.
 #[no_mangle]
 pub extern "C" fn glFramebufferTexture2D(
-    _target: GLenum, _attachment: GLenum,
-    _textarget: GLenum, _texture: GLuint, _level: GLint,
+    _target: GLenum, attachment: GLenum,
+    _textarget: GLenum, texture: GLuint, _level: GLint,
 ) {
-    // Phase 1: minimal — tracked but not rendered to
+    let c = ctx();
+    let fbo_id = c.bound_framebuffer;
+    if fbo_id == 0 { return; } // can't attach to default FBO
+
+    // Get texture dimensions
+    let (tw, th) = if texture != 0 {
+        c.textures.get(texture).map_or((0, 0), |t| (t.width, t.height))
+    } else {
+        (0, 0)
+    };
+
+    if let Some(fbo) = c.fbos.iter_mut().find(|f| f.id == fbo_id) {
+        match attachment {
+            GL_COLOR_ATTACHMENT0 => {
+                fbo.color_tex = texture;
+                if tw > 0 { fbo.width = tw; fbo.height = th; }
+            }
+            GL_DEPTH_ATTACHMENT => {
+                fbo.depth_tex = texture;
+                if tw > 0 { fbo.width = tw; fbo.height = th; }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Check framebuffer completeness.

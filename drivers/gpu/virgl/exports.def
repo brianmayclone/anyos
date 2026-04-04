@@ -25,3 +25,6 @@ EXPORTS
     drv_resize
     drv_upload_texture
     drv_bind_sampler_view
+    drv_shadow_begin
+    drv_shadow_end
+    drv_shadow_bind

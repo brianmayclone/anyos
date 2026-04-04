@@ -49,6 +49,17 @@ impl Default for VertexAttrib {
     }
 }
 
+/// Framebuffer object state (ES 2.0 FBO).
+#[derive(Clone)]
+pub struct FboState {
+    pub id: u32,
+    pub color_tex: u32,        // GL texture ID attached to COLOR_ATTACHMENT0 (0 = none)
+    pub depth_tex: u32,        // GL texture ID attached to DEPTH_ATTACHMENT (0 = none)
+    pub depth_renderbuffer: u32, // renderbuffer ID for depth (0 = none)
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Complete GL context state.
 pub struct GlContext {
     // ── Viewport & Scissor ──────────────────────────────────────────────
@@ -117,6 +128,10 @@ pub struct GlContext {
     // ── Framebuffers ────────────────────────────────────────────────────
     pub default_fb: SwFramebuffer,
     pub fbo_color_tex: Vec<(u32, u32)>,
+    /// FBO objects: maps FBO id → FboState.
+    pub fbos: Vec<FboState>,
+    /// Next FBO ID counter.
+    pub next_fbo_id: u32,
 
     // ── Anti-Aliasing ──────────────────────────────────────────────────
     /// FXAA post-process enabled.
@@ -183,6 +198,8 @@ impl GlContext {
 
             default_fb: SwFramebuffer::new(width, height),
             fbo_color_tex: Vec::new(),
+            fbos: Vec::new(),
+            next_fbo_id: 1,
 
             fxaa_enabled: false,
 

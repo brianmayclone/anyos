@@ -188,6 +188,11 @@ impl TextureStore {
                             tex.data[i] = a << 24;
                         }
                     }
+                    // GL_DEPTH_COMPONENT: depth texture (GL_OES_depth_texture).
+                    // No CPU data upload needed — GPU writes depth during shadow pass.
+                    0x1902 | 0x81A5 | 0x81A6 | 0x81A7 => {
+                        // Leave zeroed — depth is written by the GPU
+                    }
                     _ => {}
                 }
             }

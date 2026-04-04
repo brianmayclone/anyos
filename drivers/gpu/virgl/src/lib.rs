@@ -91,7 +91,11 @@ const PIPE_FORMAT_R32G32B32A32_FLOAT: u32 = 31;
 const PIPE_FORMAT_R32_FLOAT: u32       = 47;
 const PIPE_FORMAT_R32G32_FLOAT: u32    = 48;
 const PIPE_FORMAT_R32G32B32_FLOAT: u32 = 49;
+const PIPE_FORMAT_Z32_FLOAT: u32      = 59;
 const PIPE_FORMAT_R8_UNORM: u32 = 64;
+
+// Pipe texture wrap modes
+const PIPE_TEX_WRAP_CLAMP_TO_EDGE: u32 = 2;
 
 // Virgl bind flags (VIRGL_BIND_*, NOT Gallium PIPE_BIND_*)
 const VIRGL_BIND_DEPTH_STENCIL: u32   = 1 << 0;
@@ -196,6 +200,15 @@ struct VirglState {
     sampler_views: [u32; 8],
     // Per-slot cached virgl resource ID (to detect when rebind is needed).
     sampler_view_res: [u32; 8],
+
+    // Shadow mapping state
+    shadow_depth_res_id: u32,
+    shadow_depth_surface_h: u32,
+    shadow_sampler_view_h: u32,
+    shadow_sampler_state_h: u32,
+    shadow_width: u32,
+    shadow_height: u32,
+    shadow_active: bool,
 }
 
 static mut STATE: Option<VirglState> = None;
@@ -363,6 +376,13 @@ pub extern "C" fn drv_init(width: u32, height: u32) -> u32 {
             sampler_state_handle: samp_state_h,
             sampler_views: [0u32; 8],
             sampler_view_res: [0u32; 8],
+            shadow_depth_res_id: 0,
+            shadow_depth_surface_h: 0,
+            shadow_sampler_view_h: 0,
+            shadow_sampler_state_h: 0,
+            shadow_width: 0,
+            shadow_height: 0,
+            shadow_active: false,
         });
     }
 
@@ -1107,6 +1127,181 @@ pub extern "C" fn drv_bind_sampler_view(slot: u32, virgl_res_id: u32) {
 
     s.cmd.submit();
     libsyscall::serial_println!("[virgl] drv_bind_sampler_view: slot={} res={} sv={}", slot, virgl_res_id, sv_handle);
+}
+
+// ── Shadow mapping (GL_OES_depth_texture compatible) ─────────────────────
+
+/// Begin shadow pass: create depth-only FBO, switch render target.
+/// Returns 1 on success, 0 on failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn drv_shadow_begin(width: u32, height: u32) -> u32 {
+    if width == 0 || height == 0 { return 0; }
+    let s = state();
+
+    // Create shadow resources if not yet created or size changed
+    if s.shadow_depth_res_id == 0 || s.shadow_width != width || s.shadow_height != height {
+        // Destroy old resources
+        if s.shadow_depth_res_id != 0 {
+            if s.shadow_depth_surface_h != 0 {
+                s.cmd.push_cmd(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_SURFACE, 1);
+                s.cmd.push(s.shadow_depth_surface_h);
+            }
+            if s.shadow_sampler_view_h != 0 {
+                s.cmd.push_cmd(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_SAMPLER_VIEW, 1);
+                s.cmd.push(s.shadow_sampler_view_h);
+                s.shadow_sampler_view_h = 0;
+            }
+            s.cmd.submit();
+            libsyscall::gpu_3d_resource_destroy(s.shadow_depth_res_id);
+        }
+
+        // Create depth texture resource: PIPE_TEXTURE_2D, Z24S8, bindable as sampler
+        let res = libsyscall::gpu_3d_resource_create(
+            PIPE_TEXTURE_2D, PIPE_FORMAT_S8_UINT_Z24_UNORM,
+            VIRGL_BIND_DEPTH_STENCIL | VIRGL_BIND_SAMPLER_VIEW,
+            width, height,
+        );
+        if res == u32::MAX { return 0; }
+
+        // Create surface object for depth attachment
+        let surf_h = alloc_handle();
+        s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SURFACE, 5);
+        s.cmd.push(surf_h);
+        s.cmd.push(res);
+        s.cmd.push(PIPE_FORMAT_S8_UINT_Z24_UNORM);
+        s.cmd.push(0); // level
+        s.cmd.push(0); // first_layer | last_layer
+
+        // Create NEAREST/CLAMP sampler state (one-time)
+        if s.shadow_sampler_state_h == 0 {
+            let ssh = alloc_handle();
+            // S0: wrap_s=CLAMP(2), wrap_t=CLAMP(2), wrap_r=CLAMP(2),
+            //     min_filter=NEAREST(0), mip_filter=NONE(2), mag_filter=NEAREST(0)
+            let s0 = (PIPE_TEX_WRAP_CLAMP_TO_EDGE)
+                | (PIPE_TEX_WRAP_CLAMP_TO_EDGE << 3)
+                | (PIPE_TEX_WRAP_CLAMP_TO_EDGE << 6)
+                | (0u32 << 9)   // min_img_filter = NEAREST
+                | (2u32 << 11)  // min_mip_filter = NONE
+                | (0u32 << 13); // mag_img_filter = NEAREST
+            s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SAMPLER_STATE, 9);
+            s.cmd.push(ssh);
+            s.cmd.push(s0);
+            s.cmd.push_f32(0.0);     // lod_bias
+            s.cmd.push_f32(-1000.0); // min_lod
+            s.cmd.push_f32(1000.0);  // max_lod
+            s.cmd.push_f32(0.0);     // border[0]
+            s.cmd.push_f32(0.0);     // border[1]
+            s.cmd.push_f32(0.0);     // border[2]
+            s.cmd.push_f32(0.0);     // border[3]
+            s.shadow_sampler_state_h = ssh;
+        }
+
+        s.shadow_depth_res_id = res;
+        s.shadow_depth_surface_h = surf_h;
+        s.shadow_width = width;
+        s.shadow_height = height;
+
+        s.cmd.submit();
+    }
+
+    // Switch framebuffer to depth-only: nr_cbufs=0, zsurf=shadow
+    s.cmd.push_cmd(VIRGL_CCMD_SET_FRAMEBUFFER_STATE, 0, 2);
+    s.cmd.push(0); // nr_cbufs = 0
+    s.cmd.push(s.shadow_depth_surface_h); // zsurf
+
+    // Set viewport to shadow map dimensions
+    let half_w = width as f32 / 2.0;
+    let half_h = height as f32 / 2.0;
+    s.cmd.push_cmd(VIRGL_CCMD_SET_VIEWPORT_STATE, 0, 7);
+    s.cmd.push(0);
+    s.cmd.push_f32(half_w);
+    s.cmd.push_f32(-half_h);
+    s.cmd.push_f32(0.5);
+    s.cmd.push_f32(half_w);
+    s.cmd.push_f32(half_h);
+    s.cmd.push_f32(0.5);
+
+    // Clear depth to 1.0
+    s.cmd.push_cmd(VIRGL_CCMD_CLEAR, 0, 8);
+    s.cmd.push(PIPE_CLEAR_DEPTH);
+    s.cmd.push_f32(0.0); // color r (unused)
+    s.cmd.push_f32(0.0); // color g
+    s.cmd.push_f32(0.0); // color b
+    s.cmd.push_f32(0.0); // color a
+    let depth_bits = (1.0f64).to_bits();
+    s.cmd.push((depth_bits & 0xFFFF_FFFF) as u32);
+    s.cmd.push(((depth_bits >> 32) & 0xFFFF_FFFF) as u32);
+    s.cmd.push(0); // stencil
+
+    s.cmd.submit();
+    s.shadow_active = true;
+    1
+}
+
+/// End shadow pass: restore main color+depth framebuffer and viewport.
+#[unsafe(no_mangle)]
+pub extern "C" fn drv_shadow_end() {
+    let s = state();
+    if !s.shadow_active { return; }
+
+    // Restore main framebuffer: 1 color buffer + depth
+    s.cmd.push_cmd(VIRGL_CCMD_SET_FRAMEBUFFER_STATE, 0, 3);
+    s.cmd.push(1); // nr_cbufs = 1
+    s.cmd.push(s.depth_surface_handle); // zsurf
+    s.cmd.push(s.color_surface_handle); // cbuf[0]
+
+    // Restore main viewport
+    let half_w = s.width as f32 / 2.0;
+    let half_h = s.height as f32 / 2.0;
+    s.cmd.push_cmd(VIRGL_CCMD_SET_VIEWPORT_STATE, 0, 7);
+    s.cmd.push(0);
+    s.cmd.push_f32(half_w);
+    s.cmd.push_f32(-half_h);
+    s.cmd.push_f32(0.5);
+    s.cmd.push_f32(half_w);
+    s.cmd.push_f32(half_h);
+    s.cmd.push_f32(0.5);
+
+    s.cmd.submit();
+    s.shadow_active = false;
+}
+
+/// Bind the shadow depth map as a sampler view for fragment shader sampling.
+/// `slot`: FS sampler slot (0-7) to bind to.
+#[unsafe(no_mangle)]
+pub extern "C" fn drv_shadow_bind(slot: u32) {
+    if slot >= 8 { return; }
+    let s = state();
+    if s.shadow_depth_res_id == 0 { return; }
+
+    // Create sampler view for the shadow depth texture (if not cached)
+    if s.shadow_sampler_view_h == 0 {
+        let sv = alloc_handle();
+        s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SAMPLER_VIEW, 6);
+        s.cmd.push(sv);
+        s.cmd.push(s.shadow_depth_res_id);
+        s.cmd.push(PIPE_FORMAT_S8_UINT_Z24_UNORM); // view format
+        s.cmd.push(0); // val0: first_level=0 | first_layer=0
+        s.cmd.push(0); // val1: last_level=0 | last_layer=0
+        // swizzle: R=0,G=0,B=0,A=5(ONE) + target=PIPE_TEXTURE_2D
+        let swizzle = 0u32 | (0 << 3) | (0 << 6) | (5 << 9);
+        s.cmd.push(swizzle | (PIPE_TEXTURE_2D << 24));
+        s.shadow_sampler_view_h = sv;
+    }
+
+    // Bind sampler view to slot
+    s.cmd.push_cmd(VIRGL_CCMD_SET_SAMPLER_VIEWS, 0, 3);
+    s.cmd.push(PIPE_SHADER_FRAGMENT);
+    s.cmd.push(slot);
+    s.cmd.push(s.shadow_sampler_view_h);
+
+    // Bind NEAREST/CLAMP sampler state
+    s.cmd.push_cmd(VIRGL_CCMD_BIND_SAMPLER_STATES, 0, 3);
+    s.cmd.push(PIPE_SHADER_FRAGMENT);
+    s.cmd.push(slot);
+    s.cmd.push(s.shadow_sampler_state_h);
+
+    s.cmd.submit();
 }
 
 // ── Panic handler ────────────────────────────────────────────────────────

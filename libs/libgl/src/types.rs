@@ -158,9 +158,15 @@ pub const GL_CCW: GLenum = 0x0901;
 // ── Framebuffer ─────────────────────────────────────────────────────────────
 
 pub const GL_FRAMEBUFFER: GLenum = 0x8D40;
+pub const GL_RENDERBUFFER: GLenum = 0x8D41;
 pub const GL_COLOR_ATTACHMENT0: GLenum = 0x8CE0;
 pub const GL_DEPTH_ATTACHMENT: GLenum = 0x8D00;
+pub const GL_STENCIL_ATTACHMENT: GLenum = 0x8D20;
 pub const GL_FRAMEBUFFER_COMPLETE: GLenum = 0x8CD5;
+pub const GL_DEPTH_COMPONENT: GLenum = 0x1902;
+pub const GL_DEPTH_COMPONENT16: GLenum = 0x81A5;
+pub const GL_DEPTH_COMPONENT24: GLenum = 0x81A6;
+pub const GL_DEPTH_COMPONENT32: GLenum = 0x81A7;
 
 // ── String Queries ──────────────────────────────────────────────────────────
 

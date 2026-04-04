@@ -240,6 +240,11 @@ pub struct GpuDrv {
 
     // Sampler view bind: (slot, virgl_res_id) — binds texture resource to FS SAMP[slot]
     pub drv_bind_sampler_view: Option<extern "C" fn(u32, u32)>,
+
+    // Shadow mapping (GL_OES_depth_texture / ES 2.0 FBO)
+    pub drv_shadow_begin: Option<extern "C" fn(u32, u32) -> u32>,
+    pub drv_shadow_end: Option<extern "C" fn()>,
+    pub drv_shadow_bind: Option<extern "C" fn(u32)>,
 }
 
 static mut DRV: Option<GpuDrv> = None;
@@ -349,6 +354,9 @@ fn init_inner(width: u32, height: u32) -> Option<()> {
             drv_resize:           resolve_opt(&handle, "drv_resize"),
             drv_upload_texture:   resolve_opt(&handle, "drv_upload_texture"),
             drv_bind_sampler_view: resolve_opt(&handle, "drv_bind_sampler_view"),
+            drv_shadow_begin:     resolve_opt(&handle, "drv_shadow_begin"),
+            drv_shadow_end:       resolve_opt(&handle, "drv_shadow_end"),
+            drv_shadow_bind:      resolve_opt(&handle, "drv_shadow_bind"),
             _handle: handle,
         };
 
