@@ -29,4 +29,5 @@ pub mod mono;
 pub mod codegen;
 pub mod linker;
 pub mod loader;
+pub mod runtime;
 pub mod driver;

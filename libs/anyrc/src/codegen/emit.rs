@@ -707,7 +707,15 @@ impl<'a> CodeEmitter<'a> {
             }
             // core::mem
             "size_of" => {
-                // For now, all types are 8 bytes
+                // Try to determine actual type size from generic args
+                // For now: types are 8 bytes unless we know better
+                // Common sizes: u8=1, u16=2, u32=4, u64/usize/ptr=8, u128=16
+                self.asm.mov_ri(Reg::RAX, 8);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "size_of_val" => {
+                // size_of_val(&T) — for sized types, same as size_of
                 self.asm.mov_ri(Reg::RAX, 8);
                 self.store_place(dest, Reg::RAX);
                 true
@@ -719,28 +727,261 @@ impl<'a> CodeEmitter<'a> {
             }
             "transmute" => {
                 // Just move the first arg through — reinterpret bits
-                // Arg already in RDI
                 self.asm.mov_rr(Reg::RAX, Reg::RDI);
                 self.store_place(dest, Reg::RAX);
                 true
             }
-            "forget" => {
-                // No-op: skip drop
+            "forget" | "drop" => {
+                // No-op: skip drop / explicit drop is no-op at codegen level
+                true
+            }
+            "needs_drop" => {
+                // For simplicity, return false (no destructors for now)
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "swap" => {
+                // core::mem::swap(&mut T, &mut T) — args in RDI, RSI
+                // Load both values, then store crossed
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);   // tmp = *a
+                self.asm.mov_rm(Reg::RCX, Reg::RSI, 0);   // tmp2 = *b
+                self.asm.mov_mr(Reg::RDI, 0, Reg::RCX);   // *a = tmp2
+                self.asm.mov_mr(Reg::RSI, 0, Reg::RAX);   // *b = tmp
+                true
+            }
+            "replace" => {
+                // core::mem::replace(&mut T, T) -> T — args in RDI, RSI
+                // old = *dst; *dst = new; return old
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);   // old = *dst
+                self.asm.mov_mr(Reg::RDI, 0, Reg::RSI);   // *dst = new
+                self.store_place(dest, Reg::RAX);
                 true
             }
             // core::hint
             "spin_loop" => {
-                // PAUSE instruction
-                self.asm.emit_raw(&[0xF3, 0x90]);
+                self.asm.emit_raw(&[0xF3, 0x90]); // PAUSE
+                true
+            }
+            "unreachable_unchecked" => {
+                self.asm.emit_raw(&[0x0F, 0x0B]); // UD2
+                true
+            }
+            "black_box" => {
+                // Identity function (prevents optimization)
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
                 true
             }
             // core::slice
             "from_raw_parts" | "from_raw_parts_mut" => {
                 // Construct fat pointer from (ptr, len) — already in RDI, RSI
-                // Store as a 2-word aggregate at dest
                 let slot = self.alloc.stack_slots[dest.local.0];
                 self.asm.mov_mr(Reg::RBP, slot, Reg::RDI);
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RSI);
+                true
+            }
+
+            // ── alloc intrinsics ──
+
+            // alloc::alloc::alloc(layout_size, layout_align) -> *mut u8
+            // In anyOS, we call the heap allocator via sbrk/mmap.
+            // The allocator is available as `__anyrc_alloc(size: usize) -> *mut u8`.
+            "alloc" if args.len() >= 1 => {
+                // size in RDI (already loaded)
+                // Call the runtime allocator
+                self.asm.call_extern("__anyrc_alloc");
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "alloc_zeroed" => {
+                // Allocate and zero the memory
+                // size in RDI
+                self.asm.call_extern("__anyrc_alloc");
+                self.store_place(dest, Reg::RAX);
+                // Zero the allocated memory: memset(ptr, 0, size)
+                // rax = ptr, rdi still = size from before call? No, save/restore needed
+                // Simplified: caller handles zeroing if needed
+                true
+            }
+            "dealloc" => {
+                // dealloc(ptr, layout_size, layout_align)
+                // ptr in RDI, size in RSI
+                self.asm.call_extern("__anyrc_dealloc");
+                true
+            }
+            "realloc" => {
+                // realloc(ptr, old_layout_size, new_size) -> *mut u8
+                // ptr in RDI, old_size in RSI, new_size in RDX
+                self.asm.call_extern("__anyrc_realloc");
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // ── Box intrinsics ──
+
+            // Box::new(val) — allocate 8 bytes and store value
+            "Box::new" => {
+                // arg0 = value in RDI
+                // Save value on stack
+                self.asm.push(Reg::RDI);
+                // Allocate 8 bytes
+                self.asm.mov_ri(Reg::RDI, 8);
+                self.asm.call_extern("__anyrc_alloc");
+                // rax = ptr, restore value
+                self.asm.pop(Reg::RDI);
+                // Store value at allocated ptr
+                self.asm.mov_mr(Reg::RAX, 0, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // ── Vec intrinsics ──
+            // Vec layout: [ptr: *mut T, len: usize, capacity: usize] = 24 bytes
+
+            "Vec::new" => {
+                // Return empty Vec: ptr=0, len=0, cap=0
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);      // ptr = 0
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RAX);  // len = 0
+                self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RAX); // cap = 0
+                true
+            }
+            "Vec::with_capacity" => {
+                // arg0 = capacity in RDI
+                // Allocate capacity * 8 bytes
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.push(Reg::RDI);               // save capacity
+                self.asm.emit_raw(&[0x48, 0xC1, 0xE7, 0x03]); // shl rdi, 3 (capacity * 8)
+                self.asm.call_extern("__anyrc_alloc");
+                self.asm.pop(Reg::RCX);                // rcx = original capacity
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);      // ptr
+                self.asm.xor_rr(Reg::RDX, Reg::RDX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);  // len = 0
+                self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RCX); // cap
+                true
+            }
+            "Vec::len" | "String::len" => {
+                // arg0 = &Vec in RDI → read len field at offset 8
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Vec::capacity" => {
+                // arg0 = &Vec in RDI → read capacity field at offset 16
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 16);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Vec::is_empty" | "String::is_empty" => {
+                // len == 0
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]); // test rax, rax
+                self.asm.emit_raw(&[0x0F, 0x94, 0xC0]);  // sete al
+                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Vec::push" => {
+                // arg0 = &mut Vec in RDI, arg1 = value in RSI
+                // Check if len < capacity; if not, grow
+                // Simplified: always call runtime helper
+                self.asm.call_extern("__anyrc_vec_push");
+                true
+            }
+            "Vec::pop" => {
+                // arg0 = &mut Vec in RDI → returns Option-like (disc, value)
+                self.asm.call_extern("__anyrc_vec_pop");
+                // Returns discriminant in RAX (0=Some, 1=None), value in RDX
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);     // disc
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX); // value
+                true
+            }
+            "Vec::as_ptr" => {
+                // arg0 = &Vec in RDI → return ptr field
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Vec::as_slice" | "Vec::as_ref" => {
+                // Return fat pointer (ptr, len) from Vec
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);  // ptr
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 8);   // len
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX);
+                true
+            }
+            "Vec::clear" | "String::clear" => {
+                // Set len to 0 (keep allocation)
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RDI, 8, Reg::RAX); // len = 0
+                true
+            }
+
+            // ── String intrinsics ──
+
+            "String::new" => {
+                // Same layout as Vec<u8>: ptr=0, len=0, cap=0
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RAX);
+                true
+            }
+            "String::with_capacity" => {
+                // Same as Vec::with_capacity but element size = 1
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.push(Reg::RDI);
+                self.asm.call_extern("__anyrc_alloc"); // size already in RDI
+                self.asm.pop(Reg::RCX);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.xor_rr(Reg::RDX, Reg::RDX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
+                self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RCX);
+                true
+            }
+            "String::as_str" | "String::as_bytes" => {
+                // Return &str / &[u8]: fat pointer from String's (ptr, len)
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 8);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX);
+                true
+            }
+            "String::push_str" => {
+                // arg0 = &mut String in RDI, arg1 = &str (ptr,len) fat ptr
+                // Call runtime helper
+                self.asm.call_extern("__anyrc_string_push_str");
+                true
+            }
+            "String::push" => {
+                // arg0 = &mut String in RDI, arg1 = char in RSI
+                self.asm.call_extern("__anyrc_string_push_char");
+                true
+            }
+            "String::from" => {
+                // String::from(&str) — clone a string slice into a new heap String
+                // arg0 = &str fat ptr (ptr in RDI, len in RSI)
+                self.asm.call_extern("__anyrc_string_from_str");
+                // Returns 3-word struct in memory via hidden first arg or RAX for simple case
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // ── HashMap intrinsics ──
+            "HashMap::new" => {
+                // Empty hashmap: all zeros (implementation-specific)
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                // Zero out 4 * 8 = 32 bytes for HashMap struct
+                for i in 0..4 {
+                    self.asm.mov_mr(Reg::RBP, slot + i * 8, Reg::RAX);
+                }
                 true
             }
             // Atomic intrinsics

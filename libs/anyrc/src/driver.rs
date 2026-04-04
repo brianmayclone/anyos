@@ -204,8 +204,11 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         EmitKind::Exe => {
             let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &static_data);
             let obj_bytes = elf::write_object(&obj);
-            // Collect all object files: our code + extern crate .rlib objects
+            // Collect all object files: our code + extern crate .rlib objects + runtime stubs
             let mut all_objects = vec![obj_bytes];
+            // Add runtime support stubs (__anyrc_alloc, __anyrc_vec_push, etc.)
+            let rt_obj = build_runtime_object();
+            all_objects.push(elf::write_object(&rt_obj));
             for ext in &options.extern_crates {
                 if let Some(rlib_data) = crate::loader::OsFileLoader::read_bytes(&ext.rlib_path) {
                     if let Some((obj_data, _meta)) = crate::loader::unpack_rlib(&rlib_data) {
@@ -394,5 +397,38 @@ fn terminator_kind(t: &crate::mir::Terminator) -> &'static str {
         crate::mir::Terminator::Call { .. } => "call",
         crate::mir::Terminator::Return => "return",
         crate::mir::Terminator::Unreachable => "unreachable",
+    }
+}
+
+/// Build an ELF object file containing the runtime support stubs.
+fn build_runtime_object() -> elf::ObjectFile {
+    let stubs = crate::runtime::runtime_stubs();
+    let mut text_data = Vec::new();
+    let mut symbols = Vec::new();
+
+    for (name, code) in &stubs {
+        let offset = text_data.len() as u64;
+        let size = code.len() as u64;
+        text_data.extend_from_slice(code);
+        symbols.push(elf::ElfSymbol {
+            name: name.clone(),
+            section: Some(0), // .text
+            offset,
+            size,
+            binding: 1, // STB_GLOBAL
+            sym_type: 2, // STT_FUNC
+        });
+    }
+
+    elf::ObjectFile {
+        sections: vec![elf::Section {
+            name: ".text".to_string(),
+            data: text_data,
+            sh_type: 1,         // SHT_PROGBITS
+            sh_flags: 0x2 | 0x4, // SHF_ALLOC | SHF_EXECINSTR
+            sh_addralign: 16,
+        }],
+        symbols,
+        relocations: Vec::new(),
     }
 }
