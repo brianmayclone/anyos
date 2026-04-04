@@ -164,6 +164,9 @@ EXPORTS
     anyui_get_compositor_channel
     anyui_on_window_opened
     anyui_on_window_closed
+    anyui_on_window_list
+    anyui_request_window_list
+    anyui_get_window_list_buffer
     anyui_focus_by_tid
     anyui_resize_window
     anyui_move_window

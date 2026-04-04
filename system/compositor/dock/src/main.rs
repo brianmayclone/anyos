@@ -481,7 +481,7 @@ fn tick() {
     {
         let a = app();
         let elapsed = now.wrapping_sub(a.last_window_poll);
-        let poll_interval = hz * 3; // 3 seconds
+        let poll_interval = hz; // 1 second
         if elapsed >= poll_interval {
             a.last_window_poll = now;
             anyui::request_window_list();
@@ -1121,6 +1121,129 @@ fn process_system_events() {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// Reconcile dock items against the actual compositor window list.
+/// Called when the on_window_list callback fires with the authoritative TID list.
+///
+/// This is the safety net: it adds missing apps and removes stale ones.
+fn reconcile_window_list() {
+    let actual_tids = anyui::get_window_list_buffer();
+    if actual_tids.is_empty() {
+        return;
+    }
+
+    let a = app();
+
+    // 1. Add missing apps — TIDs in the compositor window list that aren't tracked in dock
+    for &tid in actual_tids {
+        // Skip if already tracked
+        if a.items.iter().any(|it| it.tid == tid) {
+            continue;
+        }
+
+        // Look up name from tid_names cache or query kernel
+        let name = match a.tid_names.iter().find(|(t, _)| *t == tid) {
+            Some((_, n)) => n.clone(),
+            None => {
+                // Not in cache — query from kernel
+                if let Some(n) = events::query_thread_name(tid) {
+                    let a = app();
+                    a.tid_names.push((tid, n.clone()));
+                    n
+                } else {
+                    continue;
+                }
+            }
+        };
+
+        // Skip system threads
+        if SYSTEM_NAMES.iter().any(|&s| s == name.as_str()) {
+            continue;
+        }
+
+        // Check if there's a pinned item with matching name that we should associate
+        let a = app();
+        let mut matched_pinned = false;
+        for item in a.items.iter_mut() {
+            if item.pinned && item.tid == 0 {
+                let raw_basename = item.bin_path.rsplit('/').next().unwrap_or("");
+                let basename = raw_basename.strip_suffix(".app").unwrap_or(raw_basename);
+                if basename == name.as_str() {
+                    item.tid = tid;
+                    item.running = true;
+                    a.needs_redraw = true;
+                    matched_pinned = true;
+                    break;
+                }
+            }
+        }
+        if matched_pinned {
+            continue;
+        }
+
+        // Add as transient item (same logic as handle_window_opened)
+        let icon_size = a.settings.icon_size;
+        let mag_size = a.settings.mag_size;
+        let magnification = a.settings.magnification;
+
+        let bin_path = {
+            let app_path = alloc::format!("/Applications/{}.app", name);
+            let mut stat_buf = [0u32; 7];
+            if anyos_std::fs::stat(&app_path, &mut stat_buf) == 0 && stat_buf[0] == 1 {
+                app_path
+            } else {
+                alloc::format!("/System/bin/{}", name)
+            }
+        };
+        let icon_path = anyos_std::icons::app_icon_path(&bin_path);
+        let icon = load_ico_icon(&icon_path, icon_size);
+        let icon_hires = if magnification {
+            load_ico_icon(&icon_path, mag_size)
+        } else {
+            None
+        };
+
+        let a = app();
+        a.items.push(DockItem {
+            name,
+            bin_path,
+            icon,
+            icon_hires,
+            running: true,
+            tid,
+            pinned: false,
+        });
+        a.needs_redraw = true;
+    }
+
+    // 2. Remove stale transient items — TIDs in dock but NOT in compositor window list
+    let a = app();
+    let mut i = 0;
+    while i < a.items.len() {
+        let item = &a.items[i];
+        if item.tid != 0 && item.running {
+            let in_compositor = actual_tids.iter().any(|&t| t == item.tid);
+            if !in_compositor {
+                if item.pinned {
+                    // Pinned: mark as not running but keep in dock
+                    a.items[i].running = false;
+                    a.items[i].tid = 0;
+                    a.needs_redraw = true;
+                    i += 1;
+                } else {
+                    // Transient: remove entirely
+                    a.items.remove(i);
+                    a.needs_redraw = true;
+                    // Don't increment i — next item shifted into this position
+                }
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
         }
     }
 }
