@@ -1153,9 +1153,9 @@ pub extern "C" fn drv_shadow_begin(width: u32, height: u32) -> u32 {
             libsyscall::gpu_3d_resource_destroy(s.shadow_depth_res_id);
         }
 
-        // Create depth texture resource: PIPE_TEXTURE_2D, Z24S8, bindable as sampler
+        // Create depth texture resource: PIPE_TEXTURE_2D, Z32F, bindable as sampler
         let res = libsyscall::gpu_3d_resource_create(
-            PIPE_TEXTURE_2D, PIPE_FORMAT_S8_UINT_Z24_UNORM,
+            PIPE_TEXTURE_2D, PIPE_FORMAT_Z32_FLOAT,
             VIRGL_BIND_DEPTH_STENCIL | VIRGL_BIND_SAMPLER_VIEW,
             width, height,
         );
@@ -1166,7 +1166,7 @@ pub extern "C" fn drv_shadow_begin(width: u32, height: u32) -> u32 {
         s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SURFACE, 5);
         s.cmd.push(surf_h);
         s.cmd.push(res);
-        s.cmd.push(PIPE_FORMAT_S8_UINT_Z24_UNORM);
+        s.cmd.push(PIPE_FORMAT_Z32_FLOAT);
         s.cmd.push(0); // level
         s.cmd.push(0); // first_layer | last_layer
 
@@ -1287,7 +1287,7 @@ pub extern "C" fn drv_shadow_bind(slot: u32) {
         s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SAMPLER_VIEW, 6);
         s.cmd.push(sv);
         s.cmd.push(s.shadow_depth_res_id);
-        s.cmd.push(PIPE_FORMAT_S8_UINT_Z24_UNORM); // view format
+        s.cmd.push(PIPE_FORMAT_Z32_FLOAT); // view format — Z32F reads directly as float .r
         s.cmd.push(0); // val0: first_level=0 | first_layer=0
         s.cmd.push(0); // val1: last_level=0 | last_layer=0
         // swizzle: R=0,G=0,B=0,A=5(ONE) + target=PIPE_TEXTURE_2D

@@ -191,8 +191,21 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
         core::slice::from_raw_parts(vertex_data.as_ptr() as *const u8, vertex_data.len() * 4)
     };
 
-    bind_textures_hw(ctx, drv);
-    upload_uniforms(ctx, drv);
+    // During shadow pass: skip texture binding, upload per-object MVP for depth shader
+    if ctx.shadow_pass_active {
+        // The app sets loc_mvp (uniform 0) = light_vp * model per object.
+        // Upload that as CONST[0..3] for the depth-only shader.
+        let prog_id = ctx.current_program;
+        if let Some(p) = ctx.shaders.get_program(prog_id) {
+            if let Some(u) = p.uniforms.first() {
+                // Uniform 0 = MVP (mat4 = 16 floats = 4 vec4 slots)
+                (drv.drv_set_uniform_f32)(0, 4, u.value.as_ptr());
+            }
+        }
+    } else {
+        bind_textures_hw(ctx, drv);
+        upload_uniforms(ctx, drv);
+    }
 
     (drv.drv_draw_arrays)(
         mode, first as u32, count as u32,
@@ -286,8 +299,17 @@ fn draw_elements_hw(
     // Pass index data starting at the offset
     let index_start = &index_data[offset..];
 
-    bind_textures_hw(ctx, drv);
-    upload_uniforms(ctx, drv);
+    if ctx.shadow_pass_active {
+        let prog_id = ctx.current_program;
+        if let Some(p) = ctx.shaders.get_program(prog_id) {
+            if let Some(u) = p.uniforms.first() {
+                (drv.drv_set_uniform_f32)(0, 4, u.value.as_ptr());
+            }
+        }
+    } else {
+        bind_textures_hw(ctx, drv);
+        upload_uniforms(ctx, drv);
+    }
 
     (drv.drv_draw_elements)(
         mode, count as u32, type_,
