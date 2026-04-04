@@ -78,36 +78,29 @@ uniform vec3 uCamUp;
 uniform float uTanHalfFov;
 uniform float uAspect;
 void main() {
-    // Reconstruct view ray from screen position using camera basis vectors
     vec3 ray = normalize(uCamFwd
         + vPos.x * uCamRight * uTanHalfFov * uAspect
         + vPos.y * uCamUp * uTanHalfFov);
 
-    // Sky gradient based on vertical angle
     float elevation = ray.y;
-    vec3 color;
-    if (elevation > 0.0) {
-        // Above horizon: horizon -> top
-        float t = clamp(elevation * 2.5, 0.0, 1.0);
-        color = mix(uSkyHorizon, uSkyTop, t);
-    } else {
-        // Below horizon: horizon -> bottom (ground haze)
-        float t = clamp(-elevation * 4.0, 0.0, 1.0);
-        color = mix(uSkyHorizon, uSkyBottom, t);
-    }
 
-    // Sun disc
+    // Branchless sky gradient:
+    // t_up = elevation clamped to [0,1] scaled by 2.5 → above horizon blend
+    // t_down = -elevation clamped to [0,1] scaled by 4.0 → below horizon blend
+    float t_up = clamp(elevation * 2.5, 0.0, 1.0);
+    float t_down = clamp(-elevation * 4.0, 0.0, 1.0);
+    // When elevation > 0: t_up > 0, t_down = 0 → mix toward top
+    // When elevation < 0: t_up = 0, t_down > 0 → mix toward bottom
+    vec3 color = mix(uSkyHorizon, uSkyTop, t_up);
+    color = mix(color, uSkyBottom, t_down);
+
+    // Branchless sun disc + glow
     float sun_dot = dot(ray, uSunDir);
-    if (sun_dot > uSunSize) {
-        float t = (sun_dot - uSunSize) / (1.0 - uSunSize);
-        color = mix(color, uSunColor, clamp(t * 3.0, 0.0, 1.0));
-    }
-    // Sun glow (larger soft halo)
+    float sun_t = clamp((sun_dot - uSunSize) / (1.0 - uSunSize + 0.001) * 3.0, 0.0, 1.0);
+    color = mix(color, uSunColor, sun_t);
     float glow_size = uSunSize - 0.04;
-    if (sun_dot > glow_size && glow_size < 1.0) {
-        float t = (sun_dot - glow_size) / (1.0 - glow_size);
-        color = mix(color, uSunColor, t * t * 0.4);
-    }
+    float glow_t = clamp((sun_dot - glow_size) / (1.0 - glow_size + 0.001), 0.0, 1.0);
+    color = mix(color, uSunColor, glow_t * glow_t * 0.4);
 
     gl_FragColor = vec4(color, 1.0);
 }
@@ -318,9 +311,46 @@ impl Renderer {
         gl::clear_color(sky_horizon[0], sky_horizon[1], sky_horizon[2], 1.0);
         gl::clear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
 
-        // -- Block pass first (depth test on, writes depth buffer) --
+        // -- Sky pass (depth test OFF so sky doesn't write to depth buffer) --
+        gl::disable(gl::GL_DEPTH_TEST);
         let aspect = width as f32 / height as f32;
 
+        gl::use_program(self.sky_program);
+
+        gl::uniform3f(self.u_sky_top, sky_top[0], sky_top[1], sky_top[2]);
+        gl::uniform3f(self.u_sky_horizon, sky_horizon[0], sky_horizon[1], sky_horizon[2]);
+        gl::uniform3f(self.u_sky_bottom, sky_bottom[0], sky_bottom[1], sky_bottom[2]);
+        gl::uniform3f(self.u_sun_dir, sun_dir[0], sun_dir[1], sun_dir[2]);
+        gl::uniform3f(self.u_sun_color, sun_color[0], sun_color[1], sun_color[2]);
+        let sun_size = if sun_elevation > -0.1 { 0.9985 } else { 2.0 };
+        gl::uniform1f(self.u_sun_size, sun_size);
+
+        let fov_rad = 70.0 * gl::PI / 180.0;
+        let tan_half_fov = gl::tan(fov_rad * 0.5);
+        let cy = gl::cos(self.yaw);
+        let sy = gl::sin(self.yaw);
+        let cp = gl::cos(self.pitch);
+        let sp = gl::sin(self.pitch);
+        let fwd = [sy * cp, -sp, -cy * cp];
+        let right = [cy, 0.0, sy];
+        let up = [
+            right[1] * fwd[2] - right[2] * fwd[1],
+            right[2] * fwd[0] - right[0] * fwd[2],
+            right[0] * fwd[1] - right[1] * fwd[0],
+        ];
+        gl::uniform3f(self.u_cam_fwd, fwd[0], fwd[1], fwd[2]);
+        gl::uniform3f(self.u_cam_right, right[0], right[1], right[2]);
+        gl::uniform3f(self.u_cam_up, up[0], up[1], up[2]);
+        gl::uniform1f(self.u_tan_half_fov, tan_half_fov);
+        gl::uniform1f(self.u_aspect, aspect);
+
+        gl::bind_buffer(gl::GL_ARRAY_BUFFER, self.sky_vbo);
+        gl::enable_vertex_attrib_array(self.a_sky_pos as u32);
+        gl::vertex_attrib_pointer(self.a_sky_pos as u32, 2, gl::GL_FLOAT, false, 8, 0);
+        gl::draw_arrays(gl::GL_TRIANGLES, 0, 6);
+        gl::disable_vertex_attrib_array(self.a_sky_pos as u32);
+
+        // -- Block pass (depth test ON, draws over sky) --
         gl::enable(gl::GL_DEPTH_TEST);
         gl::depth_func(gl::GL_LESS);
         gl::disable(gl::GL_BLEND);
@@ -413,45 +443,6 @@ impl Renderer {
         gl::disable_vertex_attrib_array(self.a_position as u32);
         gl::disable_vertex_attrib_array(self.a_texcoord as u32);
         gl::disable_vertex_attrib_array(self.a_light as u32);
-
-        // -- Sky pass (after blocks so sky fills only empty pixels) --
-        // Sky quad has z=0.999, depth test LEQUAL ensures it only draws where
-        // no block has written a closer depth value.
-        gl::depth_func(gl::GL_LEQUAL);
-        gl::use_program(self.sky_program);
-
-        gl::uniform3f(self.u_sky_top, sky_top[0], sky_top[1], sky_top[2]);
-        gl::uniform3f(self.u_sky_horizon, sky_horizon[0], sky_horizon[1], sky_horizon[2]);
-        gl::uniform3f(self.u_sky_bottom, sky_bottom[0], sky_bottom[1], sky_bottom[2]);
-        gl::uniform3f(self.u_sun_dir, sun_dir[0], sun_dir[1], sun_dir[2]);
-        gl::uniform3f(self.u_sun_color, sun_color[0], sun_color[1], sun_color[2]);
-        let sun_size = if sun_elevation > -0.1 { 0.9985 } else { 2.0 };
-        gl::uniform1f(self.u_sun_size, sun_size);
-
-        let fov_rad = 70.0 * gl::PI / 180.0;
-        let tan_half_fov = gl::tan(fov_rad * 0.5);
-        let cy = gl::cos(self.yaw);
-        let sy = gl::sin(self.yaw);
-        let cp = gl::cos(self.pitch);
-        let sp = gl::sin(self.pitch);
-        let fwd = [sy * cp, -sp, -cy * cp];
-        let right = [cy, 0.0, sy];
-        let up = [
-            right[1] * fwd[2] - right[2] * fwd[1],
-            right[2] * fwd[0] - right[0] * fwd[2],
-            right[0] * fwd[1] - right[1] * fwd[0],
-        ];
-        gl::uniform3f(self.u_cam_fwd, fwd[0], fwd[1], fwd[2]);
-        gl::uniform3f(self.u_cam_right, right[0], right[1], right[2]);
-        gl::uniform3f(self.u_cam_up, up[0], up[1], up[2]);
-        gl::uniform1f(self.u_tan_half_fov, tan_half_fov);
-        gl::uniform1f(self.u_aspect, aspect);
-
-        gl::bind_buffer(gl::GL_ARRAY_BUFFER, self.sky_vbo);
-        gl::enable_vertex_attrib_array(self.a_sky_pos as u32);
-        gl::vertex_attrib_pointer(self.a_sky_pos as u32, 2, gl::GL_FLOAT, false, 8, 0);
-        gl::draw_arrays(gl::GL_TRIANGLES, 0, 6);
-        gl::disable_vertex_attrib_array(self.a_sky_pos as u32);
     }
 
     pub fn adapt_view_distance(&mut self, fps: f32) {
