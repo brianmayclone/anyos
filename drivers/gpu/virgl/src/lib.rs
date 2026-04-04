@@ -1071,6 +1071,7 @@ pub extern "C" fn drv_destroy_vbo(gpu_res_id: u32) {
     libsyscall::gpu_3d_resource_destroy(gpu_res_id);
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn drv_flush() {
     let s = state();
     s.cmd.submit();
