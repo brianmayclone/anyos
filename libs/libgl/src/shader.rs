@@ -349,9 +349,11 @@ impl ShaderStore {
             if u.components == 16 { 4 } else { 1 }
         }).sum();
 
-        // Compile to TGSI text
+        // Compile to TGSI text.
+        // FS IR LoadUniform indices are already patched with vs_uni_slots offset
+        // (done in link_program), so const_base=0 for FS to avoid double-offset.
         let vs_tgsi = compiler::backend_tgsi::compile(vs_ir, true, 0, 0);
-        let fs_tgsi = compiler::backend_tgsi::compile(fs_ir, false, num_samplers, vs_const_slots);
+        let fs_tgsi = compiler::backend_tgsi::compile(fs_ir, false, num_samplers, 0);
 
         crate::serial_println!("[libgl] TGSI VS ({} bytes):\n{}", vs_tgsi.len(), &vs_tgsi);
         crate::serial_println!("[libgl] TGSI FS ({} bytes):\n{}", fs_tgsi.len(), &fs_tgsi);
