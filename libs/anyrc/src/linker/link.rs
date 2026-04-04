@@ -17,20 +17,19 @@ pub fn link(objects: &[Vec<u8>], _output_name: &str, no_main: bool) -> Vec<u8> {
     // Emit _start stub (unless no_main is set)
     if !no_main {
         // call main
-        // mov rdi, rax
-        // mov rax, 60
-        // syscall
+        // mov rdi, rax  (exit code = return value of main)
+        // mov rax, 1    (SYS_EXIT on anyOS)
+        // int 0x80
         let start_offset = merged_code.len() as u64;
         // CALL rel32 (placeholder, will be patched)
         merged_code.push(0xE8);
         merged_code.extend_from_slice(&[0, 0, 0, 0]); // rel32 placeholder
-        // mov rdi, rax  =>  REX.W 89 C7  (mov rdi, rax = 48 89 c7)
+        // mov rdi, rax
         merged_code.extend_from_slice(&[0x48, 0x89, 0xC7]);
-        // mov rax, 60  =>  REX.W B8 imm64
-        merged_code.extend_from_slice(&[0x48, 0xB8]);
-        merged_code.extend_from_slice(&60u64.to_le_bytes());
-        // syscall
-        merged_code.extend_from_slice(&[0x0F, 0x05]);
+        // mov rax, 1 (SYS_EXIT)
+        merged_code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]);
+        // INT 0x80 (anyOS syscall)
+        merged_code.extend_from_slice(&[0xCD, 0x80]);
 
         // Add _start->main relocation
         pending_relocs.push((start_offset + 1, "main".to_string(), 2 /* R_X86_64_PC32 */, -4));

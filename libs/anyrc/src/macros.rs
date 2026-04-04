@@ -70,7 +70,36 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
         // Try to expand macro calls at item position
         let should_expand = matches!(&items[i], Item::MacroCall(..));
         if should_expand {
-            if let Item::MacroCall(path, args, _span) = &items[i] {
+            if let Item::MacroCall(path, args, span) = &items[i] {
+                // Check for built-in item macros
+                let macro_name = if !path.segments.is_empty() {
+                    interner.resolve(path.segments.last().unwrap().ident).to_string()
+                } else {
+                    String::new()
+                };
+
+                if macro_name == "entry" {
+                    // anyos_std::entry!(main) expands to:
+                    //   #[no_mangle]
+                    //   pub extern "C" fn _start() -> ! {
+                    //       anyos_std::heap::init();
+                    //       let code = main();
+                    //       anyos_std::process::exit(code as u32);
+                    //   }
+                    let entry_src = concat!(
+                        "#[no_mangle]\n",
+                        "pub extern \"C\" fn _start() {\n",
+                        "    main();\n",
+                        "    exit(0);\n",
+                        "}\n",
+                    );
+                    let mut parser = Parser::new(entry_src, interner);
+                    let krate = parser.parse_crate();
+                    items.splice(i..=i, krate.items);
+                    *changed = true;
+                    continue;
+                }
+
                 if let Some(def) = find_macro(defs, path) {
                     if let Some(expanded) = try_expand_to_items(def, args, interner) {
                         items.splice(i..=i, expanded);

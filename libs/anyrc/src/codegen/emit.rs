@@ -1277,6 +1277,112 @@ impl<'a> CodeEmitter<'a> {
                 true
             }
 
+            // ── anyOS syscall intrinsics ──
+            // anyos_std::fs, anyos_std::process, etc.
+            // anyOS syscalls use INT 0x80 with: RAX=syscall_nr, RDI=arg0, RSI=arg1, RDX=arg2
+
+            // ── anyOS syscall intrinsics ──
+            // anyOS syscalls use INT 0x80: RAX=syscall_nr, RDI=arg0, RSI=arg1, RDX=arg2
+            // Syscall numbers from libs/stdlib/src/raw.rs
+
+            // SYS_EXIT = 1
+            "exit" | "anyos_std::process::exit" => {
+                self.asm.mov_ri(Reg::RAX, 1);
+                self.asm.emit_raw(&[0xCD, 0x80]);
+                true
+            }
+
+            // SYS_WRITE = 2: write(fd, buf_ptr, len) -> n
+            "anyos_std::fs::write" => {
+                self.asm.mov_ri(Reg::RAX, 2);
+                self.asm.emit_raw(&[0xCD, 0x80]);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // SYS_READ = 3: read(fd, buf_ptr, len) -> n
+            "anyos_std::fs::read" => {
+                self.asm.mov_ri(Reg::RAX, 3);
+                self.asm.emit_raw(&[0xCD, 0x80]);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // SYS_OPEN = 4: open(path_ptr, flags) -> fd
+            "anyos_std::fs::open" => {
+                self.asm.mov_ri(Reg::RAX, 4);
+                self.asm.emit_raw(&[0xCD, 0x80]);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // SYS_CLOSE = 5: close(fd) -> 0
+            "anyos_std::fs::close" => {
+                self.asm.mov_ri(Reg::RAX, 5);
+                self.asm.emit_raw(&[0xCD, 0x80]);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // SYS_SBRK = 9: sbrk(increment) -> old_break
+            "anyos_std::heap::init" | "heap::init" => {
+                self.asm.xor_rr(Reg::RDI, Reg::RDI);
+                self.asm.mov_ri(Reg::RAX, 9);
+                self.asm.emit_raw(&[0xCD, 0x80]);
+                true
+            }
+
+            // SYS_EXEC = 11: exec(path_ptr, args_ptr) -> pid
+            "exec" | "anyos_std::process::exec" => {
+                self.asm.mov_ri(Reg::RAX, 11);
+                self.asm.emit_raw(&[0xCD, 0x80]);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // SYS_READDIR = 23: readdir(path_ptr, buf_ptr) -> count
+            "anyos_std::fs::readdir" | "readdir" => {
+                self.asm.mov_ri(Reg::RAX, 23);
+                self.asm.emit_raw(&[0xCD, 0x80]);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // SYS_GETARGS = 28: getargs(buf_ptr) -> len
+            "args" | "anyos_std::process::args" => {
+                self.asm.mov_ri(Reg::RAX, 28);
+                self.asm.emit_raw(&[0xCD, 0x80]);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // SYS_MKDIR = 90
+            "anyos_std::fs::mkdir" | "mkdir" => {
+                self.asm.mov_ri(Reg::RAX, 90);
+                self.asm.emit_raw(&[0xCD, 0x80]);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // SYS_UNLINK = 91
+            "anyos_std::fs::unlink" | "unlink" => {
+                self.asm.mov_ri(Reg::RAX, 91);
+                self.asm.emit_raw(&[0xCD, 0x80]);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // Raw syscall passthrough
+            "syscall" | "anyos_std::raw::syscall" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.asm.mov_rr(Reg::RDI, Reg::RSI);
+                self.asm.mov_rr(Reg::RSI, Reg::RDX);
+                self.asm.mov_rr(Reg::RDX, Reg::RCX);
+                self.asm.emit_raw(&[0xCD, 0x80]);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
             _ => false,
         }
     }

@@ -256,7 +256,7 @@ impl<'a> Resolver<'a> {
     fn is_extern_crate_path(&self, path: &[Symbol]) -> bool {
         if path.is_empty() { return false; }
         let first = self.interner.resolve(path[0]);
-        first == "core" || first == "alloc"
+        first == "core" || first == "alloc" || first == "anyos_std"
     }
 
     /// Build a full path string like "core::ptr::null_mut" from symbols
@@ -843,8 +843,8 @@ impl<'a> Resolver<'a> {
             }
         }
 
-        // Handle core:: and alloc:: paths as intrinsics
-        if path.segments.len() >= 2 && (name_str == "core" || name_str == "alloc") {
+        // Handle core::, alloc::, and anyos_std:: paths as intrinsics
+        if path.segments.len() >= 2 && (name_str == "core" || name_str == "alloc" || name_str == "anyos_std") {
             let full_path = path.segments.iter()
                 .map(|s| self.interner.resolve(s.ident).to_string())
                 .collect::<Vec<_>>()
