@@ -5,11 +5,13 @@ pub struct TextArea {
     pub(crate) cursor_pos: usize,
     pub(crate) focused: bool,
     pub(crate) scroll_y: i32,
+    /// Maximum text length in bytes (0 = unlimited).
+    pub(crate) max_length: usize,
 }
 
 impl TextArea {
     pub fn new(text_base: TextControlBase) -> Self {
-        Self { text_base, cursor_pos: 0, focused: false, scroll_y: 0 }
+        Self { text_base, cursor_pos: 0, focused: false, scroll_y: 0, max_length: 0 }
     }
 
     /// Count newlines in text to determine total line count.
@@ -27,9 +29,9 @@ impl TextArea {
         self.text_base.text_style.font_size as i32 + 4
     }
 
-    /// Total content height in pixels.
+    /// Total content height in pixels (saturating to avoid overflow).
     fn content_height(&self) -> i32 {
-        self.line_count() as i32 * self.line_height()
+        (self.line_count() as i32).saturating_mul(self.line_height())
     }
 
     /// Maximum scroll offset.
@@ -169,6 +171,10 @@ impl Control for TextArea {
 
     fn handle_key_down(&mut self, keycode: u32, char_code: u32, _modifiers: u32) -> EventResponse {
         if char_code >= 0x20 && char_code < 0x7F {
+            // Enforce max_length.
+            if self.max_length > 0 && self.text_base.text.len() >= self.max_length {
+                return EventResponse::CONSUMED;
+            }
             let ch = char_code as u8;
             if self.cursor_pos > self.text_base.text.len() {
                 self.cursor_pos = self.text_base.text.len();
@@ -177,6 +183,10 @@ impl Control for TextArea {
             self.cursor_pos += 1;
             EventResponse::CHANGED
         } else if keycode == crate::control::KEY_ENTER {
+            // Enforce max_length.
+            if self.max_length > 0 && self.text_base.text.len() >= self.max_length {
+                return EventResponse::CONSUMED;
+            }
             if self.cursor_pos > self.text_base.text.len() {
                 self.cursor_pos = self.text_base.text.len();
             }

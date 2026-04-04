@@ -13,4 +13,9 @@ impl TextArea {
         let (thunk, ud) = events::register(move |id, _| f(&TextChangedEvent { id }));
         (lib().on_change_fn)(self.ctrl.id, thunk, ud);
     }
+
+    /// Set the maximum text length in bytes (0 = unlimited).
+    pub fn set_max_length(&self, max_len: u32) {
+        (lib().textarea_set_max_length)(self.ctrl.id, max_len);
+    }
 }

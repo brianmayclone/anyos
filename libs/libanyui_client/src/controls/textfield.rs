@@ -29,6 +29,11 @@ impl TextField {
         (lib().textfield_set_password)(self.ctrl.id, enabled as u32);
     }
 
+    /// Set the maximum text length in bytes (0 = unlimited).
+    pub fn set_max_length(&self, max_len: u32) {
+        (lib().textfield_set_max_length)(self.ctrl.id, max_len);
+    }
+
     pub fn on_text_changed(&self, mut f: impl FnMut(&TextChangedEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| f(&TextChangedEvent { id }));
         (lib().on_change_fn)(self.ctrl.id, thunk, ud);

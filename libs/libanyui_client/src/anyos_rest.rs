@@ -176,6 +176,8 @@ struct AnyuiLib {
     textfield_set_password: extern "C" fn(u32, u32),
     textfield_set_placeholder: extern "C" fn(u32, *const u8, u32),
     textfield_select_all: extern "C" fn(u32),
+    textfield_set_max_length: extern "C" fn(u32, u32),
+    textarea_set_max_length: extern "C" fn(u32, u32),
     // AutoCompleteTextField
     autocomplete_set_suggestions: extern "C" fn(u32, *const u8, u32),
     // Marshal (cross-thread)
@@ -439,6 +441,8 @@ pub fn init() -> bool {
             textfield_set_password: resolve(&handle, "anyui_textfield_set_password"),
             textfield_set_placeholder: resolve(&handle, "anyui_textfield_set_placeholder"),
             textfield_select_all: resolve(&handle, "anyui_textfield_select_all"),
+            textfield_set_max_length: resolve(&handle, "anyui_textfield_set_max_length"),
+            textarea_set_max_length: resolve(&handle, "anyui_textarea_set_max_length"),
             // AutoCompleteTextField
             autocomplete_set_suggestions: resolve(&handle, "anyui_autocomplete_set_suggestions"),
             // Marshal (cross-thread)

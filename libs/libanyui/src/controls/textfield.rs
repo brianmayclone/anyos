@@ -23,6 +23,8 @@ pub struct TextField {
     sel_anchor: usize,
     /// Whether a mouse drag selection is in progress.
     dragging: bool,
+    /// Maximum text length in bytes (0 = unlimited).
+    pub(crate) max_length: usize,
 }
 
 impl TextField {
@@ -40,6 +42,7 @@ impl TextField {
             scroll_x: 0,
             sel_anchor: 0,
             dragging: false,
+            max_length: 0,
         }
     }
 
@@ -370,18 +373,27 @@ impl Control for TextField {
         // Ctrl+V: paste from clipboard.
         if ctrl && (char_code == b'v' as u32 || char_code == b'V' as u32) {
             if let Some(clip) = crate::compositor::clipboard_get() {
-                // Filter to printable ASCII.
-                let filtered: Vec<u8> = clip.into_iter().filter(|&b| b >= 0x20 && b < 0x7F).collect();
+                // Filter to printable ASCII + valid UTF-8 continuation bytes.
+                let filtered: Vec<u8> = clip.into_iter().filter(|&b| b >= 0x20 || b >= 0x80).collect();
                 if !filtered.is_empty() {
                     self.delete_selection();
                     let pos = self.cursor_pos.min(self.text_base.text.len());
-                    for (i, &b) in filtered.iter().enumerate() {
-                        self.text_base.text.insert(pos + i, b);
+                    // Enforce max_length: truncate paste to remaining capacity.
+                    let avail = if self.max_length > 0 {
+                        self.max_length.saturating_sub(self.text_base.text.len())
+                    } else {
+                        filtered.len()
+                    };
+                    let to_insert = filtered.len().min(avail);
+                    if to_insert > 0 {
+                        for (i, &b) in filtered[..to_insert].iter().enumerate() {
+                            self.text_base.text.insert(pos + i, b);
+                        }
+                        self.cursor_pos = pos + to_insert;
+                        self.sel_anchor = self.cursor_pos;
+                        self.ensure_cursor_visible();
+                        return EventResponse::CHANGED;
                     }
-                    self.cursor_pos = pos + filtered.len();
-                    self.sel_anchor = self.cursor_pos;
-                    self.ensure_cursor_visible();
-                    return EventResponse::CHANGED;
                 }
             }
             return EventResponse::CONSUMED;
@@ -389,6 +401,10 @@ impl Control for TextField {
 
         // Printable character input.
         if char_code >= 0x20 && char_code < 0x7F && !ctrl {
+            // Enforce max_length.
+            if self.max_length > 0 && !self.has_selection() && self.text_base.text.len() >= self.max_length {
+                return EventResponse::CONSUMED;
+            }
             let ch = char_code as u8;
             self.delete_selection();
             let pos = self.cursor_pos.min(self.text_base.text.len());

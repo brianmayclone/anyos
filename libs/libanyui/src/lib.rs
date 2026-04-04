@@ -431,7 +431,7 @@ pub extern "C" fn anyui_create_window(
     let ctrl = controls::create_control(ControlKind::Window, id, 0, 0, 0, w, h, &title_buf[..len]);
     st.controls.push(ctrl);
     st.windows.push(id);
-    let pixel_count = (phys_w as usize) * (phys_h as usize);
+    let pixel_count = (phys_w as usize).saturating_mul(phys_h as usize).min(16384 * 16384);
     st.comp_windows.push(CompWindow {
         window_id,
         shm_id,
@@ -879,6 +879,15 @@ fn as_textfield(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::textfield:
     }
 }
 
+fn as_textarea(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::textarea::TextArea> {
+    if ctrl.kind() == ControlKind::TextArea {
+        let raw: *mut dyn Control = &mut **ctrl;
+        Some(unsafe { &mut *(raw as *mut controls::textarea::TextArea) })
+    } else {
+        None
+    }
+}
+
 fn as_autocomplete_textfield(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::autocomplete_textfield::AutoCompleteTextField> {
     if ctrl.kind() == ControlKind::AutoCompleteTextField {
         let raw: *mut dyn Control = &mut **ctrl;
@@ -955,6 +964,28 @@ pub extern "C" fn anyui_textfield_select_all(id: ControlId) {
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tf) = as_textfield(ctrl) {
             tf.select_all();
+        }
+    }
+}
+
+/// Set the maximum text length for a TextField (0 = unlimited).
+#[no_mangle]
+pub extern "C" fn anyui_textfield_set_max_length(id: ControlId, max_len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tf) = as_textfield(ctrl) {
+            tf.max_length = max_len as usize;
+        }
+    }
+}
+
+/// Set the maximum text length for a TextArea (0 = unlimited).
+#[no_mangle]
+pub extern "C" fn anyui_textarea_set_max_length(id: ControlId, max_len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(ta) = as_textarea(ctrl) {
+            ta.max_length = max_len as usize;
         }
     }
 }

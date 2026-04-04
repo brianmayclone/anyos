@@ -66,6 +66,8 @@ EXPORTS
     anyui_textfield_set_password
     anyui_textfield_set_placeholder
     anyui_textfield_select_all
+    anyui_textfield_set_max_length
+    anyui_textarea_set_max_length
     anyui_autocomplete_set_suggestions
     anyui_marshal_set_text
     anyui_marshal_set_color

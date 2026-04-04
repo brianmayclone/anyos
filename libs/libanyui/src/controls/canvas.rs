@@ -25,7 +25,7 @@ pub struct Canvas {
 
 impl Canvas {
     pub fn new(base: ControlBase) -> Self {
-        let size = (base.w * base.h) as usize;
+        let size = (base.w as usize).saturating_mul(base.h as usize).min(16384 * 16384);
         Self {
             pixels: vec![0xFF000000; size], // opaque black
             base,

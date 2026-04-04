@@ -272,6 +272,9 @@ extern "C" fn export_init(out_sub_id: *mut u32) -> u32 {
     channel_id
 }
 
+/// Maximum window dimension (16384 × 16384 = 1 GiB at 4 Bpp).
+const MAX_WINDOW_DIM: u32 = 16384;
+
 extern "C" fn export_create_window(
     channel_id: u32,
     sub_id: u32,
@@ -283,8 +286,15 @@ extern "C" fn export_create_window(
     out_shm_id: *mut u32,
     out_surface: *mut *mut u32,
 ) -> u32 {
+    // Clamp dimensions to sane limits and reject zero-sized windows.
+    let width = width.min(MAX_WINDOW_DIM).max(1);
+    let height = height.min(MAX_WINDOW_DIM).max(1);
+
     // Create SHM region for the window surface (content area only)
-    let shm_size = width * height * 4;
+    let shm_size = match width.checked_mul(height).and_then(|n| n.checked_mul(4)) {
+        Some(s) => s,
+        None => return 0,
+    };
     let shm_id = syscall::shm_create(shm_size);
     if shm_id == 0 {
         return 0;
@@ -357,6 +367,11 @@ extern "C" fn export_present(channel_id: u32, window_id: u32, shm_id: u32) {
 }
 
 extern "C" fn export_present_rect(channel_id: u32, window_id: u32, shm_id: u32, x: u32, y: u32, w: u32, h: u32) {
+    // Clamp to u16 range to prevent silent truncation in the packed format.
+    let x = x.min(0xFFFF);
+    let y = y.min(0xFFFF);
+    let w = w.min(0xFFFF);
+    let h = h.min(0xFFFF);
     // Pack dirty rect: cmd[3] = (x << 16) | y, cmd[4] = (w << 16) | h
     let cmd: [u32; 5] = [CMD_PRESENT, window_id, shm_id, (x << 16) | y, (w << 16) | h];
     syscall::evt_chan_emit(channel_id, &cmd);
@@ -543,8 +558,15 @@ extern "C" fn export_resize_shm(
     new_height: u32,
     out_new_shm_id: *mut u32,
 ) -> *mut u32 {
+    // Clamp dimensions to sane limits and reject zero-sized windows.
+    let new_width = new_width.min(MAX_WINDOW_DIM).max(1);
+    let new_height = new_height.min(MAX_WINDOW_DIM).max(1);
+
     // Create new SHM region for the resized content area
-    let shm_size = new_width * new_height * 4;
+    let shm_size = match new_width.checked_mul(new_height).and_then(|n| n.checked_mul(4)) {
+        Some(s) => s,
+        None => return core::ptr::null_mut(),
+    };
     let new_shm_id = syscall::shm_create(shm_size);
     if new_shm_id == 0 {
         return core::ptr::null_mut();
