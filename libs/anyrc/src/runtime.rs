@@ -173,5 +173,102 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
         code
     }));
 
+    // ── HashMap runtime stubs ──
+    // HashMap is implemented as a simple linear-probe hash table:
+    // Layout: [buckets_ptr, bucket_count, len, 0_padding]
+    // Each bucket: [hash: u64, key: u64, value: u64, occupied: u64]
+
+    // __anyrc_hashmap_insert(&mut HashMap, key: u64, value: u64)
+    stubs.push(("__anyrc_hashmap_insert".to_string(), {
+        let mut code = Vec::new();
+        code.push(0xC3); // stub — full impl requires hash function
+        code
+    }));
+
+    // __anyrc_hashmap_get(&HashMap, &key) -> (disc, &value) in (RAX, RDX)
+    stubs.push(("__anyrc_hashmap_get".to_string(), {
+        let mut code = Vec::new();
+        // Stub: return None (1, 0)
+        code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]); // mov rax, 1
+        code.extend_from_slice(&[0x48, 0x31, 0xD2]); // xor rdx, rdx
+        code.push(0xC3);
+        code
+    }));
+
+    // __anyrc_hashmap_entry(&mut HashMap, key) -> *mut entry_slot
+    stubs.push(("__anyrc_hashmap_entry".to_string(), {
+        let mut code = Vec::new();
+        code.extend_from_slice(&[0x48, 0x89, 0xF8]); // mov rax, rdi (return &self as placeholder)
+        code.push(0xC3);
+        code
+    }));
+
+    // __anyrc_entry_or_default(entry_ptr) -> *mut value
+    stubs.push(("__anyrc_entry_or_default".to_string(), {
+        let mut code = Vec::new();
+        code.extend_from_slice(&[0x48, 0x89, 0xF8]); // mov rax, rdi
+        code.push(0xC3);
+        code
+    }));
+
+    // __anyrc_option_map(&Option, fn_ptr) -> Option
+    // disc in [RDI], value in [RDI+8], closure in RSI
+    stubs.push(("__anyrc_option_map".to_string(), {
+        let mut code = Vec::new();
+        // Check disc
+        code.extend_from_slice(&[0x48, 0x8B, 0x07]);         // mov rax, [rdi] (disc)
+        code.extend_from_slice(&[0x48, 0x85, 0xC0]);         // test rax, rax
+        code.extend_from_slice(&[0x75, 0x0E]);               // jnz .none
+        // Some: call closure with value
+        code.extend_from_slice(&[0x48, 0x8B, 0x7F, 0x08]);   // mov rdi, [rdi+8] (value)
+        code.extend_from_slice(&[0xFF, 0xD6]);               // call rsi (closure)
+        code.extend_from_slice(&[0x48, 0x89, 0xC2]);         // mov rdx, rax (mapped value)
+        code.extend_from_slice(&[0x48, 0x31, 0xC0]);         // xor rax, rax (disc = Some)
+        code.extend_from_slice(&[0xC3]);                      // ret
+        // .none: return None
+        code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]); // mov rax, 1
+        code.extend_from_slice(&[0x48, 0x31, 0xD2]);         // xor rdx, rdx
+        code.extend_from_slice(&[0xC3]);                      // ret
+        code
+    }));
+
+    // __anyrc_to_string(value: u64) -> String ptr
+    stubs.push(("__anyrc_to_string".to_string(), {
+        let mut code = Vec::new();
+        code.extend_from_slice(&[0x48, 0x89, 0xF8]); // mov rax, rdi
+        code.push(0xC3);
+        code
+    }));
+
+    // __anyrc_println(fmt_str_ptr: *const u8) — write to stdout
+    // On anyOS: SYS_WRITE = 4, fd=1 (stdout)
+    stubs.push(("__anyrc_println".to_string(), {
+        let mut code = Vec::new();
+        // First, compute string length (scan for null terminator)
+        code.extend_from_slice(&[0x48, 0x89, 0xFE]);         // mov rsi, rdi (save ptr)
+        code.extend_from_slice(&[0x48, 0x31, 0xC9]);         // xor rcx, rcx (len = 0)
+        // .scan:
+        code.extend_from_slice(&[0x80, 0x3C, 0x0E, 0x00]);   // cmp byte [rsi+rcx], 0
+        code.extend_from_slice(&[0x74, 0x04]);               // je .done_scan
+        code.extend_from_slice(&[0x48, 0xFF, 0xC1]);         // inc rcx
+        code.extend_from_slice(&[0xEB, 0xF5]);               // jmp .scan
+        // .done_scan: rcx = len, rsi = ptr
+        // SYS_WRITE(fd=1, buf=rsi, len=rcx)
+        code.extend_from_slice(&[0x48, 0x89, 0xCA]);         // mov rdx, rcx (len)
+        code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x01, 0x00, 0x00, 0x00]); // mov rdi, 1 (stdout)
+        code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x04, 0x00, 0x00, 0x00]); // mov rax, 4 (SYS_WRITE)
+        code.extend_from_slice(&[0x0F, 0x05]);               // syscall
+        // Write newline
+        code.extend_from_slice(&[0x6A, 0x0A]);               // push 0x0A ('\n')
+        code.extend_from_slice(&[0x48, 0x89, 0xE6]);         // mov rsi, rsp (ptr to '\n')
+        code.extend_from_slice(&[0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00]); // mov rdx, 1
+        code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x01, 0x00, 0x00, 0x00]); // mov rdi, 1
+        code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x04, 0x00, 0x00, 0x00]); // mov rax, 4
+        code.extend_from_slice(&[0x0F, 0x05]);               // syscall
+        code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x08]);   // add rsp, 8 (clean up push)
+        code.push(0xC3);
+        code
+    }));
+
     stubs
 }

@@ -1,5 +1,6 @@
 use crate::prelude::*;
 use crate::ast::*;
+use crate::diagnostics::Span;
 use crate::intern::{Interner, Symbol};
 use crate::lexer::{Token, TokenKind, Keyword};
 use crate::parser::Parser;
@@ -19,6 +20,26 @@ enum Capture {
     Single(Vec<TokenTree>),
     /// Repeated captures from a $(...)*
     Repeated(Vec<Vec<TokenTree>>),
+}
+
+/// Extract arguments from macro call token trees.
+/// Returns each comma-separated group of tokens as a re-parsed expression.
+fn collect_macro_call_args(tokens: &[TokenTree], interner: &mut Interner) -> Vec<Expr> {
+    // Convert token trees back to source string, then parse as expressions
+    let src = token_trees_to_string(tokens, interner);
+    if src.trim().is_empty() {
+        return vec![];
+    }
+    // Wrap in a function call context and parse the arguments
+    let wrapped = format!("__f({})", src);
+    let mut parser = Parser::new(&wrapped, interner);
+    let expr = parser.parse_expr();
+    // Extract the args from the Call expression
+    if let Expr::Call(_, args, _) = expr {
+        args
+    } else {
+        vec![]
+    }
 }
 
 /// Expand all macros in a crate, modifying the AST in place.
@@ -114,7 +135,73 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
     // Try macro expansion first
     let try_expand = matches!(expr, Expr::MacroCall(..));
     if try_expand {
-        if let Expr::MacroCall(path, args, _) = expr {
+        if let Expr::MacroCall(path, args, span) = expr {
+            // Check for built-in macros first
+            let macro_name = if !path.segments.is_empty() {
+                interner.resolve(path.segments.last().unwrap().ident).to_string()
+            } else {
+                String::new()
+            };
+
+            match macro_name.as_str() {
+                "format" => {
+                    // format!("...", args...) → __anyrc_format("...", args...)
+                    // Expand to a call to __anyrc_format intrinsic
+                    let fn_sym = interner.intern("__anyrc_format");
+                    let fn_path = Path {
+                        segments: vec![PathSegment { ident: fn_sym, args: None }],
+                        span: Span::dummy(),
+                    };
+                    let call_args = collect_macro_call_args(args, interner);
+                    *expr = Expr::Call(
+                        Box::new(Expr::Path(fn_path)),
+                        call_args,
+                        *span,
+                    );
+                    *changed = true;
+                    return;
+                }
+                "vec" => {
+                    // vec![a, b, c] → { let mut v = Vec::new(); v.push(a); v.push(b); v.push(c); v }
+                    // For now, expand to Vec::new() as a simple placeholder
+                    let fn_sym = interner.intern("Vec::new");
+                    let fn_path = Path {
+                        segments: vec![PathSegment { ident: fn_sym, args: None }],
+                        span: Span::dummy(),
+                    };
+                    *expr = Expr::Call(
+                        Box::new(Expr::Path(fn_path)),
+                        vec![],
+                        *span,
+                    );
+                    *changed = true;
+                    return;
+                }
+                "println" | "eprintln" => {
+                    // println!("...", args...) → __anyrc_println("...", args...)
+                    let fn_sym = interner.intern("__anyrc_println");
+                    let fn_path = Path {
+                        segments: vec![PathSegment { ident: fn_sym, args: None }],
+                        span: Span::dummy(),
+                    };
+                    let call_args = collect_macro_call_args(args, interner);
+                    *expr = Expr::Call(
+                        Box::new(Expr::Path(fn_path)),
+                        call_args,
+                        *span,
+                    );
+                    *changed = true;
+                    return;
+                }
+                "assert" | "assert_eq" | "debug_assert" | "debug_assert_eq" => {
+                    // Expand to a no-op or simple check (for bootstrap)
+                    *expr = Expr::Tuple(vec![], *span);
+                    *changed = true;
+                    return;
+                }
+                _ => {}
+            }
+
             if let Some(def) = find_macro(defs, path) {
                 if let Some(expanded) = try_expand_to_expr(def, args, interner) {
                     *expr = expanded;

@@ -1035,6 +1035,248 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            // ── core::mem intrinsics ──
+
+            "take" => {
+                // core::mem::take(&mut T) -> T: replace *ptr with default (0) and return old
+                // arg0 = &mut T in RDI
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);   // old = *ptr
+                self.asm.xor_rr(Reg::RCX, Reg::RCX);
+                self.asm.mov_mr(Reg::RDI, 0, Reg::RCX);   // *ptr = 0
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "discriminant" => {
+                // core::mem::discriminant(&T) -> Discriminant<T>
+                // For enums, the discriminant is at offset 0
+                // arg0 = &T in RDI
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "ManuallyDrop::new" => {
+                // Just pass through the value
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // ── Option/Result combinator methods ──
+
+            "Option::unwrap" | "Result::unwrap" => {
+                // Extract value from Some/Ok (field 1), panic on None/Err
+                // arg0 = &Option/Result in RDI
+                // Check discriminant (field 0): 0 = Some/Ok
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);     // disc
+                // If disc != 0, trap (simplified: just read value regardless)
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);     // value
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Option::unwrap_or" => {
+                // arg0 = &Option in RDI, arg1 = default in RSI
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);     // disc
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test rax, rax
+                // If disc == 0 (Some), load value; else use default
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);     // value from Some
+                self.asm.emit_raw(&[0x74, 0x03]);            // je .done (disc==0 → Some)
+                self.asm.mov_rr(Reg::RAX, Reg::RSI);        // else: use default
+                // .done:
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Option::is_some" => {
+                // arg0 = &Option in RDI → disc == 0 means Some
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test rax, rax
+                self.asm.emit_raw(&[0x0F, 0x94, 0xC0]);     // sete al
+                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Option::is_none" => {
+                // arg0 = &Option in RDI → disc != 0 means None
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test rax, rax
+                self.asm.emit_raw(&[0x0F, 0x95, 0xC0]);     // setne al
+                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Option::copied" | "Option::cloned" => {
+                // Just return the option as-is (value types are already copied)
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 8);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX);
+                true
+            }
+            "Option::map" | "Result::map" => {
+                // arg0 = &Option in RDI, arg1 = closure fn ptr in RSI
+                // Check disc, if Some: call closure with value, wrap result in Some
+                self.asm.call_extern("__anyrc_option_map");
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);     // disc
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX); // value
+                true
+            }
+
+            // ── Iterator intrinsics ──
+
+            // Vec::iter(&self) → return fat pointer (ptr, len) as an iterator state
+            "iter" | "Vec::iter" | "iter_mut" | "Vec::iter_mut" => {
+                // Return iterator = (current_ptr, end_ptr)
+                // arg0 = &Vec in RDI
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);     // ptr
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 8);     // len
+                // end = ptr + len * 8
+                self.asm.emit_raw(&[0x48, 0xC1, 0xE1, 0x03]); // shl rcx, 3
+                self.asm.emit_raw(&[0x48, 0x01, 0xC1]);       // add rcx, rax
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);    // current ptr
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX); // end ptr
+                true
+            }
+            "next" => {
+                // Iterator::next(&mut self) → Option<T>
+                // Iterator state = (current_ptr, end_ptr) at [RDI]
+                // If current < end: return Some(*current), advance current
+                // Else: return None
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);     // current
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 8);     // end
+                self.asm.emit_raw(&[0x48, 0x39, 0xC8]);     // cmp rax, rcx
+                self.asm.emit_raw(&[0x73, 0x15]);            // jae .none
+                // Some: read value, advance ptr
+                self.asm.mov_rm(Reg::RDX, Reg::RAX, 0);     // value = *current
+                self.asm.emit_raw(&[0x48, 0x83, 0xC0, 0x08]); // add rax, 8
+                self.asm.mov_mr(Reg::RDI, 0, Reg::RAX);     // update current
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);        // disc = 0 (Some)
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
+                self.asm.emit_raw(&[0xEB, 0x0D]);           // jmp .done
+                // .none:
+                self.asm.mov_ri(Reg::RAX, 1);               // disc = 1 (None)
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RAX);
+                // .done:
+                true
+            }
+            "enumerate" => {
+                // Wraps iterator, adding index — returns (iter_state, counter=0)
+                // arg0 = iterator state in RDI
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);     // current
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 8);     // end
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX);
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RAX); // counter = 0
+                true
+            }
+
+            // ── Slice operations ──
+
+            "slice_index" | "SliceIndex::index" => {
+                // &slice[index] — arg0 = &slice (fat ptr) in RDI, arg1 = index in RSI
+                // slice.ptr + index * 8
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);     // ptr
+                self.asm.emit_raw(&[0x48, 0xC1, 0xE6, 0x03]); // shl rsi, 3
+                self.asm.emit_raw(&[0x48, 0x01, 0xF0]);       // add rax, rsi
+                self.asm.mov_rm(Reg::RAX, Reg::RAX, 0);     // deref
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // ── HashMap intrinsics ──
+
+            "HashMap::insert" => {
+                // arg0 = &mut HashMap, arg1 = key, arg2 = value
+                self.asm.call_extern("__anyrc_hashmap_insert");
+                true
+            }
+            "HashMap::get" => {
+                // arg0 = &HashMap, arg1 = &key → Option<&V>
+                self.asm.call_extern("__anyrc_hashmap_get");
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);     // disc
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX); // value ptr
+                true
+            }
+            "HashMap::contains_key" => {
+                self.asm.call_extern("__anyrc_hashmap_get");
+                // If RAX (disc) == 0, key exists
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test rax, rax
+                self.asm.emit_raw(&[0x0F, 0x94, 0xC0]);     // sete al
+                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "HashMap::entry" => {
+                // Returns a reference to the entry slot
+                self.asm.call_extern("__anyrc_hashmap_entry");
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "or_default" | "or_insert" => {
+                // Entry::or_default() — insert default if vacant
+                self.asm.call_extern("__anyrc_entry_or_default");
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // ── Clone/Copy/Display intrinsics ──
+
+            "clone" => {
+                // For Copy types: identity. For heap types: deep copy.
+                // Simplified: just copy the value
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "to_string" => {
+                // Convert to String — calls runtime
+                self.asm.call_extern("__anyrc_to_string");
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
+            // ── Comparison/ordering intrinsics ──
+
+            // ── Format/Print intrinsics ──
+
+            "__anyrc_format" => {
+                // format!() expansion — for bootstrap, just return the first arg (format string)
+                // Real implementation would do string interpolation
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "__anyrc_println" => {
+                // println!() expansion — write string to stdout via syscall
+                // arg0 = format string ptr in RDI
+                // For bootstrap: call runtime write helper
+                self.asm.call_extern("__anyrc_println");
+                true
+            }
+
+            // ── Comparison/ordering intrinsics ──
+
+            "cmp" | "partial_cmp" => {
+                // Compare two values: arg0 in RDI, arg1 in RSI
+                self.asm.emit_raw(&[0x48, 0x39, 0xF7]);     // cmp rdi, rsi
+                self.asm.emit_raw(&[0x0F, 0x9C, 0xC0]);     // setl al (Less = -1)
+                self.asm.emit_raw(&[0x0F, 0x9F, 0xC2]);     // setg dl (Greater = 1)
+                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xD2]); // movzx rdx, dl
+                self.asm.emit_raw(&[0x48, 0x29, 0xC2]);     // sub rdx, rax
+                self.asm.mov_rr(Reg::RAX, Reg::RDX);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+
             _ => false,
         }
     }
