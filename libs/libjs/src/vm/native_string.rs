@@ -25,17 +25,12 @@ fn this_string(vm: &Vm) -> String {
     }
 }
 
-/// Like this_string but throws TypeError for null/undefined.
+/// RequireObjectCoercible + ToString. Throws TypeError for null/undefined.
 /// Returns None if TypeError was thrown.
 fn this_string_checked(vm: &mut Vm) -> Option<String> {
     match &vm.current_this {
         JsValue::Null | JsValue::Undefined => {
-            let method = "String.prototype method";
-            let err = vm.make_type_error(&alloc::format!(
-                "Cannot read properties of {} (calling '{}')",
-                if matches!(vm.current_this, JsValue::Null) { "null" } else { "undefined" },
-                method
-            ));
+            let err = vm.make_type_error("Cannot convert undefined or null to object");
             vm.throw_native(err);
             None
         }
