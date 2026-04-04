@@ -114,3 +114,8 @@ EXPORTS
     gl_swap_buffers_fullscreen
     gl_set_cursor_captured
     gl_get_cursor_captured
+    gl_shadow_pass_begin
+    gl_shadow_pass_end
+    gl_shadow_get_light_mvp
+    gl_shadow_available
+    gl_shadow_get_unit
