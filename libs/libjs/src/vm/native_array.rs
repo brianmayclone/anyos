@@ -665,9 +665,16 @@ pub fn call_callback_pub(vm: &mut Vm, callback: &JsValue, args: &[JsValue]) -> J
 }
 
 /// Helper: call a callback function with given args.
+/// Propagates exceptions from last_exception to pending_exception.
 fn call_callback(vm: &mut Vm, callback: &JsValue, args: &[JsValue]) -> JsValue {
     match callback {
-        JsValue::Function(_) => vm.call_value(callback, args, JsValue::Undefined),
+        JsValue::Function(_) => {
+            let result = vm.call_value(callback, args, JsValue::Undefined);
+            if let Some(exc) = vm.last_exception.take() {
+                vm.pending_exception = Some(exc);
+            }
+            result
+        }
         _ => JsValue::Undefined,
     }
 }
@@ -675,7 +682,13 @@ fn call_callback(vm: &mut Vm, callback: &JsValue, args: &[JsValue]) -> JsValue {
 /// Helper: call a callback function with an explicit `this` binding.
 fn call_callback_with_this(vm: &mut Vm, callback: &JsValue, this_arg: &JsValue, args: &[JsValue]) -> JsValue {
     match callback {
-        JsValue::Function(_) => vm.call_value(callback, args, this_arg.clone()),
+        JsValue::Function(_) => {
+            let result = vm.call_value(callback, args, this_arg.clone());
+            if let Some(exc) = vm.last_exception.take() {
+                vm.pending_exception = Some(exc);
+            }
+            result
+        }
         _ => JsValue::Undefined,
     }
 }

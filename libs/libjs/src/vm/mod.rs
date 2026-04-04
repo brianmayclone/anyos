@@ -845,6 +845,10 @@ impl Vm {
                 }
                 Op::IterNext => {
                     let (value, has_more) = self.iter_next_mut();
+                    if let Some(exc) = self.pending_exception.take() {
+                        if !self.handle_exception(exc) { return JsValue::Undefined; }
+                        continue;
+                    }
                     self.stack.push(value);
                     self.stack.push(JsValue::Bool(has_more));
                 }

@@ -27,6 +27,13 @@ impl Vm {
         if iter_fn.is_function() {
             // Call val[Symbol.iterator]() with this=val
             let iterator = self.call_value(&iter_fn, &[], val.clone());
+            // Propagate exceptions from Symbol.iterator() call
+            if let Some(exc) = self.last_exception.take() {
+                self.pending_exception = Some(exc);
+            }
+            if self.pending_exception.is_some() {
+                return self.make_internal_iterator(Vec::new());
+            }
             // If the result is a proper iterator (has .next method), use it directly.
             // Otherwise (e.g. Array returned from Map.entries), wrap in internal iterator.
             match &iterator {
@@ -145,6 +152,14 @@ impl Vm {
                     }
                     // Call next() with this=iterator
                     let result = self.call_value(&next_fn, &[], iter.clone());
+                    // Propagate exceptions from next() call
+                    if self.pending_exception.is_some() {
+                        return (JsValue::Undefined, false);
+                    }
+                    if let Some(exc) = self.last_exception.take() {
+                        self.pending_exception = Some(exc);
+                        return (JsValue::Undefined, false);
+                    }
 
                     // Extract { value, done } from the result
                     let done = self.get_property_with_proto(&result, "done").to_boolean();
