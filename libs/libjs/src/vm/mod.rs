@@ -1029,8 +1029,8 @@ impl Vm {
                                         if let Some(exc) = self.last_exception.take() {
                                             self.pending_exception = Some(exc);
                                         }
-                                        if self.pending_exception.is_some() {
-                                            if !self.handle_exception(self.pending_exception.take().unwrap()) {
+                                        if let Some(exc) = self.pending_exception.take() {
+                                            if !self.handle_exception(exc) {
                                                 return JsValue::Undefined;
                                             }
                                             continue;
