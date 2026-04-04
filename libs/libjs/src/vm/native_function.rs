@@ -69,6 +69,7 @@ pub fn function_bind(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 upvalues: original.upvalues.clone(),
                 prototype: original.prototype.clone(),
                 own_props: original.own_props.clone(),
+                arity: original.arity,
             };
             drop(original);
             JsValue::Function(Rc::new(RefCell::new(bound)))

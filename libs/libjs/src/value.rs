@@ -474,6 +474,8 @@ pub struct JsFunction {
     pub prototype: Option<Rc<RefCell<JsObject>>>,
     /// Own properties stored directly on the function (e.g. static class methods).
     pub own_props: BTreeMap<String, JsValue>,
+    /// Explicit arity for native functions (overrides params.len() for Function.length).
+    pub arity: Option<usize>,
 }
 
 impl fmt::Debug for JsFunction {

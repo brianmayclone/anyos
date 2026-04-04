@@ -281,6 +281,7 @@ impl Vm {
             upvalues: Vec::new(),
             prototype: None,
             own_props: BTreeMap::new(),
+            arity: None,
         };
         self.set_global(name, JsValue::Function(Rc::new(RefCell::new(f))));
     }
@@ -631,6 +632,7 @@ impl Vm {
                         upvalues: upvalue_cells,
                         prototype: None,
                         own_props: BTreeMap::new(),
+                        arity: None,
                     }));
                     // Arrow functions are NOT constructable and have no .prototype
                     // (ES6 §14.2.17).  Only regular functions get a prototype.
@@ -1349,6 +1351,7 @@ impl Vm {
                     upvalues: Vec::new(),
                     prototype: None,
                     own_props: BTreeMap::new(),
+                    arity: None,
                 };
                 JsValue::Function(Rc::new(RefCell::new(func)))
             }
@@ -1499,7 +1502,8 @@ impl Vm {
                         .unwrap_or(JsValue::String(String::new()));
                 }
                 if key == "length" {
-                    return JsValue::Number(func.params.len() as f64);
+                    let len = func.arity.unwrap_or(func.params.len());
+                    return JsValue::Number(len as f64);
                 }
                 if key == "prototype" {
                     // Arrow functions have no .prototype (ES2023 §14.2.17)
@@ -1810,5 +1814,21 @@ pub fn native_fn(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue) -> JsValue {
         upvalues: Vec::new(),
         prototype: None,
         own_props: BTreeMap::new(),
+        arity: None,
+    })))
+}
+
+/// Create a native function with an explicit `.length` (arity) property.
+pub fn native_fn_with_length(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue, length: usize) -> JsValue {
+    JsValue::Function(Rc::new(RefCell::new(JsFunction {
+        name: Some(String::from(name)),
+        params: Vec::new(),
+        kind: FnKind::Native(f),
+        this_binding: None,
+        bound_args: Vec::new(),
+        upvalues: Vec::new(),
+        prototype: None,
+        own_props: BTreeMap::new(),
+        arity: Some(length),
     })))
 }

@@ -24,8 +24,11 @@ pub fn object_has_own_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 JsValue::Bool(key == "length" || a.properties.contains_key(&key))
             }
         }
-        // Function values store own properties in `own_props` (e.g. Constructor.prototype).
-        JsValue::Function(f) => JsValue::Bool(f.borrow().own_props.contains_key(&key)),
+        // Function values: check own_props AND built-in properties (name, length, prototype).
+        JsValue::Function(f) => {
+            let func = f.borrow();
+            JsValue::Bool(func.own_props.contains_key(&key) || key == "name" || key == "length" || (key == "prototype" && !func.kind.is_arrow()))
+        }
         _ => JsValue::Bool(false),
     }
 }
@@ -399,8 +402,9 @@ fn fn_get_own_property_descriptor(fn_rc: &Rc<RefCell<JsFunction>>, key: &str) ->
             })
         }
         "length" => {
+            let len = func.arity.unwrap_or(func.params.len());
             prop_to_descriptor(&Property {
-                value: JsValue::Number(func.params.len() as f64),
+                value: JsValue::Number(len as f64),
                 writable: false,
                 enumerable: false,
                 configurable: true,
@@ -538,6 +542,10 @@ pub fn object_has_own(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             } else {
                 JsValue::Bool(key == "length" || a.properties.contains_key(&key))
             }
+        }
+        Some(JsValue::Function(f)) => {
+            let func = f.borrow();
+            JsValue::Bool(func.own_props.contains_key(&key) || key == "name" || key == "length" || (key == "prototype" && !func.kind.is_arrow()))
         }
         _ => JsValue::Bool(false),
     }

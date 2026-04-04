@@ -6,7 +6,7 @@ use alloc::string::String;
 use core::cell::RefCell;
 
 use crate::value::*;
-use super::{Vm, native_fn};
+use super::{Vm, native_fn, native_fn_with_length};
 use super::native_array;
 use super::native_string;
 use super::native_object;
@@ -48,46 +48,46 @@ impl Vm {
         {
             let mut p = self.array_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
-            p.set(String::from("push"), native_fn("push", native_array::array_push));
-            p.set(String::from("pop"), native_fn("pop", native_array::array_pop));
-            p.set(String::from("shift"), native_fn("shift", native_array::array_shift));
-            p.set(String::from("unshift"), native_fn("unshift", native_array::array_unshift));
-            p.set(String::from("indexOf"), native_fn("indexOf", native_array::array_index_of));
-            p.set(String::from("lastIndexOf"), native_fn("lastIndexOf", native_array::array_last_index_of));
-            p.set(String::from("includes"), native_fn("includes", native_array::array_includes));
-            p.set(String::from("join"), native_fn("join", native_array::array_join));
-            p.set(String::from("slice"), native_fn("slice", native_array::array_slice));
-            p.set(String::from("splice"), native_fn("splice", native_array::array_splice));
-            p.set(String::from("concat"), native_fn("concat", native_array::array_concat));
-            p.set(String::from("reverse"), native_fn("reverse", native_array::array_reverse));
-            p.set(String::from("sort"), native_fn("sort", native_array::array_sort));
-            p.set(String::from("map"), native_fn("map", native_array::array_map));
-            p.set(String::from("filter"), native_fn("filter", native_array::array_filter));
-            p.set(String::from("forEach"), native_fn("forEach", native_array::array_for_each));
-            p.set(String::from("reduce"), native_fn("reduce", native_array::array_reduce));
-            p.set(String::from("reduceRight"), native_fn("reduceRight", native_array::array_reduce_right));
-            p.set(String::from("find"), native_fn("find", native_array::array_find));
-            p.set(String::from("findIndex"), native_fn("findIndex", native_array::array_find_index));
-            p.set(String::from("some"), native_fn("some", native_array::array_some));
-            p.set(String::from("every"), native_fn("every", native_array::array_every));
-            p.set(String::from("flat"), native_fn("flat", native_array::array_flat));
-            p.set(String::from("flatMap"), native_fn("flatMap", native_array::array_flat_map));
-            p.set(String::from("fill"), native_fn("fill", native_array::array_fill));
-            p.set(String::from("copyWithin"), native_fn("copyWithin", native_array::array_copy_within));
-            p.set(String::from("entries"), native_fn("entries", native_array::array_entries));
-            p.set(String::from("keys"), native_fn("keys", native_array::array_keys));
-            p.set(String::from("values"), native_fn("values", native_array::array_values));
-            p.set(String::from("at"), native_fn("at", native_array::array_at));
-            p.set(String::from("toString"), native_fn("toString", native_array::array_to_string));
+            p.set_hidden(String::from("push"), native_fn_with_length("push", native_array::array_push, 1));
+            p.set_hidden(String::from("pop"), native_fn_with_length("pop", native_array::array_pop, 0));
+            p.set_hidden(String::from("shift"), native_fn_with_length("shift", native_array::array_shift, 0));
+            p.set_hidden(String::from("unshift"), native_fn_with_length("unshift", native_array::array_unshift, 1));
+            p.set_hidden(String::from("indexOf"), native_fn_with_length("indexOf", native_array::array_index_of, 1));
+            p.set_hidden(String::from("lastIndexOf"), native_fn_with_length("lastIndexOf", native_array::array_last_index_of, 1));
+            p.set_hidden(String::from("includes"), native_fn_with_length("includes", native_array::array_includes, 1));
+            p.set_hidden(String::from("join"), native_fn_with_length("join", native_array::array_join, 1));
+            p.set_hidden(String::from("slice"), native_fn_with_length("slice", native_array::array_slice, 2));
+            p.set_hidden(String::from("splice"), native_fn_with_length("splice", native_array::array_splice, 2));
+            p.set_hidden(String::from("concat"), native_fn_with_length("concat", native_array::array_concat, 1));
+            p.set_hidden(String::from("reverse"), native_fn_with_length("reverse", native_array::array_reverse, 0));
+            p.set_hidden(String::from("sort"), native_fn_with_length("sort", native_array::array_sort, 1));
+            p.set_hidden(String::from("map"), native_fn_with_length("map", native_array::array_map, 1));
+            p.set_hidden(String::from("filter"), native_fn_with_length("filter", native_array::array_filter, 1));
+            p.set_hidden(String::from("forEach"), native_fn_with_length("forEach", native_array::array_for_each, 1));
+            p.set_hidden(String::from("reduce"), native_fn_with_length("reduce", native_array::array_reduce, 1));
+            p.set_hidden(String::from("reduceRight"), native_fn_with_length("reduceRight", native_array::array_reduce_right, 1));
+            p.set_hidden(String::from("find"), native_fn_with_length("find", native_array::array_find, 1));
+            p.set_hidden(String::from("findIndex"), native_fn_with_length("findIndex", native_array::array_find_index, 1));
+            p.set_hidden(String::from("some"), native_fn_with_length("some", native_array::array_some, 1));
+            p.set_hidden(String::from("every"), native_fn_with_length("every", native_array::array_every, 1));
+            p.set_hidden(String::from("flat"), native_fn_with_length("flat", native_array::array_flat, 0));
+            p.set_hidden(String::from("flatMap"), native_fn_with_length("flatMap", native_array::array_flat_map, 1));
+            p.set_hidden(String::from("fill"), native_fn_with_length("fill", native_array::array_fill, 1));
+            p.set_hidden(String::from("copyWithin"), native_fn_with_length("copyWithin", native_array::array_copy_within, 2));
+            p.set_hidden(String::from("entries"), native_fn_with_length("entries", native_array::array_entries, 0));
+            p.set_hidden(String::from("keys"), native_fn_with_length("keys", native_array::array_keys, 0));
+            p.set_hidden(String::from("values"), native_fn_with_length("values", native_array::array_values, 0));
+            p.set_hidden(String::from("at"), native_fn_with_length("at", native_array::array_at, 1));
+            p.set_hidden(String::from("toString"), native_fn_with_length("toString", native_array::array_to_string, 0));
             // Symbol.iterator — returns an array iterator
-            p.set(String::from(native_symbol::WELL_KNOWN_ITERATOR), native_fn("[Symbol.iterator]", array_symbol_iterator));
+            p.set_hidden(String::from(native_symbol::WELL_KNOWN_ITERATOR), native_fn("[Symbol.iterator]", array_symbol_iterator));
             // ES2023+
-            p.set(String::from("findLast"), native_fn("findLast", native_es2024::array_find_last));
-            p.set(String::from("findLastIndex"), native_fn("findLastIndex", native_es2024::array_find_last_index));
-            p.set(String::from("toReversed"), native_fn("toReversed", native_es2024::array_to_reversed));
-            p.set(String::from("toSorted"), native_fn("toSorted", native_es2024::array_to_sorted));
-            p.set(String::from("toSpliced"), native_fn("toSpliced", native_es2024::array_to_spliced));
-            p.set(String::from("with"), native_fn("with", native_es2024::array_with));
+            p.set_hidden(String::from("findLast"), native_fn_with_length("findLast", native_es2024::array_find_last, 1));
+            p.set_hidden(String::from("findLastIndex"), native_fn_with_length("findLastIndex", native_es2024::array_find_last_index, 1));
+            p.set_hidden(String::from("toReversed"), native_fn_with_length("toReversed", native_es2024::array_to_reversed, 0));
+            p.set_hidden(String::from("toSorted"), native_fn_with_length("toSorted", native_es2024::array_to_sorted, 1));
+            p.set_hidden(String::from("toSpliced"), native_fn_with_length("toSpliced", native_es2024::array_to_spliced, 2));
+            p.set_hidden(String::from("with"), native_fn_with_length("with", native_es2024::array_with, 2));
         }
 
         // ── String.prototype ──
@@ -659,6 +659,7 @@ fn global_eval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             upvalues: alloc::vec::Vec::new(),
             prototype: None,
             own_props: alloc::collections::BTreeMap::new(),
+            arity: None,
         }))),
         &[],
         JsValue::Undefined,

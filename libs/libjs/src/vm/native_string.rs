@@ -165,7 +165,7 @@ pub fn string_starts_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let search_chars = chars_vec(&search);
     let pos = args.get(1).map(|v| to_usize_clamped(v.to_number(), s_chars.len())).unwrap_or(0);
 
-    if pos > s_chars.len().saturating_sub(search_chars.len()) {
+    if search_chars.len() > s_chars.len() || pos > s_chars.len() - search_chars.len() {
         return JsValue::Bool(false);
     }
     JsValue::Bool(s_chars[pos..pos + search_chars.len()] == search_chars[..])
@@ -388,6 +388,9 @@ pub fn string_repeat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         return JsValue::Undefined;
     }
     let count = n as usize;
+    if s.is_empty() || count == 0 {
+        return JsValue::String(String::new());
+    }
     // Limit allocation to prevent OOM (16 MiB)
     let total = s.len().saturating_mul(count);
     if total > 16 * 1024 * 1024 {
@@ -395,11 +398,7 @@ pub fn string_repeat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         vm.throw_native(err);
         return JsValue::Undefined;
     }
-    let mut result = String::with_capacity(total);
-    for _ in 0..count {
-        result.push_str(&s);
-    }
-    JsValue::String(result)
+    JsValue::String(s.repeat(count))
 }
 
 pub fn string_pad_start(vm: &mut Vm, args: &[JsValue]) -> JsValue {
