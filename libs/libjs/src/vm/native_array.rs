@@ -164,7 +164,31 @@ fn this_array_like(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>
                 .collect();
             Some((this_val.clone(), chars.len(), entries))
         }
-        // Primitives (bool, number): check their prototype for length + numeric properties
+        // Primitives (bool, number): ToObject wraps them — read prototype for length + numeric properties
+        JsValue::Bool(_) | JsValue::Number(_) => {
+            let proto_rc = match &this_val {
+                JsValue::Bool(_) => vm.boolean_proto.clone(),
+                _ => vm.number_proto.clone(),
+            };
+            // Read all data from proto before calling to_length_vm (avoids borrow conflicts)
+            let len_val;
+            let mut entries = Vec::new();
+            {
+                let p = proto_rc.borrow();
+                len_val = p.get("length");
+                for (key, prop) in p.properties.iter() {
+                    if !prop.is_accessor() {
+                        if let Ok(idx) = key.parse::<usize>() {
+                            entries.push((idx, prop.value.clone()));
+                        }
+                    }
+                }
+            }
+            let len = to_length_vm(vm, &len_val);
+            entries.retain(|&(idx, _)| idx < len);
+            entries.sort_by_key(|&(idx, _)| idx);
+            Some((this_val.clone(), len, entries))
+        }
         _ => {
             Some((this_val.clone(), 0, Vec::new()))
         }
