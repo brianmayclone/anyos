@@ -1014,11 +1014,10 @@ pub extern "C" fn drv_upload_vbo(data: *const u8, len: u32, _stride: u32) -> u32
     );
     if res == u32::MAX { return 0; }
 
-    let r = libsyscall::gpu_3d_surface_dma(res, bytes, len, 1);
-    if r != 0 {
-        libsyscall::gpu_3d_resource_destroy(res);
-        return 0;
-    }
+    // Upload via chunked RESOURCE_INLINE_WRITE (works for PIPE_BUFFER)
+    let s = state();
+    inline_write(&mut s.cmd, res, bytes);
+
     res
 }
 
