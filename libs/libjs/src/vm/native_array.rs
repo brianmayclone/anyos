@@ -132,27 +132,51 @@ fn this_array_like(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>
             // Get length value first (may need VM to call valueOf/toString)
             let len_val = obj.borrow().get("length");
             let len = to_length_vm(vm, &len_val);
-            // For sparse array-like objects: collect only existing numeric properties
-            // instead of iterating 0..len (which could be billions).
+            // Collect data properties and accessor getters separately
             let mut entries = Vec::new();
-            let o = obj.borrow();
-            for (key, prop) in o.properties.iter() {
-                if let Ok(idx) = key.parse::<usize>() {
-                    if idx < len {
-                        entries.push((idx, prop.value.clone()));
-                    }
-                }
-            }
-            // Also check prototype chain for numeric properties
-            if let Some(proto) = &o.prototype {
-                let p = proto.borrow();
-                for (key, prop) in p.properties.iter() {
+            let mut accessor_getters: Vec<(usize, JsValue)> = Vec::new();
+            {
+                let o = obj.borrow();
+                for (key, prop) in o.properties.iter() {
                     if let Ok(idx) = key.parse::<usize>() {
-                        if idx < len && !entries.iter().any(|&(i, _)| i == idx) {
-                            entries.push((idx, prop.value.clone()));
+                        if idx < len {
+                            if prop.is_accessor() {
+                                if let Some(ref g) = prop.getter {
+                                    accessor_getters.push((idx, g.clone()));
+                                }
+                            } else {
+                                entries.push((idx, prop.value.clone()));
+                            }
                         }
                     }
                 }
+                // Walk prototype chain for inherited numeric properties
+                let mut proto_opt = o.prototype.clone();
+                let mut depth = 0;
+                while let Some(proto) = proto_opt {
+                    depth += 1;
+                    if depth > 50 { break; }
+                    let p = proto.borrow();
+                    for (key, prop) in p.properties.iter() {
+                        if let Ok(idx) = key.parse::<usize>() {
+                            if idx < len && !entries.iter().any(|&(i, _)| i == idx) && !accessor_getters.iter().any(|&(i, _)| i == idx) {
+                                if prop.is_accessor() {
+                                    if let Some(ref g) = prop.getter {
+                                        accessor_getters.push((idx, g.clone()));
+                                    }
+                                } else {
+                                    entries.push((idx, prop.value.clone()));
+                                }
+                            }
+                        }
+                    }
+                    proto_opt = p.prototype.clone();
+                }
+            }
+            // Invoke accessor getters via VM (outside borrow)
+            for (idx, getter_fn) in accessor_getters {
+                let val = vm.call_value(&getter_fn, &[], this_val.clone());
+                entries.push((idx, val));
             }
             entries.sort_by_key(|&(idx, _)| idx);
             Some((this_val.clone(), len, entries))
