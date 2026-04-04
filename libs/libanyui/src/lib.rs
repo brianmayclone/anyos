@@ -1696,6 +1696,33 @@ pub extern "C" fn anyui_datagrid_set_minimap(id: ControlId, colors: *const u32, 
     }
 }
 
+/// Set per-row left indent in pixels (first column only).
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_row_indents(id: ControlId, indents: *const u16, count: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            if !indents.is_null() && count > 0 {
+                let slice = unsafe { core::slice::from_raw_parts(indents, count as usize) };
+                dg.set_row_indents(slice);
+            } else {
+                dg.set_row_indents(&[]);
+            }
+        }
+    }
+}
+
+/// Set which logical column receives per-row indentation.
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_indent_column(id: ControlId, col: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            dg.set_indent_column(col as usize);
+        }
+    }
+}
+
 /// Get the display column index of the last click (-1 if none).
 #[no_mangle]
 pub extern "C" fn anyui_datagrid_get_click_col(id: ControlId) -> i32 {

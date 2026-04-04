@@ -175,6 +175,7 @@ fn main() {
         ColumnDef::new(i18n::t("Priority")).width(50).align(ALIGN_RIGHT).numeric(),
     ]);
     proc_grid.set_row_height(20);
+    proc_grid.set_indent_column(1); // Indent applies to "Process" column
     panel_procs.add(&proc_grid);
 
     // ── Panel: Graphs (DOCK_FILL, initially hidden) ──
@@ -401,6 +402,8 @@ fn main() {
         // Look up the actual task via display row mapping
         let display = unsafe { &*DISPLAY_ROWS_BUF.unwrap() };
         let tasks = unsafe { &*TASKS_BUF.unwrap() };
+        let expanded = unsafe { &mut *EXPANDED_LEADERS.unwrap() };
+
         if let Some(dr) = display.get(row as usize) {
             let task = &tasks[dr.task_idx as usize];
             let tid = task.tid;
@@ -408,6 +411,16 @@ fn main() {
             let is_idle = name.starts_with(b"idle/");
             let killable = tid > 3 && !is_idle && dr.kind != 1; // don't allow killing group headers directly
             kill_btn.set_enabled(killable);
+
+            // Single-click toggles expand/collapse for group headers
+            if dr.kind == 1 {
+                let leader_tid = tasks[dr.task_idx as usize].tid;
+                if let Some(pos) = expanded.iter().position(|&t| t == leader_tid) {
+                    expanded.remove(pos);
+                } else {
+                    expanded.push(leader_tid);
+                }
+            }
 
             // Update status bar selection info
             let mut sbuf = [0u8; 48];
@@ -420,28 +433,6 @@ fn main() {
             sbuf[p..p + nl].copy_from_slice(&name[..nl]); p += nl;
             if let Ok(s) = core::str::from_utf8(&sbuf[..p]) {
                 sb_sel_label.set_text(s);
-            }
-        }
-    });
-
-    // ── Double-click / Enter: toggle expand/collapse for process groups ──
-    proc_grid.on_submit(move |ev| {
-        let row = ev.index;
-        if row == u32::MAX { return; }
-
-        let display = unsafe { &*DISPLAY_ROWS_BUF.unwrap() };
-        let tasks = unsafe { &*TASKS_BUF.unwrap() };
-        let expanded = unsafe { &mut *EXPANDED_LEADERS.unwrap() };
-
-        if let Some(dr) = display.get(row as usize) {
-            if dr.kind == 1 {
-                // Group header: toggle expansion
-                let leader_tid = tasks[dr.task_idx as usize].tid;
-                if let Some(pos) = expanded.iter().position(|&t| t == leader_tid) {
-                    expanded.remove(pos);
-                } else {
-                    expanded.push(leader_tid);
-                }
             }
         }
     });
@@ -643,22 +634,19 @@ fn main() {
                 let display_tid = task.tid;
                 let is_new = ri >= old_count || old_tid != display_tid;
 
-                if is_new {
-                    // TID column
-                    let mut t = [0u8; 12];
-                    let s = fmt_u32(&mut t, task.tid);
-                    proc_grid.set_cell(ri as u32, 0, s);
-
-                    // Process/Name column: depends on row kind
+                // Process/Name column: ALWAYS update (arrow state can change on expand/collapse)
+                {
                     let mut nbuf = [0u8; 48];
                     let mut np = 0;
                     match dr.kind {
                         1 => {
                             // Group header: "▶ name (N)" or "▼ name (N)"
+                            // Arrow is drawn as text before the icon (icon is shifted by row_indent)
                             let is_exp = expanded.iter().any(|&tid| tid == task.tid);
                             let arrow: &[u8] = if is_exp { "\u{25BC} ".as_bytes() } else { "\u{25B6} ".as_bytes() };
                             let alen = arrow.len();
                             nbuf[np..np + alen].copy_from_slice(arrow); np += alen;
+                            let mut t = [0u8; 12];
                             let nl = task.name_len.min(28);
                             nbuf[np..np + nl].copy_from_slice(&task.name[..nl]); np += nl;
                             nbuf[np..np + 2].copy_from_slice(b" ("); np += 2;
@@ -667,8 +655,7 @@ fn main() {
                             nbuf[np] = b')'; np += 1;
                         }
                         2 => {
-                            // Child thread: "   name"
-                            nbuf[np..np + 3].copy_from_slice(b"   "); np += 3;
+                            // Child thread: plain name (indentation via row_indent)
                             let nl = task.name_len.min(32);
                             nbuf[np..np + nl].copy_from_slice(&task.name[..nl]); np += nl;
                         }
@@ -681,6 +668,13 @@ fn main() {
                     if let Ok(s) = core::str::from_utf8(&nbuf[..np]) {
                         proc_grid.set_cell(ri as u32, 1, s);
                     }
+                }
+
+                if is_new {
+                    // TID column
+                    let mut t = [0u8; 12];
+                    let s = fmt_u32(&mut t, task.tid);
+                    proc_grid.set_cell(ri as u32, 0, s);
 
                     // User column
                     {
@@ -706,7 +700,7 @@ fn main() {
                         proc_grid.set_cell(ri as u32, 7, s);
                     }
 
-                    // Icon (use task name for lookup)
+                    // Icon for all row types
                     if let Ok(name) = core::str::from_utf8(&task.name[..task.name_len]) {
                         ensure_icon_cached(cache, name);
                         if let Some(pixels) = find_icon(cache, name) {
@@ -767,6 +761,15 @@ fn main() {
             }
 
             proc_grid.set_cell_colors(&colors);
+
+            // Set per-row indents: child threads are indented under their group header
+            {
+                let mut indents = Vec::with_capacity(new_count);
+                for dr in display.iter() {
+                    indents.push(if dr.kind == 2 { 20u16 } else { 0u16 });
+                }
+                proc_grid.set_row_indents(&indents);
+            }
 
             // Update tracking state (using display row TIDs for change detection)
             prev_tids.clear();

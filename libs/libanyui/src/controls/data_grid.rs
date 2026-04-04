@@ -127,6 +127,11 @@ pub struct DataGrid {
     connector_lines: Vec<ConnectorLine>,
     /// Column index (display) in which connector lines are drawn.
     connector_column: usize,
+    /// Per-row left indent in pixels. Applied to the column specified by `indent_column`.
+    /// Used for tree-like indentation in process lists etc.
+    row_indents: Vec<u16>,
+    /// Logical column index to which row_indents are applied (default: 0).
+    indent_column: usize,
     /// True while the user is dragging the scrollbar thumb.
     dragging_scrollbar: bool,
     /// Mouse-Y offset from thumb top when scrollbar drag started.
@@ -163,6 +168,8 @@ impl DataGrid {
             last_click_col: -1,
             connector_lines: Vec::new(),
             connector_column: 2,
+            row_indents: Vec::new(),
+            indent_column: 0,
             dragging_scrollbar: false,
             scrollbar_drag_anchor: 0,
         }
@@ -311,6 +318,19 @@ impl DataGrid {
     pub fn set_minimap_colors(&mut self, colors: &[u32]) {
         self.minimap_colors = colors.to_vec();
         self.base.mark_dirty();
+    }
+
+    /// Set per-row left indent in pixels. Applied to the column set by `set_indent_column`.
+    /// The indent shifts icon + text to the right by the given amount.
+    /// `indents` has one entry per row (u16 pixel value, 0 = no indent).
+    pub fn set_row_indents(&mut self, indents: &[u16]) {
+        self.row_indents = indents.to_vec();
+        self.base.mark_dirty();
+    }
+
+    /// Set which logical column receives the per-row indent (default: 0).
+    pub fn set_indent_column(&mut self, col: usize) {
+        self.indent_column = col;
     }
 
     /// Get the display column index of the last click (-1 if none).
@@ -612,16 +632,23 @@ impl Control for DataGrid {
                         crate::draw::fill_rect(&cell_clip, col_x, row_y, col_w_s, rh_u, self.cell_bg_colors[cell_idx]);
                     }
 
+                    // Per-row indent (applied to the configured indent column)
+                    let row_indent: i32 = if logical_col == self.indent_column && data_row < self.row_indents.len() {
+                        crate::theme::scale_i32(self.row_indents[data_row] as i32)
+                    } else {
+                        0
+                    };
+
                     // Draw cell icon (if any)
-                    let mut icon_offset: i32 = 0;
+                    let mut icon_offset: i32 = row_indent;
                     if cell_idx < self.cell_icons.len() {
                         if let Some(ref icon) = self.cell_icons[cell_idx] {
                             let iw = icon.width as i32;
                             let ih = icon.height as i32;
-                            let ix = col_x + icon_pad;
+                            let ix = col_x + icon_pad + row_indent;
                             let iy = row_y + (rh_s - ih) / 2;
                             crate::draw::blit_argb(&cell_clip, ix, iy, icon.width as u32, icon.height as u32, &icon.pixels);
-                            icon_offset = iw + icon_pad;
+                            icon_offset = row_indent + iw + icon_pad;
                         }
                     }
 

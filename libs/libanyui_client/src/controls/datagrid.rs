@@ -242,6 +242,18 @@ impl DataGrid {
         (lib().datagrid_set_minimap)(self.ctrl.id, colors.as_ptr(), colors.len() as u32);
     }
 
+    /// Set per-row left indent in pixels (applied to the indent column).
+    /// Shifts icon + text to the right. One value per row (0 = no indent).
+    pub fn set_row_indents(&self, indents: &[u16]) {
+        (lib().datagrid_set_row_indents)(self.ctrl.id, indents.as_ptr(), indents.len() as u32);
+    }
+
+    /// Set which logical column receives the per-row indent (default: 0).
+    /// Call this once after creating the grid. E.g., `set_indent_column(1)` for "Process" column.
+    pub fn set_indent_column(&self, col: u32) {
+        (lib().datagrid_set_indent_column)(self.ctrl.id, col);
+    }
+
     /// Get the display column index of the last click (-1 if none).
     pub fn click_column(&self) -> i32 {
         (lib().datagrid_get_click_col)(self.ctrl.id)
