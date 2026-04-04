@@ -195,6 +195,14 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
                         }
 
                         let gpu_res = buf.gpu_res_id;
+                        static mut VBO_DBG: u32 = 0;
+                        unsafe {
+                            if VBO_DBG < 3 {
+                                VBO_DBG += 1;
+                                crate::serial_println!("[libgl] persistent VBO: id={} gpu_res={} size={} count={}",
+                                    vbo_id, gpu_res, buf.gpu_size, count);
+                            }
+                        }
                         if gpu_res != 0 {
                             // Build attrib descriptors using original offsets from the VBO
                             let mut attribs: alloc::vec::Vec<DrvAttrib> = alloc::vec::Vec::with_capacity(attrib_count);
