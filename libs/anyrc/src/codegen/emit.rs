@@ -144,7 +144,7 @@ impl<'a> CodeEmitter<'a> {
 
     fn operand_slot_count(&self, op: &Operand) -> usize {
         match op {
-            Operand::Copy(place) | Operand::Move(place) => {
+            Operand::Copy(place) | Operand::Move(place) | Operand::Ref(place, _) => {
                 if place.projections.is_empty() {
                     (self.alloc.local_sizes[place.local.0] / 8) as usize
                 } else {
@@ -157,7 +157,7 @@ impl<'a> CodeEmitter<'a> {
 
     fn load_operand(&mut self, op: &Operand, dst: Reg) {
         match op {
-            Operand::Copy(place) | Operand::Move(place) => {
+            Operand::Copy(place) | Operand::Move(place) | Operand::Ref(place, _) => {
                 self.load_place(place, dst);
             }
             Operand::Constant(c) => {
@@ -464,7 +464,7 @@ impl<'a> CodeEmitter<'a> {
                     crate::ast::UnOp::Not => {
                         // For bools, use XOR 1 (logical NOT); for integers, bitwise NOT
                         let is_bool = match operand {
-                            Operand::Copy(p) | Operand::Move(p) => {
+                            Operand::Copy(p) | Operand::Move(p) | Operand::Ref(p, _) => {
                                 matches!(self.body.locals[p.local.0].ty, TyKind::Bool)
                             }
                             Operand::Constant(c) => matches!(c.ty, TyKind::Bool),
@@ -622,7 +622,7 @@ impl<'a> CodeEmitter<'a> {
                 // Check for intrinsic calls before emitting a regular call
                 let mut is_intrinsic = false;
                 if let Operand::Constant(c) = func {
-                    if let ConstValue::FnItem(sym) = &c.value {
+                    if let ConstValue::FnItem(sym) | ConstValue::MethodRef(sym) = &c.value {
                         let fn_name = interner.resolve(*sym);
                         is_intrinsic = self.try_emit_intrinsic(fn_name, args, dest);
                     }
@@ -632,7 +632,7 @@ impl<'a> CodeEmitter<'a> {
                     // Extract the function name or do indirect call
                     match func {
                         Operand::Constant(c) => match &c.value {
-                            ConstValue::FnItem(sym) => {
+                            ConstValue::FnItem(sym) | ConstValue::MethodRef(sym) => {
                                 let fn_name = interner.resolve(*sym).to_string();
                                 self.asm.call_extern(&fn_name);
                             }
@@ -640,7 +640,7 @@ impl<'a> CodeEmitter<'a> {
                                 self.asm.call_extern("__unknown");
                             }
                         },
-                        Operand::Copy(place) | Operand::Move(place) => {
+                        Operand::Copy(place) | Operand::Move(place) | Operand::Ref(place, _) => {
                             // Indirect call: load function pointer from place, call through register
                             self.load_place(place, Reg::R10);
                             self.asm.call_reg(Reg::R10);
@@ -1013,6 +1013,7 @@ fn const_to_i64(val: &ConstValue) -> i64 {
         ConstValue::Float(f) => *f as i64,
         ConstValue::Str(_) => 0,
         ConstValue::FnItem(_) => 0,
+        ConstValue::MethodRef(_) => 0,
         ConstValue::StaticRef(_) => 0,
         ConstValue::Unit => 0,
     }

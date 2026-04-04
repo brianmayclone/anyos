@@ -66,6 +66,17 @@ impl<'a> MirBuilder<'a> {
                     Self::collect_fn_defs(sub, out);
                 }
             }
+            HirItemKind::Trait(t) => {
+                // Collect trait methods that have default bodies — these are
+                // codegen'd so that impls which don't override them can call them.
+                for sub in &t.items {
+                    if let HirItemKind::Fn(f) = &sub.kind {
+                        if f.body.is_some() {
+                            out.push(f);
+                        }
+                    }
+                }
+            }
             HirItemKind::ExternBlock(eb) => {
                 for sub in &eb.items {
                     Self::collect_fn_defs(sub, out);
@@ -1433,7 +1444,93 @@ impl<'a> MirBuilder<'a> {
                         self.current_block = loop_exit;
                     }
                     _ => {
-                        // Unsupported for-loop iterable, emit as unit
+                        // Iterator-based for loop:
+                        // Desugar `for pat in iterable { body }` to:
+                        //   let mut __iter = iterable.into_iter();  // or just iterable
+                        //   loop {
+                        //     match __iter.next() {
+                        //       Some(val) => { let pat = val; body; }
+                        //       None => break;
+                        //     }
+                        //   }
+                        let iter_op = self.lower_expr(iter);
+                        let iter_ty = self.get_expr_ty(iter);
+
+                        // Store iterator in a local
+                        let iter_local = self.alloc_temp(iter_ty.clone(), expr.span);
+                        self.locals[iter_local.0].mutability = Mutability::Mut;
+                        self.emit_assign(Place::local(iter_local), Rvalue::Use(iter_op), expr.span);
+
+                        // Determine element type from the pattern or infer as i64 fallback
+                        let elem_ty = self.get_expr_ty(expr);
+
+                        let loop_header = self.push_block();
+                        let loop_body = self.push_block();
+                        let loop_exit = self.push_block();
+                        self.terminate(Terminator::Goto(loop_header));
+
+                        // Loop header: call .next() on iterator
+                        self.current_block = loop_header;
+
+                        // Call next() — result is an Option-like enum (discriminant + value)
+                        let next_result_ty = TyKind::Tuple(vec![TyKind::Int(IntTy::I64), elem_ty.clone()]);
+                        let next_result = self.alloc_temp(next_result_ty.clone(), expr.span);
+
+                        // Emit method call: __iter.next()
+                        let next_sym = self.interner.intern("next");
+                        let next_block = self.push_block();
+                        self.terminate(Terminator::Call {
+                            func: Operand::Constant(Constant {
+                                ty: TyKind::FnDef(DefId(0), vec![]),
+                                value: ConstValue::MethodRef(next_sym),
+                            }),
+                            args: vec![Operand::Ref(Place::local(iter_local), Mutability::Mut)],
+                            dest: Place::local(next_result),
+                            target: next_block,
+                        });
+                        self.current_block = next_block;
+
+                        // Read discriminant of the Option result
+                        let disc = self.alloc_temp(TyKind::Int(IntTy::I64), expr.span);
+                        self.emit_assign(
+                            Place::local(disc),
+                            Rvalue::Discriminant(Place::local(next_result)),
+                            expr.span,
+                        );
+
+                        // SwitchInt: 0 = Some (has value), 1 = None (done)
+                        self.terminate(Terminator::SwitchInt {
+                            operand: Operand::Copy(Place::local(disc)),
+                            targets: vec![(0, loop_body)],
+                            default: loop_exit,
+                        });
+
+                        // Body block: extract value from Some, bind to pattern
+                        self.current_block = loop_body;
+                        self.loop_stack.push((loop_header, loop_exit));
+
+                        // Extract field 1 (the value inside Some)
+                        if let HirPattern::Ident(hir_id, sym, _, _, _) = pat {
+                            let local = self.alloc_local(elem_ty.clone(), Some(*sym), expr.span);
+                            if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
+                                self.var_map.insert(def_id, local);
+                            }
+                            self.emit_assign(
+                                Place::local(local),
+                                Rvalue::Use(Operand::Copy(Place {
+                                    local: next_result,
+                                    projections: vec![Projection::Field(1)],
+                                })),
+                                expr.span,
+                            );
+                        }
+
+                        let _ = self.lower_block(body);
+                        self.loop_stack.pop();
+
+                        // Back edge
+                        self.terminate(Terminator::Goto(loop_header));
+                        self.current_block = loop_exit;
                     }
                 }
                 Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })

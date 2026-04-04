@@ -163,7 +163,7 @@ fn collect_place_reads(place: &Place, used: &mut HashSet<usize>) {
 
 fn collect_operand_reads(op: &Operand, used: &mut HashSet<usize>) {
     match op {
-        Operand::Copy(p) | Operand::Move(p) => {
+        Operand::Copy(p) | Operand::Move(p) | Operand::Ref(p, _) => {
             used.insert(p.local.0);
             for proj in &p.projections {
                 if let Projection::Index(l) = proj {

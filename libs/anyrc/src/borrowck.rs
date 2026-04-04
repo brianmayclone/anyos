@@ -167,7 +167,7 @@ fn check_operand_not_moved(
     span: Span,
 ) {
     match op {
-        Operand::Move(place) | Operand::Copy(place) => {
+        Operand::Move(place) | Operand::Copy(place) | Operand::Ref(place, _) => {
             if moved.contains(&place.local.0) {
                 let name = locals[place.local.0]
                     .name

@@ -99,6 +99,8 @@ pub enum Operand {
     Copy(Place),
     Move(Place),
     Constant(Constant),
+    /// Reference to a place (creates a &T or &mut T).
+    Ref(Place, crate::ast::Mutability),
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +120,8 @@ pub enum ConstValue {
     FnItem(crate::intern::Symbol),
     /// Reference to a static variable by its symbol name
     StaticRef(crate::intern::Symbol),
+    /// Reference to a method by name (for virtual dispatch / trait method calls)
+    MethodRef(crate::intern::Symbol),
     Unit,
 }
 

@@ -1308,6 +1308,39 @@ impl<'a> TypeChecker<'a> {
         match ty {
             HirTy::Path(path) => {
                 if path.segments.is_empty() { return TyKind::Error; }
+
+                // Handle associated type projections: `Self::Item`, `T::Output`, etc.
+                if path.segments.len() >= 2 {
+                    let first_sym = path.segments[0].ident;
+                    let assoc_name = path.segments[1].ident;
+                    let first_str = self.interner.resolve(first_sym);
+
+                    // Self::AssocType — look up which trait's impl we're in
+                    if first_str == "Self" {
+                        // Try to find the associated type in any trait impl
+                        for (&(trait_def_id, type_name), concrete_ty) in &self.assoc_types {
+                            if type_name == assoc_name {
+                                return concrete_ty.clone();
+                            }
+                        }
+                    }
+
+                    // T::AssocType where T is a generic param with trait bounds
+                    if let Some(&param_idx) = self.current_generic_params.get(&first_sym) {
+                        if let Some(bounds) = self.current_generic_bounds.get(&param_idx) {
+                            for trait_def_id in bounds {
+                                if let Some(ty) = self.assoc_types.get(&(*trait_def_id, assoc_name)) {
+                                    return ty.clone();
+                                }
+                            }
+                        }
+                        // Even without a concrete resolution, return the param
+                        return TyKind::Param(param_idx);
+                    }
+
+                    // Enum::Variant or Module::Type — fall through to single-segment handling
+                }
+
                 let name = self.interner.resolve(path.segments[0].ident);
                 match name {
                     "i8" => TyKind::Int(IntTy::I8),
@@ -1335,7 +1368,19 @@ impl<'a> TypeChecker<'a> {
                         }
                         // Look up as ADT by name
                         if let Some(&def_id) = self.type_name_to_def.get(&sym) {
-                            TyKind::Adt(def_id, vec![])
+                            // Collect generic args if present
+                            let type_args = if let Some(ref args) = path.segments[0].args {
+                                args.args.iter().filter_map(|a| {
+                                    if let HirGenericArg::Type(ty) = a {
+                                        Some(self.hir_ty_to_ty(ty))
+                                    } else {
+                                        None
+                                    }
+                                }).collect()
+                            } else {
+                                vec![]
+                            };
+                            TyKind::Adt(def_id, type_args)
                         } else {
                             TyKind::Error
                         }
