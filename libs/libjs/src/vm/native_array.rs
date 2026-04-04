@@ -130,7 +130,7 @@ fn this_array_like(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>
         JsValue::String(s) => {
             let chars: Vec<char> = s.chars().collect();
             let entries: Vec<(usize, JsValue)> = chars.iter().enumerate()
-                .map(|(i, c)| (i, JsValue::String(alloc::string::String::from(c.to_string()))))
+                .map(|(i, c)| { let mut s = String::new(); s.push(*c); (i, JsValue::String(s)) })
                 .collect();
             Some((this_val.clone(), chars.len(), entries))
         }

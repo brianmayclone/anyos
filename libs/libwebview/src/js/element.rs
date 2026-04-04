@@ -822,7 +822,7 @@ fn el_append_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let JsValue::Object(obj) = &vm.current_this {
         let children_arr = obj.borrow().get("children");
         if let JsValue::Array(arr) = &children_arr {
-            arr.borrow_mut().elements.push(child.clone());
+            arr.borrow_mut().push(child.clone());
         }
         // Update firstChild/lastChild.
         let (first, last) = get_first_last(&children_arr);
@@ -861,7 +861,7 @@ fn el_remove_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let JsValue::Object(obj) = &vm.current_this {
         let children_arr = obj.borrow().get("children");
         if let JsValue::Array(arr) = &children_arr {
-            arr.borrow_mut().elements.retain(|el| extract_node_id(el) != child_id);
+            arr.borrow_mut().elements.retain(|_k, el| extract_node_id(el) != child_id);
         }
         let (first, last) = get_first_last(&children_arr);
         let mut o = obj.borrow_mut();
@@ -898,11 +898,11 @@ fn el_insert_before(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let children_arr = obj.borrow().get("children");
         if let JsValue::Array(arr) = &children_arr {
             let mut a = arr.borrow_mut();
-            let idx = a.elements.iter().position(|el| extract_node_id(el) == ref_id);
+            let idx = a.elements.iter().find(|(_k, el)| extract_node_id(el) == ref_id).map(|(k, _)| *k);
             if let Some(i) = idx {
-                a.elements.insert(i, new_node.clone());
+                a.insert_and_shift(i, new_node.clone());
             } else {
-                a.elements.push(new_node.clone());
+                a.push(new_node.clone());
             }
         }
         let (first, last) = get_first_last(&children_arr);
@@ -941,8 +941,8 @@ fn el_replace_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let children_arr = obj.borrow().get("children");
         if let JsValue::Array(arr) = &children_arr {
             let mut a = arr.borrow_mut();
-            if let Some(idx) = a.elements.iter().position(|el| extract_node_id(el) == old_id) {
-                a.elements[idx] = new_node.clone();
+            if let Some(idx) = a.elements.iter().find(|(_k, el)| extract_node_id(el) == old_id).map(|(k, _)| *k) {
+                a.elements.insert(idx, new_node.clone());
             }
         }
         let (first, last) = get_first_last(&children_arr);
@@ -1698,7 +1698,9 @@ fn get_first_last(children: &JsValue) -> (JsValue, JsValue) {
     if let JsValue::Array(arr) = children {
         let elems = &arr.borrow().elements;
         if !elems.is_empty() {
-            return (elems[0].clone(), elems[elems.len() - 1].clone());
+            let first = elems.values().next().cloned().unwrap_or(JsValue::Null);
+            let last = elems.values().next_back().cloned().unwrap_or(JsValue::Null);
+            return (first, last);
         }
     }
     (JsValue::Null, JsValue::Null)

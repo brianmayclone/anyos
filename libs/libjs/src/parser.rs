@@ -20,11 +20,16 @@ pub struct Parser {
     /// relational expressions.  This implements the [~In] grammar parameter
     /// required by the ECMAScript spec for `for` loop initializers.
     no_in: bool,
+    /// Parser recursion depth — prevents stack overflow on deeply nested input.
+    depth: usize,
 }
+
+/// Maximum parser recursion depth before bailing out with a SyntaxError.
+const MAX_PARSER_DEPTH: usize = 256;
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0, errors: Vec::new(), no_in: false }
+        Parser { tokens, pos: 0, errors: Vec::new(), no_in: false, depth: 0 }
     }
 
     /// Return the number of tokens that were NOT consumed by parse_program().
@@ -184,6 +189,18 @@ impl Parser {
     // ── Statements ──
 
     fn parse_statement(&mut self) -> Option<Stmt> {
+        self.depth += 1;
+        if self.depth > MAX_PARSER_DEPTH {
+            self.depth -= 1;
+            self.syntax_error("Maximum nesting depth exceeded");
+            return None;
+        }
+        let result = self.parse_statement_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_statement_inner(&mut self) -> Option<Stmt> {
         match self.peek() {
             TokenKind::Semicolon => {
                 self.pos += 1;
@@ -1022,7 +1039,14 @@ impl Parser {
     // ── Expressions ──
 
     fn parse_expression(&mut self) -> Expr {
+        self.depth += 1;
+        if self.depth > MAX_PARSER_DEPTH {
+            self.depth -= 1;
+            self.syntax_error("Maximum nesting depth exceeded");
+            return Expr::Undefined;
+        }
         let expr = self.parse_assignment_expr();
+        self.depth -= 1;
         if matches!(self.peek(), TokenKind::Comma) {
             let mut exprs = vec![expr];
             while self.eat(&TokenKind::Comma) {

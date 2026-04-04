@@ -893,7 +893,7 @@ fn win_text_decoder(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
         let input = args.first().cloned().unwrap_or(JsValue::Undefined);
         if let JsValue::Array(arr) = &input {
             let elements = &arr.borrow().elements;
-            let bytes: Vec<u8> = elements.iter().map(|v| v.to_number() as u8).collect();
+            let bytes: Vec<u8> = elements.values().map(|v| v.to_number() as u8).collect();
             let text = String::from_utf8_lossy(&bytes);
             return JsValue::String(String::from(text.as_ref()));
         }
@@ -1068,7 +1068,7 @@ fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let key = super::arg_string(args, 0);
         let entries = vm.current_this.get_property("__entries");
         if let JsValue::Array(arr) = &entries {
-            for e in &arr.borrow().elements {
+            for (_k, e) in &arr.borrow().elements {
                 if let JsValue::Array(pair) = e {
                     let p = pair.borrow();
                     if p.get(0).to_js_string() == key {
@@ -1084,7 +1084,7 @@ fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let key = super::arg_string(args, 0);
         let entries = vm.current_this.get_property("__entries");
         if let JsValue::Array(arr) = &entries {
-            for e in &arr.borrow().elements {
+            for (_k, e) in &arr.borrow().elements {
                 if let JsValue::Array(pair) = e {
                     if pair.borrow().get(0).to_js_string() == key {
                         return JsValue::Bool(true);
@@ -1100,7 +1100,7 @@ fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let entries = vm.current_this.get_property("__entries");
         let mut results = Vec::new();
         if let JsValue::Array(arr) = &entries {
-            for e in &arr.borrow().elements {
+            for (_k, e) in &arr.borrow().elements {
                 if let JsValue::Array(pair) = e {
                     let p = pair.borrow();
                     if p.get(0).to_js_string() == key {
@@ -1116,7 +1116,7 @@ fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let entries = vm.current_this.get_property("__entries");
         let mut out = String::new();
         if let JsValue::Array(arr) = &entries {
-            for (i, e) in arr.borrow().elements.iter().enumerate() {
+            for (i, (_k, e)) in arr.borrow().elements.iter().enumerate() {
                 if i > 0 { out.push('&'); }
                 if let JsValue::Array(pair) = e {
                     let p = pair.borrow();
@@ -1134,7 +1134,7 @@ fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if !cb.is_function() { return JsValue::Undefined; }
         let entries = vm.current_this.get_property("__entries");
         if let JsValue::Array(arr) = &entries {
-            for e in arr.borrow().elements.clone() {
+            for (_k, e) in arr.borrow().elements.clone() {
                 if let JsValue::Array(pair) = &e {
                     let p = pair.borrow();
                     let val = p.get(1);

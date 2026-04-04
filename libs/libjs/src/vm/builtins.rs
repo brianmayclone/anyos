@@ -37,17 +37,21 @@ impl Vm {
         // ── Object.prototype ──
         {
             let mut p = self.object_proto.borrow_mut();
-            p.set(String::from("hasOwnProperty"), native_fn("hasOwnProperty", native_object::object_has_own_property));
-            p.set(String::from("isPrototypeOf"), native_fn("isPrototypeOf", native_object::object_is_prototype_of));
-            p.set(String::from("toString"), native_fn("toString", native_object::object_to_string));
-            p.set(String::from("valueOf"), native_fn("valueOf", native_object::object_value_of));
-            p.set(String::from("keys"), native_fn("keys", native_object::object_keys_method));
+            p.set_hidden(String::from("hasOwnProperty"), native_fn("hasOwnProperty", native_object::object_has_own_property));
+            // propertyIsEnumerable is available via __propertyIsEnumerable or direct property check
+            p.set_hidden(String::from("isPrototypeOf"), native_fn("isPrototypeOf", native_object::object_is_prototype_of));
+            p.set_hidden(String::from("toString"), native_fn("toString", native_object::object_to_string));
+            p.set_hidden(String::from("valueOf"), native_fn("valueOf", native_object::object_value_of));
+            p.set_hidden(String::from("keys"), native_fn("keys", native_object::object_keys_method));
+            p.set_hidden(String::from("constructor"), self.globals.get("Object"));
         }
 
         // ── Array.prototype ──
         {
             let mut p = self.array_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
+            // constructor property: Array.prototype.constructor = Array
+            p.set_hidden(String::from("constructor"), self.globals.get("Array"));
             p.set_hidden(String::from("push"), native_fn_with_length("push", native_array::array_push, 1));
             p.set_hidden(String::from("pop"), native_fn_with_length("pop", native_array::array_pop, 0));
             p.set_hidden(String::from("shift"), native_fn_with_length("shift", native_array::array_shift, 0));
@@ -94,52 +98,59 @@ impl Vm {
         {
             let mut p = self.string_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
-            p.set(String::from("charAt"), native_fn("charAt", native_string::string_char_at));
-            p.set(String::from("charCodeAt"), native_fn("charCodeAt", native_string::string_char_code_at));
-            p.set(String::from("codePointAt"), native_fn("codePointAt", native_string::string_code_point_at));
-            p.set(String::from("indexOf"), native_fn("indexOf", native_string::string_index_of));
-            p.set(String::from("lastIndexOf"), native_fn("lastIndexOf", native_string::string_last_index_of));
-            p.set(String::from("includes"), native_fn("includes", native_string::string_includes));
-            p.set(String::from("startsWith"), native_fn("startsWith", native_string::string_starts_with));
-            p.set(String::from("endsWith"), native_fn("endsWith", native_string::string_ends_with));
-            p.set(String::from("slice"), native_fn("slice", native_string::string_slice));
-            p.set(String::from("substring"), native_fn("substring", native_string::string_substring));
-            p.set(String::from("toLowerCase"), native_fn("toLowerCase", native_string::string_to_lower_case));
-            p.set(String::from("toUpperCase"), native_fn("toUpperCase", native_string::string_to_upper_case));
-            p.set(String::from("trim"), native_fn("trim", native_string::string_trim));
-            p.set(String::from("trimStart"), native_fn("trimStart", native_string::string_trim_start));
-            p.set(String::from("trimEnd"), native_fn("trimEnd", native_string::string_trim_end));
-            p.set(String::from("split"), native_fn("split", native_string::string_split));
-            p.set(String::from("replace"), native_fn("replace", native_string::string_replace));
-            p.set(String::from("replaceAll"), native_fn("replaceAll", native_string::string_replace_all));
-            p.set(String::from("repeat"), native_fn("repeat", native_string::string_repeat));
-            p.set(String::from("padStart"), native_fn("padStart", native_string::string_pad_start));
-            p.set(String::from("padEnd"), native_fn("padEnd", native_string::string_pad_end));
-            p.set(String::from("at"), native_fn("at", native_string::string_at));
-            p.set(String::from("concat"), native_fn("concat", native_string::string_concat));
-            p.set(String::from("toString"), native_fn("toString", native_string::string_to_string));
-            p.set(String::from("valueOf"), native_fn("valueOf", native_string::string_to_string));
-            p.set(String::from("normalize"), native_fn("normalize", native_string::string_normalize));
-            p.set(String::from("localeCompare"), native_fn("localeCompare", native_string::string_locale_compare));
-            p.set(String::from("match"), native_fn("match", native_regexp::string_match));
-            p.set(String::from("matchAll"), native_fn("matchAll", native_regexp::string_match_all));
-            p.set(String::from("search"), native_fn("search", native_regexp::string_search));
+            p.set_hidden(String::from("charAt"), native_fn("charAt", native_string::string_char_at));
+            p.set_hidden(String::from("charCodeAt"), native_fn("charCodeAt", native_string::string_char_code_at));
+            p.set_hidden(String::from("codePointAt"), native_fn("codePointAt", native_string::string_code_point_at));
+            p.set_hidden(String::from("indexOf"), native_fn("indexOf", native_string::string_index_of));
+            p.set_hidden(String::from("lastIndexOf"), native_fn("lastIndexOf", native_string::string_last_index_of));
+            p.set_hidden(String::from("includes"), native_fn("includes", native_string::string_includes));
+            p.set_hidden(String::from("startsWith"), native_fn("startsWith", native_string::string_starts_with));
+            p.set_hidden(String::from("endsWith"), native_fn("endsWith", native_string::string_ends_with));
+            p.set_hidden(String::from("slice"), native_fn("slice", native_string::string_slice));
+            p.set_hidden(String::from("substring"), native_fn("substring", native_string::string_substring));
+            p.set_hidden(String::from("toLowerCase"), native_fn("toLowerCase", native_string::string_to_lower_case));
+            p.set_hidden(String::from("toUpperCase"), native_fn("toUpperCase", native_string::string_to_upper_case));
+            p.set_hidden(String::from("trim"), native_fn("trim", native_string::string_trim));
+            p.set_hidden(String::from("trimStart"), native_fn("trimStart", native_string::string_trim_start));
+            p.set_hidden(String::from("trimEnd"), native_fn("trimEnd", native_string::string_trim_end));
+            p.set_hidden(String::from("split"), native_fn("split", native_string::string_split));
+            p.set_hidden(String::from("replace"), native_fn("replace", native_string::string_replace));
+            p.set_hidden(String::from("replaceAll"), native_fn("replaceAll", native_string::string_replace_all));
+            p.set_hidden(String::from("repeat"), native_fn("repeat", native_string::string_repeat));
+            p.set_hidden(String::from("padStart"), native_fn("padStart", native_string::string_pad_start));
+            p.set_hidden(String::from("padEnd"), native_fn("padEnd", native_string::string_pad_end));
+            p.set_hidden(String::from("at"), native_fn("at", native_string::string_at));
+            p.set_hidden(String::from("concat"), native_fn("concat", native_string::string_concat));
+            p.set_hidden(String::from("toString"), native_fn("toString", native_string::string_to_string));
+            p.set_hidden(String::from("valueOf"), native_fn("valueOf", native_string::string_to_string));
+            p.set_hidden(String::from("normalize"), native_fn("normalize", native_string::string_normalize));
+            p.set_hidden(String::from("localeCompare"), native_fn("localeCompare", native_string::string_locale_compare));
+            p.set_hidden(String::from("match"), native_fn("match", native_regexp::string_match));
+            p.set_hidden(String::from("matchAll"), native_fn("matchAll", native_regexp::string_match_all));
+            p.set_hidden(String::from("search"), native_fn("search", native_regexp::string_search));
+            // toLocaleLowerCase / toLocaleUpperCase = same as toLowerCase/toUpperCase
+            p.set_hidden(String::from("toLocaleLowerCase"), native_fn("toLocaleLowerCase", native_string::string_to_lower_case));
+            p.set_hidden(String::from("toLocaleUpperCase"), native_fn("toLocaleUpperCase", native_string::string_to_upper_case));
             // Symbol.iterator — returns a string character iterator
-            p.set(String::from(native_symbol::WELL_KNOWN_ITERATOR), native_fn("[Symbol.iterator]", string_symbol_iterator));
+            p.set_hidden(String::from(native_symbol::WELL_KNOWN_ITERATOR), native_fn("[Symbol.iterator]", string_symbol_iterator));
             // ES2024
-            p.set(String::from("isWellFormed"), native_fn("isWellFormed", native_es2024::string_is_well_formed));
-            p.set(String::from("toWellFormed"), native_fn("toWellFormed", native_es2024::string_to_well_formed));
+            p.set_hidden(String::from("isWellFormed"), native_fn("isWellFormed", native_es2024::string_is_well_formed));
+            p.set_hidden(String::from("toWellFormed"), native_fn("toWellFormed", native_es2024::string_to_well_formed));
+            // constructor
+            p.set_hidden(String::from("constructor"), self.globals.get("String"));
         }
 
         // ── Number.prototype ──
         {
             let mut p = self.number_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
-            p.set(String::from("toString"), native_fn("toString", native_number::number_to_string));
-            p.set(String::from("valueOf"), native_fn("valueOf", native_number::number_value_of));
-            p.set(String::from("toFixed"), native_fn("toFixed", native_number::number_to_fixed));
-            p.set(String::from("toPrecision"), native_fn("toPrecision", native_number::number_to_precision));
-            p.set(String::from("toExponential"), native_fn("toExponential", native_number::number_to_exponential));
+            p.set_hidden(String::from("toString"), native_fn("toString", native_number::number_to_string));
+            p.set_hidden(String::from("valueOf"), native_fn("valueOf", native_number::number_value_of));
+            p.set_hidden(String::from("toFixed"), native_fn("toFixed", native_number::number_to_fixed));
+            p.set_hidden(String::from("toPrecision"), native_fn("toPrecision", native_number::number_to_precision));
+            p.set_hidden(String::from("toExponential"), native_fn("toExponential", native_number::number_to_exponential));
+            p.set_hidden(String::from("toLocaleString"), native_fn("toLocaleString", native_number::number_to_string));
+            p.set_hidden(String::from("constructor"), self.globals.get("Number"));
         }
 
         // ── Boolean.prototype ──

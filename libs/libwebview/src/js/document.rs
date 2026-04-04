@@ -457,7 +457,7 @@ fn doc_create_tree_walker(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             if (next_pos as usize) < a.elements.len() {
                 vm.current_this.set_property(
                     String::from("__pos"), JsValue::Number(next_pos as f64));
-                let nid = a.elements[next_pos as usize].to_number() as i64;
+                let nid = a.elements[&(next_pos as usize)].to_number() as i64;
                 let el = super::element::make_element(vm, nid);
                 vm.current_this.set_property(String::from("currentNode"), el.clone());
                 return el;
@@ -476,7 +476,7 @@ fn doc_create_tree_walker(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 if (prev_pos as usize) < a.elements.len() {
                     vm.current_this.set_property(
                         String::from("__pos"), JsValue::Number(prev_pos as f64));
-                    let nid = a.elements[prev_pos as usize].to_number() as i64;
+                    let nid = a.elements[&(prev_pos as usize)].to_number() as i64;
                     let el = super::element::make_element(vm, nid);
                     vm.current_this.set_property(String::from("currentNode"), el.clone());
                     return el;
@@ -554,7 +554,7 @@ fn frag_append_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let o = obj.borrow();
         if let Some(p) = o.properties.get("children") {
             if let JsValue::Array(arr) = &p.value {
-                arr.borrow_mut().elements.push(child.clone());
+                arr.borrow_mut().push(child.clone());
             }
         }
     }
@@ -570,7 +570,7 @@ fn frag_remove_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 let child_id = if let JsValue::Object(cobj) = &child {
                     cobj.borrow().get("__nodeId").to_number() as i64
                 } else { -9999 };
-                arr.borrow_mut().elements.retain(|el| {
+                arr.borrow_mut().elements.retain(|_k, el| {
                     if let JsValue::Object(eobj) = el {
                         eobj.borrow().get("__nodeId").to_number() as i64 != child_id
                     } else { true }
@@ -591,16 +591,16 @@ fn frag_insert_before(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             if let JsValue::Array(arr) = &p.value {
                 let mut arr_mut = arr.borrow_mut();
                 if ref_child.is_null() || ref_child.is_undefined() {
-                    arr_mut.elements.push(new_child.clone());
+                    arr_mut.push(new_child.clone());
                 } else {
                     let ref_id = ref_child.get_property("__nodeId").to_number() as i64;
-                    let pos = arr_mut.elements.iter().position(|el| {
+                    let pos = arr_mut.elements.iter().find(|(_k, el)| {
                         el.get_property("__nodeId").to_number() as i64 == ref_id
-                    });
+                    }).map(|(k, _)| *k);
                     if let Some(idx) = pos {
-                        arr_mut.elements.insert(idx, new_child.clone());
+                        arr_mut.insert_and_shift(idx, new_child.clone());
                     } else {
-                        arr_mut.elements.push(new_child.clone());
+                        arr_mut.push(new_child.clone());
                     }
                 }
             }
@@ -622,7 +622,7 @@ fn frag_query_selector(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let o = obj.borrow();
         if let Some(p) = o.properties.get("children") {
             if let JsValue::Array(arr) = &p.value {
-                for child in &arr.borrow().elements {
+                for (_k, child) in &arr.borrow().elements {
                     if frag_matches_selector(child, &sel) {
                         return child.clone();
                     }
@@ -641,7 +641,7 @@ fn frag_query_selector_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let o = obj.borrow();
         if let Some(p) = o.properties.get("children") {
             if let JsValue::Array(arr) = &p.value {
-                for child in &arr.borrow().elements {
+                for (_k, child) in &arr.borrow().elements {
                     if frag_matches_selector(child, &sel) {
                         results.push(child.clone());
                     }
@@ -660,7 +660,7 @@ fn frag_get_element_by_id(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let o = obj.borrow();
         if let Some(p) = o.properties.get("children") {
             if let JsValue::Array(arr) = &p.value {
-                for child in &arr.borrow().elements {
+                for (_k, child) in &arr.borrow().elements {
                     let child_id = child.get_property("id").to_js_string();
                     if child_id == id {
                         return child.clone();
@@ -679,7 +679,7 @@ fn frag_prepend(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let o = obj.borrow();
         if let Some(p) = o.properties.get("children") {
             if let JsValue::Array(arr) = &p.value {
-                arr.borrow_mut().elements.insert(0, child.clone());
+                arr.borrow_mut().insert_and_shift(0, child.clone());
             }
         }
     }
@@ -694,8 +694,9 @@ fn frag_replace_children(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             if let JsValue::Array(arr) = &p.value {
                 let mut arr_mut = arr.borrow_mut();
                 arr_mut.elements.clear();
+                arr_mut.length = 0;
                 for arg in args {
-                    arr_mut.elements.push(arg.clone());
+                    arr_mut.push(arg.clone());
                 }
             }
         }

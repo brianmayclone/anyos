@@ -62,7 +62,7 @@ fn ws_ctor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         Some(JsValue::Array(arr)) => arr
             .borrow()
             .elements
-            .iter()
+            .values()
             .map(|v| v.to_js_string())
             .collect(),
         _ => Vec::new(),
