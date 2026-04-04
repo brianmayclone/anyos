@@ -106,23 +106,18 @@ fn is_global_or_sticky(val: &JsValue) -> bool {
 
 /// Build a match result array (like `exec` returns).
 fn build_exec_result(_vm: &Vm, m: &crate::regexp::Match, input: &str) -> JsValue {
-    let mut elements = Vec::new();
+    let mut elems = Vec::new();
     // Index 0 = full match
-    elements.push(JsValue::String(String::from(m.full_match(input))));
+    elems.push(JsValue::String(String::from(m.full_match(input))));
     // Groups 1..n
     for i in 1..m.groups.len() {
         if let Some(s) = m.group(i, input) {
-            elements.push(JsValue::String(String::from(s)));
+            elems.push(JsValue::String(String::from(s)));
         } else {
-            elements.push(JsValue::Undefined);
+            elems.push(JsValue::Undefined);
         }
     }
-    let arr = JsArray {
-        elements,
-        sparse: BTreeMap::new(),
-        sparse_len: 0,
-        properties: BTreeMap::new(),
-    };
+    let arr = JsArray::from_vec(elems);
     let arr_val = JsValue::Array(Rc::new(RefCell::new(arr)));
     arr_val.set_property(String::from("index"), JsValue::Number(m.start as f64));
     arr_val.set_property(String::from("input"), JsValue::String(String::from(input)));

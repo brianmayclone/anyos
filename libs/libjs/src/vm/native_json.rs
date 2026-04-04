@@ -56,19 +56,20 @@ fn stringify_value(val: &JsValue, indent: &str, depth: usize) -> Option<String> 
         JsValue::String(s) => Some(stringify_string(s)),
         JsValue::Array(arr) => {
             let a = arr.borrow();
-            if a.elements.is_empty() {
+            if a.length == 0 {
                 return Some(String::from("[]"));
             }
             let has_indent = !indent.is_empty();
             let mut out = String::from("[");
             let new_depth = depth + 1;
-            for (i, el) in a.elements.iter().enumerate() {
+            for i in 0..a.length {
                 if i > 0 { out.push(','); }
                 if has_indent {
                     out.push('\n');
                     push_indent(&mut out, indent, new_depth);
                 }
-                match stringify_value(el, indent, new_depth) {
+                let el = a.get(i);
+                match stringify_value(&el, indent, new_depth) {
                     Some(s) => out.push_str(&s),
                     None => out.push_str("null"),
                 }

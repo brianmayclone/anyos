@@ -56,8 +56,10 @@ fn format_args_to_string(args: &[JsValue]) -> String {
             JsValue::Array(a) => {
                 let arr = a.borrow();
                 out.push('[');
-                for (j, el) in arr.elements.iter().enumerate() {
-                    if j > 0 { out.push_str(", "); }
+                let mut first = true;
+                for (_, el) in arr.iter_entries() {
+                    if !first { out.push_str(", "); }
+                    first = false;
                     out.push_str(&el.to_js_string());
                 }
                 out.push(']');

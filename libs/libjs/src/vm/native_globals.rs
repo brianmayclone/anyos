@@ -136,8 +136,10 @@ pub fn ctor_array(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if args.len() == 1 {
         if let JsValue::Number(n) = &args[0] {
             let len = *n as usize;
-            let elements = alloc::vec![JsValue::Undefined; len];
-            return JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(elements))));
+            // Sparse: only set the logical length, allocate nothing.
+            let mut arr = JsArray::new();
+            arr.length = len;
+            return JsValue::Array(Rc::new(RefCell::new(arr)));
         }
     }
     JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(args.to_vec()))))

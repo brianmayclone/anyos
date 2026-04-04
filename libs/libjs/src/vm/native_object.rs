@@ -19,9 +19,9 @@ pub fn object_has_own_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         JsValue::Array(arr) => {
             let a = arr.borrow();
             if let Some(idx) = super::try_parse_index(&key) {
-                JsValue::Bool(idx < a.elements.len() || a.sparse.contains_key(&idx))
+                JsValue::Bool(a.has(idx))
             } else {
-                JsValue::Bool(a.properties.contains_key(&key))
+                JsValue::Bool(key == "length" || a.properties.contains_key(&key))
             }
         }
         // Function values store own properties in `own_props` (e.g. Constructor.prototype).
@@ -108,8 +108,8 @@ pub fn object_keys(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
         Some(JsValue::Array(arr)) => {
             let a = arr.borrow();
-            let keys: Vec<JsValue> = (0..a.elements.len())
-                .map(|i| JsValue::String(format_usize(i)))
+            let keys: Vec<JsValue> = a.elements.keys()
+                .map(|&i| JsValue::String(format_usize(i)))
                 .collect();
             JsValue::new_array(keys)
         }
@@ -128,7 +128,7 @@ pub fn object_values(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
         Some(JsValue::Array(arr)) => {
             let a = arr.borrow();
-            JsValue::new_array(a.elements.clone())
+            JsValue::new_array(a.values_vec())
         }
         _ => JsValue::new_array(Vec::new()),
     }
@@ -270,11 +270,11 @@ pub fn object_from_entries(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let obj = JsValue::new_object();
     if let Some(JsValue::Array(arr)) = args.first() {
         let entries = arr.borrow();
-        for entry in &entries.elements {
+        for (_, entry) in entries.elements.iter() {
             if let JsValue::Array(pair) = entry {
                 let p = pair.borrow();
-                let key = p.elements.first().map(|v| v.to_js_string()).unwrap_or_default();
-                let val = p.elements.get(1).cloned().unwrap_or(JsValue::Undefined);
+                let key = p.get(0).to_js_string();
+                let val = p.get(1);
                 obj.set_property(key, val);
             }
         }
@@ -335,8 +335,8 @@ pub fn object_get_own_property_names(_vm: &mut Vm, args: &[JsValue]) -> JsValue 
         }
         Some(JsValue::Array(arr)) => {
             let a = arr.borrow();
-            let mut keys: Vec<JsValue> = (0..a.elements.len())
-                .map(|i| JsValue::String(format_usize(i)))
+            let mut keys: Vec<JsValue> = a.elements.keys()
+                .map(|&i| JsValue::String(format_usize(i)))
                 .collect();
             keys.push(JsValue::String(String::from("length")));
             JsValue::new_array(keys)
@@ -534,9 +534,9 @@ pub fn object_has_own(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         Some(JsValue::Array(arr)) => {
             let a = arr.borrow();
             if let Some(idx) = super::try_parse_index(&key) {
-                JsValue::Bool(idx < a.elements.len() || a.sparse.contains_key(&idx))
+                JsValue::Bool(a.has(idx))
             } else {
-                JsValue::Bool(a.properties.contains_key(&key))
+                JsValue::Bool(key == "length" || a.properties.contains_key(&key))
             }
         }
         _ => JsValue::Bool(false),

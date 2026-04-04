@@ -509,7 +509,7 @@ pub fn string_raw(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         _ => JsValue::Undefined,
     };
     let raw_arr = match &raw {
-        JsValue::Array(arr) => arr.borrow().elements.clone(),
+        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
         _ => return JsValue::String(String::new()),
     };
 

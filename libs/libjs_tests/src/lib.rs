@@ -50,6 +50,9 @@ pub mod compiler;
 #[path = "../../libjs/src/value.rs"]
 pub mod value;
 
+#[path = "../../libjs/src/regexp.rs"]
+pub mod regexp;
+
 #[path = "../../libjs/src/vm/mod.rs"]
 pub mod vm;
 

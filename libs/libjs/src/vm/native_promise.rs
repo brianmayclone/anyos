@@ -87,7 +87,7 @@ fn settle_promise(vm: &mut Vm, promise: &JsValue, state: &str, value: &JsValue) 
             o.get(cb_key)
         };
         if let JsValue::Array(arr) = cbs {
-            let entries = arr.borrow().elements.clone();
+            let entries = arr.borrow().to_dense_vec();
             for entry in &entries {
                 // New format: each entry is { cb, promise } object
                 if let JsValue::Object(entry_obj) = entry {
@@ -151,13 +151,13 @@ pub fn promise_then(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 let mut entry = JsObject::new();
                 entry.set(String::from("cb"), on_fulfilled);
                 entry.set(String::from("promise"), new_promise.clone());
-                arr.borrow_mut().elements.push(JsValue::Object(Rc::new(RefCell::new(entry))));
+                arr.borrow_mut().push(JsValue::Object(Rc::new(RefCell::new(entry))));
             }
             if let JsValue::Array(arr) = o.get("__catch_cbs") {
                 let mut entry = JsObject::new();
                 entry.set(String::from("cb"), on_rejected);
                 entry.set(String::from("promise"), new_promise.clone());
-                arr.borrow_mut().elements.push(JsValue::Object(Rc::new(RefCell::new(entry))));
+                arr.borrow_mut().push(JsValue::Object(Rc::new(RefCell::new(entry))));
             }
         }
 
@@ -274,13 +274,13 @@ pub fn promise_finally(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 let mut entry = JsObject::new();
                 entry.set(String::from("cb"), on_finally.clone());
                 entry.set(String::from("promise"), new_promise.clone());
-                arr.borrow_mut().elements.push(JsValue::Object(Rc::new(RefCell::new(entry))));
+                arr.borrow_mut().push(JsValue::Object(Rc::new(RefCell::new(entry))));
             }
             if let JsValue::Array(arr) = o.get("__catch_cbs") {
                 let mut entry = JsObject::new();
                 entry.set(String::from("cb"), on_finally.clone());
                 entry.set(String::from("promise"), new_promise.clone());
-                arr.borrow_mut().elements.push(JsValue::Object(Rc::new(RefCell::new(entry))));
+                arr.borrow_mut().push(JsValue::Object(Rc::new(RefCell::new(entry))));
             }
         }
 
@@ -330,7 +330,7 @@ pub fn promise_reject(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn promise_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iterable = args.first().cloned().unwrap_or(JsValue::Undefined);
     let promises = match &iterable {
-        JsValue::Array(arr) => arr.borrow().elements.clone(),
+        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
         _ => Vec::new(),
     };
 
@@ -357,7 +357,7 @@ pub fn promise_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn promise_all_settled(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iterable = args.first().cloned().unwrap_or(JsValue::Undefined);
     let promises = match &iterable {
-        JsValue::Array(arr) => arr.borrow().elements.clone(),
+        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
         _ => Vec::new(),
     };
 
@@ -388,7 +388,7 @@ pub fn promise_all_settled(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn promise_race(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iterable = args.first().cloned().unwrap_or(JsValue::Undefined);
     let promises = match &iterable {
-        JsValue::Array(arr) => arr.borrow().elements.clone(),
+        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
         _ => Vec::new(),
     };
     // Return the first settled promise
@@ -420,7 +420,7 @@ pub fn promise_race(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn promise_any(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iterable = args.first().cloned().unwrap_or(JsValue::Undefined);
     let promises = match &iterable {
-        JsValue::Array(arr) => arr.borrow().elements.clone(),
+        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
         _ => Vec::new(),
     };
     let mut errors: Vec<JsValue> = Vec::new();

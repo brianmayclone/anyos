@@ -414,9 +414,9 @@ run_tc39_tests() {
     echo ""
 
     if [ "$RELEASE_FLAG" == "--release" ]; then
-        RUNNER="${LIBJS_TESTS_DIR}/target/aarch64-apple-darwin/release/tc39_runner"
+        RUNNER="${LIBJS_TESTS_DIR}/target/x86_64-unknown-linux-gnu/release/tc39_runner"
     else
-        RUNNER="${LIBJS_TESTS_DIR}/target/aarch64-apple-darwin/debug/tc39_runner"
+        RUNNER="${LIBJS_TESTS_DIR}/target/x86_64-unknown-linux-gnu/debug/tc39_runner"
     fi
 
     if [ ! -f "$RUNNER" ]; then

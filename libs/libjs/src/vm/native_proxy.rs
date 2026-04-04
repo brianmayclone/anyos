@@ -135,7 +135,7 @@ pub fn proxy_own_keys(vm: &mut Vm, proxy: &JsValue) -> Option<Vec<String>> {
     match invoke_trap(vm, &handler, "ownKeys", &[target.clone()]) {
         Some(JsValue::Array(arr)) => {
             let a = arr.borrow();
-            Some(a.elements.iter().map(|v| v.to_js_string()).collect())
+            Some(a.elements.values().map(|v| v.to_js_string()).collect())
         }
         Some(_) => None,
         None => {
@@ -225,7 +225,7 @@ pub fn reflect_apply(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let args_list = args.get(2).cloned().unwrap_or(JsValue::Undefined);
 
     let call_args: Vec<JsValue> = if let JsValue::Array(arr) = &args_list {
-        arr.borrow().elements.clone()
+        arr.borrow().to_dense_vec()
     } else {
         Vec::new()
     };
@@ -238,7 +238,7 @@ pub fn reflect_construct(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let args_list = args.get(1).cloned().unwrap_or(JsValue::Undefined);
 
     let call_args: Vec<JsValue> = if let JsValue::Array(arr) = &args_list {
-        arr.borrow().elements.clone()
+        arr.borrow().to_dense_vec()
     } else {
         Vec::new()
     };

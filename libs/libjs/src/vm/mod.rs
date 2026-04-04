@@ -803,9 +803,9 @@ impl Vm {
                         JsValue::Array(a) => {
                             let arr = a.borrow();
                             if let Some(idx) = try_parse_index(&key_str) {
-                                idx < arr.elements.len() || arr.sparse.contains_key(&idx)
+                                arr.has(idx)
                             } else {
-                                arr.properties.contains_key(&key_str)
+                                key_str == "length" || arr.properties.contains_key(&key_str)
                             }
                         }
                         JsValue::Function(f) => {
@@ -921,16 +921,17 @@ impl Vm {
                     if let JsValue::Array(tgt_rc) = &tgt {
                         match &src {
                             JsValue::Array(src_rc) => {
-                                let elems = src_rc.borrow().elements.clone();
-                                for el in elems {
-                                    tgt_rc.borrow_mut().elements.push(el);
+                                let src_a = src_rc.borrow();
+                                let mut tgt_a = tgt_rc.borrow_mut();
+                                for (_, el) in src_a.iter_entries() {
+                                    tgt_a.push(el.clone());
                                 }
                             }
                             JsValue::String(s) => {
                                 for ch in s.chars() {
                                     let mut cs = String::new();
                                     cs.push(ch);
-                                    tgt_rc.borrow_mut().elements.push(JsValue::String(cs));
+                                    tgt_rc.borrow_mut().push(JsValue::String(cs));
                                 }
                             }
                             JsValue::Object(_) => {
@@ -991,7 +992,7 @@ impl Vm {
                                             spread_exc_handled = true;
                                             break;
                                         }
-                                        tgt_rc.borrow_mut().elements.push(value);
+                                        tgt_rc.borrow_mut().push(value);
                                     }
                                 }
                                 if spread_exc_handled { continue; }
@@ -1037,7 +1038,7 @@ impl Vm {
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let tgt = self.stack.pop().unwrap_or(JsValue::Undefined);
                     if let JsValue::Array(tgt_rc) = &tgt {
-                        tgt_rc.borrow_mut().elements.push(val);
+                        tgt_rc.borrow_mut().push(val);
                     }
                     self.stack.push(tgt);
                 }
@@ -1083,7 +1084,7 @@ impl Vm {
                     let args_val = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let callee = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let args: Vec<JsValue> = match &args_val {
-                        JsValue::Array(arr) => arr.borrow().elements.clone(),
+                        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
                         _ => Vec::new(),
                     };
                     self.current_this = JsValue::Undefined;
@@ -1095,7 +1096,7 @@ impl Vm {
                     let callee = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let this_val = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let args: Vec<JsValue> = match &args_val {
-                        JsValue::Array(arr) => arr.borrow().elements.clone(),
+                        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
                         _ => Vec::new(),
                     };
                     self.current_this = this_val.clone();
@@ -1202,7 +1203,7 @@ impl Vm {
                         }
                         JsValue::Array(arr) => {
                             let a = arr.borrow();
-                            for (i, elem) in a.elements.iter().enumerate() {
+                            for (&i, elem) in a.elements.iter() {
                                 let key = format!("{}", i);
                                 if !excluded.contains(&key) {
                                     result.set_property(key, elem.clone());

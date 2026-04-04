@@ -7,7 +7,7 @@ fn test_map_single_eval() {
     assert_eq!(num("[1,2,3].map(function(x){ return x * 2; })[0]"), 2.0);
 }
 
-#[test]  
+#[test]
 fn test_global_var() {
     let mut e = JsEngine::new();
     e.eval("var x = 42;");
@@ -28,4 +28,16 @@ fn test_global_var_after_map() {
     let d = e.get_global("doubled");
     eprintln!("doubled type: {:?}", d);
     assert_eq!(d.get_index(0).to_number(), 2.0);
+}
+
+#[test]
+fn test_sparse_array_indexof_infinity() {
+    let mut e = JsEngine::new();
+    e.set_step_limit(50_000_000);
+    let r = e.eval(r#"
+        var arr = [];
+        arr[Math.pow(2, 32) - 2] = true;
+        arr.indexOf(true, Infinity)
+    "#);
+    assert_eq!(r.to_number(), -1.0);
 }

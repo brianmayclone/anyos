@@ -23,16 +23,17 @@ pub fn array_find_last(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     if let JsValue::Array(arr) = &this {
-        let elements = arr.borrow().elements.clone();
-        for i in (0..elements.len()).rev() {
+        let entries: Vec<(usize, JsValue)> = arr.borrow().elements.iter()
+            .map(|(&k, v)| (k, v.clone())).collect();
+        for &(i, ref el) in entries.iter().rev() {
             let result = vm.invoke_function(
                 &callback,
-                &[elements[i].clone(), JsValue::Number(i as f64), this.clone()],
+                &[el.clone(), JsValue::Number(i as f64), this.clone()],
                 JsValue::Undefined,
             );
             let val = vm.stack.pop().unwrap_or(JsValue::Undefined);
             if val.to_boolean() {
-                return elements[i].clone();
+                return el.clone();
             }
         }
     }
@@ -44,11 +45,12 @@ pub fn array_find_last_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     if let JsValue::Array(arr) = &this {
-        let elements = arr.borrow().elements.clone();
-        for i in (0..elements.len()).rev() {
+        let entries: Vec<(usize, JsValue)> = arr.borrow().elements.iter()
+            .map(|(&k, v)| (k, v.clone())).collect();
+        for &(i, ref el) in entries.iter().rev() {
             vm.invoke_function(
                 &callback,
-                &[elements[i].clone(), JsValue::Number(i as f64), this.clone()],
+                &[el.clone(), JsValue::Number(i as f64), this.clone()],
                 JsValue::Undefined,
             );
             let val = vm.stack.pop().unwrap_or(JsValue::Undefined);
@@ -64,9 +66,9 @@ pub fn array_find_last_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn array_to_reversed(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
     if let JsValue::Array(arr) = &this {
-        let mut elements = arr.borrow().elements.clone();
-        elements.reverse();
-        JsValue::new_array(elements)
+        let mut dense = arr.borrow().to_dense_vec();
+        dense.reverse();
+        JsValue::new_array(dense)
     } else {
         JsValue::new_array(Vec::new())
     }
@@ -76,14 +78,13 @@ pub fn array_to_reversed(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 pub fn array_to_sorted(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
     if let JsValue::Array(arr) = &this {
-        let mut elements = arr.borrow().elements.clone();
-        // Simple numeric/string sort (compareFn not invoked for simplicity)
-        elements.sort_by(|a, b| {
+        let mut dense = arr.borrow().to_dense_vec();
+        dense.sort_by(|a, b| {
             let sa = a.to_js_string();
             let sb = b.to_js_string();
             sa.cmp(&sb)
         });
-        JsValue::new_array(elements)
+        JsValue::new_array(dense)
     } else {
         JsValue::new_array(Vec::new())
     }
@@ -93,18 +94,18 @@ pub fn array_to_sorted(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn array_to_spliced(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
     if let JsValue::Array(arr) = &this {
-        let mut elements = arr.borrow().elements.clone();
-        let len = elements.len();
+        let dense = arr.borrow().to_dense_vec();
+        let len = dense.len();
         let start_raw = args.first().map(|v| v.to_number() as i64).unwrap_or(0);
         let start = if start_raw < 0 { (len as i64 + start_raw).max(0) as usize } else { (start_raw as usize).min(len) };
         let delete_count = args.get(1).map(|v| (v.to_number() as usize).min(len - start)).unwrap_or(len - start);
         let items: Vec<JsValue> = args.iter().skip(2).cloned().collect();
 
         let mut result = Vec::with_capacity(len - delete_count + items.len());
-        result.extend_from_slice(&elements[..start]);
+        result.extend_from_slice(&dense[..start]);
         result.extend(items);
         if start + delete_count < len {
-            result.extend_from_slice(&elements[start + delete_count..]);
+            result.extend_from_slice(&dense[start + delete_count..]);
         }
         JsValue::new_array(result)
     } else {
@@ -116,15 +117,15 @@ pub fn array_to_spliced(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn array_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
     if let JsValue::Array(arr) = &this {
-        let mut elements = arr.borrow().elements.clone();
-        let len = elements.len();
+        let mut dense = arr.borrow().to_dense_vec();
+        let len = dense.len();
         let idx_raw = args.first().map(|v| v.to_number() as i64).unwrap_or(0);
         let idx = if idx_raw < 0 { (len as i64 + idx_raw) as usize } else { idx_raw as usize };
         let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
         if idx < len {
-            elements[idx] = value;
+            dense[idx] = value;
         }
-        JsValue::new_array(elements)
+        JsValue::new_array(dense)
     } else {
         JsValue::new_array(Vec::new())
     }
@@ -151,8 +152,9 @@ pub fn object_group_by(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     let result = JsValue::new_object();
     if let JsValue::Array(arr) = &items {
-        let elements = arr.borrow().elements.clone();
-        for (i, item) in elements.iter().enumerate() {
+        let entries: Vec<(usize, JsValue)> = arr.borrow().elements.iter()
+            .map(|(&k, v)| (k, v.clone())).collect();
+        for (i, item) in entries.iter().map(|(k, v)| (*k, v)) {
             vm.invoke_function(
                 &callback,
                 &[item.clone(), JsValue::Number(i as f64)],
@@ -223,8 +225,12 @@ fn deep_clone(val: &JsValue) -> JsValue {
         }
         JsValue::Array(arr) => {
             let a = arr.borrow();
-            let elements: Vec<JsValue> = a.elements.iter().map(|v| deep_clone(v)).collect();
-            JsValue::new_array(elements)
+            let mut new_arr = JsArray::new();
+            new_arr.length = a.length;
+            for (&k, v) in a.elements.iter() {
+                new_arr.elements.insert(k, deep_clone(v));
+            }
+            JsValue::Array(Rc::new(RefCell::new(new_arr)))
         }
         // Primitives are copied by value
         other => other.clone(),

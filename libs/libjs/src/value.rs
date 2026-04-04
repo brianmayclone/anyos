@@ -43,7 +43,7 @@ impl fmt::Debug for JsValue {
             JsValue::Object(_) => write!(f, "[object Object]"),
             JsValue::Array(a) => {
                 let arr = a.borrow();
-                write!(f, "[Array({})]", arr.elements.len())
+                write!(f, "[Array({})]", arr.length)
             }
             JsValue::Function(func) => {
                 let fun = func.borrow();
@@ -280,21 +280,19 @@ impl JsObject {
     }
 }
 
-/// A JavaScript array.
+/// A JavaScript array — sparse storage like V8.
+///
+/// Only indices that have actually been written consume memory.
+/// `length` is a separate logical value; unset indices return `undefined`
+/// without ever being materialised.
 #[derive(Clone, Debug)]
 pub struct JsArray {
-    pub elements: Vec<JsValue>,
-    /// Sparse storage for indices beyond the dense part.
-    pub sparse: BTreeMap<usize, JsValue>,
-    /// Logical length when it exceeds `elements.len()` (e.g. after setting
-    /// `arr.length = N` with a very large N, or after sparse index inserts).
-    pub sparse_len: usize,
+    /// Sparse element storage — only indices that were explicitly set.
+    pub elements: BTreeMap<usize, JsValue>,
+    /// Logical array length (ES2023 §10.4.2).
+    pub length: usize,
     pub properties: BTreeMap<String, Property>,
 }
-
-/// Maximum gap we allow when expanding the dense `elements` Vec.
-/// Indices that would create a gap larger than this are stored in `sparse`.
-const SPARSE_GAP: usize = 10_000;
 
 /// Maximum valid ES array index (2^32 − 2).  Index 2^32 − 1 is a regular
 /// property, not an array element (ES2023 §6.1.7).
@@ -303,70 +301,160 @@ pub const MAX_ARRAY_INDEX: usize = 0xFFFF_FFFE; // 4294967294
 impl JsArray {
     pub fn new() -> Self {
         JsArray {
-            elements: Vec::new(),
-            sparse: BTreeMap::new(),
-            sparse_len: 0,
+            elements: BTreeMap::new(),
+            length: 0,
             properties: BTreeMap::new(),
         }
     }
 
-    pub fn from_vec(elements: Vec<JsValue>) -> Self {
+    /// Create from a dense Vec (e.g. array literal `[1, 2, 3]`).
+    pub fn from_vec(v: Vec<JsValue>) -> Self {
+        let len = v.len();
+        let mut map = BTreeMap::new();
+        for (i, val) in v.into_iter().enumerate() {
+            map.insert(i, val);
+        }
         JsArray {
-            elements,
-            sparse: BTreeMap::new(),
-            sparse_len: 0,
+            elements: map,
+            length: len,
             properties: BTreeMap::new(),
         }
     }
 
+    /// Get element at `index`.  Returns `Undefined` for unset indices.
     pub fn get(&self, index: usize) -> JsValue {
-        if index < self.elements.len() {
-            self.elements[index].clone()
-        } else if let Some(v) = self.sparse.get(&index) {
-            v.clone()
-        } else {
-            JsValue::Undefined
-        }
+        self.elements.get(&index).cloned().unwrap_or(JsValue::Undefined)
     }
 
+    /// Set element at `index`.  Updates `length` if needed.
+    /// No memory is allocated for intervening unset indices.
     pub fn set(&mut self, index: usize, value: JsValue) {
-        if index < self.elements.len() {
-            self.elements[index] = value;
-        } else if index.wrapping_sub(self.elements.len()) < SPARSE_GAP {
-            // Small gap — expand the dense part.
-            while self.elements.len() <= index {
-                self.elements.push(JsValue::Undefined);
-            }
-            self.elements[index] = value;
-        } else {
-            // Large gap — store in sparse map.
-            self.sparse.insert(index, value);
-            if index + 1 > self.sparse_len {
-                self.sparse_len = index + 1;
-            }
+        self.elements.insert(index, value);
+        if index >= self.length {
+            self.length = index + 1;
         }
     }
 
+    /// Returns true if `index` has been explicitly set (distinguishes
+    /// a hole from an explicit `undefined` value).
+    pub fn has(&self, index: usize) -> bool {
+        self.elements.contains_key(&index)
+    }
+
+    /// Delete element at `index` (creates a hole).  Does NOT change `length`.
+    pub fn delete(&mut self, index: usize) -> bool {
+        self.elements.remove(&index);
+        true
+    }
+
+    /// Append a value at the end (at the current `length`).
     pub fn push(&mut self, value: JsValue) {
-        if self.sparse.is_empty() && self.sparse_len <= self.elements.len() {
-            self.elements.push(value);
-        } else {
-            // Push at logical end.
-            let idx = self.len();
-            self.set(idx, value);
+        let idx = self.length;
+        self.elements.insert(idx, value);
+        self.length = idx + 1;
+    }
+
+    /// Remove and return the last element.
+    pub fn pop(&mut self) -> JsValue {
+        if self.length == 0 {
+            return JsValue::Undefined;
         }
+        self.length -= 1;
+        self.elements.remove(&self.length).unwrap_or(JsValue::Undefined)
     }
 
+    /// Logical length.
     pub fn len(&self) -> usize {
-        self.elements.len().max(self.sparse_len)
+        self.length
     }
 
-    /// Iterate over all (index, &value) pairs that actually exist (dense + sparse)
-    /// in ascending index order.
+    /// Set the logical length.  Removes entries >= `new_len`.
+    pub fn set_length(&mut self, new_len: usize) {
+        if new_len < self.length {
+            // Truncate: remove all entries with index >= new_len.
+            let to_remove: Vec<usize> = self.elements.range(new_len..).map(|(&k, _)| k).collect();
+            for k in to_remove {
+                self.elements.remove(&k);
+            }
+        }
+        self.length = new_len;
+    }
+
+    /// Number of actually stored elements (not the logical length).
+    pub fn count(&self) -> usize {
+        self.elements.len()
+    }
+
+    /// Iterate over all (index, &value) pairs that actually exist,
+    /// in ascending index order.  Holes are skipped.
     pub fn iter_entries(&self) -> impl Iterator<Item = (usize, &JsValue)> {
-        let dense = self.elements.iter().enumerate();
-        let sparse = self.sparse.iter().map(|(&k, v)| (k, v));
-        dense.chain(sparse)
+        self.elements.iter().map(|(&k, v)| (k, v))
+    }
+
+    /// Collect all values in index order as a dense Vec (for interop with
+    /// code that needs a contiguous slice, e.g. function call args).
+    /// Holes are filled with Undefined.
+    pub fn to_dense_vec(&self) -> Vec<JsValue> {
+        if self.length == 0 {
+            return Vec::new();
+        }
+        let mut v = Vec::with_capacity(self.length.min(4096));
+        for i in 0..self.length {
+            v.push(self.elements.get(&i).cloned().unwrap_or(JsValue::Undefined));
+        }
+        v
+    }
+
+    /// Collect only the actually-set values in index order (no holes).
+    pub fn values_vec(&self) -> Vec<JsValue> {
+        self.elements.values().cloned().collect()
+    }
+
+    /// Remove element at index and shift higher indices down by 1
+    /// (used by `shift`, `splice`).
+    pub fn remove_and_shift(&mut self, index: usize) -> JsValue {
+        let removed = self.elements.remove(&index).unwrap_or(JsValue::Undefined);
+        // Collect keys > index and shift them down.
+        let to_shift: Vec<(usize, JsValue)> = self.elements.range((index + 1)..)
+            .map(|(&k, v)| (k, v.clone())).collect();
+        for (k, v) in to_shift {
+            self.elements.remove(&k);
+            self.elements.insert(k - 1, v);
+        }
+        if self.length > 0 {
+            self.length -= 1;
+        }
+        removed
+    }
+
+    /// Insert value at index and shift higher indices up by 1
+    /// (used by `unshift`, `splice`).
+    pub fn insert_and_shift(&mut self, index: usize, value: JsValue) {
+        // Shift existing entries at index..length up by 1.
+        let to_shift: Vec<(usize, JsValue)> = self.elements.range(index..)
+            .map(|(&k, v)| (k, v.clone())).rev().collect();
+        for (k, v) in to_shift {
+            self.elements.remove(&k);
+            self.elements.insert(k + 1, v);
+        }
+        self.elements.insert(index, value);
+        self.length += 1;
+    }
+
+    /// Clear all elements and set length to 0.
+    pub fn clear(&mut self) {
+        self.elements.clear();
+        self.length = 0;
+    }
+
+    /// Reverse elements in place.
+    pub fn reverse(&mut self) {
+        let entries: Vec<(usize, JsValue)> = self.elements.iter()
+            .map(|(&k, v)| (k, v.clone())).collect();
+        self.elements.clear();
+        for (k, v) in entries {
+            self.elements.insert(self.length - 1 - k, v);
+        }
     }
 }
 
@@ -514,13 +602,15 @@ impl JsValue {
             JsValue::Object(_) => String::from("[object Object]"),
             JsValue::Array(a) => {
                 let arr = a.borrow();
-                let parts: Vec<String> = arr.elements.iter().map(|v| v.to_js_string()).collect();
                 let mut out = String::new();
-                for (i, p) in parts.iter().enumerate() {
-                    if i > 0 {
-                        out.push(',');
+                for i in 0..arr.length {
+                    if i > 0 { out.push(','); }
+                    if let Some(v) = arr.elements.get(&i) {
+                        match v {
+                            JsValue::Undefined | JsValue::Null => {}
+                            _ => out.push_str(&v.to_js_string()),
+                        }
                     }
-                    out.push_str(p);
                 }
                 out
             }
@@ -669,27 +759,12 @@ impl JsValue {
                     if idx <= MAX_ARRAY_INDEX {
                         a.set(idx, value);
                     } else {
-                        // Indices > MAX_ARRAY_INDEX are regular string properties.
                         a.properties.insert(key, Property::data(value));
                     }
                 } else if key == "length" {
                     if let JsValue::Number(n) = &value {
                         let new_len = *n as usize;
-                        // Truncate dense part if needed.
-                        if new_len < a.elements.len() {
-                            a.elements.truncate(new_len);
-                        }
-                        // Remove sparse entries >= new_len.
-                        let to_remove: Vec<usize> = a.sparse.range(new_len..).map(|(&k, _)| k).collect();
-                        for k in to_remove { a.sparse.remove(&k); }
-                        // Expand dense part only for small lengths.
-                        if new_len <= a.elements.len() + SPARSE_GAP {
-                            while a.elements.len() < new_len {
-                                a.elements.push(JsValue::Undefined);
-                            }
-                        }
-                        // Track the logical length.
-                        a.sparse_len = new_len;
+                        a.set_length(new_len);
                     }
                 } else {
                     a.properties.insert(key, Property::data(value));
@@ -714,6 +789,15 @@ impl JsValue {
     pub fn delete_property(&self, key: &str) -> bool {
         match self {
             JsValue::Object(obj) => obj.borrow_mut().delete(key),
+            JsValue::Array(arr) => {
+                if let Some(idx) = parse_index(key) {
+                    if idx <= MAX_ARRAY_INDEX {
+                        return arr.borrow_mut().delete(idx);
+                    }
+                }
+                arr.borrow_mut().properties.remove(key);
+                true
+            }
             _ => true,
         }
     }

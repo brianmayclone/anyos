@@ -45,7 +45,7 @@ impl Vm {
                 }
                 JsValue::Array(arr) => {
                     // Array returned — convert to internal iterator over elements
-                    let items = arr.borrow().elements.clone();
+                    let items = arr.borrow().to_dense_vec();
                     return self.make_internal_iterator(items);
                 }
                 _ => return iterator,
@@ -55,7 +55,7 @@ impl Vm {
         // 2. Fallback: create internal iterator for built-in types
         let items: Vec<JsValue> = match val {
             JsValue::Array(arr) => {
-                arr.borrow().elements.clone()
+                arr.borrow().to_dense_vec()
             }
             JsValue::String(s) => {
                 s.chars().map(|c| {
@@ -123,8 +123,8 @@ impl Vm {
                     match &items_val {
                         JsValue::Array(arr) => {
                             let a = arr.borrow();
-                            if index < a.elements.len() {
-                                let val = a.elements[index].clone();
+                            if index < a.length {
+                                let val = a.get(index);
                                 o.properties.insert(
                                     String::from("__index__"),
                                     Property::data(JsValue::Number((index + 1) as f64)),

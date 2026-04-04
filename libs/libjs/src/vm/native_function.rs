@@ -31,7 +31,7 @@ pub fn function_apply(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let func = vm.current_this.clone();
     let this_arg = args.first().cloned().unwrap_or(JsValue::Undefined);
     let call_args: Vec<JsValue> = match args.get(1) {
-        Some(JsValue::Array(arr)) => arr.borrow().elements.clone(),
+        Some(JsValue::Array(arr)) => arr.borrow().to_dense_vec(),
         _ => Vec::new(),
     };
 

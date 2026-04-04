@@ -676,7 +676,7 @@ fn array_symbol_iterator(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
     // Collect elements from the array
     let items: alloc::vec::Vec<JsValue> = match &this {
-        JsValue::Array(arr) => arr.borrow().elements.clone(),
+        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
         _ => alloc::vec::Vec::new(),
     };
     make_value_iterator(vm, items)
@@ -720,8 +720,8 @@ fn iterator_next(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
         let items = o.get("__items__");
         if let JsValue::Array(arr) = &items {
             let a = arr.borrow();
-            if index < a.elements.len() {
-                let val = a.elements[index].clone();
+            if index < a.length {
+                let val = a.get(index);
                 o.properties.insert(
                     alloc::string::String::from("__index__"),
                     Property::data(JsValue::Number((index + 1) as f64)),

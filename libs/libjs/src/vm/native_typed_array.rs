@@ -189,12 +189,12 @@ pub fn create_typed_array(vm: &Vm, kind: TypedArrayKind, args: &[JsValue]) -> Js
         }
         Some(JsValue::Array(arr)) => {
             // new Uint8Array([1, 2, 3])
-            let elements = &arr.borrow().elements;
-            let len = elements.len();
+            let dense = arr.borrow().to_dense_vec();
+            let len = dense.len();
             let buf = create_arraybuffer(vm, len * elem_size);
             if let Some(buf_rc) = get_buffer(&buf) {
                 let mut b = buf_rc.borrow_mut();
-                for (i, el) in elements.iter().enumerate() {
+                for (i, el) in dense.iter().enumerate() {
                     write_element(&mut b, i * elem_size, kind, el.to_number());
                 }
             }
@@ -298,9 +298,9 @@ pub fn typed_array_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let elem_size = kind.bytes_per_element();
 
     if let Some(JsValue::Array(src)) = args.first() {
-        let elements = &src.borrow().elements;
+        let dense = src.borrow().to_dense_vec();
         let mut b = buf.borrow_mut();
-        for (i, el) in elements.iter().enumerate() {
+        for (i, el) in dense.iter().enumerate() {
             let idx = offset + i;
             let pos = byte_off + idx * elem_size;
             if pos + elem_size <= b.len() {
