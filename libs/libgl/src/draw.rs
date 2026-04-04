@@ -153,9 +153,75 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
         _ => return,
     };
 
-    // Collect vertex data into a contiguous buffer
+    // Upload state
+    if ctx.shadow_pass_active {
+        let prog_id = ctx.current_program;
+        if let Some(p) = ctx.shaders.get_program(prog_id) {
+            if let Some(u) = p.uniforms.first() {
+                (drv.drv_set_uniform_f32)(0, 4, u.value.as_ptr());
+            }
+        }
+    } else {
+        bind_textures_hw(ctx, drv);
+        upload_uniforms(ctx, drv);
+    }
+
+    // Try persistent VBO path: if all attribs reference the same VBO and
+    // the VBO has matching raw data layout, use the GPU-resident buffer directly.
     let attrib_count = program.attributes.len();
-    let vertex_stride = (attrib_count * 4 * 4) as u32; // 4 floats * 4 bytes per attrib
+    if attrib_count > 0 {
+        let first_loc = program.attributes[0].location as usize;
+        if first_loc < ctx.attribs.len() && ctx.attribs[first_loc].enabled {
+            let vbo_id = ctx.attribs[first_loc].buffer_id;
+            let stride = ctx.attribs[first_loc].stride as u32;
+
+            // Check if all attribs use the same VBO
+            let all_same_vbo = vbo_id != 0 && stride > 0 && program.attributes.iter().all(|a| {
+                let loc = a.location as usize;
+                loc < ctx.attribs.len() && ctx.attribs[loc].enabled
+                    && ctx.attribs[loc].buffer_id == vbo_id
+            });
+
+            if all_same_vbo {
+                if let (Some(upload_fn), Some(draw_fn)) = (drv.drv_upload_vbo, drv.drv_draw_vbo) {
+                    // Ensure GPU resource exists for this VBO
+                    let buf = ctx.buffers.get_mut(vbo_id);
+                    if let Some(buf) = buf {
+                        if buf.gpu_res_id == 0 && !buf.data.is_empty() {
+                            // Upload once
+                            let res = upload_fn(buf.data.as_ptr(), buf.data.len() as u32, stride);
+                            buf.gpu_res_id = res;
+                            buf.gpu_size = buf.data.len() as u32;
+                        }
+
+                        let gpu_res = buf.gpu_res_id;
+                        if gpu_res != 0 {
+                            // Build attrib descriptors using original offsets from the VBO
+                            let mut attribs: alloc::vec::Vec<DrvAttrib> = alloc::vec::Vec::with_capacity(attrib_count);
+                            for attr in &program.attributes {
+                                let loc = attr.location as usize;
+                                let va = &ctx.attribs[loc];
+                                attribs.push(DrvAttrib {
+                                    location: attr.location as u32,
+                                    components: va.size as u32,
+                                    attr_type: va.typ,
+                                    offset: va.offset as u32,
+                                    normalized: if va.normalized { 1 } else { 0 },
+                                });
+                            }
+
+                            draw_fn(mode, first as u32, count as u32, gpu_res, stride,
+                                attribs.as_ptr(), attribs.len() as u32);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: collect vertex data and upload per-draw (original path)
+    let vertex_stride = (attrib_count * 4 * 4) as u32;
 
     let mut vertex_data: alloc::vec::Vec<f32> = alloc::vec::Vec::with_capacity(
         (count as usize) * attrib_count * 4
@@ -175,7 +241,6 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
         }
     }
 
-    // Build DrvAttrib descriptors
     let mut attribs: alloc::vec::Vec<DrvAttrib> = alloc::vec::Vec::with_capacity(attrib_count);
     for (ai, attr) in program.attributes.iter().enumerate() {
         attribs.push(DrvAttrib {
@@ -190,22 +255,6 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
     let vb_bytes = unsafe {
         core::slice::from_raw_parts(vertex_data.as_ptr() as *const u8, vertex_data.len() * 4)
     };
-
-    // During shadow pass: skip texture binding, upload per-object MVP for depth shader
-    if ctx.shadow_pass_active {
-        // The app sets loc_mvp (uniform 0) = light_vp * model per object.
-        // Upload that as CONST[0..3] for the depth-only shader.
-        let prog_id = ctx.current_program;
-        if let Some(p) = ctx.shaders.get_program(prog_id) {
-            if let Some(u) = p.uniforms.first() {
-                // Uniform 0 = MVP (mat4 = 16 floats = 4 vec4 slots)
-                (drv.drv_set_uniform_f32)(0, 4, u.value.as_ptr());
-            }
-        }
-    } else {
-        bind_textures_hw(ctx, drv);
-        upload_uniforms(ctx, drv);
-    }
 
     (drv.drv_draw_arrays)(
         mode, first as u32, count as u32,

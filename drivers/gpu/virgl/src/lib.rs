@@ -1000,6 +1000,77 @@ pub extern "C" fn drv_draw_elements(
 }
 
 #[unsafe(no_mangle)]
+// ── Persistent VBO (upload once, draw many) ─────────────────────────────
+
+/// Upload vertex data to a persistent GPU resource.
+/// Returns the virgl resource ID, or 0 on failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn drv_upload_vbo(data: *const u8, len: u32, _stride: u32) -> u32 {
+    if data.is_null() || len == 0 { return 0; }
+    let bytes = unsafe { slice::from_raw_parts(data, len as usize) };
+
+    let res = libsyscall::gpu_3d_resource_create(
+        PIPE_BUFFER, PIPE_FORMAT_R8_UNORM, VIRGL_BIND_VERTEX_BUFFER, len, 1,
+    );
+    if res == u32::MAX { return 0; }
+
+    let r = libsyscall::gpu_3d_surface_dma(res, bytes, len, 1);
+    if r != 0 {
+        libsyscall::gpu_3d_resource_destroy(res);
+        return 0;
+    }
+    res
+}
+
+/// Draw using a persistent VBO (no re-upload).
+#[unsafe(no_mangle)]
+pub extern "C" fn drv_draw_vbo(
+    mode: u32, first: u32, count: u32,
+    gpu_res_id: u32, vertex_stride: u32,
+    attribs: *const DrvAttrib, num_attribs: u32,
+) {
+    if count == 0 || num_attribs == 0 || gpu_res_id == 0 { return; }
+    let attrs = unsafe { slice::from_raw_parts(attribs, num_attribs as usize) };
+    let s = state();
+
+    flush_const_buf(s);
+    s.cmd.submit();
+
+    // Vertex elements
+    setup_vertex_elements(s, attrs);
+    s.cmd.push_cmd(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_VERTEX_ELEMENTS, 1);
+    s.cmd.push(s.ve_handle);
+
+    // Bind the persistent VBO directly
+    s.cmd.push_cmd(VIRGL_CCMD_SET_VERTEX_BUFFERS, 0, 3);
+    s.cmd.push(vertex_stride);
+    s.cmd.push(0);
+    s.cmd.push(gpu_res_id);
+
+    // Draw
+    s.cmd.push_cmd(VIRGL_CCMD_DRAW_VBO, 0, 12);
+    s.cmd.push(first);
+    s.cmd.push(count);
+    s.cmd.push(mode);
+    s.cmd.push(0);              // indexed = false
+    s.cmd.push(1);              // instance_count
+    s.cmd.push(0);              // index_bias
+    s.cmd.push(0);              // start_instance
+    s.cmd.push(0);              // primitive_restart
+    s.cmd.push(0);              // restart_index
+    s.cmd.push(first);          // min_index
+    s.cmd.push(first + count - 1); // max_index
+    s.cmd.push(0);              // cso
+    s.cmd.submit();
+}
+
+/// Destroy a persistent VBO resource.
+#[unsafe(no_mangle)]
+pub extern "C" fn drv_destroy_vbo(gpu_res_id: u32) {
+    if gpu_res_id == 0 { return; }
+    libsyscall::gpu_3d_resource_destroy(gpu_res_id);
+}
+
 pub extern "C" fn drv_flush() {
     let s = state();
     s.cmd.submit();

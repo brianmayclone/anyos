@@ -10,6 +10,10 @@ use crate::types::*;
 pub struct GlBuffer {
     pub data: Vec<u8>,
     pub usage: GLenum,
+    /// GPU-side virgl resource ID for persistent VBO (0 = not uploaded).
+    pub gpu_res_id: u32,
+    /// Size in bytes currently allocated on GPU (to detect re-upload needs).
+    pub gpu_size: u32,
 }
 
 /// Storage for all buffer objects.
@@ -40,6 +44,8 @@ impl BufferStore {
             self.slots[id as usize] = Some(GlBuffer {
                 data: Vec::new(),
                 usage: GL_STATIC_DRAW,
+                gpu_res_id: 0,
+                gpu_size: 0,
             });
             ids[i] = id;
         }
@@ -68,11 +74,15 @@ impl BufferStore {
     }
 
     /// Upload data into a buffer (glBufferData).
+    /// Invalidates any existing GPU resource so it gets re-uploaded on next draw.
     pub fn buffer_data(&mut self, id: u32, data: &[u8], usage: GLenum) {
         if let Some(buf) = self.get_mut(id) {
             buf.data.clear();
             buf.data.extend_from_slice(data);
             buf.usage = usage;
+            // Mark GPU resource as stale — will be re-uploaded on next draw
+            buf.gpu_res_id = 0;
+            buf.gpu_size = 0;
         }
     }
 

@@ -241,6 +241,14 @@ pub struct GpuDrv {
     // Sampler view bind: (slot, virgl_res_id) — binds texture resource to FS SAMP[slot]
     pub drv_bind_sampler_view: Option<extern "C" fn(u32, u32)>,
 
+    // Persistent VBO: upload once, draw many times
+    // drv_upload_vbo(data_ptr, data_len, stride) → gpu_res_id (0 on failure)
+    pub drv_upload_vbo: Option<extern "C" fn(*const u8, u32, u32) -> u32>,
+    // drv_draw_vbo(mode, first, count, gpu_res_id, stride, attribs, num_attribs)
+    pub drv_draw_vbo: Option<extern "C" fn(u32, u32, u32, u32, u32, *const DrvAttrib, u32)>,
+    // drv_destroy_vbo(gpu_res_id)
+    pub drv_destroy_vbo: Option<extern "C" fn(u32)>,
+
     // Shadow mapping (GL_OES_depth_texture / ES 2.0 FBO)
     pub drv_shadow_begin: Option<extern "C" fn(u32, u32) -> u32>,
     pub drv_shadow_end: Option<extern "C" fn()>,
@@ -354,6 +362,9 @@ fn init_inner(width: u32, height: u32) -> Option<()> {
             drv_resize:           resolve_opt(&handle, "drv_resize"),
             drv_upload_texture:   resolve_opt(&handle, "drv_upload_texture"),
             drv_bind_sampler_view: resolve_opt(&handle, "drv_bind_sampler_view"),
+            drv_upload_vbo:       resolve_opt(&handle, "drv_upload_vbo"),
+            drv_draw_vbo:         resolve_opt(&handle, "drv_draw_vbo"),
+            drv_destroy_vbo:      resolve_opt(&handle, "drv_destroy_vbo"),
             drv_shadow_begin:     resolve_opt(&handle, "drv_shadow_begin"),
             drv_shadow_end:       resolve_opt(&handle, "drv_shadow_end"),
             drv_shadow_bind:      resolve_opt(&handle, "drv_shadow_bind"),

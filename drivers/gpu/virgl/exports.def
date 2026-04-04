@@ -25,6 +25,9 @@ EXPORTS
     drv_resize
     drv_upload_texture
     drv_bind_sampler_view
+    drv_upload_vbo
+    drv_draw_vbo
+    drv_destroy_vbo
     drv_shadow_begin
     drv_shadow_end
     drv_shadow_bind
