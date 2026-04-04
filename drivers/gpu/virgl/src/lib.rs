@@ -843,10 +843,9 @@ fn flush_const_buf(s: &mut VirglState) {
 /// Create/update vertex elements object from attrib descriptors.
 fn setup_vertex_elements(s: &mut VirglState, attribs: &[DrvAttrib]) {
     let n = attribs.len() as u32;
-    if s.ve_handle != 0 && s.ve_num_attribs == n {
-        // Already created with same count — reuse (attrib layout is stable per shader)
-        return;
-    }
+    // Always recreate — attrib layouts may differ between draw calls
+    // (e.g. fallback path uses components=4/offset=0,16,32 while
+    // persistent VBO uses actual components/offsets from the VBO).
     if s.ve_handle != 0 {
         s.cmd.push_cmd(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_VERTEX_ELEMENTS, 1);
         s.cmd.push(s.ve_handle);

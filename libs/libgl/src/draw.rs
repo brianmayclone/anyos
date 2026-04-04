@@ -168,9 +168,8 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
 
     // Try persistent VBO path: if all attribs reference the same VBO and
     // the VBO has matching raw data layout, use the GPU-resident buffer directly.
-    // TODO: temporarily disabled for debugging — fallback path works, persistent doesn't
     let attrib_count = program.attributes.len();
-    if false && attrib_count > 0 {
+    if attrib_count > 0 {
         let first_loc = program.attributes[0].location as usize;
         if first_loc < ctx.attribs.len() && ctx.attribs[first_loc].enabled {
             let vbo_id = ctx.attribs[first_loc].buffer_id;
