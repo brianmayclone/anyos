@@ -31,8 +31,15 @@ The **anyos_std** crate is the standard library for user-space Rust programs on 
 - [bundle -- App Bundle Discovery](#bundle----app-bundle-discovery)
 - [icons -- Icon & MIME Type Lookup](#icons----icon--mime-type-lookup)
 - [hashmap -- Hash Map](#hashmap----hash-map)
+- [collections -- Collections](#collections----collections)
 - [json -- JSON Parser & Serializer](#json----json-parser--serializer)
 - [xml -- XML Parser & Serializer](#xml----xml-parser--serializer)
+- [error -- Error Types](#error----error-types)
+- [path -- Path Helpers](#path----path-helpers)
+- [fmt -- Formatting Helpers](#fmt----formatting-helpers)
+- [i18n -- Internationalization](#i18n----internationalization)
+- [shell -- Shell Parsing Library](#shell----shell-parsing-library)
+- [debug -- Debugger API](#debug----debugger-api)
 - [ui::window -- Window Management](#uiwindow----window-management)
 - [ui::dialog -- Modal Dialogs](#uidialog----modal-dialogs)
 - [ui::filedialog -- File & Folder Dialogs](#uifiledialog----file--folder-dialogs)
@@ -97,7 +104,7 @@ The stdlib also provides:
 
 ## Re-exported Types
 
-These are re-exported from `alloc` for convenience:
+These are re-exported from `alloc` and internal modules for convenience:
 
 ```rust
 pub use alloc::boxed::Box;
@@ -105,6 +112,7 @@ pub use alloc::string::String;
 pub use alloc::vec::Vec;
 pub use alloc::{format, vec};
 pub use hashmap::HashMap;
+pub use collections::HashSet;
 ```
 
 ---
@@ -154,6 +162,51 @@ Output goes to file descriptor 1 (stdout) via the `fs::write()` syscall.
 | `authenticate` | `fn authenticate(username: &str, password: &str) -> bool` | Authenticate credentials. |
 | `getusername` | `fn getusername(uid: u16, buf: &mut [u8]) -> u32` | Resolve UID to username. |
 | `set_identity` | `fn set_identity(uid: u16) -> u32` | Switch to a different user identity. |
+| `fork` | `fn fork() -> u32` | Fork the current process. Returns child TID in parent, 0 in child, `u32::MAX` on error. |
+| `exec` | `fn exec(path: &str, args: &str) -> u32` | Replace current process with a new program. On success, never returns. On failure, returns `u32::MAX`. |
+| `launch_app` | `fn launch_app(path: &str, args: &str) -> u32` | Launch a `.app` bundle via the Sessionhost process (handles permission checks). Returns TID or `u32::MAX`. |
+| `shutdown` | `fn shutdown() -> !` | Power off the system. Requires `CAP_SYSTEM`. Does not return. |
+| `reboot` | `fn reboot() -> !` | Reboot the system. Requires `CAP_SYSTEM`. Does not return. |
+| `sleep_us` | `fn sleep_us(us: u32)` | Sleep for `us` microseconds. For durations >= 1 ms uses scheduler blocking; for sub-ms uses TSC-based busy-wait. |
+
+### Thread
+
+A handle to a spawned thread with RAII stack management. The default stack size is 64 KiB, allocated via `mmap`.
+
+```rust
+pub struct Thread {
+    tid: u32,
+    stack_ptr: *mut u8,
+    stack_size: usize,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `spawn` | `fn spawn(entry: fn(), name: &str) -> error::Result<Thread>` | Spawn a new thread with default 64 KiB stack. |
+| `spawn_with_stack` | `fn spawn_with_stack(entry: fn(), stack_size: usize, name: &str) -> error::Result<Thread>` | Spawn with custom stack size. |
+| `tid` | `fn tid(&self) -> u32` | Get the thread ID. |
+| `join` | `fn join(self) -> u32` | Wait for thread to finish, return exit code, free stack. Consumes handle. |
+
+When a `Thread` handle is dropped without calling `join()`, it automatically waits for the thread and frees the stack to avoid leaking memory.
+
+### Child
+
+A handle to a spawned child process.
+
+```rust
+pub struct Child {
+    tid: u32,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `spawn` | `fn spawn(path: &str, args: &str) -> error::Result<Child>` | Spawn a new child process. |
+| `tid` | `fn tid(&self) -> u32` | Get the child's thread ID. |
+| `wait` | `fn wait(self) -> u32` | Wait for child to exit. Returns exit code. Consumes handle. |
+| `try_wait` | `fn try_wait(&self) -> Option<u32>` | Non-blocking check. Returns `Some(exit_code)` if terminated, `None` if still running. |
+| `kill` | `fn kill(&self) -> error::Result<()>` | Kill the child process. |
 
 ### Constants
 
@@ -178,11 +231,77 @@ Output goes to file descriptor 1 (stdout) via the `fs::write()` syscall.
 | `sysinfo` | `fn sysinfo(cmd: u32, buf: &mut [u8]) -> u32` | Query system info. cmd: 0=memory, 1=threads, 2=cpus. |
 | `dmesg` | `fn dmesg(buf: &mut [u8]) -> u32` | Read kernel log buffer. Returns bytes written. |
 | `boot_ready` | `fn boot_ready()` | Signal that boot is complete (compositor startup). |
-| `capture_screen` | `fn capture_screen(buf: &mut [u32], info: &mut [u32; 2]) -> bool` | Capture framebuffer. info = [width, height]. |
+| `capture_screen` | `fn capture_screen(buf: &mut [u32], info: &mut [u32; 3]) -> bool` | Capture framebuffer. info = [width, height, pitch_bytes]. |
 | `set_critical` | `fn set_critical()` | Mark current thread as critical (won't be killed by OOM). |
-| `random` | `fn random(buf: &mut [u8]) -> u32` | Fill buffer with random bytes. Returns bytes written. |
-| `devlist` | `fn devlist(buf: &mut [u8]) -> u32` | List detected devices. Returns bytes written. |
-| `pipe_list` | `fn pipe_list(buf: &mut [u8]) -> u32` | List active pipes. Returns bytes written. |
+| `random` | `fn random(buf: &mut [u8]) -> u32` | Fill buffer with random bytes (max 256). Returns bytes written. |
+| `set_serial_verbose` | `fn set_serial_verbose(enable: bool) -> u32` | Enable/disable verbose serial output (driver messages). |
+| `devlist` | `fn devlist(buf: &mut [u8]) -> u32` | List detected devices (64-byte entries). Returns device count. |
+| `get_crash_info` | `fn get_crash_info(tid: u32, buf: &mut [u8]) -> u32` | Retrieve crash report for a terminated thread. Returns bytes written or 0 if none. |
+| `pipe_list` | `fn pipe_list(buf: &mut [u8]) -> u32` | List active pipes (80-byte entries). Returns pipe count. |
+| `set_time` | `fn set_time(buf: &[u8; 8]) -> u32` | Set system date/time via RTC. buf: [year_lo, year_hi, month, day, hour, min, sec, 0]. Returns 0 on success. |
+| `uptime_ms` | `fn uptime_ms() -> u32` | Uptime in milliseconds (TSC-based, sub-ms precision). Wraps at ~49 days. |
+| `get_hostname` | `fn get_hostname(buf: &mut [u8]) -> u32` | Get system hostname. Returns bytes written or `u32::MAX`. |
+| `set_hostname` | `fn set_hostname(name: &str) -> u32` | Set system hostname (max 63 bytes). Returns 0 on success. |
+
+### Disk / Partition Management
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `disk_list` | `fn disk_list(buf: &mut [u8]) -> u32` | List all block devices (32-byte entries). Returns device count. |
+| `disk_partitions` | `fn disk_partitions(disk_id: u32, buf: &mut [u8]) -> u32` | List partitions for a disk (32-byte entries). Returns partition count. |
+| `disk_read` | `fn disk_read(device_id: u32, lba: u64, count: u32, buf: &mut [u8]) -> u32` | Read raw sectors. Returns 0 on success. |
+| `disk_write` | `fn disk_write(device_id: u32, lba: u64, count: u32, buf: &[u8]) -> u32` | Write raw sectors. Returns 0 on success. |
+| `partition_create` | `fn partition_create(disk_id: u32, entry: &[u8; 16]) -> u32` | Create/update an MBR partition entry. Returns 0 on success. |
+| `partition_delete` | `fn partition_delete(disk_id: u32, index: u32) -> u32` | Delete an MBR partition entry. Returns 0 on success. |
+| `partition_rescan` | `fn partition_rescan(disk_id: u32) -> u32` | Re-scan partition table. Returns partition count found. |
+| `disk_eject` | `fn disk_eject(disk_id: u32) -> u32` | Safely eject a removable disk. Returns 0 on success. |
+
+### Console API (nogui mode)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `con_write` | `fn con_write(s: &str) -> u32` | Write to kernel framebuffer text console. Returns bytes written. |
+| `con_read_line` | `fn con_read_line(buf: &mut [u8]) -> usize` | Read a line with echo. Blocks until Enter. |
+| `con_read_password` | `fn con_read_password(buf: &mut [u8]) -> usize` | Read a password (shows `*`). Blocks until Enter. |
+| `con_poll_key` | `fn con_poll_key() -> u32` | Non-blocking keyboard poll. Returns codepoint or 0 if none. |
+| `con_get_size` | `fn con_get_size() -> (u32, u32)` | Get console size as (columns, rows). |
+| `con_resize` | `fn con_resize(cols: u32, rows: u32) -> (u32, u32)` | Resize console. Returns new (cols, rows). |
+| `con_set_mode` | `fn con_set_mode(flags: u32) -> u32` | Set console mode flags. Returns previous flags. |
+
+Console mode flags: `CON_MODE_HIDE_CURSOR` (0x01), `CON_MODE_NO_AUTOSCROLL` (0x02).
+
+Key code prefixes: `KEY_ARROW_PREFIX` (0x10_0000), `KEY_NAV_PREFIX` (0x20_0000), `KEY_FN_PREFIX` (0x30_0000), `KEY_SHIFT_BIT` (0x1400_0000).
+
+### Thermal Sensors
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `thermal_read` | `fn thermal_read(max: u32) -> Vec<ThermalEntry>` | Read all thermal sensors. Returns up to `max` entries. |
+| `thermal_cpu` | `fn thermal_cpu() -> Option<i32>` | Read primary CPU temperature in 0.1 C units. |
+
+```rust
+pub struct ThermalEntry {
+    pub src_type: u8,   // 0=IntelCpu, 1=AmdCpu, 2=Lm75, 3=Smbus
+    pub src_id: u8,     // core index or SMBus address
+    pub temp_x10: i32,  // temperature in 0.1 C units
+}
+```
+
+### ACPI Power Management
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `acpi_sleep` | `fn acpi_sleep(state: u32) -> Result<(), ()>` | Request ACPI sleep state (0=S0, 3=S3, 4=S4, 5=S5 power off). |
+| `acpi_perf_get` | `fn acpi_perf_get() -> Option<u8>` | Get current CPU P-state frequency ratio byte. |
+| `acpi_perf_set` | `fn acpi_perf_set(ratio: u8) -> Result<(), ()>` | Set CPU P-state frequency ratio. |
+
+### I2C / SMBus
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `i2c_read_byte` | `fn i2c_read_byte(addr: u8, reg: u8) -> Option<u8>` | Read a byte from I2C device. |
+| `i2c_write_byte` | `fn i2c_write_byte(addr: u8, reg: u8, value: u8) -> Result<(), ()>` | Write a byte to I2C device. |
+| `i2c_detect` | `fn i2c_detect(addr: u8) -> bool` | Probe whether an I2C device is present. |
 
 ---
 
@@ -236,9 +355,9 @@ Combine with `|`: `fs::open("file.txt", fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
 | `write` | `fn write(fd: u32, buf: &[u8]) -> u32` | Write to FD. Returns bytes written. |
 | `lseek` | `fn lseek(fd: u32, offset: i32, whence: u32) -> u32` | Seek within file. Returns new position. |
 | `readdir` | `fn readdir(path: &str, buf: &mut [u8]) -> u32` | List directory. Returns entry count or `u32::MAX`. |
-| `stat` | `fn stat(path: &str, buf: &mut [u32; 6]) -> u32` | File status. Returns 0 on success. |
-| `lstat` | `fn lstat(path: &str, buf: &mut [u32; 6]) -> u32` | File status (no symlink follow). |
-| `fstat` | `fn fstat(fd: u32, buf: &mut [u32; 3]) -> u32` | FD status. Writes `[type, size, position]`. |
+| `stat` | `fn stat(path: &str, buf: &mut [u32; 7]) -> u32` | File status (follows symlinks). Writes `[type, size, flags, uid, gid, mode, mtime]`. Returns 0 on success. |
+| `lstat` | `fn lstat(path: &str, buf: &mut [u32; 7]) -> u32` | File status (no symlink follow). Same layout as `stat`. |
+| `fstat` | `fn fstat(fd: u32, buf: &mut [u32; 4]) -> u32` | FD status. Writes `[type, size, position, mtime]`. Returns 0 on success. |
 | `mkdir` | `fn mkdir(path: &str) -> u32` | Create directory. 0 on success. |
 | `unlink` | `fn unlink(path: &str) -> u32` | Delete file. 0 on success. |
 | `truncate` | `fn truncate(path: &str) -> u32` | Truncate file to zero. 0 on success. |
@@ -250,8 +369,82 @@ Combine with `|`: `fs::open("file.txt", fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
 | `mount` | `fn mount(mount_path: &str, device: &str, fs_type: u32) -> u32` | Mount filesystem. 0 on success. |
 | `umount` | `fn umount(mount_path: &str) -> u32` | Unmount filesystem. 0 on success. |
 | `list_mounts` | `fn list_mounts(buf: &mut [u8]) -> u32` | List mounted filesystems. |
+| `rename` | `fn rename(old_path: &str, new_path: &str) -> u32` | Rename (move) a file or directory. 0 on success. |
+| `sync` | `fn sync()` | Flush all filesystem metadata and storage write caches to disk. |
+| `fsync` | `fn fsync(fd: i32) -> bool` | Flush deferred metadata for a specific open file to disk (like POSIX fsync). |
 | `chmod` | `fn chmod(path: &str, mode: u16) -> u32` | Change file permissions. 0 on success. |
 | `chown` | `fn chown(path: &str, uid: u16, gid: u16) -> u32` | Change file owner/group. 0 on success. |
+| `read_nonblock` | `fn read_nonblock(fd: u32, buf: &mut [u8]) -> i32` | Non-blocking read from FD. Returns bytes read, -11 (EAGAIN) if pipe empty, -1 on error. Requires `set_fd_nonblock` first. |
+| `set_fd_nonblock` | `fn set_fd_nonblock(fd: u32, nonblock: bool)` | Set or clear O_NONBLOCK on a file descriptor. |
+| `statfs` | `fn statfs(path: &str) -> Option<StatFs>` | Get filesystem statistics for a mount point. |
+
+### High-Level File I/O
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `read_to_string` | `fn read_to_string(path: &str) -> error::Result<String>` | Read an entire file into a `String`. |
+| `read_to_vec` | `fn read_to_vec(path: &str) -> error::Result<Vec<u8>>` | Read an entire file into a `Vec<u8>`. Pre-allocates based on file size. |
+| `write_bytes` | `fn write_bytes(path: &str, data: &[u8]) -> error::Result<()>` | Write bytes to a file (creates or truncates). |
+| `read_dir` | `fn read_dir(path: &str) -> error::Result<ReadDir>` | Read directory entries and return an iterator. |
+
+### File Struct
+
+An open file handle with RAII (auto-close on drop). Implements `Read` and `Write` traits.
+
+```rust
+pub struct File { fd: u32 }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `open` | `fn open(path: &str) -> error::Result<File>` | Open an existing file for reading. |
+| `create` | `fn create(path: &str) -> error::Result<File>` | Create a new file (or truncate existing) for writing. |
+| `open_with` | `fn open_with(path: &str, flags: u32) -> error::Result<File>` | Open a file with explicit flags. |
+| `fd` | `fn fd(&self) -> u32` | Get the raw file descriptor. |
+| `metadata` | `fn metadata(&self) -> error::Result<[u32; 4]>` | Get file metadata via fstat. Returns `[type, size, position, mtime]`. |
+
+### Read / Write Traits
+
+```rust
+pub trait Read {
+    fn read(&mut self, buf: &mut [u8]) -> error::Result<usize>;
+    fn read_to_end(&mut self, out: &mut Vec<u8>) -> error::Result<usize>;
+    fn read_to_string(&mut self, out: &mut String) -> error::Result<usize>;
+}
+
+pub trait Write {
+    fn write(&mut self, buf: &[u8]) -> error::Result<usize>;
+    fn write_all(&mut self, buf: &[u8]) -> error::Result<()>;
+    fn flush(&mut self) -> error::Result<()>;
+}
+```
+
+### DirEntry / ReadDir
+
+```rust
+pub struct DirEntry {
+    pub name: String,
+    pub file_type: u8,  // 0=file, 1=directory, 2=symlink
+    pub size: u32,
+}
+
+impl DirEntry {
+    pub fn is_dir(&self) -> bool;
+    pub fn is_file(&self) -> bool;
+}
+```
+
+`ReadDir` implements `Iterator<Item = DirEntry>`.
+
+### StatFs
+
+```rust
+pub struct StatFs {
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub free_bytes: u64,
+}
+```
 
 ### Directory Entry Format
 
@@ -259,7 +452,7 @@ Combine with `|`: `fs::open("file.txt", fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
 
 | Offset | Size | Field |
 |--------|------|-------|
-| 0 | 1 byte | Type (1=file, 2=directory) |
+| 0 | 1 byte | Type (0=file, 1=directory, 2=symlink) |
 | 1 | 1 byte | Name length |
 | 2 | 2 bytes | Padding |
 | 4 | 4 bytes | File size |
@@ -293,6 +486,10 @@ Combine with `|`: `fs::open("file.txt", fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
 | `enable_nic` | `fn enable_nic() -> u32` | Enable the network interface. |
 | `is_nic_enabled` | `fn is_nic_enabled() -> bool` | Check if NIC is enabled. |
 | `is_nic_available` | `fn is_nic_available() -> bool` | Check if NIC hardware is present. |
+| `reload_hosts` | `fn reload_hosts() -> u32` | Reload the hosts file from disk. Returns 0 on success. |
+| `nic_driver_name` | `fn nic_driver_name(buf: &mut [u8; 64]) -> u32` | Get NIC driver name. Returns bytes written or 0 if no NIC. |
+| `get_interfaces` | `fn get_interfaces(buf: &mut [u8; 512]) -> u32` | Get interface configurations (64-byte entries). Returns interface count. |
+| `set_interfaces` | `fn set_interfaces(buf: &[u8]) -> u32` | Save and apply interface configurations. Returns 0 on success. |
 
 ### ICMP, DNS, ARP
 
@@ -309,8 +506,13 @@ Combine with `|`: `fs::open("file.txt", fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
 | `tcp_connect` | `fn tcp_connect(ip: &[u8; 4], port: u16, timeout_ms: u32) -> u32` | Connect to TCP server. Returns socket_id or `u32::MAX`. |
 | `tcp_send` | `fn tcp_send(socket_id: u32, data: &[u8]) -> u32` | Send data. Returns bytes sent or `u32::MAX`. |
 | `tcp_recv` | `fn tcp_recv(socket_id: u32, buf: &mut [u8]) -> u32` | Receive data. 0=EOF, `u32::MAX`=error. |
+| `tcp_recv_available` | `fn tcp_recv_available(socket_id: u32) -> u32` | Bytes available to read without blocking. >0=bytes, 0=no data, `u32::MAX-1`=EOF, `u32::MAX`=error. |
 | `tcp_close` | `fn tcp_close(socket_id: u32) -> u32` | Close connection. |
 | `tcp_status` | `fn tcp_status(socket_id: u32) -> u32` | Connection state: 0=Closed, 2=Established, etc. |
+| `tcp_listen` | `fn tcp_listen(port: u16, backlog: u16) -> u32` | Listen on a TCP port. Returns listener socket_id or `u32::MAX`. |
+| `tcp_accept` | `fn tcp_accept(listener_id: u32) -> (u32, [u8; 4], u16)` | Accept a connection (blocking, 30s timeout). Returns (socket_id, remote_ip, remote_port). |
+| `tcp_accept_nowait` | `fn tcp_accept_nowait(listener_id: u32) -> (u32, [u8; 4], u16)` | Non-blocking accept. Returns `(u32::MAX, [0;4], 0)` if none pending. |
+| `tcp_list` | `fn tcp_list() -> Vec<TcpConnInfo>` | List all active TCP connections/listeners. |
 
 ### UDP
 
@@ -320,7 +522,63 @@ Combine with `|`: `fs::open("file.txt", fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
 | `udp_unbind` | `fn udp_unbind(port: u16) -> u32` | Release a UDP port. |
 | `udp_sendto` | `fn udp_sendto(dst_ip: &[u8; 4], dst_port: u16, src_port: u16, data: &[u8], flags: u32) -> u32` | Send UDP datagram. |
 | `udp_recvfrom` | `fn udp_recvfrom(port: u16, buf: &mut [u8]) -> u32` | Receive UDP datagram. Returns bytes read. |
-| `udp_set_opt` | `fn udp_set_opt(port: u16, opt: u32, val: u32) -> u32` | Set UDP socket option. |
+| `udp_set_opt` | `fn udp_set_opt(port: u16, opt: u32, val: u32) -> u32` | Set UDP socket option (1=SO_BROADCAST, 2=SO_RCVTIMEO). |
+| `udp_list` | `fn udp_list() -> Vec<UdpBindInfo>` | List all bound UDP ports. |
+
+### Network Statistics
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `net_stats` | `fn net_stats() -> Option<NetStats>` | Get network protocol statistics. |
+
+```rust
+pub struct NetStats {
+    pub rx_packets: u64, pub tx_packets: u64,
+    pub rx_bytes: u64, pub tx_bytes: u64,
+    pub rx_errors: u64, pub tx_errors: u64,
+    pub tcp_active_opens: u64, pub tcp_passive_opens: u64,
+    pub tcp_segments_sent: u64, pub tcp_segments_recv: u64,
+    pub tcp_retransmits: u64, pub tcp_resets_sent: u64,
+    pub tcp_curr_established: u32, pub tcp_conn_errors: u32,
+}
+
+pub struct TcpConnInfo {
+    pub local_ip: [u8; 4], pub local_port: u16,
+    pub remote_ip: [u8; 4], pub remote_port: u16,
+    pub state: u8, pub owner_tid: u8, pub recv_buf_len: u16,
+}
+
+pub struct UdpBindInfo {
+    pub port: u16, pub owner_tid: u16, pub recv_queue_len: u16,
+}
+```
+
+### WiFi
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `wifi_available` | `fn wifi_available() -> bool` | Check whether a WiFi driver is present. |
+| `wifi_state` | `fn wifi_state() -> WifiState` | Get current WiFi state. |
+| `wifi_scan` | `fn wifi_scan()` | Start a new WiFi scan. Results via `wifi_scan_results`. |
+| `wifi_scan_results` | `fn wifi_scan_results(max: usize) -> Vec<BssInfo>` | Read scanned access points. |
+| `wifi_connect` | `fn wifi_connect(ssid: &str, password: &str) -> u32` | Connect to WPA2 network. Asynchronous -- poll `wifi_state`. Returns 0 on success. |
+| `wifi_disconnect` | `fn wifi_disconnect()` | Disconnect from WiFi. |
+| `wifi_status` | `fn wifi_status() -> WifiStatus` | Get current connection status. |
+
+```rust
+pub enum WifiState { Disconnected, Scanning, Associating, Authenticating, Connected }
+pub enum WifiSecurity { Open, Wpa2Personal }
+
+pub struct BssInfo {
+    pub bssid: [u8; 6], pub ssid: [u8; 32], pub ssid_len: usize,
+    pub channel: u8, pub rssi: i8, pub security: WifiSecurity,
+}
+
+pub struct WifiStatus {
+    pub state: WifiState, pub connected: bool, pub channel: u8,
+    pub bssid: [u8; 6], pub ssid: [u8; 32], pub ssid_len: usize,
+}
+```
 
 ---
 
@@ -352,8 +610,7 @@ anyos_std::log_debug!("packet: {} bytes, seq={}", len, seq);
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `log::log_msg` | `(level: &str, args: Arguments)` | Core logging function (used by macros) |
-| `log::reset` | `()` | Reset pipe cache (reconnect after logd restart) |
+| `log::log_msg` | `fn log_msg(level: &str, args: Arguments)` | Core logging function (used by macros) |
 
 ### Constants
 
@@ -383,6 +640,7 @@ The **source** is automatically derived from the program's argv[0] (filename aft
 | `pipe_read` | `fn pipe_read(pipe_id: u32, buf: &mut [u8]) -> u32` | Read from pipe. 0=empty, `u32::MAX`=not found. |
 | `pipe_write` | `fn pipe_write(pipe_id: u32, data: &[u8]) -> u32` | Write to pipe. Returns bytes written. |
 | `pipe_close` | `fn pipe_close(pipe_id: u32) -> u32` | Close and destroy pipe. |
+| `pipe_bytes_available_fd` | `fn pipe_bytes_available_fd(fd: u32) -> u32` | Non-blocking check of anonymous pipe FD. >0=bytes ready, 0=empty, `u32::MAX-1`=EOF, `u32::MAX`=not a pipe. |
 
 ### System Event Bus
 
@@ -403,6 +661,13 @@ The **source** is automatically derived from the program's argv[0] (filename aft
 | `evt_chan_poll` | `fn evt_chan_poll(channel_id: u32, sub_id: u32, buf: &mut [u32; 5]) -> bool` | Poll next event. |
 | `evt_chan_unsubscribe` | `fn evt_chan_unsubscribe(channel_id: u32, sub_id: u32)` | Unsubscribe. |
 | `evt_chan_destroy` | `fn evt_chan_destroy(channel_id: u32)` | Destroy channel. |
+| `evt_chan_wait` | `fn evt_chan_wait(channel_id: u32, sub_id: u32, timeout_ms: u32) -> u32` | Block until an event is available or timeout. Returns 1 if events ready, 0 on timeout. `u32::MAX` = wait indefinitely. |
+
+### Session Host
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `register_sessionhost` | `fn register_sessionhost() -> u32` | Register calling process as the session host. Returns 0 on success. |
 
 ### Shared Memory (SHM)
 
@@ -423,6 +688,11 @@ These functions are only available to the compositor process (registered via `re
 | `map_framebuffer` | `fn map_framebuffer() -> Option<FbMapInfo>` | Map the physical framebuffer. |
 | `gpu_command` | `fn gpu_command(cmds: &[[u32; 9]]) -> u32` | Submit GPU commands (VMware SVGA II). |
 | `input_poll` | `fn input_poll(buf: &mut [[u32; 5]]) -> u32` | Poll raw keyboard/mouse input. |
+| `grant_framebuffer` | `fn grant_framebuffer(target_tid: u32, out_info: &mut FbMapInfo) -> u32` | Grant a thread direct framebuffer access. Returns 0 on success. |
+| `revoke_framebuffer` | `fn revoke_framebuffer(target_tid: u32) -> u32` | Revoke a thread's framebuffer access. Returns 0 on success. |
+| `gpu_vram_size` | `fn gpu_vram_size() -> u32` | Query total GPU VRAM size in bytes. Returns 0 if no GPU. |
+| `vram_map` | `fn vram_map(target_tid: u32, vram_byte_offset: u32, num_bytes: u32) -> u32` | Map VRAM into target's address space. Returns user VA on success. |
+| `gpu_register_backbuffer` | `fn gpu_register_backbuffer(buf_ptr: u32, buf_size: u32) -> u32` | Register compositor back buffer for GPU DMA. Returns 0 on success. |
 | `cursor_takeover` | `fn cursor_takeover() -> (i32, i32)` | Take control of cursor, returns position. |
 
 ### FbMapInfo
@@ -861,6 +1131,32 @@ assert_eq!(map["version"], "1.0");
 
 ---
 
+## `collections` -- Collections
+
+The `collections` module provides standard collection types for `no_std` programs.
+
+### Re-exported Types
+
+| Type | Source | Description |
+|------|--------|-------------|
+| `HashMap<K, V>` | `collections::hash_map` | Hash map (FNV-1a, open addressing) |
+| `HashSet<T>` | `collections::hash_set` | Hash set built on HashMap |
+| `BTreeMap<K, V>` | `alloc::collections` | Sorted map (B-tree) |
+| `BTreeSet<T>` | `alloc::collections` | Sorted set (B-tree) |
+| `VecDeque<T>` | `alloc::collections` | Double-ended queue |
+| `BinaryHeap<T>` | `alloc::collections` | Priority queue (max-heap) |
+| `LinkedList<T>` | `alloc::collections` | Doubly-linked list |
+
+### Usage
+
+```rust
+use anyos_std::collections::{HashMap, HashSet, BTreeMap, VecDeque};
+```
+
+`HashMap` and `HashSet` are also re-exported at the crate root: `anyos_std::HashMap`, `anyos_std::HashSet`.
+
+---
+
 ## `json` -- JSON Parser & Serializer
 
 Full RFC 8259 JSON parser and serializer with pretty-printing support.
@@ -1060,6 +1356,281 @@ println!("{}", doc.to_xml_string_pretty());
 
 ---
 
+## `error` -- Error Types
+
+Provides an `Error` enum that maps kernel errno values to named variants, and a `Result<T>` type alias.
+
+### Error Enum
+
+```rust
+pub enum Error {
+    NotFound,           // ENOENT = 2
+    WouldBlock,         // EAGAIN = 11
+    PermissionDenied,   // EACCES = 13
+    AlreadyExists,      // EEXIST = 17
+    NotADirectory,      // ENOTDIR = 20
+    IsADirectory,       // EISDIR = 21
+    InvalidInput,       // EINVAL = 22
+    NoSpace,            // ENOSPC = 28
+    BrokenPipe,         // EPIPE = 32
+    TimedOut,           // ETIMEDOUT = 110
+    ConnectionRefused,  // ECONNREFUSED = 111
+    OutOfMemory,        // ENOMEM = 12
+    Other(u32),         // unmapped errno
+}
+
+pub type Result<T> = core::result::Result<T, Error>;
+```
+
+### Error Methods
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `from_errno` | `fn from_errno(errno: u32) -> Error` | Convert kernel errno to Error variant. |
+| `from_syscall` | `fn from_syscall(v: u32) -> Result<u32>` | Convert raw syscall return (negative = error). |
+| `from_raw` | `fn from_raw(v: u32) -> Result<u32>` | Like `from_syscall` but also treats `u32::MAX` as `NotFound`. |
+
+`Error` implements `Display` and can be used with `println!("{}", err)`.
+
+### DllError
+
+```rust
+pub enum DllError {
+    LoadFailed,
+    SymbolNotFound,
+}
+```
+
+Errors for dynamic library loading. Implements `Display`.
+
+---
+
+## `path` -- Path Helpers
+
+Zero-allocation path manipulation utilities. `basename`, `parent`, and `extension` return borrowed slices. Only `join` allocates.
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `basename` | `fn basename(path: &str) -> &str` | Extract last component (filename). Trailing slashes ignored. |
+| `parent` | `fn parent(path: &str) -> &str` | Extract parent directory. Returns `"."` if no separator, `"/"` for root. |
+| `extension` | `fn extension(path: &str) -> Option<&str>` | Extract file extension (without dot). Hidden files return `None`. |
+| `join` | `fn join(dir: &str, name: &str) -> String` | Join directory and filename with `/`. |
+
+### Example
+
+```rust
+use anyos_std::path;
+
+assert_eq!(path::basename("/usr/bin/ls"), "ls");
+assert_eq!(path::parent("/usr/bin/ls"), "/usr/bin");
+assert_eq!(path::extension("file.txt"), Some("txt"));
+assert_eq!(path::join("/usr/bin", "ls"), "/usr/bin/ls");
+```
+
+---
+
+## `fmt` -- Formatting Helpers
+
+Number and hex formatting utilities for `no_std` environments. Buffer-based functions write into caller-provided arrays and return `&str` slices with zero allocation.
+
+### Integer Formatting
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `fmt_u32` | `fn fmt_u32(buf: &mut [u8; 12], val: u32) -> &str` | Format u32 as decimal string. |
+| `fmt_i32` | `fn fmt_i32(buf: &mut [u8; 14], val: i32) -> &str` | Format i32 as decimal string. |
+| `fmt_u64` | `fn fmt_u64(buf: &mut [u8; 20], val: u64) -> &str` | Format u64 as decimal string. |
+| `fmt_i64` | `fn fmt_i64(buf: &mut [u8; 21], val: i64) -> &str` | Format i64 as decimal string. |
+| `fmt_f64` | `fn fmt_f64(val: f64) -> String` | Format f64 as decimal string (allocating). Handles NaN, infinity. |
+
+### Hex Formatting
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `hex64` | `fn hex64(val: u64) -> String` | Format u64 as `0x` + 16 hex digits. |
+| `hex32` | `fn hex32(val: u32) -> String` | Format u32 as `0x` + 8 hex digits. |
+| `hex_byte` | `fn hex_byte(val: u8) -> [u8; 2]` | Format u8 as 2 hex digits (no prefix). |
+| `hex_bytes` | `fn hex_bytes(data: &[u8]) -> String` | Format byte slice as space-separated hex. |
+
+### Composite Formatters
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `fmt_pct` | `fn fmt_pct(buf: &mut [u8; 12], pct_x10: u32) -> &str` | Format percentage from fixed-point x10 value (155 -> "15.5%"). |
+| `fmt_mem_pages` | `fn fmt_mem_pages(buf: &mut [u8; 16], pages: u32) -> &str` | Format page count as memory size ("X.Y M" or "X K"). |
+| `fmt_bytes` | `fn fmt_bytes(buf: &mut [u8; 20], bytes: u64) -> &str` | Format byte count as human-readable size ("X.Y MiB", "X KiB"). |
+
+---
+
+## `i18n` -- Internationalization
+
+Simple translation system based on JSON files stored in `/System/translations/{lang}.json`. English strings are used as keys -- if no translation is found, the original English text is returned.
+
+### Language Detection Order
+
+1. `LANG` environment variable (e.g. `"de"`)
+2. `/System/settings/language.conf` file contents
+3. Fallback: `"en"`
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `init` | `fn init()` | Detect language and load translation file. Call once at startup. |
+| `t` | `fn t(key: &str) -> &str` | Translate a string. Returns original key if no translation found. |
+| `lang` | `fn lang() -> &'static str` | Returns current language code (e.g. "en", "de"). Returns "en" if `init()` not called. |
+
+### Example
+
+```rust
+use anyos_std::i18n;
+
+i18n::init();
+let label = i18n::t("Save");   // "Speichern" if lang=de
+let lang  = i18n::lang();      // "de"
+```
+
+---
+
+## `shell` -- Shell Parsing Library
+
+Shared POSIX-style shell utilities used by both `terminal` (GUI) and `textmode_console` (nogui). Provides tokenization, variable expansion, redirect parsing, glob expansion, and pipeline execution.
+
+### Types
+
+```rust
+pub struct Redirect {
+    pub target: String,
+    pub append: bool,
+}
+
+pub struct InputRedirect {
+    pub source: String,
+}
+
+pub struct PipelineResult {
+    pub last_tid: u32,       // TID of last process in pipeline
+    pub display_pipe: u32,   // Pipe ID for combined stdout
+    pub extra_pipes: Vec<u32>, // Intermediate pipes (must be closed)
+}
+```
+
+### Tokenizer
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `tokenize` | `fn tokenize(input: &str) -> Vec<String>` | Tokenize shell command respecting POSIX quoting (single/double quotes, backslash). |
+| `join` | `fn join(tokens: &[String]) -> String` | Re-join tokens into shell-safe string (quotes tokens with spaces). |
+
+### Redirect Parsing
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `parse_redirects` | `fn parse_redirects(line: &str, cwd: &str) -> (String, Option<Redirect>)` | Strip output redirect (`>`, `>>`, `2>`, `2>>`, `2>&1`) from command line. |
+| `parse_input_redirect` | `fn parse_input_redirect(line: &str, cwd: &str) -> (String, Option<InputRedirect>)` | Strip input redirect (`< file`) from command line. |
+| `write_redirect` | `fn write_redirect(redirect: &mut Redirect, data: &str)` | Write data to redirect target file. First call truncates, subsequent calls append. |
+
+### PATH Resolution
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `resolve_from_path` | `fn resolve_from_path(cmd: &str) -> Option<String>` | Search PATH env var for command. Returns full path or None. |
+| `resolve_cmd_path` | `fn resolve_cmd_path(cmd: &str, cwd: &str) -> String` | Resolve command to full path (absolute, `./relative`, or PATH search). |
+
+### Variable & Tilde Expansion
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `expand_tilde` | `fn expand_tilde(token: &str) -> String` | Expand `~` or `~/` to HOME env var. |
+| `expand_vars` | `fn expand_vars(token: &str) -> String` | Expand `$VAR`, `${VAR}`, `$(cmd)`, backticks, `$$`, `$?`. |
+| `expand_args` | `fn expand_args(raw: &str, cwd: &str) -> Vec<String>` | Full expansion pipeline: tokenize + vars + tildes + globs. |
+
+### Command Substitution
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `capture_command_output` | `fn capture_command_output(cmd: &str) -> String` | Spawn command, capture stdout, return as String (trailing newlines stripped). |
+
+### Pipeline Execution
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `run_pipeline` | `fn run_pipeline(line: &str, cwd: &str, pipe_counter: &mut u32) -> Option<PipelineResult>` | Execute `cmd1 \| cmd2 \| cmdN` pipeline. Creates pipes, spawns all processes. |
+| `split_pipe_segments` | `fn split_pipe_segments(line: &str) -> Vec<&str>` | Split on unquoted `\|` characters (respects quoting). |
+| `has_pipe` | `fn has_pipe(line: &str) -> bool` | Check if line contains an unquoted pipe character. |
+
+---
+
+## `debug` -- Debugger API
+
+Userspace wrappers for the debug syscalls. All functions require `CAP_DEBUG` capability. Used by the anyTrace debugger.
+
+### Event Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `EVENT_BREAKPOINT` | `1` | Thread hit a software breakpoint (INT3) |
+| `EVENT_SINGLE_STEP` | `2` | Thread completed a single-step (#DB with TF) |
+| `EVENT_EXIT` | `3` | Thread exited while debug-attached |
+
+### Types
+
+```rust
+pub struct DebugRegs {
+    pub rax: u64, pub rbx: u64, pub rcx: u64, pub rdx: u64,
+    pub rsi: u64, pub rdi: u64, pub rbp: u64,
+    pub r8: u64, pub r9: u64, pub r10: u64, pub r11: u64,
+    pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
+    pub rsp: u64, pub rip: u64, pub rflags: u64, pub cr3: u64,
+}
+
+pub struct DebugEvent {
+    pub event_type: u32,  // EVENT_BREAKPOINT, EVENT_SINGLE_STEP, or EVENT_EXIT
+    pub addr: u64,        // RIP at breakpoint/step, exit code for exit
+}
+
+pub struct MemoryRegion {
+    pub start: u64,  // start address (inclusive)
+    pub end: u64,    // end address (exclusive)
+    pub flags: u64,  // page table flags (P, RW, US, NX, etc.)
+}
+
+pub struct ThreadInfoEx {
+    pub parent_tid: u32, pub state: u32, pub priority: u32,
+    pub cpu_ticks: u32, pub last_cpu: u32, pub user_pages: u32,
+    pub brk: u32, pub mmap_next: u32,
+    pub rip: u64, pub rsp: u64, pub cr3: u64,
+    pub io_read_bytes: u64, pub io_write_bytes: u64,
+    pub capabilities: u32, pub uid: u16, pub gid: u16,
+    pub debug_attached_by: u32,
+    pub name: [u8; 32],
+    pub arch_mode: u32,
+}
+```
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `attach` | `fn attach(tid: u32) -> bool` | Attach to a running thread as debugger. Target is suspended. |
+| `detach` | `fn detach(tid: u32) -> bool` | Detach from thread. All breakpoints removed, thread resumes. |
+| `suspend` | `fn suspend(tid: u32) -> bool` | Suspend a debug-attached thread. |
+| `resume` | `fn resume(tid: u32) -> bool` | Resume a suspended debug-attached thread. |
+| `get_regs` | `fn get_regs(tid: u32, regs: &mut DebugRegs) -> bool` | Read target thread's register state. |
+| `set_regs` | `fn set_regs(tid: u32, regs: &DebugRegs) -> bool` | Write register state. Kernel validates RIP/RSP and masks RFLAGS. |
+| `read_mem` | `fn read_mem(tid: u32, addr: u64, buf: &mut [u8]) -> usize` | Read memory from target (max 4096 bytes). Returns bytes read. |
+| `write_mem` | `fn write_mem(tid: u32, addr: u64, data: &[u8]) -> usize` | Write memory to target (max 256 bytes). Returns bytes written. |
+| `set_breakpoint` | `fn set_breakpoint(tid: u32, addr: u64) -> bool` | Set a software breakpoint (INT3) at address. |
+| `clear_breakpoint` | `fn clear_breakpoint(tid: u32, addr: u64) -> bool` | Clear a breakpoint, restoring original byte. |
+| `single_step` | `fn single_step(tid: u32) -> bool` | Execute one instruction and suspend. Sets RFLAGS.TF. |
+| `wait_event` | `fn wait_event(tid: u32, event: &mut DebugEvent) -> u32` | Poll for debug event (non-blocking). Returns event type or 0. |
+| `get_memory_map` | `fn get_memory_map(tid: u32, regions: &mut [MemoryRegion]) -> usize` | Get target's virtual memory map. Returns region count. |
+| `thread_info_ex` | `fn thread_info_ex(tid: u32, info: &mut ThreadInfoEx) -> bool` | Get extended thread information (128 bytes). |
+
+---
+
 ## `ui::window` -- Window Management
 
 ### Event Types
@@ -1087,6 +1658,7 @@ println!("{}", doc.to_xml_string_pretty());
 | `WIN_FLAG_NO_MINIMIZE` | `0x10` | Hide minimize button |
 | `WIN_FLAG_NO_MAXIMIZE` | `0x20` | Hide maximize button |
 | `WIN_FLAG_SHADOW` | `0x40` | Enable window shadow |
+| `WIN_FLAG_SCALE_CONTENT` | `0x80` | Scale window content (compositor-side scaling) |
 | `WIN_FLAG_NO_MOVE` | `0x100` | Prevent window dragging |
 
 ### Font Constants
@@ -1105,9 +1677,9 @@ println!("{}", doc.to_xml_string_pretty());
 | `MENU_FLAG_DISABLED` | `0x01` | Greyed out, not clickable |
 | `MENU_FLAG_SEPARATOR` | `0x02` | Separator line |
 | `MENU_FLAG_CHECKED` | `0x04` | Checkmark visible |
-| `APP_MENU_ABOUT` | `0xFFFE` | Standard "About" item ID |
-| `APP_MENU_HIDE` | `0xFFFD` | Standard "Hide" item ID |
-| `APP_MENU_QUIT` | `0xFFFF` | Standard "Quit" item ID |
+| `APP_MENU_ABOUT` | `0xFFF0` | Standard "About" item ID |
+| `APP_MENU_HIDE` | `0xFFF1` | Standard "Hide" item ID |
+| `APP_MENU_QUIT` | `0xFFF2` | Standard "Quit" item ID |
 
 ### Window Functions
 
@@ -1193,6 +1765,22 @@ pub struct MenuBuilder { /* ... */ }
 | `update_menu_item` | `fn update_menu_item(win: u32, item_id: u32, new_flags: u32)` | Update menu item flags. |
 | `enable_menu_item` | `fn enable_menu_item(win: u32, item_id: u32)` | Enable a menu item. |
 | `disable_menu_item` | `fn disable_menu_item(win: u32, item_id: u32)` | Disable a menu item. |
+
+### Clipboard
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `clipboard_set` | `fn clipboard_set(text: &str)` | Set clipboard contents (plain text). |
+| `clipboard_set_with_format` | `fn clipboard_set_with_format(data: &[u8], format: u32)` | Set clipboard contents with explicit format. |
+| `clipboard_get` | `fn clipboard_get() -> Option<String>` | Get clipboard contents as String. Returns None if empty. |
+
+Clipboard format constants: `CLIPBOARD_TEXT` (0), `CLIPBOARD_URI_LIST` (1).
+
+### Desktop Notifications
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `show_notification` | `fn show_notification(title: &str, message: &str, timeout_ms: u32)` | Show a desktop notification banner. `timeout_ms=0` means default (5 seconds). |
 
 ### Color Format
 

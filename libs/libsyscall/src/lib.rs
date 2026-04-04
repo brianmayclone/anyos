@@ -89,6 +89,12 @@ pub const SYS_RANDOM: u32 = 210;
 pub const SYS_GRANT_FRAMEBUFFER: u32 = 259;
 pub const SYS_REVOKE_FRAMEBUFFER: u32 = 261;
 
+// Monitor detection
+pub const SYS_MONITOR_COUNT: u32 = 327;
+pub const SYS_MONITOR_INFO: u32 = 328;
+pub const SYS_MONITOR_EDID: u32 = 329;
+pub const SYS_MONITOR_MODES: u32 = 330;
+
 // =========================================================================
 // Raw syscall wrappers — x86_64
 // =========================================================================
@@ -669,6 +675,30 @@ pub fn gpu_3d_resource_destroy(resource_id: u32) -> u32 {
 pub fn gpu_query_type(buf: &mut [u8]) -> u32 {
     if buf.is_empty() { return 0; }
     syscall2(SYS_GPU_QUERY_TYPE, buf.as_mut_ptr() as u64, buf.len() as u64) as u32
+}
+
+// ── Monitor detection ─────────────────────────────────────────────────
+
+/// Returns the number of detected monitors.
+pub fn monitor_count() -> u32 {
+    syscall0(SYS_MONITOR_COUNT) as u32
+}
+
+/// Get monitor info for monitor `id`. Writes packed MonitorInfoFlat to `buf`.
+/// `buf` must be at least 128 bytes. Returns `true` on success.
+pub fn monitor_info(id: u32, buf: &mut [u8]) -> bool {
+    syscall2(SYS_MONITOR_INFO, id as u64, buf.as_mut_ptr() as u64) == 0
+}
+
+/// Get raw EDID bytes for monitor `id`. Returns number of bytes written.
+pub fn monitor_edid(id: u32, buf: &mut [u8]) -> usize {
+    syscall3(SYS_MONITOR_EDID, id as u64, buf.as_mut_ptr() as u64, buf.len() as u64) as usize
+}
+
+/// Get supported modes for monitor `id`. Each mode is 16 bytes (4×u32).
+/// Returns number of modes written.
+pub fn monitor_modes(id: u32, buf: &mut [u8]) -> usize {
+    syscall3(SYS_MONITOR_MODES, id as u64, buf.as_mut_ptr() as u64, buf.len() as u64) as usize
 }
 
 // ── Serial print (for DLLs without anyos_std) ────────────────────────

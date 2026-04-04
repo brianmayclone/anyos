@@ -361,6 +361,12 @@ pub const SYS_I2C_READ: u32     = 324;
 pub const SYS_I2C_WRITE: u32    = 325;
 pub const SYS_I2C_DETECT: u32   = 326;
 
+// Monitor detection
+pub const SYS_MONITOR_COUNT: u32 = 327;
+pub const SYS_MONITOR_INFO: u32  = 328;
+pub const SYS_MONITOR_EDID: u32  = 329;
+pub const SYS_MONITOR_MODES: u32 = 330;
+
 // Debug / trace (anyTrace)
 pub const SYS_DEBUG_ATTACH: u32         = 300;
 pub const SYS_DEBUG_DETACH: u32         = 301;
@@ -724,6 +730,16 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         SYS_I2C_WRITE => handlers::sys_i2c_write(arg1, arg2, arg3),
         #[cfg(target_arch = "x86_64")]
         SYS_I2C_DETECT => handlers::sys_i2c_detect(arg1),
+
+        // Monitor detection
+        #[cfg(target_arch = "x86_64")]
+        SYS_MONITOR_COUNT => handlers::sys_monitor_count(),
+        #[cfg(target_arch = "x86_64")]
+        SYS_MONITOR_INFO => handlers::sys_monitor_info(arg1, arg2),
+        #[cfg(target_arch = "x86_64")]
+        SYS_MONITOR_EDID => handlers::sys_monitor_edid(arg1, arg2, arg3),
+        #[cfg(target_arch = "x86_64")]
+        SYS_MONITOR_MODES => handlers::sys_monitor_modes(arg1, arg2, arg3),
 
         // Debug / trace (anyTrace)
         SYS_DEBUG_ATTACH => handlers::sys_debug_attach(arg1),

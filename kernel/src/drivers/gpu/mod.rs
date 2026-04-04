@@ -207,6 +207,27 @@ pub trait GpuDriver: Send {
 
     /// Destroy a 3D resource. Returns true on success.
     fn destroy_3d_resource(&mut self, _resource_id: u32) -> bool { false }
+
+    // ── Monitor / EDID ──
+
+    /// Number of display outputs (scanouts) this GPU supports.
+    fn display_count(&self) -> u32 { 1 }
+
+    /// Read the 128-byte EDID base block for the given output index.
+    /// Returns `None` if EDID is not available for this output.
+    fn read_edid(&mut self, _output: u32) -> Option<[u8; 128]> { None }
+
+    /// Read the 128-byte EDID extension block (bytes 128-255) for the given output.
+    /// Returns `None` if no extension block is available.
+    fn read_edid_ext(&mut self, _output: u32) -> Option<[u8; 128]> { None }
+
+    /// Query display info for a given output: (width, height, enabled).
+    /// Returns `None` if the output index is out of range.
+    fn display_info(&self, _output: u32) -> Option<(u32, u32, bool)> { None }
+
+    /// Re-query display info from hardware (not cached).
+    /// Call this after boot has progressed to get up-to-date display dimensions.
+    fn refresh_display_info(&mut self) {}
 }
 
 // ──────────────────────────────────────────────

@@ -4,7 +4,7 @@ The **librender** DLL provides software 2D rendering primitives for drawing shap
 
 **DLL Address:** `0x04300000`
 **Version:** 1
-**Exports:** 18
+**Exports:** 19
 **Client crate:** `librender_client`
 
 ---
@@ -82,6 +82,22 @@ All shape functions take a pixel buffer (`*mut u32`), buffer dimensions (w, h), 
 | `fill_rounded_rect_aa(pixels, w, h, x, y, rw, rh, radius, color)` | Anti-aliased rounded rectangle |
 | `fill_circle(pixels, w, h, cx, cy, radius, color)` | Solid filled circle |
 | `fill_circle_aa(pixels, w, h, cx, cy, radius, color)` | Anti-aliased filled circle |
+| `fill_rounded_rect_aa_clipped(pixels, w, h, x, y, rw, rh, radius, color, clip_x, clip_y, clip_w, clip_h)` | Anti-aliased rounded rectangle with clip region |
+
+### `fill_rounded_rect_aa_clipped(pixels, w, h, x, y, rw, rh, radius, color, clip_x, clip_y, clip_w, clip_h)`
+
+Anti-aliased rounded rectangle restricted to a clip region. Only pixels within the clip rectangle are drawn.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pixels | `*mut u32` | Target pixel buffer (ARGB8888) |
+| w, h | `u32` | Buffer dimensions |
+| x, y | `i32` | Top-left of the rounded rectangle |
+| rw, rh | `u32` | Rectangle width and height |
+| radius | `i32` | Corner radius |
+| color | `u32` | Fill color (ARGB8888) |
+| clip_x, clip_y | `i32` | Clip rectangle top-left |
+| clip_w, clip_h | `i32` | Clip rectangle width and height |
 
 ### Outlines
 
@@ -116,7 +132,7 @@ let result = render::blend_color(0x80FF0000, 0xFF0000FF); // semi-transparent re
 
 ## Client Wrapper: `Surface`
 
-The `librender_client` crate provides a typed `Surface` struct that wraps a raw pixel buffer. All 17 shape functions have method wrappers on `Surface`.
+The `librender_client` crate provides a typed `Surface` struct that wraps a raw pixel buffer. 17 of the 18 shape functions have method wrappers on `Surface` (`fill_rounded_rect_aa_clipped` is DLL-only; access it via the raw export table offset).
 
 ### Construction
 

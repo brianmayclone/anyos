@@ -8,7 +8,7 @@ use super::helpers::{is_valid_user_ptr, read_user_str};
 /// sys_devlist - List devices. Each entry is 64 bytes:
 ///   [0..32]  path (null-terminated)
 ///   [32..56] driver name (null-terminated, 24 bytes)
-///   [56]     driver_type (0=Block,1=Char,2=Network,3=Display,4=Input,5=Audio,6=Output,7=Sensor,8=Bus,9=Unknown)
+///   [56]     driver_type (0=Block,1=Char,2=Network,3=Display,4=Input,5=Audio,6=Output,7=Sensor,8=Monitor,9=Bus,10=Unknown)
 ///   [57..64] padding (zeroed)
 pub fn sys_devlist(buf_ptr: u32, buf_size: u32) -> u32 {
     let devices = crate::drivers::hal::list_devices();
@@ -39,8 +39,9 @@ pub fn sys_devlist(buf_ptr: u32, buf_size: u32) -> u32 {
                 crate::drivers::hal::DriverType::Audio => 5,
                 crate::drivers::hal::DriverType::Output => 6,
                 crate::drivers::hal::DriverType::Sensor => 7,
-                crate::drivers::hal::DriverType::Bus => 8,
-                crate::drivers::hal::DriverType::Unknown => 9,
+                crate::drivers::hal::DriverType::Monitor => 8,
+                crate::drivers::hal::DriverType::Bus => 9,
+                crate::drivers::hal::DriverType::Unknown => 10,
             };
         }
     }
@@ -60,7 +61,7 @@ pub fn sys_devread(_handle: u32, _buf_ptr: u32, _len: u32) -> u32 { (-38i32) as 
 /// Unimplemented — returns -ENOSYS (38).
 pub fn sys_devwrite(_handle: u32, _buf_ptr: u32, _len: u32) -> u32 { (-38i32) as u32 }
 /// sys_devioctl - Send ioctl to a device by driver type.
-/// handle = DriverType as u32 (0=Block,1=Char,2=Network,3=Display,4=Input,5=Audio,6=Output,7=Sensor)
+/// handle = DriverType as u32 (0=Block,1=Char,2=Network,3=Display,4=Input,5=Audio,6=Output,7=Sensor,8=Monitor)
 pub fn sys_devioctl(dtype: u32, cmd: u32, arg: u32) -> u32 {
     use crate::drivers::hal::{DriverType, device_ioctl_by_type};
     let driver_type = match dtype {
@@ -72,6 +73,7 @@ pub fn sys_devioctl(dtype: u32, cmd: u32, arg: u32) -> u32 {
         5 => DriverType::Audio,
         6 => DriverType::Output,
         7 => DriverType::Sensor,
+        8 => DriverType::Monitor,
         _ => return (-22i32) as u32, // EINVAL
     };
     match device_ioctl_by_type(driver_type, cmd, arg) {

@@ -8,6 +8,8 @@ The anyOS service system provides a unified mechanism for managing background da
 | **logd** | System daemon | `bin/logd/` | `/System/bin/logd` |
 | **crond** | System daemon | `bin/crond/` | `/System/bin/crond` |
 | **httpd** | System daemon | `bin/httpd/` | `/System/bin/httpd` |
+| **ftpd** | System daemon | `bin/ftpd/` | `/System/bin/ftpd` |
+| **vncd** | System daemon | `bin/vncd/` | `/System/bin/vncd` |
 | **amid** | System daemon | `system/amid/` | `/System/bin/amid` |
 | **Event Viewer** | GUI application | `system/eventviewer/` | `/Applications/Event Viewer.app` |
 
@@ -19,22 +21,60 @@ The following services are configured in `/System/etc/svc/` and started at boot 
 |---------|-------------|
 | **logd** | Centralized logging daemon (collects app + kernel messages) |
 | **sshd** | SSH server |
-| **echoserver** | Echo test server |
 | **crond** | Cron job scheduler (periodic task execution) |
 | **httpd** | HTTP web server |
+| **ftpd** | FTP server (PASV mode, config at `/System/etc/ftpd/`) |
+| **vncd** | VNC server (remote desktop) |
+
+**Note — crond double-start:** `crond` is launched as a background process in `init.conf` (`/System/bin/crond &`) **and** has a svc config file. When `svc start-all` runs later, it detects that `crond` is already running (via thread detection) and skips it. This is harmless but redundant. To avoid confusion, either remove crond from `init.conf` or remove its svc config file.
 
 ### System Daemons (non-svc)
 
-These daemons are started directly by the compositor or init, not managed by `svc`:
+These daemons are started directly by the compositor, sessionhost, or init — not managed by `svc`.
 
-| Daemon | Description |
-|--------|-------------|
-| **amid** | Anywhere Management Interface — system information database with SQL query interface |
-| **audiomon** | Audio monitoring service |
-| **inputmon** | Input device monitoring |
-| **netmon** | Network monitoring |
-| **login** | Login manager |
-| **permdialog** | Permission dialog daemon |
+**Compositor login services** — launched before the login screen via `compositor.conf [login]`:
+
+| Daemon | Binary | Description |
+|--------|--------|-------------|
+| **inputmon** | `/System/inputmon` | Input device monitoring (keyboard layout ready at login) |
+
+**Compositor autostart** — launched after successful login via `compositor.conf [autostart]`:
+
+| Daemon | Binary | Description |
+|--------|--------|-------------|
+| **sessionhost** | `/System/Sessionhost` | App launcher — handles .app spawn requests from Dock/Finder, launches crash dialog on app crashes |
+| **notifyd** | `/System/notifyd` | Notification daemon — renders iOS-style notification banners (top-right, always-on-top) |
+| **netmon** | `/System/netmon` | Network monitoring |
+| **audiomon** | `/System/audiomon` | Audio monitoring service |
+
+**Compositor-spawned** — launched directly by the compositor:
+
+| Daemon | Binary | Description |
+|--------|--------|-------------|
+| **login** | `/System/login` | Login manager (spawned by compositor at startup, destroyed after authentication) |
+| **dock** | `/System/compositor/dock` | Desktop dock (spawned after login succeeds) |
+
+**Init-launched** — started via `init.conf` before `svc start-all`:
+
+| Daemon | Binary | Description |
+|--------|--------|-------------|
+| **dhcp** | `/System/bin/dhcp` | DHCP client (run synchronously at boot) |
+| **crond** | `/System/bin/crond` | Cron job scheduler (run in background via `&`) |
+
+**Sessionhost-spawned** — launched on demand by sessionhost:
+
+| Daemon | Binary | Description |
+|--------|--------|-------------|
+| **crashdialog** | `/System/crashdialog` | Crash report dialog (spawned when an app crashes) |
+| **permdialog** | `/System/permdialog` | Permission dialog (spawned when an app needs elevated capabilities) |
+
+**Manually started** — not auto-started at boot:
+
+| Daemon | Binary | Description |
+|--------|--------|-------------|
+| **amid** | `/System/bin/amid` | Anywhere Management Interface — system information database with SQL query interface. No svc config file; start manually with `/System/bin/amid &`. |
+| **desktopd** | `/System/desktopd` | Desktop shell daemon — menu bar registration and focus tracking |
+| **wifimon** | `/System/wifimon` | WiFi tray icon — macOS-style WiFi status/scanning menu in the menu bar |
 
 ---
 
@@ -91,9 +131,12 @@ svc <command> [service] [args...]
 $ svc list
 SERVICE          STATUS   EXEC
 -------          ------   ----
-echoserver       running  /System/bin/echoserver
+crond            running  /System/bin/crond
+ftpd             stopped  /System/bin/ftpd
+httpd            running  /System/bin/httpd
 logd             running  /System/bin/logd
 sshd             stopped  /System/bin/sshd
+vncd             stopped  /System/bin/vncd
 
 $ svc start sshd
 sshd: started (TID 42)
@@ -126,12 +169,6 @@ exec=/System/bin/sshd
 args=
 ```
 
-**`/System/etc/svc/echoserver`**
-```
-exec=/System/bin/echoserver
-args=
-```
-
 **`/System/etc/svc/logd`**
 ```
 exec=/System/bin/logd
@@ -147,6 +184,18 @@ args=
 **`/System/etc/svc/httpd`**
 ```
 exec=/System/bin/httpd
+args=
+```
+
+**`/System/etc/svc/ftpd`**
+```
+exec=/System/bin/ftpd
+args=
+```
+
+**`/System/etc/svc/vncd`**
+```
+exec=/System/bin/vncd
 args=
 ```
 
@@ -188,6 +237,7 @@ Services are started at boot via `init.conf`:
 **`/System/etc/init/init.conf`**
 ```
 /System/bin/dhcp
+/System/bin/crond &
 /System/bin/svc start-all
 ```
 
@@ -377,7 +427,7 @@ The source name is automatically derived from the program's argv[0]:
 3. Extract filename after last `/`
 4. Truncate to 31 characters
 
-Example: `/System/bin/echoserver` becomes `echoserver`.
+Example: `/System/bin/httpd` becomes `httpd`.
 
 ### Lazy Pipe Initialization
 
@@ -396,8 +446,8 @@ To reset the connection after a logd restart, call `anyos_std::log::reset()`.
 
 The Event Viewer is a GUI application modeled after the Windows Event Viewer (Ereignisanzeige). It reads log files produced by `logd` and displays them in a sortable, filterable table with a detail pane.
 
-**Source:** `apps/eventviewer/src/main.rs`
-**Binary:** `/System/bin/eventviewer`
+**Source:** `system/eventviewer/src/main.rs`
+**Binary:** `/Applications/Event Viewer.app`
 **UI Framework:** libanyui (not uisys)
 
 ### UI Layout

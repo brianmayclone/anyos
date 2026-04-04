@@ -1,10 +1,10 @@
 # anyOS Image Library (libimage) API Reference
 
-The **libimage** DLL is a shared library for decoding/encoding images and video frames into ARGB8888 pixel buffers. It supports BMP, PNG, JPEG, GIF, and ICO image formats plus MJV video, and includes scaling, BMP encoding, and icon pack rendering APIs.
+The **libimage** DLL is a shared library for decoding/encoding images and video frames into ARGB8888 pixel buffers. It supports BMP, PNG, JPEG, GIF, ICO, and WebP image formats plus MJV video, and includes scaling, trimming, BMP encoding, and icon pack rendering APIs.
 
 **DLL Address:** `0x04100000`
 **Version:** 1
-**Exports:** 10
+**Exports:** 11
 **Client crate:** `libimage_client`
 
 ---
@@ -25,6 +25,7 @@ The **libimage** DLL is a shared library for decoding/encoding images and video 
   - [video_decode_frame](#video_decode_frame)
 - [Scale Functions](#scale-functions)
   - [scale_image](#scale_image)
+  - [trim_and_scale](#trim_and_scale)
 - [Encode Functions](#encode-functions)
   - [encode_bmp](#encode_bmp)
 - [Iconpack Functions](#iconpack-functions)
@@ -36,6 +37,7 @@ The **libimage** DLL is a shared library for decoding/encoding images and video 
   - [JPEG](#jpeg)
   - [GIF](#gif)
   - [ICO](#ico)
+  - [WebP](#webp)
   - [MJV (Video)](#mjv-video)
 - [Error Handling](#error-handling)
 - [Examples](#examples)
@@ -158,6 +160,7 @@ pub struct VideoInfo {
 | `FMT_JPEG` | 3 | `\xFF\xD8` |
 | `FMT_GIF` | 4 | `GIF87a` or `GIF89a` |
 | `FMT_ICO` | 5 | `\x00\x00\x01\x00` (reserved=0, type=1) |
+| `FMT_WEBP` | 6 | `RIFF....WEBP` |
 | `FMT_MJV` | 10 | `MJV1` |
 
 ### Scale Mode Constants
@@ -190,7 +193,7 @@ Error type returned by decode functions.
 pub fn probe(data: &[u8]) -> Option<ImageInfo>
 ```
 
-Detect the image format from magic bytes and parse the header for dimensions. Supports BMP, PNG, JPEG, GIF, and ICO formats.
+Detect the image format from magic bytes and parse the header for dimensions. Supports BMP, PNG, JPEG, GIF, ICO, and WebP formats.
 
 **Parameters:**
 - `data` -- Raw image file bytes (at least 8 bytes required)
@@ -238,6 +241,8 @@ Convert a format constant to a human-readable string.
 | `FMT_PNG` | `"PNG"` |
 | `FMT_JPEG` | `"JPEG"` |
 | `FMT_GIF` | `"GIF"` |
+| `FMT_ICO` | `"ICO"` |
+| `FMT_WEBP` | `"WebP"` |
 | `FMT_MJV` | `"MJV"` |
 | other | `"Unknown"` |
 
@@ -375,6 +380,29 @@ Scale an ARGB8888 image to a new size.
 - `MODE_SCALE` (0): Stretches source to fill destination exactly. Aspect ratio is not preserved.
 - `MODE_CONTAIN` (1): Fits source within destination while preserving aspect ratio. Unused areas are filled with transparent black (`0x00000000`). The scaled image is centered in the destination.
 - `MODE_COVER` (2): Fills destination while preserving aspect ratio. Excess source area is cropped (centered). No transparent pixels are produced.
+
+### trim_and_scale
+
+```rust
+pub fn trim_and_scale(
+    src: &[u32], src_w: u32, src_h: u32,
+    dst: &mut [u32], dst_w: u32, dst_h: u32,
+) -> bool
+```
+
+Trim transparent borders from an ARGB8888 image and scale the content to fill the destination.
+
+**Parameters:**
+- `src` -- Source pixel buffer (`src_w * src_h` elements)
+- `src_w`, `src_h` -- Source dimensions
+- `dst` -- Destination pixel buffer (`dst_w * dst_h` elements)
+- `dst_w`, `dst_h` -- Destination dimensions
+
+**Returns:**
+- `true` on success
+- `false` on error (e.g. wrong buffer size)
+
+**Algorithm:** Finds the bounding box of non-transparent pixels (alpha > 0), removes the transparent border, and scales the remaining content to exactly fill the destination buffer. Uses the same bilinear/area-average quality as `scale_image`. If the source image is fully transparent, the destination is cleared and `true` is returned.
 
 ---
 
@@ -556,6 +584,25 @@ Windows Icon format.
 
 **Size selection:** `probe()` / `decode()` default to preferring a 16x16 entry. Use `probe_ico_size()` / `decode_ico_size()` to select by a preferred size.
 
+### WebP
+
+Google WebP image format.
+
+| Feature | Supported |
+|---------|-----------|
+| RIFF/WEBP container | Yes |
+| Lossless (VP8L) | Yes |
+| Lossy (VP8) | No (probe returns dimensions, decode returns Unsupported) |
+| Alpha channel | Yes |
+| VP8X extensions (animated, ICC, EXIF) | No |
+| Animation | No |
+
+VP8L supports all transform types: SUBTRACT_GREEN, PREDICTOR_TRANSFORM (all 14 modes), COLOR_INDEXING_TRANSFORM (palette images), COLOR_TRANSFORM, LZ77 backward references, color cache, and multi-group Huffman meta-images.
+
+**Scratch needed:** 0 bytes (uses internal allocation)
+
+**Magic bytes:** `RIFF` at offset 0 and `WEBP` at offset 8.
+
 ### MJV (Video)
 
 Motion JPEG Video -- a simple container for a sequence of JPEG frames.
@@ -586,7 +633,7 @@ Each frame is an independent baseline JPEG that can be decoded in any order.
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `probe()` returns `None` | File is not BMP/PNG/JPEG/GIF/ICO or too short | Check file format, ensure >= 8 bytes |
+| `probe()` returns `None` | File is not BMP/PNG/JPEG/GIF/ICO/WebP or too short | Check file format, ensure >= 8 bytes |
 | `video_probe()` returns `None` | File is not MJV or too short | Check file format, ensure >= 32 bytes |
 | `InvalidData` | Corrupt header, truncated file | Verify file integrity |
 | `Unsupported` | Progressive JPEG, palette PNG, RLE BMP | Convert to supported format |

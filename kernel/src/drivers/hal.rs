@@ -27,6 +27,7 @@ pub enum DriverType {
     Audio,
     Output,  // Speakers, printers, LEDs
     Sensor,  // Temperature, accelerometer, etc.
+    Monitor, // Display monitors (EDID, resolution, color profile)
     Bus,
     Unknown,
 }
@@ -83,6 +84,21 @@ pub const IOCTL_SENSOR_GET_TYPE: u32 = 0x0401;
 pub const IOCTL_OUTPUT_STATUS: u32 = 0x0500;
 /// Output ioctl: flush output buffer.
 pub const IOCTL_OUTPUT_FLUSH: u32 = 0x0501;
+
+/// Monitor ioctl: get monitor ID.
+pub const IOCTL_MONITOR_GET_ID: u32 = 0x0600;
+/// Monitor ioctl: get native resolution as `width | (height << 16)`.
+pub const IOCTL_MONITOR_GET_NATIVE: u32 = 0x0601;
+/// Monitor ioctl: get physical size as `width_mm | (height_mm << 16)`.
+pub const IOCTL_MONITOR_GET_PHYS_SIZE: u32 = 0x0602;
+/// Monitor ioctl: returns 1 if valid EDID is available.
+pub const IOCTL_MONITOR_HAS_EDID: u32 = 0x0603;
+/// Monitor ioctl: returns number of supported display modes.
+pub const IOCTL_MONITOR_MODE_COUNT: u32 = 0x0604;
+/// Monitor ioctl: returns display gamma × 100 (e.g. 220 = 2.20).
+pub const IOCTL_MONITOR_GET_GAMMA: u32 = 0x0605;
+/// Monitor ioctl: returns color depth in bits per primary color.
+pub const IOCTL_MONITOR_GET_COLOR_DEPTH: u32 = 0x0606;
 
 /// Unified device driver interface for the HAL registry.
 pub trait Driver: Send {
@@ -271,6 +287,7 @@ pub fn make_device_path(dtype: DriverType, index: usize) -> String {
         DriverType::Input => "/dev/input",
         DriverType::Output => "/dev/output",
         DriverType::Sensor => "/dev/sensor",
+        DriverType::Monitor => "/dev/monitor",
         DriverType::Unknown => "/dev/misc",
     };
     let mut path = String::from(prefix);
@@ -295,7 +312,7 @@ pub fn probe_and_bind_all() {
 
     let pci_devices = crate::drivers::pci::devices();
     let mut bound = 0u32;
-    let mut type_counters = [0usize; 10]; // indexed by DriverType discriminant (10 variants)
+    let mut type_counters = [0usize; 11]; // indexed by DriverType discriminant (11 variants)
 
     crate::serial_verbose_println!("  HAL: Probing {} PCI device(s) for drivers...", pci_devices.len());
 

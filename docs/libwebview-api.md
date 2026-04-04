@@ -12,6 +12,7 @@ The **libwebview** library is a complete HTML/CSS/JS rendering engine that parse
 
 - [Getting Started](#getting-started)
 - [WebView API](#webview-api)
+- [Web Font Management](#web-font-management)
 - [Callbacks](#callbacks)
 - [Image Cache](#image-cache)
 - [Form Handling](#form-handling)
@@ -84,6 +85,10 @@ Returns the inner content View. All rendered controls are children of this view.
 
 Parse HTML content and render it. This runs the full pipeline: HTML parse, CSS resolve, layout, render controls, and execute `<script>` tags. Call `set_url()` before this method so JavaScript has the correct `window.location`.
 
+### `set_html_no_js(html: &str)`
+
+Parse HTML content and render it, but skip JavaScript execution. Use this when the host wants to control JS execution timing (e.g. load external resources first, then run JS). After calling this, use `script_entries()` to discover scripts and `execute_js()` to run them.
+
 ### `set_url(url: &str)`
 
 Set the current page URL. Must be called before `set_html()` so that the JS environment has the correct `window.location` / `document.location` values when scripts run.
@@ -95,6 +100,10 @@ Add an external CSS stylesheet (as raw text). Applied on the next `set_html()` o
 ### `clear_stylesheets()`
 
 Remove all previously added external stylesheets.
+
+### `navigate_clear()`
+
+Full cleanup for page navigation. Clears DOM, layout tree, images, renderer controls, stylesheets, web fonts, and resets the JS runtime so the new page starts with a clean slate. Call this before loading a new page to ensure no state leaks from the previous page.
 
 ### `add_image(src: &str, pixels: Vec<u32>, w: u32, h: u32)`
 
@@ -108,6 +117,14 @@ Return the page title from the current DOM (the text content of the first `<titl
 
 Return the total document height in pixels. Updated after each `set_html()` or `relayout()`. Fixed-position elements are excluded from this calculation.
 
+### `viewport_width() -> u32`
+
+Get the current viewport width in pixels.
+
+### `viewport_height() -> u32`
+
+Get the current viewport height in pixels.
+
 ### `resize(w: u32, h: u32)`
 
 Resize the viewport and re-layout. If a DOM is loaded, triggers a full relayout at the new width.
@@ -115,6 +132,10 @@ Resize the viewport and re-layout. If a DOM is loaded, triggers a full relayout 
 ### `relayout()`
 
 Re-run layout and rendering with the current DOM and stylesheets. Call this after adding images or stylesheets to update the display without re-parsing HTML.
+
+### `render_viewport_at(scroll_y: i32) -> bool`
+
+Render tiles for the given scroll position. Returns `true` if there are pending tiles not yet rasterized. Used for incremental tile creation during scrolling -- only creates canvases for rows not yet present, limited to 2 new tiles per call.
 
 ### `tick(delta_ms: u64) -> bool`
 
@@ -146,6 +167,65 @@ Access the JavaScript runtime. Used for evaluating additional scripts, reading p
 ### `js_console() -> &[String]`
 
 Get console output from JavaScript execution (lines logged via `console.log`, `console.warn`, `console.error`).
+
+### `script_entries() -> Vec<js::ScriptEntry>`
+
+Collect script entries from the current DOM in document order. Returns `ScriptEntry::Inline` for inline scripts and `ScriptEntry::External` for `<script src="...">` tags. The host should fetch external URLs and pass the resolved texts to `execute_js()`.
+
+```rust
+pub enum ScriptEntry {
+    Inline(String),
+    External(String),
+}
+```
+
+### `execute_js(scripts: &[String])`
+
+Execute JavaScript scripts and apply DOM mutations. `scripts` should contain the text of each script to execute, in document order (resolved from `script_entries()`). After execution, any DOM mutations recorded by JS are applied and the page is re-laid out.
+
+### `run_timers(delta_ms: u64) -> bool`
+
+Run JS timer callbacks (setTimeout, setInterval, requestAnimationFrame) for `delta_ms` milliseconds and apply any resulting DOM mutations. Returns `true` if any timer fired. Unlike `tick()`, this only runs JS timers without advancing CSS animations or tile management.
+
+### `take_pending_http_requests() -> Vec<js::PendingHttpRequest>`
+
+Take pending HTTP requests from JavaScript (fetch/XHR). Returns a list of requests that JS code has initiated but that require the host to perform the actual HTTP call. Each `PendingHttpRequest` contains `id`, `method`, `url`, `headers`, and optional `body`.
+
+### `has_timers() -> bool`
+
+Check if there are any active JS timers (setTimeout, setInterval, requestAnimationFrame). Returns `true` if at least one timer is pending.
+
+### `timer_count() -> usize`
+
+Return the number of currently active JS timers.
+
+---
+
+## Web Font Management
+
+### `last_stylesheet_imports() -> &[String]`
+
+Return `@import` URLs from the most recently added external stylesheet. The caller should fetch these URLs and add them as additional stylesheets via `add_stylesheet()`.
+
+### `last_stylesheet_font_faces() -> &[css::FontFaceRule]`
+
+Return `@font-face` rules from the most recently added external stylesheet. Each `FontFaceRule` contains `family` (font-family name), `src_url` (font file URL), `weight` (CSS font-weight, 400=normal, 700=bold), and `italic` (font-style).
+
+### `register_web_font(family: &str, font_id: u32)`
+
+Register a web font loaded from `@font-face`. `family` is the CSS font-family name (will be lowercased for matching). `font_id` is the ID returned by `libfont_client::load_data()`. If a font with the same family is already registered, it is replaced.
+
+### `web_font_id(family: &str) -> Option<u32>`
+
+Look up a registered web font ID by family name. Returns `None` if the family has not been registered.
+
+### `all_font_faces() -> Vec<&css::FontFaceRule>`
+
+Return all `@font-face` rules across all stylesheets (inline + external). Useful for discovering all fonts a page references.
+
+### `lookup_web_font(family: &str) -> Option<u32>` (free function)
+
+Global web font lookup function. `family` may be a single name or a comma-separated CSS font-family list like `"Georgia, 'Times New Roman', serif"`. Tries each name in order and returns the first registered match. Called internally by the renderer and layout engine.
 
 ---
 
@@ -208,6 +288,48 @@ Find the form action URL and method for a submit button click. Walks up the DOM 
 ### `collect_form_data(control_id: u32) -> Vec<(String, String)>`
 
 Collect all name=value pairs from the form containing the given submit button. Reads current values from live libanyui TextFields and Checkboxes. Only controls with a `name` attribute are included. Checkboxes and radio buttons are included only when checked.
+
+### `form_action_for_node(node_id: usize) -> Option<(String, String)>`
+
+Find the form action URL for a submit button identified by DOM node_id. Walks up the DOM from the node to find the parent `<form>` and reads its `action` and `method` attributes. Used for canvas-based submit hit regions.
+
+### `collect_form_data_for_node(node_id: usize) -> Vec<(String, String)>`
+
+Collect form data (name=value pairs) for the form containing the given DOM node_id. Used for canvas-based submit hit regions where control IDs are not available.
+
+### `canvas_submit_hit(control_id: u32) -> Option<usize>`
+
+Check if a canvas click hit a submit button. If the control_id matches a tile canvas, performs a hit-test using the mouse position translated to document coordinates. Returns the DOM node_id of the submit element, or `None`.
+
+### Hit Testing (Viewport Coordinates)
+
+These functions perform hit-testing using viewport coordinates (relative to the visible area) plus a scroll offset.
+
+### `hit_test_link_viewport(vx: i32, vy: i32, scroll_y: i32) -> Option<&str>`
+
+Find the link URL at viewport position `(vx, vy)` given a scroll offset. Returns the URL string if a link was hit, else `None`.
+
+### `hit_test_submit_viewport(vx: i32, vy: i32, scroll_y: i32) -> Option<usize>`
+
+Find the submit-button DOM node_id at viewport position `(vx, vy)` given a scroll offset.
+
+### `hit_test_form_control_viewport(vx: i32, vy: i32, scroll_y: i32) -> Option<u32>`
+
+Find the form control (TextInput / Textarea) at viewport position `(vx, vy)` given a scroll offset. Returns the control_id of the matching form control, or `None`.
+
+### Form Control Text Management
+
+### `focus_form_control_at_canvas(canvas_ctrl_id: u32) -> bool`
+
+Check if a canvas click hit a form control (TextInput/Textarea). If so, focus the control and return `true`.
+
+### `get_form_control_text(control_id: u32) -> String`
+
+Read the text content of a form control by its control_id.
+
+### `set_form_control_text(control_id: u32, text: &str)`
+
+Set the text content of a form control by its control_id.
 
 ---
 

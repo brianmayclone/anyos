@@ -1,6 +1,6 @@
 # anyOS Syscall Reference
 
-Complete reference for all 184 system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
+Complete reference for all 236 system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
 
 ## Calling Conventions
 
@@ -53,7 +53,7 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 9 | `sbrk` | increment (i32) | old_brk | Grow/shrink process heap; returns previous break address |
 | 10 | `fork` | — | child_tid (parent) / 0 (child) | Fork current process. Child gets copy of address space, returns 0. Parent returns child TID |
 | 11 | `exec` | path_ptr, args_ptr | never returns / 0xFFFFFFFF | Replace current process image with new program. On failure returns error |
-| 12 | `waitpid` | tid | exit_code | Block until process exits; returns its exit code |
+| 12 | `waitpid` | tid, child_tid_ptr, options | exit_code | Block until process exits; returns its exit code. tid=0xFFFFFFFF: wait for any child (writes actual child TID to child_tid_ptr if non-zero). options bit 0 = WNOHANG (return immediately if no child exited) |
 | 13 | `kill` | tid, sig | 0 or error | Send signal to thread. sig=0 or 9→SIGKILL (force-kill), 20→SIGTSTP (stop), 18→SIGCONT (continue), others→queued for delivery |
 | 29 | `try_waitpid` | tid | code, 0xFFFFFFFD, 0xFFFFFFFE, or 0xFFFFFFFF | Non-blocking: exit code if done, `STOPPED` (0xFFFFFFFD) if stopped by signal, `STILL_RUNNING` (0xFFFFFFFE) if alive, `NOT_FOUND` (0xFFFFFFFF) if invalid |
 | 247 | `getppid` | — | parent_tid | Get parent process/thread ID |
@@ -108,6 +108,7 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 97 | `readlink` | path_ptr, buf_ptr, buf_size | bytes_read | Read symlink target path |
 | 98 | `lstat` | path_ptr, buf_ptr | 0 or error | Like stat but does NOT follow final symlink |
 | 99 | `rename` | old_path_ptr, new_path_ptr | 0 or error | Rename/move file or directory |
+| 109 | `statfs` | path_ptr, path_len, buf_ptr | 0 or error | Get filesystem statistics. Output: 24 bytes [total_bytes:u64, used_bytes:u64, free_bytes:u64] LE |
 | 224 | `chmod` | path_ptr, mode (u16) | 0 or error | Change file permission mode (owner or root only) |
 | 225 | `chown` | path_ptr, uid, gid | 0 or error | Change file owner/group (root only) |
 
@@ -157,6 +158,12 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 | 154 | `udp_set_opt` | port, opt, val | 0 or error | Set socket option. opt: 1=SO_BROADCAST, 2=SO_RCVTIMEO (ms, 0=non-blocking) |
 | 155 | `udp_list` | buf_ptr, max_entries | entry_count | List all bound UDP ports. Each entry: 8 bytes [port:u16, owner_tid:u16, recv_queue_len:u16, pad:u16] |
 | 156 | `net_stats` | buf_ptr, buf_size | 0 or error | Get network protocol statistics. Output: 104 bytes [rx/tx packets, bytes, errors (each u64), TCP counters] |
+
+## Networking — WiFi
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 158 | `wifi` | cmd, buf_ptr, buf_len | varies | WiFi management. cmd: 0=is_available (returns 1/0), 1=get_state (0=disconnected, 1=scanning, 2=associating, 3=authenticating, 4=connected), 2=start_scan, 3=read_scan_results (each entry 48 bytes: [bssid:6, ssid:32, ssid_len:1, channel:1, rssi:1, security:1, pad:6]), 4=connect (buf: [ssid_len:1, ssid:32, pw_len:1, pw:64]), 5=disconnect, 6=get_connection_status (48-byte struct) |
 
 ## Pipes / Named IPC
 
@@ -267,6 +274,14 @@ These syscalls require prior `register_compositor()` call (first caller wins).
 | 148 | `cursor_takeover` | — | (x<<16)\|(y&0xFFFF) | Take cursor control from boot splash; returns splash cursor position |
 | 256 | `gpu_vram_size` | — | bytes | Get total GPU VRAM size in bytes (compositor only) |
 | 257 | `vram_map` | target_tid, vram_offset, num_bytes | 0x18000000 or 0 | Map VRAM into target process at 0x18000000 with Write-Through caching (compositor only) |
+| 259 | `grant_framebuffer` | target_tid, out_info_ptr | 0 or error | Map GPU framebuffer into target app's address space at 0x19000000 for fullscreen direct access. Writes [fb_va, width, height, pitch] to out_info_ptr (compositor only) |
+| 261 | `revoke_framebuffer` | target_tid | 0 or error | Unmap the framebuffer from a target app's address space (compositor only). Removes mapping created by `grant_framebuffer` |
+
+## Session Host
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 255 | `register_sessionhost` | — | 0 or error | Register as session host (first caller wins). Session host manages app launching and permission dialogs |
 
 ## Environment Variables
 
@@ -435,6 +450,14 @@ Terminal "bg" → send_signal(tid, SIGCONT=18)
 | 274 | `partition_create` | disk_id, entry_ptr, entry_size | 0 or error | Create a new partition entry |
 | 275 | `partition_delete` | disk_id, index | 0 or error | Delete a partition |
 | 276 | `partition_rescan` | disk_id | 0 or error | Rescan disk partitions |
+| 277 | `disk_eject` | disk_id | 0 or error | Safely eject a removable disk: flush all dirty data, unmount all partitions, remove block device |
+
+## Filesystem Sync
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 284 | `sync` | — | 0 | Flush all deferred filesystem metadata and dirty buffers to disk |
+| 285 | `fsync` | fd | 0 or error | Flush deferred metadata for a specific open file descriptor to disk |
 
 ## Hostname
 
@@ -460,8 +483,8 @@ Debugging syscalls for the anyTrace debugger. Allows attaching to processes, rea
 | 301 | `debug_detach` | tid | 0 or error | Detach debugger from target thread |
 | 302 | `debug_suspend` | tid | 0 or error | Suspend target thread execution |
 | 303 | `debug_resume` | tid | 0 or error | Resume suspended target thread |
-| 304 | `debug_get_regs` | tid, buf_ptr | 0 or error | Read target thread register state |
-| 305 | `debug_set_regs` | tid, buf_ptr | 0 or error | Write target thread register state |
+| 304 | `debug_get_regs` | tid, buf_ptr, size | 0 or error | Read target thread register state into buffer |
+| 305 | `debug_set_regs` | tid, buf_ptr, size | 0 or error | Write target thread register state from buffer |
 | 306 | `debug_read_mem` | tid, addr, buf_ptr, len | bytes_read | Read memory from target process address space |
 | 307 | `debug_write_mem` | tid, addr, buf_ptr, len | bytes_written | Write memory to target process address space |
 | 308 | `debug_set_breakpoint` | tid, addr | 0 or error | Set hardware breakpoint at address |
@@ -471,14 +494,111 @@ Debugging syscalls for the anyTrace debugger. Allows attaching to processes, rea
 | 312 | `debug_wait_event` | tid, buf_ptr, timeout_ms | event_type or 0 | Wait for debug event (breakpoint hit, single-step complete) |
 | 313 | `thread_info_ex` | tid, buf_ptr, buf_size | bytes_written | Get extended thread information (name, state, priority, CPU time) |
 
-## GPU 3D Acceleration (SVGA3D)
+## GPU 3D Acceleration (SVGA3D / virgl)
 
-Hardware-accelerated 3D graphics via VMware SVGA3D. Requires `gpu_has_accel`.
+Hardware-accelerated 3D graphics via VMware SVGA3D or virgl. Requires `gpu_has_accel`.
 
 | # | Name | Args | Return | Description |
 |---|------|------|--------|-------------|
 | 512 | `gpu_3d_submit` | cmd_buf_ptr, cmd_size | 0 or error | Submit SVGA3D command buffer to GPU |
-| 513 | `gpu_3d_query` | query_type, buf_ptr | result | Query 3D capability. query_type: 0=has_3d, 1=max_texture_size, 2=supported_formats |
-| 514 | `gpu_3d_sync` | fence_id | 0 or error | Wait for GPU to complete all commands up to fence |
-| 515 | `gpu_3d_surface_dma` | params_ptr | 0 or error | DMA transfer from system memory to GPU surface |
-| 516 | `gpu_3d_surface_dma_read` | params_ptr | 0 or error | DMA transfer from GPU surface to system memory |
+| 513 | `gpu_3d_query` | query_type | result | Query 3D GPU capability. query_type: 0=has_3d (returns 0/1), 1=hw_version (returns version number) |
+| 514 | `gpu_3d_sync` | — | 0 or error | Synchronize GPU: wait for all submitted 3D commands to complete |
+| 515 | `gpu_3d_surface_dma` | sid, buf_ptr, buf_len, width, height | 0 or error | DMA upload from system memory to GPU surface |
+| 516 | `gpu_3d_surface_dma_read` | sid, buf_ptr, buf_len, width, height | 0 or error | DMA transfer from GPU surface to system memory (readback) |
+| 517 | `gpu_query_type` | buf_ptr, buf_len | name_length | Get GPU driver type name string (e.g. "svga3d", "virgl", "none"). Writes null-terminated string to buffer |
+| 518 | `gpu_3d_resource_create` | target, format, bind, width, height | resource_id or error | Create a virgl 3D resource. Uses defaults: depth=1, array_size=1, last_level=0, nr_samples=0, flags=0 |
+| 519 | `gpu_3d_resource_destroy` | resource_id | 0 or error | Destroy a virgl 3D resource |
+
+## Text Console I/O
+
+Text-mode console syscalls for headless / nogui mode. These bypass the compositor and render directly to the framebuffer using a built-in font. Only functional on x86_64.
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 290 | `con_write` | buf_ptr, len | bytes_written or error | Write UTF-8 text string to the text console. Max 64 KB per call |
+| 291 | `con_read` | buf_ptr, buf_len | bytes_read or error | Read a line from keyboard with echo. Blocks until Enter. buf_len high bit (0x80000000): suppress echo (password mode). Max 4 KB |
+| 292 | `con_poll_key` | — | codepoint or 0 | Non-blocking keyboard poll. Returns Unicode codepoint of next key press, or 0 if none pending. Bit 29 set = Ctrl modifier. Special: 0x03=Ctrl+C, 0x04=Ctrl+D |
+| 293 | `con_get_size` | — | cols<<16 \| rows | Get console dimensions. High 16 bits = columns, low 16 bits = rows |
+| 294 | `con_set_mode` | flags | previous_flags | Set console mode flags. Bit 0 (0x01): hide cursor. Bit 1 (0x02): disable auto-scroll. Returns previous flags |
+| 295 | `con_resize` | cols<<16 \| rows | new_packed_size or 0 | Resize the text console. Recomputes cell width/height and repaints. Returns new packed size (same format as `con_get_size`), or 0 on error |
+
+## Platform / Thermal / ACPI / I2C
+
+Hardware platform syscalls. Only functional on x86_64.
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 320 | `thermal_read` | buf_ptr, max_count | entry_count | Read all thermal sensors. Each entry: 8 bytes [source_type:u8 (0=IntelCpu, 1=AmdCpu, 2=Lm75, 3=Smbus), source_id:u8, pad:u16, temp_c_x10:i32 LE (0.1 C units)] |
+| 321 | `thermal_cpu` | — | temp or 0xFFFFFFFF | Read CPU temperature in 0.1 C units. Returns `u32::MAX` if no CPU thermal sensor |
+| 322 | `acpi_sleep` | state | 0 or error | Request ACPI sleep state. 0=S0 (no-op), 3=S3 (suspend to RAM), 4=S4 (hibernate), 5=S5 (power off) |
+| 323 | `acpi_perf` | cmd, arg | result | CPU P-state frequency ratio. cmd: 0=get current ratio (returns ratio), 1=set ratio to arg (returns 0) |
+| 324 | `i2c_read` | addr, reg | byte_value or error | Read byte from I2C device at 7-bit address, register offset. Returns 0-255 or `u32::MAX` on error |
+| 325 | `i2c_write` | addr, reg, value | 0 or error | Write byte to I2C device at 7-bit address, register offset |
+| 326 | `i2c_detect` | addr | 1 or 0 | Probe I2C device presence at 7-bit address. Returns 1 if ACK, 0 if absent |
+
+## Monitor Detection
+
+Monitor EDID and display mode enumeration. Only functional on x86_64.
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 327 | `monitor_count` | — | count | Get number of detected monitors |
+| 328 | `monitor_info` | monitor_id, buf_ptr | 0 or error | Get packed monitor info (92 bytes). Fields: id, gpu_output, manufacturer, model_name, serial, dimensions_mm, gamma, native resolution, color depth, chromaticity |
+| 329 | `monitor_edid` | monitor_id, buf_ptr, buf_len | bytes_written or 0 | Copy raw EDID bytes to user buffer |
+| 330 | `monitor_modes` | monitor_id, buf_ptr, buf_len | mode_count | List supported display modes. Each mode: 16 bytes [width:u32, height:u32, refresh_hz_100:u32, flags:u32]. flags bit 0=preferred, bit 1=interlaced |
+
+## Hardware Virtualization (VT-x / AMD-V)
+
+Hardware-assisted virtualization syscalls for creating and managing virtual machines. Only functional on x86_64 with VT-x (Intel) or SVM (AMD-V) support.
+
+### VM Lifecycle
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 600 | `vm_create` | — | vm_id or 0 | Create a new virtual machine. Returns VM ID, or 0 on failure |
+| 601 | `vm_destroy` | vm_id | 0 or error | Destroy a virtual machine and free all resources |
+| 602 | `vm_set_memory` | vm_id, slot, desc_ptr | 0 or error | Map a memory region into guest physical address space. desc_ptr points to {guest_phys:u64, size:u64, host_vaddr:u64}. Pages are translated UVA-to-HPA and programmed into EPT/NPT |
+| 612 | `vm_set_cpuid` | vm_id, entries_ptr, count | 0 or error | Set CPUID emulation table. entries_ptr = array of CpuidEntry structs |
+| 613 | `vm_hw_info` | — | type | Query hardware virtualization type: 0=none, 1=VMX (Intel VT-x), 2=SVM (AMD-V) |
+| 614 | `vm_get_dirty_log` | vm_id, req_ptr | 0 or error | Get dirty-page bitmap for a memory slot. req_ptr points to {slot:u32, pad:u32, bitmap_ptr:u64, bitmap_size:u64}. One bit per 4 KB page |
+
+### vCPU Management
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 603 | `vcpu_create` | vm_id, vcpu_id | 0 or error | Create a vCPU within a VM |
+| 604 | `vcpu_run` | vm_id, vcpu_id, exit_info_ptr | 0 or error | Run vCPU until VM-exit. Writes VmExitInfo struct to exit_info_ptr |
+| 615 | `vcpu_pause` | vm_id, vcpu_id | 0 or error | Pause a vCPU (stop execution until resumed) |
+| 616 | `vcpu_resume` | vm_id, vcpu_id | 0 or error | Resume a previously paused vCPU |
+
+### vCPU Register Access
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 605 | `vcpu_get_regs` | vm_id, vcpu_id, regs_ptr | 0 or error | Get guest general-purpose registers (GuestGprs struct) |
+| 606 | `vcpu_set_regs` | vm_id, vcpu_id, regs_ptr | 0 or error | Set guest general-purpose registers from GuestGprs struct |
+| 607 | `vcpu_get_sregs` | vm_id, vcpu_id, sregs_ptr | 0 or error | Get guest segment/control registers (GuestSregs struct) |
+| 608 | `vcpu_set_sregs` | vm_id, vcpu_id, sregs_ptr | 0 or error | Set guest segment/control registers from GuestSregs struct |
+| 617 | `vcpu_get_fpu` | vm_id, vcpu_id, fpu_ptr | 0 or error | Get guest FPU/SSE/AVX state (512 bytes, FXSAVE layout) |
+| 618 | `vcpu_set_fpu` | vm_id, vcpu_id, fpu_ptr | 0 or error | Set guest FPU/SSE/AVX state from GuestFpuState struct |
+
+### vCPU Event Injection
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 609 | `vcpu_inject_irq` | vm_id, vcpu_id, vector | 0 or error | Inject external interrupt into vCPU |
+| 610 | `vcpu_inject_exception` | vm_id, vcpu_id, info | 0 or error | Inject exception into vCPU. info: low 8 bits = vector, bits 8-31 = error code |
+| 611 | `vcpu_inject_nmi` | vm_id, vcpu_id | 0 or error | Inject NMI (non-maskable interrupt) into vCPU |
+
+### vCPU Multi-Processor State
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 619 | `vcpu_get_mp_state` | vm_id, vcpu_id | state or error | Get vCPU MP state: 0=runnable, 1=uninitialized, 2=halted, 3=init. Returns `u32::MAX` on error |
+| 620 | `vcpu_set_mp_state` | vm_id, vcpu_id, state | 0 or error | Set vCPU MP state value |
+
+### Guest Virtual Address Translation
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 621 | `vcpu_translate` | vm_id, vcpu_id, req_ptr | 0 | Translate guest virtual address to guest physical address. req_ptr points to {gva:u64, out_gpa:u64, out_valid:u32}. Always returns 0; caller checks out_valid (1=mapped, 0=not mapped) |

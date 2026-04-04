@@ -24,7 +24,8 @@ const DEV_INPUT: u8 = 4;
 const DEV_AUDIO: u8 = 5;
 const DEV_OUTPUT: u8 = 6;
 const DEV_SENSOR: u8 = 7;
-const DEV_BUS: u8 = 8;
+const DEV_MONITOR: u8 = 8;
+const DEV_BUS: u8 = 9;
 
 // ── Parsed device info ──────────────────────────────────────────────────────
 
@@ -46,6 +47,7 @@ fn type_name(t: u8) -> &'static str {
         DEV_AUDIO => "Audio",
         DEV_OUTPUT => "Output",
         DEV_SENSOR => "Sensor",
+        DEV_MONITOR => "Monitors",
         DEV_BUS => "Bus",
         _ => "Other",
     }
@@ -56,6 +58,7 @@ fn type_icon(t: u8) -> &'static str {
         DEV_BLOCK => "dev_disk.ico",
         DEV_NETWORK => "dev_network.ico",
         DEV_DISPLAY => "dev_monitor.ico",
+        DEV_MONITOR => "dev_monitor.ico",
         DEV_INPUT => "dev_keyboard.ico",
         DEV_AUDIO => "dev_audio.ico",
         _ => "devices.ico",
@@ -65,8 +68,8 @@ fn type_icon(t: u8) -> &'static str {
 // ── Group ordering ──────────────────────────────────────────────────────────
 
 const GROUP_ORDER: &[u8] = &[
-    DEV_BLOCK, DEV_DISPLAY, DEV_INPUT, DEV_NETWORK, DEV_AUDIO,
-    DEV_OUTPUT, DEV_CHAR, DEV_SENSOR, DEV_BUS, 9, // 9 = Unknown
+    DEV_MONITOR, DEV_BLOCK, DEV_DISPLAY, DEV_INPUT, DEV_NETWORK, DEV_AUDIO,
+    DEV_OUTPUT, DEV_CHAR, DEV_SENSOR, DEV_BUS, 10, // 10 = Unknown
 ];
 
 // ── Build ───────────────────────────────────────────────────────────────────
@@ -102,7 +105,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             if group.is_empty() {
                 continue;
             }
-            build_device_group(&panel, i18n::t(type_name(gt)), &group, type_icon(gt));
+            if gt == DEV_MONITOR {
+                build_monitor_group(&panel);
+            } else {
+                build_device_group(&panel, i18n::t(type_name(gt)), &group, type_icon(gt));
+            }
         }
     }
 
@@ -181,6 +188,159 @@ fn build_device_group(panel: &ui::View, group_name: &str, devices: &[&DeviceInfo
     pad.set_dock(ui::DOCK_TOP);
     pad.set_size(552, 8);
     card.add(&pad);
+}
+
+// ── Monitor group (rich details from EDID) ─────────────────────────────────
+
+fn build_monitor_group(panel: &ui::View) {
+    let count = sys::monitor_count();
+    if count == 0 {
+        return;
+    }
+
+    // Group header
+    let header_row = ui::View::new();
+    header_row.set_dock(ui::DOCK_TOP);
+    header_row.set_size(600, 28);
+    header_row.set_margin(24, 12, 24, 0);
+
+    let path = crate::icon_path("dev_monitor.ico");
+    if let Some(icon) = ui::Icon::load(&path, 20) {
+        let iv = icon.into_image_view(20, 20);
+        iv.set_dock(ui::DOCK_LEFT);
+        iv.set_margin(0, 4, 6, 4);
+        header_row.add(&iv);
+    }
+
+    let header_text = format!("{} ({})", i18n::t("Monitors"), count);
+    let header = ui::Label::new(&header_text);
+    header.set_dock(ui::DOCK_FILL);
+    header.set_font_size(13);
+    header.set_text_color(layout::text());
+    header.set_padding(0, 4, 0, 4);
+    header_row.add(&header);
+    panel.add(&header_row);
+
+    for i in 0..count {
+        if let Some(info) = sys::monitor_info(i) {
+            let card = layout::build_auto_card(panel);
+            build_monitor_card(&card, &info, i);
+        }
+    }
+}
+
+fn build_monitor_card(card: &ui::Card, info: &sys::MonitorInfoFlat, index: u32) {
+    // Manufacturer + model
+    let mfr = str_from_bytes(&info.manufacturer);
+    let model = str_from_bytes(&info.model_name);
+    let title = if model.is_empty() {
+        if mfr.is_empty() {
+            format!("{} {}", i18n::t("Monitor"), index)
+        } else {
+            format!("{} {}", mfr, i18n::t("Monitor"))
+        }
+    } else {
+        format!("{} {}", mfr, model)
+    };
+    layout::build_info_row(card, i18n::t("Monitor"), &title, true);
+    layout::build_separator(card);
+
+    // Native resolution
+    let nw = unsafe { core::ptr::addr_of!(info.native_width).read_unaligned() };
+    let nh = unsafe { core::ptr::addr_of!(info.native_height).read_unaligned() };
+    let refresh = unsafe { core::ptr::addr_of!(info.native_refresh_100).read_unaligned() };
+    let res_str = if refresh > 0 {
+        format!("{} x {} @ {}.{:02} Hz", nw, nh, refresh / 100, refresh % 100)
+    } else {
+        format!("{} x {}", nw, nh)
+    };
+    layout::build_info_row(card, i18n::t("Native Resolution"), &res_str, false);
+    layout::build_separator(card);
+
+    // Physical size
+    let wmm = unsafe { core::ptr::addr_of!(info.width_mm).read_unaligned() };
+    let hmm = unsafe { core::ptr::addr_of!(info.height_mm).read_unaligned() };
+    if wmm > 0 && hmm > 0 {
+        // Calculate diagonal in inches: sqrt(w² + h²) / 25.4
+        let diag_mm_sq = (wmm as u32) * (wmm as u32) + (hmm as u32) * (hmm as u32);
+        let diag_mm = isqrt(diag_mm_sq);
+        let diag_inch_10 = diag_mm * 10 / 254; // ×10 for one decimal
+        let size_str = format!("{} x {} mm ({}.{}\")", wmm, hmm, diag_inch_10 / 10, diag_inch_10 % 10);
+        layout::build_info_row(card, i18n::t("Physical Size"), &size_str, false);
+        layout::build_separator(card);
+    }
+
+    // Connection type
+    let conn = if info.is_digital != 0 { i18n::t("Digital (DVI/HDMI/DP)") } else { i18n::t("Analog (VGA)") };
+    layout::build_info_row(card, i18n::t("Connection"), conn, false);
+    layout::build_separator(card);
+
+    // Color depth
+    let depth = info.color_depth;
+    let depth_str = if depth > 0 { format!("{} bit", depth) } else { String::from(i18n::t("Unknown")) };
+    layout::build_info_row(card, i18n::t("Color Depth"), &depth_str, false);
+    layout::build_separator(card);
+
+    // Gamma
+    let gamma = unsafe { core::ptr::addr_of!(info.gamma).read_unaligned() };
+    if gamma > 0 {
+        let gamma_str = format!("{}.{:02}", gamma / 100, gamma % 100);
+        layout::build_info_row(card, i18n::t("Gamma"), &gamma_str, false);
+        layout::build_separator(card);
+    }
+
+    // EDID status
+    let edid_str = if info.has_edid != 0 { i18n::t("Available") } else { i18n::t("Not available") };
+    let tc = ui::theme::colors();
+    layout::build_info_row_colored(
+        card,
+        "EDID",
+        edid_str,
+        if info.has_edid != 0 { tc.success } else { tc.destructive },
+        false,
+    );
+
+    // Serial (if available)
+    let serial = str_from_bytes(&info.serial_string);
+    if !serial.is_empty() {
+        layout::build_separator(card);
+        layout::build_info_row(card, i18n::t("Serial"), &serial, false);
+    }
+
+    // Manufacture year
+    let year = unsafe { core::ptr::addr_of!(info.manufacture_year).read_unaligned() };
+    if year > 1990 {
+        layout::build_separator(card);
+        let year_str = format!("{}", year);
+        layout::build_info_row(card, i18n::t("Year"), &year_str, false);
+    }
+
+    // Bottom padding
+    let pad = ui::View::new();
+    pad.set_dock(ui::DOCK_TOP);
+    pad.set_size(552, 8);
+    card.add(&pad);
+}
+
+/// Extract a trimmed string from a null-terminated byte array.
+fn str_from_bytes(bytes: &[u8]) -> String {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    match core::str::from_utf8(&bytes[..end]) {
+        Ok(s) => String::from(s.trim()),
+        Err(_) => String::new(),
+    }
+}
+
+/// Integer square root (Babylonian method).
+fn isqrt(n: u32) -> u32 {
+    if n == 0 { return 0; }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
 }
 
 // ── Device enumeration ──────────────────────────────────────────────────────

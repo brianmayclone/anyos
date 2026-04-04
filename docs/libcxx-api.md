@@ -43,6 +43,19 @@ This document covers the 64-bit C and C++ standard libraries for anyOS. **libcxx
   - [Numeric Limits](#numeric-limits)
   - [I/O Streams](#io-streams)
   - [String Streams](#string-streams)
+  - [Threading](#threading)
+  - [Atomic Operations](#atomic-operations)
+  - [Chrono](#chrono)
+  - [Filesystem](#filesystem)
+  - [Variant](#variant)
+  - [Any](#any)
+  - [Expected (C++23)](#expected-c23)
+  - [Concepts (C++20)](#concepts-c20)
+  - [Random](#random)
+  - [Regex](#regex)
+  - [Ranges](#ranges)
+  - [Source Location](#source-location)
+  - [Error Handling](#error-handling)
   - [C++ Wrapper Headers](#c-wrapper-headers)
   - [Linking a C++ Program](#linking-a-c-program)
 - [Limitations and Known Differences](#limitations-and-known-differences)
@@ -1077,14 +1090,464 @@ iss >> n >> s >> d;                     // n=42, s="hello", d=3.14
 
 ---
 
+## Threading
+
+Headers: `<thread>`, `<mutex>`, `<condition_variable>`, `<future>`
+
+anyOS libcxx provides full threading support backed by the kernel's POSIX threading layer (pthreads).
+
+### thread
+
+```cpp
+#include <thread>
+
+void worker(int id) { /* ... */ }
+
+std::thread t(worker, 42);          // spawn thread with argument
+t.join();                            // wait for completion
+
+std::thread t2([]{ /* lambda */ });
+t2.detach();                         // detach (runs independently)
+
+std::thread::id tid = t.get_id();    // thread ID
+unsigned n = std::thread::hardware_concurrency(); // CPU count (or 0)
+std::this_thread::sleep_for(std::chrono::milliseconds(100));
+std::this_thread::yield();
+```
+
+### mutex
+
+```cpp
+#include <mutex>
+
+std::mutex mtx;
+mtx.lock();
+mtx.unlock();
+
+std::recursive_mutex rmtx;           // re-entrant mutex
+
+std::lock_guard<std::mutex> guard(mtx);   // RAII lock
+std::unique_lock<std::mutex> ulock(mtx);  // movable, supports try_lock/unlock
+std::scoped_lock sl(mtx, rmtx);          // lock multiple mutexes
+
+std::once_flag flag;
+std::call_once(flag, []{ /* one-time init */ });
+```
+
+### condition_variable
+
+```cpp
+#include <condition_variable>
+
+std::condition_variable cv;
+std::mutex mtx;
+bool ready = false;
+
+// Waiting thread:
+std::unique_lock<std::mutex> lk(mtx);
+cv.wait(lk, []{ return ready; });
+
+// Signaling thread:
+{ std::lock_guard<std::mutex> lk(mtx); ready = true; }
+cv.notify_one();                      // wake one waiter
+cv.notify_all();                      // wake all waiters
+```
+
+### future
+
+```cpp
+#include <future>
+
+std::promise<int> p;
+std::future<int> f = p.get_future();
+p.set_value(42);
+int result = f.get();                 // blocks until value is ready
+
+// Async-style (spawns thread internally):
+std::future<int> f2 = std::async(std::launch::async, []{ return compute(); });
+int r = f2.get();
+```
+
+**Classes:** `promise<T>`, `future<T>`, `shared_future<T>`, `packaged_task<R(Args...)>`
+**Functions:** `async(policy, fn, args...)`
+**Enums:** `launch::async`, `launch::deferred`, `future_status::ready/timeout/deferred`
+
+---
+
+## Atomic Operations
+
+Header: `<atomic>`
+
+Provides lock-free atomic types using compiler builtins (`__atomic_*`).
+
+```cpp
+#include <atomic>
+
+std::atomic<int> counter(0);
+counter.store(10);
+int val = counter.load();
+int prev = counter.exchange(20);
+counter.fetch_add(1);
+counter.fetch_sub(1);
+
+bool ok = counter.compare_exchange_strong(val, 42);
+
+std::atomic_flag flag = ATOMIC_FLAG_INIT;
+flag.test_and_set();
+flag.clear();
+
+std::atomic_thread_fence(std::memory_order_seq_cst);
+```
+
+**Memory orderings:** `memory_order_relaxed`, `memory_order_consume`, `memory_order_acquire`, `memory_order_release`, `memory_order_acq_rel`, `memory_order_seq_cst`
+
+**Type aliases:** `atomic_bool`, `atomic_int`, `atomic_uint`, `atomic_size_t`, `atomic_intptr_t`, etc.
+
+**Supported operations on integral atomics:** `fetch_add`, `fetch_sub`, `fetch_and`, `fetch_or`, `fetch_xor`, `operator++`, `operator--`
+
+---
+
+## Chrono
+
+Header: `<chrono>`
+
+Time utilities with duration arithmetic and clocks.
+
+```cpp
+#include <chrono>
+
+using namespace std::chrono;
+
+auto d = milliseconds(500) + seconds(2);    // 2500ms
+auto us = duration_cast<microseconds>(d);
+
+auto now = steady_clock::now();
+// ... work ...
+auto elapsed = steady_clock::now() - now;
+auto ms = duration_cast<milliseconds>(elapsed).count();
+
+auto wall = system_clock::now();
+std::time_t t = system_clock::to_time_t(wall);
+```
+
+**Durations:** `nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`
+**Clocks:** `system_clock` (wall time via `gettimeofday`), `steady_clock` (monotonic via `clock_gettime`), `high_resolution_clock` (alias for `steady_clock`)
+**Functions:** `duration_cast<To>(d)`, `time_point_cast<To>(tp)`, `clock::now()`, `system_clock::to_time_t()`
+
+---
+
+## Filesystem
+
+Header: `<filesystem>`
+
+Basic filesystem operations wrapping the POSIX layer (`stat`, `opendir`, `unlink`, etc.).
+
+```cpp
+#include <filesystem>
+namespace fs = std::filesystem;
+
+fs::path p = "/System/bin/ls";
+p.filename();              // "ls"
+p.parent_path();           // "/System/bin"
+p.extension();             // ""
+p.stem();                  // "ls"
+fs::path combined = p.parent_path() / "cat";
+
+bool e = fs::exists("/System/bin/ls");
+bool d = fs::is_directory("/System");
+bool f = fs::is_regular_file("/System/bin/ls");
+auto sz = fs::file_size("/System/bin/ls");
+
+fs::create_directory("/tmp/mydir");
+fs::create_directories("/tmp/a/b/c");
+fs::remove("/tmp/myfile");
+fs::remove_all("/tmp/mydir");         // recursive
+fs::rename("/tmp/old", "/tmp/new");
+fs::copy_file("/src", "/dst");
+
+for (auto& entry : fs::directory_iterator("/System/bin")) {
+    entry.path();                      // full path
+    entry.is_regular_file();
+    entry.is_directory();
+    entry.file_size();
+}
+```
+
+**Classes:** `path`, `directory_entry`, `directory_iterator`, `file_status`
+**Free functions:** `exists()`, `is_directory()`, `is_regular_file()`, `file_size()`, `create_directory()`, `create_directories()`, `remove()`, `remove_all()`, `rename()`, `copy_file()`, `current_path()`
+**Enums:** `file_type::regular`, `file_type::directory`, `file_type::symlink`, `file_type::not_found`, etc.
+
+---
+
+## Variant
+
+Header: `<variant>`
+
+Type-safe discriminated union (tagged union).
+
+```cpp
+#include <variant>
+
+std::variant<int, double, std::string> v = 42;
+v = 3.14;
+v = std::string("hello");
+
+int idx = v.index();                       // 2 (string)
+auto& s = std::get<std::string>(v);        // access by type
+auto& d = std::get<1>(v);                  // access by index (throws bad_variant_access if wrong)
+
+auto* p = std::get_if<int>(&v);            // nullptr if wrong type
+
+std::visit([](auto& val) {
+    // called with the active type
+}, v);
+```
+
+**Classes:** `variant<Types...>`, `monostate` (empty alternative)
+**Functions:** `get<I>(v)`, `get<T>(v)`, `get_if<I>(p)`, `get_if<T>(p)`, `visit(visitor, variants...)`, `holds_alternative<T>(v)`
+**Constants:** `variant_npos`
+**Exceptions:** `bad_variant_access`
+
+---
+
+## Any
+
+Header: `<any>`
+
+Type-erased container for any copy-constructible value with small buffer optimization.
+
+```cpp
+#include <any>
+
+std::any a = 42;
+a = std::string("hello");
+a = 3.14;
+
+bool empty = !a.has_value();
+a.reset();                                 // clear contents
+
+std::any b = std::make_any<std::vector<int>>(3, 42);
+
+auto& val = std::any_cast<double&>(a);     // throws bad_any_cast if wrong
+auto* ptr = std::any_cast<double>(&a);     // nullptr if wrong type
+```
+
+**Class:** `any`
+**Functions:** `any_cast<T>(a)`, `any_cast<T>(&a)`, `make_any<T>(args...)`
+**Exceptions:** `bad_any_cast`
+
+---
+
+## Expected (C++23)
+
+Header: `<expected>`
+
+Value-or-error type for error handling without exceptions.
+
+```cpp
+#include <expected>
+
+std::expected<int, std::string> parse(const char* s) {
+    if (!s) return std::unexpected(std::string("null input"));
+    return 42;
+}
+
+auto result = parse("hello");
+if (result.has_value()) {
+    int val = result.value();              // or *result
+} else {
+    std::string err = result.error();
+}
+
+int val = result.value_or(0);              // default on error
+```
+
+**Classes:** `expected<T, E>`, `unexpected<E>`
+**Methods:** `has_value()`, `value()`, `error()`, `value_or(default)`, `operator*`, `operator->`, `operator bool`
+
+---
+
+## Concepts (C++20)
+
+Header: `<concepts>`
+
+Core language concepts using compiler builtins.
+
+```cpp
+#include <concepts>
+
+template<std::integral T>
+T double_it(T x) { return x * 2; }
+
+template<std::floating_point T>
+T half(T x) { return x / 2; }
+```
+
+**Concepts defined:**
+- `same_as<T, U>` — types are identical
+- `derived_from<Derived, Base>` — class inheritance
+- `convertible_to<From, To>` — implicit conversion
+- `integral<T>` — integer types
+- `signed_integral<T>` / `unsigned_integral<T>`
+- `floating_point<T>` — float/double/long double
+- `destructible<T>` / `constructible_from<T, Args...>`
+- `default_initializable<T>` / `copy_constructible<T>` / `move_constructible<T>`
+- `assignable_from<LHS, RHS>`
+- `swappable<T>` / `swappable_with<T, U>`
+- `equality_comparable<T>` / `equality_comparable_with<T, U>`
+- `totally_ordered<T>` / `totally_ordered_with<T, U>`
+- `copyable<T>` / `movable<T>` / `semiregular<T>` / `regular<T>`
+- `invocable<F, Args...>` / `regular_invocable<F, Args...>` / `predicate<F, Args...>`
+
+---
+
+## Random
+
+Header: `<random>`
+
+Random number generation engines and distributions.
+
+```cpp
+#include <random>
+
+std::mt19937 rng(42);                      // Mersenne Twister, seed 42
+uint32_t val = rng();
+
+std::minstd_rand lcg(123);                // linear congruential
+
+std::uniform_int_distribution<int> dist(1, 100);
+int roll = dist(rng);
+
+std::uniform_real_distribution<double> rdist(0.0, 1.0);
+double r = rdist(rng);
+
+std::normal_distribution<double> norm(0.0, 1.0);
+double n = norm(rng);
+```
+
+**Engines:** `minstd_rand` (LCG), `mt19937` (Mersenne Twister 32-bit), `mt19937_64` (64-bit)
+**Distributions:** `uniform_int_distribution<T>`, `uniform_real_distribution<T>`, `normal_distribution<T>`
+
+---
+
+## Regex
+
+Header: `<regex>`
+
+Simplified regular expression support. Currently a basic wrapper — stores patterns and provides a minimal matching API. Full POSIX regex support is planned when libc64's regex functions are completed.
+
+```cpp
+#include <regex>
+
+std::regex pattern("hello");
+std::smatch match;
+std::string text = "say hello world";
+
+if (std::regex_search(text, match, pattern)) {
+    std::string found = match[0];          // "hello"
+    size_t pos = match.position(0);        // position in string
+}
+
+bool full = std::regex_match("hello", pattern);  // exact match
+std::string result = std::regex_replace(text, pattern, "hi");
+```
+
+**Classes:** `regex`, `smatch`, `ssub_match`
+**Functions:** `regex_search()`, `regex_match()`, `regex_replace()`
+
+---
+
+## Ranges
+
+Header: `<ranges>`
+
+Minimal ranges support with `begin`/`end` customization points and range concepts.
+
+```cpp
+#include <ranges>
+
+template<std::ranges::range R>
+void process(R&& r) {
+    for (auto& elem : r) { /* ... */ }
+}
+```
+
+**Concepts:** `ranges::range<R>`, `ranges::input_range`, `ranges::forward_range`, `ranges::bidirectional_range`, `ranges::random_access_range`
+**Customization points:** `ranges::begin(r)`, `ranges::end(r)`, `ranges::size(r)`
+
+---
+
+## Source Location
+
+Header: `<source_location>`
+
+Compile-time source code location information (C++20).
+
+```cpp
+#include <source_location>
+
+void log(const char* msg, std::source_location loc = std::source_location::current()) {
+    printf("[%s:%u] %s\n", loc.file_name(), loc.line(), msg);
+}
+```
+
+**Class:** `source_location`
+**Static method:** `current()` — captures call site at compile time
+**Methods:** `file_name()`, `function_name()`, `line()`, `column()`
+
+---
+
+## Error Handling
+
+Headers: `<stdexcept>`, `<system_error>`, `<exception>`
+
+### stdexcept
+
+Standard exception classes (call `abort()` if uncaught, since exceptions are disabled):
+
+```cpp
+#include <stdexcept>
+
+std::runtime_error("message");
+std::logic_error("message");
+std::out_of_range("index");
+std::invalid_argument("bad");
+std::overflow_error("too big");
+std::underflow_error("too small");
+std::length_error("too long");
+std::domain_error("domain");
+```
+
+All inherit from `std::exception`. Each provides `what()` returning the message string.
+
+### system_error
+
+```cpp
+#include <system_error>
+
+std::error_code ec(ENOENT, std::generic_category());
+std::string msg = ec.message();            // "No such file or directory"
+bool ok = !ec;                             // true if no error
+
+std::error_condition cond = ec.default_error_condition();
+```
+
+**Classes:** `error_code`, `error_condition`, `error_category`, `system_error`
+**Functions:** `generic_category()`, `system_category()`
+
+---
+
 ## C++ Wrapper Headers
 
 Standard C++ wrapper headers that include and re-export the corresponding libc64 C headers into the `std` namespace:
 
 | Header | Wraps | Key Contents |
 |--------|-------|-------------|
+| `<cassert>` | `assert.h` | `assert()` macro |
 | `<cctype>` | `ctype.h` | `std::isalpha`, `std::isdigit`, `std::toupper`, `std::tolower`, ... |
 | `<cerrno>` | `errno.h` | `errno`, `ENOENT`, `EINVAL`, ... |
+| `<cfloat>` | `float.h` | `FLT_MIN`, `FLT_MAX`, `DBL_MIN`, `DBL_MAX`, `FLT_EPSILON`, ... |
+| `<cinttypes>` | `inttypes.h` | `PRId64`, `PRIu64`, `PRIx64`, `std::strtoimax`, ... |
 | `<climits>` | `limits.h` | `INT_MIN`, `INT_MAX`, `LONG_MIN`, `LONG_MAX`, ... |
 | `<cmath>` | `math.h` | `std::sqrt`, `std::sin`, `std::cos`, `std::pow`, `std::log`, ... |
 | `<cstddef>` | `stddef.h` | `std::size_t`, `std::ptrdiff_t`, `std::nullptr_t`, `std::byte` |
@@ -1093,6 +1556,7 @@ Standard C++ wrapper headers that include and re-export the corresponding libc64
 | `<cstdlib>` | `stdlib.h` | `std::malloc`, `std::free`, `std::abort`, `std::exit`, `std::atoi`, ... |
 | `<cstring>` | `string.h` | `std::memcpy`, `std::strlen`, `std::strcmp`, `std::strcpy`, ... |
 | `<ctime>` | `time.h` | `std::time`, `std::localtime`, `std::strftime`, ... |
+| `<cwchar>` | `wchar.h` | `std::wchar_t`, `std::mbstowcs`, `std::wcstombs`, ... |
 
 ---
 
@@ -1162,31 +1626,23 @@ Both libc64 and libcxx are compiled with `-fno-exceptions`. Functions that would
 - `std::map::at()` / `std::unordered_map::at()` abort when key not found
 - All container allocations abort on failure
 
-### No RTTI
+### Limited RTTI
 
-libcxx is compiled with `-fno-rtti`. The following features are unavailable:
-- `dynamic_cast`
-- `typeid` / `std::type_info`
-- Virtual destructors in `shared_ptr` use explicit virtual dispatch rather than RTTI
+libcxx is compiled with `-fno-rtti` by default. The `<typeinfo>` header provides `std::type_info` and `std::bad_typeid` for link compatibility (e.g., `std::any` uses them internally), but user code should not rely on `dynamic_cast` or `typeid` unless compiling with `-frtti`.
 
-### No Threading Support
+### Threading Caveats
 
-There are no threading primitives: no `<thread>`, `<mutex>`, `<atomic>`, `<condition_variable>`, or `<future>`. The standard library is not thread-safe. If the kernel supports multiple threads in a process, external synchronization is required.
+Threading is supported via `<thread>`, `<mutex>`, `<atomic>`, `<condition_variable>`, and `<future>`, backed by the kernel's pthreads implementation. Note that not all standard library containers are thread-safe — external synchronization (mutexes, atomics) is required for concurrent access to shared data.
 
-### No Filesystem Library
-
-There is no `<filesystem>`. Use the POSIX-layer functions in `<unistd.h>`, `<dirent.h>`, and `<sys/stat.h>` directly.
-
-### No Locales or Wide Characters
+### No Locales
 
 - `setlocale()` always returns `"C"`
-- No wide character support (`<wchar.h>`, `<cwchar>`)
 - No locale-aware formatting
 - `iconv_open()` / `iconv()` are stubs that return error
 
-### No Regular Expressions
+### Regex Limitations
 
-The `<regex.h>` functions (`regcomp`, `regexec`, `regfree`) are stubs that always return failure. Use command-line `grep` or implement pattern matching manually.
+The `<regex>` header provides a simplified C++ wrapper with `regex_search`, `regex_match`, and `regex_replace`. The underlying POSIX regex functions in libc64 are still stubs — the C++ `<regex>` uses its own basic pattern matching. Complex patterns may not work correctly.
 
 ### No std::function
 
@@ -1241,17 +1697,9 @@ All containers call `std::abort()` on allocation failure. There is no exception-
 
 The following standard C++ library features are **not** provided:
 
-- `<thread>`, `<mutex>`, `<atomic>`, `<condition_variable>`, `<future>` -- no threading
-- `<filesystem>` -- use POSIX APIs directly
-- `<regex>` -- stubs only
-- `<chrono>` -- use `<ctime>` / `<time.h>` directly
-- `<exception>`, `<stdexcept>` -- no exceptions
-- `<typeinfo>`, `<typeindex>` -- no RTTI
-- `<variant>` -- not implemented (use `optional` or manual tagged unions)
-- `<any>` -- not implemented
 - `<charconv>` -- not implemented (use `snprintf` / `strtol`)
 - `<format>` -- not implemented (use `ostringstream` or `snprintf`)
-- `<ranges>` -- not implemented
 - `<coroutine>` -- not implemented
-- `<source_location>` -- not implemented
-- `<concepts>` -- not implemented (use SFINAE / `enable_if` / `type_traits`)
+- `<typeindex>` -- no RTTI (see above)
+- `<locale>` -- locale support is stub-only ("C" locale)
+- `<codecvt>` -- not implemented

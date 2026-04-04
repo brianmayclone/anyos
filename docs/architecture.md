@@ -7,11 +7,13 @@ This document describes the internal architecture of anyOS, from boot to desktop
 - [Boot Process](#boot-process)
 - [Memory Layout](#memory-layout)
 - [Kernel Architecture](#kernel-architecture)
+- [ARM64 Port](#arm64-port)
 - [Process Model](#process-model)
 - [Security](#security)
 - [Graphics & Compositor](#graphics--compositor)
 - [Filesystem](#filesystem)
 - [Networking](#networking)
+- [Bluetooth Subsystem](#bluetooth-subsystem)
 - [USB Subsystem](#usb-subsystem)
 - [IPC Architecture](#ipc-architecture)
 - [User Identity System](#user-identity-system)
@@ -99,38 +101,43 @@ PML4[510] recursive self-mapping              Page table access
 
 ## Kernel Architecture
 
+anyOS uses a **hybrid kernel** architecture. Filesystems, the TCP/IP network stack, and device drivers all run in kernel space for performance, while the compositor, GUI framework, and system services run as userspace processes communicating via IPC.
+
 ### Module Overview
 
 ```
-                 +-----------+
-                 |  main.rs  |  Kernel entry, init sequence
-                 +-----+-----+
-                       |
-    +--------+---------+---------+--------+--------+
-    |        |         |         |        |        |
-+---+---+ +--+--+ +---+---+ +---+--+ +---+---+ +--+--+
-|arch/  | |mem/ | |drivers/| |task/ | |syscall/| |ipc/ |
-|x86    | |     | |        | |      | |        | |     |
-+-------+ +-----+ +--------+ +------+ +--------+ +-----+
-    |        |         |         |        |        |
-    |   +----+----+    |    +----+----+   |   +----+----+
-    |   |physical | +--+--+ |scheduler|   |   |msg queue|
-    |   |virtual  | |GPU  | |loader   |   |   |pipes    |
-    |   |heap     | |E1000| |thread   |   |   |signals  |
-    |   +---------+ |ATA  | |KDRV     |   |   |shm      |
-    |               |AHCI | +---------+   |   +---------+
-    |               |NVMe |               |
-    |               |USB  |               |
-    +--+  +--+      |HDA  |              |
-    |GDT| |IDT|     |input|              |
-    |TSS| |PIC|     +-----+              |
-    |PIT| |APIC|                          |
-    +---+ +----+  +-------+  +-----+     |
-                  |  fs/  |  | net/|     |
-                  | exFAT |  | TCP |     |
-                  | VFS   |  | UDP |     |
-                  +-------+  | DNS |     |
-                             +-----+     |
+                      +-----------+
+                      |  main.rs  |  Kernel entry, init sequence
+                      +-----+-----+
+                            |
+    +--------+---------+----+----+--------+--------+--------+
+    |        |         |         |        |        |        |
++---+---+ +--+--+ +---+---+ +---+--+ +---+---+ +--+--+ +--+--+
+|arch/  | |mem/ | |drivers/| |task/ | |syscall/| |ipc/ | |net/ |
+|x86_64 | |     | |        | |      | | (232)  | |     | |     |
+|arm64  | +-----+ +--------+ +------+ +--------+ +-----+ +-----+
++-------+    |         |         |                  |        |
+    |   +----+----+ +--+--------+-+            +----+----+ +-+------+
+    |   |physical | |GPU (7)     | |scheduler| |pipes   | |TCP/IP |
+    |   |virtual  | |Network (8) | |loader   | |signals | |UDP    |
+    |   |heap     | |Storage (7) | |thread   | |shm     | |DHCP   |
+    |               |USB (3+cls) | |KDRV     | |events  | |DNS    |
+    |               |Audio (2)   | +---------+ +--------+ |ARP    |
+    |               |Bluetooth   |                        |WiFi   |
+    +--+  +--+      |Input       |                        +-------+
+    |GDT| |IDT|     |VirtIO      |
+    |TSS| |PIC|     |I2C/SMBus   |    +----------+
+    |PIT| |APIC|    |Thermal     |    |   fs/    |
+    +---+ +----+    |Watchdog    |    | exFAT    |
+                    +------------+    | FAT32    |
+                                      | NTFS(ro) |
+                                      | ISO 9660 |
+                                      | OverlayFS|
+                                      | RamFS    |
+                                      | SMBFS    |
+                                      | DevFS    |
+                                      | VFS      |
+                                      +----------+
 ```
 
 ### Init Sequence (main.rs)
@@ -173,6 +180,47 @@ After the kernel hands off to `/System/init`, the init program:
 The **service manager** (`svc start-all`) reads `/System/etc/svc/` for service configurations and starts each service (e.g., `logd`, `sshd`, `echoserver`) with dependency resolution.
 
 See [services.md](services.md) for the full service system documentation.
+
+---
+
+## ARM64 Port
+
+anyOS has an in-progress ARM64 (AArch64) port targeting QEMU `virt` (with planned Raspberry Pi 4/5 support). The ARM64 kernel shares all architecture-independent subsystems (VFS, TCP/IP stack, IPC, scheduler, syscall handlers) with x86-64 via a HAL abstraction layer.
+
+### Architecture-Specific Modules (`kernel/src/arch/arm64/`)
+
+| Module | Description |
+|--------|-------------|
+| `boot.rs` | Boot entry, DTB (Device Tree Blob) address from X0, FDT parser |
+| `context.rs` | Thread CPU context (X0-X30, SP, PC, SPSR, PSTATE) for context switching |
+| `cpu_features.rs` | AArch64 CPU feature detection |
+| `exceptions.rs` | VBAR_EL1 exception vector table, IRQ/SVC/fault dispatch from EL1 |
+| `gic.rs` | GICv3 interrupt controller (Distributor GICD + Redistributor GICR, system register access) |
+| `generic_timer.rs` | ARM Generic Timer (CNTPCT_EL0 monotonic counter, CNTP_TVAL_EL0 periodic 1000 Hz tick) |
+| `mmu.rs` | VMSAv8-A MMU configuration (TCR_EL1, MAIR_EL1, 4-level page tables, 48-bit VA, 4 KiB granule) |
+| `serial.rs` | PL011 UART driver (MMIO at 0x0900_0000 on QEMU virt) |
+| `smp.rs` | SMP bring-up via PSCI CPU_ON (HVC #0), up to 16 CPUs, per-CPU kernel stacks |
+| `syscall.rs` | SVC #0 syscall entry (X8=number, X0-X5=args, X0=return), dispatches to shared syscall handlers |
+| `power.rs` | PSCI-based shutdown and reboot |
+
+### Memory Model
+
+- **4-level paging** (VMSAv8-A): PGD -> PUD -> PMD -> PTE, 4 KiB pages, 48-bit virtual addresses
+- **TTBR0_EL1**: User address space (lower half)
+- **TTBR1_EL1**: Kernel address space (upper half, `0xFFFF_0000_0000_0000+`)
+- **MAIR_EL1**: Three memory attributes -- Device-nGnRnE (MMIO), Normal Non-Cacheable, Normal Write-Back Cacheable
+- **Device MMIO**: Mapped via TTBR1 PUD[3] at `0xFFFF_0000_C000_0000` (1 GiB device region)
+
+### Interrupt Controller (GICv3)
+
+- GICD (Distributor) at PA `0x0800_0000`: SPI routing, enable/disable, priority
+- GICR (Redistributor) at PA `0x080A_0000`: Per-CPU PPI/SGI configuration (128 KiB stride per CPU)
+- System register access (ICC_*) for interrupt acknowledge/EOI, priority mask
+- IRQ routing: Timer (PPI 30) -> scheduler tick, UART (SPI 33) -> serial input
+
+### Current Status
+
+The ARM64 port boots to kernel_main with working MMU, GICv3 interrupts, Generic Timer, SMP, and syscall dispatch. Userspace loading, storage drivers, and framebuffer are planned (see Raspberry Pi roadmap in CLAUDE.md).
 
 ---
 
@@ -252,7 +300,7 @@ Implementation notes:
 
 ### GPU Drivers
 
-anyOS supports four GPU backends via the `GpuDriver` trait:
+anyOS supports seven GPU backends via the `GpuDriver` trait:
 
 | Driver | PCI ID | Features |
 |--------|--------|----------|
@@ -260,8 +308,11 @@ anyOS supports four GPU backends via the `GpuDriver` trait:
 | **VMware SVGA II** | 15AD:0405 | FIFO command queue, 2D acceleration (rect fill/copy), hardware cursor, **3D via SVGA3D** |
 | **VirtualBox VGA** | 80EE:BEEF | VirtualBox guest display adapter |
 | **VirtIO GPU** | 1AF4:1050 | VirtIO graphics device, **3D via virgl** (when `VIRTIO_GPU_F_VIRGL` negotiated) |
+| **Intel HD/UHD/Iris** | 8086:* (class 03:00) | Firmware-inherited framebuffer (UEFI GOP / VBE), Gen 5+ (HD 3000 through Xe) |
+| **AMD Radeon** | 1002:* (class 03:00) | Firmware-inherited framebuffer, Radeon HD 5000+ through RX 7000 (RDNA 3) |
+| **NVIDIA GeForce** | 10DE:* (class 03:00/03:02) | Firmware-inherited framebuffer, GeForce 600+ (Kepler) through RTX 4000 (Ada) |
 
-GPU auto-detection happens during PCI enumeration. The compositor uses whichever driver is available, falling back to software-only rendering if no known GPU is found.
+GPU auto-detection happens during PCI enumeration. The compositor uses whichever driver is available, falling back to software-only rendering if no known GPU is found. The Intel, AMD, and NVIDIA drivers inherit the display mode configured by UEFI GOP or VBIOS firmware, providing a working framebuffer at native resolution without full modesetting.
 
 ### GPU Driver HAL (Userspace 3D Drivers)
 
@@ -357,26 +408,40 @@ This is comparable to Windows DWM (~8-16ms per frame).
 
 ## Filesystem
 
-### exFAT (Primary Filesystem)
+### Supported Filesystems
 
-- **256 MiB disk image** with exFAT filesystem (both BIOS and UEFI modes)
-- **4 KiB clusters**, contiguous allocation preferred
-- **Long filenames**: File + Stream + FileName entry sets
-- **Operations**: read, write, create, delete, mkdir, readdir, stat, seek, symlink, chmod, chown, rename
-- **Storage dispatch**: Routes I/O to the active backend (auto-detected at boot)
-  - **ATA PIO**: 28-bit LBA, sector read/write via I/O ports (legacy IDE, default)
-  - **AHCI DMA**: SATA DMA transfers via MMIO + bounce buffer (ICH9 AHCI)
-  - **NVMe**: PCIe NVMe controller (submission/completion queue pairs)
-  - **ATAPI**: CD-ROM / ISO 9660 access
-  - **LSI SCSI**: LSI MegaRAID SCSI controller
+| Filesystem | Mode | Description |
+|------------|------|-------------|
+| **exFAT** | Read/Write | Primary filesystem for disk images (4 KiB clusters, long filenames, contiguous allocation) |
+| **FAT12/16/32** | Read/Write | FAT family with VFAT long filename (LFN) support, DOS datetime conversion |
+| **NTFS** | Read-only | Minimal NTFS driver (MFT parsing, B+ tree index, runlist decoding, fixup arrays) |
+| **ISO 9660** | Read-only | CD-ROM/DVD-ROM filesystem (2048-byte blocks, Primary Volume Descriptor at LBA 16) |
+| **OverlayFS** | Read/Write | Union mount -- writable RamFS layer over read-only ISO 9660 (whiteout support for deletes) |
+| **RamFS** | Read/Write | In-memory inode-based filesystem (upper layer for OverlayFS, volatile) |
+| **SMBFS** | Read/Write | SMB2 network filesystem client (dialect 0x0202, TCP port 445, anonymous/guest session) |
+| **DevFS** | Virtual | Device filesystem at `/dev` -- maps file ops to kernel device drivers (`/dev/null`, `/dev/zero`, `/dev/console`, etc.) |
+
+### Storage Dispatch
+
+I/O is routed to the active backend, auto-detected at boot:
+
+| Backend | Description |
+|---------|-------------|
+| **ATA PIO** | 28-bit LBA, sector read/write via I/O ports (legacy IDE) |
+| **AHCI DMA** | SATA DMA transfers via MMIO + bounce buffer (ICH9 AHCI) |
+| **NVMe** | PCIe NVMe controller (submission/completion queue pairs) |
+| **ATAPI** | CD-ROM / ISO 9660 access |
+| **LSI SCSI** | LSI MegaRAID SCSI controller |
+| **SDHCI** | SD Host Controller (PCI class 08:05, SD/SDHC/SDXC cards, PIO mode, Realtek/O2 Micro/Genesys Logic) |
 
 ### Virtual File System (VFS)
 
-- **File descriptors**: Global FD table, per-process open files
+- **File descriptors**: Global FD table (1024 slots), per-process open files (256 max)
 - **Mount points**: Runtime mount/unmount of additional filesystems
 - **Paths**: `/bin/`, `/System/`, `/Libraries/`, `/include/`, `/lib/`, `/home/`
 - **Device files**: `/dev/serial`, `/dev/null`, `/dev/random`
 - **Symbolic links**: Symlink creation and resolution
+- **Block cache**: Sector-level caching for disk I/O
 - **Standard FDs**: 0=stdin, 1=stdout (serial), 2=stderr (serial)
 
 ---
@@ -387,7 +452,7 @@ This is comparable to Windows DWM (~8-16ms per frame).
 
 ```
 +------------------+
-|   Applications   |  wget, ftp, ping, dns, dhcp
+|   Applications   |  wget, ftp, ping, dns, dhcp, ssh, httpd, curl
 +--------+---------+
          |
 +--------+---------+
@@ -403,13 +468,42 @@ This is comparable to Windows DWM (~8-16ms per frame).
 +------------------+
          |
 +--------+---------+
-|    Ethernet      |  Data link layer
+|  Ethernet / WiFi |  Data link layer
 +------------------+
          |
 +--------+---------+
-|  E1000 Driver    |  Intel 82540EM (MMIO, DMA, IRQ)
+|   NIC Drivers    |  See table below
 +------------------+
 ```
+
+### Network Drivers
+
+anyOS includes 8 NIC drivers, covering Ethernet and WiFi:
+
+| Driver | Type | Devices | Speed |
+|--------|------|---------|-------|
+| **Intel E1000** | Ethernet | 82540EM (8086:100E), 82545EM (8086:100F) | 1 GbE |
+| **Intel IGC** | Ethernet | I225/I226-V/LM, I210, I211, I219 | 1/2.5 GbE |
+| **Realtek RTL8168** | Ethernet | RTL8111B+, RTL8101/8102, RTL8169SC | 1 GbE |
+| **Realtek RTL8125** | Ethernet | RTL8125B, RTL8125BG | 2.5 GbE |
+| **VirtIO Net** | Ethernet | VirtIO modern/transitional (1AF4:1000/1041) | Virtual |
+| **Intel iwlwifi** | WiFi | AX200/201/210/211, BE200, AC 9260/9560, 8265 | WiFi 6/6E/7 |
+| **Qualcomm Atheros** | WiFi | QCA6174, QCA9377, QCA6390, WCN6855 | WiFi 5/6/6E |
+| **Realtek RTL8188EU** | WiFi (USB) | RTL8188EUS, D-Link DWA-131, Edimax EW-7811Un | 802.11n |
+
+### WiFi Stack (`kernel/src/net/wifi.rs`)
+
+Hardware-independent 802.11 management layer:
+- **State machine**: Disconnected -> Scanning -> Associating -> Authenticating -> Connected
+- **WPA2 (CCMP/AES)**: Full EAPOL 4-way handshake (ANonce/SNonce, PTK derivation, GTK installation)
+- **Data encryption**: AES-128-CCM with 48-bit packet number replay counter
+- After association, the WiFi interface presents as a standard `NetworkDriver` for the TCP/IP stack
+
+### Interface Configuration
+
+- **Loopback** (`lo`, 127.0.0.1/255.0.0.0): Defined in `/System/etc/network/interfaces`, auto-injected if missing
+- **Own-IP loopback**: Packets to the host's own IP are routed via loopback (no ARP)
+- **Config file**: `/System/etc/network/interfaces` supports `static`, `dhcp`, and `loopback` methods
 
 ### QEMU Networking
 
@@ -417,6 +511,34 @@ This is comparable to Windows DWM (~8-16ms per frame).
 - Gateway: `10.0.2.2`
 - DNS: `10.0.2.3`
 - DHCP auto-configuration at boot
+
+---
+
+## Bluetooth Subsystem
+
+anyOS includes a Bluetooth stack (`kernel/src/drivers/bluetooth/`) with the following layers:
+
+```
++-------------------+
+| HID Profile       |  (Keyboard/Mouse over BT)
++--------+----------+
+         |
++--------+----------+
+|      L2CAP        |  Logical Link Control and Adaptation Protocol
++--------+----------+
+         |
++--------+----------+
+|     HCI Core      |  Host Controller Interface (commands, events, ACL data)
++--------+----------+
+         |
++--------+----------+
+| USB Transport     |  HCI over USB bulk/interrupt endpoints
++-------------------+
+```
+
+- **HCI**: Command/event processing, connection management, device discovery
+- **L2CAP**: Channel multiplexing, signaling (connection request/response, config, disconnect)
+- **USB Transport**: HCI packets over USB bulk (ACL data) and interrupt (events) endpoints
 
 ---
 
@@ -476,20 +598,27 @@ The standard library includes a WAV parser that handles format conversion:
 
 ## USB Subsystem
 
-anyOS includes USB host controller drivers for device connectivity.
+anyOS includes USB host controller drivers for all USB generations plus class drivers.
 
-### Controllers
+### Host Controllers
 
 | Controller | Standard | PCI Class | Features |
 |------------|----------|-----------|----------|
-| **UHCI** | USB 1.1 | 0x0C03/0x00 | 12 Mbps, polled I/O, keyboard/mouse/storage |
+| **UHCI** | USB 1.1 | 0x0C03/0x00 | 1.5/12 Mbps, polled I/O |
 | **EHCI** | USB 2.0 | 0x0C03/0x20 | 480 Mbps, async/periodic schedules |
+| **xHCI** | USB 3.x | 0x0C03/0x30 | 5/10 Gbps, all speeds (SS/HS/FS/LS), slot/endpoint model, command/transfer rings |
 
-### Device Support
+### Class Drivers
 
-- **HID**: USB keyboards and mice (via polling thread)
-- **Mass Storage**: USB storage devices (Bulk-Only Transport)
-- Hub detection and port enumeration
+| Driver | Description |
+|--------|-------------|
+| **HID** | USB keyboards and mice (interrupt transfers, polling thread) |
+| **Mass Storage** | USB storage devices (Bulk-Only Transport, SCSI pass-through) |
+| **Hub** | Hub detection, port enumeration, device attach/detach |
+| **Audio** | USB audio class devices |
+| **CDC-ACM** | USB serial ports (Abstract Control Model, e.g., Arduino/modems) |
+| **CDC-ECM** | USB Ethernet adapters (Ethernet Control Model) |
+| **Digitizer** | USB digitizer/touchscreen devices (absolute positioning) |
 
 QEMU flags: `-device qemu-xhci` or `-device usb-ehci` with `-device usb-kbd`, `-device usb-mouse`, etc.
 
@@ -559,9 +688,10 @@ anyOS supports multi-user identity with per-process UID/GID.
 
 anyOS enforces a runtime permission system similar to macOS/Android for `.app` bundles:
 
-- **Capability bitmask**: 14 capability bits enforced at syscall dispatch
+- **Capability bitmask**: 16 capability bits (bits 0-15) enforced at syscall dispatch
 - **Sensitive capabilities** (require user consent): Filesystem, Network, Audio, Display, Device, Process, System, Compositor
 - **Auto-granted capabilities** (infrastructure, no prompt): DLL, Thread, SHM, Event, Pipe
+- **Restricted capabilities**: Manage_Perms (bit 13), Debug (bit 14), Hypervisor (bit 15)
 - **Permission storage**: `/System/users/perm/{uid}/{app_id}` files containing `granted=0x{hex}`
 
 **First-launch flow:**
@@ -592,7 +722,7 @@ anyOS supports two syscall paths:
 | RSI | Argument 4 |
 | RDI | Argument 5 |
 
-**INT 0x80 (32-bit C/TCC programs, compatibility mode):
+**INT 0x80 (32-bit C/TCC programs, compatibility mode):**
 
 | Register | Purpose |
 |----------|---------|
@@ -603,9 +733,17 @@ anyOS supports two syscall paths:
 | ESI | Argument 4 |
 | EDI | Argument 5 |
 
+**SVC #0 (ARM64 programs):**
+
+| Register | Purpose |
+|----------|---------|
+| X8 | Syscall number |
+| X0-X5 | Arguments |
+| X0 | Return value |
+
 ### Syscall Categories
 
-There are 141+ syscalls organized by category:
+There are **232 syscalls** organized by category:
 
 | Category | Count | Examples |
 |----------|-------|----------|
@@ -616,12 +754,13 @@ There are 141+ syscalls organized by category:
 | Memory | 3 | sbrk, mmap, munmap |
 | Networking | 24 | ping, dhcp, dns, tcp_*, udp_*, net_poll, net_stats |
 | Pipes/IPC | 11 | pipe_create/read/write, evt_chan_*, evt_sys_* |
-| POSIX Pipes/FD | 5 | pipe2, dup, dup2, fcntl, **pipe_bytes_available** |
+| POSIX Pipes/FD | 5 | pipe2, dup, dup2, fcntl, pipe_bytes_available |
 | Shared Memory | 4 | shm_create, shm_map, shm_unmap, shm_destroy |
 | Signals | 2 | sigaction, sigprocmask |
 | Window Manager | 13 | win_create, draw_text, blit, present |
 | Display/GPU | 8 | set_resolution, set_wallpaper, capture_screen, gpu_vram_size |
 | Compositor | 5 | map_framebuffer, gpu_command, input_poll |
+| GPU 3D | 5 | gpu_query_type, gpu_3d_submit, gpu_3d_sync, gpu_3d_surface_dma, gpu_3d_surface_dma_read |
 | Audio | 2 | audio_write, audio_ctl |
 | DLL | 2 | dll_load, set_dll_u32 |
 | Device/System | 10 | time, uptime, sysinfo, devlist, random |
@@ -631,6 +770,8 @@ There are 141+ syscalls organized by category:
 | App Permissions | 5 | perm_check, perm_store, perm_list, perm_delete, perm_pending_info |
 | Filesystem ext | 3 | chmod, chown, chdir |
 | Capabilities | 1 | get_capabilities |
+| Debug | 4 | debug_read_mem, debug_get_mem_map, debug_wait_event, thread_info_ex |
+| Hypervisor (VM) | 22 | vm_create, vcpu_create, vcpu_run, vm_set_memory, vm_map_mmio, vcpu_get/set_regs, etc. |
 
 See [syscalls reference](syscalls.md) for the complete list with all arguments and return values.
 
@@ -649,19 +790,25 @@ anyOS uses two shared library formats at fixed virtual addresses (0x04000000+):
 
 | Library | Format | Base Address | Exports | Description |
 |---------|--------|-------------|---------|-------------|
-| **uisys** | DLIB | `0x04000000` | 80 | Legacy UI components (31 types, deprecated — use libanyui) |
+| **uisys** | DLIB | `0x04000000` | 80 | Legacy UI components (31 types, deprecated -- use libanyui) |
 | **libimage** | DLIB | `0x04100000` | 10 | Image/video decoding (BMP, PNG, JPEG, GIF, ICO, MJV) + scaling + BMP encoding + iconpack rendering |
 | **librender** | DLIB | `0x04300000` | 18 | 2D rendering primitives (shapes, gradients, anti-aliasing) |
 | **libcompositor** | DLIB | `0x04380000` | 16 | Window management IPC (SHM surfaces, event channels) |
-| **libanyui** | .so | `0x04400000` | 120+ | anyui UI framework (42 controls, Windows Forms-style, clipboard, theming, tooltips) |
+| **libanyui** | .so | `0x04400000` | 178 | anyui UI framework (44 controls, Windows Forms-style, clipboard, theming, tooltips, dialogs, icons) |
 | **libfont** | .so | `0x05000000` | 7 | TrueType font rendering (gamma-corrected greyscale + LCD subpixel AA), system fonts embedded in .rodata |
-| **libjs** | .so | — | — | JavaScript engine (ES5+ support) |
-| **libwebview** | .so | — | — | Web view component (HTML/CSS rendering) |
-| **libsvg** | .so | — | — | SVG rendering library |
-| **libzip** | .so | — | — | ZIP archive handling |
-| **libdb** | .so | — | — | Key-value database |
-| **libc64** | static | — | — | 64-bit C standard library |
-| **libcxx** | static | — | — | 64-bit C++ standard library |
+| **libgl** | .so | -- | -- | OpenGL ES 2.0 3D engine (software rasterizer + userspace GPU driver loading via .drv) |
+| **libhttp** | .so | -- | -- | HTTP client/server library |
+| **libm** | .so | -- | -- | Hardware-accelerated math (SSE2 + x87 FPU: sin, cos, sqrt, matrix ops) |
+| **libjs** | .so | -- | -- | JavaScript engine (ES2023 support) |
+| **libwebview** | .so | -- | -- | HTML/CSS/JS web rendering engine |
+| **libsvg** | .so | -- | -- | SVG rasterizer |
+| **libzip** | .so | -- | -- | ZIP/TAR/GZIP archive handling |
+| **libdb** | .so | -- | -- | Key-value database |
+| **libphysics** | .so | -- | -- | Physics engine |
+| **libcorevm** | .so | -- | -- | CoreVM x86 virtual machine engine (KVM backend on Linux) |
+| **libc64** | static | -- | -- | 64-bit C standard library |
+| **libcxx** | static | -- | -- | C++20 standard library |
+| **libcxxabi** | static | -- | -- | C++ ABI runtime (exception handling, RTTI) |
 
 ### uisys.dlib
 
@@ -817,35 +964,55 @@ capabilities=filesystem,dll # Comma-separated capability list
 
 ## Applications & Programs
 
-### GUI Applications (`apps/`)
+### GUI Applications (`apps/`) -- 33 apps
 
 | App | Description |
 |-----|-------------|
 | **anycode** | Code editor (VSCode-like, reference anyui app) |
+| **anybench** | Benchmarking tool |
+| **anymail** | Email client (IMAP/SMTP, address book, autocomplete) |
+| **anyzilla** | FTP client (FileZilla-like, dual-pane, PASV transfers) |
+| **button_demo** | Button demo |
 | **calc** | Calculator |
 | **clipman** | Clipboard history manager |
 | **clock** | Clock widget |
 | **demo_anyui** | anyui widget demo/showcase |
 | **diagnostics** | System diagnostics |
-| **diff** | Diff/merge tool (Meld-like) |
+| **diff** | Diff/merge tool (Meld-like, syntax highlighting, themes) |
 | **fontviewer** | Font browser |
+| **forger** | Application builder |
+| **ftp-settings** | FTP server settings |
+| **gldemo** | OpenGL ES 2.0 demo |
+| **iconview** | Icon viewer |
 | **imgview** | Image viewer |
+| **installer** | System installer |
+| **keyboard** | On-screen keyboard |
 | **mdview** | Markdown viewer |
 | **minesweeper** | Minesweeper game |
 | **notepad** | Simple text editor |
+| **notifications** | Notification settings |
 | **paint** | Paint application (Canvas-based) |
+| **runner** | Application launcher |
 | **screenshot** | Screenshot tool |
-| **surf** | Web browser |
+| **store** | App Store |
+| **surf** | Web browser (HTML/CSS/JS via libwebview) |
+| **updater** | System updater |
 | **videoplayer** | Video player |
+| **vmmanager** | VM Manager (create, configure, run VMs via CoreVM) |
+| **vnc-settings** | VNC server settings |
 | **webmanager** | Web management tool |
 
-### System Services (`system/`)
+### System Services (`system/`) -- 23 daemons
 
 | Service | Description |
 |---------|-------------|
 | **amid** | Anywhere Management Interface daemon (system info database) |
+| **anybout** | About dialog (system version info) |
+| **anytrace** | Interactive debugger, profiler, and process inspector |
 | **audiomon** | Audio monitoring service |
 | **compositor** | Display server / window manager |
+| **crashdialog** | Crash report dialog (displays crash info to user) |
+| **desktopd** | Desktop daemon (desktop icon management, wallpaper, session) |
 | **diskutil** | Disk utility GUI |
 | **eventviewer** | Event/log viewer GUI |
 | **finder** | File manager/browser |
@@ -853,24 +1020,31 @@ capabilities=filesystem,dll # Comma-separated capability list
 | **inputmon** | Input device monitoring |
 | **login** | Login manager |
 | **netmon** | Network monitoring |
+| **notifyd** | Notification daemon (iOS-style banners, top-right, always-on-top) |
 | **permdialog** | Permission dialog daemon |
+| **sessionhost** | Session host (user session lifecycle management) |
 | **settings** | System settings GUI |
-| **shell** | Command-line shell |
+| **shell** | Command-line shell (job control, pipes, redirects, variables, here-docs) |
 | **taskmanager** | Task manager / activity monitor |
-| **terminal** | Terminal emulator |
+| **terminal** | Terminal emulator (256-color, true-color, alternate screen, mouse tracking, hyperlinks, Unicode) |
+| **textmode_console** | Full-screen text console (for `nogui` boot mode) |
+| **wifimon** | WiFi tray icon (macOS-style WiFi menu in menu bar) |
 
-### CLI Programs (`bin/`)
+### CLI Programs (`bin/`) -- 122 programs
 
-98+ Unix-like CLI tools including:
-- **Standard tools**: ls, cat, cp, mv, rm, mkdir, rmdir, grep, find, head, tail, sort, uniq, wc, tee, xargs, tr, cut, seq, basename, dirname, readlink, realpath, env, export, which, whoami, uname, hostname
+- **Standard tools**: ls, cat, cp, mv, rm, mkdir, grep, find, head, tail, sort, uniq, wc, xargs, ln, seq, rev, strings, base64, hexdump, xxd, echo, yes, true, false, sleep, clear
 - **Editors**: nano, vi, nvi, sed, awk
 - **Archive**: tar, zip, unzip, gzip
-- **Network**: ping, ssh, sshd, wget, ftp, dhcp, dns, ifconfig, arp, httpd
-- **System**: ps, top, htop, mount, umount, sysinfo, dmesg, neofetch, stat, df, du, lsblk, fdisk, free
+- **Network**: ping, ssh, sshd, scp, wget, ftp, ftpd, dhcp, dns, ifconfig, arp, netstat, httpd, vncd, curl, ntp, ntpd, wifi
+- **System**: ps, top, htop, mount, umount, sysinfo, dmesg, neofetch, stat, df, free, fdisk, devlist, reboot, sync, mode, uptime
+- **User management**: adduser, deluser, listuser, addgroup, delgroup, listgroups, passwd, su, sudo, whoami
 - **Version control**: git
-- **Package manager**: ami
-- **Process management**: kill, nice, nohup, crond, crontab
-- **Service manager**: svc
+- **Package manager**: ami, apkg
+- **Dev tools**: jscript (JavaScript REPL), make
+- **VM**: vmd (CoreVM daemon), vmctl (CoreVM CLI controller)
+- **Process management**: kill, killall, nice, crond, crontab
+- **Service manager**: svc, logd
+- **Misc**: cal, banner, jp2a, open, play, pipes, vdagent, anyrc, echoserver
 
 ---
 

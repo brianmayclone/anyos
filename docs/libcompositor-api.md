@@ -4,7 +4,7 @@ The **libcompositor** DLL provides IPC-based window management for GUI applicati
 
 **DLL Address:** `0x04380000`
 **Version:** 1
-**Exports:** 23
+**Exports:** 28
 **Client crate:** `libcompositor_client`
 
 ---
@@ -25,7 +25,7 @@ libcompositor_client = { path = "../../libs/libcompositor_client" }
 use libcompositor_client::CompositorClient;
 
 let mut client = CompositorClient::init().expect("compositor not running");
-let win = client.create_window(400, 300, 0).expect("create failed");
+let win = client.create_window(-1, -1, 400, 300, 0).expect("create failed");
 
 // Get pixel buffer (ARGB8888, width * height u32s)
 let surface = client.surface(win);
@@ -80,12 +80,13 @@ client.destroy_window(win);
 
 Connect to the compositor. Returns channel ID for all subsequent calls, fills `out_sub_id` with event subscription ID. Returns 0 on failure (compositor not running).
 
-### `create_window(channel_id, sub_id, width, height, flags, out_shm_id, out_surface) -> window_id`
+### `create_window(channel_id, sub_id, x, y, width, height, flags, out_shm_id, out_surface) -> window_id`
 
-Create a new window.
+Create a new window at position (x, y) with the given content dimensions.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| x, y | `i32` | Window position in pixels, or -1 for compositor auto-placement (CW_USEDEFAULT) |
 | width, height | `u32` | Window client area size in pixels |
 | flags | `u32` | Reserved (pass 0) |
 | out_shm_id | `*mut u32` | Receives SHM region ID |
@@ -148,30 +149,103 @@ Poll events without window filtering — used by tray-icon applications that don
 
 ### `set_blur_behind(channel_id, window_id, radius)`
 
-Enable frosted-glass blur effect behind the window. `radius=0` disables.
+Enable frosted-glass blur effect behind the window. `radius=0` disables. Typical values are 4-12.
+
+### `set_clipboard(channel_id, data_ptr, data_len, format)`
+
+Set the system clipboard contents.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| data_ptr | `*const u8` | Pointer to clipboard data bytes |
+| data_len | `u32` | Length of data in bytes |
+| format | `u32` | Clipboard format: 0 = text/plain, 1 = text/uri-list |
+
+### `get_clipboard(channel_id, sub_id, out_ptr, out_cap, out_format) -> u32`
+
+Read the current clipboard contents. Returns the actual byte count written to `out_ptr` (0 if clipboard is empty).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| out_ptr | `*mut u8` | Buffer to receive clipboard data |
+| out_cap | `u32` | Capacity of the output buffer in bytes |
+| out_format | `*mut u32` | Receives the clipboard format (0 = text/plain, 1 = text/uri-list) |
+| **Returns** | `u32` | Actual byte count (0 if empty) |
+
+### `get_window_position(channel_id, sub_id, window_id, out_x, out_y) -> u32`
+
+Get a window's content area screen position. Returns 1 on success, 0 on failure/timeout.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| out_x | `*mut i32` | Receives the window X position |
+| out_y | `*mut i32` | Receives the window Y position |
+| **Returns** | `u32` | 1 on success, 0 on failure/timeout |
+
+### `minimize_window(channel_id, window_id)`
+
+Minimize a window (move off-screen, save bounds for later restore).
+
+### `set_modal_owner(channel_id, modal_window_id, owner_window_id)`
+
+Set a window as a modal child of another window. The modal window will stay above its owner, and clicking the owner re-focuses the modal. Pass `owner_window_id=0` to clear the modal relationship.
+
+### `set_fullscreen_capable(channel_id, window_id, auto_enter)`
+
+Mark a window as fullscreen-capable. If `auto_enter=1`, the window immediately enters fullscreen mode.
+
+### `request_fullscreen(channel_id, sub_id, window_id, want_direct_fb, out_width, out_height, out_stride, out_fb_ptr) -> u32`
+
+Request fullscreen mode for a window. Returns 1 on success (response received), 0 on timeout.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| want_direct_fb | `u32` | 1 = request direct framebuffer access (for LibGL apps), 0 = SHM compositing |
+| out_width | `*mut u32` | Receives the fullscreen width |
+| out_height | `*mut u32` | Receives the fullscreen height |
+| out_stride | `*mut u32` | Receives the row stride in pixels |
+| out_fb_ptr | `*mut usize` | Receives the direct framebuffer pointer (0 if SHM compositing mode) |
+| **Returns** | `u32` | 1 on success, 0 on timeout |
+
+### `exit_fullscreen(channel_id, window_id)`
+
+Exit fullscreen mode for a window.
 
 ---
 
 ## Event Types
 
-Events are 5 u32s: `[event_type, p1, p2, p3, p4]`.
+Events are 5 u32s: `[event_type, window_id, arg1, arg2, arg3]`.
 
-| Event | Code | p1 | p2 | p3 | p4 |
-|-------|------|----|----|----|-----|
-| `EVT_KEY_DOWN` | 0x3001 | keycode | char_value | modifiers | — |
-| `EVT_KEY_UP` | 0x3002 | keycode | char_value | modifiers | — |
-| `EVT_MOUSE_DOWN` | 0x3003 | x | y | button | — |
-| `EVT_MOUSE_UP` | 0x3004 | x | y | button | — |
-| `EVT_MOUSE_SCROLL` | 0x3005 | x | y | delta_y | — |
-| `EVT_RESIZE` | 0x3006 | new_width | new_height | — | — |
-| `EVT_WINDOW_CLOSE` | 0x3007 | — | — | — | — |
-| `EVT_MENU_ITEM` | 0x3008 | item_id | — | — | — |
-| `EVT_STATUS_ICON_CLICK` | 0x3009 | icon_id | — | — | — |
-| `EVT_MOUSE_MOVE` | 0x300A | x | y | — | — |
-| `EVT_FRAME_ACK` | 0x300B | — | — | — | — |
-| `EVT_FOCUS_LOST` | 0x300C | — | — | — | — |
-| `EVT_NOTIFICATION_CLICK` | 0x3010 | notification_id | — | — | — |
-| `EVT_NOTIFICATION_DISMISSED` | 0x3011 | notification_id | — | — | — |
+The `Event` struct has the following fields:
+```rust
+pub struct Event {
+    pub event_type: u32,
+    pub window_id: u32,
+    pub arg1: u32,
+    pub arg2: u32,
+    pub arg3: u32,
+}
+```
+
+| Event | Code | window_id | arg1 | arg2 | arg3 |
+|-------|------|-----------|------|------|------|
+| `EVT_KEY_DOWN` | 0x3001 | win | keycode | char_value | modifiers |
+| `EVT_KEY_UP` | 0x3002 | win | keycode | char_value | modifiers |
+| `EVT_MOUSE_DOWN` | 0x3003 | win | x | y | button |
+| `EVT_MOUSE_UP` | 0x3004 | win | x | y | button |
+| `EVT_MOUSE_SCROLL` | 0x3005 | win | x | y | delta_y |
+| `EVT_RESIZE` | 0x3006 | win | new_width | new_height | — |
+| `EVT_WINDOW_CLOSE` | 0x3007 | win | — | — | — |
+| `EVT_MENU_ITEM` | 0x3008 | win | item_id | — | — |
+| `EVT_STATUS_ICON_CLICK` | 0x3009 | — | icon_id | — | — |
+| `EVT_MOUSE_MOVE` | 0x300A | win | x | y | — |
+| `EVT_FRAME_ACK` | 0x300B | win | — | — | — |
+| `EVT_FOCUS_LOST` | 0x300C | win | — | — | — |
+| `EVT_FULLSCREEN_ENTER` | 0x300D | win | — | — | — |
+| `EVT_FULLSCREEN_EXIT` | 0x300E | win | — | — | — |
+| `EVT_NOTIFICATION_CLICK` | 0x3010 | — | notification_id | — | — |
+| `EVT_NOTIFICATION_DISMISSED` | 0x3011 | — | notification_id | — | — |
 
 Mouse coordinates are relative to the window client area.
 
@@ -216,6 +290,21 @@ loop {
 
 ## Client Wrappers
 
+### `FullscreenInfo`
+
+Information returned when entering fullscreen mode.
+
+```rust
+pub struct FullscreenInfo {
+    pub width: u32,
+    pub height: u32,
+    /// Row stride in pixels.
+    pub stride: u32,
+    /// Direct framebuffer pointer (0 if SHM compositing mode).
+    pub fb_ptr: usize,
+}
+```
+
 ### `CompositorClient`
 
 High-level wrapper for windowed applications:
@@ -236,6 +325,11 @@ High-level wrapper for windowed applications:
 - `show_notification(title, message, icon, timeout_ms)` — Show system notification
 - `dismiss_notification(notification_id)` — Dismiss notification
 - `screen_size() -> (u32, u32)` — Get screen resolution
+- `set_fullscreen_capable(win, auto_enter)` — Mark window as fullscreen-capable
+- `set_fullscreen_capable_vram(vram_win, auto_enter)` — Mark VRAM window as fullscreen-capable
+- `request_fullscreen(win, want_direct_fb) -> Option<FullscreenInfo>` — Enter fullscreen mode
+- `exit_fullscreen(win)` — Exit fullscreen mode
+- `exit_fullscreen_vram(vram_win)` — Exit fullscreen mode for VRAM window
 
 ### `VramWindowHandle`
 

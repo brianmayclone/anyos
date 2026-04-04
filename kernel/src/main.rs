@@ -126,6 +126,16 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             }
         }
 
+        // Extract bootloader EDID data (from VBE DDC, read in real mode).
+        {
+            let edid_valid = unsafe { core::ptr::addr_of!((*boot_info).edid_valid).read_unaligned() };
+            if edid_valid == 1 {
+                let edid_data = unsafe { core::ptr::addr_of!((*boot_info).edid_data).read_unaligned() };
+                crate::drivers::monitor::store_bootloader_edid(edid_data);
+                serial_println!("[OK] Bootloader EDID: 128 bytes from VBE DDC");
+            }
+        }
+
         boot_info
     };
 
@@ -456,6 +466,54 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
                 }
             }
 
+            // Detect connected monitors and register in device tree
+            drivers::monitor::detect_and_register();
+
+            // Auto-apply native monitor resolution (if no boot param override).
+            // Minimum: 1024x768 — never start with a smaller resolution.
+            // Skip for virgl (3D) — calling set_mode during early boot with an active
+            // GL context causes intermittent black screens due to timing issues.
+            let is_3d = drivers::gpu::with_gpu(|g| g.has_3d()).unwrap_or(false);
+            if !is_3d && drivers::gpu::preferred_resolution().is_none() {
+                let mut target: Option<(u32, u32)> = None;
+
+                // Try EDID preferred resolution first.
+                if let Some(mon) = drivers::monitor::get_monitor(0) {
+                    let nw = mon.edid.preferred_width;
+                    let nh = mon.edid.preferred_height;
+                    if nw >= 1024 && nh >= 768 {
+                        target = Some((nw, nh));
+                    }
+                }
+
+                // Fallback: GPU display_info (e.g. VirtIO GET_DISPLAY_INFO reports
+                // the host-configured resolution even when EDID preferred timing
+                // reports a different value like 640x480).
+                if target.is_none() {
+                    if let Some((dw, dh, true)) = drivers::gpu::with_gpu(|g| g.display_info(0)).flatten() {
+                        if dw >= 1024 && dh >= 768 {
+                            target = Some((dw, dh));
+                        }
+                    }
+                }
+
+                if let Some((tw, th)) = target {
+                    if let Some((aw, ah, _, _)) = drivers::gpu::with_gpu(|g| g.get_mode()) {
+                        if (aw, ah) != (tw, th) {
+                            if drivers::gpu::with_gpu(|g| g.set_mode(tw, th, 32)).is_some() {
+                                serial_println!("[OK] Applied native monitor resolution: {}x{}", tw, th);
+                                if let Some((w2, h2, p2, a2)) = drivers::gpu::with_gpu(|g| g.get_mode()) {
+                                    drivers::framebuffer::update(a2 as u64, p2, w2, h2, 32);
+                                    // Update vmmouse coordinate scaling for new resolution
+                                    drivers::input::vmmouse::update_screen_size(w2, h2);
+                                    drivers::vmmdev::set_screen_size(w2 as u16, h2 as u16);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let has_accel = drivers::gpu::with_gpu(|g| g.has_accel()).unwrap_or(false);
             if has_accel {
                 GPU_ACCEL.store(true, AtomicOrdering::Relaxed);
@@ -487,10 +545,16 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
                 }
             } else {
                 // --- Normal GUI path ---
+                // Use current GPU mode dimensions (may differ from boot fb after auto-resolution).
+                let (disp_w, disp_h) = drivers::gpu::with_gpu(|g| {
+                    let (w, h, _, _) = g.get_mode();
+                    (w, h)
+                }).unwrap_or((fb.width, fb.height));
+
                 let has_hw_cursor = drivers::gpu::with_gpu(|g| g.has_hw_cursor()).unwrap_or(false);
                 if has_hw_cursor {
                     GPU_HW_CURSOR.store(true, AtomicOrdering::Relaxed);
-                    drivers::gpu::enable_splash_cursor(fb.width, fb.height);
+                    drivers::gpu::enable_splash_cursor(disp_w, disp_h);
                 }
 
                 // Flush the current framebuffer content (boot splash with spinner cleared)

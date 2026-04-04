@@ -28,6 +28,11 @@ pub struct BootInfo {
     pub rsdp_addr: u32,
     /// Boot parameters string from boot.cfg (null-terminated, 64 bytes).
     pub boot_params: [u8; 64],
+    /// EDID data read by the bootloader via VBE DDC (128 bytes).
+    pub edid_data: [u8; 128],
+    /// 1 if EDID was successfully read by the bootloader, 0 otherwise.
+    pub edid_valid: u8,
+    pub _padding2: [u8; 3],
 }
 
 /// Magic value (`"ANYO"` in ASCII) used to validate the boot info struct.

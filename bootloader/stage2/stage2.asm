@@ -386,6 +386,37 @@ fill_boot_info:
     pop ecx
     pop edi
 
+    ; EDID data (128 bytes at offset 108) + edid_valid (1 byte at offset 236)
+    push esi
+    push edi
+    push ecx
+    push eax
+    cmp byte [edid_ok], 1
+    jne .no_edid_copy
+    ; Copy 128 bytes from EDID_BUF_ADDR to BOOT_INFO_ADDR + 108
+    mov esi, EDID_BUF_ADDR
+    lea edi, [BOOT_INFO_ADDR + 108]
+    mov ecx, 32                     ; 32 dwords = 128 bytes
+    a32 rep movsd
+    mov byte [BOOT_INFO_ADDR + 236], 1   ; edid_valid = 1
+    jmp .edid_copy_done
+.no_edid_copy:
+    ; Zero the EDID area (128 bytes)
+    lea edi, [BOOT_INFO_ADDR + 108]
+    mov ecx, 32
+    xor eax, eax
+    a32 rep stosd
+    mov byte [BOOT_INFO_ADDR + 236], 0   ; edid_valid = 0
+.edid_copy_done:
+    ; Zero padding bytes 237-239
+    mov byte [BOOT_INFO_ADDR + 237], 0
+    mov byte [BOOT_INFO_ADDR + 238], 0
+    mov byte [BOOT_INFO_ADDR + 239], 0
+    pop eax
+    pop ecx
+    pop edi
+    pop esi
+
     popa
     ret
 

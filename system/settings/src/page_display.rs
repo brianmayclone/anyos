@@ -93,6 +93,37 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let res_str = format!("{} x {}", sw, sh);
     layout::build_info_row(&info_card, i18n::t("Current Resolution"), &res_str, false);
 
+    // Monitor info (from EDID)
+    if anyos_std::sys::monitor_count() > 0 {
+        if let Some(minfo) = anyos_std::sys::monitor_info(0) {
+            layout::build_separator(&info_card);
+            let mfr = str_from_bytes(&minfo.manufacturer);
+            let model = str_from_bytes(&minfo.model_name);
+            let mon_name = if model.is_empty() {
+                if mfr.is_empty() { alloc::string::String::from("Unknown") } else { alloc::string::String::from(mfr) }
+            } else {
+                format!("{} {}", mfr, model)
+            };
+            layout::build_info_row(&info_card, i18n::t("Monitor"), &mon_name, false);
+
+            let nw = unsafe { core::ptr::addr_of!(minfo.native_width).read_unaligned() };
+            let nh = unsafe { core::ptr::addr_of!(minfo.native_height).read_unaligned() };
+            if nw > 0 && nh > 0 {
+                layout::build_separator(&info_card);
+                let native_str = format!("{} x {}", nw, nh);
+                layout::build_info_row(&info_card, i18n::t("Native Resolution"), &native_str, false);
+            }
+
+            let wmm = unsafe { core::ptr::addr_of!(minfo.width_mm).read_unaligned() };
+            let hmm = unsafe { core::ptr::addr_of!(minfo.height_mm).read_unaligned() };
+            if wmm > 0 && hmm > 0 {
+                layout::build_separator(&info_card);
+                let size_str = format!("{} x {} mm", wmm, hmm);
+                layout::build_info_row(&info_card, i18n::t("Screen Size"), &size_str, false);
+            }
+        }
+    }
+
     // ── Theme Appearance card ─────────────────────────────────────────────
     build_theme_card(&panel);
 
@@ -109,14 +140,30 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 
         let row = layout::build_setting_row(&res_card, i18n::t("Resolution"), true);
 
-        // Build pipe-separated items string
+        // Get native resolution from monitor (if available).
+        let native = if anyos_std::sys::monitor_count() > 0 {
+            anyos_std::sys::monitor_info(0).and_then(|m| {
+                let nw = unsafe { core::ptr::addr_of!(m.native_width).read_unaligned() };
+                let nh = unsafe { core::ptr::addr_of!(m.native_height).read_unaligned() };
+                if nw > 0 && nh > 0 { Some((nw, nh)) } else { None }
+            })
+        } else {
+            None
+        };
+
+        // Build pipe-separated items string; mark native resolution.
         let mut items = String::new();
         let mut current_idx: u32 = 0;
         for (i, &(rw, rh)) in resolutions.iter().enumerate() {
             if i > 0 {
                 items.push('|');
             }
-            items.push_str(&format!("{} x {}", rw, rh));
+            let label = if native == Some((rw, rh)) {
+                format!("{} x {} ({})", rw, rh, i18n::t("native"))
+            } else {
+                format!("{} x {}", rw, rh)
+            };
+            items.push_str(&label);
             if rw == sw && rh == sh {
                 current_idx = i as u32;
             }
@@ -855,4 +902,10 @@ fn fmt_u32_bytes(val: u32) -> &'static [u8] {
         }
         &BUF[..LEN]
     }
+}
+
+/// Extract a trimmed string from a null-terminated byte array.
+fn str_from_bytes(bytes: &[u8]) -> &str {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    core::str::from_utf8(&bytes[..end]).unwrap_or("").trim()
 }

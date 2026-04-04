@@ -19,8 +19,9 @@ ami (client)                     amid (daemon)
 
 | Property | Value |
 |----------|-------|
-| Binary | `/system/amid` |
-| Start | `svc start amid` |
+| Source | `system/amid/` |
+| Binary | `/System/bin/amid` |
+| Start | Not auto-started. Run manually: `/System/bin/amid &` or from a shell. There is no svc config file for amid. |
 | Database | `/System/sysdb/ami.db` |
 | Pipe | `"ami"` (named pipe) |
 

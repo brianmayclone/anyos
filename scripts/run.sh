@@ -530,9 +530,72 @@ if [ "$ARM64_MODE" = true ]; then
     exit 0
 fi
 
-# VirtIO/virgl GPU: default to 1024x768 if no --res specified
-if { [ "$VGA" = "virtio" ] || [ "$VGA" = "virgl" ]; } && [ -z "$RESOLUTION" ]; then
-    RESOLUTION="${MIN_RES_W}x${MIN_RES_H}"
+# VirtIO GPU (2D only): auto-detect host monitor resolution if no --res specified.
+# This makes the guest start at the same resolution as the host display,
+# so the Monitor EDID data in anyOS matches the real screen.
+# virgl is excluded — its GL display backend handles resolution differently.
+if [ "$VGA" = "virtio" ] && [ -z "$RESOLUTION" ]; then
+    HOST_RES=""
+    # Try xrandr (X11 and XWayland)
+    if command -v xrandr &>/dev/null; then
+        HOST_RES=$(xrandr --current 2>/dev/null | grep -oP '\d+x\d+(?=\s+\d+\.\d+\*)')
+        # Take primary monitor (first match)
+        HOST_RES=$(echo "$HOST_RES" | head -1)
+    fi
+    # Try wlr-randr (native Wayland)
+    if [ -z "$HOST_RES" ] && command -v wlr-randr &>/dev/null; then
+        HOST_RES=$(wlr-randr 2>/dev/null | grep -oP '\d+x\d+(?= px)')
+        HOST_RES=$(echo "$HOST_RES" | head -1)
+    fi
+    if [ -n "$HOST_RES" ]; then
+        H_W="${HOST_RES%%x*}"
+        H_H="${HOST_RES#*x}"
+        # Cap at 1920x1080 for VM performance (large framebuffers are slow in VirtIO).
+        # HiDPI monitors (4K/5K) would produce huge guest framebuffers with no benefit
+        # since QEMU does not pass through HiDPI scaling.
+        MAX_RES_W=1920
+        MAX_RES_H=1080
+        if [ "$H_W" -gt "$MAX_RES_W" ] || [ "$H_H" -gt "$MAX_RES_H" ]; then
+            H_W=$MAX_RES_W
+            H_H=$MAX_RES_H
+        fi
+        # Enforce minimum 1024x768
+        if [ "$H_W" -ge "$MIN_RES_W" ] 2>/dev/null && [ "$H_H" -ge "$MIN_RES_H" ] 2>/dev/null; then
+            RESOLUTION="${H_W}x${H_H}"
+            echo "Auto-detected host monitor: ${HOST_RES} -> VM resolution: ${RESOLUTION}"
+        fi
+    fi
+    # Fallback if detection failed
+    if [ -z "$RESOLUTION" ]; then
+        RESOLUTION="${MIN_RES_W}x${MIN_RES_H}"
+    fi
+fi
+
+# std/vmware GPU: auto-detect host resolution for GTK window size if no --res.
+if { [ "$VGA" = "std" ] || [ "$VGA" = "vmware" ]; } && [ -z "$RESOLUTION" ]; then
+    HOST_RES=""
+    if command -v xrandr &>/dev/null; then
+        HOST_RES=$(xrandr --current 2>/dev/null | grep -oP '\d+x\d+(?=\s+\d+\.\d+\*)')
+        HOST_RES=$(echo "$HOST_RES" | head -1)
+    fi
+    if [ -z "$HOST_RES" ] && command -v wlr-randr &>/dev/null; then
+        HOST_RES=$(wlr-randr 2>/dev/null | grep -oP '\d+x\d+(?= px)')
+        HOST_RES=$(echo "$HOST_RES" | head -1)
+    fi
+    if [ -n "$HOST_RES" ]; then
+        H_W="${HOST_RES%%x*}"
+        H_H="${HOST_RES#*x}"
+        MAX_RES_W=1920
+        MAX_RES_H=1080
+        if [ "$H_W" -gt "$MAX_RES_W" ] || [ "$H_H" -gt "$MAX_RES_H" ]; then
+            H_W=$MAX_RES_W
+            H_H=$MAX_RES_H
+        fi
+        if [ "$H_W" -ge "$MIN_RES_W" ] 2>/dev/null && [ "$H_H" -ge "$MIN_RES_H" ] 2>/dev/null; then
+            RESOLUTION="${H_W}x${H_H}"
+            echo "Auto-detected host monitor: ${HOST_RES} -> VM window: ${RESOLUTION}"
+        fi
+    fi
 fi
 
 # Enforce minimum resolution (1024x768)
@@ -635,24 +698,10 @@ fi
 
 # VGA device flags
 VGA_FLAGS="-vga $VGA"
-# macOS QEMU uses cocoa display backend, Linux uses gtk
-if [ "$(uname)" = "Darwin" ]; then
-    DISPLAY_FLAGS="-display cocoa"
-else
-    DISPLAY_FLAGS="-display gtk"
-fi
 RES_LABEL=""
 if [ "$VGA" = "virgl" ]; then
-    RES_W="${RESOLUTION%%x*}"
-    RES_H="${RESOLUTION#*x}"
-    VGA_FLAGS="-vga none -device virtio-vga-gl,edid=on,xres=$RES_W,yres=$RES_H"
-    if [ "$(uname)" = "Darwin" ]; then
-        DISPLAY_FLAGS="-display cocoa"
-    else
-        DISPLAY_FLAGS="-display gtk,gl=on"
-    fi
-    VGA_LABEL="Virtio GPU + virgl (${RES_W}x${RES_H}, 3D)"
-    RES_LABEL=", res: ${RESOLUTION}"
+    VGA_FLAGS="-vga none -device virtio-vga-gl"
+    VGA_LABEL="Virtio GPU + virgl (3D accelerated)"
 elif [ "$VGA" = "virtio" ]; then
     RES_W="${RESOLUTION%%x*}"
     RES_H="${RESOLUTION#*x}"
@@ -662,12 +711,19 @@ elif [ "$VGA" = "virtio" ]; then
 elif [ -n "$RESOLUTION" ]; then
     RES_W="${RESOLUTION%%x*}"
     RES_H="${RESOLUTION#*x}"
-    if [ "$(uname)" = "Darwin" ]; then
-        DISPLAY_FLAGS="-display cocoa"
-    else
-        DISPLAY_FLAGS="-display gtk,window-size=${RES_W}x${RES_H}"
-    fi
     RES_LABEL=", res: ${RESOLUTION}"
+fi
+
+# Display backend.
+# Do NOT use zoom-to-fit — it prevents the GTK window from resizing when
+# the guest changes resolution via SET_SCANOUT. Without zoom-to-fit,
+# QEMU auto-resizes the window to match the guest framebuffer dimensions.
+if [ "$(uname)" = "Darwin" ]; then
+    DISPLAY_FLAGS="-display cocoa"
+elif [ "$VGA" = "virgl" ]; then
+    DISPLAY_FLAGS="-display gtk,gl=on"
+else
+    DISPLAY_FLAGS="-display gtk"
 fi
 
 # Default input: PS/2 keyboard + PS/2 mouse + vmmouse backdoor (absolute positioning).

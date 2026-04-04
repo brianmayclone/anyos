@@ -1,10 +1,10 @@
 # anyui Controls Framework API Reference
 
-The **anyui** framework is a Windows Forms-inspired UI toolkit providing 42 control types for anyOS GUI applications. It consists of a server-side library (**libanyui**, `.so` at `0x04400000`) compiled into the compositor, and a client-side wrapper (**libanyui_client**) that user programs link against.
+The **anyui** framework is a Windows Forms-inspired UI toolkit providing 44 control types for anyOS GUI applications. It consists of a server-side library (**libanyui**, `.so` at `0x04400000`) compiled into the compositor, and a client-side wrapper (**libanyui_client**) that user programs link against.
 
-**Exports:** 120+ (C ABI, `#[no_mangle]`)
+**Exports:** 191 (C ABI, `#[no_mangle]`)
 **Client crate:** `libanyui_client`
-**Controls:** 42 types (ControlKind 0-41)
+**Controls:** 44 types (ControlKind 0-43)
 **Symbol resolution:** `dl_open`/`dl_sym` (ELF `.dynsym`/`.hash`)
 
 ---
@@ -43,6 +43,8 @@ The **anyui** framework is a Windows Forms-inspired UI toolkit providing 42 cont
   - [TextEditor](#texteditor)
   - [TreeView](#treeview)
   - [ImageButton](#imagebutton)
+  - [DropDown](#dropdown)
+  - [AutoCompleteTextField](#autocompletetextfield)
 - [Container Controls](#container-controls)
   - [Card](#card)
   - [GroupBox](#groupbox)
@@ -61,6 +63,9 @@ The **anyui** framework is a Windows Forms-inspired UI toolkit providing 42 cont
   - [FlowPanel](#flowpanel)
   - [TableLayout](#tablelayout)
   - [RadioGroup](#radiogroup)
+- [System Components](#system-components)
+  - [TrayIcon](#trayicon)
+  - [MenuBar](#menubar)
 - [Dialogs](#dialogs)
 - [Icon System](#icon-system)
 - [Events Reference](#events-reference)
@@ -70,6 +75,12 @@ The **anyui** framework is a Windows Forms-inspired UI toolkit providing 42 cont
 - [Clipboard API](#clipboard-api)
 - [Theme API](#theme-api)
 - [Key Constants](#key-constants)
+- [Window Management](#window-management)
+- [Fullscreen API](#fullscreen-api)
+- [Modal Dialogs](#modal-dialogs)
+- [Display & Scaling](#display--scaling)
+- [Text Measurement](#text-measurement)
+- [Window Lifecycle](#window-lifecycle)
 - [Utilities](#utilities)
 - [Syntax Highlighting](#syntax-highlighting)
 - [Frame Pacing & VSync](#frame-pacing--vsync)
@@ -273,7 +284,7 @@ KIND_SEARCH_FIELD = 28, KIND_TEXT_AREA = 29, KIND_ICON_BUTTON = 30,
 KIND_BADGE = 31, KIND_TAG = 32, KIND_STACK_PANEL = 33, KIND_FLOW_PANEL = 34,
 KIND_TABLE_LAYOUT = 35, KIND_CANVAS = 36, KIND_EXPANDER = 37,
 KIND_DATA_GRID = 38, KIND_TEXT_EDITOR = 39, KIND_TREE_VIEW = 40,
-KIND_RADIO_GROUP = 41
+KIND_RADIO_GROUP = 41, KIND_DROP_DOWN = 42, KIND_AUTO_COMPLETE_TEXT_FIELD = 43
 ```
 
 ---
@@ -345,6 +356,7 @@ fn set_tooltip(&self, text: &str)        // Shown on hover
 fn focus(&self)                          // Set keyboard focus
 fn set_tab_index(&self, index: u32)
 fn set_context_menu(&self, menu: &impl Widget)
+fn bring_to_front(&self)                 // Move to end of parent's child list (render on top)
 fn remove(&self)                         // Remove from parent
 fn from_id(id: u32) -> Self             // Wrap existing control ID
 fn id(&self) -> u32                      // Get control ID
@@ -357,7 +369,9 @@ fn id(&self) -> u32                      // Get control ID
 Extends Control with:
 
 ```rust
-fn add(&self, child: &impl Widget)       // Add child control
+fn add(&self, child: &impl Widget)               // Add child control
+fn remove_child(&self, child: &impl Widget)      // Remove and destroy a specific child (including descendants)
+fn clear(&self)                                  // Remove and destroy ALL children (container preserved)
 ```
 
 ---
@@ -375,9 +389,19 @@ Window::new_with_flags(title: &str, x: i32, y: i32, w: u32, h: u32, flags: u32) 
 
 fn set_title(&self, title: &str)         // Change window title after creation
 fn destroy(&self)
+fn resize(&self, w: u32, h: u32)        // Programmatically resize (SHM buffer + control)
+fn move_to(&self, x: i32, y: i32)       // Move window to new screen position
+fn minimize(&self)                       // Minimize (hide off-screen, restore via dock)
+fn set_modal(&self, owner: &Window)      // Make this a modal child of owner (blocks owner input)
+fn set_cursor_visible(&self, visible: bool)  // Hide/show mouse cursor for this window
+fn set_fullscreen_capable(&self, auto_enter: bool)  // Mark window as fullscreen-capable
 fn on_close(&self, f: impl FnMut(&EventArgs) + 'static)
 fn on_resize(&self, f: impl FnMut(&EventArgs) + 'static)
+fn on_click(&self, f: impl FnMut(&ClickEvent) + 'static)   // Window background click
 fn on_key_down(&self, f: impl FnMut(&KeyEvent) + 'static)  // Unhandled key events that bubble up
+fn on_key_up(&self, f: impl FnMut(&KeyEvent) + 'static)
+fn on_fullscreen_enter(&self, f: impl FnMut(&EventArgs) + 'static)
+fn on_fullscreen_exit(&self, f: impl FnMut(&EventArgs) + 'static)
 ```
 
 ### View
@@ -429,6 +453,7 @@ fn set_placeholder(&self, text: &str)
 fn set_prefix_icon(&self, icon_code: u32)
 fn set_postfix_icon(&self, icon_code: u32)
 fn set_password_mode(&self, enabled: bool)
+fn select_all(&self)                              // Select all text in the field
 fn on_text_changed(&self, f: impl FnMut(&TextChangedEvent) + 'static)
 fn on_submit(&self, f: impl FnMut(&SubmitEvent) + 'static)   // Enter key
 ```
@@ -629,6 +654,8 @@ fn fill_circle(&self, cx: i32, cy: i32, radius: i32, color: u32)
 fn draw_ellipse(&self, cx: i32, cy: i32, rx: i32, ry: i32, color: u32)
 fn fill_ellipse(&self, cx: i32, cy: i32, rx: i32, ry: i32, color: u32)
 fn flood_fill(&self, x: i32, y: i32, color: u32)
+fn draw_text(&self, x: i32, y: i32, color: u32, font_id: u32, size: u16, text: &str)
+             // font_id: 0=system, 1=bold, 2=thin, 3=italic, 4=mono (Andale Mono)
 
 // Buffer access
 fn get_buffer(&self) -> *mut u32       // Raw ARGB pixel buffer
@@ -645,7 +672,8 @@ fn get_mouse(&self) -> (i32, i32, u32)   // (x, y, button_state)
 fn on_click(&self, f: impl FnMut(&ClickEvent) + 'static)
 fn on_mouse_down(&self, f: impl FnMut(i32, i32, u32) + 'static)
 fn on_mouse_up(&self, f: impl FnMut(i32, i32, u32) + 'static)
-fn on_draw(&self, f: impl FnMut(i32, i32, u32) + 'static)  // Drag events
+fn on_mouse_move(&self, f: impl FnMut(i32, i32) + 'static)  // Cursor movement
+fn on_draw(&self, f: impl FnMut(i32, i32, u32) + 'static)   // Drag events (requires set_interactive(true))
 ```
 
 ### DataGrid
@@ -691,6 +719,12 @@ fn is_row_selected(&self, row: u32) -> bool
 
 // Sorting
 fn sort(&self, column: u32, direction: u32)      // SORT_NONE/ASCENDING/DESCENDING
+
+// Minimap & Connectors
+fn set_minimap_colors(&self, colors: &[u32])     // Per-row colors in scrollbar track (0=no marker)
+fn click_column(&self) -> i32                    // Display column of last click (-1 if none)
+fn set_connector_lines(&self, lines: &[(u32, u32, u32, u8)])  // (start_row, end_row, color, filled)
+fn set_connector_column(&self, col: u32)         // Which column to draw connectors in (default: 2)
 
 // Events
 fn on_selection_changed(&self, f: impl FnMut(&SelectionChangedEvent) + 'static)
@@ -747,8 +781,17 @@ fn cut(&self) -> bool                    // Cut selection to system clipboard
 fn paste(&self) -> u32                   // Paste from clipboard; returns bytes pasted
 fn select_all(&self)                     // Select all text
 
+// Line Highlights
+fn highlight_line(&self, line: u32, color: u32)  // Highlight a line with ARGB background color
+fn clear_highlights(&self)               // Remove all line highlights
+
+// Read-Only & Navigation
+fn set_read_only(&self, read_only: bool) // Disable editing (navigation/selection/copy still work)
+fn ensure_line_visible(&self, line: u32) // Scroll so the given line is visible (centered if possible)
+
 // Events
 fn on_text_changed(&self, f: impl FnMut(&TextChangedEvent) + 'static)
+fn on_key_down(&self, f: impl FnMut(&KeyEvent) + 'static)   // Key events on this editor
 ```
 
 **Keyboard:** Arrow keys, Home/End, Page Up/Down, Backspace, Delete, Tab (inserts spaces), Enter (auto-indent), Ctrl+C/X/V (copy/cut/paste), Ctrl+A (select all).
@@ -806,6 +849,41 @@ fn set_pixels(&self, pixels: &[u32], w: u32, h: u32)  // Raw ARGB
 fn on_click(&self, f: impl FnMut(&ClickEvent) + 'static)
 ```
 
+### DropDown
+
+Drop-down selection list.
+
+```rust
+DropDown::new(items: &str) -> Self               // Pipe-separated: "640x480|800x600|1024x768"
+fn set_items(&self, items: &str)                 // Replace item list (pipe-separated)
+fn selected_index(&self) -> u32                  // Get selected index (0-based)
+fn set_selected_index(&self, idx: u32)           // Set selected index
+fn on_selection_changed(&self, f: impl FnMut(&SelectionChangedEvent) + 'static)
+```
+
+Use `set_text()` / `get_text()` from Control base to set/get the item list.
+
+### AutoCompleteTextField
+
+Text input with autocomplete suggestions popup.
+
+```rust
+AutoCompleteTextField::new() -> Self
+fn set_placeholder(&self, text: &str)
+fn set_suggestions(&self, items: &str)           // Pipe-separated suggestions
+fn on_text_changed(&self, f: impl FnMut(&TextChangedEvent) + 'static)
+fn on_submit(&self, f: impl FnMut(&SubmitEvent) + 'static)   // Enter key
+```
+
+The server filters the suggestions as the user types, displaying matching entries in a popup.
+
+```rust
+let field = AutoCompleteTextField::new();
+field.set_placeholder("Search contacts...");
+field.set_suggestions("Alice <alice@example.com>|Bob <bob@example.com>|Carol <carol@example.com>");
+field.on_submit(|e| { /* user pressed Enter */ });
+```
+
 ---
 
 ## Container Controls
@@ -836,6 +914,7 @@ fn set_orientation(&self, orientation: u32)     // VERTICAL or HORIZONTAL
 fn set_split_ratio(&self, ratio: u32)           // 0-100
 fn set_min_split(&self, min_ratio: u32)
 fn set_max_split(&self, max_ratio: u32)
+fn set_resizable(&self, resizable: bool)        // Enable/disable drag-to-resize splitter
 fn on_split_changed(&self, f: impl FnMut(&ValueChangedEvent) + 'static)
 ```
 
@@ -872,8 +951,10 @@ Multi-tab interface with closable tabs.
 ```rust
 TabBar::new(labels: &str) -> Self           // Pipe-separated: "File 1|File 2"
 fn connect_panels(&self, panels: &[&impl Widget])  // Auto-switch visibility
+fn show_plus(&self, show: bool)                // Show/hide "+" (new-tab) button
 fn on_active_changed(&self, f: impl FnMut(&SelectionChangedEvent) + 'static)
 fn on_tab_close(&self, f: impl FnMut(&SelectionChangedEvent) + 'static)
+fn on_double_click(&self, f: impl FnMut(&SelectionChangedEvent) + 'static)  // Double-click on a tab
 ```
 
 ### Toolbar
@@ -971,6 +1052,7 @@ Grid layout with configurable columns.
 TableLayout::new(columns: u32) -> Self
 fn set_columns(&self, columns: u32)
 fn set_row_height(&self, row_height: u32)
+fn set_column_widths(&self, widths: &[u32])  // Per-column pixel widths (last column gets remaining space)
 ```
 
 ### RadioGroup
@@ -982,6 +1064,82 @@ RadioGroup::new() -> Self
 ```
 
 Add RadioButton children with `add()`. When one is checked, the others are automatically unchecked.
+
+---
+
+## System Components
+
+### TrayIcon
+
+System tray icon (16x16 ARGB, displayed in the menu bar). Unlike normal controls, TrayIcon does not have a control ID or parent window -- it communicates directly with the compositor via IPC.
+
+```rust
+TrayIcon::new(icon_id: u32, pixels: &[u32; 256]) -> Self   // Create and register a 16x16 ARGB tray icon
+fn set_pixels(&self, pixels: &[u32; 256])        // Update the icon pixel data
+fn on_click(&self, f: impl FnMut() + 'static)   // Register click callback
+fn remove(&self)                                 // Remove from menu bar
+```
+
+TrayIcon implements `Drop`, so it is automatically removed when the struct is dropped.
+
+```rust
+let mut pixels = [0xFF007AFFu32; 256]; // solid blue 16x16
+let tray = TrayIcon::new(1, &pixels);
+tray.on_click(|| {
+    // user clicked the tray icon
+});
+```
+
+### MenuBar
+
+Window menu bar with nested menus and item flags. Built using `MenuBarBuilder`, then applied to a window via `MenuBar::set()`.
+
+**Constants:**
+
+```rust
+MENU_FLAG_DISABLED  = 0x01    // Greyed out, not clickable
+MENU_FLAG_SEPARATOR = 0x02    // Horizontal separator line
+MENU_FLAG_CHECKED   = 0x04    // Checkmark next to item
+```
+
+**Types:**
+
+```rust
+MenuBar::set(win_id: u32, data: &[u8]) -> Self          // Attach menu bar to window
+fn on_item(&self, f: impl FnMut(&MenuItemEvent) + 'static)  // Menu item click callback
+fn update_item(&self, item_id: u32, new_flags: u32)      // Update item flags at runtime
+```
+
+**Builder:**
+
+```rust
+let mut builder = MenuBarBuilder::new();
+let data = builder
+    .menu("File")
+        .item(1, "New", 0)
+        .item(2, "Open...", 0)
+        .separator()
+        .item(5, "Quit", 0)
+    .end_menu()
+    .menu("Edit")
+        .item(10, "Cut", 0)
+        .item(11, "Copy", 0)
+        .item(12, "Paste", 0)
+    .end_menu()
+    .build();
+let menu = MenuBar::set(win.id(), data);
+menu.on_item(|e| {
+    match e.item_id {
+        1 => new_file(),
+        2 => open_file(),
+        5 => anyui::quit(),
+        10 => cut(), 11 => copy(), 12 => paste(),
+        _ => {}
+    }
+});
+```
+
+The `MenuItemEvent` struct contains a single field `item_id: u32`.
 
 ---
 
@@ -1077,15 +1235,16 @@ fn apply_to(&self, image_view: &ImageView)
 | Struct | Fields | Used by |
 |--------|--------|---------|
 | `ClickEvent` | `id: u32` | Button, IconButton, Tag, Canvas, TreeView |
-| `TextChangedEvent` | `id: u32` + `.text() -> String` | TextField, SearchField, TextArea, TextEditor |
-| `SubmitEvent` | `id: u32` | TextField, SearchField (Enter key) |
-| `SelectionChangedEvent` | `id: u32, index: u32` | DataGrid, TreeView, TabBar, SegmentedControl, Sidebar, ContextMenu |
+| `TextChangedEvent` | `id: u32` + `.text() -> String` | TextField, SearchField, TextArea, TextEditor, AutoCompleteTextField |
+| `SubmitEvent` | `id: u32` | TextField, SearchField, AutoCompleteTextField (Enter key) |
+| `SelectionChangedEvent` | `id: u32, index: u32` | DataGrid, TreeView, TabBar, SegmentedControl, Sidebar, ContextMenu, DropDown |
 | `CheckedChangedEvent` | `id: u32, checked: bool` | Toggle, Checkbox, RadioButton, Expander |
 | `ValueChangedEvent` | `id: u32, value: u32` | Slider, Stepper, SplitView |
 | `ScrollChangedEvent` | `id: u32, offset: u32` | ScrollView |
 | `EventArgs` | `id: u32` | Window (close, resize) |
 | `ColorSelectedEvent` | `id: u32, color: u32` | ColorWell |
-| `KeyEvent` | `keycode: u32, char_code: u32, modifiers: u32` | Window (on_key_down) |
+| `KeyEvent` | `keycode: u32, char_code: u32, modifiers: u32` | Window (on_key_down, on_key_up), TextEditor (on_key_down) |
+| `MenuItemEvent` | `item_id: u32` | MenuBar (on_item) |
 
 ### KeyEvent
 
@@ -1241,9 +1400,11 @@ fn get_theme() -> u32                       // Get current theme ID
 
 // Theme module
 pub mod theme {
-    fn colors() -> ThemeColors              // Get current theme colors
+    fn colors() -> &'static ThemeColors     // Get current theme colors (zero-cost pointer read)
     fn set_theme(light: bool)               // Switch theme
     fn is_light() -> bool                   // Check if light mode is active
+    fn apply_accent_style(dark_accent: u32, dark_hover: u32, light_accent: u32, light_hover: u32)
+                                            // Override accent colors in both palettes
 
     // Color utilities
     fn darken(color: u32, amount: u32) -> u32    // Darken ARGB color (amount: 0-255)
@@ -1256,16 +1417,152 @@ pub mod theme {
 
 ```rust
 pub struct ThemeColors {
-    pub bg: u32,              // Main background
-    pub text: u32,            // Default text
-    pub sidebar_bg: u32,      // Sidebar/toolbar background
-    pub border: u32,          // Border color
-    pub accent: u32,          // Accent / selection color
-    pub hover: u32,           // Hover highlight
-    pub selected_bg: u32,     // Selected item background
-    pub selected_text: u32,   // Selected item text
-    // ... additional fields
+    pub window_bg: u32,           // Main window background
+    pub text: u32,                // Default text
+    pub text_secondary: u32,      // Secondary/muted text
+    pub text_disabled: u32,       // Disabled control text
+    pub accent: u32,              // Accent / primary action color
+    pub accent_hover: u32,        // Accent hover state
+    pub destructive: u32,         // Destructive action color (red)
+    pub success: u32,             // Success indicator (green)
+    pub warning: u32,             // Warning indicator (yellow)
+    pub control_bg: u32,          // Button/control background
+    pub control_hover: u32,       // Control hover state
+    pub control_pressed: u32,     // Control pressed state
+    pub input_bg: u32,            // Text input background
+    pub input_border: u32,        // Text input border
+    pub input_focus: u32,         // Focused input border
+    pub separator: u32,           // Divider/separator color
+    pub selection: u32,           // Text selection background
+    pub sidebar_bg: u32,          // Sidebar background
+    pub card_bg: u32,             // Card background
+    pub card_border: u32,         // Card border
+    pub badge_red: u32,           // Badge color
+    pub toggle_on: u32,           // Toggle on-state
+    pub toggle_off: u32,          // Toggle off-state
+    pub toggle_thumb: u32,        // Toggle thumb color
+    pub scrollbar: u32,           // Scrollbar thumb
+    pub scrollbar_track: u32,     // Scrollbar track
+    pub check_mark: u32,          // Checkbox/radio checkmark
+    pub toolbar_bg: u32,          // Toolbar background
+    pub tab_inactive_bg: u32,     // Inactive tab background
+    pub tab_hover_bg: u32,        // Tab hover state
+    pub tab_border_active: u32,   // Active tab bottom border
+    pub editor_bg: u32,           // Text editor background
+    pub editor_line_hl: u32,      // Editor current line highlight
+    pub editor_selection: u32,    // Editor text selection
+    pub alt_row_bg: u32,          // Alternating row background
+    pub placeholder_bg: u32,      // Placeholder/loading background
 }
+```
+
+---
+
+## Window Management
+
+Functions for programmatic window control beyond what the Window struct provides:
+
+```rust
+fn minimize_window(win_id: u32)                  // Minimize a window (hide off-screen)
+fn move_window(win_id: u32, x: i32, y: i32)     // Move a window to screen position
+fn resize_window(win_id: u32, w: u32, h: u32)   // Resize window (SHM + control tree)
+fn destroy_window(win_id: u32)                   // Destroy a window and all children
+```
+
+These are also available as methods on `Window` (see [Window](#window)).
+
+---
+
+## Fullscreen API
+
+Direct framebuffer access for fullscreen applications (games, video players).
+
+```rust
+// On Window:
+fn set_fullscreen_capable(&self, auto_enter: bool)   // Mark window as fullscreen-capable
+fn on_fullscreen_enter(&self, f: impl FnMut(&EventArgs) + 'static)
+fn on_fullscreen_exit(&self, f: impl FnMut(&EventArgs) + 'static)
+
+// Standalone:
+fn get_fullscreen_info() -> Option<FullscreenInfo>   // Get FB pointer and dimensions
+fn flush_display(x: u32, y: u32, w: u32, h: u32)    // Flush dirty region after direct FB writes
+```
+
+### FullscreenInfo
+
+```rust
+pub struct FullscreenInfo {
+    pub width: u32,     // Screen width in pixels
+    pub height: u32,    // Screen height in pixels
+    pub stride: u32,    // Pixels per row (may differ from width)
+    pub fb_ptr: u32,    // Direct framebuffer pointer (0 if SHM compositing mode)
+}
+```
+
+When `fb_ptr != 0`, the app can write ARGB pixels directly to GPU VRAM at that address. After writing, call `flush_display()` to tell the GPU to update the screen region. Without `flush_display()`, changes may not be visible on virtualized displays (e.g. SVGA).
+
+---
+
+## Modal Dialogs
+
+```rust
+// On Window:
+fn set_modal(&self, owner: &Window)      // Make this a modal child of owner
+// The modal relationship is automatically cleared when the modal window is destroyed.
+
+// Standalone (advanced):
+fn set_modal(modal_id: u32, owner_id: u32)    // Set modal relationship by control IDs
+fn clear_modal(modal_id: u32)                  // Clear modal relationship
+```
+
+The modal window blocks input to the owner and stays on top until destroyed.
+
+---
+
+## Display & Scaling
+
+System-wide display settings accessible via the `theme` module:
+
+```rust
+pub mod theme {
+    fn set_font_smoothing(mode: u32)     // 0=none, 1=greyscale AA, 2=subpixel LCD
+    fn get_font_smoothing() -> u32
+
+    fn set_scale_factor(percent: u32)    // 100-300 in 25% steps (100=1x, 200=2x)
+    fn get_scale_factor() -> u32
+}
+```
+
+Changes are sent to the compositor via IPC, persisted to `compositor.conf`, and picked up by all running apps immediately.
+
+```rust
+// On Window:
+fn set_cursor_visible(&self, visible: bool)   // Hide/show mouse cursor for this window
+```
+
+---
+
+## Text Measurement
+
+Measure text dimensions using the font engine (useful for layout calculations):
+
+```rust
+fn measure_text(text: &str, font_id: u16, font_size: u16) -> (u32, u32)
+// Returns (width, height) in pixels
+// font_id: 0 = normal, 1 = bold
+```
+
+---
+
+## Window Lifecycle
+
+Callbacks for monitoring window open/close events across all applications (used by the compositor/dock):
+
+```rust
+fn on_window_opened(f: impl FnMut(u32) + 'static)   // Callback receives app task ID
+fn on_window_closed(f: impl FnMut(u32) + 'static)   // Callback receives app task ID
+fn focus_by_tid(tid: u32)                             // Bring a window to front by task ID
+fn get_compositor_channel() -> u32                    // Get raw compositor IPC channel ID
 ```
 
 ---
@@ -1312,8 +1609,9 @@ win.on_key_down(|e| {
 
 ```rust
 fn set_blur_behind(window: &impl Widget, radius: u32)     // Frosted glass (0=disable)
-fn screen_size() -> (u32, u32)                             // Display dimensions
+fn screen_size() -> (u32, u32)                             // Display dimensions (logical pixels)
 fn show_notification(title: &str, message: &str, icon: Option<&[u32; 256]>, timeout_ms: u32)
+                                                           // title max 64 bytes, message max 128 bytes, 0=default 5s
 ```
 
 ---
@@ -1408,6 +1706,8 @@ End-to-end latency: **4-9ms** (vs 18-53ms with fixed timer).
 | 39 | TextEditor | Leaf | Code editor |
 | 40 | TreeView | Leaf | Hierarchical tree |
 | 41 | RadioGroup | Container | Radio button group |
+| 42 | DropDown | Leaf | Drop-down selection list |
+| 43 | AutoCompleteTextField | Leaf | Text input with autocomplete |
 
 ---
 
@@ -1426,18 +1726,22 @@ End-to-end latency: **4-9ms** (vs 18-53ms with fixed timer).
 | SegmentedControl | `on_active_changed` |
 | IconButton | `on_click` |
 | Tag | `on_click` |
-| Canvas | `on_click`, `on_mouse_down`, `on_mouse_up`, `on_draw` |
+| Canvas | `on_click`, `on_mouse_down`, `on_mouse_up`, `on_mouse_move`, `on_draw` |
 | DataGrid | `on_selection_changed`, `on_submit` |
-| TextEditor | `on_text_changed` |
+| TextEditor | `on_text_changed`, `on_key_down` |
 | TreeView | `on_selection_changed`, `on_node_clicked`, `on_enter` |
 | SearchField | `on_text_changed`, `on_submit` |
 | ColorWell | `on_color_selected` |
 | ImageButton | `on_click` |
-| Window | `on_close`, `on_resize`, `on_key_down` |
+| DropDown | `on_selection_changed` |
+| AutoCompleteTextField | `on_text_changed`, `on_submit` |
+| Window | `on_close`, `on_resize`, `on_click`, `on_key_down`, `on_key_up`, `on_fullscreen_enter`, `on_fullscreen_exit` |
 | SplitView | `on_split_changed` |
 | ScrollView | `on_scroll` |
 | Sidebar | `on_selection_changed` |
-| TabBar | `on_active_changed`, `on_tab_close` |
+| TabBar | `on_active_changed`, `on_tab_close`, `on_double_click` |
 | ContextMenu | `on_item_click` |
 | TableView | `on_selection_changed` |
 | Expander | `on_toggled` |
+| TrayIcon | `on_click` |
+| MenuBar | `on_item` |

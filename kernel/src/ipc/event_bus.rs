@@ -27,6 +27,8 @@ pub const EVT_BOOT_COMPLETE: u32 = 0x0010;
 pub const EVT_PROCESS_SPAWNED: u32 = 0x0020;
 pub const EVT_PROCESS_EXITED: u32 = 0x0021;
 pub const EVT_RESOLUTION_CHANGED: u32 = 0x0040;
+/// arg1 = monitor count
+pub const EVT_MONITOR_DETECTED: u32 = 0x0041;
 pub const EVT_OUT_OF_MEMORY: u32 = 0x0030;
 pub const EVT_DISK_ERROR: u32 = 0x0031;
 /// arg1 = disk_id, arg2 = partition_index, arg3 = mount_path_ptr (in kernel), arg4 = fs_type

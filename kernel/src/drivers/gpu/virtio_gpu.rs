@@ -38,6 +38,9 @@ const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D: u32  = 0x0205;
 const VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D: u32 = 0x0206;
 const VIRTIO_GPU_CMD_SUBMIT_3D: u32            = 0x0207;
 
+// EDID query (QEMU 3.1+, requires edid=on in device config)
+const VIRTIO_GPU_CMD_GET_EDID: u32             = 0x010A;
+
 const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32        = 0x0300;
 const VIRTIO_GPU_CMD_MOVE_CURSOR: u32          = 0x0301;
 
@@ -50,6 +53,7 @@ const VIRTIO_GPU_F_VIRGL: u64 = 1 << 1;
 
 const VIRTIO_GPU_RESP_OK_NODATA: u32           = 0x1100;
 const VIRTIO_GPU_RESP_OK_DISPLAY_INFO: u32     = 0x1101;
+const VIRTIO_GPU_RESP_OK_EDID: u32             = 0x1104;
 
 // ──────────────────────────────────────────────
 // VirtIO GPU Pixel Formats
@@ -284,6 +288,25 @@ struct RespDisplayInfo {
     pmodes: [DisplayOne; 16],
 }
 
+/// GET_EDID command (QEMU 3.1+, requires `edid=on` in device config).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GetEdid {
+    hdr: GpuCtrlHdr,
+    scanout: u32,
+    padding: u32,
+}
+
+/// GET_EDID response (header + size + 1024 bytes EDID data).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RespEdid {
+    hdr: GpuCtrlHdr,
+    size: u32,
+    padding: u32,
+    edid: [u8; 1024],
+}
+
 /// UPDATE_CURSOR / MOVE_CURSOR command.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -348,6 +371,10 @@ pub struct VirtioGpu {
 
     // Supported display modes (native first, then filtered COMMON_MODES)
     supported: Vec<(u32, u32)>,
+
+    // Monitor detection: per-scanout display info cached from GET_DISPLAY_INFO
+    display_infos: Vec<(u32, u32, bool)>, // (width, height, enabled) per scanout
+    enabled_scanout_count: u32,
 
     // 3D (virgl) state
     virgl_capable: bool,
@@ -482,6 +509,52 @@ impl VirtioGpu {
 
         // Default if no enabled scanout found
         Some((1024, 768))
+    }
+
+    /// Query GET_DISPLAY_INFO and cache all scanout infos.
+    fn query_all_display_infos(&mut self) {
+        let hdr = GpuCtrlHdr::new(VIRTIO_GPU_CMD_GET_DISPLAY_INFO);
+        let cmd_bytes = unsafe {
+            core::slice::from_raw_parts(&hdr as *const _ as *const u8, core::mem::size_of::<GpuCtrlHdr>())
+        };
+        let resp_type = self.send_ctrl_cmd(cmd_bytes);
+        if resp_type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO {
+            return;
+        }
+        let resp = unsafe { &*(self.resp_buf as *const RespDisplayInfo) };
+        self.display_infos.clear();
+        self.enabled_scanout_count = 0;
+        for i in 0..16 {
+            let d = &resp.pmodes[i];
+            let enabled = d.enabled != 0 && d.r_width > 0 && d.r_height > 0;
+            self.display_infos.push((d.r_width, d.r_height, enabled));
+            if enabled {
+                self.enabled_scanout_count += 1;
+            }
+        }
+    }
+
+    /// Read EDID for a scanout via VIRTIO_GPU_CMD_GET_EDID (QEMU 3.1+, edid=on).
+    fn cmd_get_edid(&mut self, scanout: u32) -> Option<[u8; 128]> {
+        let cmd = GetEdid {
+            hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_GET_EDID),
+            scanout,
+            padding: 0,
+        };
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<GetEdid>())
+        };
+        let resp_type = self.send_ctrl_cmd(bytes);
+        if resp_type != VIRTIO_GPU_RESP_OK_EDID {
+            return None;
+        }
+        let resp = unsafe { &*(self.resp_buf as *const RespEdid) };
+        if resp.size < 128 {
+            return None;
+        }
+        let mut edid = [0u8; 128];
+        edid.copy_from_slice(&resp.edid[..128]);
+        Some(edid)
     }
 
     fn cmd_resource_create_2d(&mut self, resource_id: u32, format: u32, width: u32, height: u32) -> bool {
@@ -1412,6 +1485,28 @@ impl GpuDriver for VirtioGpu {
     fn has_double_buffer(&self) -> bool {
         false
     }
+
+    // ── Monitor / EDID ──
+
+    fn display_count(&self) -> u32 {
+        if self.enabled_scanout_count > 0 {
+            self.enabled_scanout_count
+        } else {
+            1
+        }
+    }
+
+    fn read_edid(&mut self, output: u32) -> Option<[u8; 128]> {
+        self.cmd_get_edid(output)
+    }
+
+    fn display_info(&self, output: u32) -> Option<(u32, u32, bool)> {
+        self.display_infos.get(output as usize).copied()
+    }
+
+    fn refresh_display_info(&mut self) {
+        self.query_all_display_infos();
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -1551,6 +1646,8 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         virgl_ctx_id: 0,
         cmd_3d_buf,
         live_3d_resources: Vec::new(),
+        display_infos: Vec::new(),
+        enabled_scanout_count: 0,
     };
 
     // 9. Query native display resolution and build supported modes list.
@@ -1583,6 +1680,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         native = (1024, 768);
     }
     crate::serial_verbose_println!("  VirtIO GPU: native display {}x{}", native.0, native.1);
+
+    // Cache all display/scanout info for monitor detection.
+    gpu.query_all_display_infos();
 
     // Build supported modes: start with COMMON_MODES, add native if not already present
     let mut modes: Vec<(u32, u32)> = super::COMMON_MODES.to_vec();

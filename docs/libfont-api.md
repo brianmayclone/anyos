@@ -4,7 +4,7 @@ The **libfont** shared library provides TrueType font loading and text rendering
 
 **Format:** ELF64 shared object (.so), loaded on demand via `SYS_DLL_LOAD`
 **Load Address:** `0x05000000`
-**Exports:** 8
+**Exports:** 9
 **Client crate:** `libfont_client` (uses `dynlink::dl_open` / `dl_sym`)
 
 System fonts (SF Pro family + Andale Mono, ~17 MiB) are embedded in `.rodata` via `include_bytes!()`. Since `.rodata` pages are shared read-only across all processes, the font data exists once in physical RAM — zero disk I/O at init, zero per-process memory duplication.
@@ -70,7 +70,20 @@ Load a custom TTF font from a filesystem path (reads from disk).
 | path | `&str` | Filesystem path to `.ttf` file |
 | **Returns** | `Option<u32>` | Font ID on success, `None` on failure |
 
-Font IDs 0–4 are the embedded system fonts (see table below).
+Font IDs 0–5 are the embedded system fonts (see table below).
+
+---
+
+### `load_data(data) -> Option<u32>`
+
+Load a custom TTF font from raw byte data in memory (no disk I/O).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| data | `&[u8]` | Raw TTF font file data |
+| **Returns** | `Option<u32>` | Font ID on success, `None` on failure |
+
+Useful for loading fonts from archives, network responses, or embedded resources without writing to disk first.
 
 ---
 
@@ -170,6 +183,7 @@ Auto-detection on `init()`: enabled when VMware SVGA II is present (LCD monitors
 | 2 | SF Pro Thin | sfpro-thin.ttf | Thin/light text |
 | 3 | SF Pro Italic | sfpro-italic.ttf | Italic text |
 | 4 | Andale Mono | andale-mono.ttf | Monospace (terminal, code editor) |
+| 5 | Noto Color Emoji | NotoColorEmoji.ttf | Emoji rendering |
 
 These fonts are compiled into `libfont.so`'s `.rodata` section and shared across all processes. No disk files are needed at runtime for system fonts.
 
@@ -177,7 +191,7 @@ These fonts are compiled into `libfont.so`'s `.rodata` section and shared across
 
 libfont uses two library formats:
 
-- **libfont** (`libs/libfont/`) — the shared library itself, built as a `staticlib` and linked by `anyld` into an ELF64 `.so`. Exports 8 `#[no_mangle] pub extern "C"` symbols (the client wraps 7 of them; `draw_string_buf_clipped` is server-only).
+- **libfont** (`libs/libfont/`) — the shared library itself, built as a `staticlib` and linked by `anyld` into an ELF64 `.so`. Exports 9 `#[no_mangle] pub extern "C"` symbols (the client wraps 8 of them; `draw_string_buf_clipped` is server-only).
 - **libfont_client** (`libs/libfont_client/`) — client wrapper that resolves symbols via `dynlink::dl_open("/Libraries/libfont.so")` + `dl_sym()`. Caches function pointers in a static `FontLib` struct.
 
 Other libraries (libanyui, uisys, stdlib) that need font rendering resolve libfont symbols directly via inline ELF parsing of the mapped `.so` at runtime.

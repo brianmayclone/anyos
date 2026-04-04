@@ -18,6 +18,8 @@ mod system;
 mod disk;
 mod debug;
 mod platform;
+#[cfg(target_arch = "x86_64")]
+mod monitor;
 
 pub use process::*;
 pub use io::*;
@@ -32,6 +34,8 @@ pub use system::*;
 pub use disk::*;
 pub use debug::*;
 pub use platform::*;
+#[cfg(target_arch = "x86_64")]
+pub use monitor::*;
 
 // =========================================================================
 // Shared compositor state

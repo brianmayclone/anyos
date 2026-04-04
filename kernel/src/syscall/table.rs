@@ -136,6 +136,11 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_I2C_READ,     "i2c_read"),
     (SYS_I2C_WRITE,    "i2c_write"),
     (SYS_I2C_DETECT,   "i2c_detect"),
+    // Monitor detection
+    (SYS_MONITOR_COUNT, "monitor_count"),
+    (SYS_MONITOR_INFO,  "monitor_info"),
+    (SYS_MONITOR_EDID,  "monitor_edid"),
+    (SYS_MONITOR_MODES, "monitor_modes"),
     // Debug / trace (anyTrace)
     (SYS_DEBUG_ATTACH, "debug_attach"),
     (SYS_DEBUG_DETACH, "debug_detach"),

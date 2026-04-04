@@ -3,7 +3,7 @@
 The **libgl** shared library provides an OpenGL ES 2.0 compatible 3D graphics engine with a built-in GLSL ES 1.00 shader compiler, software rasterizer, and hardware-accelerated GPU backends via loadable `.drv` drivers. When a compatible GPU is detected (VMware SVGA II or VirtIO GPU with virgl), libgl loads the appropriate userspace driver for hardware-accelerated 3D. Otherwise, it falls back to the built-in software rasterizer, producing an ARGB framebuffer that can be displayed on any anyOS surface (e.g. anyui Canvas).
 
 **Format:** ELF64 shared object (.so), loaded via `dl_open("/Libraries/libgl.so")`
-**Exports:** 86
+**Exports:** 120
 **Client crate:** `libgl_client` (uses `dynlink::dl_open` / `dl_sym`)
 **API level:** OpenGL ES 2.0 (Phase 1 subset)
 **Shader execution:** JIT-compiled x86_64 SSE (primary) with IR interpreter fallback
@@ -19,6 +19,7 @@ The **libgl** shared library provides an OpenGL ES 2.0 compatible 3D graphics en
   - [Software Rasterizer](#software-rasterizer)
 - [Client API (libgl_client)](#client-api-libgl_client)
   - [Initialization](#initialization)
+  - [Fullscreen & Cursor](#fullscreen--cursor)
   - [State Management](#state-management)
   - [Buffer Objects](#buffer-objects)
   - [Texture Objects](#texture-objects)
@@ -26,16 +27,25 @@ The **libgl** shared library provides an OpenGL ES 2.0 compatible 3D graphics en
   - [Uniforms & Attributes](#uniforms--attributes)
   - [Draw Calls](#draw-calls)
   - [Framebuffer Operations](#framebuffer-operations)
+  - [FXAA & Backend Selection](#fxaa--backend-selection)
+  - [Shadow Mapping](#shadow-mapping)
+  - [Math Library](#math-library)
+  - [Physics Engine](#physics-engine)
 - [C ABI Exports](#c-abi-exports)
-  - [anyOS Extensions (3)](#anyos-extensions-3)
-  - [State Management (15)](#state-management-15)
+  - [anyOS Extensions (5)](#anyos-extensions-5)
+  - [Fullscreen & Cursor (5)](#fullscreen--cursor-5)
+  - [State Management (17)](#state-management-17)
   - [Buffer Objects (5)](#buffer-objects-5)
   - [Texture Objects (8)](#texture-objects-8)
   - [Shader Objects (6)](#shader-objects-6)
-  - [Program Objects (6)](#program-objects-6)
+  - [Program Objects (7)](#program-objects-7)
   - [Uniforms & Attributes (12)](#uniforms--attributes-12)
   - [Draw Calls (2)](#draw-calls-2)
   - [Framebuffer Objects (8)](#framebuffer-objects-8)
+  - [FXAA & Backend Selection (4)](#fxaa--backend-selection-4)
+  - [Shadow Mapping (5)](#shadow-mapping-5)
+  - [Math Library (12)](#math-library-12)
+  - [Physics Engine (24)](#physics-engine-24)
 - [GLSL ES 1.00 Subset](#glsl-es-100-subset)
   - [Supported Types](#supported-types)
   - [Qualifiers](#qualifiers)
@@ -173,7 +183,7 @@ fn main() {
 
 ```
 libs/libgl/src/
-  lib.rs                 C ABI exports, allocator, global context
+  lib.rs                 C ABI exports (120), allocator, global context
   types.rs               GL type aliases and constants
   state.rs               GlContext state machine
   buffer.rs              VBO/EBO storage
@@ -181,6 +191,7 @@ libs/libgl/src/
   shader.rs              Shader/Program objects, link-time JIT compilation
   framebuffer.rs         SwFramebuffer (ARGB color + f32 depth)
   draw.rs                Draw dispatch
+  physics.rs             Rigid-body physics engine (sphere, plane, box colliders)
   simd.rs                SSE-accelerated Vec4 (wraps __m128)
   fxaa.rs                FXAA post-processing
   drv_loader.rs          GPU driver HAL — ELF loader + drv_* symbol resolution
@@ -377,25 +388,51 @@ All implemented without libm (no_std compatible):
 
 ## Client API (libgl_client)
 
-The `libgl_client` crate provides ergonomic Rust wrappers around the 86 C ABI exports. All functions are free-standing (no receiver) and operate on the global GL context.
+The `libgl_client` crate provides ergonomic Rust wrappers around the 120 C ABI exports. All functions are free-standing (no receiver) and operate on the global GL context.
 
 ### Initialization
 
 ```rust
-/// Load libgl.so and resolve all 86 function pointers.
+/// Load libgl.so and resolve all 120 function pointers.
 /// Returns false if loading fails.
 pub fn init() -> bool;
 
 /// Initialize the GL context with framebuffer dimensions.
 pub fn gl_init(width: u32, height: u32);
 
+/// Resize the GL framebuffer (preserves shaders, buffers, textures).
+pub fn gl_resize(width: u32, height: u32);
+
 /// Swap buffers. Returns a pointer to the ARGB pixel data.
 pub fn swap_buffers() -> *const u32;
+
+/// Get a pointer to the backbuffer.
+pub fn get_backbuffer() -> *const u32;
+```
+
+### Fullscreen & Cursor
+
+```rust
+/// Initialize fullscreen direct framebuffer rendering.
+pub fn gl_init_fullscreen(fb_ptr: *mut u32, width: u32, height: u32, stride: u32);
+
+/// Exit fullscreen mode.
+pub fn gl_exit_fullscreen();
+
+/// Swap buffers in fullscreen mode (copies directly to mapped framebuffer).
+pub fn swap_buffers_fullscreen() -> bool;
+
+/// Set cursor captured state (for FPS-style mouse grab). Returns previous state.
+pub fn set_cursor_captured(captured: bool) -> bool;
+
+/// Query whether the cursor is currently captured.
+pub fn get_cursor_captured() -> bool;
 ```
 
 ### State Management
 
 ```rust
+pub fn get_error() -> GLenum;
 pub fn enable(cap: GLenum);
 pub fn disable(cap: GLenum);
 pub fn blend_func(sfactor: GLenum, dfactor: GLenum);
@@ -403,17 +440,19 @@ pub fn depth_func(func: GLenum);
 pub fn depth_mask(flag: bool);
 pub fn cull_face(mode: GLenum);
 pub fn front_face(mode: GLenum);
-pub fn viewport(x: i32, y: i32, width: i32, height: i32);
+pub fn viewport(x: i32, y: i32, w: i32, h: i32);
 pub fn clear_color(r: f32, g: f32, b: f32, a: f32);
 pub fn clear(mask: u32);
+pub fn color_mask(r: bool, g: bool, b: bool, a: bool);
 ```
 
 ### Buffer Objects
 
 ```rust
-pub fn gen_buffers(n: i32, buffers: &mut [u32]);
-pub fn delete_buffers(n: i32, buffers: &[u32]);
+pub fn gen_buffers(n: i32, ids: &mut [u32]);
+pub fn delete_buffers(ids: &[u32]);
 pub fn bind_buffer(target: GLenum, buffer: u32);
+pub fn buffer_data(target: GLenum, data: &[u8], usage: GLenum);
 pub fn buffer_data_f32(target: GLenum, data: &[f32], usage: GLenum);
 pub fn buffer_data_u16(target: GLenum, data: &[u16], usage: GLenum);
 ```
@@ -421,10 +460,13 @@ pub fn buffer_data_u16(target: GLenum, data: &[u16], usage: GLenum);
 ### Texture Objects
 
 ```rust
-pub fn gen_textures(n: i32, textures: &mut [u32]);
-pub fn delete_textures(n: i32, textures: &[u32]);
+pub fn gen_textures(n: i32, ids: &mut [u32]);
+pub fn delete_textures(ids: &[u32]);
 pub fn bind_texture(target: GLenum, texture: u32);
 pub fn tex_parameteri(target: GLenum, pname: GLenum, param: i32);
+pub fn tex_image_2d(target: GLenum, level: i32, internal_format: i32,
+                    width: i32, height: i32, border: i32,
+                    format: GLenum, type_: GLenum, data: &[u8]);
 pub fn active_texture(texture: GLenum);
 ```
 
@@ -451,10 +493,10 @@ pub fn get_program_link_status(program: u32) -> bool;
 ```rust
 pub fn get_uniform_location(program: u32, name: &str) -> i32;
 pub fn get_attrib_location(program: u32, name: &str) -> i32;
-pub fn uniform1i(location: i32, v0: i32);
-pub fn uniform1f(location: i32, v0: f32);
-pub fn uniform3f(location: i32, v0: f32, v1: f32, v2: f32);
-pub fn uniform4f(location: i32, v0: f32, v1: f32, v2: f32, v3: f32);
+pub fn uniform1i(location: i32, v: i32);
+pub fn uniform1f(location: i32, v: f32);
+pub fn uniform3f(location: i32, x: f32, y: f32, z: f32);
+pub fn uniform4f(location: i32, x: f32, y: f32, z: f32, w: f32);
 pub fn uniform_matrix4fv(location: i32, transpose: bool, value: &[f32; 16]);
 pub fn enable_vertex_attrib_array(index: u32);
 pub fn disable_vertex_attrib_array(index: u32);
@@ -471,25 +513,172 @@ pub fn draw_elements(mode: GLenum, count: i32, type_: GLenum, offset: usize);
 ### Framebuffer Operations
 
 ```rust
+pub fn gen_framebuffers(n: i32, fbs: &mut [u32]);
+pub fn delete_framebuffers(n: i32, fbs: &[u32]);
+pub fn bind_framebuffer(target: u32, framebuffer: u32);
+pub fn framebuffer_texture_2d(target: u32, attachment: u32, textarget: u32, texture: u32, level: i32);
+pub fn check_framebuffer_status(target: u32) -> u32;
 pub fn flush();
 pub fn finish();
+```
+
+### FXAA & Backend Selection
+
+```rust
+/// Enable or disable FXAA post-process anti-aliasing.
+pub fn set_fxaa(enabled: bool);
+
+/// Switch between hardware (GPU driver) and software rasterizer.
+pub fn set_hw_backend(enabled: bool);
+
+/// Query whether the hardware backend is currently active.
+pub fn get_hw_backend() -> bool;
+
+/// Query whether a hardware 3D driver is available (even if not in use).
+pub fn has_hw_backend() -> bool;
+```
+
+### Shadow Mapping
+
+```rust
+/// Begin shadow pass. Returns true if HW shadow is active.
+pub fn shadow_pass_begin(lx: f32, ly: f32, lz: f32, tx: f32, ty: f32, tz: f32, radius: f32) -> bool;
+
+/// End shadow pass. Shadow map is now available for the main render.
+pub fn shadow_pass_end();
+
+/// Get the light MVP matrix (16 floats). Returns null if no shadow.
+pub fn shadow_get_light_mvp() -> *const f32;
+
+/// Whether a shadow map is available this frame.
+pub fn shadow_available() -> bool;
+
+/// Texture unit where shadow map is bound (always 7).
+pub fn shadow_get_unit() -> u32;
+```
+
+### Math Library
+
+```rust
+pub const PI: f32 = 3.14159265;
+
+pub fn sin(x: f32) -> f32;       // x87 fsin
+pub fn cos(x: f32) -> f32;       // x87 fcos
+pub fn tan(x: f32) -> f32;       // x87 fptan
+pub fn sqrt(x: f32) -> f32;      // SSE2 sqrtss
+pub fn abs(x: f32) -> f32;       // sign-bit clear
+pub fn pow(base: f32, exp: f32) -> f32;  // x87 FPU
+pub fn log2(x: f32) -> f32;      // x87 fyl2x
+pub fn exp2(x: f32) -> f32;      // x87 f2xm1+fscale
+pub fn floor(x: f32) -> f32;     // x87 rounding
+pub fn ceil(x: f32) -> f32;      // x87 rounding
+pub fn clamp(x: f32, lo: f32, hi: f32) -> f32;
+pub fn lerp(a: f32, b: f32, t: f32) -> f32;
+```
+
+### Physics Engine
+
+```rust
+/// Create/reset the physics world.
+pub fn physics_create_world();
+
+/// Set the gravity vector (default: 0, -9.81, 0).
+pub fn physics_set_gravity(gx: f32, gy: f32, gz: f32);
+
+/// Step the physics simulation by dt seconds.
+pub fn physics_step(dt: f32);
+
+/// Add a sphere body. Returns body ID.
+pub fn physics_add_sphere(mass: f32, radius: f32, x: f32, y: f32, z: f32) -> u32;
+
+/// Add an infinite plane (static). Returns body ID.
+pub fn physics_add_plane(nx: f32, ny: f32, nz: f32, d: f32) -> u32;
+
+/// Add an axis-aligned box body. Returns body ID.
+pub fn physics_add_box(mass: f32, hx: f32, hy: f32, hz: f32, x: f32, y: f32, z: f32) -> u32;
+
+/// Set body velocity.
+pub fn physics_set_velocity(id: u32, vx: f32, vy: f32, vz: f32);
+
+/// Set body position.
+pub fn physics_set_position(id: u32, x: f32, y: f32, z: f32);
+
+/// Get body position. Returns (x, y, z).
+pub fn physics_get_position(id: u32) -> (f32, f32, f32);
+
+/// Get body velocity. Returns (vx, vy, vz).
+pub fn physics_get_velocity(id: u32) -> (f32, f32, f32);
+
+/// Set coefficient of restitution (bounciness, 0.0..1.0).
+pub fn physics_set_restitution(id: u32, e: f32);
+
+/// Set body mass (0.0 = static/immovable).
+pub fn physics_set_mass(id: u32, mass: f32);
+
+/// Apply a force to a body (accumulated until next step).
+pub fn physics_apply_force(id: u32, fx: f32, fy: f32, fz: f32);
+
+/// Apply an impulse (instant velocity change).
+pub fn physics_apply_impulse(id: u32, ix: f32, iy: f32, iz: f32);
+
+/// Set angular velocity around Y axis (rad/s).
+pub fn physics_set_angular_vel_y(id: u32, omega: f32);
+
+/// Get current Y rotation angle (rad, extracted from quaternion).
+pub fn physics_get_rotation_y(id: u32) -> f32;
+
+/// Set full 3D angular velocity (rad/s).
+pub fn physics_set_angular_velocity(id: u32, wx: f32, wy: f32, wz: f32);
+
+/// Get orientation quaternion. Returns (w, x, y, z).
+pub fn physics_get_orientation(id: u32) -> (f32, f32, f32, f32);
+
+/// Set angular damping factor (0.0 = none, ~2.0 = moderate, ~5.0 = heavy).
+pub fn physics_set_angular_damping(id: u32, damping: f32);
+
+/// Set linear damping factor (air resistance).
+pub fn physics_set_linear_damping(id: u32, damping: f32);
+
+/// Set whether body is affected by gravity.
+pub fn physics_set_use_gravity(id: u32, use_grav: bool);
+
+/// Set body active/inactive.
+pub fn physics_set_active(id: u32, active: bool);
+
+/// Update the distance parameter of a plane collider.
+pub fn physics_set_plane_d(id: u32, d: f32);
+
+/// Get number of bodies in the world.
+pub fn physics_body_count() -> u32;
 ```
 
 ---
 
 ## C ABI Exports
 
-All 86 exported functions use `extern "C"` with `#[no_mangle]`. Strings are null-terminated C strings. Object handles (shaders, programs, buffers, textures) are 1-based unsigned integers; 0 indicates "none" or failure.
+All 120 exported functions use `extern "C"` with `#[no_mangle]`. Strings are null-terminated C strings. Object handles (shaders, programs, buffers, textures) are 1-based unsigned integers; 0 indicates "none" or failure.
 
-### anyOS Extensions (3)
+### anyOS Extensions (5)
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
-| `gl_init` | `(u32 width, u32 height)` | Initialize GL context with framebuffer dimensions |
-| `gl_swap_buffers` | `() -> *const u32` | Return pointer to ARGB color buffer |
+| `gl_init` | `(u32 width, u32 height)` | Initialize GL context with framebuffer dimensions; loads HW driver if available |
+| `gl_deinit` | `()` | Shut down libgl, unload hardware driver, free resources |
+| `gl_resize` | `(u32 width, u32 height)` | Resize GL framebuffer without destroying shaders, buffers, or textures |
+| `gl_swap_buffers` | `() -> *const u32` | Return pointer to ARGB color buffer (runs FXAA if enabled, HW readback if active) |
 | `gl_get_backbuffer` | `() -> *const u32` | Return pointer to backbuffer (alias for single-buffered SW) |
 
-### State Management (15)
+### Fullscreen & Cursor (5)
+
+| Export | Signature | Description |
+|--------|-----------|-------------|
+| `gl_init_fullscreen` | `(*mut u32 fb_ptr, u32 width, u32 height, u32 stride)` | Initialize fullscreen direct framebuffer rendering; stride is row stride in pixels |
+| `gl_exit_fullscreen` | `()` | Exit fullscreen mode, stop writing to direct framebuffer |
+| `gl_swap_buffers_fullscreen` | `() -> u32` | Copy rendered frame to mapped framebuffer; returns 1 if performed, 0 if not in fullscreen |
+| `gl_set_cursor_captured` | `(u32 captured) -> u32` | Set cursor captured state (hidden + grabbed); returns previous state |
+| `gl_get_cursor_captured` | `() -> u32` | Query whether cursor is captured (1) or not (0) |
+
+### State Management (17)
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
@@ -545,7 +734,7 @@ All 86 exported functions use `extern "C"` with `#[no_mangle]`. Strings are null
 | `glGetShaderiv` | `(GLuint shader, GLenum pname, GLint *params)` | Query shader parameter (COMPILE_STATUS, INFO_LOG_LENGTH) |
 | `glGetShaderInfoLog` | `(GLuint shader, GLsizei maxLen, GLsizei *length, GLchar *infoLog)` | Get compilation error log |
 
-### Program Objects (6)
+### Program Objects (7)
 
 | Export | Signature | Description |
 |--------|-----------|-------------|
@@ -553,9 +742,9 @@ All 86 exported functions use `extern "C"` with `#[no_mangle]`. Strings are null
 | `glDeleteProgram` | `(GLuint program)` | Delete program |
 | `glAttachShader` | `(GLuint program, GLuint shader)` | Attach compiled shader to program |
 | `glLinkProgram` | `(GLuint program)` | Link program (resolves attributes, uniforms, varyings) |
+| `glUseProgram` | `(GLuint program)` | Set active program for rendering |
 | `glGetProgramiv` | `(GLuint program, GLenum pname, GLint *params)` | Query program parameter (LINK_STATUS) |
 | `glGetProgramInfoLog` | `(GLuint program, GLsizei maxLen, GLsizei *length, GLchar *infoLog)` | Get link error log |
-| `glUseProgram` | `(GLuint program)` | Set active program for rendering |
 
 ### Uniforms & Attributes (12)
 
@@ -588,13 +777,103 @@ All 86 exported functions use `extern "C"` with `#[no_mangle]`. Strings are null
 | Export | Signature | Description |
 |--------|-----------|-------------|
 | `glGenFramebuffers` | `(GLsizei n, GLuint *framebuffers)` | Generate FBO names |
-| `glDeleteFramebuffers` | `(GLsizei n, const GLuint *framebuffers)` | Delete FBOs (no-op in Phase 1) |
-| `glBindFramebuffer` | `(GLenum target, GLuint framebuffer)` | Bind framebuffer |
-| `glFramebufferTexture2D` | `(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level)` | Attach texture to FBO (tracked, not rendered to in Phase 1) |
+| `glDeleteFramebuffers` | `(GLsizei n, const GLuint *framebuffers)` | Delete FBOs |
+| `glBindFramebuffer` | `(GLenum target, GLuint framebuffer)` | Bind framebuffer (0 = default); in HW mode triggers shadow begin/end |
+| `glFramebufferTexture2D` | `(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level)` | Attach texture to FBO (COLOR_ATTACHMENT0, DEPTH_ATTACHMENT) |
 | `glCheckFramebufferStatus` | `(GLenum target) -> GLenum` | Check FBO completeness (always returns COMPLETE) |
-| `glReadPixels` | `(GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, void *pixels)` | Read pixels from framebuffer |
+| `glReadPixels` | `(GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, void *pixels)` | Read pixels from framebuffer (RGBA or RGB) |
 | `glFlush` | `()` | Flush pending operations (no-op for SW) |
 | `glFinish` | `()` | Finish all operations (no-op for SW) |
+
+### FXAA & Backend Selection (4)
+
+| Export | Signature | Description |
+|--------|-----------|-------------|
+| `gl_set_fxaa` | `(u32 enabled)` | Enable (non-zero) or disable (0) FXAA post-process anti-aliasing |
+| `gl_set_hw_backend` | `(u32 enabled)` | Switch between hardware (non-zero) and software (0) rasterizer at runtime |
+| `gl_get_hw_backend` | `() -> u32` | Query whether HW backend is currently active (1 = HW, 0 = SW) |
+| `gl_has_hw_backend` | `() -> u32` | Query whether a HW 3D driver is available, regardless of current mode (1/0) |
+
+### Shadow Mapping (5)
+
+Shadow mapping is hardware-only (no-op on SW rasterizer). The shadow pass renders the scene from the light's perspective into a depth-only FBO, then binds the resulting depth texture to sampler unit 7 for the main render pass.
+
+| Export | Signature | Description |
+|--------|-----------|-------------|
+| `gl_shadow_pass_begin` | `(f32 lx, f32 ly, f32 lz, f32 tx, f32 ty, f32 tz, f32 radius) -> u32` | Begin shadow pass; light at (lx,ly,lz) looking at (tx,ty,tz), radius = shadow volume extent; returns 1 if active |
+| `gl_shadow_pass_end` | `()` | End shadow pass; shadow map bound to sampler unit 7 |
+| `gl_shadow_get_light_mvp` | `() -> *const f32` | Get light MVP matrix (16 floats, column-major); null if no shadow |
+| `gl_shadow_available` | `() -> u32` | Whether a shadow map is available this frame (1/0) |
+| `gl_shadow_get_unit` | `() -> u32` | Texture unit where shadow map is bound (always 7) |
+
+**Usage pattern:**
+```rust
+// 1. Shadow pass — render scene from light's POV
+gl::shadow_pass_begin(light_x, light_y, light_z, target_x, target_y, target_z, 20.0);
+// ... draw shadow casters with light MVP as the projection ...
+gl::shadow_pass_end();
+
+// 2. Main pass — shadow map is automatically on unit 7
+let light_mvp = gl::shadow_get_light_mvp();
+// ... bind light_mvp as uniform, sample shadow map in fragment shader ...
+```
+
+### Math Library (12)
+
+Hardware-accelerated math functions using x87 FPU and SSE2 instructions. Usable by any application linked against libgl, not just for GL rendering.
+
+| Export | Signature | Description |
+|--------|-----------|-------------|
+| `gl_math_sin` | `(f32 x) -> f32` | Sine via x87 `fsin` (IEEE 754 exact) |
+| `gl_math_cos` | `(f32 x) -> f32` | Cosine via x87 `fcos` (IEEE 754 exact) |
+| `gl_math_tan` | `(f32 x) -> f32` | Tangent via x87 `fptan` |
+| `gl_math_sqrt` | `(f32 x) -> f32` | Square root via SSE2 `sqrtss` (IEEE 754 exact) |
+| `gl_math_abs` | `(f32 x) -> f32` | Absolute value via sign-bit clear |
+| `gl_math_pow` | `(f32 base, f32 exp) -> f32` | Power function via x87 FPU |
+| `gl_math_log2` | `(f32 x) -> f32` | Base-2 logarithm via x87 `fyl2x` |
+| `gl_math_exp2` | `(f32 x) -> f32` | Base-2 exponential via x87 `f2xm1` + `fscale` |
+| `gl_math_floor` | `(f32 x) -> f32` | Floor via x87 rounding |
+| `gl_math_ceil` | `(f32 x) -> f32` | Ceiling via x87 rounding |
+| `gl_math_clamp` | `(f32 x, f32 lo, f32 hi) -> f32` | Clamp to [lo, hi] |
+| `gl_math_lerp` | `(f32 a, f32 b, f32 t) -> f32` | Linear interpolation: a + (b - a) * t |
+
+### Physics Engine (24)
+
+A rigid-body physics engine with sphere, plane, and box colliders. Supports gravity, mass-based acceleration (F = ma), elastic collision response with restitution, semi-implicit Euler integration, quaternion-based orientation, and angular/linear damping. The physics world holds up to 64 bodies.
+
+| Export | Signature | Description |
+|--------|-----------|-------------|
+| `gl_physics_create_world` | `() -> u32` | Create/reset the physics world; returns 1 on success |
+| `gl_physics_set_gravity` | `(f32 gx, f32 gy, f32 gz)` | Set gravity vector (default: 0, -9.81, 0) |
+| `gl_physics_step` | `(f32 dt)` | Step simulation by dt seconds |
+| `gl_physics_add_sphere` | `(f32 mass, f32 radius, f32 x, f32 y, f32 z) -> u32` | Add sphere body; returns body ID |
+| `gl_physics_add_plane` | `(f32 nx, f32 ny, f32 nz, f32 d) -> u32` | Add infinite static plane (normal + distance); returns body ID |
+| `gl_physics_add_box` | `(f32 mass, f32 hx, f32 hy, f32 hz, f32 x, f32 y, f32 z) -> u32` | Add axis-aligned box (half-extents + position); returns body ID |
+| `gl_physics_set_position` | `(u32 id, f32 x, f32 y, f32 z)` | Set body position |
+| `gl_physics_get_position` | `(u32 id, *mut f32 x, *mut f32 y, *mut f32 z)` | Get body position (writes to output pointers) |
+| `gl_physics_set_velocity` | `(u32 id, f32 vx, f32 vy, f32 vz)` | Set body velocity |
+| `gl_physics_get_velocity` | `(u32 id, *mut f32 vx, *mut f32 vy, *mut f32 vz)` | Get body velocity (writes to output pointers) |
+| `gl_physics_apply_force` | `(u32 id, f32 fx, f32 fy, f32 fz)` | Apply force (accumulated until next step) |
+| `gl_physics_apply_impulse` | `(u32 id, f32 ix, f32 iy, f32 iz)` | Apply impulse (instant velocity change: dv = impulse / mass) |
+| `gl_physics_set_restitution` | `(u32 id, f32 e)` | Set coefficient of restitution (0.0 = no bounce, 1.0 = perfect) |
+| `gl_physics_set_mass` | `(u32 id, f32 mass)` | Set body mass (0.0 = static/immovable) |
+| `gl_physics_set_angular_vel_y` | `(u32 id, f32 omega)` | Set angular velocity around Y axis (rad/s) |
+| `gl_physics_get_rotation_y` | `(u32 id) -> f32` | Get Y rotation angle (rad, extracted from quaternion) |
+| `gl_physics_set_angular_velocity` | `(u32 id, f32 wx, f32 wy, f32 wz)` | Set full 3D angular velocity (rad/s) |
+| `gl_physics_get_orientation` | `(u32 id, *mut f32 w, *mut f32 x, *mut f32 y, *mut f32 z)` | Get orientation quaternion (writes to output pointers) |
+| `gl_physics_set_angular_damping` | `(u32 id, f32 damping)` | Set angular damping (0.0 = none, ~2.0 = moderate, ~5.0 = heavy) |
+| `gl_physics_set_linear_damping` | `(u32 id, f32 damping)` | Set linear damping (air resistance, 0.0 = none, ~0.5 = light drag) |
+| `gl_physics_set_use_gravity` | `(u32 id, u32 use_grav)` | Set whether body is affected by gravity (0/non-zero) |
+| `gl_physics_set_active` | `(u32 id, u32 active)` | Set body active (non-zero) or inactive (0) |
+| `gl_physics_set_plane_d` | `(u32 id, f32 d)` | Update the distance parameter of a plane collider |
+| `gl_physics_body_count` | `() -> u32` | Get number of bodies in the world |
+
+**Collider types:**
+- **Sphere** — radius-based; sphere-sphere and sphere-plane collisions resolved with positional correction
+- **Plane** — infinite static surface defined by normal vector and distance from origin (n.dot(p) = d)
+- **Box** — axis-aligned half-extents from center; box-plane collisions resolved via vertex projection
+
+**Integration:** Semi-implicit Euler (velocity updated before position). Angular velocity integrated via quaternion derivative. Collision detection runs N^2 pairwise between active bodies.
 
 ---
 

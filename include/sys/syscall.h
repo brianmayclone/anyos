@@ -92,6 +92,12 @@
 /* ---- Display ---- */
 #define SYS_SCREEN_SIZE     72
 
+/* ---- Monitor detection ---- */
+#define SYS_MONITOR_COUNT   327
+#define SYS_MONITOR_INFO    328
+#define SYS_MONITOR_EDID    329
+#define SYS_MONITOR_MODES   330
+
 /* ---- DLL loading ---- */
 #define SYS_DLL_LOAD        80
 

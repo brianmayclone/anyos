@@ -9,6 +9,7 @@
 ; Temp buffers for VBE BIOS calls (free conventional memory)
 VBE_CTRL_INFO       equ 0x2200   ; 512 bytes for VBE Controller Info
 VBE_MODE_INFO_ADDR  equ 0x2000   ; 256 bytes for VBE Mode Info
+EDID_BUF_ADDR       equ 0x2400   ; 128 bytes for EDID data from VBE DDC
 
 ; Desired resolutions (tried in order)
 WANT_W              equ 1024
@@ -29,6 +30,9 @@ FALLBACK2_H         equ 480
 ; =============================================================================
 setup_vesa:
     pusha
+
+    ; --- Step 0: Read EDID via VBE/DDC (before mode setting) ---
+    call read_edid_ddc
 
     ; --- Step 1: Get VBE Controller Info ---
     mov di, VBE_CTRL_INFO
@@ -169,7 +173,59 @@ setup_vesa:
     popa
     ret
 
+; =============================================================================
+; read_edid_ddc - Read EDID via VBE/DDC (INT 0x10, AX=0x4F15, BL=0x01)
+;
+; Reads the 128-byte EDID base block from the primary monitor.
+; Sets edid_ok to 1 on success, 0 on failure.
+; =============================================================================
+read_edid_ddc:
+    pusha
+    push es
+
+    ; ES:DI = EDID buffer
+    push ds
+    pop es
+    mov di, EDID_BUF_ADDR
+
+    ; Zero the EDID buffer first (128 bytes = 32 dwords)
+    push di
+    xor eax, eax
+    mov cx, 32
+    rep stosd
+    pop di
+
+    ; VBE/DDC: Read EDID (INT 0x10, AX=0x4F15, BL=0x01)
+    mov ax, 0x4F15
+    mov bl, 0x01              ; Subfunction: Read EDID
+    xor cx, cx                ; Controller unit 0
+    xor dx, dx                ; EDID block 0
+    int 0x10
+
+    cmp ax, 0x004F
+    jne .edid_fail
+
+    ; Validate EDID header: bytes 0-1 must be 0x00, 0xFF
+    cmp byte [EDID_BUF_ADDR], 0x00
+    jne .edid_fail
+    cmp byte [EDID_BUF_ADDR + 1], 0xFF
+    jne .edid_fail
+    cmp byte [EDID_BUF_ADDR + 7], 0x00
+    jne .edid_fail
+
+    mov byte [edid_ok], 1
+    jmp .edid_done
+
+.edid_fail:
+    mov byte [edid_ok], 0
+
+.edid_done:
+    pop es
+    popa
+    ret
+
 ; --- Data ---
+edid_ok:    db 0
 vesa_ok:    db 0
 best_mode:  dw 0xFFFF
 best_match: db 0

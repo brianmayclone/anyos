@@ -96,9 +96,9 @@ and a self-hosted Rust compiler — all running bare-metal on x86_64.
 
 ### Kernel
 
-- **Mach-style microkernel architecture** with message-based IPC
+- **Hybrid kernel architecture** — filesystems, TCP/IP stack, and device drivers run in kernel space for performance; compositor and system services run in user space
 - **64-bit x86_64** long mode with 4-level paging (4 KiB pages)
-- **Preemptive multitasking** with Mach-style multi-level priority scheduler (128 levels, bitmap-indexed O(1) thread selection, per-CPU run queues)
+- **Preemptive multitasking** with multi-level priority scheduler (128 levels, bitmap-indexed O(1) thread selection, per-CPU run queues)
 - **SMP support** — multi-core (up to 16 CPUs) via LAPIC/IOAPIC with per-CPU idle threads and work stealing
 - **Per-process address spaces** with isolated PML4 page directories
 - **Ring 3 user mode** with dual syscall interface: `SYSCALL/SYSRET` (64-bit) and `INT 0x80` (32-bit compat)
@@ -130,13 +130,13 @@ and a self-hosted Rust compiler — all running bare-metal on x86_64.
   - **AMD Radeon** framebuffer (HD 5000+, RX 400/500, RX 5000–7000 Navi/RDNA)
   - **NVIDIA GeForce** framebuffer (Kepler 600+ through Ada RTX 4000)
 - **macOS-inspired dark theme** with rounded windows, shadows, and alpha blending
-- **44 UI controls** via the anyui framework (buttons, text fields, code editor, tree view, data grid, toolbars, canvas, expander, flow/stack panels, autocomplete, etc.)
+- **44 UI controls** via the anyui framework (buttons, text fields, code editor, tree view, data grid, toolbars, canvas, expander, flow/stack panels, dropdown, autocomplete, etc.)
 - **13 shared libraries** — libimage, librender, libcompositor (DLIB format) + libanyui, libfont, libgl, libhttp, libdb, libzip, libsvg, libjs, libwebview, libm (.so format with ELF dynamic linking)
 - **TrueType font rendering** with gamma-corrected subpixel LCD anti-aliasing and size-adaptive smoothing (SF Pro family)
 
 ### 3D Graphics
 
-- **OpenGL ES 2.0** compatible 3D engine (`libgl.so`) with 105 API exports
+- **OpenGL ES 2.0** compatible 3D engine (`libgl.so`) with 116 API exports
 - **Hardware-accelerated 3D** via loadable userspace GPU drivers (`.drv` shared libraries):
   - **VMware SVGA3D** (`svga3d.drv`) — DX9 Shader Model 2.0 bytecode, FIFO command submission
   - **VirtIO GPU / virgl** (`virgl.drv`) — Gallium3D/TGSI command buffers via `VIRTIO_GPU_CMD_SUBMIT_3D`
@@ -146,7 +146,9 @@ and a self-hosted Rust compiler — all running bare-metal on x86_64.
 - **No libm dependency** — all transcendental math (sin, cos, sqrt, pow, log2, exp2) via polynomial approximations
 - **Vertex + Fragment shaders** with swizzle, type constructors (vec2/3/4, mat3/4), 18 built-in functions (texture2D, normalize, dot, cross, clamp, mix, reflect, ...)
 - **Texture sampling** with nearest/bilinear filtering and repeat/clamp/mirror wrap modes
-- **Physics engine** — rigid body dynamics with sphere/plane/box colliders, gravity, restitution, forces, impulses, angular velocity (20 API exports)
+- **Physics engine** — rigid body dynamics with sphere/plane/box colliders, gravity, restitution, forces, impulses, angular velocity (26 API exports)
+- **Shadow mapping** — depth texture FBO shadow pass with configurable light MVP (ES 2.0 hardware path)
+- **Post-processing** — FXAA anti-aliasing, selectable software/hardware backend
 
 ### Networking
 
@@ -469,13 +471,14 @@ anyos/
     asm/                   Context switch, ISR/IRQ stubs, syscall entry, SMP trampoline
     src/
       arch/x86/            GDT, IDT, APIC, PIT, TSC, paging, CPUID
+      arch/arm64/          GICv3, Generic Timer, MMU (VMSAv8-A), SMP (PSCI), UART (PL011)
       drivers/             PCI, GPU (Bochs/VMware/VBox/VirtIO/Intel/AMD/NVIDIA),
                            keyboard, mouse, vmmouse, I2C-HID touchpad,
                            E1000, IGC, RTL8125, RTL8168, VirtIO Net,
                            WiFi (Intel iwlwifi, Qualcomm Atheros, Realtek RTL8188EU),
                            ATA, AHCI, NVMe, ATAPI, SDHCI, LSI SCSI,
                            serial, AC'97, HDA audio, UHCI, EHCI, xHCI,
-                           VMMDev, thermal, SMBus/I2C, watchdog
+                           VMMDev, thermal, SMBus/I2C, watchdog, Bluetooth (HCI/L2CAP)
       fs/                  VFS, exFAT, FAT12/16/32, NTFS, ISO 9660, OverlayFS, SMB/CIFS, devfs
       graphics/            Framebuffer management
       ipc/                 Pipes, anonymous pipes, event bus, shared memory, message queues, signals
@@ -483,7 +486,7 @@ anyos/
       net/                 Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS
       sync/                Spinlock, mutex
       syscall/             232 syscall handlers
-      task/                Mach-style scheduler, context switch, ELF loader, DLL loader, KDRV loader
+      task/                Scheduler, context switch, ELF loader, DLL loader, KDRV loader
       crypto/              MD5 hash
   drivers/               Userspace GPU drivers (.drv shared libraries)
     gpu/
@@ -494,9 +497,9 @@ anyos/
     libc/                  POSIX C library (35 headers, i686-elf-gcc)
     uisys/                 uisys.dlib — Legacy UI (deprecated, replaced by libanyui)
     uisys_client/          Client stub crate for uisys (deprecated)
-    libimage/              libimage.dlib — Image decoding DLL (PNG, BMP, JPEG, ICO, MJV)
+    libimage/              libimage.dlib — Image decoding DLL (PNG, BMP, JPEG, ICO, WebP, MJV)
     libimage_client/       Client stub crate for libimage
-    libanyui/              libanyui.so — anyui UI framework (44 controls, 178 exports)
+    libanyui/              libanyui.so — anyui UI framework (44 controls, 191 exports)
     libanyui_client/       Client crate for libanyui (dynlink-based)
     libfont/               libfont.so — TrueType font rendering (embedded system fonts in .rodata)
     libfont_client/        Client crate for libfont (dynlink-based)
@@ -590,12 +593,12 @@ All new libraries use the `.so` format. The DLIB format is maintained for backwa
 
 | Library | Format | Exports | Purpose |
 |---------|--------|---------|---------|
-| libimage | DLIB | 7 | Image decoding (PNG, BMP, JPEG, GIF, ICO) and scaling |
-| librender | DLIB | 18 | 2D drawing primitives (lines, rects, circles, gradients) |
-| libcompositor | DLIB | 16 | Window creation, event handling, IPC with compositor |
-| libanyui | .so | 178 | anyui UI framework (44 controls, Windows Forms-style) |
-| libfont | .so | 7 | TrueType font rendering with LCD subpixel AA (system fonts embedded in .rodata) |
-| libgl | .so | 105 | OpenGL ES 2.0 3D engine with GLSL compiler, software rasterizer, and physics engine |
+| libimage | DLIB | 11 | Image decoding (PNG, BMP, JPEG, GIF, ICO, WebP) and scaling |
+| librender | DLIB | 19 | 2D drawing primitives (lines, rects, circles, gradients) |
+| libcompositor | DLIB | 28 | Window creation, event handling, IPC with compositor |
+| libanyui | .so | 191 | anyui UI framework (44 controls, Windows Forms-style) |
+| libfont | .so | 9 | TrueType font rendering with LCD subpixel AA (system fonts embedded in .rodata) |
+| libgl | .so | 116 | OpenGL ES 2.0 3D engine with GLSL compiler, software rasterizer, physics engine, and shadow mapping |
 | libm | .so | 56 | Hardware-accelerated math (SSE2 + x87 FPU) |
 | libhttp | .so | — | HTTP client/server library |
 | libdb | .so | — | Key-value database |
@@ -614,14 +617,14 @@ DLIB programs link against lightweight client stub crates (e.g. `libimage_client
 - **[Architecture Overview](docs/architecture.md)** — Boot process, memory layout, scheduling, IPC, USB, user identity
 - **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 232 system calls
 - **[Standard Library API](docs/stdlib-api.md)** — `anyos_std` crate reference for Rust user programs
-- **[anyui Controls API](docs/anyui-api.md)** — anyui framework reference (44 controls, 178 exports)
+- **[anyui Controls API](docs/anyui-api.md)** — anyui framework reference (44 controls, 191 exports)
 - **[C Library API](docs/libc-api.md)** — POSIX libc reference (35 headers) for C programs
 - **[C++20 / libc64 API](docs/libcxx-api.md)** — 64-bit C and C++20 standard library reference
 - **[libimage API](docs/libimage-api.md)** — Image decoding, scaling, ICO, and video (MJV)
 - **[libfont API](docs/libfont-api.md)** — TrueType font rendering with subpixel LCD anti-aliasing
 - **[librender API](docs/librender-api.md)** — 2D graphics primitives (fill, stroke, gradient, AA)
 - **[libcompositor API](docs/libcompositor-api.md)** — Window management and compositor IPC
-- **[libgl API](docs/libgl-api.md)** — OpenGL ES 2.0 3D engine with GLSL compiler, software rasterizer, and physics engine (105 exports)
+- **[libgl API](docs/libgl-api.md)** — OpenGL ES 2.0 3D engine with GLSL compiler, software rasterizer, physics engine, and shadow mapping (116 exports)
 - **[libm API](docs/libm-api.md)** — Hardware-accelerated math (SSE2 + x87 FPU, 56 exports)
 - **[libdb API](docs/libdb-api.md)** — Key-value database
 - **[libzip API](docs/libzip-api.md)** — ZIP/TAR/GZIP archive handling

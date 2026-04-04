@@ -413,3 +413,104 @@ pub fn i2c_write_byte(addr: u8, reg: u8, value: u8) -> Result<(), ()> {
 pub fn i2c_detect(addr: u8) -> bool {
     syscall1(SYS_I2C_DETECT, addr as u64) == 1
 }
+
+// =========================================================================
+// Monitor detection
+// =========================================================================
+
+/// Returns the number of detected monitors.
+pub fn monitor_count() -> u32 {
+    syscall0(SYS_MONITOR_COUNT)
+}
+
+/// Packed monitor info returned by `monitor_info()`.
+///
+/// This matches the kernel's `MonitorInfoFlat` layout (92 bytes, `repr(C, packed)`).
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct MonitorInfoFlat {
+    pub id: u32,
+    pub gpu_output: u32,
+    pub manufacturer: [u8; 4],
+    pub model_name: [u8; 14],
+    pub serial_string: [u8; 14],
+    pub serial_number: u32,
+    pub product_code: u16,
+    pub manufacture_year: u16,
+    pub manufacture_week: u8,
+    pub _pad0: u8,
+    pub width_mm: u16,
+    pub height_mm: u16,
+    pub gamma: u16,
+    pub native_width: u32,
+    pub native_height: u32,
+    pub native_refresh_100: u32,
+    pub color_depth: u8,
+    pub is_digital: u8,
+    pub has_edid: u8,
+    pub _pad1: u8,
+    pub mode_count: u32,
+    pub red_x: u16,
+    pub red_y: u16,
+    pub green_x: u16,
+    pub green_y: u16,
+    pub blue_x: u16,
+    pub blue_y: u16,
+    pub white_x: u16,
+    pub white_y: u16,
+}
+
+/// Get monitor info for monitor `id`. Returns `None` if the monitor does not exist.
+pub fn monitor_info(id: u32) -> Option<MonitorInfoFlat> {
+    let mut buf = [0u8; 128];
+    let ret = syscall2(SYS_MONITOR_INFO, id as u64, buf.as_mut_ptr() as u64);
+    if ret == u32::MAX {
+        return None;
+    }
+    Some(unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const MonitorInfoFlat) })
+}
+
+/// Supported display mode from a monitor.
+#[derive(Clone, Copy, Default)]
+pub struct MonitorMode {
+    pub width: u32,
+    pub height: u32,
+    pub refresh_hz_100: u32,
+    pub is_preferred: bool,
+    pub is_interlaced: bool,
+}
+
+/// Get supported modes for monitor `id`. Returns up to 32 modes.
+pub fn monitor_modes(id: u32) -> crate::Vec<MonitorMode> {
+    let mut buf = [0u32; 128]; // 32 modes × 4 u32
+    let count = syscall3(
+        SYS_MONITOR_MODES,
+        id as u64,
+        buf.as_mut_ptr() as u64,
+        (buf.len() * 4) as u64,
+    );
+    let mut modes = crate::Vec::new();
+    for i in 0..count as usize {
+        if i * 4 + 3 < buf.len() {
+            let flags = buf[i * 4 + 3];
+            modes.push(MonitorMode {
+                width: buf[i * 4],
+                height: buf[i * 4 + 1],
+                refresh_hz_100: buf[i * 4 + 2],
+                is_preferred: flags & 1 != 0,
+                is_interlaced: flags & 2 != 0,
+            });
+        }
+    }
+    modes
+}
+
+/// Get raw EDID bytes for monitor `id`. Returns the EDID block (up to 256 bytes).
+pub fn monitor_edid(id: u32) -> crate::Vec<u8> {
+    let mut buf = [0u8; 256];
+    let n = syscall3(SYS_MONITOR_EDID, id as u64, buf.as_mut_ptr() as u64, 256);
+    let len = (n as usize).min(256);
+    let mut v = crate::Vec::new();
+    v.extend_from_slice(&buf[..len]);
+    v
+}

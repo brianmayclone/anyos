@@ -278,6 +278,12 @@ pub(crate) const SYS_I2C_READ:     u32 = 324;
 pub(crate) const SYS_I2C_WRITE:    u32 = 325;
 pub(crate) const SYS_I2C_DETECT:   u32 = 326;
 
+// Monitor detection
+pub(crate) const SYS_MONITOR_COUNT: u32 = 327;
+pub(crate) const SYS_MONITOR_INFO:  u32 = 328;
+pub(crate) const SYS_MONITOR_EDID:  u32 = 329;
+pub(crate) const SYS_MONITOR_MODES: u32 = 330;
+
 // Event bus
 pub(crate) const SYS_EVT_SYS_SUBSCRIBE: u32 = 60;
 pub(crate) const SYS_EVT_SYS_POLL: u32 = 61;
