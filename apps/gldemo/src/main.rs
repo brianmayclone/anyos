@@ -55,7 +55,7 @@ void main() {
 }
 ";
 
-/// Fragment shader: texture × lighting + shadow mapping.
+/// Fragment shader: texture × lighting + shadow mapping (branchless).
 static FS_SOURCE: &str =
 "varying vec3 vLighting;
 varying vec2 vTexCoord;
@@ -65,16 +65,11 @@ uniform sampler2D uShadowMap;
 uniform mat4 uLightMVP;
 void main() {
     vec4 texColor = texture2D(uTexture, vTexCoord);
-    float shadow = 1.0;
     vec4 lsPos = uLightMVP * vWorldPos;
-    vec3 proj = lsPos.xyz / lsPos.w;
-    proj = proj * 0.5 + 0.5;
-    if (proj.x >= 0.0 && proj.x <= 1.0 && proj.y >= 0.0 && proj.y <= 1.0) {
-        float closest = texture2D(uShadowMap, proj.xy).r;
-        if (proj.z > closest + 0.005) {
-            shadow = 0.4;
-        }
-    }
+    vec3 proj = lsPos.xyz / lsPos.w * 0.5 + 0.5;
+    float closest = texture2D(uShadowMap, proj.xy).r;
+    float diff = proj.z - closest - 0.005;
+    float shadow = 1.0 - clamp(diff * 10000.0, 0.0, 1.0) * 0.6;
     gl_FragColor = vec4(vLighting * texColor.rgb * shadow, 1.0);
 }
 ";
