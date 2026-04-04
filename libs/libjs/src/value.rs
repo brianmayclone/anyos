@@ -284,13 +284,28 @@ impl JsObject {
 #[derive(Clone, Debug)]
 pub struct JsArray {
     pub elements: Vec<JsValue>,
+    /// Sparse storage for indices beyond the dense part.
+    pub sparse: BTreeMap<usize, JsValue>,
+    /// Logical length when it exceeds `elements.len()` (e.g. after setting
+    /// `arr.length = N` with a very large N, or after sparse index inserts).
+    pub sparse_len: usize,
     pub properties: BTreeMap<String, Property>,
 }
+
+/// Maximum gap we allow when expanding the dense `elements` Vec.
+/// Indices that would create a gap larger than this are stored in `sparse`.
+const SPARSE_GAP: usize = 10_000;
+
+/// Maximum valid ES array index (2^32 − 2).  Index 2^32 − 1 is a regular
+/// property, not an array element (ES2023 §6.1.7).
+pub const MAX_ARRAY_INDEX: usize = 0xFFFF_FFFE; // 4294967294
 
 impl JsArray {
     pub fn new() -> Self {
         JsArray {
             elements: Vec::new(),
+            sparse: BTreeMap::new(),
+            sparse_len: 0,
             properties: BTreeMap::new(),
         }
     }
@@ -298,27 +313,60 @@ impl JsArray {
     pub fn from_vec(elements: Vec<JsValue>) -> Self {
         JsArray {
             elements,
+            sparse: BTreeMap::new(),
+            sparse_len: 0,
             properties: BTreeMap::new(),
         }
     }
 
     pub fn get(&self, index: usize) -> JsValue {
-        self.elements.get(index).cloned().unwrap_or(JsValue::Undefined)
+        if index < self.elements.len() {
+            self.elements[index].clone()
+        } else if let Some(v) = self.sparse.get(&index) {
+            v.clone()
+        } else {
+            JsValue::Undefined
+        }
     }
 
     pub fn set(&mut self, index: usize, value: JsValue) {
-        while self.elements.len() <= index {
-            self.elements.push(JsValue::Undefined);
+        if index < self.elements.len() {
+            self.elements[index] = value;
+        } else if index.wrapping_sub(self.elements.len()) < SPARSE_GAP {
+            // Small gap — expand the dense part.
+            while self.elements.len() <= index {
+                self.elements.push(JsValue::Undefined);
+            }
+            self.elements[index] = value;
+        } else {
+            // Large gap — store in sparse map.
+            self.sparse.insert(index, value);
+            if index + 1 > self.sparse_len {
+                self.sparse_len = index + 1;
+            }
         }
-        self.elements[index] = value;
     }
 
     pub fn push(&mut self, value: JsValue) {
-        self.elements.push(value);
+        if self.sparse.is_empty() && self.sparse_len <= self.elements.len() {
+            self.elements.push(value);
+        } else {
+            // Push at logical end.
+            let idx = self.len();
+            self.set(idx, value);
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.elements.len()
+        self.elements.len().max(self.sparse_len)
+    }
+
+    /// Iterate over all (index, &value) pairs that actually exist (dense + sparse)
+    /// in ascending index order.
+    pub fn iter_entries(&self) -> impl Iterator<Item = (usize, &JsValue)> {
+        let dense = self.elements.iter().enumerate();
+        let sparse = self.sparse.iter().map(|(&k, v)| (k, v));
+        dense.chain(sparse)
     }
 }
 
@@ -575,10 +623,17 @@ impl JsValue {
             JsValue::Array(arr) => {
                 let a = arr.borrow();
                 if key == "length" {
-                    return JsValue::Number(a.elements.len() as f64);
+                    return JsValue::Number(a.len() as f64);
                 }
                 if let Some(idx) = parse_index(key) {
-                    return a.get(idx);
+                    if idx <= MAX_ARRAY_INDEX {
+                        return a.get(idx);
+                    }
+                    // Indices > MAX_ARRAY_INDEX are regular properties.
+                    if let Some(prop) = a.properties.get(key) {
+                        return prop.value.clone();
+                    }
+                    return JsValue::Undefined;
                 }
                 if let Some(prop) = a.properties.get(key) {
                     return prop.value.clone();
@@ -611,14 +666,30 @@ impl JsValue {
             JsValue::Array(arr) => {
                 let mut a = arr.borrow_mut();
                 if let Some(idx) = parse_index(&key) {
-                    a.set(idx, value);
+                    if idx <= MAX_ARRAY_INDEX {
+                        a.set(idx, value);
+                    } else {
+                        // Indices > MAX_ARRAY_INDEX are regular string properties.
+                        a.properties.insert(key, Property::data(value));
+                    }
                 } else if key == "length" {
                     if let JsValue::Number(n) = &value {
                         let new_len = *n as usize;
-                        a.elements.truncate(new_len);
-                        while a.elements.len() < new_len {
-                            a.elements.push(JsValue::Undefined);
+                        // Truncate dense part if needed.
+                        if new_len < a.elements.len() {
+                            a.elements.truncate(new_len);
                         }
+                        // Remove sparse entries >= new_len.
+                        let to_remove: Vec<usize> = a.sparse.range(new_len..).map(|(&k, _)| k).collect();
+                        for k in to_remove { a.sparse.remove(&k); }
+                        // Expand dense part only for small lengths.
+                        if new_len <= a.elements.len() + SPARSE_GAP {
+                            while a.elements.len() < new_len {
+                                a.elements.push(JsValue::Undefined);
+                            }
+                        }
+                        // Track the logical length.
+                        a.sparse_len = new_len;
                     }
                 } else {
                     a.properties.insert(key, Property::data(value));

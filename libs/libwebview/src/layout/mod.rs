@@ -1207,6 +1207,21 @@ fn is_table_element(dom: &Dom, node_id: NodeId) -> bool {
     matches!(dom.tag(node_id), Some(Tag::Table))
 }
 
+/// Check whether `node_id` has an `<svg>` ancestor.  SVG inner markup is
+/// stored as raw text by the HTML parser — it must never be rendered as
+/// visible characters.  Walking the full ancestor chain (not just the
+/// immediate parent) handles nested SVG elements like `<g>`, `<defs>`, etc.
+pub(crate) fn is_inside_svg(dom: &Dom, node_id: NodeId) -> bool {
+    let mut cur = dom.nodes.get(node_id).and_then(|n| n.parent);
+    while let Some(pid) = cur {
+        if dom.tag(pid) == Some(Tag::Svg) {
+            return true;
+        }
+        cur = dom.nodes.get(pid).and_then(|n| n.parent);
+    }
+    false
+}
+
 // ---------------------------------------------------------------------------
 // Float context — tracks placed floats for correct flow-around behaviour.
 // ---------------------------------------------------------------------------
@@ -1348,6 +1363,7 @@ fn measure_min_content(
         + st.border_left.width + st.border_right.width;
 
     if let NodeType::Text(ref text) = dom.nodes[node_id].node_type {
+        if is_inside_svg(dom, node_id) { return 0; }
         // Find the longest word (non-breaking run).
         let fs = st.font_size.max(1);
         let bold = matches!(st.font_weight, crate::style::FontWeight::Bold);

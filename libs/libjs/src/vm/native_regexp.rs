@@ -119,6 +119,8 @@ fn build_exec_result(_vm: &Vm, m: &crate::regexp::Match, input: &str) -> JsValue
     }
     let arr = JsArray {
         elements,
+        sparse: BTreeMap::new(),
+        sparse_len: 0,
         properties: BTreeMap::new(),
     };
     let arr_val = JsValue::Array(Rc::new(RefCell::new(arr)));

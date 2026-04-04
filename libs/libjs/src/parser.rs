@@ -1807,11 +1807,23 @@ impl Parser {
             let key = self.parse_prop_key();
 
             // Shorthand property: { x } → { x: x }
-            if matches!(self.peek(), TokenKind::Comma | TokenKind::RBrace) {
+            // CoverInitializedName: { x = default } → { x: x = default }
+            if matches!(self.peek(), TokenKind::Comma | TokenKind::RBrace | TokenKind::Eq) {
                 if let PropKey::Ident(ref name) = key {
+                    let value = if self.eat(&TokenKind::Eq) {
+                        // { x = default } — shorthand with default (destructuring pattern)
+                        let default = self.parse_assignment_expr();
+                        Expr::Assign {
+                            op: AssignOp::Assign,
+                            left: Box::new(Expr::Ident(name.clone())),
+                            right: Box::new(default),
+                        }
+                    } else {
+                        Expr::Ident(name.clone())
+                    };
                     props.push(ObjProp {
                         key: key.clone(),
-                        value: Expr::Ident(name.clone()),
+                        value,
                         kind: PropKind::Init,
                         shorthand: true,
                     });

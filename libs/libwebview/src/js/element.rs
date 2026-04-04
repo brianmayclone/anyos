@@ -152,7 +152,19 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
 
     // Properties.
     obj.set(String::from("nodeType"), JsValue::Number(node_type));
-    obj.set(String::from("tagName"), JsValue::String(tag_name));
+    obj.set(String::from("tagName"), JsValue::String(tag_name.clone()));
+    // nodeName: W3C DOM §4.4 — Element→tagName, Text→"#text", Comment→"#comment",
+    // Document→"#document", DocumentFragment→"#document-fragment".
+    let node_name = match node_type as u32 {
+        1  => tag_name.clone(),                          // Element
+        3  => String::from("#text"),                     // Text
+        8  => String::from("#comment"),                  // Comment
+        9  => String::from("#document"),                 // Document
+        11 => String::from("#document-fragment"),         // DocumentFragment
+        _  => tag_name.clone(),
+    };
+    obj.set(String::from("nodeName"), JsValue::String(node_name));
+    obj.set(String::from("localName"), JsValue::String(tag_name.to_ascii_lowercase()));
     obj.set(String::from("id"), JsValue::String(id_val));
     obj.set(String::from("className"), JsValue::String(class_name.clone()));
     obj.set(String::from("textContent"), JsValue::String(text.clone()));
@@ -272,7 +284,9 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     // Node properties (W3C DOM §4.4).
     obj.set(String::from("isConnected"), JsValue::Bool(node_id >= 0));
     obj.set(String::from("getRootNode"), native_fn("getRootNode", el_get_root_node));
-    obj.set(String::from("ownerDocument"), JsValue::Null); // set by document setup
+    // ownerDocument: W3C DOM §4.4 — returns the Document that owns this node.
+    // React 19 relies on ownerDocument.defaultView to find the window object.
+    obj.set(String::from("ownerDocument"), vm.get_global("document"));
 
     // outerHTML (W3C DOM Parsing §3).
     obj.set(String::from("outerHTML"), JsValue::String(String::new())); // placeholder, set_hook handles writes

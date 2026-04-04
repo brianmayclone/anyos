@@ -19,7 +19,7 @@ pub fn object_has_own_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         JsValue::Array(arr) => {
             let a = arr.borrow();
             if let Some(idx) = super::try_parse_index(&key) {
-                JsValue::Bool(idx < a.elements.len())
+                JsValue::Bool(idx < a.elements.len() || a.sparse.contains_key(&idx))
             } else {
                 JsValue::Bool(a.properties.contains_key(&key))
             }
@@ -244,7 +244,7 @@ pub fn object_define_property(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     target
 }
 
-pub fn object_get_prototype_of(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn object_get_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
         Some(JsValue::Object(obj)) => {
             let o = obj.borrow();
@@ -252,6 +252,10 @@ pub fn object_get_prototype_of(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 Some(proto) => JsValue::Object(proto.clone()),
                 None => JsValue::Null,
             }
+        }
+        Some(JsValue::Function(_)) => {
+            // Functions inherit from Function.prototype
+            JsValue::Object(vm.function_proto.clone())
         }
         _ => JsValue::Null,
     }
@@ -530,7 +534,7 @@ pub fn object_has_own(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         Some(JsValue::Array(arr)) => {
             let a = arr.borrow();
             if let Some(idx) = super::try_parse_index(&key) {
-                JsValue::Bool(idx < a.elements.len())
+                JsValue::Bool(idx < a.elements.len() || a.sparse.contains_key(&idx))
             } else {
                 JsValue::Bool(a.properties.contains_key(&key))
             }

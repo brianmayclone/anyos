@@ -182,6 +182,21 @@ impl Vm {
         JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 
+    /// Create a `RangeError` object.
+    pub fn make_range_error(&self, message: &str) -> JsValue {
+        let stack_str = self.make_stack_trace("RangeError", message);
+        let mut obj = JsObject::new();
+        obj.prototype = Some(self.error_proto.clone());
+        obj.set(String::from("name"), JsValue::String(String::from("RangeError")));
+        obj.set(String::from("message"), JsValue::String(String::from(message)));
+        obj.set(String::from("stack"), JsValue::String(stack_str));
+        let ctor = self.globals.get("RangeError");
+        if !matches!(ctor, JsValue::Undefined) {
+            obj.set(String::from("constructor"), ctor);
+        }
+        JsValue::Object(Rc::new(RefCell::new(obj)))
+    }
+
     /// Create a `ReferenceError` object.
     pub fn make_reference_error(&self, message: &str) -> JsValue {
         let stack_str = self.make_stack_trace("ReferenceError", message);
@@ -788,9 +803,27 @@ impl Vm {
                         JsValue::Array(a) => {
                             let arr = a.borrow();
                             if let Some(idx) = try_parse_index(&key_str) {
-                                idx < arr.elements.len()
+                                idx < arr.elements.len() || arr.sparse.contains_key(&idx)
                             } else {
                                 arr.properties.contains_key(&key_str)
+                            }
+                        }
+                        JsValue::Function(f) => {
+                            let func = f.borrow();
+                            // Check own_props, then built-in properties
+                            if func.own_props.contains_key(&key_str) {
+                                true
+                            } else {
+                                match key_str.as_str() {
+                                    "name" | "length" => true,
+                                    "prototype" => !func.kind.is_arrow(),
+                                    _ => {
+                                        // Check function prototype chain
+                                        drop(func);
+                                        let proto_val = self.get_property_with_proto(&obj, &key_str);
+                                        !matches!(proto_val, JsValue::Undefined)
+                                    }
+                                }
                             }
                         }
                         _ => false,
@@ -1126,6 +1159,16 @@ impl Vm {
 
                 Op::Debugger | Op::Nop => {}
 
+                Op::RequireObjectCoercible => {
+                    let val = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    if matches!(val, JsValue::Null | JsValue::Undefined) {
+                        let type_str = if matches!(val, JsValue::Null) { "null" } else { "undefined" };
+                        let msg = format!("Cannot destructure '{}' as it is {}.", type_str, type_str);
+                        let exc = self.make_type_error(&msg);
+                        if !self.handle_exception(exc) { return JsValue::Undefined; }
+                    }
+                }
+
                 Op::ObjectRest(count) => {
                     // Pop `count` excluded key strings, then pop source object.
                     // Push new object with all enumerable own properties except excluded ones.
@@ -1136,14 +1179,37 @@ impl Vm {
                     excluded.reverse();
                     let src = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let result = JsValue::new_object();
-                    if let JsValue::Object(src_rc) = &src {
-                        let keys = src_rc.borrow().keys();
-                        for key in keys {
-                            if !excluded.contains(&key) {
-                                let val = src_rc.borrow().get(&key);
-                                result.set_property(key, val);
+                    match &src {
+                        JsValue::Object(src_rc) => {
+                            let keys = src_rc.borrow().keys();
+                            for key in keys {
+                                if !excluded.contains(&key) {
+                                    let val = src_rc.borrow().get(&key);
+                                    result.set_property(key, val);
+                                }
                             }
                         }
+                        JsValue::String(s) => {
+                            // Spread string characters as indexed properties
+                            for (i, ch) in s.chars().enumerate() {
+                                let key = format!("{}", i);
+                                if !excluded.contains(&key) {
+                                    let mut cs = String::new();
+                                    cs.push(ch);
+                                    result.set_property(key, JsValue::String(cs));
+                                }
+                            }
+                        }
+                        JsValue::Array(arr) => {
+                            let a = arr.borrow();
+                            for (i, elem) in a.elements.iter().enumerate() {
+                                let key = format!("{}", i);
+                                if !excluded.contains(&key) {
+                                    result.set_property(key, elem.clone());
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                     self.stack.push(result);
                 }
@@ -1393,7 +1459,7 @@ impl Vm {
             JsValue::Array(arr) => {
                 let a = arr.borrow();
                 if key == "length" {
-                    return JsValue::Number(a.elements.len() as f64);
+                    return JsValue::Number(a.len() as f64);
                 }
                 if let Some(idx) = try_parse_index(key) {
                     return a.get(idx);

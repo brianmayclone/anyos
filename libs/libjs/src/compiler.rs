@@ -992,6 +992,10 @@ impl Compiler {
     }
 
     fn compile_object_destructure(&mut self, props: &[ObjPatProp]) {
+        // ES2023 §13.3.3.5: RequireObjectCoercible — throw TypeError for null/undefined
+        self.emit(Op::Dup);
+        self.emit(Op::RequireObjectCoercible);
+        self.emit(Op::Pop);
         // Collect the non-rest keys (for building the exclusion list for the rest element).
         let mut excluded_keys: Vec<String> = Vec::new();
         let mut has_rest = false;
@@ -2599,11 +2603,13 @@ impl Compiler {
                 self.emit(Op::Dup); // keep RHS value as result of the assignment expression
                 self.emit(Op::GetIterator); // convert to iterator
                 // Stack: [..., rhs_value, iterator]
+                // Note: IterNext peeks the iterator from stack.last() without popping.
+                // After IterNext, stack is [..., iter, value, has_more].
+                // After consuming value and has_more, iter is back on top for next call.
                 for elem in elements.iter() {
                     match elem {
                         None => {
                             // Elision: [,] — advance iterator without binding
-                            self.emit(Op::Dup);
                             self.emit(Op::IterNext);
                             self.emit(Op::Pop); // pop has_more
                             self.emit(Op::Pop); // pop value
@@ -2617,7 +2623,6 @@ impl Compiler {
                                     self.emit(Op::StoreLocal(result_arr));
                                     self.emit(Op::Pop);
                                     let loop_top = self.offset();
-                                    self.emit(Op::Dup); // dup iterator
                                     self.emit(Op::IterNext); // value, has_more
                                     let exit = self.emit(Op::JumpIfFalse(0));
                                     // has_more=true: push value into array
@@ -2636,7 +2641,6 @@ impl Compiler {
                                 }
                                 Expr::Assign { op: AssignOp::Assign, left, right: default } => {
                                     // Element with default: [x = default] = arr
-                                    self.emit(Op::Dup);
                                     self.emit(Op::IterNext); // value, has_more
                                     self.emit(Op::Pop); // pop has_more
                                     // If undefined, use default
@@ -2650,7 +2654,6 @@ impl Compiler {
                                     self.compile_assign_target(left);
                                 }
                                 _ => {
-                                    self.emit(Op::Dup);
                                     self.emit(Op::IterNext); // value, has_more
                                     self.emit(Op::Pop); // pop has_more
                                     self.compile_assign_target(expr);
@@ -2664,8 +2667,13 @@ impl Compiler {
             }
             Expr::Object(props) if *op == AssignOp::Assign => {
                 // Object destructuring assignment: {a, b, ...rest} = expr
+                // ES2023 §13.15.5.3: RequireObjectCoercible — throw TypeError for null/undefined
                 self.compile_expr(right);
                 self.emit(Op::Dup); // keep RHS value as result
+                // Emit RequireObjectCoercible check
+                self.emit(Op::Dup);
+                self.emit(Op::RequireObjectCoercible);
+                self.emit(Op::Pop);
 
                 // Collect excluded keys for rest element
                 let mut excluded_keys: Vec<String> = Vec::new();
@@ -2768,12 +2776,11 @@ impl Compiler {
             }
             Expr::Array(elements) => {
                 // Nested array destructuring: [[a, b]] = [[1, 2]]
-                // Use iterator protocol
+                // Use iterator protocol. IterNext peeks the iterator without popping.
                 self.emit(Op::GetIterator);
                 for elem in elements.iter() {
                     match elem {
                         None => {
-                            self.emit(Op::Dup);
                             self.emit(Op::IterNext);
                             self.emit(Op::Pop);
                             self.emit(Op::Pop);
@@ -2784,7 +2791,6 @@ impl Compiler {
                             self.emit(Op::StoreLocal(result_arr));
                             self.emit(Op::Pop);
                             let loop_top = self.offset();
-                            self.emit(Op::Dup);
                             self.emit(Op::IterNext);
                             let exit = self.emit(Op::JumpIfFalse(0));
                             let tmp = self.scope_mut().add_local(String::from("__dstr_tmp__"));
@@ -2801,7 +2807,6 @@ impl Compiler {
                             self.compile_assign_target(inner);
                         }
                         Some(Expr::Assign { op: AssignOp::Assign, left, right: default }) => {
-                            self.emit(Op::Dup);
                             self.emit(Op::IterNext);
                             self.emit(Op::Pop);
                             self.emit(Op::Dup);
@@ -2814,7 +2819,6 @@ impl Compiler {
                             self.compile_assign_target(left);
                         }
                         Some(e) => {
-                            self.emit(Op::Dup);
                             self.emit(Op::IterNext);
                             self.emit(Op::Pop);
                             self.compile_assign_target(e);

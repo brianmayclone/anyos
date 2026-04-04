@@ -274,13 +274,11 @@ fn collect_inline_fragments(
         NodeType::Text(text) => {
             // SVG raw text children must never be rendered as visible text.
             // The HTML parser stores the SVG inner markup (<path>, <circle>, etc.)
-            // as a Text node child of the <svg> element.  Normally the SVG early-
-            // return prevents this node from being visited, but CSS display:contents
-            // or other promotion paths could expose it.
-            if let Some(pid) = node.parent {
-                if dom.tag(pid) == Some(Tag::Svg) {
-                    return;
-                }
+            // as a Text node child of the <svg> element.  Walk the full ancestor
+            // chain because SVG elements like <g>, <defs> etc. become Tag::Unknown
+            // and wrap the actual text nodes.
+            if super::is_inside_svg(dom, node_id) {
+                return;
             }
 
             let fs = font_size_px(style);

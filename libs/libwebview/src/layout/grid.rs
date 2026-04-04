@@ -87,11 +87,12 @@ pub fn layout_grid(
             let st = &styles[cid];
             if st.display == Display::None { return None; }
             if matches!(st.position, Position::Absolute | Position::Fixed) { return None; }
-            // Skip whitespace-only text nodes (CSS Grid §4).
+            // Skip whitespace-only text nodes (CSS Grid §4) and SVG raw text.
             if let crate::dom::NodeType::Text(ref t) = dom.get(cid).node_type {
                 if t.bytes().all(|b| b == b' ' || b == b'\n' || b == b'\r' || b == b'\t') {
                     return None;
                 }
+                if super::is_inside_svg(dom, cid) { return None; }
             }
             Some(GridItem {
                 node_id: cid,

@@ -124,7 +124,6 @@ impl Vm {
                 let mut context = alloc::string::String::new();
                 if let Some(frame) = self.frames.last() {
                     let ip = frame.ip;
-                    // Look backward through bytecode for the property name that was loaded
                     let code = &frame.chunk.code;
                     let consts = &frame.chunk.constants;
                     if ip >= 2 {
@@ -133,7 +132,24 @@ impl Vm {
                             if check_ip < code.len() {
                                 if let crate::bytecode::Op::GetPropNamed(ci) = &code[check_ip] {
                                     if let Some(crate::bytecode::Constant::String(s)) = consts.get(*ci as usize) {
-                                        context = alloc::format!(" prop=.{}", s);
+                                        // Show the `this` object type for method calls
+                                        let this_desc = match &this_val {
+                                            JsValue::Undefined => "undefined",
+                                            JsValue::Null => "null",
+                                            JsValue::Number(_) => "number",
+                                            JsValue::String(_) => "string",
+                                            JsValue::Bool(_) => "bool",
+                                            JsValue::Object(o) => {
+                                                let b = o.borrow();
+                                                if b.has("__nodeId") { "DOMElement" }
+                                                else if b.internal_tag.as_deref() == Some("Map") { "Map" }
+                                                else if b.internal_tag.as_deref() == Some("Set") { "Set" }
+                                                else { "object" }
+                                            }
+                                            JsValue::Array(_) => "array",
+                                            JsValue::Function(_) => "function",
+                                        };
+                                        context = alloc::format!(" {}.{}()", this_desc, s);
                                         break;
                                     }
                                 }
@@ -147,7 +163,6 @@ impl Vm {
                         }
                     }
                 }
-                // Include call stack for debugging
                 let mut stack = alloc::string::String::new();
                 for (fi, frame) in self.frames.iter().rev().take(6).enumerate() {
                     let fname = frame.chunk.name.as_deref().unwrap_or("(anon)");

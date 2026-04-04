@@ -62,6 +62,7 @@ pub(super) fn measure_max_content(
 
     // Text node → measure text width.
     if let crate::dom::NodeType::Text(ref text) = dom.nodes[node_id].node_type {
+        if super::is_inside_svg(dom, node_id) { return 0; }
         let trimmed = text.trim();
         if trimmed.is_empty() { return 0; }
         let fs = st.font_size.max(1);
@@ -219,6 +220,11 @@ pub fn layout_flex(
     for item in &mut items {
         // Handle text nodes as anonymous flex items (CSS Flexbox §4).
         if let NodeType::Text(ref text) = dom.nodes[item.node_id].node_type {
+            if super::is_inside_svg(dom, item.node_id) {
+                item.main_base = 0;
+                item.cross_base = 0;
+                continue;
+            }
             let trimmed = text.trim();
             if trimmed.is_empty() {
                 item.main_base = 0;

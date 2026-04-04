@@ -168,6 +168,7 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     obj.set(String::from("querySelector"), native_fn("querySelector", doc_query_selector));
     obj.set(String::from("querySelectorAll"), native_fn("querySelectorAll", doc_query_selector_all));
     obj.set(String::from("createElement"), native_fn("createElement", doc_create_element));
+    obj.set(String::from("createElementNS"), native_fn("createElementNS", doc_create_element_ns));
     obj.set(String::from("createTextNode"), native_fn("createTextNode", doc_create_text_node));
     obj.set(String::from("createDocumentFragment"), native_fn("createDocumentFragment", doc_create_document_fragment));
     obj.set(String::from("createComment"), native_fn("createComment", doc_create_comment));
@@ -290,6 +291,35 @@ fn doc_create_element(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         -1
     };
     element::make_element(vm, virtual_id)
+}
+
+/// `document.createElementNS(namespaceURI, qualifiedName)` — W3C DOM §4.5.
+/// Creates an element with the given namespace.  We treat all namespaces
+/// identically (HTML) but set `namespaceURI` on the resulting element.
+fn doc_create_element_ns(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let ns = arg_string(args, 0);
+    let tag = arg_string(args, 1).to_ascii_uppercase();
+    let virtual_id = if let Some(bridge) = get_bridge(vm) {
+        let id = bridge.alloc_virtual_id();
+        bridge.mutations.push(DomMutation::CreateElement { virtual_id: id, tag: tag.clone() });
+        bridge.virtual_nodes.push(VirtualNode {
+            id,
+            tag: tag.clone(),
+            attrs: Vec::new(),
+            text_content: String::new(),
+            child_ids: Vec::new(),
+            parent_id: None,
+        });
+        id
+    } else {
+        -1
+    };
+    let el = element::make_element(vm, virtual_id);
+    // Override namespace with the requested one.
+    if !ns.is_empty() {
+        el.set_property(String::from("namespaceURI"), JsValue::String(ns));
+    }
+    el
 }
 
 fn doc_create_text_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
