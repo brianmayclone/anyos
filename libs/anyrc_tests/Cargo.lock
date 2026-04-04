@@ -3,8 +3,18 @@
 version = 4
 
 [[package]]
+name = "anyos_std"
+version = "0.1.0"
+dependencies = [
+ "libheap",
+]
+
+[[package]]
 name = "anyrc"
 version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
 
 [[package]]
 name = "anyrc_tests"
@@ -12,3 +22,7 @@ version = "0.1.0"
 dependencies = [
  "anyrc",
 ]
+
+[[package]]
+name = "libheap"
+version = "0.1.0"

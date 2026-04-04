@@ -286,6 +286,9 @@ impl TypeckResult {
             trait_impls: self.trait_impls.clone(),
             trait_names: self.trait_names.clone(),
             type_def_to_name: self.type_def_to_name.clone(),
+            assoc_types: self.assoc_types.clone(),
+            generic_param_bounds: self.generic_param_bounds.clone(),
+            trait_default_methods: self.trait_default_methods.clone(),
         }
     }
 }

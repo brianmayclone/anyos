@@ -75,6 +75,13 @@ pub struct TypeckResult {
     pub trait_names: HashMap<DefId, Symbol>,
     /// Reverse map: DefId -> type name Symbol (for looking up impl_methods by DefId)
     pub type_def_to_name: HashMap<DefId, Symbol>,
+    /// Associated types: (trait DefId, assoc_type_name) -> concrete TyKind
+    /// Populated from impl blocks: `impl Trait for Foo { type Item = Bar; }`
+    pub assoc_types: HashMap<(DefId, Symbol), TyKind>,
+    /// Trait bounds on generic params: maps generic param DefId -> list of trait DefIds
+    pub generic_param_bounds: HashMap<u32, Vec<DefId>>,
+    /// Default trait method bodies: method DefId -> true if body exists in trait def
+    pub trait_default_methods: HashMap<DefId, bool>,
 }
 
 /// Compile-time evaluated constant value
@@ -117,6 +124,12 @@ pub struct TypeChecker<'a> {
     trait_impls: HashMap<(Symbol, DefId), Vec<(Symbol, DefId)>>,
     /// Trait DefId -> trait name Symbol
     trait_names: HashMap<DefId, Symbol>,
+    /// Associated types: (trait DefId, assoc_type_name) -> concrete TyKind
+    assoc_types: HashMap<(DefId, Symbol), TyKind>,
+    /// Trait bounds on current function's generic params: param_index -> list of trait DefIds
+    current_generic_bounds: HashMap<u32, Vec<DefId>>,
+    /// Default trait method bodies: method DefId -> true if body exists in trait def
+    trait_default_methods: HashMap<DefId, bool>,
 
     next_infer: u32,
     infer_kinds: HashMap<InferVar, InferKind>,
@@ -150,6 +163,9 @@ impl<'a> TypeChecker<'a> {
             trait_methods: HashMap::new(),
             trait_impls: HashMap::new(),
             trait_names: HashMap::new(),
+            assoc_types: HashMap::new(),
+            current_generic_bounds: HashMap::new(),
+            trait_default_methods: HashMap::new(),
             next_infer: 0,
             infer_kinds: HashMap::new(),
             substitutions: HashMap::new(),
@@ -237,6 +253,9 @@ impl<'a> TypeChecker<'a> {
             trait_methods: core::mem::take(&mut self.trait_methods),
             trait_impls: core::mem::take(&mut self.trait_impls),
             trait_names: core::mem::take(&mut self.trait_names),
+            assoc_types: core::mem::take(&mut self.assoc_types),
+            generic_param_bounds: HashMap::new(),
+            trait_default_methods: core::mem::take(&mut self.trait_default_methods),
             type_def_to_name: self.type_name_to_def.iter()
                 .filter(|(name, _)| self.interner.resolve(**name) != "Self")
                 .map(|(name, &def_id)| (def_id, *name))
@@ -263,10 +282,24 @@ impl<'a> TypeChecker<'a> {
             HirItemKind::Fn(f) => {
                 // Set up generic params for this function
                 let old_generics = core::mem::take(&mut self.current_generic_params);
+                let old_bounds = core::mem::take(&mut self.current_generic_bounds);
                 let mut n_type_params = 0u32;
                 for gp in &f.generics.params {
-                    if let HirGenericParam::Type(name, _, _, _) = gp {
+                    if let HirGenericParam::Type(name, bounds, _, _) = gp {
                         self.current_generic_params.insert(*name, n_type_params);
+                        // Collect trait bounds for this param
+                        let mut bound_def_ids = Vec::new();
+                        for bound in bounds {
+                            if !bound.path.segments.is_empty() {
+                                let trait_name = bound.path.segments[0].ident;
+                                if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
+                                    bound_def_ids.push(trait_def_id);
+                                }
+                            }
+                        }
+                        if !bound_def_ids.is_empty() {
+                            self.current_generic_bounds.insert(n_type_params, bound_def_ids);
+                        }
                         n_type_params += 1;
                     }
                 }
@@ -282,6 +315,7 @@ impl<'a> TypeChecker<'a> {
                     .unwrap_or(TyKind::Unit);
                 self.fn_sigs.insert(f.def_id, (params, ret));
                 self.current_generic_params = old_generics;
+                self.current_generic_bounds = old_bounds;
             }
             HirItemKind::Struct(s) => {
                 let fields: Vec<(Symbol, TyKind)> = s.fields.iter()
@@ -325,8 +359,18 @@ impl<'a> TypeChecker<'a> {
                                 if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
                                     let mut impl_methods = Vec::new();
                                     for sub in &ib.items {
-                                        if let HirItemKind::Fn(f) = &sub.kind {
-                                            impl_methods.push((f.name, f.def_id));
+                                        match &sub.kind {
+                                            HirItemKind::Fn(f) => {
+                                                impl_methods.push((f.name, f.def_id));
+                                            }
+                                            HirItemKind::TypeAlias(ta) => {
+                                                // Associated type: `type Item = Foo;`
+                                                if let Some(ref ty) = ta.ty {
+                                                    let resolved_ty = self.hir_ty_to_ty(ty);
+                                                    self.assoc_types.insert((trait_def_id, ta.name), resolved_ty);
+                                                }
+                                            }
+                                            _ => {}
                                         }
                                     }
                                     self.trait_impls.insert((self_ty_name, trait_def_id), impl_methods);
@@ -371,6 +415,8 @@ impl<'a> TypeChecker<'a> {
                 for sub in &t.items {
                     if let HirItemKind::Fn(f) = &sub.kind {
                         methods.push((f.name, f.def_id));
+                        // Track whether this method has a default body
+                        self.trait_default_methods.insert(f.def_id, f.body.is_some());
                     }
                     self.collect_item(sub);
                 }
@@ -466,12 +512,25 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_fn(&mut self, f: &HirFnDef) {
-        // Set up generic params for this function's body
+        // Set up generic params and bounds for this function's body
         let old_generics = core::mem::take(&mut self.current_generic_params);
+        let old_bounds = core::mem::take(&mut self.current_generic_bounds);
         let mut n_type_params = 0u32;
         for gp in &f.generics.params {
-            if let HirGenericParam::Type(name, _, _, _) = gp {
+            if let HirGenericParam::Type(name, bounds, _, _) = gp {
                 self.current_generic_params.insert(*name, n_type_params);
+                let mut bound_def_ids = Vec::new();
+                for bound in bounds {
+                    if !bound.path.segments.is_empty() {
+                        let trait_name = bound.path.segments[0].ident;
+                        if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
+                            bound_def_ids.push(trait_def_id);
+                        }
+                    }
+                }
+                if !bound_def_ids.is_empty() {
+                    self.current_generic_bounds.insert(n_type_params, bound_def_ids);
+                }
                 n_type_params += 1;
             }
         }
@@ -494,6 +553,7 @@ impl<'a> TypeChecker<'a> {
 
         self.current_fn_ret = old_ret;
         self.current_generic_params = old_generics;
+        self.current_generic_bounds = old_bounds;
     }
 
     fn check_block(&mut self, block: &HirBlock) -> TyKind {
@@ -884,6 +944,28 @@ impl<'a> TypeChecker<'a> {
                                         user_params.len(), args.len()));
                                 }
                                 return ret_ty;
+                            }
+                        }
+                    }
+                }
+
+                // Handle method calls on generic type params via trait bounds
+                if let TyKind::Param(param_idx) = &inner_ty {
+                    // Look through trait bounds for this param
+                    if let Some(bounds) = self.current_generic_bounds.get(param_idx).cloned() {
+                        for trait_def_id in &bounds {
+                            if let Some(methods) = self.trait_methods.get(trait_def_id).cloned() {
+                                if let Some((_, method_def_id)) = methods.iter().find(|(n, _)| *n == *method_name) {
+                                    if let Some((param_tys, ret_ty)) = self.fn_sigs.get(method_def_id).cloned() {
+                                        let user_params = if !param_tys.is_empty() { &param_tys[1..] } else { &param_tys[..] };
+                                        if args.len() != user_params.len() {
+                                            self.error(expr.span, &format!(
+                                                "wrong number of arguments: expected {}, found {}",
+                                                user_params.len(), args.len()));
+                                        }
+                                        return ret_ty;
+                                    }
+                                }
                             }
                         }
                     }

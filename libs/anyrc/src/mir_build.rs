@@ -1079,6 +1079,55 @@ impl<'a> MirBuilder<'a> {
                         }
                     }
 
+                    // Bind inner pattern variables for Struct patterns: `Foo { x, y }`
+                    if let HirPattern::Struct(path, field_pats, _, _) = &arm.pat {
+                        if let Some(scr_local) = scr_local {
+                            let scrutinee_ty = self.get_expr_ty(scrutinee);
+                            // Look up the struct's field ordering
+                            let field_order = self.resolve_struct_fields(&scrutinee_ty);
+                            for field_pat in field_pats {
+                                if let HirPattern::Ident(hir_id, name, _, _, _) = &field_pat.pat {
+                                    if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
+                                        // Find this field's index in the struct
+                                        let field_idx = field_order.iter()
+                                            .position(|(fname, _)| *fname == field_pat.name)
+                                            .unwrap_or(0);
+                                        let field_ty = field_order.get(field_idx)
+                                            .map(|(_, ty)| ty.clone())
+                                            .unwrap_or(TyKind::Int(IntTy::I64));
+                                        let local = self.alloc_local(field_ty, Some(*name), expr.span);
+                                        self.var_map.insert(def_id, local);
+                                        let src_place = Place {
+                                            local: scr_local,
+                                            projections: vec![Projection::Field(field_idx)],
+                                        };
+                                        self.emit_assign(
+                                            Place::local(local),
+                                            Rvalue::Use(Operand::Copy(src_place)),
+                                            expr.span,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Bind Ident pattern (simple binding of whole scrutinee)
+                    if let HirPattern::Ident(hir_id, name, _, _, _) = &arm.pat {
+                        if let Some(scr_local) = scr_local {
+                            if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
+                                let scrutinee_ty = self.get_expr_ty(scrutinee);
+                                let local = self.alloc_local(scrutinee_ty, Some(*name), expr.span);
+                                self.var_map.insert(def_id, local);
+                                self.emit_assign(
+                                    Place::local(local),
+                                    Rvalue::Use(Operand::Copy(Place::local(scr_local))),
+                                    expr.span,
+                                );
+                            }
+                        }
+                    }
+
                     let arm_op = self.lower_expr(&arm.body);
                     self.emit_assign(Place::local(result), Rvalue::Use(arm_op), arm.span);
                     self.terminate(Terminator::Goto(merge_bb));
@@ -1404,9 +1453,69 @@ impl<'a> MirBuilder<'a> {
                 Operand::Copy(Place::local(tmp))
             }
 
-            HirExprKind::Range(_, _, _) |
-            HirExprKind::Try(_) => {
+            HirExprKind::Range(_, _, _) => {
                 Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+            }
+
+            HirExprKind::Try(inner) => {
+                // Desugar `expr?` to:
+                //   match expr {
+                //     Ok(val) / Some(val) => val,
+                //     Err(e) => return Err(e),  / None => return None,
+                //   }
+                let inner_op = self.lower_expr(inner);
+                let inner_ty = self.get_expr_ty(inner);
+
+                // Store the scrutinee in a temp
+                let scrutinee = self.alloc_temp(inner_ty.clone(), expr.span);
+                self.emit_assign(Place::local(scrutinee), Rvalue::Use(inner_op), expr.span);
+
+                // Read discriminant (field 0 of the enum)
+                let disc = self.alloc_temp(TyKind::Int(IntTy::I64), expr.span);
+                self.emit_assign(
+                    Place::local(disc),
+                    Rvalue::Discriminant(Place::local(scrutinee)),
+                    expr.span,
+                );
+
+                let ok_block = self.push_block();
+                let err_block = self.push_block();
+                let after_block = self.push_block();
+
+                // SwitchInt: discriminant 0 = first variant (Ok/Some), 1 = second (Err/None)
+                self.terminate(Terminator::SwitchInt {
+                    operand: Operand::Copy(Place::local(disc)),
+                    targets: vec![(0, ok_block)],
+                    default: err_block,
+                });
+
+                // Ok/Some block: extract value (field 1)
+                self.current_block = ok_block;
+                let result_ty = self.get_expr_ty(expr);
+                let val = self.alloc_temp(result_ty.clone(), expr.span);
+                self.emit_assign(
+                    Place::local(val),
+                    Rvalue::Use(Operand::Copy(Place {
+                        local: scrutinee,
+                        projections: vec![Projection::Field(1)],
+                    })),
+                    expr.span,
+                );
+                self.terminate(Terminator::Goto(after_block));
+
+                // Err/None block: early return with the error variant
+                self.current_block = err_block;
+                // Return the scrutinee as-is (it's already the Err/None variant)
+                let ret_place = Place::local(Local(0)); // _0 = return place
+                self.emit_assign(
+                    ret_place,
+                    Rvalue::Use(Operand::Copy(Place::local(scrutinee))),
+                    expr.span,
+                );
+                self.terminate(Terminator::Return);
+
+                self.current_block = after_block;
+                Operand::Copy(Place::local(val))
             }
         }
     }
@@ -1697,6 +1806,20 @@ impl<'a> MirBuilder<'a> {
         0
     }
 
+    /// Get the field list for a struct type.
+    fn resolve_struct_fields(&self, ty: &TyKind) -> Vec<(Symbol, TyKind)> {
+        let inner = match ty {
+            TyKind::Ref(inner, _) => inner.as_ref(),
+            other => other,
+        };
+        if let TyKind::Adt(def_id, _) = inner {
+            if let Some(fields) = self.typeck.struct_defs.get(def_id) {
+                return fields.clone();
+            }
+        }
+        Vec::new()
+    }
+
     /// Extract discriminant value from a match arm pattern.
     fn pattern_discriminant(&self, pat: &HirPattern) -> Option<u128> {
         match pat {
@@ -1720,6 +1843,8 @@ impl<'a> MirBuilder<'a> {
                     _ => None,
                 }
             }
+            HirPattern::Struct(_, _, _, _) => None, // Struct patterns always match (like wildcard)
+            HirPattern::Ident(_, _, _, _, _) => None, // Ident patterns are catch-all bindings
             HirPattern::Wildcard(_) => None,
             // Range patterns are handled specially in match lowering
             HirPattern::Range(_, _, _, _) => None,
