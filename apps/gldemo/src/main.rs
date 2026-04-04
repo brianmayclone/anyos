@@ -35,11 +35,9 @@ uniform vec3 uLightColor0;
 uniform vec3 uEyePos;
 varying vec3 vLighting;
 varying vec2 vTexCoord;
-varying vec4 vWorldPos;
 void main() {
     vec4 worldPos = uModel * vec4(aPosition, 1.0);
     vec3 wp = worldPos.xyz;
-    vWorldPos = worldPos;
     vec4 tn = uModel * vec4(aNormal, 0.0);
     vec3 N = normalize(tn.xyz);
     vec3 V = normalize(uEyePos - wp);
@@ -55,22 +53,14 @@ void main() {
 }
 ";
 
-/// Fragment shader: texture × lighting + shadow mapping (branchless).
+/// Fragment shader: texture × lighting (shadow disabled for debugging).
 static FS_SOURCE: &str =
 "varying vec3 vLighting;
 varying vec2 vTexCoord;
-varying vec4 vWorldPos;
 uniform sampler2D uTexture;
-uniform sampler2D uShadowMap;
-uniform mat4 uLightMVP;
 void main() {
     vec4 texColor = texture2D(uTexture, vTexCoord);
-    vec4 lsPos = uLightMVP * vWorldPos;
-    vec3 proj = lsPos.xyz / lsPos.w * 0.5 + 0.5;
-    float closest = texture2D(uShadowMap, proj.xy).r;
-    float diff = proj.z - closest - 0.005;
-    float shadow = 1.0 - clamp(diff * 10000.0, 0.0, 1.0) * 0.6;
-    gl_FragColor = vec4(vLighting * texColor.rgb * shadow, 1.0);
+    gl_FragColor = vec4(vLighting * texColor.rgb, 1.0);
 }
 ";
 
@@ -641,30 +631,13 @@ fn render_frame() {
     let l0_z = gl::cos(t * 0.7) * 3.0;
     let l0_y = 2.0f32;
 
-    // ── Shadow pass (HW-only, automatic no-op on SW) ───────────────────
+    // ── Main pass ──────────────────────────────────────────────────────
     let camera_vp = mat4_mul(&proj, &view);
 
-    gl::shadow_pass_begin(l0_x, l0_y, l0_z, 0.0, 0.0, 0.0, 6.0);
-    // Use light VP matrix for shadow geometry
-    let light_mvp_ptr = gl::shadow_get_light_mvp();
-    if !light_mvp_ptr.is_null() {
-        let light_vp = unsafe { &*(light_mvp_ptr as *const [f32; 16]) };
-        draw_scene_geometry(s, light_vp);
-    }
-    gl::shadow_pass_end();
-
-    // ── Main pass ──────────────────────────────────────────────────────
     gl::use_program(s.program);
     gl::uniform3f(s.loc_light_pos0, l0_x, l0_y, l0_z);
     gl::uniform3f(s.loc_light_color0, 1.0, 0.95, 0.8);
     gl::uniform3f(s.loc_eye_pos, eye[0], eye[1], eye[2]);
-
-    // Bind shadow map if available
-    if gl::shadow_available() {
-        let lmvp = unsafe { &*(gl::shadow_get_light_mvp() as *const [f32; 16]) };
-        gl::uniform_matrix4fv(s.loc_light_mvp, false, lmvp);
-        gl::uniform1i(s.loc_shadow_map, gl::shadow_get_unit() as i32);
-    }
 
     draw_scene_geometry(s, &camera_vp);
 
