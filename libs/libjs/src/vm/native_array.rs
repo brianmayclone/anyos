@@ -36,10 +36,9 @@ fn snapshot_entries(a: &JsArray) -> Vec<(usize, JsValue)> {
     a.elements.iter().map(|(&k, v)| (k, v.clone())).collect()
 }
 
-/// Convert a JsValue to a length (ToLength), using the VM to call valueOf/toString
-/// on objects if needed.
-fn to_length_vm(vm: &mut Vm, val: &JsValue) -> usize {
-    let n = match val {
+/// ToNumber with VM — calls valueOf/toString on Objects per ES2023 §7.1.4.
+pub fn to_number_vm(vm: &mut Vm, val: &JsValue) -> f64 {
+    match val {
         JsValue::Number(n) => *n,
         JsValue::String(s) => crate::value::parse_js_float(s),
         JsValue::Bool(true) => 1.0,
@@ -48,38 +47,44 @@ fn to_length_vm(vm: &mut Vm, val: &JsValue) -> usize {
         JsValue::Undefined => f64::NAN,
         JsValue::Object(obj) => {
             let o = obj.borrow();
-            // Wrapper objects (new Number(2))
             if let Some(prim) = &o.primitive_value {
-                return to_length_vm(vm, prim);
+                let p = prim.clone();
+                drop(o);
+                return to_number_vm(vm, &p);
             }
-            // Try valueOf()
             let value_of = o.get("valueOf");
             drop(o);
             if let JsValue::Function(_) = &value_of {
                 let result = vm.call_value(&value_of, &[], val.clone());
-                if let JsValue::Number(n) = result {
-                    return if n.is_nan() || n < 0.0 || !n.is_finite() { 0 } else { (n as u64).min(0xFFFF_FFFF) as usize };
-                }
-                if let JsValue::String(s) = &result {
-                    let n = crate::value::parse_js_float(s);
-                    return if n.is_nan() || n < 0.0 || !n.is_finite() { 0 } else { (n as u64).min(0xFFFF_FFFF) as usize };
+                // If valueOf returns a primitive, use it
+                match &result {
+                    JsValue::Number(n) => return *n,
+                    JsValue::String(s) => return crate::value::parse_js_float(s),
+                    JsValue::Bool(true) => return 1.0,
+                    JsValue::Bool(false) => return 0.0,
+                    JsValue::Null => return 0.0,
+                    JsValue::Undefined => return f64::NAN,
+                    _ => {}
                 }
             }
-            // Try toString()
             let o = obj.borrow();
             let to_string = o.get("toString");
             drop(o);
             if let JsValue::Function(_) = &to_string {
                 let result = vm.call_value(&to_string, &[], val.clone());
                 if let JsValue::String(s) = &result {
-                    let n = crate::value::parse_js_float(&s);
-                    return if n.is_nan() || n < 0.0 || !n.is_finite() { 0 } else { (n as u64).min(0xFFFF_FFFF) as usize };
+                    return crate::value::parse_js_float(s);
                 }
             }
             f64::NAN
         }
         JsValue::Array(_) | JsValue::Function(_) => f64::NAN,
-    };
+    }
+}
+
+/// Convert a JsValue to a length (ToLength), using to_number_vm.
+fn to_length_vm(vm: &mut Vm, val: &JsValue) -> usize {
+    let n = to_number_vm(vm, val);
     if n.is_nan() || n < 0.0 || !n.is_finite() { 0 } else { (n as u64).min(0xFFFF_FFFF) as usize }
 }
 
@@ -631,8 +636,9 @@ fn flatten_vec(elements: &[JsValue], depth: usize) -> Vec<JsValue> {
 
 pub fn array_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let Some(arr) = this_array(vm) {
+        let idx_val = args.first().cloned().unwrap_or(JsValue::Undefined);
+        let idx = to_number_vm(vm, &idx_val) as i64;
         let a = arr.borrow();
-        let idx = args.first().map(|v| v.to_number() as i64).unwrap_or(0);
         let len = a.length as i64;
         let actual = if idx < 0 { len + idx } else { idx };
         if actual >= 0 && actual < len {

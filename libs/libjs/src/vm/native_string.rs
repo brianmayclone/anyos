@@ -465,7 +465,8 @@ pub fn string_pad_end(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn string_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let chars = chars_vec(&s);
-    let idx = args.first().map(|v| v.to_number() as i64).unwrap_or(0);
+    let idx_val = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let idx = super::native_array::to_number_vm(vm, &idx_val) as i64;
     let len = chars.len() as i64;
     let actual = if idx < 0 { len + idx } else { idx };
     if actual >= 0 && actual < len {
