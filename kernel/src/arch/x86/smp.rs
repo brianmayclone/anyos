@@ -128,13 +128,20 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
             continue;
         }
 
-        // Set up communication area (64-bit values)
+        // Set up communication area (64-bit values).
+        // Write all data fields first, then issue a store fence to ensure
+        // they are globally visible before the AP can observe them after SIPI.
         unsafe {
             core::ptr::write_volatile(AP_COMM_STACK as *mut u64, stack_top);
             core::ptr::write_volatile(AP_COMM_CR3 as *mut u64, cr3);
             core::ptr::write_volatile(AP_COMM_ENTRY as *mut u64, ap_entry as u64);
-            core::ptr::write_volatile(AP_COMM_READY as *mut u8, 0);
             core::ptr::write_volatile(AP_COMM_CPUID as *mut u32, cpu_id as u32);
+            // Release fence: guarantee all data writes above are globally visible
+            // before the ready flag is cleared and SIPI is sent.  The AP reads
+            // these fields after starting — without this barrier the compiler
+            // (or a weakly-ordered future target) could reorder the stores.
+            core::sync::atomic::fence(Ordering::SeqCst);
+            core::ptr::write_volatile(AP_COMM_READY as *mut u8, 0);
         }
 
         crate::serial_verbose_println!("  SMP: stack_top={:#018x}, CR3={:#018x}", stack_top, cr3);
@@ -166,6 +173,11 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
         };
 
         if ready {
+            // Acquire fence: ensure all AP initialization writes (CPU_DATA,
+            // LAPIC_TO_CPU, TSS, idle thread) are visible to the BSP now that
+            // we observed the ready flag.  Pairs with the SeqCst fence the AP
+            // issues in ap_entry() just before writing AP_COMM_READY = 1.
+            core::sync::atomic::fence(Ordering::SeqCst);
             // CPU_DATA[cpu_id] was already written by the AP itself in ap_entry()
             // (before signaling ready and enabling interrupts). No redundant BSP
             // write here — doing so would race with the AP's LAPIC timer which
@@ -186,6 +198,11 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
 /// AP entry point — called by trampoline after switching to long mode.
 /// Runs on the AP's own stack. Must never return.
 extern "C" fn ap_entry() -> ! {
+    // Acquire fence: ensure all communication-area reads below see the
+    // data the BSP wrote before sending SIPI (pairs with the SeqCst fence
+    // in start_aps() on the BSP side).
+    core::sync::atomic::fence(Ordering::SeqCst);
+
     // Read CPU ID first (trampoline wrote it before jumping here)
     let cpu_id = unsafe { core::ptr::read_volatile(AP_COMM_CPUID as *const u32) } as usize;
     crate::debug_println!("  [SMP] AP#{}: ap_entry start", cpu_id);
@@ -258,8 +275,12 @@ extern "C" fn ap_entry() -> ! {
     crate::task::scheduler::register_ap_idle(cpu_id);
     crate::debug_println!("  [SMP] AP#{}: register_ap_idle done", cpu_id);
 
-    // Signal BSP that we're ready
+    // Signal BSP that we're ready.
+    // Release fence: all AP initialization (CPU_DATA, LAPIC_TO_CPU, TSS, GDT,
+    // IDT, idle thread registration) must be globally visible before the BSP
+    // observes the ready flag and proceeds to send work to this AP.
     crate::debug_println!("  [SMP] AP#{}: signaling BSP ready", cpu_id);
+    core::sync::atomic::fence(Ordering::SeqCst);
     unsafe {
         core::ptr::write_volatile(AP_COMM_READY as *mut u8, 1);
     }

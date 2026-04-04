@@ -84,7 +84,7 @@ pub fn cleanup_for_thread(tid: u32) {
             }).unwrap_or(false);
 
             if is_owned_listener {
-                let lid = i as u8;
+                let lid = i as u16;
                 for j in 0..table.len() {
                     let is_pending = table[j].as_ref().map(|tcb| {
                         tcb.parent_listener == Some(lid) && !tcb.accepted

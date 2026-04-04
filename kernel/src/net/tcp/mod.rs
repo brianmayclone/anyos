@@ -1,7 +1,7 @@
 //! TCP (Transmission Control Protocol) — connection-oriented, reliable transport.
 //!
 //! Supports both active open (connect) and passive open (listen/accept).
-//! Sliding-window send with batched locking. 64-slot connection table with
+//! Sliding-window send with batched locking. 256-slot connection table with
 //! retransmission (exponential backoff), delayed ACKs, out-of-order reassembly,
 //! fast retransmit, dynamic window advertisement, and TIME_WAIT cleanup.
 //!
@@ -40,8 +40,8 @@ pub(crate) static TCP_CONNECTIONS: Spinlock<Option<Vec<Option<Tcb>>>> = Spinlock
 
 // ── Connection hash index for O(1) lookup ──────────────────────────
 // Maps 4-tuple hash → slot index. Avoids O(n) linear scan per packet.
-const CONN_HASH_SIZE: usize = 128; // Must be power of 2
-pub(crate) static mut CONN_HASH: [u8; CONN_HASH_SIZE] = [0xFF; CONN_HASH_SIZE];
+const CONN_HASH_SIZE: usize = 256; // Must be power of 2
+pub(crate) static mut CONN_HASH: [u16; CONN_HASH_SIZE] = [0xFFFF; CONN_HASH_SIZE];
 
 /// Hash a TCP 4-tuple to a hash table index.
 #[inline]
@@ -58,13 +58,13 @@ pub(crate) fn conn_hash_4tuple(local_port: u16, remote_port: u16, remote_ip: &cr
 /// Update the hash index when a connection is created or changes slot.
 pub(crate) fn conn_hash_insert(local_port: u16, remote_port: u16, remote_ip: &crate::net::types::Ipv4Addr, slot: usize) {
     let h = conn_hash_4tuple(local_port, remote_port, remote_ip);
-    unsafe { CONN_HASH[h] = slot as u8; }
+    unsafe { CONN_HASH[h] = slot as u16; }
 }
 
 /// Remove a connection from the hash index.
 pub(crate) fn conn_hash_remove(local_port: u16, remote_port: u16, remote_ip: &crate::net::types::Ipv4Addr) {
     let h = conn_hash_4tuple(local_port, remote_port, remote_ip);
-    unsafe { CONN_HASH[h] = 0xFF; }
+    unsafe { CONN_HASH[h] = 0xFFFF; }
 }
 
 // ── Global TCP statistics ───────────────────────────────────────────

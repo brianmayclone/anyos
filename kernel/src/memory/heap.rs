@@ -278,11 +278,23 @@ unsafe fn percpu_flush_half(cpu: usize) {
         flushed += bsize;
 
         // Insert into global free list (sorted by address)
+        const MAX_WALK: usize = 100_000;
         let mut prev: *mut FreeBlock = core::ptr::null_mut();
         let mut cur = HEAP_FREE_LIST;
+        let mut walk = 0usize;
         while !cur.is_null() && (cur as usize) < (block as usize) {
+            walk += 1;
+            if walk > MAX_WALK {
+                // Probable cycle — insert at head to avoid infinite loop
+                (*block).next = HEAP_FREE_LIST;
+                HEAP_FREE_LIST = block;
+                break;
+            }
             prev = cur;
             cur = (*cur).next;
+        }
+        if walk > MAX_WALK {
+            continue; // skip coalescing, block already inserted at head
         }
         (*block).next = cur;
         if prev.is_null() {

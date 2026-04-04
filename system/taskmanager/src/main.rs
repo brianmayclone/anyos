@@ -42,6 +42,10 @@ static mut PREV_DISK_COUNT: usize = 0;
 static mut TASKS_BUF: Option<*mut Vec<TaskEntry>> = None;
 static mut COLORS_BUF: Option<*mut Vec<u32>> = None;
 
+// Process grouping state
+static mut EXPANDED_LEADERS: Option<*mut Vec<u32>> = None;
+static mut DISPLAY_ROWS_BUF: Option<*mut Vec<DisplayRow>> = None;
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -366,6 +370,8 @@ fn main() {
     let prev_task_states = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<u8>::new()));
     let tasks_buf = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<TaskEntry>::new()));
     let colors_buf = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<u32>::new()));
+    let expanded_leaders = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<u32>::new()));
+    let display_rows_buf = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<DisplayRow>::new()));
 
     unsafe {
         PREV_TICKS = Some(prev_ticks);
@@ -376,6 +382,8 @@ fn main() {
         PREV_TASK_STATES = Some(prev_task_states);
         TASKS_BUF = Some(tasks_buf);
         COLORS_BUF = Some(colors_buf);
+        EXPANDED_LEADERS = Some(expanded_leaders);
+        DISPLAY_ROWS_BUF = Some(display_rows_buf);
     }
 
     // Initial CPU fetch
@@ -390,33 +398,51 @@ fn main() {
             sb_sel_label.set_text("");
             return;
         }
-        // Read TID and process name to decide if killable
-        let mut tid_buf = [0u8; 12];
-        let tid_len = proc_grid.get_cell(row, 0, &mut tid_buf);
-        let tid = if tid_len > 0 {
-            parse_u32_bytes(&tid_buf[..tid_len as usize]).unwrap_or(0)
-        } else {
-            0
-        };
-        let mut name_buf = [0u8; 24];
-        let name_len = proc_grid.get_cell(row, 1, &mut name_buf);
-        let name = &name_buf[..name_len as usize];
-        // Disallow killing idle threads and critical system threads (TID <= 3)
-        let is_idle = name.starts_with(b"idle/");
-        let killable = tid > 3 && !is_idle;
-        kill_btn.set_enabled(killable);
+        // Look up the actual task via display row mapping
+        let display = unsafe { &*DISPLAY_ROWS_BUF.unwrap() };
+        let tasks = unsafe { &*TASKS_BUF.unwrap() };
+        if let Some(dr) = display.get(row as usize) {
+            let task = &tasks[dr.task_idx as usize];
+            let tid = task.tid;
+            let name = &task.name[..task.name_len];
+            let is_idle = name.starts_with(b"idle/");
+            let killable = tid > 3 && !is_idle && dr.kind != 1; // don't allow killing group headers directly
+            kill_btn.set_enabled(killable);
 
-        // Update status bar selection info
-        let mut sbuf = [0u8; 48];
-        let mut p = 0;
-        let mut t = [0u8; 12];
-        sbuf[p..p + 4].copy_from_slice(b"TID "); p += 4;
-        let s = fmt_u32(&mut t, tid); sbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-        sbuf[p..p + 2].copy_from_slice(b": "); p += 2;
-        let nl = (name_len as usize).min(24);
-        sbuf[p..p + nl].copy_from_slice(&name[..nl]); p += nl;
-        if let Ok(s) = core::str::from_utf8(&sbuf[..p]) {
-            sb_sel_label.set_text(s);
+            // Update status bar selection info
+            let mut sbuf = [0u8; 48];
+            let mut p = 0;
+            let mut t = [0u8; 12];
+            sbuf[p..p + 4].copy_from_slice(b"TID "); p += 4;
+            let s = fmt_u32(&mut t, tid); sbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+            sbuf[p..p + 2].copy_from_slice(b": "); p += 2;
+            let nl = name.len().min(24);
+            sbuf[p..p + nl].copy_from_slice(&name[..nl]); p += nl;
+            if let Ok(s) = core::str::from_utf8(&sbuf[..p]) {
+                sb_sel_label.set_text(s);
+            }
+        }
+    });
+
+    // ── Double-click / Enter: toggle expand/collapse for process groups ──
+    proc_grid.on_submit(move |ev| {
+        let row = ev.index;
+        if row == u32::MAX { return; }
+
+        let display = unsafe { &*DISPLAY_ROWS_BUF.unwrap() };
+        let tasks = unsafe { &*TASKS_BUF.unwrap() };
+        let expanded = unsafe { &mut *EXPANDED_LEADERS.unwrap() };
+
+        if let Some(dr) = display.get(row as usize) {
+            if dr.kind == 1 {
+                // Group header: toggle expansion
+                let leader_tid = tasks[dr.task_idx as usize].tid;
+                if let Some(pos) = expanded.iter().position(|&t| t == leader_tid) {
+                    expanded.remove(pos);
+                } else {
+                    expanded.push(leader_tid);
+                }
+            }
         }
     });
 
@@ -424,31 +450,28 @@ fn main() {
     kill_btn.on_click(move |_| {
         let sel = proc_grid.selected_row();
         if sel != u32::MAX {
-            let mut tid_buf = [0u8; 12];
-            let len = proc_grid.get_cell(sel, 0, &mut tid_buf);
-            if len > 0 {
-                let tid = parse_u32_bytes(&tid_buf[..len as usize]).unwrap_or(0);
+            let display = unsafe { &*DISPLAY_ROWS_BUF.unwrap() };
+            let tasks_ref = unsafe { &*TASKS_BUF.unwrap() };
+            if let Some(dr) = display.get(sel as usize) {
+                let task = &tasks_ref[dr.task_idx as usize];
+                let tid = task.tid;
                 if tid > 3 {
-                    // Read process name for notification
-                    let mut name_buf = [0u8; 24];
-                    let name_len = proc_grid.get_cell(sel, 1, &mut name_buf);
+                    let name = core::str::from_utf8(&task.name[..task.name_len]).unwrap_or("?");
 
                     process::kill(tid);
                     kill_btn.set_enabled(false);
 
                     // Notify via notifyd daemon
-                    if name_len > 0 {
-                        if let Ok(name) = core::str::from_utf8(&name_buf[..name_len as usize]) {
-                            let mut msg = [0u8; 48];
-                            let mut p = 0;
-                            let nl = name.len().min(32);
-                            msg[p..p + nl].copy_from_slice(&name.as_bytes()[..nl]);
-                            p += nl;
-                            msg[p..p + 7].copy_from_slice(b" killed");
-                            p += 7;
-                            if let Ok(m) = core::str::from_utf8(&msg[..p]) {
-                                ui::show_notification(i18n::t("Process Terminated"), m, None, 3000);
-                            }
+                    {
+                        let mut msg = [0u8; 48];
+                        let mut p = 0;
+                        let nl = name.len().min(32);
+                        msg[p..p + nl].copy_from_slice(&name.as_bytes()[..nl]);
+                        p += nl;
+                        msg[p..p + 7].copy_from_slice(b" killed");
+                        p += 7;
+                        if let Ok(m) = core::str::from_utf8(&msg[..p]) {
+                            ui::show_notification(i18n::t("Process Terminated"), m, None, 3000);
                         }
                     }
                 }
@@ -469,6 +492,8 @@ fn main() {
         let prev_states = unsafe { &mut *PREV_TASK_STATES.unwrap() };
         let tasks = unsafe { &mut *TASKS_BUF.unwrap() };
         let colors = unsafe { &mut *COLORS_BUF.unwrap() };
+        let expanded = unsafe { &mut *EXPANDED_LEADERS.unwrap() };
+        let display = unsafe { &mut *DISPLAY_ROWS_BUF.unwrap() };
 
         // CPU data: always needed for history graph (even when on other tabs)
         fetch_cpu(cpu_st);
@@ -582,8 +607,11 @@ fn main() {
             }
         }
 
-        // ── Update processes tab (incremental) ──
+        // ── Update processes tab (grouped display) ──
         if active_tab == 0 {
+            // Build grouped display list
+            build_display_list(tasks, expanded, display);
+
             // Toolbar info
             {
                 let mut ibuf = [0u8; 32];
@@ -599,28 +627,62 @@ fn main() {
             }
 
             let old_count = unsafe { PREV_PROC_COUNT };
-            let new_count = tasks.len();
+            let new_count = display.len();
             if new_count != old_count {
                 proc_grid.set_row_count(new_count as u32);
             }
 
-            let mut colors_dirty = false;
             let col_count = 8usize;
-            let needed = new_count * col_count;
             colors.clear();
-            colors.resize(needed, 0u32);
+            colors.resize(new_count * col_count, 0u32);
 
-            for (ri, task) in tasks.iter().enumerate() {
+            for (ri, dr) in display.iter().enumerate() {
+                let task = &tasks[dr.task_idx as usize];
                 let old_tid = prev_tids.get(ri).copied().unwrap_or(u32::MAX);
                 let old_state = prev_states.get(ri).copied().unwrap_or(255);
-                let is_new = ri >= old_count || old_tid != task.tid;
+                let display_tid = task.tid;
+                let is_new = ri >= old_count || old_tid != display_tid;
 
-                // Static columns: only when process is new or TID changed
                 if is_new {
+                    // TID column
                     let mut t = [0u8; 12];
                     let s = fmt_u32(&mut t, task.tid);
                     proc_grid.set_cell(ri as u32, 0, s);
-                    proc_grid.set_cell(ri as u32, 1, core::str::from_utf8(&task.name[..task.name_len]).unwrap_or(""));
+
+                    // Process/Name column: depends on row kind
+                    let mut nbuf = [0u8; 48];
+                    let mut np = 0;
+                    match dr.kind {
+                        1 => {
+                            // Group header: "▶ name (N)" or "▼ name (N)"
+                            let is_exp = expanded.iter().any(|&tid| tid == task.tid);
+                            let arrow: &[u8] = if is_exp { "\u{25BC} ".as_bytes() } else { "\u{25B6} ".as_bytes() };
+                            let alen = arrow.len();
+                            nbuf[np..np + alen].copy_from_slice(arrow); np += alen;
+                            let nl = task.name_len.min(28);
+                            nbuf[np..np + nl].copy_from_slice(&task.name[..nl]); np += nl;
+                            nbuf[np..np + 2].copy_from_slice(b" ("); np += 2;
+                            let cs = fmt_u32(&mut t, dr.thread_count as u32);
+                            nbuf[np..np + cs.len()].copy_from_slice(cs.as_bytes()); np += cs.len();
+                            nbuf[np] = b')'; np += 1;
+                        }
+                        2 => {
+                            // Child thread: "   name"
+                            nbuf[np..np + 3].copy_from_slice(b"   "); np += 3;
+                            let nl = task.name_len.min(32);
+                            nbuf[np..np + nl].copy_from_slice(&task.name[..nl]); np += nl;
+                        }
+                        _ => {
+                            // Standalone: plain name
+                            let nl = task.name_len.min(40);
+                            nbuf[np..np + nl].copy_from_slice(&task.name[..nl]); np += nl;
+                        }
+                    }
+                    if let Ok(s) = core::str::from_utf8(&nbuf[..np]) {
+                        proc_grid.set_cell(ri as u32, 1, s);
+                    }
+
+                    // User column
                     {
                         let mut ubuf = [0u8; 16];
                         let nlen = process::getusername(task.uid, &mut ubuf);
@@ -632,15 +694,19 @@ fn main() {
                             proc_grid.set_cell(ri as u32, 2, "?");
                         }
                     }
+
+                    // Arch column
                     let arch_str = if task.arch == 1 { "x86" } else { "x86_64" };
                     proc_grid.set_cell(ri as u32, 4, arch_str);
+
+                    // Priority column
                     {
                         let mut t = [0u8; 12];
                         let s = fmt_u32(&mut t, task.priority as u32);
                         proc_grid.set_cell(ri as u32, 7, s);
                     }
 
-                    // Icon only for new processes
+                    // Icon (use task name for lookup)
                     if let Ok(name) = core::str::from_utf8(&task.name[..task.name_len]) {
                         ensure_icon_cached(cache, name);
                         if let Some(pixels) = find_icon(cache, name) {
@@ -649,9 +715,10 @@ fn main() {
                     }
                 }
 
-                // State: only when changed
-                if is_new || old_state != task.state {
-                    let state_str = match task.state {
+                // State column: for group headers use aggregated state, otherwise task state
+                let display_state = if dr.kind == 1 { dr.agg_state } else { task.state };
+                if is_new || old_state != display_state {
+                    let state_str = match display_state {
                         0 => i18n::t("Ready"),
                         1 => i18n::t("Running"),
                         2 => i18n::t("Blocked"),
@@ -659,27 +726,30 @@ fn main() {
                         _ => i18n::t("Unknown"),
                     };
                     proc_grid.set_cell(ri as u32, 3, state_str);
-                    colors_dirty = true;
                 }
 
-                // Volatile columns: always update (but set_cell checks for changes)
+                // CPU% column: for group headers use aggregated CPU
                 {
+                    let cpu = if dr.kind == 1 { dr.agg_cpu } else { task.cpu_pct_x10 };
                     let mut cbuf = [0u8; 12];
-                    let s = if task.cpu_pct_x10 > 0 {
-                        fmt_pct(&mut cbuf, task.cpu_pct_x10)
+                    let s = if cpu > 0 {
+                        fmt_pct(&mut cbuf, cpu)
                     } else {
                         "0.0%"
                     };
                     proc_grid.set_cell(ri as u32, 5, s);
                 }
+
+                // Memory column: for group headers and standalone use task pages,
+                // for child threads show individual (often 0 since they share)
                 {
                     let mut mbuf = [0u8; 16];
                     let s = fmt_mem_pages(&mut mbuf, task.user_pages);
                     proc_grid.set_cell(ri as u32, 6, s);
                 }
 
-                // Build colors row
-                let state_color = match task.state {
+                // Colors
+                let state_color = match display_state {
                     0 => tc.warning,
                     1 => tc.success,
                     2 => tc.destructive,
@@ -690,19 +760,22 @@ fn main() {
                 if task.arch == 1 {
                     colors[ri * col_count + 4] = tc.warning;
                 }
+                // Dim child thread rows slightly
+                if dr.kind == 2 {
+                    colors[ri * col_count + 1] = tc.text_secondary;
+                }
             }
 
-            // Colors: only update when something changed (set_cell_colors checks equality)
-            if colors_dirty || new_count != old_count {
-                proc_grid.set_cell_colors(&colors);
-            }
+            proc_grid.set_cell_colors(&colors);
 
-            // Update tracking state
+            // Update tracking state (using display row TIDs for change detection)
             prev_tids.clear();
             prev_states.clear();
-            for task in tasks.iter() {
+            for dr in display.iter() {
+                let task = &tasks[dr.task_idx as usize];
                 prev_tids.push(task.tid);
-                prev_states.push(task.state);
+                let st = if dr.kind == 1 { dr.agg_state } else { task.state };
+                prev_states.push(st);
             }
             unsafe { PREV_PROC_COUNT = new_count; }
         }

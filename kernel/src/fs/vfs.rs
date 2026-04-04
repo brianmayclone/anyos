@@ -235,7 +235,7 @@ fn normalize_path(path: &str) -> String {
     for part in path.split('/') {
         match part {
             "" | "." => {}
-            ".." => { parts.pop(); }
+            ".." => { if !parts.is_empty() { parts.pop(); } }
             _ => parts.push(part),
         }
     }

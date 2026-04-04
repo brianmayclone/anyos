@@ -117,9 +117,10 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
         }
         1 => {
             // Thread list: 64 bytes each
-            // [tid:u32, prio:u8, state:u8, arch:u8, pad:u8, name:24bytes,
+            // [tid:u32, prio:u8, state:u8, arch:u8, flags:u8, name:24bytes,
             //  user_pages:u32, cpu_ticks:u32, io_read_bytes:u64, io_write_bytes:u64,
             //  uid:u16, pad:u16, parent_tid:u32]
+            // flags byte (offset 7): bit 0 = pd_shared (child thread of same process)
             let threads = crate::task::scheduler::list_threads();
             if buf_ptr != 0 && buf_size > 0 {
                 let entry_size = 64usize;
@@ -136,7 +137,7 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                         "stopped" => 4, _ => 255,
                     };
                     buf[off + 6] = t.arch_mode; // 0=x86_64, 1=x86
-                    buf[off + 7] = 0;
+                    buf[off + 7] = if t.pd_shared { 1 } else { 0 };
                     let name_bytes = t.name.as_bytes();
                     let n = name_bytes.len().min(23);
                     buf[off + 8..off + 8 + n].copy_from_slice(&name_bytes[..n]);

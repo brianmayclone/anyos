@@ -218,8 +218,8 @@ pub fn stop_current_thread(sig: u32) {
         let sched = match guard.as_mut() { Some(s) => s, None => return };
         if let Some(idx) = sched.current_idx(cpu_id) {
             crate::serial_verbose_println!("Signal {}: stopping current T{}", sig, sched.threads[idx].tid);
-            sched.threads[idx].context.save_complete = 0;
             sched.threads[idx].state = ThreadState::Stopped;
+            sched.threads[idx].context.save_complete = 0;
             // Wake any waitpid waiter so it can see the stopped state
             if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
                 sched.wake_thread_inner(waiter_tid);

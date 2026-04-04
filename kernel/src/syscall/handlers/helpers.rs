@@ -4,6 +4,7 @@
 //! but not exported outside it.
 
 use alloc::string::String;
+use crate::memory::address::VirtAddr;
 
 /// Make a relative path absolute using the current thread's working directory.
 /// Normalizes `.` and `..` components so e.g. `"."` resolves to the CWD itself.
@@ -58,10 +59,26 @@ pub(super) fn is_valid_user_ptr(ptr: u64, len: u64) -> bool {
     }
 }
 
+/// Check that a user-space address is both in valid user range AND that the
+/// page containing it is actually mapped in the current page table.
+/// This prevents kernel page faults when userspace unmaps pages between
+/// validation and access (TOCTOU).
+#[inline]
+fn is_user_page_accessible(addr: u64) -> bool {
+    if !is_valid_user_ptr(addr, 1) {
+        return false;
+    }
+    crate::memory::virtual_mem::virt_to_phys(VirtAddr(addr)).is_some()
+}
+
 /// Read a null-terminated string from user memory (max 4096 bytes).
-/// Returns None if the pointer is invalid.
+/// Returns None if the pointer is invalid or the page is not mapped.
+///
+/// Validates page mapping at the initial pointer and at every 4K page boundary
+/// to prevent kernel page faults from unmapped user pages.
+/// Uses safe UTF-8 validation on untrusted user data.
 pub(super) fn read_user_str_safe(ptr: u32) -> Option<&'static str> {
-    if !is_valid_user_ptr(ptr as u64, 1) {
+    if !is_user_page_accessible(ptr as u64) {
         return None;
     }
     let p = ptr as *const u8;
@@ -70,7 +87,7 @@ pub(super) fn read_user_str_safe(ptr: u32) -> Option<&'static str> {
         while len < 4096 {
             // Validate each page boundary we cross
             if len > 0 && ((ptr as u64 + len as u64) & 0xFFF) == 0 {
-                if !is_valid_user_ptr(ptr as u64 + len as u64, 1) {
+                if !is_user_page_accessible(ptr as u64 + len as u64) {
                     break;
                 }
             }
@@ -79,14 +96,22 @@ pub(super) fn read_user_str_safe(ptr: u32) -> Option<&'static str> {
             }
             len += 1;
         }
-        Some(core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, len)))
+        let slice = core::slice::from_raw_parts(p, len);
+        match core::str::from_utf8(slice) {
+            Ok(s) => Some(s),
+            Err(_) => None,
+        }
     }
 }
 
 /// Read a null-terminated string from user memory (max 4096 bytes).
-/// Returns "" if the pointer is invalid (NULL or kernel space).
+/// Returns "" if the pointer is invalid (NULL, kernel space, or unmapped page).
+///
+/// Validates page mapping at the initial pointer and at every 4K page boundary
+/// to prevent kernel page faults from unmapped user pages.
+/// Uses safe UTF-8 validation on untrusted user data.
 pub(super) unsafe fn read_user_str(ptr: u32) -> &'static str {
-    if !is_valid_user_ptr(ptr as u64, 1) {
+    if !is_user_page_accessible(ptr as u64) {
         return "";
     }
     let p = ptr as *const u8;
@@ -94,7 +119,7 @@ pub(super) unsafe fn read_user_str(ptr: u32) -> &'static str {
     while len < 4096 {
         // Validate each page boundary we cross
         if len > 0 && ((ptr as u64 + len as u64) & 0xFFF) == 0 {
-            if !is_valid_user_ptr(ptr as u64 + len as u64, 1) {
+            if !is_user_page_accessible(ptr as u64 + len as u64) {
                 break;
             }
         }
@@ -103,5 +128,9 @@ pub(super) unsafe fn read_user_str(ptr: u32) -> &'static str {
         }
         len += 1;
     }
-    core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, len))
+    let slice = core::slice::from_raw_parts(p, len);
+    match core::str::from_utf8(slice) {
+        Ok(s) => s,
+        Err(_) => "",
+    }
 }

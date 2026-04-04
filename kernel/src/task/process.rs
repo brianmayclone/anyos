@@ -4,8 +4,9 @@
 //! This module handles creation and teardown of process-level resources.
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
-static mut NEXT_PID: u32 = 1;
+static NEXT_PID: AtomicU32 = AtomicU32::new(1);
 
 /// Lifecycle state of a process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,11 +31,7 @@ impl Process {
     /// Create a new process with the given name and page directory physical address.
     /// Assigns a unique PID automatically.
     pub fn new(name: &str, page_directory: u64) -> Self {
-        let pid = unsafe {
-            let p = NEXT_PID;
-            NEXT_PID += 1;
-            p
-        };
+        let pid = NEXT_PID.fetch_add(1, Ordering::Relaxed);
 
         let mut name_buf = [0u8; 64];
         let bytes = name.as_bytes();

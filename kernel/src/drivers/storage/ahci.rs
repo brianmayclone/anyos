@@ -415,7 +415,16 @@ unsafe fn identify_disk_on_port(ahci: &AhciController, port: u32) -> u64 {
 
 // ── Command Issue (IRQ-driven, slot 0 only) ─────────
 
-unsafe fn issue_command(
+/// Timeout for AHCI commands: ~5 seconds expressed in timer ticks.
+/// Computed from the HAL timer frequency at call time.
+const AHCI_TIMEOUT_MS: u64 = 5000;
+
+/// Number of retries after a timeout before giving up.
+const AHCI_MAX_RETRIES: u32 = 1;
+
+/// Set up the command table and FIS for a single AHCI command, then issue it.
+/// Returns true if the command completed successfully. Does NOT retry.
+unsafe fn issue_command_once(
     ahci: &AhciController,
     command: u8,
     lba: u64,
@@ -488,34 +497,100 @@ unsafe fn issue_command(
         core::hint::spin_loop();
     }
 
-    // Slow path: block on IRQ, with timeout fallback.
+    // Slow path: block on IRQ with timeout.
     let tid = crate::task::scheduler::current_tid();
     if tid > 0 {
+        let hz = crate::arch::hal::timer_frequency_hz() as u32;
+        let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
+        let start = crate::arch::hal::timer_current_ticks();
+
+        // Sleep in short intervals (50ms), checking for completion each time.
+        // The IRQ handler will wake us early via try_wake_thread/deferred_wake.
+        let sleep_interval = (hz / 20).max(1); // 50ms
+
         if ahci.irq > 0 {
             AHCI_WAITER.store(tid, core::sync::atomic::Ordering::Release);
         }
 
-        crate::task::scheduler::block_current_thread();
-
-        AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
-
-        let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-        if ci & 1 == 0 {
-            let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
-            if tfd & 0x01 != 0 {
-                crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
+        loop {
+            let now = crate::arch::hal::timer_current_ticks();
+            let elapsed = now.wrapping_sub(start);
+            if elapsed >= timeout_ticks {
+                // Timeout reached
+                AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+                crate::serial_println!("AHCI: command timeout (cmd={:#x}, lba={}, slow path)", command, lba);
                 return false;
             }
+
+            let wake_at = now.wrapping_add(sleep_interval);
+            crate::task::scheduler::sleep_until(wake_at);
+
+            // Check if command completed (either via IRQ or spontaneously)
+            let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
+            if ci & 1 == 0 {
+                AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+                let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
+                if tfd & 0x01 != 0 {
+                    crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
+                    return false;
+                }
+                return true;
+            }
+
+            // Check for task file error (device reported failure)
+            let is = port_read(ahci.mmio_base, ahci.active_port, PORT_IS);
+            if is & (1 << 30) != 0 {
+                AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+                crate::serial_verbose_println!("AHCI: task file error in slow path, IS={:#x}", is);
+                return false;
+            }
+        }
+    }
+
+    // Fallback: extended poll with timeout (boot thread or no IRQ)
+    poll_completion(ahci)
+}
+
+unsafe fn issue_command(
+    ahci: &AhciController,
+    command: u8,
+    lba: u64,
+    count: u16,
+    dma_phys: u64,
+    dma_size: u32,
+    write: bool,
+) -> bool {
+    // First attempt
+    if issue_command_once(ahci, command, lba, count, dma_phys, dma_size, write) {
+        return true;
+    }
+
+    // On failure, retry once after resetting the port
+    for retry in 0..AHCI_MAX_RETRIES {
+        crate::serial_println!(
+            "AHCI: retrying command (cmd={:#x}, lba={}, attempt {}/{})",
+            command, lba, retry + 1, AHCI_MAX_RETRIES
+        );
+
+        // Reset the port to clear any stuck state
+        stop_port(ahci.mmio_base, ahci.active_port);
+        // Clear all errors
+        port_write(ahci.mmio_base, ahci.active_port, PORT_SERR, 0xFFFF_FFFF);
+        port_write(ahci.mmio_base, ahci.active_port, PORT_IS, 0xFFFF_FFFF);
+        start_port(ahci.mmio_base, ahci.active_port);
+
+        if issue_command_once(ahci, command, lba, count, dma_phys, dma_size, write) {
             return true;
         }
     }
 
-    // Fallback: extended poll (boot thread or no IRQ)
-    poll_completion(ahci)
+    crate::serial_println!("AHCI: command failed after retries (cmd={:#x}, lba={})", command, lba);
+    false
 }
 
 /// Issue a command on a specific port with given DMA structures (polled I/O).
 /// Used for extra disks that don't use the primary port's DMA.
+/// Includes a ~5 second timeout and one retry on failure.
 unsafe fn issue_command_on_port(
     mmio_base: u64,
     port: u32,
@@ -528,80 +603,160 @@ unsafe fn issue_command_on_port(
     dma_size: u32,
     write: bool,
 ) -> bool {
-    let cmd_header = clb_phys as *mut CmdHeader;
-    let cfl: u16 = 5;
-    let w_bit: u16 = if write { 1 << 6 } else { 0 };
-    (*cmd_header).flags = cfl | w_bit;
-    (*cmd_header).prdtl = if dma_size > 0 { 1 } else { 0 };
-    (*cmd_header).prdbc = 0;
-
-    let cmd_table = ctba_phys as *mut CmdTable;
-    core::ptr::write_bytes((*cmd_table).cfis.as_mut_ptr(), 0, 64);
-    core::ptr::write_bytes((*cmd_table).acmd.as_mut_ptr(), 0, 16);
-
-    let fis = (*cmd_table).cfis.as_mut_ptr() as *mut FisRegH2D;
-    (*fis).fis_type = FIS_TYPE_REG_H2D;
-    (*fis).flags = 0x80;
-    (*fis).command = command;
-    (*fis).device = 0x40;
-    (*fis).lba0 = (lba & 0xFF) as u8;
-    (*fis).lba1 = ((lba >> 8) & 0xFF) as u8;
-    (*fis).lba2 = ((lba >> 16) & 0xFF) as u8;
-    (*fis).lba3 = ((lba >> 24) & 0xFF) as u8;
-    (*fis).lba4 = ((lba >> 32) & 0xFF) as u8;
-    (*fis).lba5 = ((lba >> 40) & 0xFF) as u8;
-    (*fis).count_lo = (count & 0xFF) as u8;
-    (*fis).count_hi = ((count >> 8) & 0xFF) as u8;
-
-    if dma_size > 0 {
-        (*cmd_table).prdt[0].dba = dma_phys as u32;
-        (*cmd_table).prdt[0].dbau = (dma_phys >> 32) as u32;
-        (*cmd_table).prdt[0]._reserved = 0;
-        (*cmd_table).prdt[0].dbc = (dma_size - 1) | (1 << 31);
-    }
-
-    port_write(mmio_base, port, PORT_IS, 0xFFFF_FFFF);
-    port_write(mmio_base, port, PORT_CI, 1);
-
-    // Polled wait
-    for _ in 0..10_000_000 {
-        let ci = port_read(mmio_base, port, PORT_CI);
-        if ci & 1 == 0 {
-            let tfd = port_read(mmio_base, port, PORT_TFD);
-            if tfd & 0x01 != 0 {
-                return false;
-            }
-            return true;
+    for attempt in 0..2u32 {
+        if attempt > 0 {
+            crate::serial_println!(
+                "AHCI: retrying port {} command (cmd={:#x}, lba={}, attempt {})",
+                port, command, lba, attempt
+            );
+            // Reset port to clear stuck state before retry
+            stop_port(mmio_base, port);
+            port_write(mmio_base, port, PORT_SERR, 0xFFFF_FFFF);
+            port_write(mmio_base, port, PORT_IS, 0xFFFF_FFFF);
+            start_port(mmio_base, port);
         }
-        core::hint::spin_loop();
+
+        let cmd_header = clb_phys as *mut CmdHeader;
+        let cfl: u16 = 5;
+        let w_bit: u16 = if write { 1 << 6 } else { 0 };
+        (*cmd_header).flags = cfl | w_bit;
+        (*cmd_header).prdtl = if dma_size > 0 { 1 } else { 0 };
+        (*cmd_header).prdbc = 0;
+
+        let cmd_table = ctba_phys as *mut CmdTable;
+        core::ptr::write_bytes((*cmd_table).cfis.as_mut_ptr(), 0, 64);
+        core::ptr::write_bytes((*cmd_table).acmd.as_mut_ptr(), 0, 16);
+
+        let fis = (*cmd_table).cfis.as_mut_ptr() as *mut FisRegH2D;
+        (*fis).fis_type = FIS_TYPE_REG_H2D;
+        (*fis).flags = 0x80;
+        (*fis).command = command;
+        (*fis).device = 0x40;
+        (*fis).lba0 = (lba & 0xFF) as u8;
+        (*fis).lba1 = ((lba >> 8) & 0xFF) as u8;
+        (*fis).lba2 = ((lba >> 16) & 0xFF) as u8;
+        (*fis).lba3 = ((lba >> 24) & 0xFF) as u8;
+        (*fis).lba4 = ((lba >> 32) & 0xFF) as u8;
+        (*fis).lba5 = ((lba >> 40) & 0xFF) as u8;
+        (*fis).count_lo = (count & 0xFF) as u8;
+        (*fis).count_hi = ((count >> 8) & 0xFF) as u8;
+
+        if dma_size > 0 {
+            (*cmd_table).prdt[0].dba = dma_phys as u32;
+            (*cmd_table).prdt[0].dbau = (dma_phys >> 32) as u32;
+            (*cmd_table).prdt[0]._reserved = 0;
+            (*cmd_table).prdt[0].dbc = (dma_size - 1) | (1 << 31);
+        }
+
+        port_write(mmio_base, port, PORT_IS, 0xFFFF_FFFF);
+        port_write(mmio_base, port, PORT_CI, 1);
+
+        // Polled wait with timeout (~5 seconds).
+        // Use tick-based timeout when the timer is available, otherwise fall back
+        // to a bounded iteration count.
+        let hz = crate::arch::hal::timer_frequency_hz() as u32;
+        if hz > 0 {
+            let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
+            let start = crate::arch::hal::timer_current_ticks();
+            loop {
+                let ci = port_read(mmio_base, port, PORT_CI);
+                if ci & 1 == 0 {
+                    let tfd = port_read(mmio_base, port, PORT_TFD);
+                    if tfd & 0x01 != 0 {
+                        break; // error — will retry
+                    }
+                    return true;
+                }
+                let now = crate::arch::hal::timer_current_ticks();
+                if now.wrapping_sub(start) >= timeout_ticks {
+                    crate::serial_println!(
+                        "AHCI: port {} command timeout (cmd={:#x}, lba={})",
+                        port, command, lba
+                    );
+                    break; // timeout — will retry
+                }
+                core::hint::spin_loop();
+            }
+        } else {
+            // Timer not yet running (early boot) — use iteration count
+            for _ in 0..10_000_000 {
+                let ci = port_read(mmio_base, port, PORT_CI);
+                if ci & 1 == 0 {
+                    let tfd = port_read(mmio_base, port, PORT_TFD);
+                    if tfd & 0x01 != 0 {
+                        break; // error — will retry
+                    }
+                    return true;
+                }
+                core::hint::spin_loop();
+            }
+        }
     }
+
+    crate::serial_println!("AHCI: port {} command failed after retries", port);
     false
 }
 
-/// Polled completion check (used during boot or as IRQ timeout fallback).
+/// Polled completion check with timeout (used during boot or as IRQ timeout fallback).
+/// Uses tick-based timing when available, falls back to iteration count during early boot.
 unsafe fn poll_completion(ahci: &AhciController) -> bool {
-    for _ in 0..10_000_000 {
-        let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-        if ci & 1 == 0 {
-            let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
-            if tfd & 0x01 != 0 {
-                crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
+    let hz = crate::arch::hal::timer_frequency_hz() as u32;
+
+    if hz > 0 {
+        // Tick-based timeout (~5 seconds)
+        let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
+        let start = crate::arch::hal::timer_current_ticks();
+
+        loop {
+            let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
+            if ci & 1 == 0 {
+                let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
+                if tfd & 0x01 != 0 {
+                    crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
+                    return false;
+                }
+                return true;
+            }
+
+            let is = port_read(ahci.mmio_base, ahci.active_port, PORT_IS);
+            if is & (1 << 30) != 0 {
+                crate::serial_verbose_println!("AHCI: task file error, IS={:#x}", is);
                 return false;
             }
-            return true;
+
+            let now = crate::arch::hal::timer_current_ticks();
+            if now.wrapping_sub(start) >= timeout_ticks {
+                crate::serial_println!("AHCI: poll_completion timeout");
+                return false;
+            }
+
+            core::hint::spin_loop();
+        }
+    } else {
+        // Early boot fallback — iteration count (no timer yet)
+        for _ in 0..10_000_000 {
+            let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
+            if ci & 1 == 0 {
+                let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
+                if tfd & 0x01 != 0 {
+                    crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
+                    return false;
+                }
+                return true;
+            }
+
+            let is = port_read(ahci.mmio_base, ahci.active_port, PORT_IS);
+            if is & (1 << 30) != 0 {
+                crate::serial_verbose_println!("AHCI: task file error, IS={:#x}", is);
+                return false;
+            }
+
+            core::hint::spin_loop();
         }
 
-        let is = port_read(ahci.mmio_base, ahci.active_port, PORT_IS);
-        if is & (1 << 30) != 0 {
-            crate::serial_verbose_println!("AHCI: task file error, IS={:#x}", is);
-            return false;
-        }
-
-        core::hint::spin_loop();
+        crate::serial_verbose_println!("AHCI: command timeout");
+        false
     }
-
-    crate::serial_verbose_println!("AHCI: command timeout");
-    false
 }
 
 // ── Public Read / Write API ─────────────────────────
@@ -1388,22 +1543,46 @@ unsafe fn issue_atapi_read(
     // Issue command (slot 0)
     port_write(ahci.mmio_base, port, PORT_CI, 1);
 
-    // Spin-wait for completion (ATAPI is slow, allow more time)
-    for _ in 0..500_000 {
-        let ci = port_read(ahci.mmio_base, port, PORT_CI);
-        if ci & 1 == 0 {
-            let tfd = port_read(ahci.mmio_base, port, PORT_TFD);
-            if tfd & 0x01 != 0 {
-                crate::serial_verbose_println!("AHCI ATAPI: command error, TFD={:#x}", tfd);
+    // Spin-wait for completion with timeout.
+    // ATAPI is slower than ATA, but still bounded to ~5 seconds.
+    let hz = crate::arch::hal::timer_frequency_hz() as u32;
+    if hz > 0 {
+        let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
+        let start = crate::arch::hal::timer_current_ticks();
+        loop {
+            let ci = port_read(ahci.mmio_base, port, PORT_CI);
+            if ci & 1 == 0 {
+                let tfd = port_read(ahci.mmio_base, port, PORT_TFD);
+                if tfd & 0x01 != 0 {
+                    crate::serial_verbose_println!("AHCI ATAPI: command error, TFD={:#x}", tfd);
+                    return false;
+                }
+                return true;
+            }
+            let now = crate::arch::hal::timer_current_ticks();
+            if now.wrapping_sub(start) >= timeout_ticks {
+                crate::serial_println!("AHCI ATAPI: command timeout (lba={}, count={})", lba, count);
                 return false;
             }
-            return true;
+            core::hint::spin_loop();
         }
-        core::hint::spin_loop();
+    } else {
+        // Early boot fallback
+        for _ in 0..500_000 {
+            let ci = port_read(ahci.mmio_base, port, PORT_CI);
+            if ci & 1 == 0 {
+                let tfd = port_read(ahci.mmio_base, port, PORT_TFD);
+                if tfd & 0x01 != 0 {
+                    crate::serial_verbose_println!("AHCI ATAPI: command error, TFD={:#x}", tfd);
+                    return false;
+                }
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        crate::serial_verbose_println!("AHCI ATAPI: command timeout");
+        false
     }
-
-    crate::serial_verbose_println!("AHCI ATAPI: command timeout");
-    false
 }
 
 /// Probe: initialize AHCI and return a HAL driver.

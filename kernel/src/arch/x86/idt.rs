@@ -1206,6 +1206,10 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
                 let hrs = mins / 60;
                 serial_println!("uptime: {}h {}m {}s", hrs, mins % 60, secs % 60);
             }
+            // Pet the hardware watchdog every ~1s (1024 ticks at 1000 Hz).
+            if ctr % 1024 == 0 {
+                crate::drivers::watchdog::pet();
+            }
         }
         if cpu_id < 8 {
             // TSS.RSP0 corruption check on EVERY timer tick.

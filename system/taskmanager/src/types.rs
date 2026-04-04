@@ -18,6 +18,23 @@ pub struct TaskEntry {
     pub cpu_pct_x10: u32,
     pub io_read_bytes: u64,
     pub io_write_bytes: u64,
+    pub parent_tid: u32,
+    pub is_child_thread: bool,
+}
+
+/// Describes one visible row in the process grid.
+#[derive(Clone, Copy)]
+pub struct DisplayRow {
+    /// 0 = standalone process (single thread), 1 = group header, 2 = child thread row
+    pub kind: u8,
+    /// Index into the tasks Vec.
+    pub task_idx: u16,
+    /// Number of threads in the group (only meaningful for kind==1).
+    pub thread_count: u16,
+    /// Aggregated CPU% x10 for group headers (sum of all threads).
+    pub agg_cpu: u32,
+    /// Best state among group threads for headers.
+    pub agg_state: u8,
 }
 
 pub struct PrevTicks {

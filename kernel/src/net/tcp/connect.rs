@@ -183,7 +183,7 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
             // Find a ready connection spawned by this listener
             for i in 0..table.len() {
                 let ready = table[i].as_ref().map(|tcb| {
-                    tcb.parent_listener == Some(lid as u8)
+                    tcb.parent_listener == Some(lid as u16)
                         && tcb.state == TcpState::Established
                         && !tcb.accepted
                 }).unwrap_or(false);
@@ -248,7 +248,7 @@ pub fn close_listener(socket_id: u32) -> u32 {
     // Clean up pending connections
     for i in 0..table.len() {
         let is_pending = table[i].as_ref().map(|tcb| {
-            tcb.parent_listener == Some(id as u8) && !tcb.accepted
+            tcb.parent_listener == Some(id as u16) && !tcb.accepted
         }).unwrap_or(false);
         if is_pending {
             table[i] = None;

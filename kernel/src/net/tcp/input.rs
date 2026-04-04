@@ -33,7 +33,7 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
         let slot_idx = {
             let h = super::conn_hash_4tuple(seg.dst_port, seg.src_port, &seg.src_ip);
             let hint = unsafe { super::CONN_HASH[h] };
-            if hint != 0xFF {
+            if hint != 0xFFFF {
                 let hi = hint as usize;
                 if hi < table.len() {
                     if let Some(tcb) = &table[hi] {
@@ -80,12 +80,42 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                         // Count pending connections for this listener
                         let pending_count = table.iter().filter(|s| {
                             s.as_ref().map(|t| {
-                                t.parent_listener == Some(lid as u8) && !t.accepted
+                                t.parent_listener == Some(lid as u16) && !t.accepted
                             }).unwrap_or(false)
                         }).count();
 
                         if pending_count >= MAX_BACKLOG {
                             return; // Backlog full — silently drop SYN
+                        }
+
+                        // SYN flood mitigation: when backlog reaches 75%, evict the
+                        // oldest pending (SynReceived, not yet accepted) connection
+                        // to make room for new ones. This prevents a burst of
+                        // half-open connections from starving legitimate clients.
+                        const BACKLOG_EVICT_THRESHOLD: usize = MAX_BACKLOG * 3 / 4;
+                        if pending_count >= BACKLOG_EVICT_THRESHOLD {
+                            let mut oldest_idx: Option<usize> = None;
+                            let mut oldest_tick: u32 = u32::MAX;
+                            for (i, slot) in table.iter().enumerate() {
+                                if let Some(t) = slot {
+                                    if t.parent_listener == Some(lid as u16)
+                                        && !t.accepted
+                                        && t.state == TcpState::SynReceived
+                                        && t.last_send_tick < oldest_tick
+                                    {
+                                        oldest_tick = t.last_send_tick;
+                                        oldest_idx = Some(i);
+                                    }
+                                }
+                            }
+                            if let Some(evict) = oldest_idx {
+                                if let Some(tcb) = &table[evict] {
+                                    super::conn_hash_remove(
+                                        tcb.local_port, tcb.remote_port, &tcb.remote_ip,
+                                    );
+                                }
+                                table[evict] = None;
+                            }
                         }
 
                         let cfg = crate::net::config();
@@ -99,7 +129,7 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                                 tcb.rcv_irs = seg.seq;
                                 tcb.rcv_nxt = seg.seq.wrapping_add(1);
                                 tcb.snd_nxt = tcb.snd_iss.wrapping_add(1);
-                                tcb.parent_listener = Some(lid as u8);
+                                tcb.parent_listener = Some(lid as u16);
                                 tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
                                 // Store peer's window scale if present (RFC 7323)
                                 if let Some(shift) = seg.wscale {

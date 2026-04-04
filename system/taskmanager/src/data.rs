@@ -44,8 +44,10 @@ pub fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks,
         };
 
         let uid = u16::from_le_bytes([buf[off + 56], buf[off + 57]]);
+        let parent_tid = u32::from_le_bytes([buf[off + 60], buf[off + 61], buf[off + 62], buf[off + 63]]);
+        let is_child_thread = buf[off + 7] != 0; // pd_shared flag from kernel
 
-        result.push(TaskEntry { tid, name, name_len, state, priority: prio, arch, uid, user_pages, cpu_pct_x10, io_read_bytes, io_write_bytes });
+        result.push(TaskEntry { tid, name, name_len, state, priority: prio, arch, uid, user_pages, cpu_pct_x10, io_read_bytes, io_write_bytes, parent_tid, is_child_thread });
     }
 
     prev.count = 0;
@@ -59,6 +61,96 @@ pub fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks,
         prev.count += 1;
     }
     prev.prev_total = total_sched_ticks;
+}
+
+/// Build the flat display list from grouped tasks.
+///
+/// Groups child threads (pd_shared) under their leader process.
+/// Single-thread processes appear as standalone rows.
+/// Multi-thread processes appear as collapsible group headers.
+pub fn build_display_list(
+    tasks: &[TaskEntry],
+    expanded: &[u32],
+    display: &mut Vec<DisplayRow>,
+) {
+    display.clear();
+    let n = tasks.len().min(MAX_TASKS);
+    if n == 0 { return; }
+
+    // Step 1: Find the ultimate leader for each task.
+    let mut leader = [0u16; MAX_TASKS];
+    for i in 0..n { leader[i] = i as u16; }
+
+    // Direct parent resolution
+    for i in 0..n {
+        if tasks[i].is_child_thread && tasks[i].parent_tid != 0 {
+            for j in 0..n {
+                if tasks[j].tid == tasks[i].parent_tid {
+                    leader[i] = j as u16;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Transitive closure (follow parent chains)
+    for _ in 0..10 {
+        let mut changed = false;
+        for i in 0..n {
+            let l = leader[i] as usize;
+            if l < n && l != i && (leader[l] as usize) != l {
+                leader[i] = leader[l];
+                changed = true;
+            }
+        }
+        if !changed { break; }
+    }
+
+    // Step 2: Count members per leader
+    let mut member_count = [0u16; MAX_TASKS];
+    for i in 0..n {
+        member_count[leader[i] as usize] += 1;
+    }
+
+    // Step 3: Build display list
+    let mut processed = [false; MAX_TASKS];
+    for i in 0..n {
+        let l = leader[i] as usize;
+        if processed[l] { continue; }
+        processed[l] = true;
+
+        let count = member_count[l];
+        if count <= 1 {
+            // Standalone process (single thread)
+            display.push(DisplayRow { kind: 0, task_idx: l as u16, thread_count: 0, agg_cpu: tasks[l].cpu_pct_x10, agg_state: tasks[l].state });
+        } else {
+            // Multi-thread process: compute aggregates
+            let mut agg_cpu = 0u32;
+            let mut best_state = 2u8; // default blocked
+            for j in 0..n {
+                if leader[j] as usize == l {
+                    agg_cpu += tasks[j].cpu_pct_x10;
+                    match tasks[j].state {
+                        1 => best_state = 1, // Running
+                        0 if best_state != 1 => best_state = 0, // Ready
+                        _ => {}
+                    }
+                }
+            }
+
+            display.push(DisplayRow { kind: 1, task_idx: l as u16, thread_count: count, agg_cpu, agg_state: best_state });
+
+            // If expanded, add individual thread rows
+            let is_expanded = expanded.iter().any(|&tid| tid == tasks[l].tid);
+            if is_expanded {
+                for j in 0..n {
+                    if leader[j] as usize == l {
+                        display.push(DisplayRow { kind: 2, task_idx: j as u16, thread_count: 0, agg_cpu: 0, agg_state: 0 });
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub fn fetch_memory() -> Option<MemInfo> {

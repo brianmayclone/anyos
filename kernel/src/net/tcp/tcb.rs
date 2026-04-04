@@ -16,7 +16,7 @@ pub(crate) const ACK: u8 = 0x10;
 
 // ── Protocol constants ──────────────────────────────────────────────
 pub(crate) const TCP_HEADER_LEN: usize = 20;
-pub(crate) const MAX_CONNECTIONS: usize = 64;
+pub(crate) const MAX_CONNECTIONS: usize = 256;
 /// Receive buffer size per connection (256 KB).
 pub(crate) const RECV_BUF_SIZE: usize = 262144;
 /// Maximum segment size (standard Ethernet MTU minus IP+TCP headers).
@@ -28,7 +28,7 @@ pub(crate) const MAX_RETRANSMITS: u32 = 5;
 /// TIME_WAIT duration in ticks (2 seconds at 100 Hz).
 pub(crate) const TIME_WAIT_TICKS: u32 = 200;
 /// Maximum pending connections per listener.
-pub(crate) const MAX_BACKLOG: usize = 16;
+pub(crate) const MAX_BACKLOG: usize = 128;
 /// Maximum bytes in flight (sliding window send limit, 1 MB).
 pub(crate) const MAX_IN_FLIGHT: usize = 1_048_576;
 /// Our TCP Window Scale shift count (RFC 7323).
@@ -169,7 +169,7 @@ pub(crate) struct Tcb {
     pub time_wait_start: u32,
 
     // ── Server socket support ──
-    pub parent_listener: Option<u8>,
+    pub parent_listener: Option<u16>,
     pub accepted: bool,
 
     // ── Ownership tracking ──

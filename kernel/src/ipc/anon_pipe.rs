@@ -19,7 +19,7 @@ const MAX_PIPES: usize = 64;
 pub const PIPE_BUF_SIZE: usize = 4096;
 
 /// Maximum blocked TIDs per side (readers or writers).
-const MAX_BLOCKED: usize = 8;
+const MAX_BLOCKED: usize = 64;
 
 static NEXT_PIPE_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -196,6 +196,11 @@ pub fn read(pipe_id: u32, buf: &mut [u8]) -> u32 {
                 if pipe.blocked_reader_count < MAX_BLOCKED {
                     pipe.blocked_readers[pipe.blocked_reader_count] = tid;
                     pipe.blocked_reader_count += 1;
+                } else {
+                    crate::serial_verbose_println!(
+                        "[anon_pipe] WARNING: pipe {} blocked_readers full ({}/{}), tid {} gets silent EOF",
+                        pipe_id, pipe.blocked_reader_count, MAX_BLOCKED, tid
+                    );
                 }
                 Err(()) // signal: must block
             }
@@ -269,6 +274,11 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
                     if pipe.blocked_writer_count < MAX_BLOCKED {
                         pipe.blocked_writers[pipe.blocked_writer_count] = tid;
                         pipe.blocked_writer_count += 1;
+                    } else {
+                        crate::serial_verbose_println!(
+                            "[anon_pipe] WARNING: pipe {} blocked_writers full ({}/{}), tid {} gets silent EPIPE",
+                            pipe_id, pipe.blocked_writer_count, MAX_BLOCKED, tid
+                        );
                     }
                     Err(()) // signal: must block to write more
                 }
@@ -278,6 +288,11 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
                 if pipe.blocked_writer_count < MAX_BLOCKED {
                     pipe.blocked_writers[pipe.blocked_writer_count] = tid;
                     pipe.blocked_writer_count += 1;
+                } else {
+                    crate::serial_verbose_println!(
+                        "[anon_pipe] WARNING: pipe {} blocked_writers full ({}/{}), tid {} gets silent EPIPE",
+                        pipe_id, pipe.blocked_writer_count, MAX_BLOCKED, tid
+                    );
                 }
                 Err(()) // signal: must block
             }

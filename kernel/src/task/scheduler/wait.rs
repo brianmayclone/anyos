@@ -22,12 +22,16 @@ pub fn waitpid(tid: u32) -> u32 {
                 target.waiting_tid = Some(current_tid);
             }
             if let Some(idx) = sched.current_idx(cpu_id) {
-                // CRITICAL: Mark context as unsaved BEFORE setting Blocked.
-                // Without this, another CPU can wake this thread (→ Ready)
-                // and load its stale saved context while we're still
-                // physically executing on its stack → two CPUs on same stack → crash.
-                sched.threads[idx].context.save_complete = 0;
+                // CRITICAL: Set Blocked FIRST, then clear save_complete.
+                // pick_eligible checks state==Ready first, so once Blocked
+                // no other CPU will attempt to run this thread — even if
+                // save_complete is momentarily stale.  The old order
+                // (save_complete=0 then Blocked) left a window where the
+                // thread was Ready with save_complete=0, allowing another
+                // CPU to re-enqueue and potentially load a partially-saved
+                // context.
                 sched.threads[idx].state = ThreadState::Blocked;
+                sched.threads[idx].context.save_complete = 0;
             }
         }
     }
@@ -89,10 +93,11 @@ pub fn waitpid_any() -> (u32, u32) {
             }
         }
 
-        // Block current thread
+        // Block current thread — state=Blocked first so no CPU picks it,
+        // then clear save_complete (see waitpid for detailed rationale).
         if let Some(idx) = sched.current_idx(get_cpu_id()) {
-            sched.threads[idx].context.save_complete = 0;
             sched.threads[idx].state = ThreadState::Blocked;
+            sched.threads[idx].context.save_complete = 0;
         }
     }
     // Yield immediately instead of waiting up to 1ms for timer preemption.
@@ -186,10 +191,12 @@ pub fn sleep_until(wake_at: u32) {
         let cpu_id = get_cpu_id();
         let sched = match guard.as_mut() { Some(s) => s, None => return };
         if let Some(idx) = sched.current_idx(cpu_id) {
-            // CRITICAL: Mark context as unsaved before Blocked (same race as waitpid).
-            sched.threads[idx].context.save_complete = 0;
+            // CRITICAL: Set Blocked first, then clear save_complete
+            // (same rationale as waitpid — no window where state==Ready
+            // with save_complete==0).
             sched.threads[idx].wake_at_tick = Some(wake_at);
             sched.threads[idx].state = ThreadState::Blocked;
+            sched.threads[idx].context.save_complete = 0;
         }
     }
     schedule();
@@ -203,9 +210,10 @@ pub fn block_current_thread() {
         let cpu_id = get_cpu_id();
         let sched = match guard.as_mut() { Some(s) => s, None => return };
         if let Some(idx) = sched.current_idx(cpu_id) {
-            // CRITICAL: Mark context as unsaved before Blocked (same race as waitpid).
-            sched.threads[idx].context.save_complete = 0;
+            // CRITICAL: Set Blocked first, then clear save_complete
+            // (same rationale as waitpid).
             sched.threads[idx].state = ThreadState::Blocked;
+            sched.threads[idx].context.save_complete = 0;
         }
     }
     schedule();

@@ -11,7 +11,7 @@ pub fn normalize(path: &str) -> String {
     let absolute = path.starts_with('/');
 
     // Fast path: simple paths without . or .. (common case ~90% of opens)
-    if !path.contains("/.") && !path.contains("//") {
+    if !path.contains("/.") && !path.contains("//") && !path.starts_with('.') {
         // No normalization needed — just trim trailing slash
         let trimmed = path.trim_end_matches('/');
         if trimmed.is_empty() {
@@ -27,7 +27,7 @@ pub fn normalize(path: &str) -> String {
         match part {
             "" | "." => {}
             ".." => {
-                components.pop();
+                if !components.is_empty() { components.pop(); }
             }
             other => components.push(other),
         }

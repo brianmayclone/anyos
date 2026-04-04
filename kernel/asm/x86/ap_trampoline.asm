@@ -94,6 +94,11 @@ ap_lm_entry:
 
     fninit
 
+    ; Acquire barrier: ensure BSP's writes to the communication area
+    ; (stack, CR3, entry point, cpu_id) are visible before we read them.
+    ; Pairs with the SeqCst fence in start_aps() on the BSP.
+    mfence
+
     ; Load 64-bit stack pointer from communication area
     mov     rsp, [0x7F00]
 

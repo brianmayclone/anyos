@@ -841,10 +841,12 @@ pub fn debug_auto_suspend(tid: u32, event_type: u32, addr: u64) {
                     sched.threads[idx].context.checksum =
                         sched.threads[idx].context.compute_checksum();
 
-                    // Block the thread — it will be suspended until debugger resumes it
+                    // Block the thread — it will be suspended until debugger resumes it.
+                    // Set Blocked first so no CPU picks it via pick_eligible,
+                    // then clear save_complete (same rationale as wait.rs).
                     if sched.threads[idx].state == ThreadState::Running {
-                        sched.threads[idx].context.save_complete = 0;
                         sched.threads[idx].state = ThreadState::Blocked;
+                        sched.threads[idx].context.save_complete = 0;
                     }
                 }
             }

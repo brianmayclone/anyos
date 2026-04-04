@@ -418,12 +418,12 @@ impl ExFatFs {
         }
 
         // Parse VBR fields
-        let _volume_length = u64::from_le_bytes(buf[72..80].try_into().unwrap());
-        let fat_offset = u32::from_le_bytes(buf[80..84].try_into().unwrap());
-        let fat_length = u32::from_le_bytes(buf[84..88].try_into().unwrap());
-        let cluster_heap_offset = u32::from_le_bytes(buf[88..92].try_into().unwrap());
-        let cluster_count = u32::from_le_bytes(buf[92..96].try_into().unwrap());
-        let root_cluster = u32::from_le_bytes(buf[96..100].try_into().unwrap());
+        let _volume_length = u64::from_le_bytes(buf[72..80].try_into().map_err(|_| FsError::IoError)?);
+        let fat_offset = u32::from_le_bytes(buf[80..84].try_into().map_err(|_| FsError::IoError)?);
+        let fat_length = u32::from_le_bytes(buf[84..88].try_into().map_err(|_| FsError::IoError)?);
+        let cluster_heap_offset = u32::from_le_bytes(buf[88..92].try_into().map_err(|_| FsError::IoError)?);
+        let cluster_count = u32::from_le_bytes(buf[92..96].try_into().map_err(|_| FsError::IoError)?);
+        let root_cluster = u32::from_le_bytes(buf[96..100].try_into().map_err(|_| FsError::IoError)?);
         let bytes_per_sector_shift = buf[108];
         let sectors_per_cluster_shift = buf[109];
         let _number_of_fats = buf[110];
@@ -769,10 +769,10 @@ impl ExFatFs {
                 // Allocation Bitmap (in-use = 0x81)
                 if etype == 0x81 {
                     let bm_cluster = u32::from_le_bytes(
-                        cbuf[i + 20..i + 24].try_into().unwrap(),
+                        cbuf[i + 20..i + 24].try_into().map_err(|_| FsError::IoError)?,
                     );
                     let bm_size = u64::from_le_bytes(
-                        cbuf[i + 24..i + 32].try_into().unwrap(),
+                        cbuf[i + 24..i + 32].try_into().map_err(|_| FsError::IoError)?,
                     );
                     crate::debug_println!("  [exFAT] load_bitmap: FOUND bitmap cluster={} size={}", bm_cluster, bm_size);
                     self.bitmap_cluster = bm_cluster;
@@ -1077,8 +1077,8 @@ impl ExFatFs {
             let general_flags = buf[s + 1];
             let contiguous = general_flags & FLAG_CONTIGUOUS != 0;
             let name_length = buf[s + 3] as usize;
-            let first_cluster = u32::from_le_bytes(buf[s + 20..s + 24].try_into().unwrap());
-            let data_length = u64::from_le_bytes(buf[s + 24..s + 32].try_into().unwrap());
+            let first_cluster = u32::from_le_bytes(buf[s + 20..s + 24].try_into().ok()?);
+            let data_length = u64::from_le_bytes(buf[s + 24..s + 32].try_into().ok()?);
 
             // Read uid/gid/mode from File Directory Entry reserved bytes 6-11
             let entry_uid = u16::from_le_bytes([buf[i + 6], buf[i + 7]]);
@@ -1087,7 +1087,7 @@ impl ExFatFs {
             let entry_mode = if entry_mode == 0 { 0xFFF } else { entry_mode };
 
             // Read LastModifiedTimestamp (bytes 12-15 of 0x85 entry) and convert to Unix
-            let exfat_mtime = u32::from_le_bytes(buf[i + 12..i + 16].try_into().unwrap());
+            let exfat_mtime = u32::from_le_bytes(buf[i + 12..i + 16].try_into().ok()?);
             let mtime_unix = exfat_timestamp_to_unix(exfat_mtime);
 
             let collected = Self::collect_name(buf, i, secondary_count, name_length);
@@ -1140,7 +1140,10 @@ impl ExFatFs {
             }
 
             let name_length = buf[s + 3] as usize;
-            let data_length = u64::from_le_bytes(buf[s + 24..s + 32].try_into().unwrap());
+            let data_length = match buf[s + 24..s + 32].try_into() {
+                Ok(arr) => u64::from_le_bytes(arr),
+                Err(_) => { i += 32; continue; }
+            };
 
             let collected = Self::collect_name(buf, i, secondary_count, name_length);
             let name_str = Self::utf16_to_string(&collected);
