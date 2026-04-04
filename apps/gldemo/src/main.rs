@@ -35,9 +35,11 @@ uniform vec3 uLightColor0;
 uniform vec3 uEyePos;
 varying vec3 vLighting;
 varying vec2 vTexCoord;
+varying vec4 vWorldPos;
 void main() {
     vec4 worldPos = uModel * vec4(aPosition, 1.0);
     vec3 wp = worldPos.xyz;
+    vWorldPos = worldPos;
     vec4 tn = uModel * vec4(aNormal, 0.0);
     vec3 N = normalize(tn.xyz);
     vec3 V = normalize(uEyePos - wp);
@@ -53,14 +55,27 @@ void main() {
 }
 ";
 
-/// Fragment shader: texture × lighting (HW-accelerated via virgl).
+/// Fragment shader: texture × lighting + shadow mapping.
 static FS_SOURCE: &str =
 "varying vec3 vLighting;
 varying vec2 vTexCoord;
+varying vec4 vWorldPos;
 uniform sampler2D uTexture;
+uniform sampler2D uShadowMap;
+uniform mat4 uLightMVP;
 void main() {
     vec4 texColor = texture2D(uTexture, vTexCoord);
-    gl_FragColor = vec4(vLighting * texColor.rgb, 1.0);
+    float shadow = 1.0;
+    vec4 lsPos = uLightMVP * vWorldPos;
+    vec3 proj = lsPos.xyz / lsPos.w;
+    proj = proj * 0.5 + 0.5;
+    if (proj.x >= 0.0 && proj.x <= 1.0 && proj.y >= 0.0 && proj.y <= 1.0) {
+        float closest = texture2D(uShadowMap, proj.xy).r;
+        if (proj.z > closest + 0.005) {
+            shadow = 0.4;
+        }
+    }
+    gl_FragColor = vec4(vLighting * texColor.rgb * shadow, 1.0);
 }
 ";
 
@@ -531,6 +546,8 @@ struct RenderState {
     loc_eye_pos: i32,
     loc_texture: i32,
     loc_mat_color: i32,
+    loc_shadow_map: i32,
+    loc_light_mvp: i32,
     // Physics body IDs
     phys_sphere: u32,
     phys_cube: u32,
@@ -627,9 +644,37 @@ fn render_frame() {
     // Animated light
     let l0_x = gl::sin(t * 0.7) * 3.0;
     let l0_z = gl::cos(t * 0.7) * 3.0;
-    gl::uniform3f(s.loc_light_pos0, l0_x, 2.0, l0_z);
+    let l0_y = 2.0f32;
+
+    // ── Shadow pass (HW-only, automatic no-op on SW) ───────────────────
+    gl::shadow_pass_begin(l0_x, l0_y, l0_z, 0.0, 0.0, 0.0, 6.0);
+    draw_scene_geometry(s, &proj, &view);
+    gl::shadow_pass_end();
+
+    // ── Main pass ──────────────────────────────────────────────────────
+    gl::use_program(s.program);
+    gl::uniform3f(s.loc_light_pos0, l0_x, l0_y, l0_z);
     gl::uniform3f(s.loc_light_color0, 1.0, 0.95, 0.8);
     gl::uniform3f(s.loc_eye_pos, eye[0], eye[1], eye[2]);
+
+    // Bind shadow map if available
+    if gl::shadow_available() {
+        let light_mvp = gl::shadow_get_light_mvp();
+        if !light_mvp.is_null() {
+            let lmvp = unsafe { core::slice::from_raw_parts(light_mvp, 16) };
+            gl::uniform_matrix4fv(s.loc_light_mvp, false, lmvp);
+        }
+        gl::uniform1i(s.loc_shadow_map, gl::shadow_get_unit() as i32);
+    }
+
+    draw_scene_geometry(s, &proj, &view);
+
+    render_frame_finish();
+}
+
+/// Draw all scene geometry (used by both shadow pass and main pass).
+fn draw_scene_geometry(s: &mut RenderState, proj: &Mat4, view: &Mat4) {
+    let d = s.camera_dist;
 
     // ── Draw sphere (physics-driven with quaternion) ────────────────────
     {
@@ -731,6 +776,10 @@ fn render_frame() {
 
         gl::enable(gl::GL_CULL_FACE);
     }
+}
+
+fn render_frame_finish() {
+    let s = unsafe { STATE.as_mut().unwrap() };
 
     // ── Swap to canvas or direct framebuffer ────────────────────────────
     if s.fullscreen {
@@ -854,9 +903,11 @@ fn main() {
     let loc_eye_pos = gl::get_uniform_location(program, "uEyePos");
     let loc_texture = gl::get_uniform_location(program, "uTexture");
     let loc_mat_color = gl::get_uniform_location(program, "uMatColor");
+    let loc_shadow_map = gl::get_uniform_location(program, "uShadowMap");
+    let loc_light_mvp = gl::get_uniform_location(program, "uLightMVP");
 
-    anyos_std::println!("gldemo: uniforms: mvp={} model={} lp0={} eye={} tex={} mat={}",
-        loc_mvp, loc_model, loc_light_pos0, loc_eye_pos, loc_texture, loc_mat_color);
+    anyos_std::println!("gldemo: uniforms: mvp={} model={} lp0={} eye={} tex={} mat={} shadow={} lmvp={}",
+        loc_mvp, loc_model, loc_light_pos0, loc_eye_pos, loc_texture, loc_mat_color, loc_shadow_map, loc_light_mvp);
 
     // ── Generate sphere geometry ─────────────────────────────────────────
     let (sphere_verts, sphere_indices) = generate_sphere(24, 32);
@@ -1083,6 +1134,8 @@ fn main() {
             loc_eye_pos,
             loc_texture,
             loc_mat_color,
+            loc_shadow_map,
+            loc_light_mvp,
             phys_sphere,
             phys_cube,
             phys_boing,
