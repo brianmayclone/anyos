@@ -45,8 +45,19 @@ impl Vm {
         self.invoke_function(&callee, &args, this_val);
     }
 
+    /// Maximum call depth to prevent stack overflow (Rust stack).
+    const MAX_CALL_DEPTH: usize = 200;
+
     /// Invoke a function value with the given arguments and this binding.
     pub(super) fn invoke_function(&mut self, callee: &JsValue, args: &[JsValue], this_val: JsValue) {
+        // Guard against stack overflow from deep recursion
+        if self.frames.len() >= Self::MAX_CALL_DEPTH {
+            let err = self.make_range_error("Maximum call stack size exceeded");
+            if !self.handle_exception(err) {
+                self.stack.push(JsValue::Undefined);
+            }
+            return;
+        }
         match callee {
             JsValue::Function(func_rc) => {
                 // Extract what we need before any mutable VM operations

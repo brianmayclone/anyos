@@ -40,7 +40,14 @@ pub fn json_stringify(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 }
 
+/// Maximum nesting depth for JSON.stringify to prevent stack overflow.
+const MAX_JSON_DEPTH: usize = 128;
+
 fn stringify_value(val: &JsValue, indent: &str, depth: usize) -> Option<String> {
+    // Depth limit to prevent stack overflow from circular references
+    if depth > MAX_JSON_DEPTH {
+        return None; // treated as undefined → omitted or "null"
+    }
     match val {
         JsValue::Undefined | JsValue::Function(_) => None,
         JsValue::Null => Some(String::from("null")),

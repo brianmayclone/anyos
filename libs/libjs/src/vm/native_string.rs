@@ -41,6 +41,14 @@ fn resolve_index(idx: f64, len: usize) -> usize {
     }
 }
 
+/// Safely convert an f64 to usize, clamping NaN/negative to 0 and Infinity/huge to `cap`.
+#[inline]
+fn to_usize_clamped(n: f64, cap: usize) -> usize {
+    if n.is_nan() || n < 0.0 { return 0; }
+    if !n.is_finite() || n >= cap as f64 { return cap; }
+    n as usize
+}
+
 // ═══════════════════════════════════════════════════════════
 // String.prototype methods
 // ═══════════════════════════════════════════════════════════
@@ -48,7 +56,7 @@ fn resolve_index(idx: f64, len: usize) -> usize {
 pub fn string_char_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = this_string(vm);
     let chars = chars_vec(&s);
-    let idx = args.first().map(|v| v.to_number() as usize).unwrap_or(0);
+    let idx = args.first().map(|v| to_usize_clamped(v.to_number(), chars.len())).unwrap_or(0);
     if idx < chars.len() {
         let mut buf = String::new();
         buf.push(chars[idx]);
@@ -61,7 +69,7 @@ pub fn string_char_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn string_char_code_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = this_string(vm);
     let chars = chars_vec(&s);
-    let idx = args.first().map(|v| v.to_number() as usize).unwrap_or(0);
+    let idx = args.first().map(|v| to_usize_clamped(v.to_number(), chars.len())).unwrap_or(0);
     if idx < chars.len() {
         JsValue::Number(chars[idx] as u32 as f64)
     } else {
@@ -72,7 +80,7 @@ pub fn string_char_code_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn string_code_point_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = this_string(vm);
     let chars = chars_vec(&s);
-    let idx = args.first().map(|v| v.to_number() as usize).unwrap_or(0);
+    let idx = args.first().map(|v| to_usize_clamped(v.to_number(), chars.len())).unwrap_or(0);
     if idx < chars.len() {
         JsValue::Number(chars[idx] as u32 as f64)
     } else {
@@ -83,13 +91,13 @@ pub fn string_code_point_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn string_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = this_string(vm);
     let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
-    let from = args.get(1).map(|v| v.to_number() as usize).unwrap_or(0);
+    let s_chars = chars_vec(&s);
+    let from = args.get(1).map(|v| to_usize_clamped(v.to_number(), s_chars.len())).unwrap_or(0);
 
     if search.is_empty() {
-        return JsValue::Number(from.min(s.chars().count()) as f64);
+        return JsValue::Number(from.min(s_chars.len()) as f64);
     }
 
-    let s_chars = chars_vec(&s);
     let search_chars = chars_vec(&search);
     let s_len = s_chars.len();
     let search_len = search_chars.len();
@@ -131,9 +139,9 @@ pub fn string_last_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn string_includes(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = this_string(vm);
     let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
-    let from = args.get(1).map(|v| v.to_number() as usize).unwrap_or(0);
 
     let s_chars = chars_vec(&s);
+    let from = args.get(1).map(|v| to_usize_clamped(v.to_number(), s_chars.len())).unwrap_or(0);
     let search_chars = chars_vec(&search);
     let s_len = s_chars.len();
     let search_len = search_chars.len();
@@ -152,12 +160,12 @@ pub fn string_includes(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn string_starts_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = this_string(vm);
     let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
-    let pos = args.get(1).map(|v| v.to_number() as usize).unwrap_or(0);
 
     let s_chars = chars_vec(&s);
     let search_chars = chars_vec(&search);
+    let pos = args.get(1).map(|v| to_usize_clamped(v.to_number(), s_chars.len())).unwrap_or(0);
 
-    if pos + search_chars.len() > s_chars.len() {
+    if pos > s_chars.len().saturating_sub(search_chars.len()) {
         return JsValue::Bool(false);
     }
     JsValue::Bool(s_chars[pos..pos + search_chars.len()] == search_chars[..])
@@ -169,7 +177,7 @@ pub fn string_ends_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s_chars = chars_vec(&s);
     let search_chars = chars_vec(&search);
 
-    let end_pos = args.get(1).map(|v| (v.to_number() as usize).min(s_chars.len())).unwrap_or(s_chars.len());
+    let end_pos = args.get(1).map(|v| to_usize_clamped(v.to_number(), s_chars.len())).unwrap_or(s_chars.len());
 
     if search_chars.len() > end_pos {
         return JsValue::Bool(false);
@@ -257,7 +265,10 @@ pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     let s = this_string(vm);
     let sep = args.first().map(|v| v.to_js_string());
-    let limit = args.get(1).map(|v| v.to_number() as usize).unwrap_or(usize::MAX);
+    let limit = args.get(1).map(|v| {
+        let n = v.to_number();
+        if n.is_nan() || n < 0.0 { 0 } else if !n.is_finite() { usize::MAX } else { n as usize }
+    }).unwrap_or(usize::MAX);
 
     let parts: Vec<JsValue> = match sep {
         None => {
@@ -369,8 +380,22 @@ pub fn string_replace_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn string_repeat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = this_string(vm);
-    let count = args.first().map(|v| v.to_number() as usize).unwrap_or(0);
-    let mut result = String::with_capacity(s.len() * count);
+    let n = args.first().map(|v| v.to_number()).unwrap_or(0.0);
+    // §22.1.3.16: throw RangeError if count is negative or Infinity
+    if n < 0.0 || !n.is_finite() {
+        let err = vm.make_range_error("Invalid count value");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+    let count = n as usize;
+    // Limit allocation to prevent OOM (16 MiB)
+    let total = s.len().saturating_mul(count);
+    if total > 16 * 1024 * 1024 {
+        let err = vm.make_range_error("Invalid count value");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+    let mut result = String::with_capacity(total);
     for _ in 0..count {
         result.push_str(&s);
     }
@@ -379,7 +404,7 @@ pub fn string_repeat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn string_pad_start(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = this_string(vm);
-    let target_len = args.first().map(|v| v.to_number() as usize).unwrap_or(0);
+    let target_len = args.first().map(|v| to_usize_clamped(v.to_number(), 1 << 20)).unwrap_or(0);
     let pad_str = args.get(1).map(|v| v.to_js_string()).unwrap_or_else(|| String::from(" "));
 
     let chars = chars_vec(&s);
@@ -401,7 +426,7 @@ pub fn string_pad_start(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn string_pad_end(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = this_string(vm);
-    let target_len = args.first().map(|v| v.to_number() as usize).unwrap_or(0);
+    let target_len = args.first().map(|v| to_usize_clamped(v.to_number(), 1 << 20)).unwrap_or(0);
     let pad_str = args.get(1).map(|v| v.to_js_string()).unwrap_or_else(|| String::from(" "));
 
     let chars = chars_vec(&s);
