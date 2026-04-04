@@ -412,7 +412,7 @@ pub fn string_split_regexp(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     while pos <= len && result.len() < limit {
         match regex.exec(&this_str, pos) {
-            Some(m) if m.end != last_end || m.start != pos || pos == 0 => {
+            Some(m) if m.end != last_end || (m.start != pos && m.end > m.start) => {
                 // Collect substring before match
                 let part: String = chars[last_end..m.start].iter().collect();
                 result.push(JsValue::String(part));

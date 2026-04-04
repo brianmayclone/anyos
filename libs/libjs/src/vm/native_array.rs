@@ -95,8 +95,38 @@ fn this_array_like(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>
             None
         }
         JsValue::Array(a) => {
-            let a = a.borrow();
-            Some((this_val.clone(), a.length, snapshot_entries(&a)))
+            let length;
+            let mut entries;
+            let mut accessor_keys = Vec::new();
+            {
+                let a = a.borrow();
+                length = a.length;
+                entries = snapshot_entries(&a);
+                // Collect numeric accessor properties (set via Object.defineProperty)
+                for (key, prop) in a.properties.iter() {
+                    if prop.is_accessor() {
+                        if let Ok(idx) = key.parse::<usize>() {
+                            if idx < length {
+                                accessor_keys.push((idx, prop.getter.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            // Invoke getters via VM (outside borrow)
+            for (idx, getter) in accessor_keys {
+                if let Some(getter_fn) = getter {
+                    let val = vm.call_value(&getter_fn, &[], this_val.clone());
+                    // Replace or insert the entry
+                    if let Some(existing) = entries.iter_mut().find(|(i, _)| *i == idx) {
+                        existing.1 = val;
+                    } else {
+                        entries.push((idx, val));
+                    }
+                }
+            }
+            entries.sort_by_key(|&(idx, _)| idx);
+            Some((this_val.clone(), length, entries))
         }
         JsValue::Object(obj) => {
             // Get length value first (may need VM to call valueOf/toString)
