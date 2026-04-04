@@ -647,8 +647,15 @@ fn render_frame() {
     let l0_y = 2.0f32;
 
     // ── Shadow pass (HW-only, automatic no-op on SW) ───────────────────
+    let camera_vp = mat4_mul(&proj, &view);
+
     gl::shadow_pass_begin(l0_x, l0_y, l0_z, 0.0, 0.0, 0.0, 6.0);
-    draw_scene_geometry(s, &proj, &view);
+    // Use light VP matrix for shadow geometry
+    let light_mvp_ptr = gl::shadow_get_light_mvp();
+    if !light_mvp_ptr.is_null() {
+        let light_vp = unsafe { &*(light_mvp_ptr as *const [f32; 16]) };
+        draw_scene_geometry(s, light_vp);
+    }
     gl::shadow_pass_end();
 
     // ── Main pass ──────────────────────────────────────────────────────
@@ -659,21 +666,19 @@ fn render_frame() {
 
     // Bind shadow map if available
     if gl::shadow_available() {
-        let light_mvp = gl::shadow_get_light_mvp();
-        if !light_mvp.is_null() {
-            let lmvp = unsafe { &*(light_mvp as *const [f32; 16]) };
-            gl::uniform_matrix4fv(s.loc_light_mvp, false, lmvp);
-        }
+        let lmvp = unsafe { &*(gl::shadow_get_light_mvp() as *const [f32; 16]) };
+        gl::uniform_matrix4fv(s.loc_light_mvp, false, lmvp);
         gl::uniform1i(s.loc_shadow_map, gl::shadow_get_unit() as i32);
     }
 
-    draw_scene_geometry(s, &proj, &view);
+    draw_scene_geometry(s, &camera_vp);
 
     render_frame_finish();
 }
 
 /// Draw all scene geometry (used by both shadow pass and main pass).
-fn draw_scene_geometry(s: &mut RenderState, proj: &Mat4, view: &Mat4) {
+/// `vp` is the combined view-projection matrix (light VP for shadow, camera VP for main).
+fn draw_scene_geometry(s: &mut RenderState, vp: &Mat4) {
     let d = s.camera_dist;
 
     // ── Draw sphere (physics-driven with quaternion) ────────────────────
@@ -685,7 +690,7 @@ fn draw_scene_geometry(s: &mut RenderState, proj: &Mat4, view: &Mat4) {
             &mat4_translate(px, py, pz),
             &mat4_mul(&rot_mat, &mat4_scale(0.8, 0.8, 0.8)),
         );
-        let mvp = mat4_mul(&proj, &mat4_mul(&view, &model));
+        let mvp = mat4_mul(vp, &model);
 
         gl::uniform_matrix4fv(s.loc_mvp, false, &mvp);
         gl::uniform_matrix4fv(s.loc_model, false, &model);
@@ -710,7 +715,7 @@ fn draw_scene_geometry(s: &mut RenderState, proj: &Mat4, view: &Mat4) {
             &mat4_translate(px, py, pz),
             &mat4_mul(&rot_mat, &mat4_scale(0.9, 0.9, 0.9)),
         );
-        let mvp = mat4_mul(&proj, &mat4_mul(&view, &model));
+        let mvp = mat4_mul(vp, &model);
 
         gl::uniform_matrix4fv(s.loc_mvp, false, &mvp);
         gl::uniform_matrix4fv(s.loc_model, false, &model);
@@ -735,7 +740,7 @@ fn draw_scene_geometry(s: &mut RenderState, proj: &Mat4, view: &Mat4) {
             &mat4_translate(px, py, pz),
             &mat4_mul(&rot_mat, &mat4_scale(0.6, 0.6, 0.6)),
         );
-        let mvp = mat4_mul(&proj, &mat4_mul(&view, &model));
+        let mvp = mat4_mul(vp, &model);
 
         gl::uniform_matrix4fv(s.loc_mvp, false, &mvp);
         gl::uniform_matrix4fv(s.loc_model, false, &model);
@@ -760,7 +765,7 @@ fn draw_scene_geometry(s: &mut RenderState, proj: &Mat4, view: &Mat4) {
             &mat4_translate(0.0, -0.5, 0.0),
             &mat4_scale(floor_scale, 1.0, floor_scale),
         );
-        let mvp = mat4_mul(&proj, &mat4_mul(&view, &model));
+        let mvp = mat4_mul(vp, &model);
 
         gl::uniform_matrix4fv(s.loc_mvp, false, &mvp);
         gl::uniform_matrix4fv(s.loc_model, false, &model);

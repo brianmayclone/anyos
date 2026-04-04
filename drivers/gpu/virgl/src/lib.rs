@@ -1068,7 +1068,6 @@ pub extern "C" fn drv_upload_texture(
         return 0;
     }
 
-    libsyscall::serial_println!("[virgl] drv_upload_texture: gl_id={} -> res={} ({}x{})", gl_tex_id, res, width, height);
     s.tex_cache.push((gl_tex_id, res));
     res
 }
@@ -1126,7 +1125,6 @@ pub extern "C" fn drv_bind_sampler_view(slot: u32, virgl_res_id: u32) {
     s.cmd.push(s.sampler_state_handle);
 
     s.cmd.submit();
-    libsyscall::serial_println!("[virgl] drv_bind_sampler_view: slot={} res={} sv={}", slot, virgl_res_id, sv_handle);
 }
 
 // ── Shadow mapping (GL_OES_depth_texture compatible) ─────────────────────
@@ -1235,6 +1233,15 @@ pub extern "C" fn drv_shadow_begin(width: u32, height: u32) -> u32 {
 
     s.cmd.submit();
     s.shadow_active = true;
+
+    static mut SHADOW_DBG: bool = true;
+    unsafe {
+        if SHADOW_DBG {
+            SHADOW_DBG = false;
+            libsyscall::serial_println!("[virgl] shadow_begin: res={} surf={} size={}x{}",
+                s.shadow_depth_res_id, s.shadow_depth_surface_h, width, height);
+        }
+    }
     1
 }
 
@@ -1302,6 +1309,15 @@ pub extern "C" fn drv_shadow_bind(slot: u32) {
     s.cmd.push(s.shadow_sampler_state_h);
 
     s.cmd.submit();
+
+    static mut BIND_DBG: bool = true;
+    unsafe {
+        if BIND_DBG {
+            BIND_DBG = false;
+            libsyscall::serial_println!("[virgl] shadow_bind: slot={} sv={} samp={} res={}",
+                slot, s.shadow_sampler_view_h, s.shadow_sampler_state_h, s.shadow_depth_res_id);
+        }
+    }
 }
 
 // ── Panic handler ────────────────────────────────────────────────────────
