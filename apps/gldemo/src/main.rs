@@ -661,7 +661,7 @@ fn render_frame() {
     if gl::shadow_available() {
         let light_mvp = gl::shadow_get_light_mvp();
         if !light_mvp.is_null() {
-            let lmvp = unsafe { core::slice::from_raw_parts(light_mvp, 16) };
+            let lmvp = unsafe { &*(light_mvp as *const [f32; 16]) };
             gl::uniform_matrix4fv(s.loc_light_mvp, false, lmvp);
         }
         gl::uniform1i(s.loc_shadow_map, gl::shadow_get_unit() as i32);
