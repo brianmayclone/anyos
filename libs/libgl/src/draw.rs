@@ -169,7 +169,7 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
     // Try persistent VBO path: if all attribs reference the same VBO and
     // the VBO has matching raw data layout, use the GPU-resident buffer directly.
     let attrib_count = program.attributes.len();
-    if attrib_count > 0 {
+    if false && attrib_count > 0 { // persistent VBO disabled until rendering issues resolved
         let first_loc = program.attributes[0].location as usize;
         if first_loc < ctx.attribs.len() && ctx.attribs[first_loc].enabled {
             let vbo_id = ctx.attribs[first_loc].buffer_id;
@@ -228,7 +228,55 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
         }
     }
 
-    // Fallback: collect vertex data and upload per-draw (original path)
+    // Fallback: if all attribs come from the same VBO with interleaved layout,
+    // pass the raw VBO data directly (no per-vertex copy). Much faster.
+    let first_loc = if attrib_count > 0 { program.attributes[0].location as usize } else { 0 };
+    let vbo_id = if first_loc < ctx.attribs.len() && ctx.attribs[first_loc].enabled {
+        ctx.attribs[first_loc].buffer_id
+    } else { 0 };
+    let raw_stride = if first_loc < ctx.attribs.len() { ctx.attribs[first_loc].stride } else { 0 };
+
+    let all_same_vbo = vbo_id != 0 && raw_stride > 0 && attrib_count > 0
+        && program.attributes.iter().all(|a| {
+            let loc = a.location as usize;
+            loc < ctx.attribs.len() && ctx.attribs[loc].enabled
+                && ctx.attribs[loc].buffer_id == vbo_id
+        });
+
+    if all_same_vbo {
+        // Fast path: pass raw interleaved VBO data with real offsets
+        let buf = ctx.buffers.get(vbo_id);
+        if let Some(buf) = buf {
+            let stride = raw_stride as u32;
+            let start_byte = first as usize * stride as usize;
+            let end_byte = (first + count) as usize * stride as usize;
+            if end_byte <= buf.data.len() {
+                let vb_bytes = &buf.data[start_byte..end_byte];
+
+                let mut attribs: alloc::vec::Vec<DrvAttrib> = alloc::vec::Vec::with_capacity(attrib_count);
+                for attr in &program.attributes {
+                    let loc = attr.location as usize;
+                    let va = &ctx.attribs[loc];
+                    attribs.push(DrvAttrib {
+                        location: attr.location as u32,
+                        components: va.size as u32,
+                        attr_type: va.typ,
+                        offset: va.offset as u32,
+                        normalized: if va.normalized { 1 } else { 0 },
+                    });
+                }
+
+                (drv.drv_draw_arrays)(
+                    mode, 0, count as u32,
+                    vb_bytes.as_ptr(), stride,
+                    attribs.as_ptr(), attribs.len() as u32,
+                );
+                return;
+            }
+        }
+    }
+
+    // Slow fallback: collect vertex data per-attribute (for multi-VBO or non-interleaved)
     let vertex_stride = (attrib_count * 4 * 4) as u32;
 
     let mut vertex_data: alloc::vec::Vec<f32> = alloc::vec::Vec::with_capacity(
