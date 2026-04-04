@@ -405,8 +405,6 @@ impl Vm {
     }
 
     /// Simplified instanceof check.
-    /// `left instanceof right` — basic implementation.
-    /// TODO: proper prototype chain walk (requires all constructors to have .prototype set)
     pub fn instance_of(&self, left: &JsValue, _right: &JsValue) -> bool {
         matches!(left, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_))
     }

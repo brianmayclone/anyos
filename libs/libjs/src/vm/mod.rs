@@ -175,10 +175,6 @@ impl Vm {
         obj.set(String::from("name"), JsValue::String(String::from("TypeError")));
         obj.set(String::from("message"), JsValue::String(String::from(message)));
         obj.set(String::from("stack"), JsValue::String(stack_str));
-        let ctor = self.globals.get("TypeError");
-        if !matches!(ctor, JsValue::Undefined) {
-            obj.set(String::from("constructor"), ctor);
-        }
         JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 
@@ -190,10 +186,6 @@ impl Vm {
         obj.set(String::from("name"), JsValue::String(String::from("RangeError")));
         obj.set(String::from("message"), JsValue::String(String::from(message)));
         obj.set(String::from("stack"), JsValue::String(stack_str));
-        let ctor = self.globals.get("RangeError");
-        if !matches!(ctor, JsValue::Undefined) {
-            obj.set(String::from("constructor"), ctor);
-        }
         JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 
@@ -205,10 +197,6 @@ impl Vm {
         obj.set(String::from("name"), JsValue::String(String::from("ReferenceError")));
         obj.set(String::from("message"), JsValue::String(String::from(message)));
         obj.set(String::from("stack"), JsValue::String(stack_str));
-        let ctor = self.globals.get("ReferenceError");
-        if !matches!(ctor, JsValue::Undefined) {
-            obj.set(String::from("constructor"), ctor);
-        }
         JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 

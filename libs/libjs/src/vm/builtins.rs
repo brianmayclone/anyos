@@ -569,7 +569,6 @@ impl Vm {
     }
 
     fn init_error_statics(&mut self) {
-        // Link Error.prototype so that `new Error()` gets error_proto as its prototype.
         for name in ["Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError", "AggregateError"] {
             if let JsValue::Function(f) = self.globals.get(name) {
                 let ctor = JsValue::Function(f.clone());

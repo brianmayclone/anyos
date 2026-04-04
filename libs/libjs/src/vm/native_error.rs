@@ -98,8 +98,6 @@ fn ctor_error_with_name(vm: &mut Vm, args: &[JsValue], type_name: &str) -> JsVal
         o.set(String::from("stack"), JsValue::String(stack_str));
         if let Some(cause_val) = cause { o.set(String::from("cause"), cause_val); }
         if o.prototype.is_none() { o.prototype = Some(vm.error_proto.clone()); }
-        let ctor = vm.globals.get(type_name);
-        if !matches!(ctor, JsValue::Undefined) { o.set(String::from("constructor"), ctor); }
         drop(o);
         return vm.current_this.clone();
     }
