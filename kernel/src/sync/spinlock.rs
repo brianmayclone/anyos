@@ -156,8 +156,10 @@ impl<T> Spinlock<T> {
             .is_err()
         {
             // Exponential PAUSE backoff: 1, 2, 4, 8, 16, 32, 64 PAUSEs per check.
-            // Reduces cache-line bouncing under contention and helps VMware's
-            // "PAUSE Loop Exiting" (PLE) detect spin-waiting vCPUs.
+            // Reduces cache-line bouncing under contention.
+            // NOTE: On KVM, high backoff can trigger Pause Loop Exiting (PLE)
+            // which deschedules the vCPU — this causes spurious SPIN TIMEOUT
+            // warnings at boot but is functionally harmless.
             let mut backoff: u32 = 1;
             while self.lock.load(Ordering::Relaxed) {
                 for _ in 0..backoff {

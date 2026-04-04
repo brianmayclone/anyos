@@ -454,7 +454,7 @@ fn doc_create_tree_walker(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let next_pos = pos + 1;
         if let JsValue::Array(arr) = &ids {
             let a = arr.borrow();
-            if (next_pos as usize) < a.elements.len() {
+            if (next_pos as usize) < a.len() {
                 vm.current_this.set_property(
                     String::from("__pos"), JsValue::Number(next_pos as f64));
                 let nid = a.elements[&(next_pos as usize)].to_number() as i64;
@@ -473,7 +473,7 @@ fn doc_create_tree_walker(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if prev_pos >= 0 {
             if let JsValue::Array(arr) = &ids {
                 let a = arr.borrow();
-                if (prev_pos as usize) < a.elements.len() {
+                if (prev_pos as usize) < a.len() {
                     vm.current_this.set_property(
                         String::from("__pos"), JsValue::Number(prev_pos as f64));
                     let nid = a.elements[&(prev_pos as usize)].to_number() as i64;

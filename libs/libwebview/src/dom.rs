@@ -444,7 +444,12 @@ impl Dom {
     fn collect_text(&self, id: NodeId, out: &mut String) {
         match &self.nodes[id].node_type {
             NodeType::Text(s) => out.push_str(s),
-            NodeType::Element { .. } => {
+            NodeType::Element { tag, .. } => {
+                // SVG inner markup is stored as raw text by the HTML parser
+                // and must not be collected as visible text content.
+                if *tag == Tag::Svg {
+                    return;
+                }
                 // Must collect children indices first to avoid holding an
                 // immutable borrow on self.nodes while recursing.
                 let len = self.nodes[id].children.len();

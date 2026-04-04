@@ -165,7 +165,7 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
             let flag = unsafe { core::ptr::read_volatile(AP_COMM_READY as *const u8) };
             if flag != 0 { break true; }
             let elapsed = crate::arch::x86::pit::get_ticks().wrapping_sub(start);
-            if elapsed > 50 {
+            if elapsed > 500 {
                 crate::serial_verbose_println!("  SMP: Timeout after {} ticks waiting for AP", elapsed);
                 break false;
             }
@@ -270,20 +270,27 @@ extern "C" fn ap_entry() -> ! {
     }
     crate::debug_println!("  [SMP] AP#{}: CPU_DATA set", cpu_id);
 
-    // Register this CPU's idle thread in the scheduler
-    crate::debug_println!("  [SMP] AP#{}: calling register_ap_idle", cpu_id);
-    crate::task::scheduler::register_ap_idle(cpu_id);
-    crate::debug_println!("  [SMP] AP#{}: register_ap_idle done", cpu_id);
-
-    // Signal BSP that we're ready.
-    // Release fence: all AP initialization (CPU_DATA, LAPIC_TO_CPU, TSS, GDT,
-    // IDT, idle thread registration) must be globally visible before the BSP
-    // observes the ready flag and proceeds to send work to this AP.
-    crate::debug_println!("  [SMP] AP#{}: signaling BSP ready", cpu_id);
+    // Signal BSP that we're alive BEFORE acquiring the scheduler lock.
+    // register_ap_idle() calls SCHEDULER.lock() which can block for 100+ ms
+    // under contention, causing the BSP's timeout to expire and declaring
+    // this AP "failed to start" — even though it's still running.  By
+    // signaling first, the BSP knows we're alive and can proceed.
+    // Interrupts are still disabled (no sti yet), so no timer can fire on
+    // this AP until after register_ap_idle + stack switch + sti.
+    // Release fence: CPU_DATA, LAPIC_TO_CPU, TSS, GDT, IDT must be
+    // globally visible before the BSP observes the ready flag.
+    crate::debug_println!("  [SMP] AP#{}: signaling BSP ready (before idle registration)", cpu_id);
     core::sync::atomic::fence(Ordering::SeqCst);
     unsafe {
         core::ptr::write_volatile(AP_COMM_READY as *mut u8, 1);
     }
+
+    // Register this CPU's idle thread in the scheduler.
+    // This acquires SCHEDULER.lock() which may block under contention,
+    // but the BSP has already been notified and won't time out.
+    crate::debug_println!("  [SMP] AP#{}: calling register_ap_idle", cpu_id);
+    crate::task::scheduler::register_ap_idle(cpu_id);
+    crate::debug_println!("  [SMP] AP#{}: register_ap_idle done", cpu_id);
 
     // Switch from the small 16 KiB AP boot stack to the idle thread's
     // 512 KiB kernel stack. All interrupt handling (scheduler, serial output,

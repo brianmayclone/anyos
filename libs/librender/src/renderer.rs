@@ -34,15 +34,14 @@ fn isqrt64(n: i64) -> i64 {
 /// r: radius in sub-pixel units (2x pixel radius).
 /// Returns signed distance scaled so that 128 = 1 pixel (positive = outside).
 fn circle_signed_dist_128(dx: i32, dy: i32, r: i32) -> i32 {
-    // dist_sq and r_sq in sub-pixel^2 units
     let dist_sq = dx as i64 * dx as i64 + dy as i64 * dy as i64;
-    let r_sq = r as i64 * r as i64;
-    // Use (dist_sq - r_sq) / (2*r) as linear approximation of (dist - r)
-    // This avoids sqrt entirely and is accurate near the circle boundary.
-    // Scale by 128 (1 pixel = 2 sub-pixels, so 128/2 = 64 per sub-pixel unit)
-    let diff = dist_sq - r_sq;
-    let denom = (2 * r as i64).max(1);
-    (diff * 128 / denom) as i32
+    // Scale up by 256² before sqrt for sub-pixel precision.
+    // The old approximation (dist²-r²)/(2r) overestimated by up to 2x at 45°
+    // for small radii, causing corner-tip pixels to be skipped entirely.
+    let dist_scaled = isqrt64(dist_sq * 65536); // ≈ dist * 256
+    let r_scaled = r as i64 * 256;
+    // Convert to 64-per-subpixel = 128-per-pixel units: divide by 256/64 = 4
+    ((dist_scaled - r_scaled) / 4) as i32
 }
 
 /// 2D renderer that draws primitives onto a surface.

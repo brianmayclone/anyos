@@ -59,10 +59,10 @@ impl Control for Button {
         };
         crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, border_color);
 
-        // Main button body (1px inset)
-        if w > 2 && h > 2 {
-            let inner_corner = if corner > 1 { corner - 1 } else { 0 };
-            crate::draw::fill_rounded_rect(surface, x + 1, y + 1, w - 2, h - 2, inner_corner, bg);
+        // Main button body (2px inset for visible border)
+        if w > 4 && h > 4 {
+            let inner_corner = if corner > 2 { corner - 2 } else { 0 };
+            crate::draw::fill_rounded_rect(surface, x + 2, y + 2, w - 4, h - 4, inner_corner, bg);
         }
 
         // Focus ring
