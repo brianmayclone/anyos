@@ -25,6 +25,24 @@ fn this_string(vm: &Vm) -> String {
     }
 }
 
+/// Like this_string but throws TypeError for null/undefined.
+/// Returns None if TypeError was thrown.
+fn this_string_checked(vm: &mut Vm) -> Option<String> {
+    match &vm.current_this {
+        JsValue::Null | JsValue::Undefined => {
+            let method = "String.prototype method";
+            let err = vm.make_type_error(&alloc::format!(
+                "Cannot read properties of {} (calling '{}')",
+                if matches!(vm.current_this, JsValue::Null) { "null" } else { "undefined" },
+                method
+            ));
+            vm.throw_native(err);
+            None
+        }
+        _ => Some(this_string(vm)),
+    }
+}
+
 /// Collect the string into chars for indexing.
 fn chars_vec(s: &str) -> Vec<char> {
     s.chars().collect()
@@ -54,7 +72,7 @@ fn to_usize_clamped(n: f64, cap: usize) -> usize {
 // ═══════════════════════════════════════════════════════════
 
 pub fn string_char_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let chars = chars_vec(&s);
     let idx = args.first().map(|v| to_usize_clamped(v.to_number(), chars.len())).unwrap_or(0);
     if idx < chars.len() {
@@ -67,7 +85,7 @@ pub fn string_char_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_char_code_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let chars = chars_vec(&s);
     let idx = args.first().map(|v| to_usize_clamped(v.to_number(), chars.len())).unwrap_or(0);
     if idx < chars.len() {
@@ -78,7 +96,7 @@ pub fn string_char_code_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_code_point_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let chars = chars_vec(&s);
     let idx = args.first().map(|v| to_usize_clamped(v.to_number(), chars.len())).unwrap_or(0);
     if idx < chars.len() {
@@ -89,7 +107,7 @@ pub fn string_code_point_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
     let s_chars = chars_vec(&s);
     let from = args.get(1).map(|v| to_usize_clamped(v.to_number(), s_chars.len())).unwrap_or(0);
@@ -113,7 +131,7 @@ pub fn string_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_last_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
     let s_chars = chars_vec(&s);
     let search_chars = chars_vec(&search);
@@ -137,7 +155,7 @@ pub fn string_last_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_includes(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
 
     let s_chars = chars_vec(&s);
@@ -158,7 +176,7 @@ pub fn string_includes(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_starts_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
 
     let s_chars = chars_vec(&s);
@@ -172,7 +190,7 @@ pub fn string_starts_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_ends_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
     let s_chars = chars_vec(&s);
     let search_chars = chars_vec(&search);
@@ -187,7 +205,7 @@ pub fn string_ends_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_slice(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let chars = chars_vec(&s);
     let len = chars.len();
     let start = resolve_index(args.first().map(|v| v.to_number()).unwrap_or(0.0), len);
@@ -201,7 +219,7 @@ pub fn string_slice(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_substring(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let chars = chars_vec(&s);
     let len = chars.len();
 
@@ -217,7 +235,7 @@ pub fn string_substring(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_to_lower_case(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         for lc in c.to_lowercase() {
@@ -228,7 +246,7 @@ pub fn string_to_lower_case(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_to_upper_case(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         for uc in c.to_uppercase() {
@@ -263,7 +281,7 @@ pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
     }
 
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let sep = args.first().map(|v| v.to_js_string());
     let limit = args.get(1).map(|v| {
         let n = v.to_number();
@@ -319,7 +337,7 @@ pub fn string_replace(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
     }
 
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
     let replacement = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
 
@@ -348,7 +366,7 @@ pub fn string_replace_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
     }
 
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
     let replacement = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
 
@@ -379,7 +397,7 @@ pub fn string_replace_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_repeat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let n = args.first().map(|v| v.to_number()).unwrap_or(0.0);
     // §22.1.3.16: throw RangeError if count is negative or Infinity
     if n < 0.0 || !n.is_finite() {
@@ -402,7 +420,7 @@ pub fn string_repeat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_pad_start(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let target_len = args.first().map(|v| to_usize_clamped(v.to_number(), 1 << 20)).unwrap_or(0);
     let pad_str = args.get(1).map(|v| v.to_js_string()).unwrap_or_else(|| String::from(" "));
 
@@ -424,7 +442,7 @@ pub fn string_pad_start(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_pad_end(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let target_len = args.first().map(|v| to_usize_clamped(v.to_number(), 1 << 20)).unwrap_or(0);
     let pad_str = args.get(1).map(|v| v.to_js_string()).unwrap_or_else(|| String::from(" "));
 
@@ -445,7 +463,7 @@ pub fn string_pad_end(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let chars = chars_vec(&s);
     let idx = args.first().map(|v| v.to_number() as i64).unwrap_or(0);
     let len = chars.len() as i64;
@@ -468,7 +486,7 @@ pub fn string_concat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     // Symbol.prototype.toString() → "Symbol(description)"
     if super::is_symbol_value(&JsValue::String(s.clone())) {
         return JsValue::String(symbol_display_name(&s));
@@ -557,7 +575,7 @@ pub fn string_normalize(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 /// `String.prototype.localeCompare(that)` — simplified: byte comparison.
 pub fn string_locale_compare(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = this_string(vm);
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let that = args.first().map(|v| v.to_js_string()).unwrap_or_default();
     let cmp = s.cmp(&that);
     JsValue::Number(match cmp {

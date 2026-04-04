@@ -43,15 +43,12 @@ impl Vm {
             p.set_hidden(String::from("toString"), native_fn("toString", native_object::object_to_string));
             p.set_hidden(String::from("valueOf"), native_fn("valueOf", native_object::object_value_of));
             p.set_hidden(String::from("keys"), native_fn("keys", native_object::object_keys_method));
-            p.set_hidden(String::from("constructor"), self.globals.get("Object"));
         }
 
         // ── Array.prototype ──
         {
             let mut p = self.array_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
-            // constructor property: Array.prototype.constructor = Array
-            p.set_hidden(String::from("constructor"), self.globals.get("Array"));
             p.set_hidden(String::from("push"), native_fn_with_length("push", native_array::array_push, 1));
             p.set_hidden(String::from("pop"), native_fn_with_length("pop", native_array::array_pop, 0));
             p.set_hidden(String::from("shift"), native_fn_with_length("shift", native_array::array_shift, 0));
@@ -136,8 +133,6 @@ impl Vm {
             // ES2024
             p.set_hidden(String::from("isWellFormed"), native_fn("isWellFormed", native_es2024::string_is_well_formed));
             p.set_hidden(String::from("toWellFormed"), native_fn("toWellFormed", native_es2024::string_to_well_formed));
-            // constructor
-            p.set_hidden(String::from("constructor"), self.globals.get("String"));
         }
 
         // ── Number.prototype ──
@@ -150,7 +145,6 @@ impl Vm {
             p.set_hidden(String::from("toPrecision"), native_fn("toPrecision", native_number::number_to_precision));
             p.set_hidden(String::from("toExponential"), native_fn("toExponential", native_number::number_to_exponential));
             p.set_hidden(String::from("toLocaleString"), native_fn("toLocaleString", native_number::number_to_string));
-            p.set_hidden(String::from("constructor"), self.globals.get("Number"));
         }
 
         // ── Boolean.prototype ──
@@ -263,6 +257,13 @@ impl Vm {
 
         // ── Object static methods ──
         self.init_object_statics();
+
+        // ── Set constructor properties on prototypes (must happen AFTER globals) ──
+        self.array_proto.borrow_mut().set_hidden(String::from("constructor"), self.globals.get("Array"));
+        self.string_proto.borrow_mut().set_hidden(String::from("constructor"), self.globals.get("String"));
+        self.number_proto.borrow_mut().set_hidden(String::from("constructor"), self.globals.get("Number"));
+        self.object_proto.borrow_mut().set_hidden(String::from("constructor"), self.globals.get("Object"));
+        self.boolean_proto.borrow_mut().set_hidden(String::from("constructor"), self.globals.get("Boolean"));
 
         // ── Array static methods ──
         self.init_array_statics();

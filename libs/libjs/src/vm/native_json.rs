@@ -174,7 +174,24 @@ pub fn json_parse(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut pos = 0;
     skip_ws(bytes, &mut pos);
     let result = parse_value(vm, bytes, &mut pos);
-    result.unwrap_or(JsValue::Undefined)
+    match result {
+        Some(val) => {
+            // After parsing, only whitespace should remain
+            skip_ws(bytes, &mut pos);
+            if pos < bytes.len() {
+                let err = vm.make_syntax_error("Unexpected token in JSON");
+                vm.throw_native(err);
+                JsValue::Undefined
+            } else {
+                val
+            }
+        }
+        None => {
+            let err = vm.make_syntax_error("Unexpected end of JSON input");
+            vm.throw_native(err);
+            JsValue::Undefined
+        }
+    }
 }
 
 fn skip_ws(bytes: &[u8], pos: &mut usize) {

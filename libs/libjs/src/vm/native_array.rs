@@ -154,11 +154,24 @@ fn require_callable(vm: &mut Vm, callback: &JsValue) -> bool {
 }
 
 
+/// Check if `this` is null/undefined and throw TypeError if so.
+/// Returns true if the check passed (this is valid), false if TypeError was thrown.
+fn require_object_coercible(vm: &mut Vm) -> bool {
+    if matches!(&vm.current_this, JsValue::Null | JsValue::Undefined) {
+        let err = vm.make_type_error("Cannot convert undefined or null to object");
+        vm.throw_native(err);
+        false
+    } else {
+        true
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // Mutating methods
 // ═══════════════════════════════════════════════════════════
 
 pub fn array_push(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if !require_object_coercible(vm) { return JsValue::Undefined; }
     if let Some(arr) = this_array(vm) {
         let current_len = arr.borrow().len();
         if args.is_empty() {
@@ -182,6 +195,7 @@ pub fn array_push(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_pop(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    if !require_object_coercible(vm) { return JsValue::Undefined; }
     if let Some(arr) = this_array(vm) {
         let mut a = arr.borrow_mut();
         a.pop()
@@ -191,6 +205,7 @@ pub fn array_pop(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_shift(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    if !require_object_coercible(vm) { return JsValue::Undefined; }
     if let Some(arr) = this_array(vm) {
         let mut a = arr.borrow_mut();
         if a.length == 0 {
@@ -204,6 +219,7 @@ pub fn array_shift(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_unshift(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if !require_object_coercible(vm) { return JsValue::Undefined; }
     if let Some(arr) = this_array(vm) {
         let mut a = arr.borrow_mut();
         // Insert in reverse order so they end up in the right position.
@@ -217,6 +233,7 @@ pub fn array_unshift(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_splice(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if !require_object_coercible(vm) { return JsValue::Undefined; }
     if let Some(arr) = this_array(vm) {
         let mut a = arr.borrow_mut();
         let len = a.length;
@@ -265,6 +282,7 @@ pub fn array_splice(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_reverse(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    if !require_object_coercible(vm) { return JsValue::Undefined; }
     if let Some(arr) = this_array(vm) {
         arr.borrow_mut().reverse();
         JsValue::Array(arr)
@@ -274,6 +292,7 @@ pub fn array_reverse(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_sort(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if !require_object_coercible(vm) { return JsValue::Undefined; }
     let comparefn = args.first().cloned();
     if let Some(arr) = this_array(vm) {
         // Extract set elements as (index, value), sort values, re-assign to
@@ -322,6 +341,7 @@ pub fn array_sort(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_fill(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if !require_object_coercible(vm) { return JsValue::Undefined; }
     if let Some(arr) = this_array(vm) {
         let mut a = arr.borrow_mut();
         let len = a.length;
@@ -339,6 +359,7 @@ pub fn array_fill(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_copy_within(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if !require_object_coercible(vm) { return JsValue::Undefined; }
     if let Some(arr) = this_array(vm) {
         let mut a = arr.borrow_mut();
         let len = a.length;
@@ -431,6 +452,7 @@ pub fn array_includes(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_join(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if !require_object_coercible(vm) { return JsValue::Undefined; }
     if let Some(arr) = this_array(vm) {
         let a = arr.borrow();
         let sep = match args.first() {
