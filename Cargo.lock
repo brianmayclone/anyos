@@ -10,6 +10,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "acargo"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "anyrc",
+]
+
+[[package]]
 name = "addgroup"
 version = "0.1.0"
 dependencies = [

@@ -25,12 +25,24 @@ pub struct CompileOptions {
     pub opt_level: u32,
     pub crate_type: CrateType,
     pub crate_name: Option<String>,
+    /// Base directory for module file resolution (parent of src/main.rs or src/lib.rs).
+    /// If None, derived from input file path.
+    pub src_dir: Option<String>,
+    /// Paths to .rlib files to link against (extern crate dependencies).
+    pub extern_crates: Vec<ExternCrateSpec>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternCrateSpec {
+    pub name: String,
+    pub rlib_path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmitKind {
     Exe,
     Obj,
+    Rlib,
     Mir,
     Hir,
     Asm,
@@ -59,6 +71,21 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
 
     // 2. Expand macros
     expand_macros(&mut krate, &mut interner);
+
+    // 2b. Resolve multi-file modules (mod foo;)
+    let src_dir = if let Some(ref dir) = options.src_dir {
+        dir.clone()
+    } else {
+        // Derive from input path: "src/main.rs" -> "src/"
+        let input = &options.input;
+        if let Some(pos) = input.rfind('/') {
+            input[..pos].to_string()
+        } else {
+            ".".to_string()
+        }
+    };
+    let loader = crate::loader::OsFileLoader;
+    let _loaded_modules = crate::loader::resolve_modules(&mut krate, &src_dir, &mut interner, &loader);
 
     // 3. Lower to HIR
     let mut lower_ctx = LoweringContext::new(&mut interner);
@@ -177,9 +204,39 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         EmitKind::Exe => {
             let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &static_data);
             let obj_bytes = elf::write_object(&obj);
+            // Collect all object files: our code + extern crate .rlib objects
+            let mut all_objects = vec![obj_bytes];
+            for ext in &options.extern_crates {
+                if let Some(rlib_data) = crate::loader::OsFileLoader::read_bytes(&ext.rlib_path) {
+                    if let Some((obj_data, _meta)) = crate::loader::unpack_rlib(&rlib_data) {
+                        all_objects.push(obj_data);
+                    }
+                }
+            }
             let no_main_flag = no_main || options.crate_type == CrateType::StaticLib;
-            let exe = link::link(&[obj_bytes], &options.output, no_main_flag);
+            let exe = link::link(&all_objects, &options.output, no_main_flag);
             Ok(exe)
+        }
+        EmitKind::Rlib => {
+            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &static_data);
+            let obj_bytes = elf::write_object(&obj);
+            let crate_name = options.crate_name.as_deref().unwrap_or("unknown");
+            // Collect exported public symbols
+            let mut exports = Vec::new();
+            for body in &mir_bodies {
+                let name = interner.resolve(body.name).to_string();
+                exports.push(crate::loader::ExportedSymbol {
+                    name,
+                    kind: crate::loader::ExportKind::Function,
+                });
+            }
+            let meta = crate::loader::CrateMetadata {
+                name: crate_name.to_string(),
+                version: "0.1.0".to_string(),
+                exports,
+                deps: options.extern_crates.iter().map(|e| e.name.clone()).collect(),
+            };
+            Ok(crate::loader::pack_rlib(&obj_bytes, &meta))
         }
         EmitKind::Mir => {
             let output = mir_to_string(&mir_bodies, &interner);

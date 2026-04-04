@@ -28,4 +28,5 @@ pub mod mir_opt;
 pub mod mono;
 pub mod codegen;
 pub mod linker;
+pub mod loader;
 pub mod driver;

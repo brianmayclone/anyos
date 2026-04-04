@@ -2,7 +2,7 @@
 #![no_main]
 
 use anyos_std::{String, Vec};
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
+use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType, ExternCrateSpec};
 
 anyos_std::entry!(main);
 
@@ -17,6 +17,10 @@ fn main() {
     let mut output = "a.out";
     let mut emit = EmitKind::Exe;
     let mut opt_level = 0u32;
+    let mut crate_type = CrateType::Bin;
+    let mut crate_name: Option<String> = None;
+    let mut src_dir: Option<String> = None;
+    let mut extern_crates: Vec<ExternCrateSpec> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -33,6 +37,7 @@ fn main() {
                     emit = match args[i] {
                         "exe" => EmitKind::Exe,
                         "obj" => EmitKind::Obj,
+                        "rlib" => EmitKind::Rlib,
                         "mir" => EmitKind::Mir,
                         "hir" => EmitKind::Hir,
                         "asm" => EmitKind::Asm,
@@ -49,19 +54,66 @@ fn main() {
                     opt_level = parse_u32(args[i]);
                 }
             }
+            "--crate-type" => {
+                i += 1;
+                if i < args.len() {
+                    crate_type = match args[i] {
+                        "bin" => CrateType::Bin,
+                        "lib" => CrateType::Lib,
+                        "staticlib" => CrateType::StaticLib,
+                        other => {
+                            anyos_std::println!("anyrc: unknown crate type: {}", other);
+                            anyos_std::process::exit(1);
+                        }
+                    };
+                }
+            }
+            "--crate-name" => {
+                i += 1;
+                if i < args.len() {
+                    crate_name = Some(String::from(args[i]));
+                }
+            }
+            "--src-dir" => {
+                i += 1;
+                if i < args.len() {
+                    src_dir = Some(String::from(args[i]));
+                }
+            }
+            "--extern" => {
+                // Format: --extern name=path.rlib
+                i += 1;
+                if i < args.len() {
+                    if let Some(eq_pos) = args[i].find('=') {
+                        let name = &args[i][..eq_pos];
+                        let path = &args[i][eq_pos + 1..];
+                        extern_crates.push(ExternCrateSpec {
+                            name: String::from(name),
+                            rlib_path: String::from(path),
+                        });
+                    } else {
+                        anyos_std::println!("anyrc: --extern expects name=path.rlib");
+                        anyos_std::process::exit(1);
+                    }
+                }
+            }
             "--version" => {
-                anyos_std::println!("anyrc 0.1.0");
+                anyos_std::println!("anyrc 0.2.0");
                 return;
             }
             "--help" | "-h" => {
                 anyos_std::println!("Usage: anyrc [OPTIONS] <INPUT>");
                 anyos_std::println!();
                 anyos_std::println!("Options:");
-                anyos_std::println!("  -o <FILE>          Output file (default: a.out)");
-                anyos_std::println!("  --emit <TYPE>      Output type: exe, obj, mir, hir, asm");
-                anyos_std::println!("  --opt-level <N>    Optimization level (0-3)");
-                anyos_std::println!("  --version          Print version");
-                anyos_std::println!("  -h, --help         Print help");
+                anyos_std::println!("  -o <FILE>              Output file (default: a.out)");
+                anyos_std::println!("  --emit <TYPE>          Output type: exe, obj, rlib, mir, hir, asm");
+                anyos_std::println!("  --opt-level <N>        Optimization level (0-3)");
+                anyos_std::println!("  --crate-type <TYPE>    Crate type: bin, lib, staticlib");
+                anyos_std::println!("  --crate-name <NAME>    Crate name");
+                anyos_std::println!("  --src-dir <DIR>        Source directory for module resolution");
+                anyos_std::println!("  --extern <name=path>   Link against extern crate .rlib");
+                anyos_std::println!("  --version              Print version");
+                anyos_std::println!("  -h, --help             Print help");
                 return;
             }
             arg if !arg.starts_with('-') => {
@@ -97,8 +149,10 @@ fn main() {
         output: String::from(output),
         emit,
         opt_level,
-        crate_type: CrateType::Bin,
-        crate_name: None,
+        crate_type,
+        crate_name,
+        src_dir,
+        extern_crates,
     };
 
     match compile(&source, input_file, &options) {

@@ -60,6 +60,7 @@ Affected files:
 - `libs/libm/` / `libs/libm_client/` -- Hardware-accelerated math (SSE2 + x87 FPU)
 - `libs/libgl/` / `libs/libgl_client/` -- OpenGL ES 2.0 3D engine
 - `libs/libcorevm/` / `libs/libcorevm_client/` -- CoreVM x86 virtual machine engine
+- `libs/anyrc/` -- Rust compiler library (lexer, parser, HIR, MIR, codegen, linker)
 - `libs/libheap/` -- Heap allocator
 - `libs/libsyscall/` -- Low-level syscall interface
 - `libs/libunwind/` -- Stack unwinding support
@@ -74,7 +75,7 @@ Affected files:
 - Editors: nano, vi, nvi, sed, awk
 - Package manager: ami, apkg
 - Version control: git
-- Dev tools: cc (TCC), nasm, make, jscript
+- Dev tools: cc (TCC), nasm, make, jscript, anyrc (Rust compiler), acargo (Rust build system)
 - VM: vmd (CoreVM daemon), vmctl (AI-friendly CoreVM CLI controller)
 
 ### GUI Applications (`apps/`) -- 27 apps

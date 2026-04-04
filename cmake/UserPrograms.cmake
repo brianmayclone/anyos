@@ -620,6 +620,7 @@ add_rust_user_program(ntpd)
 add_rust_user_program(neofetch)
 add_rust_user_program(nvi)
 add_rust_user_program(anyrc)
+add_rust_user_program(acargo)
 # Privileged sbin programs
 add_rust_sbin_program(adduser)
 add_rust_sbin_program(deluser)
