@@ -133,6 +133,22 @@ pub struct GlContext {
     /// Next FBO ID counter.
     pub next_fbo_id: u32,
 
+    // ── Shadow Mapping (HW-only, automatic) ─────────────────────────
+    /// Shadow pass is currently active (depth-only rendering).
+    pub shadow_pass_active: bool,
+    /// Shadow map FBO id (0 = not created yet).
+    pub shadow_fbo_id: u32,
+    /// Shadow depth texture id (0 = not created yet).
+    pub shadow_depth_tex_id: u32,
+    /// Shadow map resolution.
+    pub shadow_map_size: u32,
+    /// Light MVP matrix (column-major, computed by gl_shadow_pass_begin).
+    pub shadow_light_mvp: [f32; 16],
+    /// Whether a valid shadow map exists for the current frame.
+    pub shadow_map_ready: bool,
+    /// HW program ID for the auto-generated depth-only shader (per user program).
+    pub shadow_depth_program: u32,
+
     // ── Anti-Aliasing ──────────────────────────────────────────────────
     /// FXAA post-process enabled.
     pub fxaa_enabled: bool,
@@ -200,6 +216,14 @@ impl GlContext {
             fbo_color_tex: Vec::new(),
             fbos: Vec::new(),
             next_fbo_id: 1,
+
+            shadow_pass_active: false,
+            shadow_fbo_id: 0,
+            shadow_depth_tex_id: 0,
+            shadow_map_size: 1024,
+            shadow_light_mvp: [0.0; 16],
+            shadow_map_ready: false,
+            shadow_depth_program: 0,
 
             fxaa_enabled: false,
 

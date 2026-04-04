@@ -179,6 +179,12 @@ struct LibGl {
     set_hw_backend: extern "C" fn(u32),
     get_hw_backend: extern "C" fn() -> u32,
     has_hw_backend: extern "C" fn() -> u32,
+    // Shadow mapping
+    shadow_pass_begin: extern "C" fn(f32, f32, f32, f32, f32, f32, f32) -> u32,
+    shadow_pass_end: extern "C" fn(),
+    shadow_get_light_mvp: extern "C" fn() -> *const f32,
+    shadow_available: extern "C" fn() -> u32,
+    shadow_get_unit: extern "C" fn() -> u32,
     // Math
     math_sin: extern "C" fn(f32) -> f32,
     math_cos: extern "C" fn(f32) -> f32,
@@ -321,6 +327,11 @@ pub fn init() -> bool {
             set_hw_backend: resolve(&handle, "gl_set_hw_backend"),
             get_hw_backend: resolve(&handle, "gl_get_hw_backend"),
             has_hw_backend: resolve(&handle, "gl_has_hw_backend"),
+            shadow_pass_begin: resolve(&handle, "gl_shadow_pass_begin"),
+            shadow_pass_end: resolve(&handle, "gl_shadow_pass_end"),
+            shadow_get_light_mvp: resolve(&handle, "gl_shadow_get_light_mvp"),
+            shadow_available: resolve(&handle, "gl_shadow_available"),
+            shadow_get_unit: resolve(&handle, "gl_shadow_get_unit"),
             math_sin: resolve(&handle, "gl_math_sin"),
             math_cos: resolve(&handle, "gl_math_cos"),
             math_tan: resolve(&handle, "gl_math_tan"),
@@ -634,6 +645,28 @@ pub fn get_hw_backend() -> bool { (lib().get_hw_backend)() != 0 }
 
 /// Query whether SVGA3D hardware is available (even if not currently in use).
 pub fn has_hw_backend() -> bool { (lib().has_hw_backend)() != 0 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Shadow Mapping (automatic, HW-only — no-op on SW)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Begin shadow pass. Light at `(lx,ly,lz)` looking at `(tx,ty,tz)`.
+/// `radius` = shadow volume extent. Returns true if HW shadow is active.
+pub fn shadow_pass_begin(lx: f32, ly: f32, lz: f32, tx: f32, ty: f32, tz: f32, radius: f32) -> bool {
+    (lib().shadow_pass_begin)(lx, ly, lz, tx, ty, tz, radius) != 0
+}
+
+/// End shadow pass. Shadow map is now available for the main render.
+pub fn shadow_pass_end() { (lib().shadow_pass_end)(); }
+
+/// Get the light MVP matrix (16 floats). Returns null if no shadow.
+pub fn shadow_get_light_mvp() -> *const f32 { (lib().shadow_get_light_mvp)() }
+
+/// Whether a shadow map is available this frame.
+pub fn shadow_available() -> bool { (lib().shadow_available)() != 0 }
+
+/// Texture unit where shadow map is bound (always 7).
+pub fn shadow_get_unit() -> u32 { (lib().shadow_get_unit)() }
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Framebuffer Objects (ES 2.0 FBO + GL_OES_depth_texture)
