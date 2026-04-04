@@ -56,7 +56,10 @@ pub fn to_number_vm(vm: &mut Vm, val: &JsValue) -> f64 {
             drop(o);
             if let JsValue::Function(_) = &value_of {
                 let result = vm.call_value(&value_of, &[], val.clone());
-                // If valueOf returns a primitive, use it
+                if let Some(exc) = vm.last_exception.take() {
+                    vm.pending_exception = Some(exc);
+                    return f64::NAN;
+                }
                 match &result {
                     JsValue::Number(n) => return *n,
                     JsValue::String(s) => return crate::value::parse_js_float(s),
@@ -72,6 +75,10 @@ pub fn to_number_vm(vm: &mut Vm, val: &JsValue) -> f64 {
             drop(o);
             if let JsValue::Function(_) = &to_string {
                 let result = vm.call_value(&to_string, &[], val.clone());
+                if let Some(exc) = vm.last_exception.take() {
+                    vm.pending_exception = Some(exc);
+                    return f64::NAN;
+                }
                 if let JsValue::String(s) = &result {
                     return crate::value::parse_js_float(s);
                 }
@@ -122,6 +129,10 @@ fn this_array_like(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>
             for (idx, getter) in accessor_keys {
                 if let Some(getter_fn) = getter {
                     let val = vm.call_value(&getter_fn, &[], this_val.clone());
+                    if let Some(exc) = vm.last_exception.take() {
+                        vm.pending_exception = Some(exc);
+                    }
+                    if vm.pending_exception.is_some() { break; }
                     // Replace or insert the entry
                     if let Some(existing) = entries.iter_mut().find(|(i, _)| *i == idx) {
                         existing.1 = val;
@@ -181,6 +192,10 @@ fn this_array_like(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>
             // Invoke accessor getters via VM (outside borrow)
             for (idx, getter_fn) in accessor_getters {
                 let val = vm.call_value(&getter_fn, &[], this_val.clone());
+                if let Some(exc) = vm.last_exception.take() {
+                    vm.pending_exception = Some(exc);
+                }
+                if vm.pending_exception.is_some() { break; }
                 entries.push((idx, val));
             }
             entries.sort_by_key(|&(idx, _)| idx);
@@ -705,6 +720,7 @@ pub fn array_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     result.length = len;
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el, JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         result.elements.insert(idx, val);
     }
     JsValue::Array(Rc::new(RefCell::new(result)))
@@ -721,6 +737,7 @@ pub fn array_filter(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut result = Vec::new();
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el.clone(), JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         if val.to_boolean() {
             result.push(el);
         }
@@ -738,6 +755,7 @@ pub fn array_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_callable(vm, &callback) { return JsValue::Undefined; }
     for (idx, el) in entries {
         call_callback_with_this(vm, &callback, &this_arg, &[el, JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
     }
     JsValue::Undefined
 }
@@ -764,6 +782,7 @@ pub fn array_reduce(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     for &(idx, ref el) in &entries[start..] {
         acc = call_callback(vm, &callback, &[acc, el.clone(), JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
     }
     acc
 }
@@ -795,6 +814,7 @@ pub fn array_reduce_right(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     };
     for &(idx, ref el) in iter.iter().rev() {
         acc = call_callback(vm, &callback, &[acc, el.clone(), JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
     }
     acc
 }
@@ -809,6 +829,7 @@ pub fn array_find(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_callable(vm, &callback) { return JsValue::Undefined; }
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el.clone(), JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         if val.to_boolean() {
             return el;
         }
@@ -826,6 +847,7 @@ pub fn array_find_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_callable(vm, &callback) { return JsValue::Undefined; }
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el, JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         if val.to_boolean() {
             return JsValue::Number(idx as f64);
         }
@@ -843,6 +865,7 @@ pub fn array_some(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_callable(vm, &callback) { return JsValue::Undefined; }
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el, JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         if val.to_boolean() {
             return JsValue::Bool(true);
         }
@@ -860,6 +883,7 @@ pub fn array_every(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_callable(vm, &callback) { return JsValue::Undefined; }
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el, JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         if !val.to_boolean() {
             return JsValue::Bool(false);
         }
@@ -878,6 +902,7 @@ pub fn array_flat_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut result = Vec::new();
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el, JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         match val {
             JsValue::Array(a) => {
                 let inner = a.borrow();

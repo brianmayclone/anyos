@@ -1025,8 +1025,17 @@ impl Vm {
                                     .collect();
                                 for (k, getter, val) in props {
                                     let v = if let Some(ref getter_fn) = getter {
-                                        // Invoke getter with source as `this`
-                                        self.call_value(getter_fn, &[], src.clone())
+                                        let r = self.call_value(getter_fn, &[], src.clone());
+                                        if let Some(exc) = self.last_exception.take() {
+                                            self.pending_exception = Some(exc);
+                                        }
+                                        if self.pending_exception.is_some() {
+                                            if !self.handle_exception(self.pending_exception.take().unwrap()) {
+                                                return JsValue::Undefined;
+                                            }
+                                            continue;
+                                        }
+                                        r
                                     } else {
                                         val
                                     };
