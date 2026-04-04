@@ -885,31 +885,29 @@ pub extern "C" fn drv_draw_arrays(
     let attrs = unsafe { slice::from_raw_parts(attribs, num_attribs as usize) };
     let s = state();
 
-    // 0. Upload uniforms (const buffer mirror) if dirty
+    // 0. Upload uniforms (const buffer mirror) if dirty — submit separately
     flush_const_buf(s);
+    s.cmd.submit();
 
-    // 1. Create/reuse VBO resource and upload vertex data
+    // 1. Create/reuse VBO resource and upload vertex data via chunked inline_write
     ensure_vbo(s, vdata_len as u32);
     inline_write(&mut s.cmd, s.vbo_res_id, vdata);
 
-    // 2. Create vertex elements object
+    // 2-5. Bind state + draw (single submit after inline_write)
     setup_vertex_elements(s, attrs);
 
-    // 3. Bind vertex elements
     s.cmd.push_cmd(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_VERTEX_ELEMENTS, 1);
     s.cmd.push(s.ve_handle);
 
-    // 4. Set vertex buffer: stride, offset, handle
     s.cmd.push_cmd(VIRGL_CCMD_SET_VERTEX_BUFFERS, 0, 3);
     s.cmd.push(vertex_stride);
-    s.cmd.push(0);              // offset
+    s.cmd.push(0);
     s.cmd.push(s.vbo_res_id);
 
-    // 5. Draw
     s.cmd.push_cmd(VIRGL_CCMD_DRAW_VBO, 0, 12);
-    s.cmd.push(0);              // start (vertex data already offset by libgl)
-    s.cmd.push(count);          // count
-    s.cmd.push(mode);           // mode
+    s.cmd.push(0);
+    s.cmd.push(count);
+    s.cmd.push(mode);
     s.cmd.push(0);              // indexed = false
     s.cmd.push(1);              // instance_count
     s.cmd.push(0);              // index_bias
@@ -919,8 +917,7 @@ pub extern "C" fn drv_draw_arrays(
     s.cmd.push(0);              // min_index
     s.cmd.push(count - 1);     // max_index
     s.cmd.push(0);              // cso
-    let r = s.cmd.submit();
-    if r != 0 { libsyscall::serial_println!("[virgl] draw_arrays submit FAILED: {}", r); }
+    s.cmd.submit();
 }
 
 #[unsafe(no_mangle)]
@@ -936,8 +933,9 @@ pub extern "C" fn drv_draw_elements(
     let attrs = unsafe { slice::from_raw_parts(attribs, num_attribs as usize) };
     let s = state();
 
-    // 0. Upload uniforms (const buffer mirror) if dirty
+    // 0. Upload uniforms (const buffer mirror) if dirty — submit separately
     flush_const_buf(s);
+    s.cmd.submit();
 
     // Index element size from GL type
     let index_size = match index_type {
@@ -963,36 +961,32 @@ pub extern "C" fn drv_draw_elements(
     let vbo_bytes = (max_idx + 1) * vertex_stride;
     let vdata = unsafe { slice::from_raw_parts(vertex_data, vbo_bytes as usize) };
 
-    // 1. Upload vertex data
+    // 1-2. Upload vertex + index data via chunked inline_write
     ensure_vbo(s, vbo_bytes);
     inline_write(&mut s.cmd, s.vbo_res_id, vdata);
 
-    // 2. Upload index data
     ensure_ibo(s, index_data_len);
     inline_write(&mut s.cmd, s.ibo_res_id, idata);
 
-    // 3. Setup vertex elements + bind
+    // 3-6. Bind state + draw (single submit)
     setup_vertex_elements(s, attrs);
     s.cmd.push_cmd(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_VERTEX_ELEMENTS, 1);
     s.cmd.push(s.ve_handle);
 
-    // 4. Set vertex buffer
     s.cmd.push_cmd(VIRGL_CCMD_SET_VERTEX_BUFFERS, 0, 3);
     s.cmd.push(vertex_stride);
     s.cmd.push(0);
     s.cmd.push(s.vbo_res_id);
 
-    // 5. Set index buffer: handle, index_size, offset
     s.cmd.push_cmd(VIRGL_CCMD_SET_INDEX_BUFFER, 0, 3);
     s.cmd.push(s.ibo_res_id);
     s.cmd.push(index_size);
-    s.cmd.push(0); // offset
+    s.cmd.push(0);
 
-    // 6. Draw indexed
     s.cmd.push_cmd(VIRGL_CCMD_DRAW_VBO, 0, 12);
-    s.cmd.push(0);              // start
-    s.cmd.push(count);          // count
-    s.cmd.push(mode);           // mode
+    s.cmd.push(0);
+    s.cmd.push(count);
+    s.cmd.push(mode);
     s.cmd.push(1);              // indexed = true
     s.cmd.push(1);              // instance_count
     s.cmd.push(0);              // index_bias
