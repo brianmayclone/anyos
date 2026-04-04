@@ -397,6 +397,22 @@ pub fn run_once() -> u32 {
                     });
                 }
             }
+            0x0064 => {
+                // EVT_WINDOW_LIST_ENTRY: ev[1] = app_tid
+                st.window_list_buffer.push(ev[1]);
+            }
+            0x0065 => {
+                // EVT_WINDOW_LIST_END: ev[1] = count
+                if let Some((cb, ud)) = st.on_window_list {
+                    pending_cbs.push(PendingCallback {
+                        id: ev[1], // count
+                        event_type: 0x0065,
+                        cb,
+                        userdata: ud,
+                    });
+                }
+                // Buffer is cleared on next request_window_list() call
+            }
             _ => {}
         }
     }

@@ -763,6 +763,45 @@ fn handle_ipc_commands(
                 release_lock();
                 i += 1;
             }
+            // CMD_LIST_WINDOW_TIDS: collect unique owner TIDs and send back
+            ipc_protocol::CMD_LIST_WINDOW_TIDS => {
+                let requester_tid = cmd[1];
+                // Collect unique owner TIDs under lock
+                let mut tids: Vec<u32> = Vec::new();
+                {
+                    acquire_lock();
+                    let desktop = unsafe { desktop_ref() };
+                    for win in &desktop.windows {
+                        if win.owner_tid != 0 && !tids.contains(&win.owner_tid) {
+                            tids.push(win.owner_tid);
+                        }
+                    }
+                    release_lock();
+                }
+                // Send responses outside lock — targeted to requester's sub_id
+                let target = {
+                    acquire_lock();
+                    let desktop = unsafe { desktop_ref() };
+                    let t = desktop.get_sub_id_for_tid(requester_tid);
+                    release_lock();
+                    t
+                };
+                for &tid in &tids {
+                    let entry = [ipc_protocol::EVT_WINDOW_LIST_ENTRY, tid, 0, 0, 0];
+                    if let Some(sub_id) = target {
+                        ipc::evt_chan_emit_to(compositor_channel, sub_id, &entry);
+                    } else {
+                        ipc::evt_chan_emit(compositor_channel, &entry);
+                    }
+                }
+                let end = [ipc_protocol::EVT_WINDOW_LIST_END, tids.len() as u32, 0, 0, 0];
+                if let Some(sub_id) = target {
+                    ipc::evt_chan_emit_to(compositor_channel, sub_id, &end);
+                } else {
+                    ipc::evt_chan_emit(compositor_channel, &end);
+                }
+                i += 1;
+            }
             // All other fast commands: batch under a single lock hold.
             // This prevents the render thread from firing between consecutive
             // CMD_PRESENTs during rapid scrolling (eliminates partial-update flicker).

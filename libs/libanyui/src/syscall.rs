@@ -3,7 +3,7 @@
 pub use libsyscall::{
     exit, yield_cpu, sleep, sbrk, mmap, munmap, uptime_ms,
     dll_load, readdir, getcwd, write, open, read, close,
-    evt_chan_poll, evt_chan_wait, evt_chan_emit,
+    evt_chan_poll, evt_chan_wait, evt_chan_emit, get_tid,
 };
 
 /// Create a directory (accepts &[u8] path).

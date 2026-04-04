@@ -94,6 +94,8 @@ struct DockApp {
     // Keyboard navigation
     kb_focus: bool,
     kb_selected: usize,
+    // Window list poll — reconciliation safety net
+    last_window_poll: u32,
 }
 
 anyos_std::global_app_state!(DockApp);
@@ -245,6 +247,7 @@ fn main() {
             mag_start_time: 0,
             kb_focus: false,
             kb_selected: 0,
+            last_window_poll: 0,
         });
     }
 
@@ -363,6 +366,11 @@ fn main() {
         handle_window_closed(app_tid);
     });
 
+    // Window list reconciliation: safety net for missed events
+    anyui::on_window_list(|_count| {
+        reconcile_window_list();
+    });
+
     // Start with idle timer — switches to fast (16ms) when animations/drag are active
     app().timer_id = anyui::set_timer(TIMER_IDLE_MS, || {
         tick();
@@ -466,6 +474,19 @@ fn tick() {
     // Poll system events + dock IPC channel
     process_system_events();
     poll_dock_channel();
+
+    // Periodically request window list from compositor (every ~3 seconds)
+    // This is a safety net: if EVT_WINDOW_OPENED/CLOSED events were missed
+    // (e.g., race at startup, queue overflow), this reconciles the dock state.
+    {
+        let a = app();
+        let elapsed = now.wrapping_sub(a.last_window_poll);
+        let poll_interval = hz * 3; // 3 seconds
+        if elapsed >= poll_interval {
+            a.last_window_poll = now;
+            anyui::request_window_list();
+        }
+    }
 
     // Clean up finished bounces (>2 seconds)
     let a = app();

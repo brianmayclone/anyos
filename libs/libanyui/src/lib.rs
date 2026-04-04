@@ -236,6 +236,11 @@ pub(crate) struct AnyuiState {
     pub on_window_opened: Option<(Callback, u64)>,
     /// Callback for EVT_WINDOW_CLOSED (0x0061). Called with (app_tid, 0x0061, userdata).
     pub on_window_closed: Option<(Callback, u64)>,
+    /// Callback for EVT_WINDOW_LIST_END (0x0065). Called once per request_window_list()
+    /// with (count, 0x0065, userdata). The collected TIDs are in `window_list_buffer`.
+    pub on_window_list: Option<(Callback, u64)>,
+    /// Buffer for accumulating EVT_WINDOW_LIST_ENTRY TIDs between request and end marker.
+    pub window_list_buffer: Vec<u32>,
 
     // ── Modal dialog stack ──────────────────────────────────────────
     /// Stack of active modal contexts. Last entry = topmost modal.
@@ -349,6 +354,8 @@ pub extern "C" fn anyui_init() -> u32 {
             current_cursor: 0,
             on_window_opened: None,
             on_window_closed: None,
+            on_window_list: None,
+            window_list_buffer: Vec::new(),
             modal_stack: Vec::new(),
             tray_callbacks: Vec::new(),
             menu_callbacks: Vec::new(),
@@ -3179,6 +3186,38 @@ pub extern "C" fn anyui_on_window_opened(cb: Callback, userdata: u64) {
 #[no_mangle]
 pub extern "C" fn anyui_on_window_closed(cb: Callback, userdata: u64) {
     state().on_window_closed = Some((cb, userdata));
+}
+
+/// Register a callback for the window list response.
+/// Callback receives (count, 0x0065, userdata) when the list is complete.
+/// Use `anyui_get_window_list_buffer()` to read the collected TIDs.
+#[no_mangle]
+pub extern "C" fn anyui_on_window_list(cb: Callback, userdata: u64) {
+    state().on_window_list = Some((cb, userdata));
+}
+
+/// Send CMD_LIST_WINDOW_TIDS to the compositor.
+/// The response arrives asynchronously via the on_window_list callback.
+#[no_mangle]
+pub extern "C" fn anyui_request_window_list() {
+    let st = state();
+    let channel_id = st.channel_id;
+    if channel_id == 0 { return; }
+    st.window_list_buffer.clear();
+    let my_tid = syscall::get_tid();
+    let cmd: [u32; 5] = [0x1034, my_tid, 0, 0, 0]; // CMD_LIST_WINDOW_TIDS
+    syscall::evt_chan_emit(channel_id, &cmd);
+}
+
+/// Get a pointer to the window list buffer and its length.
+/// Valid only inside the on_window_list callback. Returns (ptr, count).
+#[no_mangle]
+pub extern "C" fn anyui_get_window_list_buffer(out_count: *mut u32) -> *const u32 {
+    let st = state();
+    if !out_count.is_null() {
+        unsafe { *out_count = st.window_list_buffer.len() as u32; }
+    }
+    st.window_list_buffer.as_ptr()
 }
 
 // ── Focus by task ID ────────────────────────────────────────────────

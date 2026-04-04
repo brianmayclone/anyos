@@ -258,6 +258,13 @@ pub const CMD_EXIT_FULLSCREEN: u32 = 0x1032;
 /// Only valid when the window has direct framebuffer access.
 pub const CMD_FLUSH_DISPLAY: u32 = 0x1033;
 
+/// Request a list of all window owner TIDs.
+/// [CMD, requester_tid, 0, 0, 0]
+/// Compositor responds with EVT_WINDOW_LIST_ENTRY for each unique owner TID,
+/// followed by EVT_WINDOW_LIST_END. Responses are targeted to the requester's
+/// subscription ID.
+pub const CMD_LIST_WINDOW_TIDS: u32 = 0x1034;
+
 // ── Compositor → App: Notification Events ────────────────────────────────
 
 /// Notification clicked by user: [EVT, notification_id, sender_tid, 0, 0]
@@ -327,6 +334,14 @@ pub const EVT_FOCUS_CHANGED: u32 = 0x0062;
 /// Emitted when the Super/Win key is pressed and released (without combining with other keys).
 /// Used by Shell/Dock to toggle the app launcher.
 pub const EVT_SUPER_KEY: u32 = 0x0063;
+
+/// Window list entry (targeted response): [EVT, app_tid, 0, 0, 0]
+/// Sent once per unique window owner TID in response to CMD_LIST_WINDOW_TIDS.
+pub const EVT_WINDOW_LIST_ENTRY: u32 = 0x0064;
+
+/// Window list end marker (targeted response): [EVT, total_count, 0, 0, 0]
+/// Marks the end of the window list. Receiver should process the collected TIDs.
+pub const EVT_WINDOW_LIST_END: u32 = 0x0065;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

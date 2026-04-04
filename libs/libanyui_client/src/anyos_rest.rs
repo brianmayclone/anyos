@@ -311,6 +311,9 @@ struct AnyuiLib {
     // Window lifecycle callbacks
     on_window_opened_fn: extern "C" fn(Callback, u64),
     on_window_closed_fn: extern "C" fn(Callback, u64),
+    on_window_list_fn: extern "C" fn(Callback, u64),
+    request_window_list_fn: extern "C" fn(),
+    get_window_list_buffer_fn: extern "C" fn(*mut u32) -> *const u32,
     // Focus by task ID
     focus_by_tid_fn: extern "C" fn(u32),
     // Modal dialog API
@@ -572,6 +575,9 @@ pub fn init() -> bool {
             get_compositor_channel_fn: resolve(&handle, "anyui_get_compositor_channel"),
             on_window_opened_fn: resolve(&handle, "anyui_on_window_opened"),
             on_window_closed_fn: resolve(&handle, "anyui_on_window_closed"),
+            on_window_list_fn: resolve(&handle, "anyui_on_window_list"),
+            request_window_list_fn: resolve(&handle, "anyui_request_window_list"),
+            get_window_list_buffer_fn: resolve(&handle, "anyui_get_window_list_buffer"),
             focus_by_tid_fn: resolve(&handle, "anyui_focus_by_tid"),
             // Modal dialog API
             set_modal: resolve(&handle, "anyui_set_modal"),
@@ -639,6 +645,32 @@ pub fn on_window_opened(mut f: impl FnMut(u32) + 'static) {
 pub fn on_window_closed(mut f: impl FnMut(u32) + 'static) {
     let (thunk, ud) = events::register(move |id, _| f(id));
     (lib().on_window_closed_fn)(thunk, ud);
+}
+
+/// Register a callback for the window list response.
+/// Callback receives the total number of window TIDs.
+/// Use `get_window_list_buffer()` inside the callback to read the TIDs.
+pub fn on_window_list(mut f: impl FnMut(u32) + 'static) {
+    let (thunk, ud) = events::register(move |count, _| f(count));
+    (lib().on_window_list_fn)(thunk, ud);
+}
+
+/// Request the compositor to send the list of all window owner TIDs.
+/// The response arrives asynchronously via the `on_window_list` callback.
+pub fn request_window_list() {
+    (lib().request_window_list_fn)();
+}
+
+/// Read the window list buffer (valid only inside the `on_window_list` callback).
+/// Returns a slice of owner TIDs for all currently open windows.
+pub fn get_window_list_buffer() -> &'static [u32] {
+    let mut count: u32 = 0;
+    let ptr = (lib().get_window_list_buffer_fn)(&mut count);
+    if ptr.is_null() || count == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(ptr, count as usize) }
+    }
 }
 
 /// Focus the window belonging to a specific task ID via compositor IPC.
