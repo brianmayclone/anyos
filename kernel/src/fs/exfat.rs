@@ -16,12 +16,7 @@ use alloc::vec::Vec;
 /// correct physical disk, falling back to the default storage backend for disk 0.
 #[cfg(target_arch = "x86_64")]
 fn disk_read_sectors(disk_id: u32, abs_lba: u32, count: u32, buf: &mut [u8]) -> bool {
-    // Try blockdev override first (handles secondary disks, USB, etc.)
-    if let Some(dev) = crate::drivers::storage::blockdev::find_device(disk_id as u8, None) {
-        return dev.read_sectors(abs_lba, count, buf);
-    }
-    // Fallback: default storage backend (primary disk)
-    crate::drivers::storage::read_sectors(abs_lba, count, buf)
+    crate::drivers::storage::read_sectors_on_disk(disk_id as u8, abs_lba, count, buf)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -32,10 +27,7 @@ fn disk_read_sectors(_disk_id: u32, abs_lba: u32, count: u32, buf: &mut [u8]) ->
 /// Disk-aware storage write.
 #[cfg(target_arch = "x86_64")]
 fn disk_write_sectors(disk_id: u32, abs_lba: u32, count: u32, buf: &[u8]) -> bool {
-    if let Some(dev) = crate::drivers::storage::blockdev::find_device(disk_id as u8, None) {
-        return dev.write_sectors(abs_lba, count, buf);
-    }
-    crate::drivers::storage::write_sectors(abs_lba, count, buf)
+    crate::drivers::storage::write_sectors_on_disk(disk_id as u8, abs_lba, count, buf)
 }
 
 #[cfg(target_arch = "aarch64")]

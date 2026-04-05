@@ -16,6 +16,8 @@ pub struct FileReadPlan {
     pub runs: Vec<(u32, u32)>,
     /// Actual file size in bytes (sectors may extend past this).
     pub file_size: u32,
+    /// Physical disk ID for disk-aware I/O.
+    pub disk_id: u32,
 }
 
 impl FileReadPlan {
@@ -35,7 +37,7 @@ impl FileReadPlan {
 
         for &(abs_lba, sector_count) in &self.runs {
             let bytes = sector_count as usize * 512;
-            if !FatFs::storage_read_sectors(abs_lba, sector_count,
+            if !FatFs::storage_read_sectors(self.disk_id, abs_lba, sector_count,
                     &mut buf[offset..offset + bytes]) {
                 return Err(FsError::IoError);
             }
@@ -153,7 +155,7 @@ impl FatFs {
         let mut runs = Vec::new();
 
         if file_size == 0 || start_cluster < 2 {
-            return FileReadPlan { runs, file_size };
+            return FileReadPlan { runs, file_size, disk_id: self.device_id };
         }
 
         let mut cluster = start_cluster;
@@ -181,7 +183,7 @@ impl FatFs {
             }
         }
 
-        FileReadPlan { runs, file_size }
+        FileReadPlan { runs, file_size, disk_id: self.device_id }
     }
 
     /// Write data to a file at the given offset, allocating clusters as needed.

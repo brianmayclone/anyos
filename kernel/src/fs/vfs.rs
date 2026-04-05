@@ -31,6 +31,18 @@ const DEFAULT_PARTITION_LBA: u32 = 8192;
 /// partition table or fallback to DEFAULT_PARTITION_LBA).
 static ROOT_PARTITION_LBA: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8192);
 
+fn queue_disk_flush(disks: &mut Vec<u8>, disk_id: u8) {
+    if !disks.contains(&disk_id) {
+        disks.push(disk_id);
+    }
+}
+
+fn flush_blockcache_for_disks(disks: &[u8]) {
+    for &disk_id in disks {
+        crate::fs::blockcache::writeback_flush(disk_id);
+    }
+}
+
 /// Set the root partition LBA (called from main.rs after partition scanning).
 pub fn set_root_partition_lba(lba: u32) {
     ROOT_PARTITION_LBA.store(lba, core::sync::atomic::Ordering::Relaxed);
@@ -1009,6 +1021,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
 /// Close a global open file slot (by slot_id). Decrements refcount, frees if 0.
 pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
     let mut do_writeback = false;
+    let mut disks_to_flush: Vec<u8> = Vec::new();
     {
         let mut vfs = VFS.lock();
         let state = vfs.as_mut().ok_or(FsError::IoError)?;
@@ -1030,12 +1043,14 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
                             if exfat.metadata_dirty {
                                 let _ = exfat.flush_metadata();
                             }
+                            queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
                         }
                     } else if fs_id == 6 {
                         for (_path, exfat) in &mut state.mounted_exfat {
                             if exfat.metadata_dirty {
                                 let _ = exfat.flush_metadata();
                             }
+                            queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
                         }
                     }
                     do_writeback = true;
@@ -1048,7 +1063,7 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
 
     // Flush write-back cache outside VFS lock (may block on disk I/O)
     if do_writeback {
-        crate::fs::blockcache::writeback_flush(0);
+        flush_blockcache_for_disks(&disks_to_flush);
     }
     Ok(())
 }
@@ -1067,6 +1082,8 @@ pub fn incref(slot_id: u32) {
 /// Frees the slot if refcount drops to 0. On last close of a writable exFAT
 /// file, flushes deferred metadata to disk.
 pub fn decref(slot_id: u32) {
+    let mut do_writeback = false;
+    let mut disks_to_flush: Vec<u8> = Vec::new();
     let mut vfs = VFS.lock();
     if let Some(state) = vfs.as_mut() {
         if let Some(entry) = state.open_files.get_mut(slot_id as usize) {
@@ -1086,18 +1103,25 @@ pub fn decref(slot_id: u32) {
                                 if exfat.metadata_dirty {
                                     let _ = exfat.flush_metadata();
                                 }
+                                queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
                             }
                         } else if fs_id == 6 {
                             for (_path, exfat) in &mut state.mounted_exfat {
                                 if exfat.metadata_dirty {
                                     let _ = exfat.flush_metadata();
                                 }
+                                queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
                             }
                         }
+                        do_writeback = true;
                     }
                 }
             }
         }
+    }
+    drop(vfs);
+    if do_writeback {
+        flush_blockcache_for_disks(&disks_to_flush);
     }
 }
 
@@ -2198,12 +2222,14 @@ pub fn fsync(slot_id: FileDescriptor) -> Result<(), FsError> {
 
     let fs_id = file.fs_id;
 
+    let mut disks_to_flush: Vec<u8> = Vec::new();
     match fs_id {
         3 => {
             if let Some(ref mut exfat) = state.exfat_fs {
                 if exfat.metadata_dirty {
                     exfat.flush_metadata()?;
                 }
+                queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
             }
         }
         6 => {
@@ -2211,6 +2237,7 @@ pub fn fsync(slot_id: FileDescriptor) -> Result<(), FsError> {
                 if exfat.metadata_dirty {
                     let _ = exfat.flush_metadata();
                 }
+                queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
             }
         }
         _ => {} // Other filesystems flush synchronously already
@@ -2218,27 +2245,30 @@ pub fn fsync(slot_id: FileDescriptor) -> Result<(), FsError> {
 
     // Flush write-back block cache, then storage hardware cache
     drop(vfs);
-    crate::fs::blockcache::writeback_flush(0);
+    flush_blockcache_for_disks(&disks_to_flush);
     crate::drivers::storage::flush();
     Ok(())
 }
 
 /// Flush all dirty filesystem metadata and storage write caches.
 pub fn sync_all() {
+    let mut disks_to_flush: Vec<u8> = Vec::new();
     let mut vfs = VFS.lock();
     if let Some(state) = vfs.as_mut() {
         // Flush root exFAT metadata
         if let Some(ref mut exfat) = state.exfat_fs {
             let _ = exfat.flush_metadata();
+            queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
         }
         // Flush all mounted exFAT filesystems
         for (_path, exfat) in &mut state.mounted_exfat {
             let _ = exfat.flush_metadata();
+            queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
         }
     }
     drop(vfs);
     // Flush write-back block cache to disk (coalesced writes)
-    crate::fs::blockcache::writeback_flush(0);
+    flush_blockcache_for_disks(&disks_to_flush);
     // Then flush the drive's hardware write cache to persistent media
     crate::drivers::storage::flush();
 }
