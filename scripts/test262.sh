@@ -30,8 +30,10 @@ if [ ! -x "$RUNNER" ]; then
 fi
 
 # --- Terminal setup ---
-TERM_COLS=$(tput cols)
-TERM_LINES=$(tput lines)
+TERM_COLS=$(tput cols 2>/dev/null || echo 80)
+TERM_LINES=$(tput lines 2>/dev/null || echo 24)
+(( TERM_COLS < 40 )) && TERM_COLS=80
+(( TERM_LINES < 10 )) && TERM_LINES=24
 
 setup_term() {
   tput smcup
@@ -68,7 +70,7 @@ cleanup() {
 }
 
 trap cleanup EXIT
-trap 'TERM_COLS=$(tput cols); TERM_LINES=$(tput lines)' WINCH
+trap 'TERM_COLS=$(tput cols 2>/dev/null || echo 80); TERM_LINES=$(tput lines 2>/dev/null || echo 24)' WINCH
 
 # --- State ---
 declare -i G_PASS=0 G_FAIL=0 G_SKIP=0 G_TIMEOUT=0
@@ -338,7 +340,7 @@ for block_idx in "${!BLOCKS[@]}"; do
         ;;
       "[R]F"*)
         G_FAIL+=1
-        local_rest="${line#[R]F	}"
+        local_rest="${line#\[R\]F	}"
         local_path="${local_rest%%	*}"
         local_reason="${local_rest#*	}"
         [ "$local_path" = "$local_reason" ] && local_reason=""
@@ -357,7 +359,7 @@ for block_idx in "${!BLOCKS[@]}"; do
         ;;
       "[R]T"*)
         G_TIMEOUT+=1
-        local_path="${line#[R]T	}"
+        local_path="${line#\[R\]T	}"
         CURRENT_TEST="$local_path"
         FAIL_ENTRIES+=("T	${local_path}	")
         add_to_category "$local_path"
