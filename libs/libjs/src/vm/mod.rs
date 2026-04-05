@@ -165,6 +165,10 @@ impl Vm {
         obj.set(String::from("name"), JsValue::String(String::from("SyntaxError")));
         obj.set(String::from("message"), JsValue::String(String::from(message)));
         obj.set(String::from("stack"), JsValue::String(stack_str));
+        let ctor = self.globals.get("SyntaxError");
+        if !matches!(ctor, JsValue::Undefined) {
+            obj.set(String::from("constructor"), ctor);
+        }
         JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 
@@ -281,7 +285,7 @@ impl Vm {
             upvalues: Vec::new(),
             prototype: None,
             own_props: BTreeMap::new(),
-            arity: None,
+            arity: None, super_class: None,
         };
         self.set_global(name, JsValue::Function(Rc::new(RefCell::new(f))));
     }
@@ -576,12 +580,19 @@ impl Vm {
                         }
                     }
                     let frame = self.frames.pop().unwrap();
+                    let is_async_fn = frame.chunk.is_async;
                     self.stack.truncate(frame.stack_base);
                     // `new` calls: if constructor returned non-object, return `this` instead.
                     let ret = if frame.is_constructor && !val.is_object() && !matches!(val, JsValue::Function(_)) {
                         frame.this_val
                     } else {
                         val
+                    };
+                    // Async functions: wrap return value in a resolved Promise
+                    let ret = if is_async_fn && !ret.is_object() {
+                        native_promise::make_resolved_promise(ret)
+                    } else {
+                        ret
                     };
                     self.stack.push(ret.clone());
                     if self.frames.is_empty() || self.frames.len() <= self.run_target_depth {
@@ -632,7 +643,7 @@ impl Vm {
                         upvalues: upvalue_cells,
                         prototype: None,
                         own_props: BTreeMap::new(),
-                        arity: None,
+                        arity: None, super_class: None,
                     }));
                     // Arrow functions are NOT constructable and have no .prototype
                     // (ES6 §14.2.17).  Only regular functions get a prototype.
@@ -662,8 +673,17 @@ impl Vm {
                         if !self.handle_exception(exc) { return JsValue::Undefined; }
                     } else {
                         let key_str = key.to_js_string();
-                        // Check for getter (accessor property) like GetPropNamed does.
-                        if let Some(getter) = self.find_getter(&obj, &key_str) {
+                        if let JsValue::Object(ref o) = obj {
+                            if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                                let val = native_proxy::proxy_get(self, &obj, &key_str).unwrap_or(JsValue::Undefined);
+                                self.stack.push(val);
+                            } else if let Some(getter) = self.find_getter(&obj, &key_str) {
+                                self.invoke_function(&getter, &[], obj.clone());
+                            } else {
+                                let val = self.get_property_with_proto(&obj, &key_str);
+                                self.stack.push(val);
+                            }
+                        } else if let Some(getter) = self.find_getter(&obj, &key_str) {
                             self.invoke_function(&getter, &[], obj.clone());
                         } else {
                             let val = self.get_property_with_proto(&obj, &key_str);
@@ -685,6 +705,12 @@ impl Vm {
                                 _ => {}
                             }
                         }
+                    } else if let JsValue::Object(ref o) = obj {
+                        if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                            native_proxy::proxy_set(self, &obj, &key_str, &val);
+                        } else {
+                            obj.set_property(key_str, val.clone());
+                        }
                     } else {
                         obj.set_property(key_str, val.clone());
                     }
@@ -701,8 +727,17 @@ impl Vm {
                         );
                         let exc = self.make_type_error(&msg);
                         if !self.handle_exception(exc) { return JsValue::Undefined; }
+                    } else if let JsValue::Object(ref o) = obj {
+                        if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                            let val = native_proxy::proxy_get(self, &obj, &name).unwrap_or(JsValue::Undefined);
+                            self.stack.push(val);
+                        } else if let Some(getter) = self.find_getter(&obj, &name) {
+                            self.invoke_function(&getter, &[], obj.clone());
+                        } else {
+                            let val = self.get_property_with_proto(&obj, &name);
+                            self.stack.push(val);
+                        }
                     } else if let Some(getter) = self.find_getter(&obj, &name) {
-                        // Invoke getter with this=obj
                         self.invoke_function(&getter, &[], obj.clone());
                     } else {
                         let val = self.get_property_with_proto(&obj, &name);
@@ -775,6 +810,14 @@ impl Vm {
                     self.super_call(argc as usize);
                 }
 
+                Op::SetSuperClass => {
+                    // Stack: [..., Constructor, SuperClass]
+                    let super_val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    if let Some(JsValue::Function(ref ctor_fn)) = self.stack.last() {
+                        ctor_fn.borrow_mut().super_class = Some(super_val);
+                    }
+                }
+
                 // ── Special operators ──
                 Op::Typeof => {
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
@@ -845,6 +888,10 @@ impl Vm {
                 }
                 Op::IterNext => {
                     let (value, has_more) = self.iter_next_mut();
+                    if let Some(exc) = self.pending_exception.take() {
+                        if !self.handle_exception(exc) { return JsValue::Undefined; }
+                        continue;
+                    }
                     self.stack.push(value);
                     self.stack.push(JsValue::Bool(has_more));
                 }
@@ -1021,8 +1068,17 @@ impl Vm {
                                     .collect();
                                 for (k, getter, val) in props {
                                     let v = if let Some(ref getter_fn) = getter {
-                                        // Invoke getter with source as `this`
-                                        self.call_value(getter_fn, &[], src.clone())
+                                        let r = self.call_value(getter_fn, &[], src.clone());
+                                        if let Some(exc) = self.last_exception.take() {
+                                            self.pending_exception = Some(exc);
+                                        }
+                                        if let Some(exc) = self.pending_exception.take() {
+                                            if !self.handle_exception(exc) {
+                                                return JsValue::Undefined;
+                                            }
+                                            continue;
+                                        }
+                                        r
                                     } else {
                                         val
                                     };
@@ -1107,28 +1163,35 @@ impl Vm {
 
                 // ── Async ──
                 Op::Await => {
+                    // Synchronous await: extract Promise value or pass through
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    // Check if the value is a Promise (has __state property).
                     if let JsValue::Object(ref obj) = val {
-                        let state = obj.borrow().get("__state").to_js_string();
-                        if state == "fulfilled" {
-                            let resolved = obj.borrow().get("__value");
-                            self.stack.push(resolved);
-                        } else if state == "rejected" {
-                            let reason = obj.borrow().get("__value");
-                            // Throw the rejection reason.
-                            if !self.handle_exception(reason) {
-                                return JsValue::Undefined;
+                        let is_promise = obj.borrow().internal_tag.as_deref() == Some("__promise__");
+                        if is_promise {
+                            let state = obj.borrow().get("__state").to_js_string();
+                            if state == "fulfilled" {
+                                let resolved = obj.borrow().get("__value");
+                                self.stack.push(resolved);
+                            } else if state == "rejected" {
+                                let reason = obj.borrow().get("__value");
+                                if !self.handle_exception(reason) {
+                                    return JsValue::Undefined;
+                                }
+                            } else {
+                                // Still pending after drain — push undefined
+                                self.stack.push(JsValue::Undefined);
                             }
                         } else {
-                            // Pending promise — push undefined (no event loop to wait).
-                            self.stack.push(JsValue::Undefined);
+                            // Object but not a promise — pass through
+                            self.stack.push(val);
                         }
                     } else {
-                        // Non-promise value — pass through unchanged.
+                        // Non-object value — pass through unchanged.
                         self.stack.push(val);
                     }
                 }
+
+
 
                 Op::Yield => {
                     let value = self.stack.pop().unwrap_or(JsValue::Undefined);
@@ -1351,7 +1414,7 @@ impl Vm {
                     upvalues: Vec::new(),
                     prototype: None,
                     own_props: BTreeMap::new(),
-                    arity: None,
+                    arity: None, super_class: None,
                 };
                 JsValue::Function(Rc::new(RefCell::new(func)))
             }
@@ -1814,7 +1877,7 @@ pub fn native_fn(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue) -> JsValue {
         upvalues: Vec::new(),
         prototype: None,
         own_props: BTreeMap::new(),
-        arity: None,
+        arity: None, super_class: None,
     })))
 }
 
@@ -1829,6 +1892,6 @@ pub fn native_fn_with_length(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue, 
         upvalues: Vec::new(),
         prototype: None,
         own_props: BTreeMap::new(),
-        arity: Some(length),
+        arity: Some(length), super_class: None,
     })))
 }

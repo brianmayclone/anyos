@@ -75,6 +75,9 @@ pub fn object_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
                 Some("__string__")  => "String",
                 Some("__regexp__")  => "RegExp",
                 Some("__date__")    => "Date",
+                Some("__math__")    => "Math",
+                Some("__json__")    => "JSON",
+                Some("__error__")   => "Error",
                 _                   => "Object",
             };
             JsValue::String(alloc::format!("[object {}]", kind))
@@ -85,6 +88,34 @@ pub fn object_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 pub fn object_value_of(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     vm.current_this.clone()
+}
+
+/// `Object.prototype.propertyIsEnumerable(key)`
+pub fn object_property_is_enumerable(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let key = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    match &vm.current_this {
+        JsValue::Object(obj) => {
+            let o = obj.borrow();
+            if let Some(prop) = o.properties.get(&key) {
+                JsValue::Bool(prop.enumerable)
+            } else {
+                JsValue::Bool(false)
+            }
+        }
+        JsValue::Array(arr) => {
+            let a = arr.borrow();
+            if let Ok(idx) = key.parse::<usize>() {
+                JsValue::Bool(a.elements.contains_key(&idx))
+            } else if key == "length" {
+                JsValue::Bool(false) // length is not enumerable
+            } else if let Some(prop) = a.properties.get(&key) {
+                JsValue::Bool(prop.enumerable)
+            } else {
+                JsValue::Bool(false)
+            }
+        }
+        _ => JsValue::Bool(false),
+    }
 }
 
 pub fn object_keys_method(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -367,7 +398,28 @@ pub fn object_get_own_property_names(_vm: &mut Vm, args: &[JsValue]) -> JsValue 
             let mut keys: Vec<JsValue> = a.elements.keys()
                 .map(|&i| JsValue::String(format_usize(i)))
                 .collect();
+            // Also include non-numeric property names
+            for key in a.properties.keys() {
+                if key.parse::<usize>().is_err() {
+                    keys.push(JsValue::String(key.clone()));
+                }
+            }
             keys.push(JsValue::String(String::from("length")));
+            JsValue::new_array(keys)
+        }
+        Some(JsValue::Function(f)) => {
+            let func = f.borrow();
+            let mut keys: Vec<JsValue> = Vec::new();
+            keys.push(JsValue::String(String::from("length")));
+            keys.push(JsValue::String(String::from("name")));
+            if !func.kind.is_arrow() {
+                keys.push(JsValue::String(String::from("prototype")));
+            }
+            for k in func.own_props.keys() {
+                if k != "length" && k != "name" && k != "prototype" {
+                    keys.push(JsValue::String(k.clone()));
+                }
+            }
             JsValue::new_array(keys)
         }
         _ => JsValue::new_array(Vec::new()),

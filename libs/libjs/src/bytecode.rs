@@ -254,6 +254,9 @@ pub enum Op {
     /// Stack before: [..., SuperClass, arg1, ..., argN]
     /// Sets `is_constructor = true` and forwards `new.target` from the current frame.
     SuperCall(u8),
+    /// Set the super_class field on the top-of-stack Function.
+    /// Stack: [..., Constructor, SuperClass] → [..., Constructor]
+    SetSuperClass,
 
     /// ES2023 §7.2.1 RequireObjectCoercible(value).
     /// Throws TypeError if the value on top of stack is null or undefined.
@@ -294,6 +297,8 @@ pub struct Chunk {
     /// Arrow functions lexically capture `this` from their enclosing scope
     /// (ES6 §14.2.16) — they do NOT have their own `this` binding.
     pub is_arrow: bool,
+    /// True if this is an async function.
+    pub is_async: bool,
 }
 
 impl Chunk {
@@ -308,6 +313,7 @@ impl Chunk {
             strict: false,
             is_generator: false,
             is_arrow: false,
+            is_async: false,
         }
     }
 

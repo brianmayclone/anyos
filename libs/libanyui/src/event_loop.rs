@@ -1788,6 +1788,11 @@ fn clear_tracking_for(st: &mut crate::AnyuiState, id: ControlId) {
 
 /// Dismiss the active context menu popup window.
 /// Destroys the compositor window and clears the popup state.
+/// Public wrapper so `lib.rs` can dismiss popups.
+pub(crate) fn dismiss_popup_pub(st: &mut crate::AnyuiState) {
+    dismiss_popup(st);
+}
+
 fn dismiss_popup(st: &mut crate::AnyuiState) {
     if let Some(popup) = st.popup.take() {
         // If this popup was owned by a DropDown, clear its open flag

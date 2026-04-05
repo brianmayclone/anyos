@@ -476,6 +476,8 @@ pub struct JsFunction {
     pub own_props: BTreeMap<String, JsValue>,
     /// Explicit arity for native functions (overrides params.len() for Function.length).
     pub arity: Option<usize>,
+    /// For class constructors: the super class constructor (used by Op::SuperCall).
+    pub super_class: Option<JsValue>,
 }
 
 impl fmt::Debug for JsFunction {

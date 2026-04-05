@@ -145,8 +145,17 @@ pub fn set_backend_lsi() {
 /// For sequential access patterns, extra sectors are read ahead (up to 128
 /// sectors / 64 KiB) to amortize disk latency.
 pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
+    read_sectors_on_disk(0, lba, count, buf)
+}
+
+/// Read `count` sectors from a specific physical disk into `buf`.
+///
+/// Disk 0 uses the active global backend. Other disks use registered per-device
+/// overrides when available. The block cache and adaptive readahead are keyed
+/// by `disk_id` so mounted secondary volumes benefit from the same fast path.
+pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
     if count == 0 { return true; }
-    crate::debug_println!("  [storage] read_sectors: lba={} count={}", lba, count);
+    crate::debug_println!("  [storage] read_sectors: disk={} lba={} count={}", disk_id, lba, count);
     IO_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
 
     // ── Check if block cache is available ──────────────────────────────
@@ -154,10 +163,10 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
 
     // ── Fast path: try to serve entirely from block cache ──────────────
     let cached = if cache_active {
-        crate::fs::blockcache::cached_read(0, lba, count, buf)
+        crate::fs::blockcache::cached_read(disk_id, lba, count, buf)
     } else { 0 };
     if cached == count {
-        crate::debug_println!("  [storage] read_sectors: fully cached lba={} count={}", lba, count);
+        crate::debug_println!("  [storage] read_sectors: fully cached disk={} lba={} count={}", disk_id, lba, count);
         return true;
     }
 
@@ -193,7 +202,7 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
     let result = if readahead > 0 {
         let mut big_buf = alloc::vec![0u8; fetch_bytes];
         io_lock_acquire();
-        let ok = read_sectors_raw(miss_lba, total_fetch, &mut big_buf);
+        let ok = read_sectors_raw_for_disk(disk_id, miss_lba, total_fetch, &mut big_buf);
         io_lock_release();
         if ok {
             // Copy requested portion to caller buffer
@@ -202,7 +211,7 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
             buf[miss_offset..miss_offset + copy_end]
                 .copy_from_slice(&big_buf[..copy_end]);
             // Populate cache with ALL fetched sectors (requested + readahead)
-            crate::fs::blockcache::populate(0, miss_lba, total_fetch, &big_buf);
+            crate::fs::blockcache::populate(disk_id, miss_lba, total_fetch, &big_buf);
             true
         } else {
             false
@@ -210,13 +219,13 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
     } else {
         // No readahead: read directly into caller buffer
         io_lock_acquire();
-        let ok = read_sectors_raw(miss_lba, miss_count, &mut buf[miss_offset..]);
+        let ok = read_sectors_raw_for_disk(disk_id, miss_lba, miss_count, &mut buf[miss_offset..]);
         io_lock_release();
         if ok && cache_active {
             // Populate cache with fetched sectors
             let fetched_bytes = miss_count as usize * 512;
             if buf.len() >= miss_offset + fetched_bytes {
-                crate::fs::blockcache::populate(0, miss_lba, miss_count,
+                crate::fs::blockcache::populate(disk_id, miss_lba, miss_count,
                     &buf[miss_offset..miss_offset + fetched_bytes]);
             }
         }
@@ -229,6 +238,18 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
 
 /// Raw read without cache — dispatches to the active backend.
 fn read_sectors_raw(lba: u32, count: u32, buf: &mut [u8]) -> bool {
+    read_sectors_raw_for_disk(0, lba, count, buf)
+}
+
+fn read_sectors_raw_for_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
+    if disk_id != 0 {
+        let overrides = IO_OVERRIDES.lock();
+        if let Some(handler) = overrides.iter().find(|h| h.disk_id == disk_id) {
+            let f = handler.read_fn;
+            drop(overrides);
+            return f(disk_id, lba, count, buf);
+        }
+    }
     match unsafe { BACKEND } {
         StorageBackend::Ata => {
             let mut offset = 0usize;
@@ -260,6 +281,11 @@ fn read_sectors_raw(lba: u32, count: u32, buf: &mut [u8]) -> bool {
 /// For large writes (>256 sectors / 128 KiB), data goes directly to disk to
 /// avoid flooding the cache and evicting useful read-cache entries.
 pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
+    write_sectors_on_disk(0, lba, count, buf)
+}
+
+/// Write `count` sectors to a specific physical disk from `buf`.
+pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
     if count == 0 { return true; }
     IO_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
 
@@ -268,20 +294,20 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
 
     // Write-back path: small writes go to cache, large writes bypass
     if cache_active && count <= 256 && buf.len() >= data_len {
-        crate::fs::blockcache::write_back(0, lba, count, &buf[..data_len]);
+        crate::fs::blockcache::write_back(disk_id, lba, count, &buf[..data_len]);
         return true;
     }
 
     // Large write or no cache: go directly to disk
     io_lock_acquire();
-    let result = write_sectors_raw(lba, count, buf);
+    let result = write_sectors_raw_for_disk(disk_id, lba, count, buf);
     io_lock_release();
     if result && cache_active {
         // Update cache so reads see the new data
         if buf.len() >= data_len {
-            crate::fs::blockcache::populate(0, lba, count, &buf[..data_len]);
+            crate::fs::blockcache::populate(disk_id, lba, count, &buf[..data_len]);
         } else {
-            crate::fs::blockcache::invalidate(0, lba, count);
+            crate::fs::blockcache::invalidate(disk_id, lba, count);
         }
     }
     result
@@ -289,6 +315,18 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
 
 /// Raw write without cache — dispatches to the active backend.
 fn write_sectors_raw(lba: u32, count: u32, buf: &[u8]) -> bool {
+    write_sectors_raw_for_disk(0, lba, count, buf)
+}
+
+fn write_sectors_raw_for_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
+    if disk_id != 0 {
+        let overrides = IO_OVERRIDES.lock();
+        if let Some(handler) = overrides.iter().find(|h| h.disk_id == disk_id) {
+            let f = handler.write_fn;
+            drop(overrides);
+            return f(disk_id, lba, count, buf);
+        }
+    }
     match unsafe { BACKEND } {
         StorageBackend::Ata => {
             let mut offset = 0usize;
@@ -314,9 +352,14 @@ fn write_sectors_raw(lba: u32, count: u32, buf: &[u8]) -> bool {
 /// Write sectors directly to disk, bypassing the block cache.
 /// Used by the cache writeback mechanism itself to avoid recursion.
 pub fn write_sectors_direct(lba: u32, count: u32, buf: &[u8]) -> bool {
+    write_sectors_direct_on_disk(0, lba, count, buf)
+}
+
+/// Write sectors directly to a specific disk, bypassing the block cache.
+pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
     if count == 0 { return true; }
     io_lock_acquire();
-    let result = write_sectors_raw(lba, count, buf);
+    let result = write_sectors_raw_for_disk(disk_id, lba, count, buf);
     io_lock_release();
     result
 }

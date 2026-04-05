@@ -25,19 +25,41 @@ fn this_string(vm: &Vm) -> String {
     }
 }
 
-/// Like this_string but throws TypeError for null/undefined.
-/// Returns None if TypeError was thrown.
+/// RequireObjectCoercible + ToString. Throws TypeError for null/undefined.
+/// For Objects, calls Symbol.toPrimitive if present, otherwise falls back to basic coercion.
+/// Returns None if an exception was thrown.
 fn this_string_checked(vm: &mut Vm) -> Option<String> {
-    match &vm.current_this {
+    let this = vm.current_this.clone();
+    match &this {
         JsValue::Null | JsValue::Undefined => {
-            let method = "String.prototype method";
-            let err = vm.make_type_error(&alloc::format!(
-                "Cannot read properties of {} (calling '{}')",
-                if matches!(vm.current_this, JsValue::Null) { "null" } else { "undefined" },
-                method
-            ));
+            let err = vm.make_type_error("Cannot convert undefined or null to object");
             vm.throw_native(err);
             None
+        }
+        JsValue::String(s) => Some(s.clone()),
+        JsValue::Number(_) | JsValue::Bool(_) => Some(this.to_js_string()),
+        JsValue::Object(obj) => {
+            // Check for Symbol.toPrimitive getter (the most common Test262Error case)
+            let o = obj.borrow();
+            // Wrapper objects first
+            if let Some(prim) = &o.primitive_value {
+                let p = prim.clone();
+                drop(o);
+                return Some(p.to_js_string());
+            }
+            // Check for Symbol.toPrimitive
+            let sym_key = super::native_symbol::WELL_KNOWN_TO_PRIMITIVE;
+            let has_to_prim = o.properties.contains_key(sym_key);
+            drop(o);
+            if has_to_prim {
+                // Use ToPrimitive for Symbol.toPrimitive support
+                let prim = vm.to_primitive_for_op(this, "string");
+                if vm.pending_exception.is_some() {
+                    return None;
+                }
+                return Some(prim.to_js_string());
+            }
+            Some(this_string(vm))
         }
         _ => Some(this_string(vm)),
     }
@@ -257,15 +279,18 @@ pub fn string_to_upper_case(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_trim(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::String(String::from(this_string(vm).trim()))
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
+    JsValue::String(String::from(s.trim()))
 }
 
 pub fn string_trim_start(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::String(String::from(this_string(vm).trim_start()))
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
+    JsValue::String(String::from(s.trim_start()))
 }
 
 pub fn string_trim_end(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::String(String::from(this_string(vm).trim_end()))
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
+    JsValue::String(String::from(s.trim_end()))
 }
 
 pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -282,42 +307,49 @@ pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 
     let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
-    let sep = args.first().map(|v| v.to_js_string());
+    let sep_val = args.first().cloned();
     let limit = args.get(1).map(|v| {
+        if matches!(v, JsValue::Undefined) { return usize::MAX; }
         let n = v.to_number();
         if n.is_nan() || n < 0.0 { 0 } else if !n.is_finite() { usize::MAX } else { n as usize }
     }).unwrap_or(usize::MAX);
 
-    let parts: Vec<JsValue> = match sep {
-        None => {
+    // limit === 0 → empty array (ES2023 §22.1.3.21 step 11)
+    if limit == 0 {
+        return JsValue::new_array(Vec::new());
+    }
+
+    let parts: Vec<JsValue> = match &sep_val {
+        None | Some(JsValue::Undefined) => {
             vec![JsValue::String(s)]
         }
-        Some(ref sep_val) if sep_val == "undefined" => {
-            vec![JsValue::String(s)]
-        }
-        Some(ref sep_str) if sep_str.is_empty() => {
-            // Split into individual characters
-            s.chars().take(limit).map(|c| {
-                let mut buf = String::new();
-                buf.push(c);
-                JsValue::String(buf)
-            }).collect()
-        }
-        Some(ref sep_str) => {
-            let mut result = Vec::new();
-            let mut remaining = s.as_str();
-            let mut count = 0;
-            while count + 1 < limit {
-                if let Some(idx) = remaining.find(sep_str.as_str()) {
-                    result.push(JsValue::String(String::from(&remaining[..idx])));
-                    remaining = &remaining[idx + sep_str.len()..];
-                    count += 1;
-                } else {
-                    break;
+        Some(sep_jv) => {
+            let sep_str = sep_jv.to_js_string();
+            if sep_str.is_empty() {
+                // Split into individual characters
+                s.chars().take(limit).map(|c| {
+                    let mut buf = String::new();
+                    buf.push(c);
+                    JsValue::String(buf)
+                }).collect()
+            } else {
+                let mut result = Vec::new();
+                let mut remaining = s.as_str();
+                let mut count = 0;
+                while count + 1 < limit {
+                    if let Some(idx) = remaining.find(sep_str.as_str()) {
+                        result.push(JsValue::String(String::from(&remaining[..idx])));
+                        remaining = &remaining[idx + sep_str.len()..];
+                        count += 1;
+                    } else {
+                        break;
+                    }
                 }
+                if result.len() < limit {
+                    result.push(JsValue::String(String::from(remaining)));
+                }
+                result
             }
-            result.push(JsValue::String(String::from(remaining)));
-            result
         }
     };
 
@@ -465,7 +497,8 @@ pub fn string_pad_end(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn string_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     let chars = chars_vec(&s);
-    let idx = args.first().map(|v| v.to_number() as i64).unwrap_or(0);
+    let idx_val = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let idx = super::native_array::to_number_vm(vm, &idx_val) as i64;
     let len = chars.len() as i64;
     let actual = if idx < 0 { len + idx } else { idx };
     if actual >= 0 && actual < len {
@@ -478,7 +511,7 @@ pub fn string_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_concat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let mut s = this_string(vm);
+    let mut s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     for arg in args {
         s.push_str(&arg.to_js_string());
     }
@@ -569,8 +602,8 @@ pub fn string_raw(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 /// `String.prototype.normalize([form])` — Unicode normalization (stub: returns self).
 pub fn string_normalize(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    // Full Unicode normalization requires ICU tables — return self as-is.
-    JsValue::String(this_string(vm))
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
+    JsValue::String(s)
 }
 
 /// `String.prototype.localeCompare(that)` — simplified: byte comparison.

@@ -13,9 +13,20 @@ use super::native_math::{floor_f64, trunc_f64, ln_approx};
 
 pub fn number_to_string(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let n = vm.current_this.to_number();
-    let radix = args.first().map(|v| v.to_number() as u32).unwrap_or(10);
+    let radix = match args.first() {
+        None | Some(JsValue::Undefined) => 10,
+        Some(v) => {
+            let r = v.to_number() as u32;
+            if r < 2 || r > 36 {
+                let err = vm.make_range_error("toString() radix must be between 2 and 36");
+                vm.throw_native(err);
+                return JsValue::Undefined;
+            }
+            r
+        }
+    };
 
-    if radix == 10 || radix < 2 || radix > 36 {
+    if radix == 10 {
         return JsValue::String(format_number(n));
     }
 

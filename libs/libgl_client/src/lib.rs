@@ -185,6 +185,7 @@ struct LibGl {
     shadow_get_light_mvp: extern "C" fn() -> *const f32,
     shadow_available: extern "C" fn() -> u32,
     shadow_get_unit: extern "C" fn() -> u32,
+    shadow_get_texture: extern "C" fn() -> u32,
     // Math
     math_sin: extern "C" fn(f32) -> f32,
     math_cos: extern "C" fn(f32) -> f32,
@@ -332,6 +333,7 @@ pub fn init() -> bool {
             shadow_get_light_mvp: resolve(&handle, "gl_shadow_get_light_mvp"),
             shadow_available: resolve(&handle, "gl_shadow_available"),
             shadow_get_unit: resolve(&handle, "gl_shadow_get_unit"),
+            shadow_get_texture: resolve(&handle, "gl_shadow_get_texture"),
             math_sin: resolve(&handle, "gl_math_sin"),
             math_cos: resolve(&handle, "gl_math_cos"),
             math_tan: resolve(&handle, "gl_math_tan"),
@@ -667,6 +669,9 @@ pub fn shadow_available() -> bool { (lib().shadow_available)() != 0 }
 
 /// Texture unit where shadow map is bound (always 7).
 pub fn shadow_get_unit() -> u32 { (lib().shadow_get_unit)() }
+
+/// Texture id of the internally managed shadow map depth texture.
+pub fn shadow_get_texture() -> u32 { (lib().shadow_get_texture)() }
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Framebuffer Objects (ES 2.0 FBO + GL_OES_depth_texture)

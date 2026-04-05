@@ -1148,6 +1148,8 @@ fn child_total_height(bx: &LayoutBox, parent_y: i32) -> i32 {
 
 /// Browser default CSS (minimal reset + sensible defaults).
 const DEFAULT_CSS: &str = "
+head, script, style, link, meta, title { display: none; }
+html, body { display: block; }
 body { margin: 8px; font-size: 16px; color: #000; }
 h1 { font-size: 32px; font-weight: bold; margin: 21px 0; }
 h2 { font-size: 24px; font-weight: bold; margin: 19px 0; }

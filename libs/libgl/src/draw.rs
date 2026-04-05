@@ -67,6 +67,12 @@ fn bind_textures_hw(ctx: &GlContext, drv: &drv_loader::GpuDrv) {
     for unit in 0..crate::state::MAX_TEXTURE_UNITS {
         let tex_id = ctx.bound_textures[unit];
         if tex_id == 0 { continue; }
+        if tex_id == ctx.shadow_depth_tex_id {
+            if let Some(bind_shadow) = drv.drv_shadow_bind {
+                bind_shadow(unit as u32);
+            }
+            continue;
+        }
         let tex = match ctx.textures.get(tex_id) {
             Some(t) if !t.data.is_empty() && t.width > 0 => t,
             _ => continue,
@@ -154,17 +160,8 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
     };
 
     // Upload state
-    if ctx.shadow_pass_active {
-        let prog_id = ctx.current_program;
-        if let Some(p) = ctx.shaders.get_program(prog_id) {
-            if let Some(u) = p.uniforms.first() {
-                (drv.drv_set_uniform_f32)(0, 4, u.value.as_ptr());
-            }
-        }
-    } else {
-        bind_textures_hw(ctx, drv);
-        upload_uniforms(ctx, drv);
-    }
+    bind_textures_hw(ctx, drv);
+    upload_uniforms(ctx, drv);
 
     // Try persistent VBO path: if all attribs reference the same VBO and
     // the VBO has matching raw data layout, use the GPU-resident buffer directly.
@@ -404,17 +401,8 @@ fn draw_elements_hw(
     // Pass index data starting at the offset
     let index_start = &index_data[offset..];
 
-    if ctx.shadow_pass_active {
-        let prog_id = ctx.current_program;
-        if let Some(p) = ctx.shaders.get_program(prog_id) {
-            if let Some(u) = p.uniforms.first() {
-                (drv.drv_set_uniform_f32)(0, 4, u.value.as_ptr());
-            }
-        }
-    } else {
-        bind_textures_hw(ctx, drv);
-        upload_uniforms(ctx, drv);
-    }
+    bind_textures_hw(ctx, drv);
+    upload_uniforms(ctx, drv);
 
     (drv.drv_draw_elements)(
         mode, count as u32, type_,

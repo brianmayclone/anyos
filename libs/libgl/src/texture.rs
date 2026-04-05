@@ -11,6 +11,8 @@ use crate::types::*;
 pub struct GlTexture {
     /// RGBA8 pixel data (row-major).
     pub data: Vec<u32>,
+    /// Linear depth data for depth textures.
+    pub depth: Vec<f32>,
     pub width: u32,
     pub height: u32,
     pub min_filter: GLenum,
@@ -24,6 +26,7 @@ impl GlTexture {
     fn new() -> Self {
         Self {
             data: Vec::new(),
+            depth: Vec::new(),
             width: 0,
             height: 0,
             min_filter: GL_NEAREST_MIPMAP_LINEAR,
@@ -43,6 +46,10 @@ impl GlTexture {
         let v = wrap_coord(v, self.wrap_t);
         let x = ((u * self.width as f32) as i32).clamp(0, self.width as i32 - 1) as u32;
         let y = ((v * self.height as f32) as i32).clamp(0, self.height as i32 - 1) as u32;
+        if self.internal_format == GL_DEPTH_COMPONENT {
+            let d = self.depth[(y * self.width + x) as usize];
+            return [d, d, d, 1.0];
+        }
         let px = self.data[(y * self.width + x) as usize];
         unpack_rgba(px)
     }
@@ -63,6 +70,16 @@ impl GlTexture {
 
         let w = self.width as i32;
         let h = self.height as i32;
+        if self.internal_format == GL_DEPTH_COMPONENT {
+            let s00 = self.fetch_depth(x0.clamp(0, w - 1) as u32, y0.clamp(0, h - 1) as u32);
+            let s10 = self.fetch_depth((x0 + 1).clamp(0, w - 1) as u32, y0.clamp(0, h - 1) as u32);
+            let s01 = self.fetch_depth(x0.clamp(0, w - 1) as u32, (y0 + 1).clamp(0, h - 1) as u32);
+            let s11 = self.fetch_depth((x0 + 1).clamp(0, w - 1) as u32, (y0 + 1).clamp(0, h - 1) as u32);
+            let top = s00 + (s10 - s00) * frac_x;
+            let bot = s01 + (s11 - s01) * frac_x;
+            let depth = top + (bot - top) * frac_y;
+            return [depth, depth, depth, 1.0];
+        }
         let s00 = self.fetch(x0.clamp(0, w - 1) as u32, y0.clamp(0, h - 1) as u32);
         let s10 = self.fetch((x0 + 1).clamp(0, w - 1) as u32, y0.clamp(0, h - 1) as u32);
         let s01 = self.fetch(x0.clamp(0, w - 1) as u32, (y0 + 1).clamp(0, h - 1) as u32);
@@ -88,6 +105,10 @@ impl GlTexture {
     fn fetch(&self, x: u32, y: u32) -> [f32; 4] {
         let px = self.data[(y * self.width + x) as usize];
         unpack_rgba(px)
+    }
+
+    fn fetch_depth(&self, x: u32, y: u32) -> f32 {
+        self.depth[(y * self.width + x) as usize]
     }
 }
 
@@ -156,6 +177,7 @@ impl TextureStore {
             tex.internal_format = format;
             let npixels = (width * height) as usize;
             tex.data = vec![0u32; npixels];
+            tex.depth = vec![1.0f32; npixels];
 
             if let Some(src) = data {
                 match format {
@@ -189,9 +211,14 @@ impl TextureStore {
                         }
                     }
                     // GL_DEPTH_COMPONENT: depth texture (GL_OES_depth_texture).
-                    // No CPU data upload needed — GPU writes depth during shadow pass.
+                    // CPU data is optional; depth is written by the rasterizer or GPU.
                     0x1902 | 0x81A5 | 0x81A6 | 0x81A7 => {
-                        // Leave zeroed — depth is written by the GPU
+                        for i in 0..npixels.min(src.len()) {
+                            let d = src[i] as f32 / 255.0;
+                            tex.depth[i] = d;
+                            let q = (d * 255.0) as u32;
+                            tex.data[i] = 0xFF000000 | (q << 16) | (q << 8) | q;
+                        }
                     }
                     _ => {}
                 }

@@ -12,7 +12,7 @@ pub mod window;
 pub use cursors::CursorShape;
 pub use theme::{set_theme, set_font_smoothing};
 pub use window::{
-    copy_shm_to_pixels, pre_render_chrome_ex,
+    pre_render_chrome_ex,
     menubar_height, title_bar_height, WIN_FLAG_BORDERLESS,
 };
 
@@ -26,6 +26,9 @@ use cursors::CURSOR_H;
 use cursors::CURSOR_W;
 use theme::*;
 use window::*;
+
+const MAX_WINDOW_DIM: u32 = 8192;
+const MAX_WINDOW_PIXELS: u64 = 16 * 1024 * 1024;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -299,6 +302,30 @@ impl Desktop {
     /// Whether GPU hardware cursor is available.
     pub fn has_hw_cursor(&self) -> bool {
         self.has_hw_cursor
+    }
+
+    pub(crate) fn validate_window_surface(&self, content_w: u32, content_h: u32, flags: u32) -> bool {
+        if content_w == 0 || content_h == 0 {
+            return false;
+        }
+
+        let max_w = self.screen_width.saturating_mul(2).max(2048).min(MAX_WINDOW_DIM);
+        let max_h = self.screen_height.saturating_mul(2).max(2048).min(MAX_WINDOW_DIM);
+        if content_w > max_w || content_h > max_h {
+            return false;
+        }
+
+        let full_h = if flags & WIN_FLAG_BORDERLESS != 0 {
+            content_h
+        } else {
+            match content_h.checked_add(title_bar_height()) {
+                Some(v) => v,
+                None => return false,
+            }
+        };
+
+        let pixels = (content_w as u64).saturating_mul(full_h as u64);
+        pixels > 0 && pixels <= MAX_WINDOW_PIXELS
     }
 
     /// Set the initial cursor position.

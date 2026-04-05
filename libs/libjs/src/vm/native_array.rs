@@ -36,10 +36,10 @@ fn snapshot_entries(a: &JsArray) -> Vec<(usize, JsValue)> {
     a.elements.iter().map(|(&k, v)| (k, v.clone())).collect()
 }
 
-/// Convert a JsValue to a length (ToLength), using the VM to call valueOf/toString
-/// on objects if needed.
-fn to_length_vm(vm: &mut Vm, val: &JsValue) -> usize {
-    let n = match val {
+/// ToNumber with VM — calls valueOf/toString on Objects per ES2023 §7.1.4.
+/// Throws TypeError if ToPrimitive fails (both valueOf and toString return objects).
+pub fn to_number_vm(vm: &mut Vm, val: &JsValue) -> f64 {
+    match val {
         JsValue::Number(n) => *n,
         JsValue::String(s) => crate::value::parse_js_float(s),
         JsValue::Bool(true) => 1.0,
@@ -48,39 +48,71 @@ fn to_length_vm(vm: &mut Vm, val: &JsValue) -> usize {
         JsValue::Undefined => f64::NAN,
         JsValue::Object(obj) => {
             let o = obj.borrow();
-            // Wrapper objects (new Number(2))
             if let Some(prim) = &o.primitive_value {
-                return to_length_vm(vm, prim);
+                let p = prim.clone();
+                drop(o);
+                return to_number_vm(vm, &p);
             }
-            // Try valueOf()
+            // ToPrimitive: try valueOf first, then toString
             let value_of = o.get("valueOf");
+            let to_string_fn = o.get("toString");
             drop(o);
+            let mut tried_valueof = false;
+            let mut tried_tostring = false;
             if let JsValue::Function(_) = &value_of {
+                tried_valueof = true;
                 let result = vm.call_value(&value_of, &[], val.clone());
-                if let JsValue::Number(n) = result {
-                    return if n.is_nan() || n < 0.0 || !n.is_finite() { 0 } else { (n as u64).min(0xFFFF_FFFF) as usize };
+                if let Some(exc) = vm.last_exception.take() {
+                    vm.pending_exception = Some(exc);
+                    return f64::NAN;
                 }
-                if let JsValue::String(s) = &result {
-                    let n = crate::value::parse_js_float(s);
-                    return if n.is_nan() || n < 0.0 || !n.is_finite() { 0 } else { (n as u64).min(0xFFFF_FFFF) as usize };
+                if vm.pending_exception.is_some() { return f64::NAN; }
+                // If result is a primitive, convert to number
+                match &result {
+                    JsValue::Number(n) => return *n,
+                    JsValue::String(s) => return crate::value::parse_js_float(s),
+                    JsValue::Bool(true) => return 1.0,
+                    JsValue::Bool(false) => return 0.0,
+                    JsValue::Null => return 0.0,
+                    JsValue::Undefined => return f64::NAN,
+                    _ => {} // Non-primitive: fall through to toString
                 }
             }
-            // Try toString()
-            let o = obj.borrow();
-            let to_string = o.get("toString");
-            drop(o);
-            if let JsValue::Function(_) = &to_string {
-                let result = vm.call_value(&to_string, &[], val.clone());
-                if let JsValue::String(s) = &result {
-                    let n = crate::value::parse_js_float(&s);
-                    return if n.is_nan() || n < 0.0 || !n.is_finite() { 0 } else { (n as u64).min(0xFFFF_FFFF) as usize };
+            if let JsValue::Function(_) = &to_string_fn {
+                tried_tostring = true;
+                let result = vm.call_value(&to_string_fn, &[], val.clone());
+                if let Some(exc) = vm.last_exception.take() {
+                    vm.pending_exception = Some(exc);
+                    return f64::NAN;
                 }
+                if vm.pending_exception.is_some() { return f64::NAN; }
+                match &result {
+                    JsValue::String(s) => return crate::value::parse_js_float(s),
+                    JsValue::Number(n) => return *n,
+                    JsValue::Bool(true) => return 1.0,
+                    JsValue::Bool(false) => return 0.0,
+                    JsValue::Null => return 0.0,
+                    JsValue::Undefined => return f64::NAN,
+                    _ => {} // Non-primitive: TypeError
+                }
+            }
+            // If both valueOf and toString were tried and returned objects → TypeError
+            if tried_valueof || tried_tostring {
+                let err = vm.make_type_error("Cannot convert object to primitive value");
+                vm.throw_native(err);
             }
             f64::NAN
         }
         JsValue::Array(_) | JsValue::Function(_) => f64::NAN,
-    };
-    if n.is_nan() || n < 0.0 || !n.is_finite() { 0 } else { (n as u64).min(0xFFFF_FFFF) as usize }
+    }
+}
+
+/// Convert a JsValue to a length (ToLength), using to_number_vm.
+fn to_length_vm(vm: &mut Vm, val: &JsValue) -> usize {
+    let n = to_number_vm(vm, val);
+    if n.is_nan() || n < 0.0 { 0 }
+    else if !n.is_finite() { usize::MAX } // Infinity → huge value (callers check for RangeError)
+    else { (n as u64).min(0x1F_FFFF_FFFF_FFFF) as usize } // 2^53 - 1
 }
 
 /// Get array-like entries from `this`. Supports Array and Object with `length`.
@@ -112,11 +144,41 @@ fn this_array_like(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>
                         }
                     }
                 }
+                // Also check prototype chain for inherited accessor properties
+                // (e.g. Object.defineProperty(Array.prototype, "0", {get: ...}))
+                let mut proto_opt: Option<Rc<RefCell<JsObject>>> = Some(vm.array_proto.clone());
+                let mut depth = 0;
+                while let Some(proto) = proto_opt {
+                    depth += 1;
+                    if depth > 20 { break; }
+                    let p = proto.borrow();
+                    for (key, prop) in p.properties.iter() {
+                        if let Ok(idx) = key.parse::<usize>() {
+                            if idx < length
+                                && !entries.iter().any(|&(i, _)| i == idx)
+                                && !accessor_keys.iter().any(|&(i, _)| i == idx)
+                            {
+                                if prop.is_accessor() {
+                                    if let Some(ref g) = prop.getter {
+                                        accessor_keys.push((idx, Some(g.clone())));
+                                    }
+                                } else {
+                                    entries.push((idx, prop.value.clone()));
+                                }
+                            }
+                        }
+                    }
+                    proto_opt = p.prototype.clone();
+                }
             }
             // Invoke getters via VM (outside borrow)
             for (idx, getter) in accessor_keys {
                 if let Some(getter_fn) = getter {
                     let val = vm.call_value(&getter_fn, &[], this_val.clone());
+                    if let Some(exc) = vm.last_exception.take() {
+                        vm.pending_exception = Some(exc);
+                    }
+                    if vm.pending_exception.is_some() { break; }
                     // Replace or insert the entry
                     if let Some(existing) = entries.iter_mut().find(|(i, _)| *i == idx) {
                         existing.1 = val;
@@ -129,30 +191,62 @@ fn this_array_like(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>
             Some((this_val.clone(), length, entries))
         }
         JsValue::Object(obj) => {
-            // Get length value first (may need VM to call valueOf/toString)
-            let len_val = obj.borrow().get("length");
+            // Get length value — invoke getter if it's an accessor property
+            let len_val = vm.get_property_invoking_getter(&this_val, "length");
             let len = to_length_vm(vm, &len_val);
-            // For sparse array-like objects: collect only existing numeric properties
-            // instead of iterating 0..len (which could be billions).
-            let mut entries = Vec::new();
-            let o = obj.borrow();
-            for (key, prop) in o.properties.iter() {
-                if let Ok(idx) = key.parse::<usize>() {
-                    if idx < len {
-                        entries.push((idx, prop.value.clone()));
-                    }
-                }
+            // If ToPrimitive threw TypeError, propagate it
+            if vm.pending_exception.is_some() {
+                return None;
             }
-            // Also check prototype chain for numeric properties
-            if let Some(proto) = &o.prototype {
-                let p = proto.borrow();
-                for (key, prop) in p.properties.iter() {
+            // Collect data properties and accessor getters separately
+            let mut entries = Vec::new();
+            let mut accessor_getters: Vec<(usize, JsValue)> = Vec::new();
+            {
+                let o = obj.borrow();
+                for (key, prop) in o.properties.iter() {
                     if let Ok(idx) = key.parse::<usize>() {
-                        if idx < len && !entries.iter().any(|&(i, _)| i == idx) {
-                            entries.push((idx, prop.value.clone()));
+                        if idx < len {
+                            if prop.is_accessor() {
+                                if let Some(ref g) = prop.getter {
+                                    accessor_getters.push((idx, g.clone()));
+                                }
+                            } else {
+                                entries.push((idx, prop.value.clone()));
+                            }
                         }
                     }
                 }
+                // Walk prototype chain for inherited numeric properties
+                let mut proto_opt = o.prototype.clone();
+                let mut depth = 0;
+                while let Some(proto) = proto_opt {
+                    depth += 1;
+                    if depth > 50 { break; }
+                    let p = proto.borrow();
+                    for (key, prop) in p.properties.iter() {
+                        if let Ok(idx) = key.parse::<usize>() {
+                            if idx < len && !entries.iter().any(|&(i, _)| i == idx) && !accessor_getters.iter().any(|&(i, _)| i == idx) {
+                                if prop.is_accessor() {
+                                    if let Some(ref g) = prop.getter {
+                                        accessor_getters.push((idx, g.clone()));
+                                    }
+                                } else {
+                                    entries.push((idx, prop.value.clone()));
+                                }
+                            }
+                        }
+                    }
+                    proto_opt = p.prototype.clone();
+                }
+            }
+            // Invoke accessor getters via VM (outside borrow)
+            for (idx, getter_fn) in accessor_getters {
+                let val = vm.call_value(&getter_fn, &[], this_val.clone());
+                if let Some(exc) = vm.last_exception.take() {
+                    vm.pending_exception = Some(exc);
+                }
+                if vm.pending_exception.is_some() { break; }
+                entries.push((idx, val));
             }
             entries.sort_by_key(|&(idx, _)| idx);
             Some((this_val.clone(), len, entries))
@@ -607,8 +701,9 @@ fn flatten_vec(elements: &[JsValue], depth: usize) -> Vec<JsValue> {
 
 pub fn array_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let Some(arr) = this_array(vm) {
+        let idx_val = args.first().cloned().unwrap_or(JsValue::Undefined);
+        let idx = to_number_vm(vm, &idx_val) as i64;
         let a = arr.borrow();
-        let idx = args.first().map(|v| v.to_number() as i64).unwrap_or(0);
         let len = a.length as i64;
         let actual = if idx < 0 { len + idx } else { idx };
         if actual >= 0 && actual < len {
@@ -635,9 +730,16 @@ pub fn call_callback_pub(vm: &mut Vm, callback: &JsValue, args: &[JsValue]) -> J
 }
 
 /// Helper: call a callback function with given args.
+/// Propagates exceptions from last_exception to pending_exception.
 fn call_callback(vm: &mut Vm, callback: &JsValue, args: &[JsValue]) -> JsValue {
     match callback {
-        JsValue::Function(_) => vm.call_value(callback, args, JsValue::Undefined),
+        JsValue::Function(_) => {
+            let result = vm.call_value(callback, args, JsValue::Undefined);
+            if let Some(exc) = vm.last_exception.take() {
+                vm.pending_exception = Some(exc);
+            }
+            result
+        }
         _ => JsValue::Undefined,
     }
 }
@@ -645,7 +747,13 @@ fn call_callback(vm: &mut Vm, callback: &JsValue, args: &[JsValue]) -> JsValue {
 /// Helper: call a callback function with an explicit `this` binding.
 fn call_callback_with_this(vm: &mut Vm, callback: &JsValue, this_arg: &JsValue, args: &[JsValue]) -> JsValue {
     match callback {
-        JsValue::Function(_) => vm.call_value(callback, args, this_arg.clone()),
+        JsValue::Function(_) => {
+            let result = vm.call_value(callback, args, this_arg.clone());
+            if let Some(exc) = vm.last_exception.take() {
+                vm.pending_exception = Some(exc);
+            }
+            result
+        }
         _ => JsValue::Undefined,
     }
 }
@@ -658,10 +766,17 @@ pub fn array_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         None => return JsValue::Undefined,
     };
     if !require_callable(vm, &callback) { return JsValue::Undefined; }
+    // ArraySpeciesCreate: RangeError if length > 2^32 - 1
+    if len > 0xFFFF_FFFF {
+        let err = vm.make_range_error("Invalid array length");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
     let mut result = JsArray::new();
     result.length = len;
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el, JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         result.elements.insert(idx, val);
     }
     JsValue::Array(Rc::new(RefCell::new(result)))
@@ -678,6 +793,7 @@ pub fn array_filter(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut result = Vec::new();
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el.clone(), JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         if val.to_boolean() {
             result.push(el);
         }
@@ -695,6 +811,7 @@ pub fn array_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_callable(vm, &callback) { return JsValue::Undefined; }
     for (idx, el) in entries {
         call_callback_with_this(vm, &callback, &this_arg, &[el, JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
     }
     JsValue::Undefined
 }
@@ -721,6 +838,7 @@ pub fn array_reduce(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     for &(idx, ref el) in &entries[start..] {
         acc = call_callback(vm, &callback, &[acc, el.clone(), JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
     }
     acc
 }
@@ -752,6 +870,7 @@ pub fn array_reduce_right(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     };
     for &(idx, ref el) in iter.iter().rev() {
         acc = call_callback(vm, &callback, &[acc, el.clone(), JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
     }
     acc
 }
@@ -766,6 +885,7 @@ pub fn array_find(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_callable(vm, &callback) { return JsValue::Undefined; }
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el.clone(), JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         if val.to_boolean() {
             return el;
         }
@@ -783,6 +903,7 @@ pub fn array_find_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_callable(vm, &callback) { return JsValue::Undefined; }
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el, JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         if val.to_boolean() {
             return JsValue::Number(idx as f64);
         }
@@ -800,6 +921,7 @@ pub fn array_some(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_callable(vm, &callback) { return JsValue::Undefined; }
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el, JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         if val.to_boolean() {
             return JsValue::Bool(true);
         }
@@ -817,6 +939,7 @@ pub fn array_every(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_callable(vm, &callback) { return JsValue::Undefined; }
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el, JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         if !val.to_boolean() {
             return JsValue::Bool(false);
         }
@@ -835,6 +958,7 @@ pub fn array_flat_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut result = Vec::new();
     for (idx, el) in entries {
         let val = call_callback_with_this(vm, &callback, &this_arg, &[el, JsValue::Number(idx as f64), this_obj.clone()]);
+        if vm.pending_exception.is_some() { return JsValue::Undefined; }
         match val {
             JsValue::Array(a) => {
                 let inner = a.borrow();

@@ -130,16 +130,25 @@ pub fn promise_then(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
         if state == "fulfilled" {
             if on_fulfilled.is_function() {
-                // Enqueue as microtask per ES2023 §27.2.5.4
-                let np = new_promise.clone();
-                enqueue_promise_reaction(vm, on_fulfilled, value, np, true);
+                // Run callback immediately for already-settled promises
+                // (React and most code expects synchronous .then on resolved promises)
+                let result = vm.call_value(&on_fulfilled, &[value], JsValue::Undefined);
+                if let Some(exc) = vm.last_exception.take() {
+                    settle_promise(vm, &new_promise, "rejected", &exc);
+                } else {
+                    settle_promise(vm, &new_promise, "fulfilled", &result);
+                }
             } else {
                 settle_promise(vm, &new_promise, "fulfilled", &value);
             }
         } else if state == "rejected" {
             if on_rejected.is_function() {
-                let np = new_promise.clone();
-                enqueue_promise_reaction(vm, on_rejected, value, np, false);
+                let result = vm.call_value(&on_rejected, &[value], JsValue::Undefined);
+                if let Some(exc) = vm.last_exception.take() {
+                    settle_promise(vm, &new_promise, "rejected", &exc);
+                } else {
+                    settle_promise(vm, &new_promise, "fulfilled", &result);
+                }
             } else {
                 settle_promise(vm, &new_promise, "rejected", &value);
             }
@@ -193,7 +202,7 @@ fn enqueue_promise_reaction(vm: &mut Vm, callback: JsValue, value: JsValue, new_
         upvalues: Vec::new(),
         prototype: None,
         own_props: alloc::collections::BTreeMap::new(),
-        arity: None,
+        arity: None, super_class: None,
     };
     let wrapper = JsValue::Function(Rc::new(RefCell::new(wrapper_fn)));
     // Pass callback, value, new_promise, is_fulfill as args to the microtask
@@ -293,6 +302,39 @@ pub fn promise_finally(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 // ═══════════════════════════════════════════════════════════
 // Promise static methods
 // ═══════════════════════════════════════════════════════════
+
+/// Create a resolved Promise wrapping the given value. No VM needed.
+pub fn make_resolved_promise(value: JsValue) -> JsValue {
+    if let JsValue::Object(obj) = &value {
+        if obj.borrow().internal_tag.as_deref() == Some("__promise__") {
+            return value;
+        }
+    }
+    let mut obj = JsObject::new();
+    obj.internal_tag = Some(String::from("__promise__"));
+    obj.set(String::from("__state"), JsValue::String(String::from("fulfilled")));
+    obj.set(String::from("__value"), value);
+    obj.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
+    obj.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
+    obj.set(String::from("then"), native_fn("then", promise_then));
+    obj.set(String::from("catch"), native_fn("catch", promise_catch));
+    obj.set(String::from("finally"), native_fn("finally", promise_finally));
+    JsValue::Object(Rc::new(RefCell::new(obj)))
+}
+
+/// Create a rejected Promise with the given reason.
+pub fn make_rejected_promise(reason: JsValue) -> JsValue {
+    let mut obj = JsObject::new();
+    obj.internal_tag = Some(String::from("__promise__"));
+    obj.set(String::from("__state"), JsValue::String(String::from("rejected")));
+    obj.set(String::from("__value"), reason);
+    obj.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
+    obj.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
+    obj.set(String::from("then"), native_fn("then", promise_then));
+    obj.set(String::from("catch"), native_fn("catch", promise_catch));
+    obj.set(String::from("finally"), native_fn("finally", promise_finally));
+    JsValue::Object(Rc::new(RefCell::new(obj)))
+}
 
 pub fn promise_resolve(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let value = args.first().cloned().unwrap_or(JsValue::Undefined);

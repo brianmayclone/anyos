@@ -20,12 +20,13 @@ use libjs::JsEngine;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: test262-runner <test262-dir> [filter] [--limit N] [--start N] [--timeout SECS] [--verbose]");
+        eprintln!("Usage: test262-runner <test262-dir> [filter] [--limit N] [--start N] [--timeout SECS] [--verbose] [--live]");
         std::process::exit(1);
     }
 
     let test262_dir = PathBuf::from(&args[1]);
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
+    let live = args.iter().any(|a| a == "--live");
     let limit: usize = args.iter()
         .position(|a| a == "--limit")
         .and_then(|i| args.get(i + 1))
@@ -99,7 +100,7 @@ fn main() {
         let rel_path = path.strip_prefix(&test_dir).unwrap_or(path);
         let source = match fs::read_to_string(path) {
             Ok(s) => s,
-            Err(_) => { skipped += 1; continue; }
+            Err(_) => { skipped += 1; if live { eprintln!("[R]S"); } continue; }
         };
 
         // Parse frontmatter
@@ -108,13 +109,24 @@ fn main() {
         // Skip tests with unsupported features
         if should_skip(&meta) {
             skipped += 1;
+            if live { eprintln!("[R]S"); }
+            continue;
+        }
+
+        // Determine flags early
+        let is_only_strict = meta.get("flags").map(|f| f.contains("onlyStrict")).unwrap_or(false);
+        let is_module = meta.get("flags").map(|f| f.contains("module")).unwrap_or(false);
+        let is_async = meta.get("flags").map(|f| f.contains("async")).unwrap_or(false);
+
+        // Skip module tests (async tests are now supported via synchronous await)
+        if is_module {
+            skipped += 1;
+            if live { eprintln!("[R]S"); }
             continue;
         }
 
         // Build test source: harness + includes + test
         let mut full_source = String::new();
-        // Insert "use strict" for onlyStrict tests (before harness)
-        let is_only_strict = meta.get("flags").map(|f| f.contains("onlyStrict")).unwrap_or(false);
         if is_only_strict {
             full_source.push_str("\"use strict\";\n");
         }
@@ -122,6 +134,12 @@ fn main() {
         full_source.push('\n');
         full_source.push_str(&assert_js);
         full_source.push('\n');
+        // $DONOTEVALUATE for negative parse tests
+        full_source.push_str("function $DONOTEVALUATE() { throw new Test262Error('$DONOTEVALUATE: test should not have been evaluated'); }\n");
+        // Async test support: inject $DONE callback
+        if is_async {
+            full_source.push_str("var __async_failed = false;\nfunction $DONE(err) { if (err) { __async_failed = true; throw (err instanceof Error ? err : new Test262Error(String(err))); } }\n");
+        }
 
         // Add required includes
         if let Some(includes) = meta.get("includes") {
@@ -138,14 +156,6 @@ fn main() {
 
         // Determine expected outcome
         let expect_error = meta.get("negative").is_some();
-        let is_module = meta.get("flags").map(|f| f.contains("module")).unwrap_or(false);
-        let is_async = meta.get("flags").map(|f| f.contains("async")).unwrap_or(false);
-
-        // Skip module and async tests for now
-        if is_module || is_async {
-            skipped += 1;
-            continue;
-        }
 
         // Run test in a separate thread with bounded stack (16MB) and timeout
         let full_source_clone = full_source.clone();
@@ -176,12 +186,16 @@ fn main() {
                 let _ = tx.send((exc_msg.is_none(), console, exc_msg));
             });
 
+        let mut is_timeout = false;
         let (succeeded, console_out, exc_msg) = match handle {
             Ok(_h) => match rx.recv_timeout(timeout_dur) {
                 Ok(result) => result,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     timed_out += 1;
-                    eprintln!("  TIMEOUT  #{} {} (>{}s)", test_num, rel_path.display(), timeout_secs);
+                    is_timeout = true;
+                    if !live {
+                        eprintln!("  TIMEOUT  #{} {} (>{}s)", test_num, rel_path.display(), timeout_secs);
+                    }
                     (false, Vec::new(), Some(format!("TIMEOUT after {}s", timeout_secs)))
                 }
                 Err(_) => (false, Vec::new(), Some("PANIC: channel disconnected".to_string())),
@@ -191,6 +205,9 @@ fn main() {
 
         let test_passed = if expect_error {
             !succeeded // Expected error: pass if execution failed
+        } else if is_async {
+            // Async tests: pass if no exception and $DONE was not called with error
+            succeeded && !console_out.iter().any(|s| s.contains("Test262Error"))
         } else if succeeded {
             !console_out.iter().any(|s| s.contains("Test262Error"))
         } else {
@@ -212,8 +229,20 @@ fn main() {
             errors.push((short_path, reason));
         }
 
+        // Per-test live output for TUI
+        if live {
+            if test_passed {
+                eprintln!("[R]P\t{}", rel_path.display());
+            } else if is_timeout {
+                eprintln!("[R]T\t{}", rel_path.display());
+            } else {
+                let reason = errors.last().map(|(_, r)| r.as_str()).unwrap_or("?");
+                eprintln!("[R]F\t{}\t{}", rel_path.display(), reason);
+            }
+        }
+
         // Progress every 500 tests
-        if (i + 1) % 500 == 0 {
+        if !live && (i + 1) % 500 == 0 {
             let elapsed = timer_start.elapsed().as_secs_f64();
             let rate = (i + 1) as f64 / elapsed;
             eprintln!(
@@ -364,7 +393,7 @@ fn parse_yaml_list(val: &str) -> Vec<String> {
 
 /// Features that we know we don't support — skip these tests.
 const SKIP_FEATURES: &[&str] = &[
-    "SharedArrayBuffer", "Atomics", "async-iteration", "async-functions",
+    "SharedArrayBuffer", "Atomics", "async-iteration",
     "top-level-await", "import-assertions", "import-attributes",
     "dynamic-import", "decorators", "explicit-resource-management",
     "resizable-arraybuffer", "arraybuffer-transfer",
@@ -374,8 +403,8 @@ const SKIP_FEATURES: &[&str] = &[
     "tail-call-optimization", "iterator-helpers",
     "json-modules", "source-phase-imports",
     "Float16Array", "uint8array-base64",
-    "IsHTMLDDA", "change-array-by-copy",
-    "array-grouping", "BigInt",
+    "IsHTMLDDA",
+    "BigInt",
 ];
 
 fn should_skip(meta: &HashMap<String, String>) -> bool {

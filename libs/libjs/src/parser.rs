@@ -25,7 +25,7 @@ pub struct Parser {
 }
 
 /// Maximum parser recursion depth before bailing out with a SyntaxError.
-const MAX_PARSER_DEPTH: usize = 256;
+const MAX_PARSER_DEPTH: usize = 128;
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
@@ -825,7 +825,7 @@ impl Parser {
         self.expect(&TokenKind::Class);
         let name = self.ident_str();
         let super_class = if self.eat(&TokenKind::Extends) {
-            Some(self.parse_left_hand_side_expr())
+            Some(self.parse_assignment_expr())
         } else {
             None
         };
@@ -1594,6 +1594,15 @@ impl Parser {
                         index: Box::new(index),
                     };
                 }
+                // Tagged template: expr`template`
+                TokenKind::Template(ref s) => {
+                    let template = s.clone();
+                    self.pos += 1;
+                    expr = Expr::TaggedTemplate {
+                        tag: Box::new(expr),
+                        template,
+                    };
+                }
                 _ => break,
             }
         }
@@ -1648,6 +1657,19 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Expr {
+        self.depth += 1;
+        if self.depth > MAX_PARSER_DEPTH {
+            self.depth -= 1;
+            self.syntax_error("Maximum nesting depth exceeded");
+            self.pos = self.tokens.len(); // skip to end
+            return Expr::Undefined;
+        }
+        let result = self.parse_primary_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_primary_inner(&mut self) -> Expr {
         match self.peek().clone() {
             TokenKind::Number(n) => {
                 self.pos += 1;
@@ -1921,7 +1943,7 @@ impl Parser {
             None
         };
         let super_class = if self.eat(&TokenKind::Extends) {
-            Some(Box::new(self.parse_left_hand_side_expr()))
+            Some(Box::new(self.parse_assignment_expr()))
         } else {
             None
         };

@@ -38,7 +38,7 @@ impl Vm {
         {
             let mut p = self.object_proto.borrow_mut();
             p.set_hidden(String::from("hasOwnProperty"), native_fn("hasOwnProperty", native_object::object_has_own_property));
-            // propertyIsEnumerable is available via __propertyIsEnumerable or direct property check
+            p.set_hidden(String::from("propertyIsEnumerable"), native_fn("propertyIsEnumerable", native_object::object_property_is_enumerable));
             p.set_hidden(String::from("isPrototypeOf"), native_fn("isPrototypeOf", native_object::object_is_prototype_of));
             p.set_hidden(String::from("toString"), native_fn("toString", native_object::object_to_string));
             p.set_hidden(String::from("valueOf"), native_fn("valueOf", native_object::object_value_of));
@@ -95,6 +95,8 @@ impl Vm {
         {
             let mut p = self.string_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
+            p.internal_tag = Some(String::from("__string__"));
+            p.primitive_value = Some(Box::new(JsValue::String(String::new())));
             p.set_hidden(String::from("charAt"), native_fn("charAt", native_string::string_char_at));
             p.set_hidden(String::from("charCodeAt"), native_fn("charCodeAt", native_string::string_char_code_at));
             p.set_hidden(String::from("codePointAt"), native_fn("codePointAt", native_string::string_code_point_at));
@@ -136,9 +138,12 @@ impl Vm {
         }
 
         // ── Number.prototype ──
+        // Per spec: Number.prototype is itself a Number object with [[NumberData]] = +0.
         {
             let mut p = self.number_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
+            p.internal_tag = Some(String::from("__number__"));
+            p.primitive_value = Some(Box::new(JsValue::Number(0.0)));
             p.set_hidden(String::from("toString"), native_fn("toString", native_number::number_to_string));
             p.set_hidden(String::from("valueOf"), native_fn("valueOf", native_number::number_value_of));
             p.set_hidden(String::from("toFixed"), native_fn("toFixed", native_number::number_to_fixed));
@@ -154,37 +159,37 @@ impl Vm {
             p.prototype = Some(self.object_proto.clone());
             p.internal_tag = Some(String::from("__boolean__"));
             p.primitive_value = Some(Box::new(JsValue::Bool(false)));
-            p.set(String::from("__bool_data__"), JsValue::Bool(false));
-            p.set(String::from("toString"), native_fn("toString", native_globals::boolean_to_string));
-            p.set(String::from("valueOf"), native_fn("valueOf", native_globals::boolean_value_of));
+            p.set_hidden(String::from("__bool_data__"), JsValue::Bool(false));
+            p.set_hidden(String::from("toString"), native_fn("toString", native_globals::boolean_to_string));
+            p.set_hidden(String::from("valueOf"), native_fn("valueOf", native_globals::boolean_value_of));
         }
 
         // ── Function.prototype ──
         {
             let mut p = self.function_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
-            p.set(String::from("call"), native_fn("call", native_function::function_call));
-            p.set(String::from("apply"), native_fn("apply", native_function::function_apply));
-            p.set(String::from("bind"), native_fn("bind", native_function::function_bind));
-            p.set(String::from("toString"), native_fn("toString", native_function::function_to_string));
+            p.set_hidden(String::from("call"), native_fn_with_length("call", native_function::function_call, 1));
+            p.set_hidden(String::from("apply"), native_fn_with_length("apply", native_function::function_apply, 2));
+            p.set_hidden(String::from("bind"), native_fn_with_length("bind", native_function::function_bind, 1));
+            p.set_hidden(String::from("toString"), native_fn_with_length("toString", native_function::function_to_string, 0));
         }
 
         // ── Error.prototype ──
         {
             let mut p = self.error_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
-            p.set(String::from("name"), JsValue::String(String::from("Error")));
-            p.set(String::from("message"), JsValue::String(String::new()));
-            p.set(String::from("toString"), native_fn("toString", native_error::error_to_string));
+            p.set_hidden(String::from("name"), JsValue::String(String::from("Error")));
+            p.set_hidden(String::from("message"), JsValue::String(String::new()));
+            p.set_hidden(String::from("toString"), native_fn("toString", native_error::error_to_string));
         }
 
         // ── RegExp.prototype ──
         {
             let mut p = self.regexp_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
-            p.set(String::from("test"), native_fn("test", native_regexp::regexp_test));
-            p.set(String::from("exec"), native_fn("exec", native_regexp::regexp_exec));
-            p.set(String::from("toString"), native_fn("toString", native_regexp::regexp_to_string));
+            p.set_hidden(String::from("test"), native_fn_with_length("test", native_regexp::regexp_test, 1));
+            p.set_hidden(String::from("exec"), native_fn_with_length("exec", native_regexp::regexp_exec, 1));
+            p.set_hidden(String::from("toString"), native_fn_with_length("toString", native_regexp::regexp_to_string, 0));
         }
 
         // ── Generator.prototype ──
@@ -439,67 +444,71 @@ impl Vm {
     }
 
     fn init_math(&mut self) {
-        let math = JsValue::new_object();
-        // Math.[[Prototype]] = Object.prototype (per spec)
-        if let JsValue::Object(obj) = &math {
-            obj.borrow_mut().prototype = Some(self.object_proto.clone());
+        let math_rc = Rc::new(RefCell::new(JsObject::new()));
+        {
+            let mut m = math_rc.borrow_mut();
+            m.prototype = Some(self.object_proto.clone());
+            m.internal_tag = Some(String::from("__math__"));
+            m.set_hidden(String::from("PI"), JsValue::Number(core::f64::consts::PI));
+            m.set_hidden(String::from("E"), JsValue::Number(core::f64::consts::E));
+            m.set_hidden(String::from("LN2"), JsValue::Number(core::f64::consts::LN_2));
+            m.set_hidden(String::from("LN10"), JsValue::Number(core::f64::consts::LN_10));
+            m.set_hidden(String::from("LOG2E"), JsValue::Number(core::f64::consts::LOG2_E));
+            m.set_hidden(String::from("LOG10E"), JsValue::Number(core::f64::consts::LOG10_E));
+            m.set_hidden(String::from("SQRT2"), JsValue::Number(core::f64::consts::SQRT_2));
+            m.set_hidden(String::from("SQRT1_2"), JsValue::Number(core::f64::consts::FRAC_1_SQRT_2));
         }
-        math.set_property(String::from("PI"), JsValue::Number(core::f64::consts::PI));
-        math.set_property(String::from("E"), JsValue::Number(core::f64::consts::E));
-        math.set_property(String::from("LN2"), JsValue::Number(core::f64::consts::LN_2));
-        math.set_property(String::from("LN10"), JsValue::Number(core::f64::consts::LN_10));
-        math.set_property(String::from("LOG2E"), JsValue::Number(core::f64::consts::LOG2_E));
-        math.set_property(String::from("LOG10E"), JsValue::Number(core::f64::consts::LOG10_E));
-        math.set_property(String::from("SQRT2"), JsValue::Number(core::f64::consts::SQRT_2));
-        math.set_property(String::from("SQRT1_2"), JsValue::Number(core::f64::consts::FRAC_1_SQRT_2));
-        math.set_property(String::from("abs"), native_fn("abs", native_math::math_abs));
-        math.set_property(String::from("floor"), native_fn("floor", native_math::math_floor));
-        math.set_property(String::from("ceil"), native_fn("ceil", native_math::math_ceil));
-        math.set_property(String::from("round"), native_fn("round", native_math::math_round));
-        math.set_property(String::from("trunc"), native_fn("trunc", native_math::math_trunc));
-        // Math.max.length = 2, Math.min.length = 2 per spec
-        let max_fn = native_fn("max", native_math::math_max);
-        max_fn.set_property(String::from("length"), JsValue::Number(2.0));
-        math.set_property(String::from("max"), max_fn);
-        let min_fn = native_fn("min", native_math::math_min);
-        min_fn.set_property(String::from("length"), JsValue::Number(2.0));
-        math.set_property(String::from("min"), min_fn);
-        math.set_property(String::from("pow"), native_fn("pow", native_math::math_pow));
-        math.set_property(String::from("sqrt"), native_fn("sqrt", native_math::math_sqrt));
-        math.set_property(String::from("cbrt"), native_fn("cbrt", native_math::math_cbrt));
-        math.set_property(String::from("sign"), native_fn("sign", native_math::math_sign));
-        math.set_property(String::from("log"), native_fn("log", native_math::math_log_fn));
-        math.set_property(String::from("log2"), native_fn("log2", native_math::math_log2));
-        math.set_property(String::from("log10"), native_fn("log10", native_math::math_log10));
-        math.set_property(String::from("sin"), native_fn("sin", native_math::math_sin));
-        math.set_property(String::from("cos"), native_fn("cos", native_math::math_cos));
-        math.set_property(String::from("tan"), native_fn("tan", native_math::math_tan));
-        math.set_property(String::from("atan2"), native_fn("atan2", native_math::math_atan2));
-        math.set_property(String::from("hypot"), native_fn("hypot", native_math::math_hypot));
-        math.set_property(String::from("clz32"), native_fn("clz32", native_math::math_clz32));
-        math.set_property(String::from("fround"), native_fn("fround", native_math::math_fround));
-        math.set_property(String::from("random"), native_fn("random", native_math::math_random));
-        math.set_property(String::from("exp"),    native_fn("exp",    native_math::math_exp));
-        math.set_property(String::from("expm1"),  native_fn("expm1",  native_math::math_expm1));
-        math.set_property(String::from("log1p"),  native_fn("log1p",  native_math::math_log1p));
-        math.set_property(String::from("asin"),   native_fn("asin",   native_math::math_asin));
-        math.set_property(String::from("acos"),   native_fn("acos",   native_math::math_acos));
-        math.set_property(String::from("atan"),   native_fn("atan",   native_math::math_atan));
-        math.set_property(String::from("sinh"),   native_fn("sinh",   native_math::math_sinh));
-        math.set_property(String::from("cosh"),   native_fn("cosh",   native_math::math_cosh));
-        math.set_property(String::from("tanh"),   native_fn("tanh",   native_math::math_tanh));
-        math.set_property(String::from("acosh"),  native_fn("acosh",  native_math::math_acosh));
-        math.set_property(String::from("asinh"),  native_fn("asinh",  native_math::math_asinh));
-        math.set_property(String::from("atanh"),  native_fn("atanh",  native_math::math_atanh));
-        math.set_property(String::from("imul"),   native_fn("imul",   native_math::math_imul));
-        self.set_global("Math", math);
+        {
+            let mut m = math_rc.borrow_mut();
+            m.set_hidden(String::from("abs"), native_fn_with_length("abs", native_math::math_abs, 1));
+            m.set_hidden(String::from("floor"), native_fn_with_length("floor", native_math::math_floor, 1));
+            m.set_hidden(String::from("ceil"), native_fn_with_length("ceil", native_math::math_ceil, 1));
+            m.set_hidden(String::from("round"), native_fn_with_length("round", native_math::math_round, 1));
+            m.set_hidden(String::from("trunc"), native_fn_with_length("trunc", native_math::math_trunc, 1));
+            m.set_hidden(String::from("max"), native_fn_with_length("max", native_math::math_max, 2));
+            m.set_hidden(String::from("min"), native_fn_with_length("min", native_math::math_min, 2));
+            m.set_hidden(String::from("pow"), native_fn_with_length("pow", native_math::math_pow, 2));
+            m.set_hidden(String::from("sqrt"), native_fn_with_length("sqrt", native_math::math_sqrt, 1));
+            m.set_hidden(String::from("cbrt"), native_fn_with_length("cbrt", native_math::math_cbrt, 1));
+            m.set_hidden(String::from("sign"), native_fn_with_length("sign", native_math::math_sign, 1));
+            m.set_hidden(String::from("log"), native_fn_with_length("log", native_math::math_log_fn, 1));
+            m.set_hidden(String::from("log2"), native_fn_with_length("log2", native_math::math_log2, 1));
+            m.set_hidden(String::from("log10"), native_fn_with_length("log10", native_math::math_log10, 1));
+            m.set_hidden(String::from("sin"), native_fn_with_length("sin", native_math::math_sin, 1));
+            m.set_hidden(String::from("cos"), native_fn_with_length("cos", native_math::math_cos, 1));
+            m.set_hidden(String::from("tan"), native_fn_with_length("tan", native_math::math_tan, 1));
+            m.set_hidden(String::from("atan2"), native_fn_with_length("atan2", native_math::math_atan2, 2));
+            m.set_hidden(String::from("hypot"), native_fn_with_length("hypot", native_math::math_hypot, 2));
+            m.set_hidden(String::from("clz32"), native_fn_with_length("clz32", native_math::math_clz32, 1));
+            m.set_hidden(String::from("fround"), native_fn_with_length("fround", native_math::math_fround, 1));
+            m.set_hidden(String::from("random"), native_fn_with_length("random", native_math::math_random, 0));
+            m.set_hidden(String::from("exp"), native_fn_with_length("exp", native_math::math_exp, 1));
+            m.set_hidden(String::from("expm1"), native_fn_with_length("expm1", native_math::math_expm1, 1));
+            m.set_hidden(String::from("log1p"), native_fn_with_length("log1p", native_math::math_log1p, 1));
+            m.set_hidden(String::from("asin"), native_fn_with_length("asin", native_math::math_asin, 1));
+            m.set_hidden(String::from("acos"), native_fn_with_length("acos", native_math::math_acos, 1));
+            m.set_hidden(String::from("atan"), native_fn_with_length("atan", native_math::math_atan, 1));
+            m.set_hidden(String::from("sinh"), native_fn_with_length("sinh", native_math::math_sinh, 1));
+            m.set_hidden(String::from("cosh"), native_fn_with_length("cosh", native_math::math_cosh, 1));
+            m.set_hidden(String::from("tanh"), native_fn_with_length("tanh", native_math::math_tanh, 1));
+            m.set_hidden(String::from("acosh"), native_fn_with_length("acosh", native_math::math_acosh, 1));
+            m.set_hidden(String::from("asinh"), native_fn_with_length("asinh", native_math::math_asinh, 1));
+            m.set_hidden(String::from("atanh"), native_fn_with_length("atanh", native_math::math_atanh, 1));
+            m.set_hidden(String::from("imul"), native_fn_with_length("imul", native_math::math_imul, 2));
+        }
+        self.set_global("Math", JsValue::Object(math_rc));
     }
 
     fn init_json(&mut self) {
-        let json = JsValue::new_object();
-        json.set_property(String::from("parse"), native_fn("parse", native_json::json_parse));
-        json.set_property(String::from("stringify"), native_fn("stringify", native_json::json_stringify));
-        self.set_global("JSON", json);
+        let json_rc = Rc::new(RefCell::new(JsObject::new()));
+        {
+            let mut j = json_rc.borrow_mut();
+            j.prototype = Some(self.object_proto.clone());
+            j.internal_tag = Some(String::from("__json__"));
+            j.set_hidden(String::from("parse"), native_fn_with_length("parse", native_json::json_parse, 2));
+            j.set_hidden(String::from("stringify"), native_fn_with_length("stringify", native_json::json_stringify, 3));
+        }
+        self.set_global("JSON", JsValue::Object(json_rc));
     }
 
     fn init_object_statics(&mut self) {
@@ -671,7 +680,7 @@ fn global_eval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             upvalues: alloc::vec::Vec::new(),
             prototype: None,
             own_props: alloc::collections::BTreeMap::new(),
-            arity: None,
+            arity: None, super_class: None,
         }))),
         &[],
         JsValue::Undefined,

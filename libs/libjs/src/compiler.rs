@@ -1088,10 +1088,24 @@ impl Compiler {
         if is_of {
             self.emit(Op::GetIterator);
         } else {
-            // For-in: get object keys as an array, then iterate
-            // We'll use a simple approach: push keys array + index counter
-            // For simplicity, emit GetIterator which the VM handles for both
+            // For-in: null/undefined → skip entirely (ES2023 §14.7.5.6 step 7a)
+            self.emit(Op::Dup);
+            self.emit(Op::LoadNull);
+            self.emit(Op::StrictEq);
+            let skip_null = self.emit(Op::JumpIfTrue(0));
+            self.emit(Op::Dup);
+            self.emit(Op::LoadUndefined);
+            self.emit(Op::StrictEq);
+            let skip_undef = self.emit(Op::JumpIfTrue(0));
             self.emit(Op::GetIterator);
+            let skip_over = self.emit(Op::Jump(0));
+            // Null/undefined path: pop value, push empty iterator
+            self.patch_jump(skip_null);
+            self.patch_jump(skip_undef);
+            self.emit(Op::Pop); // pop null/undefined
+            self.emit(Op::NewArray(0)); // empty "iterator"
+            self.emit(Op::GetIterator);
+            self.patch_jump(skip_over);
         }
 
         let loop_start = self.offset();
@@ -1489,6 +1503,7 @@ impl Compiler {
         func_scope.chunk.name = name.cloned();
         func_scope.chunk.is_generator = is_generator;
         func_scope.chunk.is_arrow = is_arrow;
+        func_scope.chunk.is_async = is_async;
         // ES2023 §10.2.8: function.length = number of params before the first
         // one with a default value, excluding rest parameters.
         let formal_length = params.iter()
@@ -1816,7 +1831,14 @@ impl Compiler {
 
         // Step 3: if there's a super class, set up the prototype chain.
         if let Some(super_slot) = super_local {
+            // Store super class directly on the constructor function
             // Stack: [..., Constructor]
+            self.emit(Op::Dup);                        // [..., Ctor, Ctor]
+            self.emit(Op::LoadLocal(super_slot));       // [..., Ctor, Ctor, SuperClass]
+            self.emit(Op::SetSuperClass);               // [..., Ctor, Ctor]  (pops SuperClass, sets ctor.super_class)
+            self.emit(Op::Pop);                         // [..., Ctor]
+
+            // Set up prototype chain
             self.emit(Op::Dup);
             let proto_idx = self.add_const(Constant::String(String::from("prototype")));
             self.emit(Op::GetPropNamed(proto_idx));    // [..., Constructor, Constructor.prototype]
@@ -2208,7 +2230,6 @@ impl Compiler {
                 match callee.as_ref() {
                     Expr::Ident(name) if name == "super" => {
                         // super(args) — call parent constructor with current `this`.
-                        // Uses SuperCall to forward new.target from the derived constructor.
                         // Stack layout: [..., SuperClass, arg1..argN]
                         self.emit_load_name("$$super$$");
                         for arg in arguments { self.compile_expr(arg); }
@@ -2477,11 +2498,74 @@ impl Compiler {
                 self.patch_jump(end);
             }
             Expr::TaggedTemplate { tag, template } => {
+                // Tagged template: tag`str0${expr1}str1${expr2}str2`
+                // → tag(["str0", "str1", "str2"], expr1, expr2)
+                // Parse the template into static parts and expression sources
+                let mut static_parts: Vec<String> = Vec::new();
+                let mut expr_sources: Vec<String> = Vec::new();
+                let bytes = template.as_bytes();
+                let mut i = 0;
+                let mut current = String::new();
+                while i < bytes.len() {
+                    if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                        static_parts.push(current.clone());
+                        current.clear();
+                        i += 2;
+                        let mut depth = 1u32;
+                        let mut expr_src = String::new();
+                        while i < bytes.len() && depth > 0 {
+                            match bytes[i] {
+                                b'{' => { depth += 1; expr_src.push(bytes[i] as char); }
+                                b'}' => { depth -= 1; if depth > 0 { expr_src.push(b'}' as char); } }
+                                _ => {
+                                    if bytes[i] < 0x80 {
+                                        expr_src.push(bytes[i] as char);
+                                    } else {
+                                        let start = i;
+                                        while i + 1 < bytes.len() && (bytes[i + 1] & 0xC0) == 0x80 { i += 1; }
+                                        if let Ok(s) = core::str::from_utf8(&bytes[start..=i]) { expr_src.push_str(s); }
+                                    }
+                                }
+                            }
+                            i += 1;
+                        }
+                        expr_sources.push(expr_src);
+                    } else if bytes[i] < 0x80 {
+                        current.push(bytes[i] as char);
+                        i += 1;
+                    } else {
+                        let start = i;
+                        i += 1;
+                        while i < bytes.len() && (bytes[i] & 0xC0) == 0x80 { i += 1; }
+                        if let Ok(s) = core::str::from_utf8(&bytes[start..i]) { current.push_str(s); }
+                    }
+                }
+                static_parts.push(current);
+
+                // Compile: push tag function
                 self.compile_expr(tag);
-                let ci = self.add_const(Constant::String(template.clone()));
-                self.emit(Op::LoadConst(ci));
-                self.emit(Op::NewArray(1));
-                self.emit(Op::Call(1));
+
+                // Build the strings array (first argument)
+                for sp in &static_parts {
+                    let ci = self.add_const(Constant::String(sp.clone()));
+                    self.emit(Op::LoadConst(ci));
+                }
+                self.emit(Op::NewArray(static_parts.len() as u16));
+
+                // Compile each expression as additional arguments
+                let argc = 1 + expr_sources.len(); // strings array + each expression value
+                for expr_src in &expr_sources {
+                    let tokens = crate::lexer::Lexer::tokenize(expr_src);
+                    let mut p = crate::parser::Parser::new(tokens);
+                    let prog = p.parse_program();
+                    if let Some(Stmt::Expr(inner)) = prog.body.into_iter().next() {
+                        self.compile_expr(&inner);
+                    } else {
+                        self.emit(Op::LoadUndefined);
+                    }
+                }
+
+                self.emit(Op::Call(argc as u8));
             }
             Expr::RegExp { pattern, flags } => {
                 let pi = self.add_const(Constant::String(pattern.clone()));

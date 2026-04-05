@@ -190,6 +190,7 @@ struct AnyuiLib {
     marshal_dispatch: extern "C" fn(extern "C" fn(u64), u64),
     // Context menu
     set_context_menu: extern "C" fn(u32, u32),
+    open_popup: extern "C" fn(u32),
     // Tooltip
     set_tooltip: extern "C" fn(u32, *const u8, u32),
     // MessageBox
@@ -460,6 +461,7 @@ pub fn init() -> bool {
             marshal_dispatch: resolve(&handle, "anyui_marshal_dispatch"),
             // Context menu
             set_context_menu: resolve(&handle, "anyui_set_context_menu"),
+            open_popup: resolve(&handle, "anyui_open_popup"),
             // Tooltip
             set_tooltip: resolve(&handle, "anyui_set_tooltip"),
             // MessageBox
@@ -912,6 +914,11 @@ impl Control {
     /// Attach a context menu to this control. Shown on right-click.
     pub fn set_context_menu(&self, menu: &impl Widget) {
         (lib().set_context_menu)(self.id, menu.id());
+    }
+
+    /// Open this control's context menu below the control (for left-click popups).
+    pub fn open_popup(&self) {
+        (lib().open_popup)(self.id);
     }
 
     // ── Tooltip ──

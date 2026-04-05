@@ -501,8 +501,17 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
         }
 
         // Write coalesced run to disk (bypasses cache, goes direct to hardware)
-        crate::drivers::storage::write_sectors_direct(run_start_lba, run_len as u32, &buf);
-        flushed += run_len as u32;
+        if crate::drivers::storage::write_sectors_direct_on_disk(disk_id, run_start_lba, run_len as u32, &buf) {
+            flushed += run_len as u32;
+        } else {
+            let mut cache = BLOCK_CACHE.lock();
+            for j in 0..run_len {
+                let slot = dirty_entries[i + j].1;
+                if slot < cache.slots.len() {
+                    cache.slots[slot].dirty = true;
+                }
+            }
+        }
         i += run_len;
     }
 

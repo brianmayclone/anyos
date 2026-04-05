@@ -585,9 +585,9 @@ fn handle_ipc_commands(
     ipc_buf: &mut [u32; 5],
 ) -> bool {
     // Pass 1: poll all pending IPC events into a local buffer
-    let mut cmds = [[0u32; 5]; 16];
+    let mut cmds = [[0u32; 5]; 64];
     let mut cmd_count = 0usize;
-    for i in 0..16 {
+    for i in 0..cmds.len() {
         if !ipc::evt_chan_poll(compositor_channel, compositor_sub, ipc_buf) {
             break;
         }
@@ -624,7 +624,15 @@ fn handle_ipc_commands(
                 let shm_id = shm_id_and_flags >> 16;
                 let flags = shm_id_and_flags & 0xFFFF;
 
-                if shm_id != 0 && width != 0 && height != 0 {
+                let valid = {
+                    acquire_lock();
+                    let desktop = unsafe { desktop_ref() };
+                    let ok = shm_id != 0 && desktop.validate_window_surface(width, height, flags);
+                    release_lock();
+                    ok
+                };
+
+                if valid {
                     // ── OUTSIDE LOCK: expensive operations ──
                     let shm_addr = ipc::shm_map(shm_id);
                     if shm_addr != 0 {
@@ -642,7 +650,7 @@ fn handle_ipc_commands(
                             desktop::pre_render_chrome_ex(
                                 &mut pre_pixels, width, full_h, "Window", true, flags,
                             );
-                            desktop::copy_shm_to_pixels(
+                            crate::desktop::window::copy_shm_to_pixels(
                                 &mut pre_pixels,
                                 width,
                                 desktop::title_bar_height(),

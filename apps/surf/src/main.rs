@@ -58,16 +58,13 @@ pub(crate) fn debug_heap() -> u64 {
 struct AppState {
     win: ui_lib::Window,
     toolbar: ui_lib::View,
-    btn_back: ui_lib::Button,
-    btn_forward: ui_lib::Button,
-    btn_reload: ui_lib::Button,
+    btn_back: ui_lib::IconButton,
+    btn_forward: ui_lib::IconButton,
+    btn_reload: ui_lib::IconButton,
+    btn_menu: ui_lib::IconButton,
     url_field: ui_lib::TextField,
-    /// Loading progress bar behind the URL field.
+    /// Loading progress bar below the toolbar.
     url_progress: ui_lib::ProgressBar,
-    /// DevTools toggle button (right of URL field).
-    btn_devtools: ui_lib::Button,
-    /// Floating popup menu that appears below the DevTools button.
-    devtools_menu: ui_lib::View,
     tab_bar_view: ui_lib::TabBar,
     content_view: ui_lib::View,
     status_label: ui_lib::Label,
@@ -77,8 +74,6 @@ struct AppState {
     devtools_label: ui_lib::Label,
     /// Whether the DevTools window is currently visible.
     devtools_open: bool,
-    /// Whether the DevTools popup menu is currently visible.
-    devtools_menu_visible: bool,
     tabs: Vec<tab::TabState>,
     active_tab: usize,
     cookies: http::CookieJar,
@@ -728,70 +723,72 @@ fn main() {
     toolbar.set_dock(ui_lib::DOCK_TOP);
     toolbar.set_size(0, 40);
     toolbar.set_color(0xFF2A2A2C);
+    toolbar.set_padding(6, 6, 6, 6);
     win.add(&toolbar);
 
-    let btn_back = ui_lib::Button::new("<");
-    btn_back.set_position(8, 6);
+    // Navigation buttons (DOCK_LEFT).
+    let nav_group = ui_lib::View::new();
+    nav_group.set_dock(ui_lib::DOCK_LEFT);
+    nav_group.set_size(104, 28);
+    nav_group.set_color(0xFF2A2A2C);
+    toolbar.add(&nav_group);
+
+    let btn_back = ui_lib::IconButton::new("");
+    btn_back.set_position(0, 0);
     btn_back.set_size(32, 28);
-    toolbar.add(&btn_back);
+    btn_back.set_system_icon("chevron-left", ui_lib::IconType::Outline, 0xFFCCCCCC, 20);
+    nav_group.add(&btn_back);
 
-    let btn_forward = ui_lib::Button::new(">");
-    btn_forward.set_position(42, 6);
+    let btn_forward = ui_lib::IconButton::new("");
+    btn_forward.set_position(34, 0);
     btn_forward.set_size(32, 28);
-    toolbar.add(&btn_forward);
+    btn_forward.set_system_icon("chevron-right", ui_lib::IconType::Outline, 0xFFCCCCCC, 20);
+    nav_group.add(&btn_forward);
 
-    let btn_reload = ui_lib::Button::new("R");
-    btn_reload.set_position(76, 6);
+    let btn_reload = ui_lib::IconButton::new("");
+    btn_reload.set_position(68, 0);
     btn_reload.set_size(32, 28);
-    toolbar.add(&btn_reload);
+    btn_reload.set_system_icon("refresh", ui_lib::IconType::Outline, 0xFFCCCCCC, 20);
+    nav_group.add(&btn_reload);
 
-    // Loading progress bar — positioned behind the URL field.
-    let url_progress = ui_lib::ProgressBar::new(0);
-    url_progress.set_position(116, 32);
-    url_progress.set_size(666, 3);
-    url_progress.set_color(0xFF0A84FF);  // blue accent
-    url_progress.set_visible(false);
-    toolbar.add(&url_progress);
+    // Hamburger menu button (DOCK_RIGHT).
+    let btn_menu = ui_lib::IconButton::new("");
+    btn_menu.set_dock(ui_lib::DOCK_RIGHT);
+    btn_menu.set_size(36, 28);
+    btn_menu.set_system_icon("menu-2", ui_lib::IconType::Outline, 0xFFCCCCCC, 20);
+    toolbar.add(&btn_menu);
 
-    // URL field — shortened by 84 px to make room for the DevTools button.
+    // URL field (DOCK_FILL — takes all remaining width).
     let url_field = ui_lib::TextField::new();
-    url_field.set_position(116, 6);
-    url_field.set_size(666, 28);
+    url_field.set_dock(ui_lib::DOCK_FILL);
     url_field.set_placeholder(i18n::t("Enter URL..."));
     toolbar.add(&url_field);
 
-    // DevTools button — right of URL field.
-    let btn_devtools = ui_lib::Button::new("DevTools \u{25BC}");   // ▼
-    btn_devtools.set_position(786, 6);
-    btn_devtools.set_size(106, 28);
-    toolbar.add(&btn_devtools);
+    // Loading progress bar (DOCK_TOP, 3px, below toolbar).
+    let url_progress = ui_lib::ProgressBar::new(0);
+    url_progress.set_dock(ui_lib::DOCK_TOP);
+    url_progress.set_size(0, 3);
+    url_progress.set_color(0xFF0A84FF);  // blue accent
+    url_progress.set_visible(false);
+    win.add(&url_progress);
 
-    // ── DevTools popup menu (appears below toolbar, overlaid on content) ──────
-    // The menu View is added to the window with an absolute position; it is
-    // normally hidden and popped into view when the DevTools button is clicked.
-    let devtools_menu = ui_lib::View::new();
-    devtools_menu.set_size(180, 80);
-    devtools_menu.set_color(0xFF3A3A3C);
-    devtools_menu.set_visible(false);
-    win.add(&devtools_menu);
-
-    let show_console_text = anyos_std::format!("  {}", i18n::t("Show Console"));
-    let menu_item_console = ui_lib::Label::new(&show_console_text);
-    menu_item_console.set_position(0, 0);
-    menu_item_console.set_size(180, 38);
-    menu_item_console.set_color(0xFF3A3A3C);
-    menu_item_console.set_text_color(0xFFE5E5EA);
-    menu_item_console.set_font_size(14);
-    devtools_menu.add(&menu_item_console);
-
-    let clear_console_text = anyos_std::format!("  {}", i18n::t("Clear Console"));
-    let menu_item_clear = ui_lib::Label::new(&clear_console_text);
-    menu_item_clear.set_position(0, 40);
-    menu_item_clear.set_size(180, 38);
-    menu_item_clear.set_color(0xFF3A3A3C);
-    menu_item_clear.set_text_color(0xFFE5E5EA);
-    menu_item_clear.set_font_size(14);
-    devtools_menu.add(&menu_item_clear);
+    // Hamburger context menu.
+    let menu_items = anyos_std::format!(
+        "{}|{}|-|{}|{}|{}|-|{}|{}|{}|-|{}|{}|-|{}",
+        i18n::t("New Tab"),
+        i18n::t("Close Tab"),
+        i18n::t("History"),
+        i18n::t("Downloads"),
+        i18n::t("Bookmarks"),
+        i18n::t("Zoom In"),
+        i18n::t("Zoom Out"),
+        i18n::t("Reset Zoom"),
+        i18n::t("Settings"),
+        i18n::t("Developer Tools"),
+        i18n::t("About Surf"),
+    );
+    let hamburger_menu = ui_lib::ContextMenu::new(&menu_items);
+    btn_menu.set_context_menu(&hamburger_menu);
 
     // ── Tab bar (DOCK_TOP, 30 px) ────────────────────────────────────────────
     let tab_bar_view = ui_lib::TabBar::new(i18n::t("New Tab"));
@@ -844,17 +841,15 @@ fn main() {
             btn_back,
             btn_forward,
             btn_reload,
+            btn_menu,
             url_field,
             url_progress,
-            btn_devtools,
-            devtools_menu,
             tab_bar_view,
             content_view,
             status_label,
             devtools_win,
             devtools_label,
             devtools_open: false,
-            devtools_menu_visible: false,
             tabs: vec![initial_tab],
             active_tab: 0,
             cookies: http::CookieJar { cookies: Vec::new() },
@@ -919,31 +914,32 @@ fn main() {
     st.btn_forward.on_click(|_| { tab::go_forward(); });
     st.btn_reload.on_click(|_| { tab::reload(); });
 
-    // DevTools button: show/hide the popup menu.
-    btn_devtools.on_click(|_| {
+    // Hamburger menu button: open popup on left-click.
+    st.btn_menu.on_click(|_| {
         let st = state();
-        let menu_visible = !st.devtools_menu_visible;
-        st.devtools_menu_visible = menu_visible;
-        if menu_visible {
-            // Position the menu just below the DevTools button.
-            // The button is at toolbar x=786, toolbar height=40, tabbar=30 → y=70.
-            st.devtools_menu.set_position(720, 70);
-        }
-        st.devtools_menu.set_visible(menu_visible);
+        st.btn_menu.open_popup();
     });
 
-    // Menu items.
-    menu_item_console.on_click(|_| {
-        let st = state();
-        st.devtools_menu_visible = false;
-        st.devtools_menu.set_visible(false);
-        ui::toggle_devtools();
-    });
-    menu_item_clear.on_click(|_| {
-        let st = state();
-        st.devtools_menu_visible = false;
-        st.devtools_menu.set_visible(false);
-        ui::clear_devtools();
+    // Hamburger menu item handler.
+    hamburger_menu.on_item_click(|e| {
+        match e.index {
+            0 => ui::add_tab(),                                      // New Tab
+            1 => { let st = state(); ui::close_tab(st.active_tab); } // Close Tab
+            // 2 = separator
+            3 => {}  // History (TODO)
+            4 => {}  // Downloads (TODO)
+            5 => {}  // Bookmarks (TODO)
+            // 6 = separator
+            7 => {}  // Zoom In (TODO)
+            8 => {}  // Zoom Out (TODO)
+            9 => {}  // Reset Zoom (TODO)
+            // 10 = separator
+            11 => {} // Settings (TODO)
+            12 => ui::toggle_devtools(),                              // Developer Tools
+            // 13 = separator
+            14 => {} // About Surf (TODO)
+            _ => {}
+        }
     });
 
     // URL field: navigate on Enter.
@@ -993,14 +989,7 @@ fn main() {
         }
     });
 
-    // Close popup menu when window is clicked anywhere else.
-    win.on_click(|_| {
-        let st = state();
-        if st.devtools_menu_visible {
-            st.devtools_menu_visible = false;
-            st.devtools_menu.set_visible(false);
-        }
-    });
+    win.on_click(|_| {});
 
     // Viewport resize: re-layout the active tab's webview.
     win.on_resize(|_| {
