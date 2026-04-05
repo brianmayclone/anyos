@@ -47,7 +47,7 @@ fn set_class_value(vm: &mut Vm, new_val: &str) {
     if let Some(bridge) = get_bridge(vm) {
         if nid >= 0 {
             bridge.mutations.push(DomMutation::SetAttribute {
-                node_id: nid as usize,
+                node_id: nid,
                 name: String::from("class"),
                 value: String::from(new_val),
             });

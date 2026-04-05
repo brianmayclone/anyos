@@ -520,7 +520,7 @@ fn deep_clone_node(vm: &mut Vm, node_id: i64) -> JsValue {
                 });
                 for (name, value) in &attrs {
                     bridge.mutations.push(DomMutation::SetAttribute {
-                        node_id: new_id as usize, name: name.clone(), value: value.clone(),
+                        node_id: new_id, name: name.clone(), value: value.clone(),
                     });
                 }
 
@@ -615,7 +615,7 @@ fn deep_clone_node(vm: &mut Vm, node_id: i64) -> JsValue {
                 });
                 for (name, value) in &attrs {
                     bridge.mutations.push(DomMutation::SetAttribute {
-                        node_id: new_id as usize, name: name.clone(), value: value.clone(),
+                        node_id: new_id, name: name.clone(), value: value.clone(),
                     });
                 }
             }
@@ -679,7 +679,7 @@ fn el_set_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
         if nid >= 0 {
             bridge.mutations.push(DomMutation::SetAttribute {
-                node_id: nid as usize, name: name.clone(), value: value.clone(),
+                node_id: nid, name: name.clone(), value: value.clone(),
             });
         }
     }
@@ -706,7 +706,7 @@ fn el_remove_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
         if nid >= 0 {
             bridge.mutations.push(DomMutation::RemoveAttribute {
-                node_id: nid as usize, name,
+                node_id: nid, name,
             });
         }
     }
@@ -1009,7 +1009,7 @@ fn el_set_text_content(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
         if nid >= 0 {
             bridge.mutations.push(DomMutation::SetTextContent {
-                node_id: nid as usize, text: text.clone(),
+                node_id: nid, text: text.clone(),
             });
         }
     }

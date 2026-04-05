@@ -56,7 +56,7 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
         "textContent" | "innerText" => {
             if node_id >= 0 {
                 mutations.push(DomMutation::SetTextContent {
-                    node_id: node_id as usize,
+                    node_id: node_id,
                     text: value.to_js_string(),
                 });
             }
@@ -72,31 +72,18 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
             if cls.contains("client-js") {
                 cls = cls.replace("client-js", "client-nojs");
             }
-            if node_id >= 0 {
-                mutations.push(DomMutation::SetAttribute {
-                    node_id: node_id as usize,
-                    name: String::from("class"),
-                    value: cls,
-                });
-            } else {
-                // Virtual node: store on VirtualNode for later CreateElement
-                let vnodes = unsafe {
-                    if VIRTUAL_NODES_TARGET.is_null() { return; }
-                    &mut *VIRTUAL_NODES_TARGET
-                };
-                if let Some(vn) = vnodes.iter_mut().find(|v| v.id == node_id) {
-                    if let Some(attr) = vn.attrs.iter_mut().find(|(k, _)| k == "class") {
-                        attr.1 = cls;
-                    } else {
-                        vn.attrs.push((String::from("class"), cls));
-                    }
-                }
-            }
+            // Always emit SetAttribute mutation — for virtual nodes,
+            // apply_mutations resolves the ID via id_map.
+            mutations.push(DomMutation::SetAttribute {
+                node_id: node_id,
+                name: String::from("class"),
+                value: cls,
+            });
         }
         "value" | "src" | "href" | "id" | "name" | "type" => {
             if node_id >= 0 {
                 mutations.push(DomMutation::SetAttribute {
-                    node_id: node_id as usize,
+                    node_id: node_id,
                     name: String::from(key),
                     value: value.to_js_string(),
                 });
@@ -106,13 +93,13 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
             if node_id >= 0 {
                 if value.to_boolean() {
                     mutations.push(DomMutation::SetAttribute {
-                        node_id: node_id as usize,
+                        node_id: node_id,
                         name: String::from(key),
                         value: String::new(),
                     });
                 } else {
                     mutations.push(DomMutation::RemoveAttribute {
-                        node_id: node_id as usize,
+                        node_id: node_id,
                         name: String::from(key),
                     });
                 }
@@ -230,9 +217,9 @@ struct VirtualNode {
 /// A recorded DOM mutation from JavaScript.
 #[derive(Clone)]
 pub enum DomMutation {
-    SetAttribute { node_id: usize, name: String, value: String },
-    SetTextContent { node_id: usize, text: String },
-    RemoveAttribute { node_id: usize, name: String },
+    SetAttribute { node_id: i64, name: String, value: String },
+    SetTextContent { node_id: i64, text: String },
+    RemoveAttribute { node_id: i64, name: String },
     CreateElement { virtual_id: i64, tag: String },
     CreateTextNode { virtual_id: i64, text: String },
     AppendChild { parent_id: i64, child_id: i64 },
@@ -983,10 +970,17 @@ impl JsRuntime {
                     // Copy attributes from virtual node if they were set before insertion
                     let attrs: Vec<crate::dom::Attr> = self.virtual_nodes.iter()
                         .find(|vn| vn.id == *virtual_id)
-                        .map(|vn| vn.attrs.iter().map(|(k, v)| crate::dom::Attr {
-                            name: k.clone(),
-                            value: v.clone(),
-                        }).collect())
+                        .map(|vn| {
+                            if !vn.attrs.is_empty() {
+                                anyos_std::println!("[dom] CreateElement <{}> vid={} with {} attrs: {:?}",
+                                    tag, virtual_id, vn.attrs.len(),
+                                    vn.attrs.iter().map(|(k,v)| alloc::format!("{}={}", k, &v[..v.len().min(40)])).collect::<Vec<_>>());
+                            }
+                            vn.attrs.iter().map(|(k, v)| crate::dom::Attr {
+                                name: k.clone(),
+                                value: v.clone(),
+                            }).collect()
+                        })
                         .unwrap_or_default();
                     let real_id = dom.add_node(NodeType::Element { tag: real_tag, attrs }, None);
                     id_map.insert(*virtual_id, real_id);
@@ -996,13 +990,19 @@ impl JsRuntime {
                     id_map.insert(*virtual_id, real_id);
                 }
                 DomMutation::SetAttribute { node_id, name, value } => {
-                    dom.set_attr(*node_id, name, value);
+                    if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                        dom.set_attr(real_id, name, value);
+                    }
                 }
                 DomMutation::RemoveAttribute { node_id, name } => {
-                    dom.remove_attr(*node_id, name);
+                    if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                        dom.remove_attr(real_id, name);
+                    }
                 }
                 DomMutation::SetTextContent { node_id, text } => {
-                    dom.set_text(*node_id, text);
+                    if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                        dom.set_text(real_id, text);
+                    }
                 }
                 DomMutation::AppendChild { parent_id, child_id } => {
                     let real_parent = resolve_id(*parent_id, &id_map);
