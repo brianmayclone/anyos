@@ -111,10 +111,19 @@ fn main() {
             continue;
         }
 
+        // Determine flags early
+        let is_only_strict = meta.get("flags").map(|f| f.contains("onlyStrict")).unwrap_or(false);
+        let is_module = meta.get("flags").map(|f| f.contains("module")).unwrap_or(false);
+        let is_async = meta.get("flags").map(|f| f.contains("async")).unwrap_or(false);
+
+        // Skip module and async tests
+        if is_module || is_async {
+            skipped += 1;
+            continue;
+        }
+
         // Build test source: harness + includes + test
         let mut full_source = String::new();
-        // Insert "use strict" for onlyStrict tests (before harness)
-        let is_only_strict = meta.get("flags").map(|f| f.contains("onlyStrict")).unwrap_or(false);
         if is_only_strict {
             full_source.push_str("\"use strict\";\n");
         }
@@ -122,6 +131,10 @@ fn main() {
         full_source.push('\n');
         full_source.push_str(&assert_js);
         full_source.push('\n');
+        // Async test support: inject $DONE callback
+        if is_async {
+            full_source.push_str("var __async_failed = false;\nfunction $DONE(err) { if (err) { __async_failed = true; throw (err instanceof Error ? err : new Test262Error(String(err))); } }\n");
+        }
 
         // Add required includes
         if let Some(includes) = meta.get("includes") {
@@ -138,14 +151,6 @@ fn main() {
 
         // Determine expected outcome
         let expect_error = meta.get("negative").is_some();
-        let is_module = meta.get("flags").map(|f| f.contains("module")).unwrap_or(false);
-        let is_async = meta.get("flags").map(|f| f.contains("async")).unwrap_or(false);
-
-        // Skip module and async tests for now
-        if is_module || is_async {
-            skipped += 1;
-            continue;
-        }
 
         // Run test in a separate thread with bounded stack (16MB) and timeout
         let full_source_clone = full_source.clone();
@@ -374,8 +379,8 @@ const SKIP_FEATURES: &[&str] = &[
     "tail-call-optimization", "iterator-helpers",
     "json-modules", "source-phase-imports",
     "Float16Array", "uint8array-base64",
-    "IsHTMLDDA", "change-array-by-copy",
-    "array-grouping", "BigInt",
+    "IsHTMLDDA",
+    "BigInt",
 ];
 
 fn should_skip(meta: &HashMap<String, String>) -> bool {

@@ -75,6 +75,9 @@ pub fn object_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
                 Some("__string__")  => "String",
                 Some("__regexp__")  => "RegExp",
                 Some("__date__")    => "Date",
+                Some("__math__")    => "Math",
+                Some("__json__")    => "JSON",
+                Some("__error__")   => "Error",
                 _                   => "Object",
             };
             JsValue::String(alloc::format!("[object {}]", kind))

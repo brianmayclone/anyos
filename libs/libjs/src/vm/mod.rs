@@ -1143,6 +1143,40 @@ impl Vm {
                     }
                 }
 
+                Op::Await => {
+                    // Simplified synchronous await:
+                    // - If value is a Promise, extract resolved/rejected value
+                    // - If value is not a Promise, push it back as-is
+                    let value = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    if let JsValue::Object(ref obj) = value {
+                        let o = obj.borrow();
+                        if o.internal_tag.as_deref() == Some("__promise__") {
+                            let state = o.get("__state__").to_js_string();
+                            if state == "fulfilled" {
+                                let result = o.get("__result__");
+                                drop(o);
+                                self.stack.push(result);
+                            } else if state == "rejected" {
+                                let reason = o.get("__result__");
+                                drop(o);
+                                if !self.handle_exception(reason) {
+                                    return JsValue::Undefined;
+                                }
+                            } else {
+                                // pending — in sync mode, just push undefined
+                                drop(o);
+                                self.stack.push(JsValue::Undefined);
+                            }
+                        } else {
+                            drop(o);
+                            self.stack.push(value);
+                        }
+                    } else {
+                        // Non-promise: await resolves immediately
+                        self.stack.push(value);
+                    }
+                }
+
                 Op::Yield => {
                     let value = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let yield_ip = self.frames[frame_idx].ip;
