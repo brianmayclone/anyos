@@ -116,8 +116,8 @@ fn main() {
         let is_module = meta.get("flags").map(|f| f.contains("module")).unwrap_or(false);
         let is_async = meta.get("flags").map(|f| f.contains("async")).unwrap_or(false);
 
-        // Skip module and async tests
-        if is_module || is_async {
+        // Skip module tests (async tests are now supported via synchronous await)
+        if is_module {
             skipped += 1;
             continue;
         }
@@ -131,6 +131,8 @@ fn main() {
         full_source.push('\n');
         full_source.push_str(&assert_js);
         full_source.push('\n');
+        // $DONOTEVALUATE for negative parse tests
+        full_source.push_str("function $DONOTEVALUATE() { throw new Test262Error('$DONOTEVALUATE: test should not have been evaluated'); }\n");
         // Async test support: inject $DONE callback
         if is_async {
             full_source.push_str("var __async_failed = false;\nfunction $DONE(err) { if (err) { __async_failed = true; throw (err instanceof Error ? err : new Test262Error(String(err))); } }\n");
@@ -196,6 +198,9 @@ fn main() {
 
         let test_passed = if expect_error {
             !succeeded // Expected error: pass if execution failed
+        } else if is_async {
+            // Async tests: pass if no exception and $DONE was not called with error
+            succeeded && !console_out.iter().any(|s| s.contains("Test262Error"))
         } else if succeeded {
             !console_out.iter().any(|s| s.contains("Test262Error"))
         } else {
@@ -369,7 +374,7 @@ fn parse_yaml_list(val: &str) -> Vec<String> {
 
 /// Features that we know we don't support — skip these tests.
 const SKIP_FEATURES: &[&str] = &[
-    "SharedArrayBuffer", "Atomics", "async-iteration", "async-functions",
+    "SharedArrayBuffer", "Atomics", "async-iteration",
     "top-level-await", "import-assertions", "import-attributes",
     "dynamic-import", "decorators", "explicit-resource-management",
     "resizable-arraybuffer", "arraybuffer-transfer",

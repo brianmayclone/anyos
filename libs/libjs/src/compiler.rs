@@ -1503,6 +1503,7 @@ impl Compiler {
         func_scope.chunk.name = name.cloned();
         func_scope.chunk.is_generator = is_generator;
         func_scope.chunk.is_arrow = is_arrow;
+        func_scope.chunk.is_async = is_async;
         // ES2023 §10.2.8: function.length = number of params before the first
         // one with a default value, excluding rest parameters.
         let formal_length = params.iter()

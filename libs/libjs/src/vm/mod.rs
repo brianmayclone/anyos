@@ -576,12 +576,19 @@ impl Vm {
                         }
                     }
                     let frame = self.frames.pop().unwrap();
+                    let is_async_fn = frame.chunk.is_async;
                     self.stack.truncate(frame.stack_base);
                     // `new` calls: if constructor returned non-object, return `this` instead.
                     let ret = if frame.is_constructor && !val.is_object() && !matches!(val, JsValue::Function(_)) {
                         frame.this_val
                     } else {
                         val
+                    };
+                    // Async functions: wrap return value in a resolved Promise
+                    let ret = if is_async_fn && !ret.is_object() {
+                        native_promise::make_resolved_promise(ret)
+                    } else {
+                        ret
                     };
                     self.stack.push(ret.clone());
                     if self.frames.is_empty() || self.frames.len() <= self.run_target_depth {
@@ -1120,62 +1127,35 @@ impl Vm {
 
                 // ── Async ──
                 Op::Await => {
+                    // Synchronous await: extract Promise value or pass through
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    // Check if the value is a Promise (has __state property).
                     if let JsValue::Object(ref obj) = val {
-                        let state = obj.borrow().get("__state").to_js_string();
-                        if state == "fulfilled" {
-                            let resolved = obj.borrow().get("__value");
-                            self.stack.push(resolved);
-                        } else if state == "rejected" {
-                            let reason = obj.borrow().get("__value");
-                            // Throw the rejection reason.
-                            if !self.handle_exception(reason) {
-                                return JsValue::Undefined;
-                            }
-                        } else {
-                            // Pending promise — push undefined (no event loop to wait).
-                            self.stack.push(JsValue::Undefined);
-                        }
-                    } else {
-                        // Non-promise value — pass through unchanged.
-                        self.stack.push(val);
-                    }
-                }
-
-                Op::Await => {
-                    // Simplified synchronous await:
-                    // - If value is a Promise, extract resolved/rejected value
-                    // - If value is not a Promise, push it back as-is
-                    let value = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    if let JsValue::Object(ref obj) = value {
-                        let o = obj.borrow();
-                        if o.internal_tag.as_deref() == Some("__promise__") {
-                            let state = o.get("__state__").to_js_string();
+                        let is_promise = obj.borrow().internal_tag.as_deref() == Some("__promise__");
+                        if is_promise {
+                            let state = obj.borrow().get("__state").to_js_string();
                             if state == "fulfilled" {
-                                let result = o.get("__result__");
-                                drop(o);
-                                self.stack.push(result);
+                                let resolved = obj.borrow().get("__value");
+                                self.stack.push(resolved);
                             } else if state == "rejected" {
-                                let reason = o.get("__result__");
-                                drop(o);
+                                let reason = obj.borrow().get("__value");
                                 if !self.handle_exception(reason) {
                                     return JsValue::Undefined;
                                 }
                             } else {
-                                // pending — in sync mode, just push undefined
-                                drop(o);
+                                // Still pending after drain — push undefined
                                 self.stack.push(JsValue::Undefined);
                             }
                         } else {
-                            drop(o);
-                            self.stack.push(value);
+                            // Object but not a promise — pass through
+                            self.stack.push(val);
                         }
                     } else {
-                        // Non-promise: await resolves immediately
-                        self.stack.push(value);
+                        // Non-object value — pass through unchanged.
+                        self.stack.push(val);
                     }
                 }
+
+
 
                 Op::Yield => {
                     let value = self.stack.pop().unwrap_or(JsValue::Undefined);

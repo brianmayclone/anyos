@@ -294,6 +294,39 @@ pub fn promise_finally(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 // Promise static methods
 // ═══════════════════════════════════════════════════════════
 
+/// Create a resolved Promise wrapping the given value. No VM needed.
+pub fn make_resolved_promise(value: JsValue) -> JsValue {
+    if let JsValue::Object(obj) = &value {
+        if obj.borrow().internal_tag.as_deref() == Some("__promise__") {
+            return value;
+        }
+    }
+    let mut obj = JsObject::new();
+    obj.internal_tag = Some(String::from("__promise__"));
+    obj.set(String::from("__state"), JsValue::String(String::from("fulfilled")));
+    obj.set(String::from("__value"), value);
+    obj.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
+    obj.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
+    obj.set(String::from("then"), native_fn("then", promise_then));
+    obj.set(String::from("catch"), native_fn("catch", promise_catch));
+    obj.set(String::from("finally"), native_fn("finally", promise_finally));
+    JsValue::Object(Rc::new(RefCell::new(obj)))
+}
+
+/// Create a rejected Promise with the given reason.
+pub fn make_rejected_promise(reason: JsValue) -> JsValue {
+    let mut obj = JsObject::new();
+    obj.internal_tag = Some(String::from("__promise__"));
+    obj.set(String::from("__state"), JsValue::String(String::from("rejected")));
+    obj.set(String::from("__value"), reason);
+    obj.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
+    obj.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
+    obj.set(String::from("then"), native_fn("then", promise_then));
+    obj.set(String::from("catch"), native_fn("catch", promise_catch));
+    obj.set(String::from("finally"), native_fn("finally", promise_finally));
+    JsValue::Object(Rc::new(RefCell::new(obj)))
+}
+
 pub fn promise_resolve(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let value = args.first().cloned().unwrap_or(JsValue::Undefined);
     // If already a promise, return it

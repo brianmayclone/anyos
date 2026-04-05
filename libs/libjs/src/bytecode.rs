@@ -294,6 +294,8 @@ pub struct Chunk {
     /// Arrow functions lexically capture `this` from their enclosing scope
     /// (ES6 §14.2.16) — they do NOT have their own `this` binding.
     pub is_arrow: bool,
+    /// True if this is an async function.
+    pub is_async: bool,
 }
 
 impl Chunk {
@@ -308,6 +310,7 @@ impl Chunk {
             strict: false,
             is_generator: false,
             is_arrow: false,
+            is_async: false,
         }
     }
 

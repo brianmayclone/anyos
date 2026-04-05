@@ -25,7 +25,7 @@ pub struct Parser {
 }
 
 /// Maximum parser recursion depth before bailing out with a SyntaxError.
-const MAX_PARSER_DEPTH: usize = 256;
+const MAX_PARSER_DEPTH: usize = 128;
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
@@ -1648,6 +1648,19 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Expr {
+        self.depth += 1;
+        if self.depth > MAX_PARSER_DEPTH {
+            self.depth -= 1;
+            self.syntax_error("Maximum nesting depth exceeded");
+            self.pos = self.tokens.len(); // skip to end
+            return Expr::Undefined;
+        }
+        let result = self.parse_primary_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_primary_inner(&mut self) -> Expr {
         match self.peek().clone() {
             TokenKind::Number(n) => {
                 self.pos += 1;
