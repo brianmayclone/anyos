@@ -335,9 +335,24 @@ impl Vm {
         let args_start = self.stack.len() - argc;
         let ctor_idx = args_start - 1;
 
-        let super_ctor = self.stack[ctor_idx].clone();
+        let mut super_ctor = self.stack[ctor_idx].clone();
         let args: Vec<JsValue> = self.stack[args_start..].to_vec();
         self.stack.truncate(ctor_idx);
+
+        // If stack value isn't a function, try the constructor's super_class field.
+        // This handles cases where the upvalue for $$super$$ was lost (e.g. timer callbacks).
+        if !matches!(super_ctor, JsValue::Function(_)) {
+            for f in self.frames.iter().rev() {
+                if f.is_constructor {
+                    if let JsValue::Function(ref ctor_fn) = f.self_ref {
+                        if let Some(ref sc) = ctor_fn.borrow().super_class {
+                            super_ctor = sc.clone();
+                        }
+                    }
+                    break;
+                }
+            }
+        }
 
         // Find the current new.target from the enclosing constructor frame.
         let mut new_target = JsValue::Undefined;
@@ -397,7 +412,22 @@ impl Vm {
                 }
             }
             _ => {
-                self.log_engine("[libjs] WARN: super() called on non-function");
+                let mut stack_info = alloc::string::String::new();
+                for (fi, frame) in self.frames.iter().rev().take(6).enumerate() {
+                    let fname = frame.chunk.name.as_deref().unwrap_or("(anon)");
+                    if fi > 0 { stack_info.push_str(" <- "); }
+                    stack_info.push_str(fname);
+                }
+                let super_type = match &super_ctor {
+                    JsValue::Undefined => "undefined",
+                    JsValue::Null => "null",
+                    JsValue::Object(_) => "object",
+                    JsValue::String(_) => "string",
+                    JsValue::Number(_) => "number",
+                    JsValue::Bool(_) => "bool",
+                    _ => "other",
+                };
+                self.log_engine(&alloc::format!("[libjs] WARN: super() called on non-function (got {}) [{}]", super_type, stack_info));
                 self.stack.push(JsValue::Undefined);
             }
         }

@@ -202,7 +202,7 @@ fn enqueue_promise_reaction(vm: &mut Vm, callback: JsValue, value: JsValue, new_
         upvalues: Vec::new(),
         prototype: None,
         own_props: alloc::collections::BTreeMap::new(),
-        arity: None,
+        arity: None, super_class: None,
     };
     let wrapper = JsValue::Function(Rc::new(RefCell::new(wrapper_fn)));
     // Pass callback, value, new_promise, is_fulfill as args to the microtask

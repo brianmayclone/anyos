@@ -2277,6 +2277,132 @@ pub extern "C" fn anyui_set_context_menu(id: ControlId, menu_id: ControlId) {
     }
 }
 
+/// Programmatically open a control's context menu below the control.
+/// Used for hamburger menus that open on left-click instead of right-click.
+#[no_mangle]
+pub extern "C" fn anyui_open_popup(id: ControlId) {
+    let st = state();
+
+    // Find the control and its context menu.
+    let ctrl_idx = match st.controls.iter().position(|c| c.id() == id) {
+        Some(i) => i,
+        None => return,
+    };
+    let menu_id = match st.controls[ctrl_idx].base().context_menu {
+        Some(m) => m,
+        None => return,
+    };
+    let mi = match st.controls.iter().position(|c| c.id() == menu_id) {
+        Some(i) => i,
+        None => return,
+    };
+
+    // Dismiss any existing popup first.
+    event_loop::dismiss_popup_pub(st);
+
+    // Compute absolute position by walking up the parent chain.
+    let mut abs_x: i32 = 0;
+    let mut abs_y: i32 = 0;
+    let mut cur = ctrl_idx;
+    let ctrl_h = st.controls[ctrl_idx].base().h;
+    loop {
+        let b = st.controls[cur].base();
+        abs_x += b.x;
+        abs_y += b.y;
+        let pid = b.parent;
+        if pid == 0 { break; }
+        match st.controls.iter().position(|c| c.id() == pid) {
+            Some(pi) => cur = pi,
+            None => break,
+        }
+    }
+    // Position the popup below the control.
+    let popup_anchor_x = abs_x;
+    let popup_anchor_y = abs_y + ctrl_h as i32;
+
+    // Get menu dimensions.
+    let menu_w = st.controls[mi].base().w;
+    let menu_h = st.controls[mi].base().h;
+    let margin: i32 = 16;
+    let popup_w = menu_w + (margin as u32) * 2;
+    let popup_h = menu_h + (margin as u32) * 2;
+    let phys_popup_w = crate::theme::scale(popup_w);
+    let phys_popup_h = crate::theme::scale(popup_h);
+
+    // Find the owning window for this control.
+    let mut win_ctrl_id: ControlId = 0;
+    let mut walk = ctrl_idx;
+    loop {
+        let b = st.controls[walk].base();
+        if b.parent == 0 || st.controls[walk].kind() == control::ControlKind::Window {
+            win_ctrl_id = st.controls[walk].id();
+            break;
+        }
+        match st.controls.iter().position(|c| c.id() == b.parent) {
+            Some(pi) => walk = pi,
+            None => { win_ctrl_id = st.controls[walk].id(); break; }
+        }
+    }
+    let wi = match st.windows.iter().position(|&w| w == win_ctrl_id) {
+        Some(i) => i,
+        None => return,
+    };
+    let comp_window_id = if wi < st.comp_windows.len() {
+        st.comp_windows[wi].window_id
+    } else {
+        return;
+    };
+
+    // Get parent window's screen position (physical).
+    let (content_x, content_y) = compositor::get_window_position(
+        st.channel_id, st.sub_id, comp_window_id,
+    );
+
+    // Calculate popup screen position.
+    let phys_margin = crate::theme::scale_i32(margin);
+    let mut popup_x = content_x + crate::theme::scale_i32(popup_anchor_x) - phys_margin;
+    let mut popup_y = content_y + crate::theme::scale_i32(popup_anchor_y) - phys_margin;
+
+    // Clamp to screen bounds.
+    let (scr_w, scr_h) = compositor::screen_size();
+    if popup_x + phys_popup_w as i32 > scr_w as i32 {
+        popup_x = scr_w as i32 - phys_popup_w as i32;
+    }
+    if popup_y + phys_popup_h as i32 > scr_h as i32 {
+        popup_y = scr_h as i32 - phys_popup_h as i32;
+    }
+    if popup_x < 0 { popup_x = 0; }
+    if popup_y < 0 { popup_y = 0; }
+
+    // Create popup compositor window.
+    let popup_flags: u32 = 0x01 | 0x02 | 0x04 | 0x100;
+    if let Some((popup_win_id, shm_id, surface)) = compositor::create_window(
+        st.channel_id, st.sub_id,
+        popup_x, popup_y,
+        phys_popup_w, phys_popup_h,
+        popup_flags,
+    ) {
+        st.controls[mi].set_position(0, 0);
+        st.controls[mi].base_mut().visible = false;
+
+        let back_buffer = alloc::vec![0u32; (phys_popup_w * phys_popup_h) as usize];
+        st.popup = Some(PopupInfo {
+            window_id: popup_win_id,
+            shm_id,
+            surface,
+            width: phys_popup_w,
+            height: phys_popup_h,
+            back_buffer,
+            menu_id,
+            owner_win_idx: wi,
+            margin,
+            dirty: true,
+            owner_dropdown: None,
+            owner_autocomplete: None,
+        });
+    }
+}
+
 /// Set tooltip text for a control. Pass empty text (len=0) to remove.
 #[no_mangle]
 pub extern "C" fn anyui_set_tooltip(id: ControlId, text: *const u8, len: u32) {

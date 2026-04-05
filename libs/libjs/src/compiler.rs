@@ -1831,7 +1831,14 @@ impl Compiler {
 
         // Step 3: if there's a super class, set up the prototype chain.
         if let Some(super_slot) = super_local {
+            // Store super class directly on the constructor function
             // Stack: [..., Constructor]
+            self.emit(Op::Dup);                        // [..., Ctor, Ctor]
+            self.emit(Op::LoadLocal(super_slot));       // [..., Ctor, Ctor, SuperClass]
+            self.emit(Op::SetSuperClass);               // [..., Ctor, Ctor]  (pops SuperClass, sets ctor.super_class)
+            self.emit(Op::Pop);                         // [..., Ctor]
+
+            // Set up prototype chain
             self.emit(Op::Dup);
             let proto_idx = self.add_const(Constant::String(String::from("prototype")));
             self.emit(Op::GetPropNamed(proto_idx));    // [..., Constructor, Constructor.prototype]

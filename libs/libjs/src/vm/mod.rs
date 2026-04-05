@@ -285,7 +285,7 @@ impl Vm {
             upvalues: Vec::new(),
             prototype: None,
             own_props: BTreeMap::new(),
-            arity: None,
+            arity: None, super_class: None,
         };
         self.set_global(name, JsValue::Function(Rc::new(RefCell::new(f))));
     }
@@ -643,7 +643,7 @@ impl Vm {
                         upvalues: upvalue_cells,
                         prototype: None,
                         own_props: BTreeMap::new(),
-                        arity: None,
+                        arity: None, super_class: None,
                     }));
                     // Arrow functions are NOT constructable and have no .prototype
                     // (ES6 §14.2.17).  Only regular functions get a prototype.
@@ -808,6 +808,14 @@ impl Vm {
                 }
                 Op::SuperCall(argc) => {
                     self.super_call(argc as usize);
+                }
+
+                Op::SetSuperClass => {
+                    // Stack: [..., Constructor, SuperClass]
+                    let super_val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    if let Some(JsValue::Function(ref ctor_fn)) = self.stack.last() {
+                        ctor_fn.borrow_mut().super_class = Some(super_val);
+                    }
                 }
 
                 // ── Special operators ──
@@ -1406,7 +1414,7 @@ impl Vm {
                     upvalues: Vec::new(),
                     prototype: None,
                     own_props: BTreeMap::new(),
-                    arity: None,
+                    arity: None, super_class: None,
                 };
                 JsValue::Function(Rc::new(RefCell::new(func)))
             }
@@ -1869,7 +1877,7 @@ pub fn native_fn(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue) -> JsValue {
         upvalues: Vec::new(),
         prototype: None,
         own_props: BTreeMap::new(),
-        arity: None,
+        arity: None, super_class: None,
     })))
 }
 
@@ -1884,6 +1892,6 @@ pub fn native_fn_with_length(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue, 
         upvalues: Vec::new(),
         prototype: None,
         own_props: BTreeMap::new(),
-        arity: Some(length),
+        arity: Some(length), super_class: None,
     })))
 }

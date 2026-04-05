@@ -254,6 +254,9 @@ pub enum Op {
     /// Stack before: [..., SuperClass, arg1, ..., argN]
     /// Sets `is_constructor = true` and forwards `new.target` from the current frame.
     SuperCall(u8),
+    /// Set the super_class field on the top-of-stack Function.
+    /// Stack: [..., Constructor, SuperClass] → [..., Constructor]
+    SetSuperClass,
 
     /// ES2023 §7.2.1 RequireObjectCoercible(value).
     /// Throws TypeError if the value on top of stack is null or undefined.

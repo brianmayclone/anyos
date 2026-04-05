@@ -680,7 +680,7 @@ fn global_eval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             upvalues: alloc::vec::Vec::new(),
             prototype: None,
             own_props: alloc::collections::BTreeMap::new(),
-            arity: None,
+            arity: None, super_class: None,
         }))),
         &[],
         JsValue::Undefined,

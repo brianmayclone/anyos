@@ -20,12 +20,13 @@ use libjs::JsEngine;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: test262-runner <test262-dir> [filter] [--limit N] [--start N] [--timeout SECS] [--verbose]");
+        eprintln!("Usage: test262-runner <test262-dir> [filter] [--limit N] [--start N] [--timeout SECS] [--verbose] [--live]");
         std::process::exit(1);
     }
 
     let test262_dir = PathBuf::from(&args[1]);
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
+    let live = args.iter().any(|a| a == "--live");
     let limit: usize = args.iter()
         .position(|a| a == "--limit")
         .and_then(|i| args.get(i + 1))
@@ -99,7 +100,7 @@ fn main() {
         let rel_path = path.strip_prefix(&test_dir).unwrap_or(path);
         let source = match fs::read_to_string(path) {
             Ok(s) => s,
-            Err(_) => { skipped += 1; continue; }
+            Err(_) => { skipped += 1; if live { eprintln!("[R]S"); } continue; }
         };
 
         // Parse frontmatter
@@ -108,6 +109,7 @@ fn main() {
         // Skip tests with unsupported features
         if should_skip(&meta) {
             skipped += 1;
+            if live { eprintln!("[R]S"); }
             continue;
         }
 
@@ -119,6 +121,7 @@ fn main() {
         // Skip module tests (async tests are now supported via synchronous await)
         if is_module {
             skipped += 1;
+            if live { eprintln!("[R]S"); }
             continue;
         }
 
@@ -183,12 +186,16 @@ fn main() {
                 let _ = tx.send((exc_msg.is_none(), console, exc_msg));
             });
 
+        let mut is_timeout = false;
         let (succeeded, console_out, exc_msg) = match handle {
             Ok(_h) => match rx.recv_timeout(timeout_dur) {
                 Ok(result) => result,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     timed_out += 1;
-                    eprintln!("  TIMEOUT  #{} {} (>{}s)", test_num, rel_path.display(), timeout_secs);
+                    is_timeout = true;
+                    if !live {
+                        eprintln!("  TIMEOUT  #{} {} (>{}s)", test_num, rel_path.display(), timeout_secs);
+                    }
                     (false, Vec::new(), Some(format!("TIMEOUT after {}s", timeout_secs)))
                 }
                 Err(_) => (false, Vec::new(), Some("PANIC: channel disconnected".to_string())),
@@ -222,8 +229,20 @@ fn main() {
             errors.push((short_path, reason));
         }
 
+        // Per-test live output for TUI
+        if live {
+            if test_passed {
+                eprintln!("[R]P\t{}", rel_path.display());
+            } else if is_timeout {
+                eprintln!("[R]T\t{}", rel_path.display());
+            } else {
+                let reason = errors.last().map(|(_, r)| r.as_str()).unwrap_or("?");
+                eprintln!("[R]F\t{}\t{}", rel_path.display(), reason);
+            }
+        }
+
         // Progress every 500 tests
-        if (i + 1) % 500 == 0 {
+        if !live && (i + 1) % 500 == 0 {
             let elapsed = timer_start.elapsed().as_secs_f64();
             let rate = (i + 1) as f64 / elapsed;
             eprintln!(
