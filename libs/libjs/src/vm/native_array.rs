@@ -110,7 +110,9 @@ pub fn to_number_vm(vm: &mut Vm, val: &JsValue) -> f64 {
 /// Convert a JsValue to a length (ToLength), using to_number_vm.
 fn to_length_vm(vm: &mut Vm, val: &JsValue) -> usize {
     let n = to_number_vm(vm, val);
-    if n.is_nan() || n < 0.0 || !n.is_finite() { 0 } else { (n as u64).min(0xFFFF_FFFF) as usize }
+    if n.is_nan() || n < 0.0 { 0 }
+    else if !n.is_finite() { usize::MAX } // Infinity → huge value (callers check for RangeError)
+    else { (n as u64).min(0x1F_FFFF_FFFF_FFFF) as usize } // 2^53 - 1
 }
 
 /// Get array-like entries from `this`. Supports Array and Object with `length`.
@@ -764,6 +766,12 @@ pub fn array_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         None => return JsValue::Undefined,
     };
     if !require_callable(vm, &callback) { return JsValue::Undefined; }
+    // ArraySpeciesCreate: RangeError if length > 2^32 - 1
+    if len > 0xFFFF_FFFF {
+        let err = vm.make_range_error("Invalid array length");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
     let mut result = JsArray::new();
     result.length = len;
     for (idx, el) in entries {
