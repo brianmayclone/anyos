@@ -189,8 +189,8 @@ fn this_array_like(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>
             Some((this_val.clone(), length, entries))
         }
         JsValue::Object(obj) => {
-            // Get length value first (may need VM to call valueOf/toString)
-            let len_val = obj.borrow().get("length");
+            // Get length value — invoke getter if it's an accessor property
+            let len_val = vm.get_property_invoking_getter(&this_val, "length");
             let len = to_length_vm(vm, &len_val);
             // If ToPrimitive threw TypeError, propagate it
             if vm.pending_exception.is_some() {
