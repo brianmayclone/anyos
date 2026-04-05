@@ -461,8 +461,12 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             }
             // Apply preferred resolution from boot params if set
             if let Some((w, h)) = drivers::gpu::preferred_resolution() {
-                if drivers::gpu::with_gpu(|g| g.set_mode(w, h, 32)).is_some() {
-                    serial_println!("[OK] Applied boot resolution: {}x{}", w, h);
+                if let Some(Some((w2, h2, p2, a2))) = drivers::gpu::with_gpu(|g| g.set_mode(w, h, 32)) {
+                    drivers::framebuffer::update(a2 as u64, p2, w2, h2, 32);
+                    drivers::gpu::update_cursor_bounds(w2, h2);
+                    drivers::input::vmmouse::update_screen_size(w2, h2);
+                    drivers::vmmdev::set_screen_size(w2 as u16, h2 as u16);
+                    serial_println!("[OK] Applied boot resolution: {}x{}", w2, h2);
                 }
             }
 
@@ -500,14 +504,12 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
                 if let Some((tw, th)) = target {
                     if let Some((aw, ah, _, _)) = drivers::gpu::with_gpu(|g| g.get_mode()) {
                         if (aw, ah) != (tw, th) {
-                            if drivers::gpu::with_gpu(|g| g.set_mode(tw, th, 32)).is_some() {
-                                serial_println!("[OK] Applied native monitor resolution: {}x{}", tw, th);
-                                if let Some((w2, h2, p2, a2)) = drivers::gpu::with_gpu(|g| g.get_mode()) {
-                                    drivers::framebuffer::update(a2 as u64, p2, w2, h2, 32);
-                                    // Update vmmouse coordinate scaling for new resolution
-                                    drivers::input::vmmouse::update_screen_size(w2, h2);
-                                    drivers::vmmdev::set_screen_size(w2 as u16, h2 as u16);
-                                }
+                            if let Some(Some((w2, h2, p2, a2))) = drivers::gpu::with_gpu(|g| g.set_mode(tw, th, 32)) {
+                                serial_println!("[OK] Applied native monitor resolution: {}x{}", w2, h2);
+                                drivers::framebuffer::update(a2 as u64, p2, w2, h2, 32);
+                                drivers::gpu::update_cursor_bounds(w2, h2);
+                                drivers::input::vmmouse::update_screen_size(w2, h2);
+                                drivers::vmmdev::set_screen_size(w2 as u16, h2 as u16);
                             }
                         }
                     }
@@ -614,4 +616,3 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
     #[allow(unreachable_code)]
     loop { arch::hal::halt(); }
 }
-

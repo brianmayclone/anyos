@@ -148,7 +148,7 @@ impl<T> Spinlock<T> {
         cli();
 
         let mut spin_count: u32 = 0;
-        let mut timeout_hits: u32 = 0;
+        let mut reported = false;
 
         while self
             .lock
@@ -170,12 +170,8 @@ impl<T> Spinlock<T> {
                     backoff <<= 1;
                 }
 
-                if spin_count >= SPIN_TIMEOUT {
-                    // Reset counter so we warn again every SPIN_TIMEOUT iterations,
-                    // producing repeated messages that make a hung system obvious
-                    // on the serial console.
-                    spin_count = 0;
-                    timeout_hits += 1;
+                if !reported && spin_count >= SPIN_TIMEOUT {
+                    reported = true;
                     let lock_addr = self as *const _ as u64;
                     let me = cpu_id();
                     let owner = self.owner_cpu.load(Ordering::Relaxed);
@@ -194,8 +190,6 @@ impl<T> Spinlock<T> {
                         diag_puts(b" phase=");
                         diag_puts(crate::sched_diag::name(phase));
                     }
-                    diag_puts(b" #");
-                    diag_dec(timeout_hits);
                     diag_putc(b'\n');
                 }
             }
