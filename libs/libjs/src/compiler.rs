@@ -2223,7 +2223,6 @@ impl Compiler {
                 match callee.as_ref() {
                     Expr::Ident(name) if name == "super" => {
                         // super(args) — call parent constructor with current `this`.
-                        // Uses SuperCall to forward new.target from the derived constructor.
                         // Stack layout: [..., SuperClass, arg1..argN]
                         self.emit_load_name("$$super$$");
                         for arg in arguments { self.compile_expr(arg); }

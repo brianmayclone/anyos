@@ -15,6 +15,12 @@ fn main() {
             println!("[console] {}", line);
         }
     }
+    // Print engine log (debug messages)
+    for line in e.vm().engine_log.iter() {
+        if line.contains("super") || line.contains("SuperCall") {
+            println!("[engine-log] {}", line);
+        }
+    }
     println!("[engine] Execution complete");
 
     if let Some(exc) = e.last_exception() {

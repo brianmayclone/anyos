@@ -359,7 +359,6 @@ impl Vm {
                 let captured_upvalues = func_rc.borrow().upvalues.clone();
 
                 self.current_this = this_val.clone();
-
                 match kind {
                     FnKind::Native(native_fn) => {
                         let result = native_fn(self, &args);

@@ -825,7 +825,7 @@ impl Parser {
         self.expect(&TokenKind::Class);
         let name = self.ident_str();
         let super_class = if self.eat(&TokenKind::Extends) {
-            Some(self.parse_left_hand_side_expr())
+            Some(self.parse_assignment_expr())
         } else {
             None
         };
@@ -1943,7 +1943,7 @@ impl Parser {
             None
         };
         let super_class = if self.eat(&TokenKind::Extends) {
-            Some(Box::new(self.parse_left_hand_side_expr()))
+            Some(Box::new(self.parse_assignment_expr()))
         } else {
             None
         };
