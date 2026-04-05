@@ -1594,6 +1594,15 @@ impl Parser {
                         index: Box::new(index),
                     };
                 }
+                // Tagged template: expr`template`
+                TokenKind::Template(ref s) => {
+                    let template = s.clone();
+                    self.pos += 1;
+                    expr = Expr::TaggedTemplate {
+                        tag: Box::new(expr),
+                        template,
+                    };
+                }
                 _ => break,
             }
         }

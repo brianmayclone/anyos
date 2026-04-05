@@ -130,16 +130,25 @@ pub fn promise_then(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
         if state == "fulfilled" {
             if on_fulfilled.is_function() {
-                // Enqueue as microtask per ES2023 §27.2.5.4
-                let np = new_promise.clone();
-                enqueue_promise_reaction(vm, on_fulfilled, value, np, true);
+                // Run callback immediately for already-settled promises
+                // (React and most code expects synchronous .then on resolved promises)
+                let result = vm.call_value(&on_fulfilled, &[value], JsValue::Undefined);
+                if let Some(exc) = vm.last_exception.take() {
+                    settle_promise(vm, &new_promise, "rejected", &exc);
+                } else {
+                    settle_promise(vm, &new_promise, "fulfilled", &result);
+                }
             } else {
                 settle_promise(vm, &new_promise, "fulfilled", &value);
             }
         } else if state == "rejected" {
             if on_rejected.is_function() {
-                let np = new_promise.clone();
-                enqueue_promise_reaction(vm, on_rejected, value, np, false);
+                let result = vm.call_value(&on_rejected, &[value], JsValue::Undefined);
+                if let Some(exc) = vm.last_exception.take() {
+                    settle_promise(vm, &new_promise, "rejected", &exc);
+                } else {
+                    settle_promise(vm, &new_promise, "fulfilled", &result);
+                }
             } else {
                 settle_promise(vm, &new_promise, "rejected", &value);
             }

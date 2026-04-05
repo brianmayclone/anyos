@@ -5,8 +5,13 @@ fn main() {
     let source = std::fs::read_to_string(&path).expect("file read");
 
     let mut e = JsEngine::new();
-    e.set_step_limit(1_000_000);
+    e.set_step_limit(5_000_000);
     e.eval(&source);
+
+    // Print console output
+    for line in e.console_output() {
+        println!("{}", line);
+    }
 
     if let Some(exc) = e.last_exception() {
         let msg = match exc {
@@ -18,8 +23,7 @@ fn main() {
             },
             other => other.to_js_string(),
         };
-        println!("EXCEPTION: {}", msg);
-    } else {
-        println!("OK");
+        eprintln!("EXCEPTION: {}", msg);
+        std::process::exit(1);
     }
 }

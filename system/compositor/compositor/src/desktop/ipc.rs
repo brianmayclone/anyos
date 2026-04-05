@@ -70,7 +70,7 @@ impl Desktop {
                 let shm_id = shm_id_and_flags >> 16;
                 let flags = shm_id_and_flags & 0xFFFF;
 
-                if shm_id == 0 || width == 0 || height == 0 {
+                if shm_id == 0 || !self.validate_window_surface(width, height, flags) {
                     anyos_std::println!("[ipc] CREATE_WINDOW rejected: shm={} w={} h={}", shm_id, width, height);
                     return None;
                 }
@@ -255,7 +255,11 @@ impl Desktop {
                 let new_w = cmd[3];
                 let new_h = cmd[4];
 
-                if new_shm_id == 0 || new_w == 0 || new_h == 0 {
+                let flags = self.windows.iter()
+                    .find(|w| w.id == window_id)
+                    .map(|w| w.flags)
+                    .unwrap_or(0);
+                if new_shm_id == 0 || !self.validate_window_surface(new_w, new_h, flags) {
                     anyos_std::println!("[ipc] RESIZE_SHM rejected: shm={} w={} h={} win={}", new_shm_id, new_w, new_h, window_id);
                     return None;
                 }
@@ -383,7 +387,7 @@ impl Desktop {
                 let raw_y = (xy & 0xFFFF) as u16;
                 let flags = cmd[4];
 
-                if width == 0 || height == 0 {
+                if !self.validate_window_surface(width, height, flags) {
                     return None;
                 }
 
@@ -634,7 +638,7 @@ impl Desktop {
         let shm_id = shm_id_and_flags >> 16;
         let flags = shm_id_and_flags & 0xFFFF;
 
-        if shm_id == 0 || width == 0 || height == 0 || shm_addr == 0 {
+        if shm_id == 0 || shm_addr == 0 || !self.validate_window_surface(width, height, flags) {
             return None;
         }
 
@@ -801,7 +805,11 @@ impl Desktop {
         let new_w = cmd[3];
         let new_h = cmd[4];
 
-        if new_shm_id == 0 || new_w == 0 || new_h == 0 || new_shm_addr == 0 {
+        let flags = self.windows.iter()
+            .find(|w| w.id == window_id)
+            .map(|w| w.flags)
+            .unwrap_or(0);
+        if new_shm_id == 0 || new_shm_addr == 0 || !self.validate_window_surface(new_w, new_h, flags) {
             return None;
         }
 

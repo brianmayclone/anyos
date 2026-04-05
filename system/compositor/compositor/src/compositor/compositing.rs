@@ -501,7 +501,9 @@ impl Compositor {
             let shadow_oy = ly - spread;
 
             // Split borrow: read all layer data first, then take mutable ref to back_buffer
-            let cache = self.layers[layer_idx].shadow_cache.as_ref().unwrap();
+            let Some(cache) = self.layers[layer_idx].shadow_cache.as_ref() else {
+                return;
+            };
             let cache_w = cache.cache_w as usize;
             let alphas = if is_focused { &cache.focused_alphas } else { &cache.unfocused_alphas };
             let cache_alphas = alphas.as_ptr();

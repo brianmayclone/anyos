@@ -673,8 +673,17 @@ impl Vm {
                         if !self.handle_exception(exc) { return JsValue::Undefined; }
                     } else {
                         let key_str = key.to_js_string();
-                        // Check for getter (accessor property) like GetPropNamed does.
-                        if let Some(getter) = self.find_getter(&obj, &key_str) {
+                        if let JsValue::Object(ref o) = obj {
+                            if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                                let val = native_proxy::proxy_get(self, &obj, &key_str).unwrap_or(JsValue::Undefined);
+                                self.stack.push(val);
+                            } else if let Some(getter) = self.find_getter(&obj, &key_str) {
+                                self.invoke_function(&getter, &[], obj.clone());
+                            } else {
+                                let val = self.get_property_with_proto(&obj, &key_str);
+                                self.stack.push(val);
+                            }
+                        } else if let Some(getter) = self.find_getter(&obj, &key_str) {
                             self.invoke_function(&getter, &[], obj.clone());
                         } else {
                             let val = self.get_property_with_proto(&obj, &key_str);
@@ -696,6 +705,12 @@ impl Vm {
                                 _ => {}
                             }
                         }
+                    } else if let JsValue::Object(ref o) = obj {
+                        if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                            native_proxy::proxy_set(self, &obj, &key_str, &val);
+                        } else {
+                            obj.set_property(key_str, val.clone());
+                        }
                     } else {
                         obj.set_property(key_str, val.clone());
                     }
@@ -712,8 +727,17 @@ impl Vm {
                         );
                         let exc = self.make_type_error(&msg);
                         if !self.handle_exception(exc) { return JsValue::Undefined; }
+                    } else if let JsValue::Object(ref o) = obj {
+                        if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                            let val = native_proxy::proxy_get(self, &obj, &name).unwrap_or(JsValue::Undefined);
+                            self.stack.push(val);
+                        } else if let Some(getter) = self.find_getter(&obj, &name) {
+                            self.invoke_function(&getter, &[], obj.clone());
+                        } else {
+                            let val = self.get_property_with_proto(&obj, &name);
+                            self.stack.push(val);
+                        }
                     } else if let Some(getter) = self.find_getter(&obj, &name) {
-                        // Invoke getter with this=obj
                         self.invoke_function(&getter, &[], obj.clone());
                     } else {
                         let val = self.get_property_with_proto(&obj, &name);

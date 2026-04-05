@@ -802,9 +802,8 @@ impl Desktop {
         if down {
             // Ctrl+Alt+Delete: System escape — exit fullscreen + show system dialog
             if ctrl && alt && key_code == KEY_DELETE {
-                if self.fullscreen_window.is_some() {
+                if let Some(fs_win) = self.fullscreen_window {
                     // Notify the fullscreen app that fullscreen is ending
-                    let fs_win = self.fullscreen_window.unwrap();
                     self.push_event(fs_win, [EVENT_FULLSCREEN_EXIT, 0, 0, 0, 0]);
                     self.exit_fullscreen();
                 }
@@ -986,8 +985,7 @@ impl Desktop {
                     self.close_shortcut_overlay();
                     return;
                 }
-                if self.fullscreen_window.is_some() {
-                    let fs_win = self.fullscreen_window.unwrap();
+                if let Some(fs_win) = self.fullscreen_window {
                     self.push_event(fs_win, [EVENT_FULLSCREEN_EXIT, 0, 0, 0, 0]);
                     self.exit_fullscreen();
                     return;

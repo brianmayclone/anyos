@@ -2492,11 +2492,74 @@ impl Compiler {
                 self.patch_jump(end);
             }
             Expr::TaggedTemplate { tag, template } => {
+                // Tagged template: tag`str0${expr1}str1${expr2}str2`
+                // → tag(["str0", "str1", "str2"], expr1, expr2)
+                // Parse the template into static parts and expression sources
+                let mut static_parts: Vec<String> = Vec::new();
+                let mut expr_sources: Vec<String> = Vec::new();
+                let bytes = template.as_bytes();
+                let mut i = 0;
+                let mut current = String::new();
+                while i < bytes.len() {
+                    if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                        static_parts.push(current.clone());
+                        current.clear();
+                        i += 2;
+                        let mut depth = 1u32;
+                        let mut expr_src = String::new();
+                        while i < bytes.len() && depth > 0 {
+                            match bytes[i] {
+                                b'{' => { depth += 1; expr_src.push(bytes[i] as char); }
+                                b'}' => { depth -= 1; if depth > 0 { expr_src.push(b'}' as char); } }
+                                _ => {
+                                    if bytes[i] < 0x80 {
+                                        expr_src.push(bytes[i] as char);
+                                    } else {
+                                        let start = i;
+                                        while i + 1 < bytes.len() && (bytes[i + 1] & 0xC0) == 0x80 { i += 1; }
+                                        if let Ok(s) = core::str::from_utf8(&bytes[start..=i]) { expr_src.push_str(s); }
+                                    }
+                                }
+                            }
+                            i += 1;
+                        }
+                        expr_sources.push(expr_src);
+                    } else if bytes[i] < 0x80 {
+                        current.push(bytes[i] as char);
+                        i += 1;
+                    } else {
+                        let start = i;
+                        i += 1;
+                        while i < bytes.len() && (bytes[i] & 0xC0) == 0x80 { i += 1; }
+                        if let Ok(s) = core::str::from_utf8(&bytes[start..i]) { current.push_str(s); }
+                    }
+                }
+                static_parts.push(current);
+
+                // Compile: push tag function
                 self.compile_expr(tag);
-                let ci = self.add_const(Constant::String(template.clone()));
-                self.emit(Op::LoadConst(ci));
-                self.emit(Op::NewArray(1));
-                self.emit(Op::Call(1));
+
+                // Build the strings array (first argument)
+                for sp in &static_parts {
+                    let ci = self.add_const(Constant::String(sp.clone()));
+                    self.emit(Op::LoadConst(ci));
+                }
+                self.emit(Op::NewArray(static_parts.len() as u16));
+
+                // Compile each expression as additional arguments
+                let argc = 1 + expr_sources.len(); // strings array + each expression value
+                for expr_src in &expr_sources {
+                    let tokens = crate::lexer::Lexer::tokenize(expr_src);
+                    let mut p = crate::parser::Parser::new(tokens);
+                    let prog = p.parse_program();
+                    if let Some(Stmt::Expr(inner)) = prog.body.into_iter().next() {
+                        self.compile_expr(&inner);
+                    } else {
+                        self.emit(Op::LoadUndefined);
+                    }
+                }
+
+                self.emit(Op::Call(argc as u8));
             }
             Expr::RegExp { pattern, flags } => {
                 let pi = self.add_const(Constant::String(pattern.clone()));
