@@ -45,10 +45,11 @@ impl Control for SegmentedControl {
         let n = self.segment_count();
         if n == 0 { return; }
 
-        // Background pill with border
-        let bg = if disabled { crate::theme::darken(tc.control_bg, 10) } else { tc.control_bg };
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, h / 2, bg);
-        crate::draw::draw_rounded_border(surface, x, y, w, h, h / 2, tc.separator);
+        let shell = crate::controls::chrome::neutral_palette(b.hovered, false, disabled);
+        if focused && !disabled {
+            crate::controls::chrome::draw_focus(surface, x, y, w, h, h / 2, shell);
+        }
+        crate::controls::chrome::draw_surface(surface, x, y, w, h, h / 2, shell);
 
         let seg_w = w / n as u32;
 
@@ -56,17 +57,20 @@ impl Control for SegmentedControl {
             let sx = x + (i as u32 * seg_w) as i32;
             let sw = if i == n - 1 { w - (i as u32 * seg_w) } else { seg_w };
 
-            // Active segment: raised pill with shadow
             if i == active {
                 let pad = crate::theme::scale_i32(2);
                 let aw = sw.saturating_sub(pad as u32 * 2);
                 let ah = h.saturating_sub(pad as u32 * 2);
                 let ar = ah / 2;
-                // Bottom shadow for active pill
-                crate::draw::draw_bottom_shadow(surface, sx + pad, y + pad, aw, ah, ar, crate::theme::darken(tc.accent, 40));
-                crate::draw::fill_rounded_rect(surface, sx + pad, y + pad, aw, ah, ar, tc.accent);
-                // Top highlight
-                crate::draw::draw_top_highlight(surface, sx + pad, y + pad, aw, ar, crate::theme::lighten(tc.accent, 15));
+                crate::controls::chrome::draw_surface(
+                    surface,
+                    sx + pad,
+                    y + pad,
+                    aw,
+                    ah,
+                    ar,
+                    crate::controls::chrome::accent_palette(tc.accent, false, false, disabled),
+                );
             }
 
             // Segment label text
@@ -96,10 +100,6 @@ impl Control for SegmentedControl {
             }
         }
 
-        // Focus ring
-        if focused && !disabled {
-            crate::draw::draw_focus_ring(surface, x, y, w, h, h / 2, tc.accent);
-        }
     }
 
     fn is_interactive(&self) -> bool { !self.text_base.base.disabled }

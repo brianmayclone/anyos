@@ -19,9 +19,10 @@ impl Control for Label {
         let b = &self.text_base.base;
         let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
         let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let custom_bg = b.color != 0;
 
         // Background (only if set_color() was called with a non-zero color)
-        if b.color != 0 {
+        if custom_bg {
             let corner = w.min(h) / 2;
             crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, b.color);
         }
@@ -29,6 +30,8 @@ impl Control for Label {
         // Text color: set_text_color() > theme default
         let text_color = if self.text_base.text_style.text_color != 0 {
             self.text_base.text_style.text_color
+        } else if custom_bg {
+            0xFFFFFFFF
         } else {
             crate::theme::colors().text
         };

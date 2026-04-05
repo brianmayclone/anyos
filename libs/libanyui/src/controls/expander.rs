@@ -29,13 +29,20 @@ impl Control for Expander {
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = &self.text_base.base;
         let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let (x, y, w) = (p.x, p.y, p.w);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
         let expanded = b.state != 0;
         let hdr_h = crate::theme::scale(HEADER_HEIGHT);
+        let corner = crate::theme::scale(8);
 
-        // Header background
-        crate::draw::fill_rect(surface, x, y, w, hdr_h, tc.control_bg);
+        let header_palette = crate::controls::chrome::neutral_palette(b.hovered, false, b.disabled);
+        crate::controls::chrome::draw_surface(surface, x, y, w, hdr_h, corner, header_palette);
+
+        if expanded && h > hdr_h + 4 {
+            let body_y = y + hdr_h as i32 + crate::theme::scale_i32(6);
+            let body_h = h - hdr_h - crate::theme::scale(6);
+            crate::controls::chrome::draw_card(surface, x, body_y, w, body_h, corner, false);
+        }
 
         // Disclosure triangle (scaled)
         let tri_x = x + crate::theme::scale_i32(12);
@@ -60,14 +67,7 @@ impl Control for Expander {
         let text = &self.text_base.text;
         if !text.is_empty() {
             let fs = crate::draw::scale_font(self.text_base.text_style.font_size);
-            crate::draw::draw_text_sized(surface, x + crate::theme::scale_i32(28), y + crate::theme::scale_i32(8), tc.text, text, fs);
-        }
-
-        // Border
-        if expanded {
-            crate::draw::fill_rect(surface, x, y + hdr_h as i32 - 1, w, 1, tc.card_border);
-        } else {
-            crate::draw::draw_border(surface, x, y, w, hdr_h, tc.card_border);
+            crate::draw::draw_text_sized(surface, x + crate::theme::scale_i32(30), y + crate::theme::scale_i32(8), tc.text, text, fs);
         }
     }
 

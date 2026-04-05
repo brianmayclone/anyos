@@ -25,35 +25,32 @@ impl Control for Toggle {
         let hovered = b.hovered;
         let focused = b.focused;
 
-        let track_color = if disabled {
-            tc.toggle_off
-        } else if on {
-            if hovered { crate::theme::lighten(tc.toggle_on, 15) } else { tc.toggle_on }
-        } else {
-            if hovered { crate::theme::lighten(tc.toggle_off, 10) } else { tc.toggle_off }
-        };
-
         // Track (theme values are already logical — scale them)
         let tw = crate::theme::scale(crate::theme::toggle_width());
         let th = crate::theme::scale(crate::theme::toggle_height());
-        crate::draw::fill_rounded_rect(surface, x, y, tw, th, th / 2, track_color);
+        let track_palette = if on {
+            crate::controls::chrome::accent_palette(tc.toggle_on, hovered, false, disabled)
+        } else {
+            crate::controls::chrome::field_palette(tc.toggle_off, hovered, focused, disabled)
+        };
+        if focused && !disabled {
+            crate::controls::chrome::draw_focus(surface, x, y, tw, th, th / 2, track_palette);
+        }
+        crate::controls::chrome::draw_surface(surface, x, y, tw, th, th / 2, track_palette);
 
-        // Thumb with subtle bottom shadow
         let thumb_sz = crate::theme::scale(crate::theme::toggle_thumb_size());
         let inset = crate::theme::scale_i32(2);
         let thumb_x = if on { x + (tw - thumb_sz) as i32 - inset } else { x + inset };
         let thumb_y = y + inset;
-        let thumb_color = if disabled { crate::theme::darken(tc.toggle_thumb, 30) } else { tc.toggle_thumb };
-
-        // 1px shadow under thumb
-        crate::draw::fill_rounded_rect(surface, thumb_x, thumb_y + 1, thumb_sz, thumb_sz, thumb_sz / 2, crate::theme::with_alpha(0xFF000000, 25));
-        // Thumb
-        crate::draw::fill_rounded_rect(surface, thumb_x, thumb_y, thumb_sz, thumb_sz, thumb_sz / 2, thumb_color);
-
-        // Focus ring
-        if focused && !disabled {
-            crate::draw::draw_focus_ring(surface, x, y, tw, th, th / 2, tc.accent);
-        }
+        crate::controls::chrome::draw_surface(
+            surface,
+            thumb_x,
+            thumb_y,
+            thumb_sz,
+            thumb_sz,
+            thumb_sz / 2,
+            crate::controls::chrome::neutral_palette(hovered, false, disabled),
+        );
     }
 
     fn is_interactive(&self) -> bool { !self.text_base.base.disabled }

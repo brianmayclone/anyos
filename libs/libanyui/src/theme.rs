@@ -58,42 +58,42 @@ pub struct ThemeColors {
 // ── Built-in default palettes (overwritten by .conf at runtime) ─────────
 
 static mut DARK: ThemeColors = ThemeColors {
-    window_bg:        0xFF1E1E1E,
-    text:             0xFFE6E6E6,
-    text_secondary:   0xFF969696,
-    text_disabled:    0xFF5A5A5A,
-    accent:           0xFF007AFF,
-    accent_hover:     0xFF0A84FF,
-    destructive:      0xFFFF3B30,
-    success:          0xFF30D158,
-    warning:          0xFFFFD60A,
-    control_bg:       0xFF3C3C3C,
-    control_hover:    0xFF484848,
-    control_pressed:  0xFF2A2A2A,
-    input_bg:         0xFF1A1A1A,
-    input_border:     0xFF505050,
-    input_focus:      0xFF007AFF,
-    separator:        0xFF3D3D3D,
-    selection:        0xFF0A54C4,
-    sidebar_bg:       0xFF252525,
-    card_bg:          0xFF2A2A2A,
-    card_border:      0xFF3A3A3A,
-    badge_red:        0xFFFF3B30,
-    toggle_on:        0xFF30D158,
-    toggle_off:       0xFF636366,
+    window_bg:        0xFF0D1117,
+    text:             0xFFE6EDF3,
+    text_secondary:   0xFF8B949E,
+    text_disabled:    0xFF484F58,
+    accent:           0xFF2563EB,
+    accent_hover:     0xFF3B82F6,
+    destructive:      0xFFEF4444,
+    success:          0xFF22C55E,
+    warning:          0xFFF59E0B,
+    control_bg:       0xFF21262D,
+    control_hover:    0xFF30363D,
+    control_pressed:  0xFF161B22,
+    input_bg:         0xFF0D1117,
+    input_border:     0xFF30363D,
+    input_focus:      0xFF2563EB,
+    separator:        0xFF21262D,
+    selection:        0xFF1C3A6E,
+    sidebar_bg:       0xFF161B22,
+    card_bg:          0xFF161B22,
+    card_border:      0xFF30363D,
+    badge_red:        0xFFEF4444,
+    toggle_on:        0xFF2563EB,
+    toggle_off:       0xFF30363D,
     toggle_thumb:     0xFFFFFFFF,
-    scrollbar:        0xFF8E8E93,
-    scrollbar_track:  0xFF3A3A3C,
+    scrollbar:        0xFF484F58,
+    scrollbar_track:  0xFF161B22,
     check_mark:       0xFFFFFFFF,
-    toolbar_bg:       0xFF2C2C2E,
-    tab_inactive_bg:  0xFF2D2D2D,
-    tab_hover_bg:     0xFF383838,
-    tab_border_active:0xFF007ACC,
-    editor_bg:        0xFF1E1E1E,
-    editor_line_hl:   0xFF2A2D2E,
-    editor_selection:  0xFF264F78,
-    alt_row_bg:       0xFF232323,
-    placeholder_bg:   0xFF2A2A2A,
+    toolbar_bg:       0xFF161B22,
+    tab_inactive_bg:  0xFF161B22,
+    tab_hover_bg:     0xFF21262D,
+    tab_border_active:0xFF2563EB,
+    editor_bg:        0xFF0D1117,
+    editor_line_hl:   0xFF161B22,
+    editor_selection:  0xFF1C3A6E,
+    alt_row_bg:       0xFF0D1117,
+    placeholder_bg:   0xFF161B22,
 };
 
 static mut LIGHT: ThemeColors = ThemeColors {
@@ -460,9 +460,9 @@ pub fn unscale_u32(val: u32) -> u32 {
 
 #[inline(always)] pub fn button_height() -> u32 { scale(28) }
 #[inline(always)] pub fn button_padding_h() -> u32 { scale(16) }
-#[inline(always)] pub fn button_corner() -> u32 { scale(6) }
+#[inline(always)] pub fn button_corner() -> u32 { scale(8) }
 #[inline(always)] pub fn input_height() -> u32 { scale(28) }
-#[inline(always)] pub fn input_corner() -> u32 { scale(6) }
+#[inline(always)] pub fn input_corner() -> u32 { scale(8) }
 #[inline(always)] pub fn toggle_width() -> u32 { scale(36) }
 #[inline(always)] pub fn toggle_height() -> u32 { scale(20) }
 #[inline(always)] pub fn toggle_thumb_size() -> u32 { scale(16) }

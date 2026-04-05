@@ -29,38 +29,22 @@ impl Control for RadioButton {
         let sz = crate::theme::scale(crate::theme::radio_size());
         let r = sz / 2;
 
-        // Background with hover feedback
-        let bg = if disabled {
-            crate::theme::darken(tc.control_bg, 10)
-        } else if hovered {
-            tc.control_hover
+        let palette = if selected {
+            crate::controls::chrome::accent_palette(tc.accent, hovered, false, disabled)
         } else {
-            tc.control_bg
+            crate::controls::chrome::field_palette(0, hovered, focused, disabled)
         };
-        crate::draw::fill_rounded_rect(surface, x, y, sz, sz, r, bg);
-
-        // Border (accent when selected, lighter on hover)
-        let border_color = if selected {
-            tc.accent
-        } else if hovered && !disabled {
-            tc.accent
-        } else {
-            tc.input_border
-        };
-        crate::draw::draw_rounded_border(surface, x, y, sz, sz, r, border_color);
+        if focused && !disabled {
+            crate::controls::chrome::draw_focus(surface, x, y, sz, sz, r, palette);
+        }
+        crate::controls::chrome::draw_surface(surface, x, y, sz, sz, r, palette);
 
         // Inner dot when selected
         if selected {
-            let dot_color = if disabled { tc.text_disabled } else { tc.accent };
             let dot_inset = crate::theme::scale_i32(5);
             let dot_sz = crate::theme::scale(8);
             let dot_r = crate::theme::scale(4);
-            crate::draw::fill_rounded_rect(surface, x + dot_inset, y + dot_inset, dot_sz, dot_sz, dot_r, dot_color);
-        }
-
-        // Focus ring
-        if focused && !disabled {
-            crate::draw::draw_focus_ring(surface, x, y, sz, sz, r, tc.accent);
+            crate::draw::fill_rounded_rect(surface, x + dot_inset, y + dot_inset, dot_sz, dot_sz, dot_r, tc.check_mark);
         }
 
         // Label text

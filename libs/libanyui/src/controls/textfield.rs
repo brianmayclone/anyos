@@ -188,29 +188,12 @@ impl Control for TextField {
         let hovered = b.hovered;
         let corner = crate::theme::input_corner();
 
-        // Background: use custom color if set, otherwise theme color.
         let custom = b.color;
-        let bg = if custom != 0 {
-            if disabled { crate::theme::darken(custom, 10) } else { custom }
-        } else {
-            if disabled { crate::theme::darken(tc.input_bg, 10) } else { tc.input_bg }
-        };
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, bg);
-
-        // Border: focus (accent) > hover (lighter) > normal
-        let border_color = if self.focused {
-            tc.input_focus
-        } else if hovered && !disabled {
-            tc.accent
-        } else {
-            tc.input_border
-        };
-        crate::draw::draw_rounded_border(surface, x, y, w, h, corner, border_color);
-
-        // Focus ring (2px glow around the field)
+        let palette = crate::controls::chrome::flat_field_palette(custom, hovered, self.focused, disabled);
         if self.focused && !disabled {
-            crate::draw::draw_focus_ring(surface, x, y, w, h, corner, tc.accent);
+            crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
         }
+        crate::controls::chrome::draw_surface(surface, x, y, w, h, corner, palette);
 
         // Prefix icon placeholder (scaled)
         let icon_sz = crate::theme::scale(12);

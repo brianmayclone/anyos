@@ -19,7 +19,7 @@ impl Control for Tag {
         let b = &self.text_base.base;
         let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
         let bg = if b.color != 0 { b.color } else { crate::theme::colors().accent };
-        crate::draw::fill_rounded_rect(surface, p.x, p.y, p.w, p.h, p.h / 2, bg);
+        crate::controls::chrome::draw_surface(surface, p.x, p.y, p.w, p.h, p.h / 2, crate::controls::chrome::accent_palette(bg, b.hovered, false, b.disabled));
         if !self.text_base.text.is_empty() {
             let text_color = if self.text_base.text_style.text_color != 0 {
                 self.text_base.text_style.text_color

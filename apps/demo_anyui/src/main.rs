@@ -8,7 +8,6 @@
 
 use anyos_std::i18n;
 use libanyui_client as ui;
-use ui::Widget;
 
 anyos_std::entry!(main);
 
@@ -40,15 +39,19 @@ fn main() {
     // ════════════════════════════════════════════════════════════════
 
     let title = ui::Label::new(i18n::t("anyui Component Showcase"));
-    title.set_color(0xFF007AFF);
-    title.set_size(420, 20);
-    title.set_margin(0, 0, 0, 4);
+    title.set_color(0xFF167CFF);
+    title.set_text_color(0xFFFFFFFF);
+    title.set_text_align(ui::TEXT_ALIGN_CENTER);
+    title.set_size(340, 28);
+    title.set_margin(40, 0, 40, 6);
     content.add(&title);
 
     let subtitle = ui::Label::new(i18n::t("Scroll down to see all components"));
-    subtitle.set_color(0xFF969696);
-    subtitle.set_size(420, 16);
-    subtitle.set_margin(0, 0, 0, 8);
+    subtitle.set_color(0xFF707782);
+    subtitle.set_text_color(0xFFE8ECF2);
+    subtitle.set_text_align(ui::TEXT_ALIGN_CENTER);
+    subtitle.set_size(420, 24);
+    subtitle.set_margin(0, 0, 0, 10);
     content.add(&subtitle);
 
     let div = ui::Divider::new();
@@ -75,6 +78,7 @@ fn main() {
     let btn = ui::Button::new(i18n::t("Primary"));
     btn.set_size(100, 32);
     btn.set_margin(0, 0, 6, 0);
+    btn.set_color(0xFF167CFF);
     btn.set_tooltip(i18n::t("Show MessageBox"));
     btn.on_click(|_e| {
         ui::MessageBox::show(ui::MessageBoxType::Info, i18n::t("Button clicked!"), None);
@@ -90,14 +94,17 @@ fn main() {
     row_btns.add(&icon_btn);
 
     let tag1 = ui::Tag::new("Rust");
+    tag1.set_color(0xFF167CFF);
     tag1.set_margin(0, 4, 4, 0);
     row_btns.add(&tag1);
 
     let tag2 = ui::Tag::new("anyOS");
+    tag2.set_color(0xFF167CFF);
     tag2.set_margin(0, 4, 4, 0);
     row_btns.add(&tag2);
 
     let badge = ui::Badge::new("3");
+    badge.set_color(0xFFE53935);
     badge.set_margin(0, 4, 8, 0);
     row_btns.add(&badge);
 
@@ -138,6 +145,7 @@ fn main() {
     let cb = ui::Checkbox::new(i18n::t("Enable notifications"));
     cb.set_size(200, 20);
     cb.set_margin(0, 0, 0, 6);
+    cb.set_state(0);
     inp_stack.add(&cb);
 
     // Radio buttons row
@@ -148,6 +156,7 @@ fn main() {
 
     let rb1 = ui::RadioButton::new("Option A");
     rb1.set_position(0, 0);
+    rb1.set_state(1);
     radio_row.add(&rb1);
 
     let rb2 = ui::RadioButton::new("Option B");
@@ -170,13 +179,13 @@ fn main() {
     let search = ui::SearchField::new();
     search.set_position(208, 0);
     search.set_size(200, 28);
-    search.set_placeholder("Search...");
+    search.set_placeholder("Search");
     text_row.add(&search);
 
     // TextArea
     let ta = ui::TextArea::new();
     ta.set_size(412, 80);
-    ta.set_text("This is a very long line that should wrap automatically when it exceeds the width of the text area widget boundary.\nSecond line here.\nThird line with normal length.");
+    ta.set_text("This is a very long line that will wrap automatically when it exceeds.\nSecond line here.\nThird line with normal length.");
     inp_stack.add(&ta);
 
     // ════════════════════════════════════════════════════════════════
@@ -310,7 +319,7 @@ fn main() {
     let card_title = ui::Label::new(i18n::t("Card Widget"));
     card_title.set_position(12, 8);
     card_title.set_size(176, 16);
-    card_title.set_text_color(0xFF007AFF);
+    card_title.set_text_color(0xFF7FB7FF);
     card.add(&card_title);
 
     let card_text = ui::Label::new(i18n::t("With nested content."));
@@ -353,20 +362,20 @@ fn main() {
     cw_label.set_position(0, 6);
     color_row.add(&cw_label);
 
-    let cw = ui::ColorWell::new();
-    cw.set_position(100, 0);
-    cw.set_state(0xFF007AFF);
-    color_row.add(&cw);
-
-    let cw_swatch = ui::View::new();
-    cw_swatch.set_position(160, 0);
-    cw_swatch.set_size(28, 28);
-    cw_swatch.set_color(0xFF007AFF);
-    color_row.add(&cw_swatch);
-
-    cw.on_color_selected(move |e| {
-        cw_swatch.set_color(e.color);
-    });
+    let swatches = [
+        0xFFFF3B30u32,
+        0xFF167CFFu32,
+        0xFF59C135u32,
+        0xFF8E44D9u32,
+        0xFF4B5260u32,
+    ];
+    for (idx, color) in swatches.iter().enumerate() {
+        let sw = ui::ColorWell::new();
+        sw.set_position(100 + (idx as i32 * 30), 2);
+        sw.set_size(20, 20);
+        sw.set_color(*color);
+        color_row.add(&sw);
+    }
 
     // Status indicators row
     let status_row = ui::View::new();
@@ -399,14 +408,13 @@ fn main() {
 
     let canvas = ui::Canvas::new(412, 100);
     canvas.set_position(4, 4);
-    canvas.clear(0xFF1C1C1E);
+    canvas.clear(0xFF1F242D);
     // Draw some shapes
-    canvas.fill_rect(10, 10, 80, 40, 0xFF007AFF);   // blue rect
-    canvas.fill_rect(100, 10, 80, 40, 0xFF30D158);   // green rect
-    canvas.fill_rect(190, 10, 80, 40, 0xFFFF453A);   // red rect
-    canvas.draw_line(10, 70, 270, 70, 0xFFFFFFFF);    // white line
-    canvas.draw_circle(320, 50, 30, 0xFFFF9F0A);      // orange circle
-    canvas.fill_circle(380, 50, 20, 0xFFBF5AF2);      // purple filled circle
+    canvas.fill_rect(10, 10, 80, 40, 0xFF167CFF);
+    canvas.fill_rect(100, 10, 80, 40, 0xFF24B04A);
+    canvas.fill_rect(190, 10, 80, 40, 0xFFD92C36);
+    canvas.draw_line(10, 70, 270, 70, 0xFFD8DEE8);
+    canvas.fill_circle(320, 50, 22, 0xFF7A35D8);
     exp_canvas.add(&canvas);
 
     // ════════════════════════════════════════════════════════════════

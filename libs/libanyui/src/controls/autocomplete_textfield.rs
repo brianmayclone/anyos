@@ -193,15 +193,11 @@ impl Control for AutoCompleteTextField {
         let corner = crate::theme::scale(6);
 
         // ── Background ──────────────────────────────────────────────
-        let bg = if disabled {
-            crate::theme::darken(tc.input_bg, 10)
-        } else if hovered {
-            tc.control_hover
-        } else {
-            tc.input_bg
-        };
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, bg);
-        crate::draw::draw_rounded_border(surface, x, y, w, h, corner, tc.input_border);
+        let palette = crate::controls::chrome::flat_field_palette(0, hovered, focused, disabled);
+        if focused && !disabled {
+            crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
+        }
+        crate::controls::chrome::draw_surface(surface, x, y, w, h, corner, palette);
 
         // ── Text content ────────────────────────────────────────────
         let logical_fs = if self.text_base.text_style.font_size > 0 {
@@ -233,10 +229,6 @@ impl Control for AutoCompleteTextField {
             crate::draw::fill_rect(surface, cursor_x, ty, 2, font_size as u32, text_color);
         }
 
-        // ── Focus ring ──────────────────────────────────────────────
-        if focused && !disabled {
-            crate::draw::draw_focus_ring(surface, x, y, w, h, corner, tc.accent);
-        }
     }
 
     fn is_interactive(&self) -> bool {

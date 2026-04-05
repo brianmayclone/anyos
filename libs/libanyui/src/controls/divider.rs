@@ -18,11 +18,11 @@ impl Control for Divider {
         let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
         let tc = crate::theme::colors();
         if b.h <= 1 {
-            // Horizontal divider — 1 physical pixel tall
-            crate::draw::fill_rect(surface, p.x, p.y, p.w, 1, tc.separator);
+            crate::draw::fill_rect(surface, p.x, p.y, p.w, 1, crate::theme::darken(tc.separator, 10));
+            crate::draw::fill_rect(surface, p.x, p.y + 1, p.w, 1, crate::theme::with_alpha(0xFFFFFFFF, 18));
         } else {
-            // Vertical divider — 1 physical pixel wide
-            crate::draw::fill_rect(surface, p.x, p.y, 1, p.h, tc.separator);
+            crate::draw::fill_rect(surface, p.x, p.y, 1, p.h, crate::theme::darken(tc.separator, 10));
+            crate::draw::fill_rect(surface, p.x + 1, p.y, 1, p.h, crate::theme::with_alpha(0xFFFFFFFF, 18));
         }
     }
 }

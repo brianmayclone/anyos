@@ -27,7 +27,15 @@ impl Control for StatusIndicator {
         };
         let dot_size = crate::theme::scale(10);
         let dot_radius = crate::theme::scale(5);
-        crate::draw::fill_rounded_rect(surface, p.x, p.y + crate::theme::scale_i32(2), dot_size, dot_size, dot_radius, dot_color);
+        crate::controls::chrome::draw_surface(
+            surface,
+            p.x,
+            p.y + crate::theme::scale_i32(2),
+            dot_size,
+            dot_size,
+            dot_radius,
+            crate::controls::chrome::accent_palette(dot_color, false, false, false),
+        );
         if !self.text_base.text.is_empty() {
             let fs = crate::draw::scale_font(self.text_base.text_style.font_size);
             let fid = self.text_base.text_style.font_id;

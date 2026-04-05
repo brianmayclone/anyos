@@ -9,6 +9,7 @@ use crate::control::{Control, ControlBase, TextControlBase, ControlKind, Control
 pub mod window;
 pub mod view;
 pub mod label;
+pub mod chrome;
 pub mod button;
 pub mod textfield;
 pub mod toggle;

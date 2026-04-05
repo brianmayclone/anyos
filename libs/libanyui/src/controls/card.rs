@@ -20,14 +20,7 @@ impl Control for Card {
         let tc = crate::theme::colors();
         let corner = crate::theme::card_corner();
 
-        // Bottom shadow line (cheap elevation)
-        crate::draw::draw_bottom_shadow(surface, x, y, w, h, corner, crate::theme::darken(tc.card_border, 15));
-
-        // Card body + border
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, tc.card_bg);
-        crate::draw::draw_rounded_border(surface, x, y, w, h, corner, tc.card_border);
-
-        // Top highlight
-        crate::draw::draw_top_highlight(surface, x, y, w, corner, crate::theme::lighten(tc.card_bg, 8));
+        let _ = tc;
+        crate::controls::chrome::draw_card(surface, x, y, w, h, corner, b.hovered);
     }
 }

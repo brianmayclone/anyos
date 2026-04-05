@@ -116,23 +116,11 @@ impl Control for SearchField {
         let hovered = b.hovered;
         let corner = h / 2; // Full round ends (pill shape)
 
-        // Background
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, tc.input_bg);
-
-        // Border: focus > hover > normal
-        let border_color = if self.focused {
-            tc.input_focus
-        } else if hovered && !disabled {
-            tc.accent
-        } else {
-            tc.input_border
-        };
-        crate::draw::draw_rounded_border(surface, x, y, w, h, corner, border_color);
-
-        // Focus ring
+        let palette = crate::controls::chrome::flat_field_palette(0, hovered, self.focused, disabled);
         if self.focused && !disabled {
-            crate::draw::draw_focus_ring(surface, x, y, w, h, corner, tc.accent);
+            crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
         }
+        crate::controls::chrome::draw_surface(surface, x, y, w, h, corner, palette);
 
         // Search icon placeholder (small circle + line = magnifying glass)
         let icon_sz = crate::theme::scale(10);

@@ -25,23 +25,18 @@ impl Control for Checkbox {
         let hovered = b.hovered;
         let focused = b.focused;
         let sz = crate::theme::scale(crate::theme::checkbox_size());
-        let corner = crate::theme::scale(4);
+        let corner = crate::theme::scale(5);
 
-        let bg = if disabled {
-            crate::theme::darken(tc.control_bg, 10)
-        } else if checked {
-            if hovered { crate::theme::lighten(tc.accent, 15) } else { tc.accent }
-        } else if hovered {
-            tc.control_hover
+        let palette = if checked {
+            crate::controls::chrome::accent_palette(tc.accent, hovered, false, disabled)
         } else {
-            tc.control_bg
+            crate::controls::chrome::field_palette(0, hovered, focused, disabled)
         };
 
-        // Checkbox box
-        crate::draw::fill_rounded_rect(surface, x, y, sz, sz, corner, bg);
-        if !checked {
-            crate::draw::draw_rounded_border(surface, x, y, sz, sz, corner, if hovered && !disabled { tc.accent } else { tc.input_border });
+        if focused && !disabled {
+            crate::controls::chrome::draw_focus(surface, x, y, sz, sz, corner, palette);
         }
+        crate::controls::chrome::draw_surface(surface, x, y, sz, sz, corner, palette);
 
         // Checkmark — scaled diagonal lines forming a check shape
         if checked {
@@ -59,11 +54,6 @@ impl Control for Checkbox {
             crate::draw::fill_rect(surface, x + s(10), y + s(6),  ps, ps, cm);
             crate::draw::fill_rect(surface, x + s(11), y + s(5),  ps, ps, cm);
             crate::draw::fill_rect(surface, x + s(12), y + s(4),  ps, ps, cm);
-        }
-
-        // Focus ring
-        if focused && !disabled {
-            crate::draw::draw_focus_ring(surface, x, y, sz, sz, corner, tc.accent);
         }
 
         // Label text

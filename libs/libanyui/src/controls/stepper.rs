@@ -36,11 +36,11 @@ impl Control for Stepper {
         let focused = b.focused;
         let corner = crate::theme::button_corner();
 
-        // Overall background with depth
-        let bg = if disabled { crate::theme::darken(tc.control_bg, 10) } else { tc.control_bg };
-        crate::draw::draw_bottom_shadow(surface, x, y, w, h, corner, crate::theme::darken(bg, 20));
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, bg);
-        crate::draw::draw_top_highlight(surface, x, y, w, corner, crate::theme::lighten(bg, 10));
+        let palette = crate::controls::chrome::neutral_palette(b.hovered, false, disabled);
+        if focused && !disabled {
+            crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
+        }
+        crate::controls::chrome::draw_surface(surface, x, y, w, h, corner, palette);
 
         let text_color = if disabled { tc.text_disabled } else { tc.text };
         let btn_color = if disabled { tc.text_disabled } else { tc.text_secondary };
@@ -67,10 +67,6 @@ impl Control for Stepper {
         crate::draw::fill_rect(surface, x + sep_x_left, y + sep_pad, 1, sep_h, tc.separator);
         crate::draw::fill_rect(surface, x + w as i32 - sep_x_right, y + sep_pad, 1, sep_h, tc.separator);
 
-        // Focus ring
-        if focused && !disabled {
-            crate::draw::draw_focus_ring(surface, x, y, w, h, corner, tc.accent);
-        }
     }
 
     fn is_interactive(&self) -> bool { !self.text_base.base.disabled }

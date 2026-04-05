@@ -20,17 +20,28 @@ impl Control for ProgressBar {
         let tc = crate::theme::colors();
         let r = h / 2;
 
-        // Track with subtle inner shadow (1px darker top line)
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, r, tc.control_bg);
-        crate::draw::draw_top_highlight(surface, x, y, w, r, crate::theme::darken(tc.control_bg, 8));
+        crate::controls::chrome::draw_surface(
+            surface,
+            x,
+            y,
+            w,
+            h,
+            r,
+            crate::controls::chrome::field_palette(0, b.hovered, false, b.disabled),
+        );
 
-        // Filled portion with accent
         let val = b.state.min(100);
-        let fill_w = (w as u64 * val as u64 / 100) as u32;
-        if fill_w > 0 {
-            crate::draw::fill_rounded_rect(surface, x, y, fill_w, h, r, tc.accent);
-            // Subtle highlight on the filled portion
-            crate::draw::draw_top_highlight(surface, x, y, fill_w, r, crate::theme::lighten(tc.accent, 20));
+        let fill_w = (w.saturating_sub(4) as u64 * val as u64 / 100) as u32;
+        if fill_w > 0 && h > 4 {
+            crate::controls::chrome::draw_surface(
+                surface,
+                x + 2,
+                y + 2,
+                fill_w,
+                h - 4,
+                r.saturating_sub(2),
+                crate::controls::chrome::accent_palette(tc.accent, b.hovered, false, b.disabled),
+            );
         }
     }
 }

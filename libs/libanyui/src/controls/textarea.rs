@@ -74,12 +74,16 @@ impl Control for TextArea {
             crate::theme::colors().input_bg
         };
         let tc = crate::theme::colors();
+        let corner = crate::theme::input_corner();
+        let palette = crate::controls::chrome::flat_field_palette(bg, b.hovered, self.focused, b.disabled);
 
-        // Background
-        crate::draw::fill_rect(surface, x, y, w, h, bg);
+        if self.focused && !b.disabled {
+            crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
+        }
+        crate::controls::chrome::draw_surface(surface, x, y, w, h, corner, palette);
 
         // Clip text to control bounds (physical)
-        let clipped = surface.with_clip(x, y, w, h);
+        let clipped = surface.with_clip(x + 2, y + 2, w.saturating_sub(4), h.saturating_sub(4));
         let text_color = if self.text_base.text_style.text_color != 0 {
             self.text_base.text_style.text_color
         } else {
@@ -149,7 +153,7 @@ impl Control for TextArea {
             let bar_x = x + w as i32 - bar_w as i32 - crate::theme::scale_i32(2);
             let track_y = y + crate::theme::scale_i32(2);
             let track_h = view_h;
-            crate::draw::fill_rect(&clipped, bar_x, track_y, bar_w, track_h as u32, tc.scrollbar_track);
+            crate::controls::chrome::draw_surface(&clipped, bar_x, track_y, bar_w, track_h as u32, bar_w / 2, crate::controls::chrome::flat_field_palette(tc.scrollbar_track, false, false, false));
             let thumb_h = ((view_h as i64 * track_h as i64) / content_h as i64).max(crate::theme::scale_i32(20) as i64) as i32;
             let max_scroll = crate::theme::scale_i32(self.max_scroll());
             let scroll_frac = if max_scroll > 0 {
@@ -157,7 +161,7 @@ impl Control for TextArea {
             } else { 0 };
             let thumb_y = track_y + scroll_frac.max(0).min(track_h - thumb_h);
             let thumb_r = crate::theme::scale(3);
-            crate::draw::fill_rounded_rect(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, thumb_r, tc.scrollbar);
+            crate::controls::chrome::draw_surface(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, thumb_r, crate::controls::chrome::neutral_palette(true, false, false));
         }
     }
 

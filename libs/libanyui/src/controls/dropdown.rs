@@ -60,16 +60,11 @@ impl Control for DropDown {
         let hovered = b.hovered;
         let corner = crate::theme::scale(CORNER);
 
-        // ── Background ──────────────────────────────────────────────
-        let bg = if disabled {
-            crate::theme::darken(tc.control_bg, 10)
-        } else if hovered {
-            tc.control_hover
-        } else {
-            tc.input_bg
-        };
-        crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, bg);
-        crate::draw::draw_rounded_border(surface, x, y, w, h, corner, tc.input_border);
+        let palette = crate::controls::chrome::flat_field_palette(0, hovered, focused, disabled);
+        if focused && !disabled {
+            crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
+        }
+        crate::controls::chrome::draw_surface(surface, x, y, w, h, corner, palette);
 
         // ── Selected item text ──────────────────────────────────────
         let selected = b.state as usize;
@@ -99,10 +94,6 @@ impl Control for DropDown {
             crate::draw::fill_rect(surface, cx, chevron_y + row, cw as u32, 1, chevron_color);
         }
 
-        // ── Focus ring ──────────────────────────────────────────────
-        if focused && !disabled {
-            crate::draw::draw_focus_ring(surface, x, y, w, h, corner, tc.accent);
-        }
     }
 
     fn is_interactive(&self) -> bool { !self.text_base.base.disabled }

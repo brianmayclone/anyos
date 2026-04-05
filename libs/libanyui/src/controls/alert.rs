@@ -38,12 +38,7 @@ impl Control for Alert {
             crate::theme::POPUP_SHADOW_ALPHA,
         );
 
-        // Card body + border
-        crate::draw::fill_rounded_rect(surface, cx, cy, card_w, card_h, corner, tc.card_bg);
-        crate::draw::draw_rounded_border(surface, cx, cy, card_w, card_h, corner, tc.card_border);
-
-        // Top highlight for depth
-        crate::draw::draw_top_highlight(surface, cx, cy, card_w, corner, crate::theme::lighten(tc.card_bg, 10));
+        crate::controls::chrome::draw_surface(surface, cx, cy, card_w, card_h, corner, crate::controls::chrome::card_palette(false));
 
         if !self.text_base.text.is_empty() {
             let fs = crate::draw::scale_font(crate::theme::FONT_SIZE_LARGE);

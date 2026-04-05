@@ -7,22 +7,11 @@ const CLOSE_BTN_PAD: i32 = 8;
 const TAB_HEIGHT: i32 = 28;
 const TAB_FONT_SIZE: u16 = 12;
 const TAB_GAP: i32 = 4;
-const TAB_CORNER_RADIUS: i32 = 6;
 const TAB_TOP_MARGIN: i32 = 4;
 const MAX_TAB_WIDTH: i32 = 200;
 const MIN_TAB_WIDTH: i32 = 80;
 /// Size of the navigation / "+" buttons on the right side.
 const NAV_BTN_SIZE: i32 = 24;
-
-/// Blend two ARGB colors: result = a*(1-t/255) + b*(t/255)
-fn blend_colors(a: u32, b: u32, t: u32) -> u32 {
-    let inv = 255 - t;
-    let r = ((a >> 16 & 0xFF) * inv + (b >> 16 & 0xFF) * t) / 255;
-    let g = ((a >>  8 & 0xFF) * inv + (b >>  8 & 0xFF) * t) / 255;
-    let bl = ((a & 0xFF) * inv + (b & 0xFF) * t) / 255;
-    0xFF000000 | (r << 16) | (g << 8) | bl
-}
-
 
 pub struct TabBar {
     pub(crate) text_base: TextControlBase,
@@ -286,8 +275,7 @@ impl Control for TabBar {
         let active = b.state as usize;
         let tc = crate::theme::colors();
 
-        // Background
-        crate::draw::fill_rect(surface, x, y, w, h, tc.tab_inactive_bg);
+        crate::draw::fill_rect(surface, x, y, w, h, crate::controls::chrome::blend(tc.window_bg, tc.tab_inactive_bg, 140));
 
         // Scaled constants
         let tab_pad_x = crate::theme::scale_i32(TAB_PAD_X);
@@ -297,7 +285,6 @@ impl Control for TabBar {
         let tab_font = crate::draw::scale_font(TAB_FONT_SIZE);
         let close_font = crate::draw::scale_font(10);
         let close_corner = crate::theme::scale(4);
-        let tab_corner = crate::theme::scale(TAB_CORNER_RADIUS as u32);
         let top_margin = crate::theme::scale_i32(TAB_TOP_MARGIN);
         let max_tab_w = crate::theme::scale_i32(MAX_TAB_WIDTH);
         let nav_btn_size = crate::theme::scale_i32(NAV_BTN_SIZE);
@@ -342,26 +329,14 @@ impl Control for TabBar {
             let is_active = i == active;
             let is_hovered = self.hover_tab == i as i32;
 
-            // Tab background — rounded top corners
-            let bg = if is_active {
-                tc.window_bg
-            } else if is_hovered {
-                tc.tab_hover_bg
+            // Tab background — active tab uses accent color, fully rounded
+            let pill_r = tab_h / 2; // Pill shape
+            let palette = if is_active {
+                crate::controls::chrome::accent_palette(tc.tab_border_active, is_hovered, false, false)
             } else {
-                blend_colors(tc.tab_inactive_bg, tc.tab_hover_bg, 64)
+                crate::controls::chrome::neutral_palette(is_hovered, false, false)
             };
-            crate::draw::fill_rounded_rect(surface, tab_x, tab_y,
-                tab_w as u32, tab_h, tab_corner, bg);
-            let half_y = tab_y + tab_h as i32 / 2;
-            let half_h = tab_h - tab_h / 2;
-            crate::draw::fill_rect(surface, tab_x, half_y, tab_w as u32, half_h, bg);
-
-            // Active indicator
-            if is_active {
-                let indicator_h = crate::theme::scale(2);
-                crate::draw::fill_rect(surface, tab_x + tab_corner as i32, tab_y,
-                    tab_w as u32 - tab_corner * 2, indicator_h, tc.tab_border_active);
-            }
+            crate::controls::chrome::draw_surface(surface, tab_x, tab_y, tab_w as u32, tab_h, pill_r, palette);
 
             // Close button
             let close_x = tab_x + tab_w - tab_pad_x - close_btn_size;
@@ -378,7 +353,7 @@ impl Control for TabBar {
             let text_area_w = (text_area_right - text_area_left).max(0);
 
             let (full_tw, _) = crate::draw::text_size_at(label, tab_font);
-            let text_color = if is_active { tc.text } else { tc.text_secondary };
+            let text_color = if is_active { 0xFFFFFFFF } else { tc.text_secondary };
             let text_y = tab_y + (tab_h as i32 - tab_font as i32) / 2;
 
             if (full_tw as i32) <= text_area_w {
@@ -415,8 +390,15 @@ impl Control for TabBar {
             if show_close {
                 let close_hover = is_hovered && self.close_hovered;
                 if close_hover {
-                    crate::draw::fill_rounded_rect(surface, close_x, close_y,
-                        close_btn_size as u32, close_btn_size as u32, close_corner, tc.input_border);
+                    crate::controls::chrome::draw_surface(
+                        surface,
+                        close_x,
+                        close_y,
+                        close_btn_size as u32,
+                        close_btn_size as u32,
+                        close_corner,
+                        crate::controls::chrome::neutral_palette(true, false, false),
+                    );
                 }
                 let fg = if close_hover { tc.text } else { tc.text_secondary };
                 let cx_text = close_x + (close_btn_size - crate::theme::scale_i32(6)) / 2;
@@ -435,10 +417,16 @@ impl Control for TabBar {
         if self.show_plus {
             btn_x -= nav_btn_size + tab_gap;
             let btn_y = y + top_margin;
-            let bg = if self.nav_hover == 2 { tc.tab_hover_bg } else { blend_colors(tc.tab_inactive_bg, tc.tab_hover_bg, 50) };
-            crate::draw::fill_rounded_rect(surface, btn_x, btn_y, nav_btn_size as u32, tab_h, tab_corner, bg);
-            let half_y2 = btn_y + tab_h as i32 / 2;
-            crate::draw::fill_rect(surface, btn_x, half_y2, nav_btn_size as u32, tab_h - tab_h / 2, bg);
+            let nav_pill = tab_h / 2;
+            crate::controls::chrome::draw_surface(
+                surface,
+                btn_x,
+                btn_y,
+                nav_btn_size as u32,
+                tab_h,
+                nav_pill,
+                crate::controls::chrome::neutral_palette(self.nav_hover == 2, false, false),
+            );
             let (tw, _) = crate::draw::text_size_at(b"+", nav_font);
             let tx = btn_x + (nav_btn_size - tw as i32) / 2;
             let ty = btn_y + (tab_h as i32 - nav_font as i32) / 2;
@@ -450,13 +438,18 @@ impl Control for TabBar {
             btn_x -= nav_btn_size + tab_gap;
             let btn_y = y + top_margin;
             let enabled = show_right;
-            let bg = if self.nav_hover == 1 && enabled { tc.tab_hover_bg } else { blend_colors(tc.tab_inactive_bg, tc.tab_hover_bg, 50) };
-            crate::draw::fill_rounded_rect(surface, btn_x, btn_y, nav_btn_size as u32, tab_h, tab_corner, bg);
-            let half_y2 = btn_y + tab_h as i32 / 2;
-            crate::draw::fill_rect(surface, btn_x, half_y2, nav_btn_size as u32, tab_h - tab_h / 2, bg);
-            // Draw chevron ›
+            let nav_pill = tab_h / 2;
+            crate::controls::chrome::draw_surface(
+                surface,
+                btn_x,
+                btn_y,
+                nav_btn_size as u32,
+                tab_h,
+                nav_pill,
+                crate::controls::chrome::neutral_palette(self.nav_hover == 1 && enabled, false, false),
+            );
             let arrow = b">";
-            let fg = if enabled { tc.text_secondary } else { blend_colors(tc.tab_inactive_bg, tc.text_secondary, 80) };
+            let fg = if enabled { tc.text_secondary } else { crate::controls::chrome::blend(tc.tab_inactive_bg, tc.text_secondary, 80) };
             let (aw, _) = crate::draw::text_size_at(arrow, nav_font);
             let ax2 = btn_x + (nav_btn_size - aw as i32) / 2;
             let ay2 = btn_y + (tab_h as i32 - nav_font as i32) / 2;
@@ -466,12 +459,17 @@ impl Control for TabBar {
             btn_x -= nav_btn_size + tab_gap;
             let btn_y = y + top_margin;
             let enabled = show_left;
-            let bg = if self.nav_hover == 0 && enabled { tc.tab_hover_bg } else { blend_colors(tc.tab_inactive_bg, tc.tab_hover_bg, 50) };
-            crate::draw::fill_rounded_rect(surface, btn_x, btn_y, nav_btn_size as u32, tab_h, tab_corner, bg);
-            let half_y2 = btn_y + tab_h as i32 / 2;
-            crate::draw::fill_rect(surface, btn_x, half_y2, nav_btn_size as u32, tab_h - tab_h / 2, bg);
+            crate::controls::chrome::draw_surface(
+                surface,
+                btn_x,
+                btn_y,
+                nav_btn_size as u32,
+                tab_h,
+                nav_pill,
+                crate::controls::chrome::neutral_palette(self.nav_hover == 0 && enabled, false, false),
+            );
             let arrow = b"<";
-            let fg = if enabled { tc.text_secondary } else { blend_colors(tc.tab_inactive_bg, tc.text_secondary, 80) };
+            let fg = if enabled { tc.text_secondary } else { crate::controls::chrome::blend(tc.tab_inactive_bg, tc.text_secondary, 80) };
             let (aw, _) = crate::draw::text_size_at(arrow, nav_font);
             let ax2 = btn_x + (nav_btn_size - aw as i32) / 2;
             let ay2 = btn_y + (tab_h as i32 - nav_font as i32) / 2;

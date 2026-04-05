@@ -28,43 +28,47 @@ impl Control for Slider {
         let tc = crate::theme::colors();
         let disabled = b.disabled;
         let focused = b.focused;
-        let track_h = crate::theme::scale(4);
-        let track_r = crate::theme::scale(2);
+        let track_h = crate::theme::scale(6);
+        let track_r = crate::theme::scale(3);
         let track_y = y + (h as i32 - track_h as i32) / 2;
 
-        // Track background
-        crate::draw::fill_rounded_rect(surface, x, track_y, w, track_h, track_r, tc.control_bg);
+        crate::controls::chrome::draw_surface(
+            surface,
+            x,
+            track_y,
+            w,
+            track_h,
+            track_r,
+            crate::controls::chrome::field_palette(0, b.hovered, false, disabled),
+        );
 
-        // Filled portion
         let val = b.state.min(100);
-        let fill_w = (w as u64 * val as u64 / 100) as u32;
+        let fill_w = (w.saturating_sub(4) as u64 * val as u64 / 100) as u32;
         if fill_w > 0 {
             let accent = if disabled { tc.toggle_off } else { tc.accent };
-            crate::draw::fill_rounded_rect(surface, x, track_y, fill_w, track_h, track_r, accent);
+            crate::controls::chrome::draw_surface(
+                surface,
+                x + 2,
+                track_y + 2,
+                fill_w,
+                track_h.saturating_sub(4),
+                track_r.saturating_sub(2),
+                crate::controls::chrome::accent_palette(accent, false, false, disabled),
+            );
         }
 
-        // Thumb
-        let thumb_sz = crate::theme::scale(18);
-        let thumb_r = crate::theme::scale(9);
-        let thumb_x = x + fill_w as i32 - thumb_r as i32;
-        let thumb_y = y + (h as i32 - thumb_sz as i32) / 2;
-        let thumb_color = if disabled { crate::theme::darken(tc.toggle_thumb, 30) } else { tc.toggle_thumb };
+        let thumb_w = crate::theme::scale(14);
+        let thumb_h = crate::theme::scale(14);
+        let thumb_r = crate::theme::scale(5);
+        let usable = w.saturating_sub(thumb_w);
+        let thumb_x = x + (usable as u64 * val as u64 / 100) as i32;
+        let thumb_y = y + (h as i32 - thumb_h as i32) / 2;
+        let thumb_palette = crate::controls::chrome::neutral_palette(b.hovered || self.dragging, self.dragging, disabled);
 
-        // 1px shadow under thumb
-        if !disabled {
-            crate::draw::fill_rounded_rect(surface, thumb_x, thumb_y + 1, thumb_sz, thumb_sz, thumb_r, crate::theme::with_alpha(0xFF000000, 20));
-        }
-        crate::draw::fill_rounded_rect(surface, thumb_x, thumb_y, thumb_sz, thumb_sz, thumb_r, thumb_color);
-
-        // Subtle thumb border
-        if !disabled {
-            crate::draw::draw_rounded_border(surface, thumb_x, thumb_y, thumb_sz, thumb_sz, thumb_r, crate::theme::with_alpha(0xFF000000, 15));
-        }
-
-        // Focus ring on thumb
         if focused && !disabled {
-            crate::draw::draw_focus_ring(surface, thumb_x, thumb_y, thumb_sz, thumb_sz, thumb_r, tc.accent);
+            crate::controls::chrome::draw_focus(surface, thumb_x, thumb_y, thumb_w, thumb_h, thumb_r, thumb_palette);
         }
+        crate::controls::chrome::draw_surface(surface, thumb_x, thumb_y, thumb_w, thumb_h, thumb_r, thumb_palette);
     }
 
     fn is_interactive(&self) -> bool { !self.base.disabled }

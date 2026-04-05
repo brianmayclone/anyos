@@ -20,6 +20,6 @@ impl Control for Badge {
         let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
         let tc = crate::theme::colors();
         let bg = if b.color != 0 { b.color } else { tc.badge_red };
-        crate::draw::fill_rounded_rect(surface, p.x, p.y, p.w, p.h, p.h / 2, bg);
+        crate::controls::chrome::draw_surface(surface, p.x, p.y, p.w, p.h, p.h / 2, crate::controls::chrome::accent_palette(bg, b.hovered, false, b.disabled));
     }
 }

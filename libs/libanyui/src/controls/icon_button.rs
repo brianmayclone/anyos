@@ -94,22 +94,21 @@ impl Control for IconButton {
         let disabled = b.disabled;
         let hovered = b.hovered;
         let focused = b.focused;
-        let corner = crate::theme::button_corner();
+        let corner = h / 2; // Pill shape
         let has_icon = !self.icon_pixels.is_empty() || icon_id > 0;
         let h_pad = crate::theme::scale_i32(Self::H_PAD);
         let icon_text_gap = crate::theme::scale_i32(Self::ICON_TEXT_GAP);
         let default_icon_sz = crate::theme::scale_i32(16);
 
-        // Background: hover highlight, pressed darken, custom color
-        if self.pressed && !disabled {
-            let bg = if custom != 0 { crate::theme::darken(custom, 30) } else { tc.control_pressed };
-            crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, bg);
-        } else if hovered && !disabled {
-            let bg = if custom != 0 { crate::theme::lighten(custom, 12) } else { tc.control_hover };
-            crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, bg);
-        } else if custom != 0 {
-            crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, custom);
+        let palette = if custom != 0 {
+            crate::controls::chrome::accent_palette(custom, hovered, self.pressed, disabled)
+        } else {
+            crate::controls::chrome::neutral_palette(hovered, self.pressed, disabled)
+        };
+        if focused && !disabled {
+            crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
         }
+        crate::controls::chrome::draw_surface(surface, x, y, w, h, corner, palette);
 
         let has_text = !self.text_base.text.is_empty();
         let text_color = if disabled {
@@ -167,10 +166,6 @@ impl Control for IconButton {
             crate::draw::draw_text_sized(surface, tx, ty, text_color, &self.text_base.text, font_size);
         }
 
-        // Focus ring
-        if focused && !disabled {
-            crate::draw::draw_focus_ring(surface, x, y, w, h, corner, tc.accent);
-        }
     }
 
     fn is_interactive(&self) -> bool { !self.text_base.base.disabled }
