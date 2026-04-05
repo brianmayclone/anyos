@@ -91,7 +91,8 @@ pub fn rasterize_triangle(
     let z1 = s1[2];
     let z2 = s2[2];
 
-    let fb_width = ctx.default_fb.width;
+    let Some(target) = crate::framebuffer::current_target(ctx) else { return; };
+    let fb_width = target.width;
     let tex_sample = real_tex_sample;
     let tex_sample_addr = real_tex_sample as usize;
 
@@ -210,7 +211,11 @@ pub fn rasterize_triangle(
                     // Early depth test — BEFORE varying interpolation and fragment shader
                     let fb_idx = (row_base + px as u32) as usize;
                     if depth_test_enabled {
-                        let current_depth = unsafe { *ctx.default_fb.depth.get_unchecked(fb_idx) };
+                        let current_depth = if target.has_depth {
+                            unsafe { *target.depth_ptr.add(fb_idx) }
+                        } else {
+                            1.0
+                        };
                         if !fragment::depth_test(depth, current_depth, depth_func) {
                             w0 += a12;
                             w1 += a20;
@@ -281,8 +286,8 @@ pub fn rasterize_triangle(
                     let color = (a << 24) | (r << 16) | (g << 8) | b;
 
                     // Blending
-                    let final_color = if blend_enabled {
-                        let dst = unsafe { *ctx.default_fb.color.get_unchecked(fb_idx) };
+                    let final_color = if blend_enabled && target.has_color {
+                        let dst = unsafe { *target.color_ptr.add(fb_idx) };
                         fragment::blend(color, dst, blend_src, blend_dst)
                     } else {
                         color
@@ -290,10 +295,12 @@ pub fn rasterize_triangle(
 
                     // Write to framebuffer
                     unsafe {
-                        if depth_mask {
-                            *ctx.default_fb.depth.get_unchecked_mut(fb_idx) = depth;
+                        if depth_mask && target.has_depth {
+                            *target.depth_ptr.add(fb_idx) = depth;
                         }
-                        *ctx.default_fb.color.get_unchecked_mut(fb_idx) = final_color;
+                        if target.has_color {
+                            *target.color_ptr.add(fb_idx) = final_color;
+                        }
                     }
                 }
 
@@ -432,7 +439,8 @@ pub fn rasterize_triangle_fast(
     let v2_uv = [v2.varyings[1][0] * inv_w2c, v2.varyings[1][1] * inv_w2c];
 
     let z0 = s0[2]; let z1 = s1[2]; let z2 = s2[2];
-    let fb_width = ctx.default_fb.width;
+    let Some(target) = crate::framebuffer::current_target(ctx) else { return; };
+    let fb_width = target.width;
     let depth_test = ctx.depth_test;
     let depth_func = ctx.depth_func;
     let depth_mask = ctx.depth_mask;
@@ -515,7 +523,11 @@ pub fn rasterize_triangle_fast(
                     let fb_idx = (row_base + px as u32) as usize;
 
                     if depth_test {
-                        let cur = unsafe { *ctx.default_fb.depth.get_unchecked(fb_idx) };
+                        let cur = if target.has_depth {
+                            unsafe { *target.depth_ptr.add(fb_idx) }
+                        } else {
+                            1.0
+                        };
                         if !fragment::depth_test(depth, cur, depth_func) {
                             w0 += a12; w1 += a20; w2 += a01;
                             continue;
@@ -558,10 +570,12 @@ pub fn rasterize_triangle_fast(
                     let color = 0xFF000000 | (r << 16) | (g << 8) | b;
 
                     unsafe {
-                        if depth_mask {
-                            *ctx.default_fb.depth.get_unchecked_mut(fb_idx) = depth;
+                        if depth_mask && target.has_depth {
+                            *target.depth_ptr.add(fb_idx) = depth;
                         }
-                        *ctx.default_fb.color.get_unchecked_mut(fb_idx) = color;
+                        if target.has_color {
+                            *target.color_ptr.add(fb_idx) = color;
+                        }
                     }
                 }
 

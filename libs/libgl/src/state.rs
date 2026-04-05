@@ -148,6 +148,8 @@ pub struct GlContext {
     pub shadow_map_ready: bool,
     /// HW program ID for the auto-generated depth-only shader (per user program).
     pub shadow_depth_program: u32,
+    /// Shadow-pass viewport restore state.
+    pub shadow_prev_viewport: [i32; 4],
 
     // ── Anti-Aliasing ──────────────────────────────────────────────────
     /// FXAA post-process enabled.
@@ -224,6 +226,7 @@ impl GlContext {
             shadow_light_mvp: [0.0; 16],
             shadow_map_ready: false,
             shadow_depth_program: 0,
+            shadow_prev_viewport: [0; 4],
 
             fxaa_enabled: false,
 

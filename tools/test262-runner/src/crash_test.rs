@@ -5,13 +5,17 @@ fn main() {
     let source = std::fs::read_to_string(&path).expect("file read");
 
     let mut e = JsEngine::new();
-    e.set_step_limit(5_000_000);
+    e.set_step_limit(50_000_000);
     e.eval(&source);
 
-    // Print console output
-    for line in e.console_output() {
-        println!("{}", line);
+    // Always print console output
+    let console = e.console_output();
+    if !console.is_empty() {
+        for line in console {
+            println!("[console] {}", line);
+        }
     }
+    println!("[engine] Execution complete");
 
     if let Some(exc) = e.last_exception() {
         let msg = match exc {

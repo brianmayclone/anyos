@@ -325,7 +325,9 @@ fn doc_create_element_ns(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn doc_create_text_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let text = arg_string(args, 0);
     let virtual_id = if let Some(bridge) = get_bridge(vm) {
-        bridge.alloc_virtual_id()
+        let id = bridge.alloc_virtual_id();
+        bridge.mutations.push(DomMutation::CreateTextNode { virtual_id: id, text: text.clone() });
+        id
     } else {
         -9999
     };
@@ -368,11 +370,27 @@ fn doc_create_document_fragment(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
-fn doc_create_comment(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+fn doc_create_comment(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let text = arg_string(args, 0);
+    let virtual_id = if let Some(bridge) = get_bridge(vm) {
+        let id = bridge.alloc_virtual_id();
+        // Comment nodes are invisible but serve as DOM anchors for React
+        bridge.mutations.push(DomMutation::CreateTextNode { virtual_id: id, text: String::new() });
+        id
+    } else {
+        -9999
+    };
     let mut obj = JsObject::new();
+    obj.set(String::from("__nodeId"), JsValue::Number(virtual_id as f64));
     obj.set(String::from("nodeType"), JsValue::Number(8.0));
-    obj.set(String::from("textContent"), JsValue::String(text));
+    obj.set(String::from("nodeName"), JsValue::String(String::from("#comment")));
+    obj.set(String::from("textContent"), JsValue::String(text.clone()));
+    obj.set(String::from("data"), JsValue::String(text));
+    obj.set(String::from("parentNode"), JsValue::Null);
+    obj.set(String::from("nextSibling"), JsValue::Null);
+    obj.set(String::from("previousSibling"), JsValue::Null);
+    obj.set_hook = Some(dom_property_hook);
+    obj.set_hook_data = virtual_id as usize as *mut u8;
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 

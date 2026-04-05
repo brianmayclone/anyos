@@ -187,8 +187,9 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
     }
 
     // ── Primitive Assembly + Rasterization ───────────────────────────────
-    let fb_w = ctx.default_fb.width as i32;
-    let fb_h = ctx.default_fb.height as i32;
+    let (target_w, target_h) = crate::framebuffer::current_target_size(ctx);
+    let fb_w = target_w as i32;
+    let fb_h = target_h as i32;
 
     // Try fast path: trivial FS (≤20 instructions) + bound texture + 2 varyings
     let fast = if fs_ir.instructions.len() <= 20 && num_varyings == 2 && !ctx.blend {
@@ -427,8 +428,9 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
     }
 
     // Rasterize
-    let fb_w = ctx.default_fb.width as i32;
-    let fb_h = ctx.default_fb.height as i32;
+    let (target_w, target_h) = crate::framebuffer::current_target_size(ctx);
+    let fb_w = target_w as i32;
+    let fb_h = target_h as i32;
 
     // Try fast path (same logic as draw_arrays)
     let fast = if fs_ir.instructions.len() <= 20 && num_varyings == 2 && !ctx.blend {

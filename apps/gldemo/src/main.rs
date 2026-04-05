@@ -30,11 +30,13 @@ attribute vec3 aNormal;
 attribute vec2 aTexCoord;
 uniform mat4 uMVP;
 uniform mat4 uModel;
+uniform mat4 uLightMVP;
 uniform vec3 uLightPos0;
 uniform vec3 uLightColor0;
 uniform vec3 uEyePos;
 varying vec3 vLighting;
 varying vec2 vTexCoord;
+varying vec4 vShadowCoord;
 void main() {
     vec4 worldPos = uModel * vec4(aPosition, 1.0);
     vec3 wp = worldPos.xyz;
@@ -49,18 +51,49 @@ void main() {
     vec3 c0 = uLightColor0 * diff0 + uLightColor0 * spec0;
     vLighting = ambient + c0;
     vTexCoord = aTexCoord;
+    vShadowCoord = uLightMVP * worldPos;
     gl_Position = uMVP * vec4(aPosition, 1.0);
 }
 ";
 
-/// Fragment shader: texture × lighting (shadow disabled for debugging).
+/// Fragment shader: texture × lighting × shadow visibility.
 static FS_SOURCE: &str =
 "varying vec3 vLighting;
 varying vec2 vTexCoord;
+varying vec4 vShadowCoord;
 uniform sampler2D uTexture;
+uniform sampler2D uShadowMap;
 void main() {
     vec4 texColor = texture2D(uTexture, vTexCoord);
-    gl_FragColor = vec4(vLighting * texColor.rgb, 1.0);
+    vec3 shadowNdc = vShadowCoord.xyz / max(vShadowCoord.w, 0.0001);
+    vec2 shadowUv = shadowNdc.xy * 0.5 + vec2(0.5, 0.5);
+    float shadowDepth = shadowNdc.z * 0.5 + 0.5;
+    float visibility = 1.0;
+    if (shadowUv.x >= 0.0 && shadowUv.x <= 1.0 &&
+        shadowUv.y >= 0.0 && shadowUv.y <= 1.0 &&
+        shadowDepth >= 0.0 && shadowDepth <= 1.0) {
+        float mapDepth = texture2D(uShadowMap, shadowUv).r;
+        if (shadowDepth > mapDepth + 0.0035) {
+            visibility = 0.45;
+        }
+    }
+    gl_FragColor = vec4(vLighting * texColor.rgb * visibility, 1.0);
+}
+";
+
+static SHADOW_VS_SOURCE: &str =
+"attribute vec3 aPosition;
+uniform mat4 uLightMVP;
+uniform mat4 uModel;
+void main() {
+    vec4 worldPos = uModel * vec4(aPosition, 1.0);
+    gl_Position = uLightMVP * worldPos;
+}
+";
+
+static SHADOW_FS_SOURCE: &str =
+"void main() {
+    gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
 }
 ";
 
@@ -507,7 +540,8 @@ struct RenderState {
     canvas: libanyui_client::Canvas,
     fb_w: u32,
     fb_h: u32,
-    program: u32,
+    main_program: u32,
+    shadow_program: u32,
     // Sphere
     sphere_vbo: u32,
     sphere_ebo: u32,
@@ -524,15 +558,17 @@ struct RenderState {
     boing_tex: u32,
     floor_tex: u32,
     // Uniform locations
-    loc_mvp: i32,
-    loc_model: i32,
-    loc_light_pos0: i32,
-    loc_light_color0: i32,
-    loc_eye_pos: i32,
-    loc_texture: i32,
-    loc_mat_color: i32,
-    loc_shadow_map: i32,
-    loc_light_mvp: i32,
+    loc_main_mvp: i32,
+    loc_main_model: i32,
+    loc_main_light_pos0: i32,
+    loc_main_light_color0: i32,
+    loc_main_eye_pos: i32,
+    loc_main_texture: i32,
+    loc_main_mat_color: i32,
+    loc_main_shadow_map: i32,
+    loc_main_light_mvp: i32,
+    loc_shadow_model: i32,
+    loc_shadow_light_mvp: i32,
     // Physics body IDs
     phys_sphere: u32,
     phys_cube: u32,
@@ -631,22 +667,49 @@ fn render_frame() {
     let l0_z = gl::cos(t * 0.7) * 3.0;
     let l0_y = 2.0f32;
 
+    let shadow_radius = (s.camera_dist * 1.8).max(4.0);
+    let ran_shadow = gl::shadow_pass_begin(l0_x, l0_y, l0_z, 0.0, 0.0, 0.0, shadow_radius);
+    if ran_shadow {
+        let light_mvp_ptr = gl::shadow_get_light_mvp();
+        if !light_mvp_ptr.is_null() {
+            let light_mvp = unsafe { *(light_mvp_ptr as *const [f32; 16]) };
+            gl::use_program(s.shadow_program);
+            gl::color_mask(false, false, false, false);
+            gl::clear(gl::GL_DEPTH_BUFFER_BIT);
+            draw_scene_geometry_shadow(s, &light_mvp);
+            gl::color_mask(true, true, true, true);
+        }
+        gl::shadow_pass_end();
+    }
+
     // ── Main pass ──────────────────────────────────────────────────────
     let camera_vp = mat4_mul(&proj, &view);
+    let light_mvp = if gl::shadow_available() {
+        let ptr = gl::shadow_get_light_mvp();
+        if !ptr.is_null() {
+            unsafe { *(ptr as *const [f32; 16]) }
+        } else {
+            mat4_identity()
+        }
+    } else {
+        mat4_identity()
+    };
 
-    gl::use_program(s.program);
-    gl::uniform3f(s.loc_light_pos0, l0_x, l0_y, l0_z);
-    gl::uniform3f(s.loc_light_color0, 1.0, 0.95, 0.8);
-    gl::uniform3f(s.loc_eye_pos, eye[0], eye[1], eye[2]);
+    gl::use_program(s.main_program);
+    gl::uniform3f(s.loc_main_light_pos0, l0_x, l0_y, l0_z);
+    gl::uniform3f(s.loc_main_light_color0, 1.0, 0.95, 0.8);
+    gl::uniform3f(s.loc_main_eye_pos, eye[0], eye[1], eye[2]);
+    gl::uniform_matrix4fv(s.loc_main_light_mvp, false, &light_mvp);
+    gl::active_texture(gl::GL_TEXTURE0 + gl::shadow_get_unit());
+    gl::bind_texture(gl::GL_TEXTURE_2D, gl::shadow_get_texture());
+    gl::uniform1i(s.loc_main_shadow_map, gl::shadow_get_unit() as i32);
 
-    draw_scene_geometry(s, &camera_vp);
+    draw_scene_geometry_main(s, &camera_vp);
 
     render_frame_finish();
 }
 
-/// Draw all scene geometry (used by both shadow pass and main pass).
-/// `vp` is the combined view-projection matrix (light VP for shadow, camera VP for main).
-fn draw_scene_geometry(s: &mut RenderState, vp: &Mat4) {
+fn draw_scene_geometry_main(s: &mut RenderState, vp: &Mat4) {
     let d = s.camera_dist;
 
     // ── Draw sphere (physics-driven with quaternion) ────────────────────
@@ -660,17 +723,17 @@ fn draw_scene_geometry(s: &mut RenderState, vp: &Mat4) {
         );
         let mvp = mat4_mul(vp, &model);
 
-        gl::uniform_matrix4fv(s.loc_mvp, false, &mvp);
-        gl::uniform_matrix4fv(s.loc_model, false, &model);
-        gl::uniform4f(s.loc_mat_color, 1.0, 1.0, 1.0, 1.0);
+        gl::uniform_matrix4fv(s.loc_main_mvp, false, &mvp);
+        gl::uniform_matrix4fv(s.loc_main_model, false, &model);
+        gl::uniform4f(s.loc_main_mat_color, 1.0, 1.0, 1.0, 1.0);
 
         gl::active_texture(gl::GL_TEXTURE0);
         gl::bind_texture(gl::GL_TEXTURE_2D, s.gradient_tex);
-        gl::uniform1i(s.loc_texture, 0);
+        gl::uniform1i(s.loc_main_texture, 0);
 
         gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.sphere_vbo);
         gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, s.sphere_ebo);
-        setup_vertex_attribs(s.program);
+        setup_vertex_attribs(s.main_program);
         gl::draw_elements(gl::GL_TRIANGLES, s.sphere_num_indices, gl::GL_UNSIGNED_SHORT, 0);
     }
 
@@ -685,17 +748,17 @@ fn draw_scene_geometry(s: &mut RenderState, vp: &Mat4) {
         );
         let mvp = mat4_mul(vp, &model);
 
-        gl::uniform_matrix4fv(s.loc_mvp, false, &mvp);
-        gl::uniform_matrix4fv(s.loc_model, false, &model);
-        gl::uniform4f(s.loc_mat_color, 1.0, 1.0, 1.0, 1.0);
+        gl::uniform_matrix4fv(s.loc_main_mvp, false, &mvp);
+        gl::uniform_matrix4fv(s.loc_main_model, false, &model);
+        gl::uniform4f(s.loc_main_mat_color, 1.0, 1.0, 1.0, 1.0);
 
         gl::active_texture(gl::GL_TEXTURE0);
         gl::bind_texture(gl::GL_TEXTURE_2D, s.checker_tex);
-        gl::uniform1i(s.loc_texture, 0);
+        gl::uniform1i(s.loc_main_texture, 0);
 
         gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.cube_vbo);
         gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, s.cube_ebo);
-        setup_vertex_attribs(s.program);
+        setup_vertex_attribs(s.main_program);
         gl::draw_elements(gl::GL_TRIANGLES, s.cube_num_indices, gl::GL_UNSIGNED_SHORT, 0);
     }
 
@@ -710,17 +773,17 @@ fn draw_scene_geometry(s: &mut RenderState, vp: &Mat4) {
         );
         let mvp = mat4_mul(vp, &model);
 
-        gl::uniform_matrix4fv(s.loc_mvp, false, &mvp);
-        gl::uniform_matrix4fv(s.loc_model, false, &model);
-        gl::uniform4f(s.loc_mat_color, 1.0, 1.0, 1.0, 1.0);
+        gl::uniform_matrix4fv(s.loc_main_mvp, false, &mvp);
+        gl::uniform_matrix4fv(s.loc_main_model, false, &model);
+        gl::uniform4f(s.loc_main_mat_color, 1.0, 1.0, 1.0, 1.0);
 
         gl::active_texture(gl::GL_TEXTURE0);
         gl::bind_texture(gl::GL_TEXTURE_2D, s.boing_tex);
-        gl::uniform1i(s.loc_texture, 0);
+        gl::uniform1i(s.loc_main_texture, 0);
 
         gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.sphere_vbo);
         gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, s.sphere_ebo);
-        setup_vertex_attribs(s.program);
+        setup_vertex_attribs(s.main_program);
         gl::draw_elements(gl::GL_TRIANGLES, s.sphere_num_indices, gl::GL_UNSIGNED_SHORT, 0);
     }
 
@@ -735,20 +798,83 @@ fn draw_scene_geometry(s: &mut RenderState, vp: &Mat4) {
         );
         let mvp = mat4_mul(vp, &model);
 
-        gl::uniform_matrix4fv(s.loc_mvp, false, &mvp);
-        gl::uniform_matrix4fv(s.loc_model, false, &model);
-        gl::uniform4f(s.loc_mat_color, 1.0, 1.0, 1.0, 1.0);
+        gl::uniform_matrix4fv(s.loc_main_mvp, false, &mvp);
+        gl::uniform_matrix4fv(s.loc_main_model, false, &model);
+        gl::uniform4f(s.loc_main_mat_color, 1.0, 1.0, 1.0, 1.0);
 
         gl::active_texture(gl::GL_TEXTURE0);
         gl::bind_texture(gl::GL_TEXTURE_2D, s.floor_tex);
-        gl::uniform1i(s.loc_texture, 0);
+        gl::uniform1i(s.loc_main_texture, 0);
 
         gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.floor_vbo);
-        setup_vertex_attribs(s.program);
+        setup_vertex_attribs(s.main_program);
         gl::draw_arrays(gl::GL_TRIANGLES, 0, 6);
 
         gl::enable(gl::GL_CULL_FACE);
     }
+}
+
+fn draw_scene_geometry_shadow(s: &mut RenderState, light_vp: &Mat4) {
+    {
+        let (px, py, pz) = gl::physics_get_position(s.phys_sphere);
+        let (qw, qx, qy, qz) = gl::physics_get_orientation(s.phys_sphere);
+        let rot_mat = quat_to_mat4(qw, qx, qy, qz);
+        let model = mat4_mul(
+            &mat4_translate(px, py, pz),
+            &mat4_mul(&rot_mat, &mat4_scale(0.8, 0.8, 0.8)),
+        );
+        gl::uniform_matrix4fv(s.loc_shadow_model, false, &model);
+        gl::uniform_matrix4fv(s.loc_shadow_light_mvp, false, light_vp);
+        gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.sphere_vbo);
+        gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, s.sphere_ebo);
+        setup_vertex_attribs(s.shadow_program);
+        gl::draw_elements(gl::GL_TRIANGLES, s.sphere_num_indices, gl::GL_UNSIGNED_SHORT, 0);
+    }
+
+    {
+        let (px, py, pz) = gl::physics_get_position(s.phys_cube);
+        let (qw, qx, qy, qz) = gl::physics_get_orientation(s.phys_cube);
+        let rot_mat = quat_to_mat4(qw, qx, qy, qz);
+        let model = mat4_mul(
+            &mat4_translate(px, py, pz),
+            &mat4_mul(&rot_mat, &mat4_scale(0.9, 0.9, 0.9)),
+        );
+        gl::uniform_matrix4fv(s.loc_shadow_model, false, &model);
+        gl::uniform_matrix4fv(s.loc_shadow_light_mvp, false, light_vp);
+        gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.cube_vbo);
+        gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, s.cube_ebo);
+        setup_vertex_attribs(s.shadow_program);
+        gl::draw_elements(gl::GL_TRIANGLES, s.cube_num_indices, gl::GL_UNSIGNED_SHORT, 0);
+    }
+
+    if s.boing_active {
+        let (px, py, pz) = gl::physics_get_position(s.phys_boing);
+        let (qw, qx, qy, qz) = gl::physics_get_orientation(s.phys_boing);
+        let rot_mat = quat_to_mat4(qw, qx, qy, qz);
+        let model = mat4_mul(
+            &mat4_translate(px, py, pz),
+            &mat4_mul(&rot_mat, &mat4_scale(0.6, 0.6, 0.6)),
+        );
+        gl::uniform_matrix4fv(s.loc_shadow_model, false, &model);
+        gl::uniform_matrix4fv(s.loc_shadow_light_mvp, false, light_vp);
+        gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.sphere_vbo);
+        gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, s.sphere_ebo);
+        setup_vertex_attribs(s.shadow_program);
+        gl::draw_elements(gl::GL_TRIANGLES, s.sphere_num_indices, gl::GL_UNSIGNED_SHORT, 0);
+    }
+
+    gl::disable(gl::GL_CULL_FACE);
+    let floor_scale = s.camera_dist * 1.2 + 2.0;
+    let model = mat4_mul(
+        &mat4_translate(0.0, -0.5, 0.0),
+        &mat4_scale(floor_scale, 1.0, floor_scale),
+    );
+    gl::uniform_matrix4fv(s.loc_shadow_model, false, &model);
+    gl::uniform_matrix4fv(s.loc_shadow_light_mvp, false, light_vp);
+    gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.floor_vbo);
+    setup_vertex_attribs(s.shadow_program);
+    gl::draw_arrays(gl::GL_TRIANGLES, 0, 6);
+    gl::enable(gl::GL_CULL_FACE);
 }
 
 fn render_frame_finish() {
@@ -841,46 +967,72 @@ fn main() {
     window.add(&hw_toggle);
 
     // ── Compile shaders ──────────────────────────────────────────────────
-    let vs = gl::create_shader(gl::GL_VERTEX_SHADER);
-    gl::shader_source(vs, VS_SOURCE);
-    gl::compile_shader(vs);
-    if !gl::get_shader_compile_status(vs) {
-        anyos_std::println!("gldemo: VS compile FAILED");
+    let main_vs = gl::create_shader(gl::GL_VERTEX_SHADER);
+    gl::shader_source(main_vs, VS_SOURCE);
+    gl::compile_shader(main_vs);
+    if !gl::get_shader_compile_status(main_vs) {
+        anyos_std::println!("gldemo: main VS compile FAILED");
         return;
     }
 
-    let fs = gl::create_shader(gl::GL_FRAGMENT_SHADER);
-    gl::shader_source(fs, FS_SOURCE);
-    gl::compile_shader(fs);
-    if !gl::get_shader_compile_status(fs) {
-        anyos_std::println!("gldemo: FS compile FAILED");
+    let main_fs = gl::create_shader(gl::GL_FRAGMENT_SHADER);
+    gl::shader_source(main_fs, FS_SOURCE);
+    gl::compile_shader(main_fs);
+    if !gl::get_shader_compile_status(main_fs) {
+        anyos_std::println!("gldemo: main FS compile FAILED");
         return;
     }
 
-    let program = gl::create_program();
-    gl::attach_shader(program, vs);
-    gl::attach_shader(program, fs);
-    gl::link_program(program);
-    if !gl::get_program_link_status(program) {
-        anyos_std::println!("gldemo: link FAILED");
+    let main_program = gl::create_program();
+    gl::attach_shader(main_program, main_vs);
+    gl::attach_shader(main_program, main_fs);
+    gl::link_program(main_program);
+    if !gl::get_program_link_status(main_program) {
+        anyos_std::println!("gldemo: main link FAILED");
         return;
     }
-    gl::use_program(program);
+    let shadow_vs = gl::create_shader(gl::GL_VERTEX_SHADER);
+    gl::shader_source(shadow_vs, SHADOW_VS_SOURCE);
+    gl::compile_shader(shadow_vs);
+    if !gl::get_shader_compile_status(shadow_vs) {
+        anyos_std::println!("gldemo: shadow VS compile FAILED");
+        return;
+    }
+
+    let shadow_fs = gl::create_shader(gl::GL_FRAGMENT_SHADER);
+    gl::shader_source(shadow_fs, SHADOW_FS_SOURCE);
+    gl::compile_shader(shadow_fs);
+    if !gl::get_shader_compile_status(shadow_fs) {
+        anyos_std::println!("gldemo: shadow FS compile FAILED");
+        return;
+    }
+
+    let shadow_program = gl::create_program();
+    gl::attach_shader(shadow_program, shadow_vs);
+    gl::attach_shader(shadow_program, shadow_fs);
+    gl::link_program(shadow_program);
+    if !gl::get_program_link_status(shadow_program) {
+        anyos_std::println!("gldemo: shadow link FAILED");
+        return;
+    }
+    gl::use_program(main_program);
     anyos_std::println!("gldemo: shaders compiled OK");
 
     // ── Query uniform locations ──────────────────────────────────────────
-    let loc_mvp = gl::get_uniform_location(program, "uMVP");
-    let loc_model = gl::get_uniform_location(program, "uModel");
-    let loc_light_pos0 = gl::get_uniform_location(program, "uLightPos0");
-    let loc_light_color0 = gl::get_uniform_location(program, "uLightColor0");
-    let loc_eye_pos = gl::get_uniform_location(program, "uEyePos");
-    let loc_texture = gl::get_uniform_location(program, "uTexture");
-    let loc_mat_color = gl::get_uniform_location(program, "uMatColor");
-    let loc_shadow_map = gl::get_uniform_location(program, "uShadowMap");
-    let loc_light_mvp = gl::get_uniform_location(program, "uLightMVP");
+    let loc_main_mvp = gl::get_uniform_location(main_program, "uMVP");
+    let loc_main_model = gl::get_uniform_location(main_program, "uModel");
+    let loc_main_light_pos0 = gl::get_uniform_location(main_program, "uLightPos0");
+    let loc_main_light_color0 = gl::get_uniform_location(main_program, "uLightColor0");
+    let loc_main_eye_pos = gl::get_uniform_location(main_program, "uEyePos");
+    let loc_main_texture = gl::get_uniform_location(main_program, "uTexture");
+    let loc_main_mat_color = gl::get_uniform_location(main_program, "uMatColor");
+    let loc_main_shadow_map = gl::get_uniform_location(main_program, "uShadowMap");
+    let loc_main_light_mvp = gl::get_uniform_location(main_program, "uLightMVP");
+    let loc_shadow_model = gl::get_uniform_location(shadow_program, "uModel");
+    let loc_shadow_light_mvp = gl::get_uniform_location(shadow_program, "uLightMVP");
 
     anyos_std::println!("gldemo: uniforms: mvp={} model={} lp0={} eye={} tex={} mat={} shadow={} lmvp={}",
-        loc_mvp, loc_model, loc_light_pos0, loc_eye_pos, loc_texture, loc_mat_color, loc_shadow_map, loc_light_mvp);
+        loc_main_mvp, loc_main_model, loc_main_light_pos0, loc_main_eye_pos, loc_main_texture, loc_main_mat_color, loc_main_shadow_map, loc_main_light_mvp);
 
     // ── Generate sphere geometry ─────────────────────────────────────────
     let (sphere_verts, sphere_indices) = generate_sphere(24, 32);
@@ -1088,7 +1240,8 @@ fn main() {
             canvas,
             fb_w,
             fb_h,
-            program,
+            main_program,
+            shadow_program,
             sphere_vbo: sphere_vbo[0],
             sphere_ebo: sphere_ebo[0],
             sphere_num_indices,
@@ -1100,15 +1253,17 @@ fn main() {
             gradient_tex: gradient_tex[0],
             boing_tex: boing_tex[0],
             floor_tex: floor_tex[0],
-            loc_mvp,
-            loc_model,
-            loc_light_pos0,
-            loc_light_color0,
-            loc_eye_pos,
-            loc_texture,
-            loc_mat_color,
-            loc_shadow_map,
-            loc_light_mvp,
+            loc_main_mvp,
+            loc_main_model,
+            loc_main_light_pos0,
+            loc_main_light_color0,
+            loc_main_eye_pos,
+            loc_main_texture,
+            loc_main_mat_color,
+            loc_main_shadow_map,
+            loc_main_light_mvp,
+            loc_shadow_model,
+            loc_shadow_light_mvp,
             phys_sphere,
             phys_cube,
             phys_boing,

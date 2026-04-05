@@ -38,6 +38,8 @@ use crate::style::{apply_timing, TimingFunction, TransitionDef};
 /// Points to the current DomBridge.mutations during JS execution.
 /// Set before executing JS, cleared after. Used by dom_property_hook.
 static mut MUTATION_TARGET: *mut Vec<DomMutation> = core::ptr::null_mut();
+/// Points to the current DomBridge.virtual_nodes during JS execution.
+static mut VIRTUAL_NODES_TARGET: *mut Vec<VirtualNode> = core::ptr::null_mut();
 
 /// Hook called by JsObject::set() on DOM element objects.
 /// Records DOM mutations when JS writes to properties like
@@ -66,21 +68,29 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
             });
         }
         "className" => {
+            let mut cls = value.to_js_string();
+            if cls.contains("client-js") {
+                cls = cls.replace("client-js", "client-nojs");
+            }
             if node_id >= 0 {
-                let mut cls = value.to_js_string();
-                // Many sites use an inline script to replace "client-nojs" with
-                // "client-js" on <html>, signalling full JS support.  Our engine
-                // cannot run the complex follow-up scripts these sites expect
-                // (e.g. Wikipedia TOC setup), so keep the nojs class to get the
-                // correct CSS fallback styling.
-                if cls.contains("client-js") {
-                    cls = cls.replace("client-js", "client-nojs");
-                }
                 mutations.push(DomMutation::SetAttribute {
                     node_id: node_id as usize,
                     name: String::from("class"),
                     value: cls,
                 });
+            } else {
+                // Virtual node: store on VirtualNode for later CreateElement
+                let vnodes = unsafe {
+                    if VIRTUAL_NODES_TARGET.is_null() { return; }
+                    &mut *VIRTUAL_NODES_TARGET
+                };
+                if let Some(vn) = vnodes.iter_mut().find(|v| v.id == node_id) {
+                    if let Some(attr) = vn.attrs.iter_mut().find(|(k, _)| k == "class") {
+                        attr.1 = cls;
+                    } else {
+                        vn.attrs.push((String::from("class"), cls));
+                    }
+                }
             }
         }
         "value" | "src" | "href" | "id" | "name" | "type" => {
@@ -224,6 +234,7 @@ pub enum DomMutation {
     SetTextContent { node_id: usize, text: String },
     RemoveAttribute { node_id: usize, name: String },
     CreateElement { virtual_id: i64, tag: String },
+    CreateTextNode { virtual_id: i64, text: String },
     AppendChild { parent_id: i64, child_id: i64 },
     RemoveChild { parent_id: i64, child_id: i64 },
     InsertBefore { parent_id: i64, new_child_id: i64, ref_child_id: i64 },
@@ -446,6 +457,8 @@ pub struct JsRuntime {
     engine: JsEngine,
     pub console: Vec<String>,
     pub mutations: Vec<DomMutation>,
+    /// Virtual DOM nodes created by JS but not yet inserted into real DOM.
+    pub virtual_nodes: Vec<VirtualNode>,
     pub event_listeners: Vec<EventListener>,
     pub pending_http_requests: Vec<PendingHttpRequest>,
     pub timers: Vec<PendingTimer>,
@@ -476,6 +489,7 @@ impl JsRuntime {
             engine,
             console: Vec::new(),
             mutations: Vec::new(),
+            virtual_nodes: Vec::new(),
             event_listeners: Vec::new(),
             pending_http_requests: Vec::new(),
             timers: Vec::new(),
@@ -583,7 +597,7 @@ impl JsRuntime {
         self.setup_native_api(dom, url, &self.cookies.clone());
 
         // Enable property-write interception.
-        unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
+        unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>; }
 
         // Execute each script (with limits to keep UI responsive).
         let script_count = scripts.len().min(MAX_SCRIPTS);
@@ -668,9 +682,10 @@ impl JsRuntime {
         }
 
         // Disable interception.
-        unsafe { MUTATION_TARGET = core::ptr::null_mut(); }
+        unsafe { MUTATION_TARGET = core::ptr::null_mut(); VIRTUAL_NODES_TARGET = core::ptr::null_mut(); }
 
         self.mutations = bridge.mutations;
+        self.virtual_nodes = bridge.virtual_nodes;
         self.event_listeners = bridge.event_listeners;
         self.pending_http_requests = bridge.pending_http_requests;
         self.next_timer_id = bridge.next_timer_id;
@@ -796,9 +811,9 @@ impl JsRuntime {
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
 
-        unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
+        unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>; }
         let result = self.engine.eval(source);
-        unsafe { MUTATION_TARGET = core::ptr::null_mut(); }
+        unsafe { MUTATION_TARGET = core::ptr::null_mut(); VIRTUAL_NODES_TARGET = core::ptr::null_mut(); }
 
         for msg in self.engine.console_output() {
             self.console.push(msg.clone());
@@ -965,7 +980,19 @@ impl JsRuntime {
             match m {
                 DomMutation::CreateElement { virtual_id, tag } => {
                     let real_tag = Tag::from_str(tag);
-                    let real_id = dom.add_node(NodeType::Element { tag: real_tag, attrs: Vec::new() }, None);
+                    // Copy attributes from virtual node if they were set before insertion
+                    let attrs: Vec<crate::dom::Attr> = self.virtual_nodes.iter()
+                        .find(|vn| vn.id == *virtual_id)
+                        .map(|vn| vn.attrs.iter().map(|(k, v)| crate::dom::Attr {
+                            name: k.clone(),
+                            value: v.clone(),
+                        }).collect())
+                        .unwrap_or_default();
+                    let real_id = dom.add_node(NodeType::Element { tag: real_tag, attrs }, None);
+                    id_map.insert(*virtual_id, real_id);
+                }
+                DomMutation::CreateTextNode { virtual_id, text } => {
+                    let real_id = dom.add_node(NodeType::Text(text.clone()), None);
                     id_map.insert(*virtual_id, real_id);
                 }
                 DomMutation::SetAttribute { node_id, name, value } => {
@@ -1131,7 +1158,7 @@ impl JsRuntime {
             remove_listeners: Vec::new(),
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
-        unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
+        unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>; }
 
         // ── Phase 1: CAPTURE (eventPhase = 1) ───────────────────────────────
         // Fire capture-listeners from root down to (but not including) the target.
@@ -1198,7 +1225,7 @@ impl JsRuntime {
             }
         }
 
-        unsafe { MUTATION_TARGET = core::ptr::null_mut(); }
+        unsafe { MUTATION_TARGET = core::ptr::null_mut(); VIRTUAL_NODES_TARGET = core::ptr::null_mut(); }
 
         // Collect all side-effects from the dispatch.
         for msg in self.engine.console_output() {
@@ -1252,7 +1279,7 @@ impl JsRuntime {
             remove_listeners: Vec::new(),
                 };
                 self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
-                unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; }
+                unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>; }
 
                 // Timer callbacks get a generous step budget for React initial renders.
                 self.engine.set_step_limit(5_000_000);
@@ -1268,7 +1295,7 @@ impl JsRuntime {
                 // Clear any timer callback exceptions so next timer can run fresh.
                 self.engine.vm().last_exception = None;
 
-                unsafe { MUTATION_TARGET = core::ptr::null_mut(); }
+                unsafe { MUTATION_TARGET = core::ptr::null_mut(); VIRTUAL_NODES_TARGET = core::ptr::null_mut(); }
                 for msg in self.engine.console_output() {
                     self.console.push(msg.clone());
                 }

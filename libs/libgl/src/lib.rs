@@ -493,17 +493,21 @@ pub extern "C" fn glClear(mask: GLbitfield) {
     }
 
     // Always clear the software framebuffer too (for state consistency)
-    if mask & GL_COLOR_BUFFER_BIT != 0 {
+    let clear_color = if mask & GL_COLOR_BUFFER_BIT != 0 {
         let r = (c.clear_r.clamp(0.0, 1.0) * 255.0) as u32;
         let g = (c.clear_g.clamp(0.0, 1.0) * 255.0) as u32;
         let b = (c.clear_b.clamp(0.0, 1.0) * 255.0) as u32;
         let a = (c.clear_a.clamp(0.0, 1.0) * 255.0) as u32;
-        let argb = (a << 24) | (r << 16) | (g << 8) | b;
-        c.default_fb.clear_color(argb);
-    }
-    if mask & GL_DEPTH_BUFFER_BIT != 0 {
-        c.default_fb.clear_depth(c.clear_depth);
-    }
+        Some((a << 24) | (r << 16) | (g << 8) | b)
+    } else {
+        None
+    };
+    let clear_depth = if mask & GL_DEPTH_BUFFER_BIT != 0 {
+        Some(c.clear_depth)
+    } else {
+        None
+    };
+    framebuffer::clear_current(c, clear_color, clear_depth);
 }
 
 /// Set scissor rectangle.
@@ -1117,29 +1121,7 @@ pub extern "C" fn glDeleteFramebuffers(n: GLsizei, framebuffers: *const GLuint) 
 /// Binding 0 restores the main color+depth render target.
 #[no_mangle]
 pub extern "C" fn glBindFramebuffer(_target: GLenum, framebuffer: GLuint) {
-    let c = ctx();
-    let prev = c.bound_framebuffer;
-    c.bound_framebuffer = framebuffer;
-
-    if unsafe { USE_HW_BACKEND } {
-        if let Some(drv) = drv_loader::drv() {
-            if framebuffer != 0 {
-                // Binding a custom FBO — check if it has a depth texture (shadow pass)
-                if let Some(fbo) = c.fbos.iter().find(|f| f.id == framebuffer) {
-                    if fbo.depth_tex != 0 && fbo.width > 0 {
-                        if let Some(begin_fn) = drv.drv_shadow_begin {
-                            begin_fn(fbo.width, fbo.height);
-                        }
-                    }
-                }
-            } else if prev != 0 {
-                // Restoring default FBO — end shadow pass
-                if let Some(end_fn) = drv.drv_shadow_end {
-                    end_fn();
-                }
-            }
-        }
-    }
+    ctx().bound_framebuffer = framebuffer;
 }
 
 /// Attach a texture to a framebuffer.
@@ -1177,6 +1159,19 @@ pub extern "C" fn glFramebufferTexture2D(
 /// Check framebuffer completeness.
 #[no_mangle]
 pub extern "C" fn glCheckFramebufferStatus(_target: GLenum) -> GLenum {
+    let c = ctx();
+    if c.bound_framebuffer == 0 {
+        return GL_FRAMEBUFFER_COMPLETE;
+    }
+    let Some(fbo) = c.fbos.iter().find(|f| f.id == c.bound_framebuffer) else {
+        return GL_INVALID_FRAMEBUFFER_OPERATION;
+    };
+    if fbo.width == 0 || fbo.height == 0 {
+        return GL_INVALID_FRAMEBUFFER_OPERATION;
+    }
+    if fbo.color_tex == 0 && fbo.depth_tex == 0 {
+        return GL_INVALID_FRAMEBUFFER_OPERATION;
+    }
     GL_FRAMEBUFFER_COMPLETE
 }
 
@@ -1357,33 +1352,6 @@ fn ensure_shadow_resources() {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex[0], 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // Compile depth-only shader pair for the shadow pass
-    if unsafe { USE_HW_BACKEND } {
-        if let Some(drv) = drv_loader::drv() {
-            let vs_tgsi = "VERT\nDCL IN[0]\nDCL OUT[0], POSITION\nDCL CONST[0][0..3]\nDCL TEMP[0..1]\n\
-                IMM FLT32 { 1.0, 1.0, 1.0, 1.0 }\n\
-                  0: MOV TEMP[0], IN[0]\n\
-                  1: MOV TEMP[0].w, IMM[0].xxxx\n\
-                  2: MUL TEMP[1], CONST[0][0], TEMP[0].xxxx\n\
-                  3: MAD TEMP[1], CONST[0][1], TEMP[0].yyyy, TEMP[1]\n\
-                  4: MAD TEMP[1], CONST[0][2], TEMP[0].zzzz, TEMP[1]\n\
-                  5: MAD TEMP[1], CONST[0][3], TEMP[0].wwww, TEMP[1]\n\
-                  6: MOV OUT[0], TEMP[1]\n\
-                  7: END\n";
-            let fs_tgsi = "FRAG\nDCL OUT[0], COLOR\nIMM FLT32 { 1.0, 1.0, 1.0, 1.0 }\n\
-                  0: MOV OUT[0], IMM[0]\n\
-                  1: END\n";
-
-            let vs_h = (drv.drv_create_shader)(0, 0, vs_tgsi.as_ptr(), vs_tgsi.len() as u32);
-            let fs_h = (drv.drv_create_shader)(1, 0, fs_tgsi.as_ptr(), fs_tgsi.len() as u32);
-            if vs_h != 0 && fs_h != 0 {
-                let prog = (drv.drv_link_program)(vs_h, fs_h, 0);
-                c.shadow_depth_program = prog;
-                serial_println!("[libgl] shadow depth shader compiled: prog={:#x}", prog);
-            }
-        }
-    }
-
     serial_println!("[libgl] shadow resources created: fbo={} tex={} size={}",
         c.shadow_fbo_id, c.shadow_depth_tex_id, size);
 }
@@ -1392,16 +1360,13 @@ fn ensure_shadow_resources() {
 /// The light looks from `(lx,ly,lz)` toward `(tx,ty,tz)`.
 /// `radius` controls the shadow volume extent (how far the light "sees").
 ///
-/// Returns 1 if shadow pass started (HW backend), 0 if skipped (SW mode).
-/// In SW mode this is a complete no-op — no perf cost.
+/// Returns 1 if shadow pass started.
 #[no_mangle]
 pub extern "C" fn gl_shadow_pass_begin(
     lx: f32, ly: f32, lz: f32,
     tx: f32, ty: f32, tz: f32,
     radius: f32,
 ) -> u32 {
-    if !unsafe { USE_HW_BACKEND } { return 0; }
-
     ensure_shadow_resources();
     let c = ctx();
     if c.shadow_fbo_id == 0 { return 0; }
@@ -1414,15 +1379,15 @@ pub extern "C" fn gl_shadow_pass_begin(
     let proj = ortho_matrix(-radius, radius, -radius, radius, 0.1, radius * 4.0);
     c.shadow_light_mvp = mat4_mul_shadow(&proj, &view);
 
-    // Bind shadow FBO (triggers drv_shadow_begin via glBindFramebuffer)
+    c.shadow_prev_viewport = [c.viewport_x, c.viewport_y, c.viewport_w, c.viewport_h];
     glBindFramebuffer(GL_FRAMEBUFFER, c.shadow_fbo_id);
+    glViewport(0, 0, c.shadow_map_size as i32, c.shadow_map_size as i32);
 
-    // Use the depth-only shader
-    if c.shadow_depth_program != 0 {
+    if unsafe { USE_HW_BACKEND } {
         if let Some(drv) = drv_loader::drv() {
-            (drv.drv_use_program)(c.shadow_depth_program);
-            // Upload light MVP as CONST[0..3]
-            (drv.drv_set_uniform_f32)(0, 4, c.shadow_light_mvp.as_ptr());
+            if let Some(begin_fn) = drv.drv_shadow_begin {
+                begin_fn(c.shadow_map_size, c.shadow_map_size);
+            }
         }
     }
 
@@ -1435,20 +1400,20 @@ pub extern "C" fn gl_shadow_pass_begin(
 /// After this, shadow map is automatically available for the main pass.
 #[no_mangle]
 pub extern "C" fn gl_shadow_pass_end() {
-    if !unsafe { USE_HW_BACKEND } { return; }
     let c = ctx();
     if !c.shadow_pass_active { return; }
 
-    // Restore default FBO (triggers drv_shadow_end via glBindFramebuffer)
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    // Bind shadow map to sampler slot 7 for the main pass
-    if let Some(drv) = drv_loader::drv() {
-        if let Some(bind_fn) = drv.drv_shadow_bind {
-            bind_fn(7); // slot 7 = shadow map
+    if unsafe { USE_HW_BACKEND } {
+        if let Some(drv) = drv_loader::drv() {
+            if let Some(end_fn) = drv.drv_shadow_end {
+                end_fn();
+            }
         }
     }
 
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    let prev = c.shadow_prev_viewport;
+    glViewport(prev[0], prev[1], prev[2], prev[3]);
     c.shadow_pass_active = false;
     c.shadow_map_ready = true;
 }
@@ -1478,6 +1443,12 @@ pub extern "C" fn gl_shadow_available() -> u32 {
 #[no_mangle]
 pub extern "C" fn gl_shadow_get_unit() -> u32 {
     7
+}
+
+/// Get the GL texture id of the internally managed shadow depth map.
+#[no_mangle]
+pub extern "C" fn gl_shadow_get_texture() -> u32 {
+    ctx().shadow_depth_tex_id
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

@@ -319,6 +319,15 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set(String::from("getClientRects"), native_fn("getClientRects", el_get_client_rects));
     obj.set(String::from("toString"), native_fn("toString", el_to_string));
 
+    // Canvas: getContext('2d') returns a CanvasRenderingContext2D stub
+    if tag_name == "CANVAS" {
+        obj.set(String::from("width"), JsValue::Number(300.0));
+        obj.set(String::from("height"), JsValue::Number(150.0));
+        obj.set(String::from("getContext"), native_fn("getContext", el_get_context));
+        obj.set(String::from("toDataURL"), native_fn("toDataURL", |_,_| JsValue::String(String::from("data:,"))));
+        obj.set(String::from("toBlob"), native_fn("toBlob", |_,_| JsValue::Undefined));
+    }
+
     // Set property-write interception hook so that assignments like
     // el.textContent = "x" record DOM mutations.
     obj.set_hook = Some(dom_property_hook);
@@ -1628,14 +1637,37 @@ fn style_property_hook(data: *mut u8, key: &str, value: &JsValue) {
         | "getPropertyPriority" | "cssText" | "length" | "item" => return,
         _ => {}
     }
+    let node_id = data as usize as i64;
+    let css_prop = css_prop_from_camel(key);
+    let val_str = value.to_js_string();
+
+    // For virtual nodes: store as "style" attribute on VirtualNode
+    if node_id < 0 {
+        let vnodes = unsafe {
+            if super::VIRTUAL_NODES_TARGET.is_null() { return; }
+            &mut *super::VIRTUAL_NODES_TARGET
+        };
+        if let Some(vn) = vnodes.iter_mut().find(|v| v.id == node_id) {
+            // Append to existing style attribute
+            if let Some(attr) = vn.attrs.iter_mut().find(|(k, _)| k == "style") {
+                if attr.1.is_empty() {
+                    attr.1 = alloc::format!("{}: {}", css_prop, val_str);
+                } else {
+                    attr.1 = alloc::format!("{}; {}: {}", attr.1, css_prop, val_str);
+                }
+            } else {
+                vn.attrs.push((String::from("style"), alloc::format!("{}: {}", css_prop, val_str)));
+            }
+        }
+        return;
+    }
+
     let mutations = unsafe {
         if super::MUTATION_TARGET.is_null() { return; }
         &mut *super::MUTATION_TARGET
     };
-    let node_id = data as usize as i64;
-    let css_prop = css_prop_from_camel(key);
     mutations.push(DomMutation::SetStyleProperty {
-        node_id, property: css_prop, value: value.to_js_string(),
+        node_id, property: css_prop, value: val_str,
     });
 }
 
@@ -1704,4 +1736,168 @@ fn get_first_last(children: &JsValue) -> (JsValue, JsValue) {
         }
     }
     (JsValue::Null, JsValue::Null)
+}
+
+// ═══════════════════════════════════════════════════════════
+// Canvas 2D API
+// ═══════════════════════════════════════════════════════════
+
+/// `canvas.getContext('2d')` — returns a CanvasRenderingContext2D object.
+fn el_get_context(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let context_type = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    if context_type != "2d" {
+        return JsValue::Null; // Only 2D context supported
+    }
+    let canvas = vm.current_this.clone();
+    make_canvas_2d_context(canvas)
+}
+
+/// Create a CanvasRenderingContext2D object with all W3C Canvas 2D API methods.
+fn make_canvas_2d_context(canvas: JsValue) -> JsValue {
+    let ctx = JsValue::new_object();
+
+    // Back-reference to the canvas element
+    ctx.set_property(String::from("canvas"), canvas);
+
+    // ── State ──
+    ctx.set_property(String::from("fillStyle"), JsValue::String(String::from("#000000")));
+    ctx.set_property(String::from("strokeStyle"), JsValue::String(String::from("#000000")));
+    ctx.set_property(String::from("lineWidth"), JsValue::Number(1.0));
+    ctx.set_property(String::from("lineCap"), JsValue::String(String::from("butt")));
+    ctx.set_property(String::from("lineJoin"), JsValue::String(String::from("miter")));
+    ctx.set_property(String::from("miterLimit"), JsValue::Number(10.0));
+    ctx.set_property(String::from("lineDashOffset"), JsValue::Number(0.0));
+    ctx.set_property(String::from("font"), JsValue::String(String::from("10px sans-serif")));
+    ctx.set_property(String::from("textAlign"), JsValue::String(String::from("start")));
+    ctx.set_property(String::from("textBaseline"), JsValue::String(String::from("alphabetic")));
+    ctx.set_property(String::from("direction"), JsValue::String(String::from("ltr")));
+    ctx.set_property(String::from("globalAlpha"), JsValue::Number(1.0));
+    ctx.set_property(String::from("globalCompositeOperation"), JsValue::String(String::from("source-over")));
+    ctx.set_property(String::from("imageSmoothingEnabled"), JsValue::Bool(true));
+    ctx.set_property(String::from("shadowBlur"), JsValue::Number(0.0));
+    ctx.set_property(String::from("shadowColor"), JsValue::String(String::from("rgba(0,0,0,0)")));
+    ctx.set_property(String::from("shadowOffsetX"), JsValue::Number(0.0));
+    ctx.set_property(String::from("shadowOffsetY"), JsValue::Number(0.0));
+    ctx.set_property(String::from("filter"), JsValue::String(String::from("none")));
+
+    // ── Drawing methods (stubs that record operations) ──
+    let noop = native_fn("noop", |_,_| JsValue::Undefined);
+
+    // Rectangles
+    ctx.set_property(String::from("fillRect"), native_fn("fillRect", ctx_noop));
+    ctx.set_property(String::from("strokeRect"), native_fn("strokeRect", ctx_noop));
+    ctx.set_property(String::from("clearRect"), native_fn("clearRect", ctx_noop));
+
+    // Paths
+    ctx.set_property(String::from("beginPath"), native_fn("beginPath", ctx_noop));
+    ctx.set_property(String::from("closePath"), native_fn("closePath", ctx_noop));
+    ctx.set_property(String::from("moveTo"), native_fn("moveTo", ctx_noop));
+    ctx.set_property(String::from("lineTo"), native_fn("lineTo", ctx_noop));
+    ctx.set_property(String::from("bezierCurveTo"), native_fn("bezierCurveTo", ctx_noop));
+    ctx.set_property(String::from("quadraticCurveTo"), native_fn("quadraticCurveTo", ctx_noop));
+    ctx.set_property(String::from("arc"), native_fn("arc", ctx_noop));
+    ctx.set_property(String::from("arcTo"), native_fn("arcTo", ctx_noop));
+    ctx.set_property(String::from("ellipse"), native_fn("ellipse", ctx_noop));
+    ctx.set_property(String::from("rect"), native_fn("rect", ctx_noop));
+    ctx.set_property(String::from("roundRect"), native_fn("roundRect", ctx_noop));
+    ctx.set_property(String::from("fill"), native_fn("fill", ctx_noop));
+    ctx.set_property(String::from("stroke"), native_fn("stroke", ctx_noop));
+    ctx.set_property(String::from("clip"), native_fn("clip", ctx_noop));
+    ctx.set_property(String::from("isPointInPath"), native_fn("isPointInPath", |_,_| JsValue::Bool(false)));
+    ctx.set_property(String::from("isPointInStroke"), native_fn("isPointInStroke", |_,_| JsValue::Bool(false)));
+
+    // Text
+    ctx.set_property(String::from("fillText"), native_fn("fillText", ctx_noop));
+    ctx.set_property(String::from("strokeText"), native_fn("strokeText", ctx_noop));
+    ctx.set_property(String::from("measureText"), native_fn("measureText", ctx_measure_text));
+
+    // Drawing images
+    ctx.set_property(String::from("drawImage"), native_fn("drawImage", ctx_noop));
+
+    // Pixel manipulation
+    ctx.set_property(String::from("createImageData"), native_fn("createImageData", ctx_create_image_data));
+    ctx.set_property(String::from("getImageData"), native_fn("getImageData", ctx_get_image_data));
+    ctx.set_property(String::from("putImageData"), native_fn("putImageData", ctx_noop));
+
+    // Transforms
+    ctx.set_property(String::from("save"), native_fn("save", ctx_noop));
+    ctx.set_property(String::from("restore"), native_fn("restore", ctx_noop));
+    ctx.set_property(String::from("translate"), native_fn("translate", ctx_noop));
+    ctx.set_property(String::from("rotate"), native_fn("rotate", ctx_noop));
+    ctx.set_property(String::from("scale"), native_fn("scale", ctx_noop));
+    ctx.set_property(String::from("transform"), native_fn("transform", ctx_noop));
+    ctx.set_property(String::from("setTransform"), native_fn("setTransform", ctx_noop));
+    ctx.set_property(String::from("getTransform"), native_fn("getTransform", ctx_get_transform));
+    ctx.set_property(String::from("resetTransform"), native_fn("resetTransform", ctx_noop));
+
+    // Gradients & Patterns
+    ctx.set_property(String::from("createLinearGradient"), native_fn("createLinearGradient", ctx_create_gradient));
+    ctx.set_property(String::from("createRadialGradient"), native_fn("createRadialGradient", ctx_create_gradient));
+    ctx.set_property(String::from("createConicGradient"), native_fn("createConicGradient", ctx_create_gradient));
+    ctx.set_property(String::from("createPattern"), native_fn("createPattern", ctx_create_gradient));
+
+    // Line styles
+    ctx.set_property(String::from("setLineDash"), native_fn("setLineDash", ctx_noop));
+    ctx.set_property(String::from("getLineDash"), native_fn("getLineDash", |_,_| JsValue::new_array(Vec::new())));
+
+    // Compositing — already set as properties above
+
+    ctx
+}
+
+fn ctx_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Undefined }
+
+fn ctx_measure_text(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let text = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let width = text.len() as f64 * 7.0; // approximate 7px per char
+    let metrics = JsValue::new_object();
+    metrics.set_property(String::from("width"), JsValue::Number(width));
+    metrics.set_property(String::from("actualBoundingBoxLeft"), JsValue::Number(0.0));
+    metrics.set_property(String::from("actualBoundingBoxRight"), JsValue::Number(width));
+    metrics.set_property(String::from("actualBoundingBoxAscent"), JsValue::Number(10.0));
+    metrics.set_property(String::from("actualBoundingBoxDescent"), JsValue::Number(2.0));
+    metrics.set_property(String::from("fontBoundingBoxAscent"), JsValue::Number(10.0));
+    metrics.set_property(String::from("fontBoundingBoxDescent"), JsValue::Number(2.0));
+    metrics.set_property(String::from("emHeightAscent"), JsValue::Number(10.0));
+    metrics.set_property(String::from("emHeightDescent"), JsValue::Number(2.0));
+    metrics
+}
+
+fn ctx_create_image_data(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let w = args.first().map(|v| v.to_number() as usize).unwrap_or(1);
+    let h = args.get(1).map(|v| v.to_number() as usize).unwrap_or(1);
+    let len = w * h * 4;
+    let data = JsValue::new_array((0..len).map(|_| JsValue::Number(0.0)).collect());
+    let img = JsValue::new_object();
+    img.set_property(String::from("width"), JsValue::Number(w as f64));
+    img.set_property(String::from("height"), JsValue::Number(h as f64));
+    img.set_property(String::from("data"), data);
+    img
+}
+
+fn ctx_get_image_data(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = args.first().map(|v| v.to_number() as usize).unwrap_or(0);
+    let y = args.get(1).map(|v| v.to_number() as usize).unwrap_or(0);
+    let w = args.get(2).map(|v| v.to_number() as usize).unwrap_or(1);
+    let h = args.get(3).map(|v| v.to_number() as usize).unwrap_or(1);
+    ctx_create_image_data(_vm, &[JsValue::Number(w as f64), JsValue::Number(h as f64)])
+}
+
+fn ctx_get_transform(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let m = JsValue::new_object();
+    m.set_property(String::from("a"), JsValue::Number(1.0));
+    m.set_property(String::from("b"), JsValue::Number(0.0));
+    m.set_property(String::from("c"), JsValue::Number(0.0));
+    m.set_property(String::from("d"), JsValue::Number(1.0));
+    m.set_property(String::from("e"), JsValue::Number(0.0));
+    m.set_property(String::from("f"), JsValue::Number(0.0));
+    m.set_property(String::from("is2D"), JsValue::Bool(true));
+    m.set_property(String::from("isIdentity"), JsValue::Bool(true));
+    m
+}
+
+fn ctx_create_gradient(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let grad = JsValue::new_object();
+    grad.set_property(String::from("addColorStop"), native_fn("addColorStop", ctx_noop));
+    grad
 }

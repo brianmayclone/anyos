@@ -119,3 +119,4 @@ EXPORTS
     gl_shadow_get_light_mvp
     gl_shadow_available
     gl_shadow_get_unit
+    gl_shadow_get_texture
