@@ -970,17 +970,10 @@ impl JsRuntime {
                     // Copy attributes from virtual node if they were set before insertion
                     let attrs: Vec<crate::dom::Attr> = self.virtual_nodes.iter()
                         .find(|vn| vn.id == *virtual_id)
-                        .map(|vn| {
-                            if !vn.attrs.is_empty() {
-                                anyos_std::println!("[dom] CreateElement <{}> vid={} with {} attrs: {:?}",
-                                    tag, virtual_id, vn.attrs.len(),
-                                    vn.attrs.iter().map(|(k,v)| alloc::format!("{}={}", k, &v[..v.len().min(40)])).collect::<Vec<_>>());
-                            }
-                            vn.attrs.iter().map(|(k, v)| crate::dom::Attr {
-                                name: k.clone(),
-                                value: v.clone(),
-                            }).collect()
-                        })
+                        .map(|vn| vn.attrs.iter().map(|(k, v)| crate::dom::Attr {
+                            name: k.clone(),
+                            value: v.clone(),
+                        }).collect())
                         .unwrap_or_default();
                     let real_id = dom.add_node(NodeType::Element { tag: real_tag, attrs }, None);
                     id_map.insert(*virtual_id, real_id);
@@ -991,12 +984,7 @@ impl JsRuntime {
                 }
                 DomMutation::SetAttribute { node_id, name, value } => {
                     if let Some(real_id) = resolve_id(*node_id, &id_map) {
-                        if name == "class" && !value.is_empty() {
-                            anyos_std::println!("[dom] SetAttr class={} on node {} (real={})", &value[..value.len().min(50)], node_id, real_id);
-                        }
                         dom.set_attr(real_id, name, value);
-                    } else if name == "class" {
-                        anyos_std::println!("[dom] SetAttr class LOST: node_id={} not in id_map", node_id);
                     }
                 }
                 DomMutation::RemoveAttribute { node_id, name } => {
@@ -1013,12 +1001,7 @@ impl JsRuntime {
                     let real_parent = resolve_id(*parent_id, &id_map);
                     let real_child = resolve_id(*child_id, &id_map);
                     if let (Some(p), Some(c)) = (real_parent, real_child) {
-                        anyos_std::println!("[dom] AppendChild: parent={} (real={}) child={} (real={})",
-                            parent_id, p, child_id, c);
                         dom.append_child(p, c);
-                    } else {
-                        anyos_std::println!("[dom] AppendChild FAILED: parent_id={} child_id={} parent={:?} child={:?}",
-                            parent_id, child_id, real_parent, real_child);
                     }
                 }
                 DomMutation::RemoveChild { parent_id, child_id } => {
