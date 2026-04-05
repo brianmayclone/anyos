@@ -146,6 +146,8 @@ pub enum AttrOp {
 pub enum PseudoElement {
     Before,
     After,
+    /// Unknown pseudo-element (e.g. ::-webkit-datetime-edit). Never matches.
+    Unknown,
 }
 
 /// Pseudo-class selectors.
@@ -1716,7 +1718,8 @@ fn parse_simple_selector(p: &mut Parser) -> SimpleSelector {
                 "before" => pseudo_element = Some(PseudoElement::Before),
                 "after" => pseudo_element = Some(PseudoElement::After),
                 _ => {
-                    // Skip unknown pseudo-element arguments
+                    // Unknown pseudo-element — mark as never-matches
+                    pseudo_element = Some(PseudoElement::Unknown);
                     if p.peek() == b'(' {
                         let mut depth: u32 = 1;
                         p.pos += 1;

@@ -1828,6 +1828,7 @@ pub fn resolve_styles(
                 let slot = match pe {
                     PseudoElement::Before => &mut pseudo.before[id],
                     PseudoElement::After => &mut pseudo.after[id],
+                    PseudoElement::Unknown => continue, // skip unknown pseudo-elements
                 };
                 // Create or update the pseudo-element style.
                 // Start from parent style (inherit), then apply rule declarations.
