@@ -279,15 +279,18 @@ pub fn string_to_upper_case(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_trim(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::String(String::from(this_string(vm).trim()))
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
+    JsValue::String(String::from(s.trim()))
 }
 
 pub fn string_trim_start(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::String(String::from(this_string(vm).trim_start()))
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
+    JsValue::String(String::from(s.trim_start()))
 }
 
 pub fn string_trim_end(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::String(String::from(this_string(vm).trim_end()))
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
+    JsValue::String(String::from(s.trim_end()))
 }
 
 pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -508,7 +511,7 @@ pub fn string_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_concat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let mut s = this_string(vm);
+    let mut s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
     for arg in args {
         s.push_str(&arg.to_js_string());
     }
@@ -599,8 +602,8 @@ pub fn string_raw(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 /// `String.prototype.normalize([form])` — Unicode normalization (stub: returns self).
 pub fn string_normalize(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    // Full Unicode normalization requires ICU tables — return self as-is.
-    JsValue::String(this_string(vm))
+    let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
+    JsValue::String(s)
 }
 
 /// `String.prototype.localeCompare(that)` — simplified: byte comparison.
