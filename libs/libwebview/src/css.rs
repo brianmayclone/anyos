@@ -1006,13 +1006,33 @@ fn split_and(s: &str) -> Vec<&str> {
 fn parse_media_condition(inner: &str) -> Option<MediaCondition> {
     let inner = inner.trim();
 
+    // Range syntax: `width>=64rem`, `width<=1024px`, `width>40rem`
+    if let Some(idx) = inner.find(">=") {
+        let feature = inner[..idx].trim().to_ascii_lowercase();
+        let val = inner[idx + 2..].trim();
+        if feature == "width" {
+            if let Some(px) = parse_px_value(val) {
+                return Some(MediaCondition::MinWidth(px));
+            }
+        }
+    }
+    if let Some(idx) = inner.find("<=") {
+        let feature = inner[..idx].trim().to_ascii_lowercase();
+        let val = inner[idx + 2..].trim();
+        if feature == "width" {
+            if let Some(px) = parse_px_value(val) {
+                return Some(MediaCondition::MaxWidth(px));
+            }
+        }
+    }
+
     // Boolean media feature with no value: (color), (hover), etc.
     if !inner.contains(':') {
         let feature = inner.to_ascii_lowercase();
         return match feature.as_str() {
-            // Features we know we support/don't support.
             "color" | "color-index" => Some(MediaCondition::Known(true)),
             "monochrome" => Some(MediaCondition::Known(false)),
+            "hover" => Some(MediaCondition::Known(true)), // assume hover capable
             _ => Some(MediaCondition::Unsupported),
         };
     }
