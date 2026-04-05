@@ -376,6 +376,12 @@ pub enum Property {
     UserSelect,
     // Backdrop filter
     BackdropFilter,
+    // Additional properties for modern CSS
+    Appearance,
+    BackgroundClip,
+    ScrollBehavior,
+    Resize,
+    ObjectPosition,
     /// CSS custom property (--name). Value stored in Declaration.value as Keyword.
     CustomProperty(String),
 }
@@ -2307,6 +2313,25 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "user-select" | "-webkit-user-select" | "-moz-user-select" | "-ms-user-select" => Some(Property::UserSelect),
         // Backdrop filter
         "backdrop-filter" | "-webkit-backdrop-filter" => Some(Property::BackdropFilter),
+        // CSS Logical Properties (map to physical equivalents for LTR)
+        "padding-inline" | "padding-inline-start" | "padding-inline-end" => Some(Property::Padding),
+        "padding-block" | "padding-block-start" | "padding-block-end" => Some(Property::Padding),
+        "margin-inline" | "margin-inline-start" | "margin-inline-end" => Some(Property::Margin),
+        "margin-block" | "margin-block-start" | "margin-block-end" => Some(Property::Margin),
+        "inset-inline" | "inset-inline-start" | "inset-inline-end" => Some(Property::Inset),
+        "border-inline-width" => Some(Property::BorderWidth),
+        "border-block-width" => Some(Property::BorderWidth),
+        // Font shorthand
+        "font" => Some(Property::FontFamily),
+        // Additional properties
+        "appearance" | "-webkit-appearance" | "-moz-appearance" => Some(Property::Appearance),
+        "background-clip" | "-webkit-background-clip" => Some(Property::BackgroundClip),
+        "text-decoration-line" => Some(Property::TextDecoration),
+        "scroll-behavior" => Some(Property::ScrollBehavior),
+        "resize" => Some(Property::Resize),
+        "object-position" => Some(Property::ObjectPosition),
+        "translate" => Some(Property::Transform),
+        "scale" => Some(Property::Transform),
         _ => Option::None,
     }
 }

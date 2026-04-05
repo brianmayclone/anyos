@@ -3598,6 +3598,9 @@ pub fn apply_declaration(
                 style.backdrop_filter = parse_filter_value(kw, parent_fs, root_fs);
             }
         }
+        // Parsed but not visually applied (accepted to prevent "unknown property" skips)
+        Property::Appearance | Property::BackgroundClip | Property::ScrollBehavior
+        | Property::Resize | Property::ObjectPosition => {}
     }
 }
 
