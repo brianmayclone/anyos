@@ -376,6 +376,11 @@ pub enum Property {
     UserSelect,
     // Backdrop filter
     BackdropFilter,
+    // CSS Logical Properties (inline = left+right, block = top+bottom for LTR)
+    PaddingInline,
+    PaddingBlock,
+    MarginInline,
+    MarginBlock,
     // Additional properties for modern CSS
     Appearance,
     BackgroundClip,
@@ -620,12 +625,19 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
     let mut keyframes = Vec::new();
     let mut imports = Vec::new();
     let mut font_faces = Vec::new();
-    let mut total_memory: usize = 0;
+    let mut layer_depth: u32 = 0;
 
     loop {
         p.skip_whitespace();
         if p.eof() {
             break;
+        }
+
+        // Closing brace from @layer container
+        if p.peek() == b'}' {
+            p.pos += 1;
+            if layer_depth > 0 { layer_depth -= 1; }
+            continue;
         }
 
         // At-rules
@@ -782,7 +794,8 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
                 continue;
             }
 
-            // @layer — CSS Cascade Layers. Extract inner block and parse it.
+            // @layer — CSS Cascade Layers. Transparent container: skip name + opening
+            // brace, let the main loop parse inner rules. Closing } handled below.
             if kw_lower == "layer" {
                 p.skip_whitespace();
                 while !p.eof() && p.peek() != b'{' && p.peek() != b';' {
@@ -790,30 +803,9 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
                 }
                 if p.peek() == b';' {
                     p.pos += 1;
-                    continue;
-                }
-                if p.peek() == b'{' {
-                    p.pos += 1;
-                    let start = p.pos;
-                    let mut depth = 1u32;
-                    while p.pos < p.input.len() && depth > 0 {
-                        match p.input[p.pos] {
-                            b'{' => depth += 1,
-                            b'}' => depth -= 1,
-                            _ => {}
-                        }
-                        if depth > 0 { p.pos += 1; }
-                    }
-                    let end = p.pos;
-                    if p.pos < p.input.len() { p.pos += 1; }
-                    let inner_css = String::from_utf8_lossy(&p.input[start..end]).into_owned();
-                    crate::debug_surf!("[css] @layer: parsing {} bytes inner CSS", inner_css.len());
-                    let inner = parse_stylesheet(&inner_css);
-                    crate::debug_surf!("[css] @layer: got {} rules, {} media", inner.rules.len(), inner.media_rules.len());
-                    rules.extend(inner.rules);
-                    media_rules.extend(inner.media_rules);
-                    keyframes.extend(inner.keyframes);
-                    font_faces.extend(inner.font_faces);
+                } else if p.peek() == b'{' {
+                    p.pos += 1; // skip { — main loop continues with inner rules
+                    layer_depth += 1;
                 }
                 continue;
             }
@@ -2313,11 +2305,19 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "user-select" | "-webkit-user-select" | "-moz-user-select" | "-ms-user-select" => Some(Property::UserSelect),
         // Backdrop filter
         "backdrop-filter" | "-webkit-backdrop-filter" => Some(Property::BackdropFilter),
-        // CSS Logical Properties (map to physical equivalents for LTR)
-        "padding-inline" | "padding-inline-start" | "padding-inline-end" => Some(Property::Padding),
-        "padding-block" | "padding-block-start" | "padding-block-end" => Some(Property::Padding),
-        "margin-inline" | "margin-inline-start" | "margin-inline-end" => Some(Property::Margin),
-        "margin-block" | "margin-block-start" | "margin-block-end" => Some(Property::Margin),
+        // CSS Logical Properties
+        "padding-inline" => Some(Property::PaddingInline),
+        "padding-inline-start" => Some(Property::PaddingLeft),
+        "padding-inline-end" => Some(Property::PaddingRight),
+        "padding-block" => Some(Property::PaddingBlock),
+        "padding-block-start" => Some(Property::PaddingTop),
+        "padding-block-end" => Some(Property::PaddingBottom),
+        "margin-inline" => Some(Property::MarginInline),
+        "margin-inline-start" => Some(Property::MarginLeft),
+        "margin-inline-end" => Some(Property::MarginRight),
+        "margin-block" => Some(Property::MarginBlock),
+        "margin-block-start" => Some(Property::MarginTop),
+        "margin-block-end" => Some(Property::MarginBottom),
         "inset-inline" | "inset-inline-start" | "inset-inline-end" => Some(Property::Inset),
         "border-inline-width" => Some(Property::BorderWidth),
         "border-block-width" => Some(Property::BorderWidth),

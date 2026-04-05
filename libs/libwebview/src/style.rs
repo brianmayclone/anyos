@@ -3598,6 +3598,36 @@ pub fn apply_declaration(
                 style.backdrop_filter = parse_filter_value(kw, parent_fs, root_fs);
             }
         }
+        // CSS Logical Properties — expand to physical sides (LTR assumption)
+        Property::PaddingInline => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.padding_left = px;
+                style.padding_right = px;
+            }
+        }
+        Property::PaddingBlock => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.padding_top = px;
+                style.padding_bottom = px;
+            }
+        }
+        Property::MarginInline => {
+            if matches!(decl.value, CssValue::Auto) {
+                style.margin_left_auto = true;
+                style.margin_right_auto = true;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.margin_left = px;
+                style.margin_right = px;
+                style.margin_left_auto = false;
+                style.margin_right_auto = false;
+            }
+        }
+        Property::MarginBlock => {
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.margin_top = px;
+                style.margin_bottom = px;
+            }
+        }
         // Parsed but not visually applied (accepted to prevent "unknown property" skips)
         Property::Appearance | Property::BackgroundClip | Property::ScrollBehavior
         | Property::Resize | Property::ObjectPosition => {}
