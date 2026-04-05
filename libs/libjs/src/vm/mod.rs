@@ -165,6 +165,10 @@ impl Vm {
         obj.set(String::from("name"), JsValue::String(String::from("SyntaxError")));
         obj.set(String::from("message"), JsValue::String(String::from(message)));
         obj.set(String::from("stack"), JsValue::String(stack_str));
+        let ctor = self.globals.get("SyntaxError");
+        if !matches!(ctor, JsValue::Undefined) {
+            obj.set(String::from("constructor"), ctor);
+        }
         JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 
