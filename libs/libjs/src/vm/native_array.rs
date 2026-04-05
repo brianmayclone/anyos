@@ -37,6 +37,7 @@ fn snapshot_entries(a: &JsArray) -> Vec<(usize, JsValue)> {
 }
 
 /// ToNumber with VM — calls valueOf/toString on Objects per ES2023 §7.1.4.
+/// Throws TypeError if ToPrimitive fails (both valueOf and toString return objects).
 pub fn to_number_vm(vm: &mut Vm, val: &JsValue) -> f64 {
     match val {
         JsValue::Number(n) => *n,
@@ -52,14 +53,21 @@ pub fn to_number_vm(vm: &mut Vm, val: &JsValue) -> f64 {
                 drop(o);
                 return to_number_vm(vm, &p);
             }
+            // ToPrimitive: try valueOf first, then toString
             let value_of = o.get("valueOf");
+            let to_string_fn = o.get("toString");
             drop(o);
+            let mut tried_valueof = false;
+            let mut tried_tostring = false;
             if let JsValue::Function(_) = &value_of {
+                tried_valueof = true;
                 let result = vm.call_value(&value_of, &[], val.clone());
                 if let Some(exc) = vm.last_exception.take() {
                     vm.pending_exception = Some(exc);
                     return f64::NAN;
                 }
+                if vm.pending_exception.is_some() { return f64::NAN; }
+                // If result is a primitive, convert to number
                 match &result {
                     JsValue::Number(n) => return *n,
                     JsValue::String(s) => return crate::value::parse_js_float(s),
@@ -67,21 +75,31 @@ pub fn to_number_vm(vm: &mut Vm, val: &JsValue) -> f64 {
                     JsValue::Bool(false) => return 0.0,
                     JsValue::Null => return 0.0,
                     JsValue::Undefined => return f64::NAN,
-                    _ => {}
+                    _ => {} // Non-primitive: fall through to toString
                 }
             }
-            let o = obj.borrow();
-            let to_string = o.get("toString");
-            drop(o);
-            if let JsValue::Function(_) = &to_string {
-                let result = vm.call_value(&to_string, &[], val.clone());
+            if let JsValue::Function(_) = &to_string_fn {
+                tried_tostring = true;
+                let result = vm.call_value(&to_string_fn, &[], val.clone());
                 if let Some(exc) = vm.last_exception.take() {
                     vm.pending_exception = Some(exc);
                     return f64::NAN;
                 }
-                if let JsValue::String(s) = &result {
-                    return crate::value::parse_js_float(s);
+                if vm.pending_exception.is_some() { return f64::NAN; }
+                match &result {
+                    JsValue::String(s) => return crate::value::parse_js_float(s),
+                    JsValue::Number(n) => return *n,
+                    JsValue::Bool(true) => return 1.0,
+                    JsValue::Bool(false) => return 0.0,
+                    JsValue::Null => return 0.0,
+                    JsValue::Undefined => return f64::NAN,
+                    _ => {} // Non-primitive: TypeError
                 }
+            }
+            // If both valueOf and toString were tried and returned objects → TypeError
+            if tried_valueof || tried_tostring {
+                let err = vm.make_type_error("Cannot convert object to primitive value");
+                vm.throw_native(err);
             }
             f64::NAN
         }
@@ -174,6 +192,10 @@ fn this_array_like(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>
             // Get length value first (may need VM to call valueOf/toString)
             let len_val = obj.borrow().get("length");
             let len = to_length_vm(vm, &len_val);
+            // If ToPrimitive threw TypeError, propagate it
+            if vm.pending_exception.is_some() {
+                return None;
+            }
             // Collect data properties and accessor getters separately
             let mut entries = Vec::new();
             let mut accessor_getters: Vec<(usize, JsValue)> = Vec::new();

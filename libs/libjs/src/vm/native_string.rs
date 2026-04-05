@@ -26,13 +26,40 @@ fn this_string(vm: &Vm) -> String {
 }
 
 /// RequireObjectCoercible + ToString. Throws TypeError for null/undefined.
-/// Returns None if TypeError was thrown.
+/// For Objects, calls Symbol.toPrimitive if present, otherwise falls back to basic coercion.
+/// Returns None if an exception was thrown.
 fn this_string_checked(vm: &mut Vm) -> Option<String> {
-    match &vm.current_this {
+    let this = vm.current_this.clone();
+    match &this {
         JsValue::Null | JsValue::Undefined => {
             let err = vm.make_type_error("Cannot convert undefined or null to object");
             vm.throw_native(err);
             None
+        }
+        JsValue::String(s) => Some(s.clone()),
+        JsValue::Number(_) | JsValue::Bool(_) => Some(this.to_js_string()),
+        JsValue::Object(obj) => {
+            // Check for Symbol.toPrimitive getter (the most common Test262Error case)
+            let o = obj.borrow();
+            // Wrapper objects first
+            if let Some(prim) = &o.primitive_value {
+                let p = prim.clone();
+                drop(o);
+                return Some(p.to_js_string());
+            }
+            // Check for Symbol.toPrimitive
+            let sym_key = super::native_symbol::WELL_KNOWN_TO_PRIMITIVE;
+            let has_to_prim = o.properties.contains_key(sym_key);
+            drop(o);
+            if has_to_prim {
+                // Use ToPrimitive for Symbol.toPrimitive support
+                let prim = vm.to_primitive_for_op(this, "string");
+                if vm.pending_exception.is_some() {
+                    return None;
+                }
+                return Some(prim.to_js_string());
+            }
+            Some(this_string(vm))
         }
         _ => Some(this_string(vm)),
     }
