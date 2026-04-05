@@ -304,42 +304,49 @@ pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 
     let s = match this_string_checked(vm) { Some(s) => s, None => return JsValue::Undefined };
-    let sep = args.first().map(|v| v.to_js_string());
+    let sep_val = args.first().cloned();
     let limit = args.get(1).map(|v| {
+        if matches!(v, JsValue::Undefined) { return usize::MAX; }
         let n = v.to_number();
         if n.is_nan() || n < 0.0 { 0 } else if !n.is_finite() { usize::MAX } else { n as usize }
     }).unwrap_or(usize::MAX);
 
-    let parts: Vec<JsValue> = match sep {
-        None => {
+    // limit === 0 → empty array (ES2023 §22.1.3.21 step 11)
+    if limit == 0 {
+        return JsValue::new_array(Vec::new());
+    }
+
+    let parts: Vec<JsValue> = match &sep_val {
+        None | Some(JsValue::Undefined) => {
             vec![JsValue::String(s)]
         }
-        Some(ref sep_val) if sep_val == "undefined" => {
-            vec![JsValue::String(s)]
-        }
-        Some(ref sep_str) if sep_str.is_empty() => {
-            // Split into individual characters
-            s.chars().take(limit).map(|c| {
-                let mut buf = String::new();
-                buf.push(c);
-                JsValue::String(buf)
-            }).collect()
-        }
-        Some(ref sep_str) => {
-            let mut result = Vec::new();
-            let mut remaining = s.as_str();
-            let mut count = 0;
-            while count + 1 < limit {
-                if let Some(idx) = remaining.find(sep_str.as_str()) {
-                    result.push(JsValue::String(String::from(&remaining[..idx])));
-                    remaining = &remaining[idx + sep_str.len()..];
-                    count += 1;
-                } else {
-                    break;
+        Some(sep_jv) => {
+            let sep_str = sep_jv.to_js_string();
+            if sep_str.is_empty() {
+                // Split into individual characters
+                s.chars().take(limit).map(|c| {
+                    let mut buf = String::new();
+                    buf.push(c);
+                    JsValue::String(buf)
+                }).collect()
+            } else {
+                let mut result = Vec::new();
+                let mut remaining = s.as_str();
+                let mut count = 0;
+                while count + 1 < limit {
+                    if let Some(idx) = remaining.find(sep_str.as_str()) {
+                        result.push(JsValue::String(String::from(&remaining[..idx])));
+                        remaining = &remaining[idx + sep_str.len()..];
+                        count += 1;
+                    } else {
+                        break;
+                    }
                 }
+                if result.len() < limit {
+                    result.push(JsValue::String(String::from(remaining)));
+                }
+                result
             }
-            result.push(JsValue::String(String::from(remaining)));
-            result
         }
     };
 
