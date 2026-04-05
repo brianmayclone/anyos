@@ -601,6 +601,11 @@ impl<'a> Parser<'a> {
 // Stylesheet parser
 // ---------------------------------------------------------------------------
 
+/// Maximum number of CSS rules to prevent OOM from huge stylesheets.
+const MAX_CSS_RULES: usize = 100_000;
+/// Maximum total bytes of CSS property values to prevent memory explosion.
+const MAX_CSS_MEMORY: usize = 128 * 1024 * 1024; // 128 MB
+
 pub fn parse_stylesheet(css: &str) -> Stylesheet {
     crate::debug_surf!("[css] parse_stylesheet: {} bytes", css.len());
     let mut p = Parser::new(css);
@@ -609,6 +614,7 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
     let mut keyframes = Vec::new();
     let mut imports = Vec::new();
     let mut font_faces = Vec::new();
+    let mut total_memory: usize = 0;
 
     loop {
         p.skip_whitespace();
@@ -770,6 +776,42 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
                 continue;
             }
 
+            // @layer — CSS Cascade Layers. Extract inner block and parse it.
+            if kw_lower == "layer" {
+                p.skip_whitespace();
+                while !p.eof() && p.peek() != b'{' && p.peek() != b';' {
+                    p.pos += 1;
+                }
+                if p.peek() == b';' {
+                    p.pos += 1;
+                    continue;
+                }
+                if p.peek() == b'{' {
+                    p.pos += 1;
+                    let start = p.pos;
+                    let mut depth = 1u32;
+                    while p.pos < p.input.len() && depth > 0 {
+                        match p.input[p.pos] {
+                            b'{' => depth += 1,
+                            b'}' => depth -= 1,
+                            _ => {}
+                        }
+                        if depth > 0 { p.pos += 1; }
+                    }
+                    let end = p.pos;
+                    if p.pos < p.input.len() { p.pos += 1; }
+                    let inner_css = String::from_utf8_lossy(&p.input[start..end]).into_owned();
+                    crate::debug_surf!("[css] @layer: parsing {} bytes inner CSS", inner_css.len());
+                    let inner = parse_stylesheet(&inner_css);
+                    crate::debug_surf!("[css] @layer: got {} rules, {} media", inner.rules.len(), inner.media_rules.len());
+                    rules.extend(inner.rules);
+                    media_rules.extend(inner.media_rules);
+                    keyframes.extend(inner.keyframes);
+                    font_faces.extend(inner.font_faces);
+                }
+                continue;
+            }
+
             // Skip other at-rules.
             loop {
                 p.skip_whitespace();
@@ -793,6 +835,12 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
         if p.peek() == b'}' {
             p.pos += 1;
             continue;
+        }
+
+        // Safety: stop parsing if we hit limits
+        if rules.len() >= MAX_CSS_RULES {
+            crate::debug_surf!("[css] RULE LIMIT REACHED: {} rules — stopping", rules.len());
+            break;
         }
 
         // Parse rule: selectors { declarations }
@@ -1324,35 +1372,76 @@ fn parse_supports_rule(p: &mut Parser) -> Option<SupportsResult> {
 /// Evaluate a simple @supports condition.
 /// Supports: `(property: value)`, `not (...)`, `(...) and (...)`, `(...) or (...)`.
 fn evaluate_supports_condition(cond: &str) -> bool {
+    evaluate_supports_depth(cond, 0)
+}
+
+fn evaluate_supports_depth(cond: &str, depth: u32) -> bool {
+    if depth > 10 { return false; } // prevent infinite recursion
     let cond = cond.trim();
+    if cond.is_empty() { return false; }
+
+    // Strip exactly one matching pair of outer parens if present
+    let cond = if cond.starts_with('(') && cond.ends_with(')') {
+        // Verify the closing ) matches the opening (
+        let mut d = 0i32;
+        let mut matches_outer = true;
+        for (i, ch) in cond.chars().enumerate() {
+            if ch == '(' { d += 1; }
+            else if ch == ')' { d -= 1; }
+            if d == 0 && i < cond.len() - 1 { matches_outer = false; break; }
+        }
+        if matches_outer { &cond[1..cond.len()-1] } else { cond }
+    } else { cond };
 
     // Handle `not (...)`
     if cond.starts_with("not ") || cond.starts_with("not(") {
-        let inner = cond[3..].trim().trim_start_matches('(').trim_end_matches(')');
-        return !evaluate_supports_condition(inner);
+        let rest = cond[3..].trim();
+        return !evaluate_supports_depth(rest, depth + 1);
     }
 
-    // Handle `(...) and (...)`
-    if cond.contains(") and (") {
-        return cond.split(") and (")
-            .all(|part| evaluate_supports_condition(part.trim_matches('(').trim_matches(')')));
+    // Handle `(...) and (...)` — split at top-level " and "
+    if let Some(pos) = find_top_level(cond, " and ") {
+        let left = &cond[..pos];
+        let right = &cond[pos + 5..];
+        return evaluate_supports_depth(left, depth + 1) && evaluate_supports_depth(right, depth + 1);
     }
 
-    // Handle `(...) or (...)`
-    if cond.contains(") or (") {
-        return cond.split(") or (")
-            .any(|part| evaluate_supports_condition(part.trim_matches('(').trim_matches(')')));
+    // Handle `(...) or (...)` — split at top-level " or "
+    if let Some(pos) = find_top_level(cond, " or ") {
+        let left = &cond[..pos];
+        let right = &cond[pos + 4..];
+        return evaluate_supports_depth(left, depth + 1) || evaluate_supports_depth(right, depth + 1);
     }
 
-    // Simple `(property: value)` — check if property is known.
-    let inner = cond.trim_matches('(').trim_matches(')').trim();
+    // Simple `property: value` — check if property is known.
+    let inner = cond.trim();
     if let Some(colon) = inner.find(':') {
-        let prop_name = inner[..colon].trim();
-        return parse_property(prop_name).is_some();
+        let prop_name = inner[..colon].trim().trim_start_matches('-').trim_start_matches("webkit-").trim_start_matches("moz-");
+        return parse_property(inner[..colon].trim()).is_some();
     }
 
     // Unknown condition — be conservative, assume supported.
     true
+}
+
+/// Find the position of `needle` at the top level of parentheses (depth 0).
+fn find_top_level(s: &str, needle: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let bytes = s.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && i + needle_bytes.len() <= bytes.len() {
+            if &bytes[i..i + needle_bytes.len()] == needle_bytes {
+                return Some(i);
+            }
+        }
+    }
+    None
 }
 
 fn parse_keyframes(p: &mut Parser) -> Option<KeyframeSet> {
@@ -1816,11 +1905,30 @@ fn parse_selector_list_in_parens(p: &mut Parser) -> Vec<SimpleSelector> {
             if p.peek() == b')' { p.pos += 1; }
             break;
         }
+        let before = p.pos;
         let sel = parse_simple_selector(p);
         selectors.push(sel);
         skip_spaces_only(p);
         if p.peek() == b',' {
             p.pos += 1;
+        }
+        // Safety: if parser didn't advance, skip one char to prevent infinite loop
+        if p.pos == before {
+            p.pos += 1;
+        }
+        // Safety: cap selector list size
+        if selectors.len() > 1000 {
+            // Skip to closing paren
+            let mut depth = 1i32;
+            while !p.eof() && depth > 0 {
+                match p.input[p.pos] {
+                    b'(' => depth += 1,
+                    b')' => depth -= 1,
+                    _ => {}
+                }
+                p.pos += 1;
+            }
+            break;
         }
     }
     selectors
