@@ -38,7 +38,7 @@ impl Vm {
         {
             let mut p = self.object_proto.borrow_mut();
             p.set_hidden(String::from("hasOwnProperty"), native_fn("hasOwnProperty", native_object::object_has_own_property));
-            // propertyIsEnumerable is available via __propertyIsEnumerable or direct property check
+            p.set_hidden(String::from("propertyIsEnumerable"), native_fn("propertyIsEnumerable", native_object::object_property_is_enumerable));
             p.set_hidden(String::from("isPrototypeOf"), native_fn("isPrototypeOf", native_object::object_is_prototype_of));
             p.set_hidden(String::from("toString"), native_fn("toString", native_object::object_to_string));
             p.set_hidden(String::from("valueOf"), native_fn("valueOf", native_object::object_value_of));
@@ -95,6 +95,8 @@ impl Vm {
         {
             let mut p = self.string_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
+            p.internal_tag = Some(String::from("__string__"));
+            p.primitive_value = Some(Box::new(JsValue::String(String::new())));
             p.set_hidden(String::from("charAt"), native_fn("charAt", native_string::string_char_at));
             p.set_hidden(String::from("charCodeAt"), native_fn("charCodeAt", native_string::string_char_code_at));
             p.set_hidden(String::from("codePointAt"), native_fn("codePointAt", native_string::string_code_point_at));
@@ -136,9 +138,12 @@ impl Vm {
         }
 
         // ── Number.prototype ──
+        // Per spec: Number.prototype is itself a Number object with [[NumberData]] = +0.
         {
             let mut p = self.number_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
+            p.internal_tag = Some(String::from("__number__"));
+            p.primitive_value = Some(Box::new(JsValue::Number(0.0)));
             p.set_hidden(String::from("toString"), native_fn("toString", native_number::number_to_string));
             p.set_hidden(String::from("valueOf"), native_fn("valueOf", native_number::number_value_of));
             p.set_hidden(String::from("toFixed"), native_fn("toFixed", native_number::number_to_fixed));

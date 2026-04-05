@@ -1088,10 +1088,24 @@ impl Compiler {
         if is_of {
             self.emit(Op::GetIterator);
         } else {
-            // For-in: get object keys as an array, then iterate
-            // We'll use a simple approach: push keys array + index counter
-            // For simplicity, emit GetIterator which the VM handles for both
+            // For-in: null/undefined → skip entirely (ES2023 §14.7.5.6 step 7a)
+            self.emit(Op::Dup);
+            self.emit(Op::LoadNull);
+            self.emit(Op::StrictEq);
+            let skip_null = self.emit(Op::JumpIfTrue(0));
+            self.emit(Op::Dup);
+            self.emit(Op::LoadUndefined);
+            self.emit(Op::StrictEq);
+            let skip_undef = self.emit(Op::JumpIfTrue(0));
             self.emit(Op::GetIterator);
+            let skip_over = self.emit(Op::Jump(0));
+            // Null/undefined path: pop value, push empty iterator
+            self.patch_jump(skip_null);
+            self.patch_jump(skip_undef);
+            self.emit(Op::Pop); // pop null/undefined
+            self.emit(Op::NewArray(0)); // empty "iterator"
+            self.emit(Op::GetIterator);
+            self.patch_jump(skip_over);
         }
 
         let loop_start = self.offset();

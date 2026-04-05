@@ -90,6 +90,34 @@ pub fn object_value_of(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     vm.current_this.clone()
 }
 
+/// `Object.prototype.propertyIsEnumerable(key)`
+pub fn object_property_is_enumerable(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let key = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    match &vm.current_this {
+        JsValue::Object(obj) => {
+            let o = obj.borrow();
+            if let Some(prop) = o.properties.get(&key) {
+                JsValue::Bool(prop.enumerable)
+            } else {
+                JsValue::Bool(false)
+            }
+        }
+        JsValue::Array(arr) => {
+            let a = arr.borrow();
+            if let Ok(idx) = key.parse::<usize>() {
+                JsValue::Bool(a.elements.contains_key(&idx))
+            } else if key == "length" {
+                JsValue::Bool(false) // length is not enumerable
+            } else if let Some(prop) = a.properties.get(&key) {
+                JsValue::Bool(prop.enumerable)
+            } else {
+                JsValue::Bool(false)
+            }
+        }
+        _ => JsValue::Bool(false),
+    }
+}
+
 pub fn object_keys_method(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     match &vm.current_this {
         JsValue::Object(obj) => {

@@ -124,6 +124,32 @@ fn this_array_like(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>
                         }
                     }
                 }
+                // Also check prototype chain for inherited accessor properties
+                // (e.g. Object.defineProperty(Array.prototype, "0", {get: ...}))
+                let mut proto_opt: Option<Rc<RefCell<JsObject>>> = Some(vm.array_proto.clone());
+                let mut depth = 0;
+                while let Some(proto) = proto_opt {
+                    depth += 1;
+                    if depth > 20 { break; }
+                    let p = proto.borrow();
+                    for (key, prop) in p.properties.iter() {
+                        if let Ok(idx) = key.parse::<usize>() {
+                            if idx < length
+                                && !entries.iter().any(|&(i, _)| i == idx)
+                                && !accessor_keys.iter().any(|&(i, _)| i == idx)
+                            {
+                                if prop.is_accessor() {
+                                    if let Some(ref g) = prop.getter {
+                                        accessor_keys.push((idx, Some(g.clone())));
+                                    }
+                                } else {
+                                    entries.push((idx, prop.value.clone()));
+                                }
+                            }
+                        }
+                    }
+                    proto_opt = p.prototype.clone();
+                }
             }
             // Invoke getters via VM (outside borrow)
             for (idx, getter) in accessor_keys {
