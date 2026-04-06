@@ -281,7 +281,7 @@ add_custom_command(
     --bootloader ${UEFI_BOOTLOADER_EFI}
     --kernel ${KERNEL_ELF}
     --output ${UEFI_DISK_IMAGE}
-    --image-size 64
+    --image-size 256
     --sysroot ${SYSROOT_DIR}
     ${MKIMAGE_RESET_FLAG}
   DEPENDS
