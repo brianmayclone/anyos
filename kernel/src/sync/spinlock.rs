@@ -138,8 +138,9 @@ impl<T> Spinlock<T> {
     /// Acquire the lock, spinning until it becomes available.
     ///
     /// Disables interrupts before spinning to prevent single-core deadlocks.
-    /// If spinning exceeds `SPIN_TIMEOUT` iterations, prints a diagnostic
-    /// via direct UART (lock-free) to identify the deadlocking lock and CPUs.
+    /// While spinning, periodically re-enables interrupts to allow the timer
+    /// to preempt the lock holder and to avoid KVM Pause Loop Exiting (PLE)
+    /// which would de-schedule the vCPU and massively increase latency.
     pub fn lock(&self) -> SpinlockGuard<T> {
         // Save interrupt state and disable interrupts BEFORE acquiring the lock.
         // This prevents deadlock: if we hold the lock and a timer/device IRQ fires,
@@ -147,56 +148,61 @@ impl<T> Spinlock<T> {
         let was_enabled = interrupts_enabled();
         cli();
 
+        // Fast path: try once without any backoff overhead
+        if self.lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            self.owner_cpu.store(cpu_id(), Ordering::Relaxed);
+            return SpinlockGuard { lock: self, irq_was_enabled: was_enabled };
+        }
+
+        // Slow path: spin with bounded backoff and periodic interrupt windows
         let mut spin_count: u32 = 0;
         let mut reported = false;
 
-        while self
-            .lock
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            // Exponential PAUSE backoff: 1, 2, 4, 8, 16, 32, 64 PAUSEs per check.
-            // Reduces cache-line bouncing under contention.
-            // NOTE: On KVM, high backoff can trigger Pause Loop Exiting (PLE)
-            // which deschedules the vCPU — this causes spurious SPIN TIMEOUT
-            // warnings at boot but is functionally harmless.
-            let mut backoff: u32 = 1;
-            while self.lock.load(Ordering::Relaxed) {
-                for _ in 0..backoff {
-                    core::hint::spin_loop();
-                }
-                spin_count += backoff;
-                if backoff < 64 {
-                    backoff <<= 1;
-                }
-
-                if !reported && spin_count >= SPIN_TIMEOUT {
-                    reported = true;
-                    let lock_addr = self as *const _ as u64;
-                    let me = cpu_id();
-                    let owner = self.owner_cpu.load(Ordering::Relaxed);
-                    diag_puts(b"\n!!! SPIN TIMEOUT lock=");
-                    diag_hex(lock_addr);
-                    diag_puts(b" cpu=");
-                    diag_dec(me);
-                    diag_puts(b" owner=");
-                    if owner == NO_OWNER {
-                        diag_puts(b"NONE");
-                    } else {
-                        diag_dec(owner);
-                        // Print the SCHEDULER lock phase of the owner CPU so we
-                        // know which function is holding the lock for 100-400 ms.
-                        let phase = crate::sched_diag::get(owner as usize);
-                        diag_puts(b" phase=");
-                        diag_puts(crate::sched_diag::name(phase));
+        loop {
+            // Brief spin phase with PAUSE (128 iterations, ~1-2 µs)
+            for _ in 0..128u32 {
+                if !self.lock.load(Ordering::Relaxed) {
+                    if self.lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                        self.owner_cpu.store(cpu_id(), Ordering::Relaxed);
+                        return SpinlockGuard { lock: self, irq_was_enabled: was_enabled };
                     }
-                    diag_putc(b'\n');
                 }
+                core::hint::spin_loop();
+            }
+            spin_count += 128;
+
+            // Re-enable interrupts briefly to allow the timer to fire and
+            // the lock holder (possibly on this CPU in the timer path) to
+            // release. This also avoids KVM PLE stalls that happen when
+            // a vCPU executes too many PAUSE instructions without progress.
+            if was_enabled {
+                sti();
+                // A few NOPs give the interrupt controller time to deliver.
+                for _ in 0..4u32 { core::hint::spin_loop(); }
+                cli();
+            }
+
+            if !reported && spin_count >= SPIN_TIMEOUT {
+                reported = true;
+                let lock_addr = self as *const _ as u64;
+                let me = cpu_id();
+                let owner = self.owner_cpu.load(Ordering::Relaxed);
+                diag_puts(b"\n!!! SPIN TIMEOUT lock=");
+                diag_hex(lock_addr);
+                diag_puts(b" cpu=");
+                diag_dec(me);
+                diag_puts(b" owner=");
+                if owner == NO_OWNER {
+                    diag_puts(b"NONE");
+                } else {
+                    diag_dec(owner);
+                    let phase = crate::sched_diag::get(owner as usize);
+                    diag_puts(b" phase=");
+                    diag_puts(crate::sched_diag::name(phase));
+                }
+                diag_putc(b'\n');
             }
         }
-
-        self.owner_cpu.store(cpu_id(), Ordering::Relaxed);
-        SpinlockGuard { lock: self, irq_was_enabled: was_enabled }
     }
 
     /// Try to acquire the lock without blocking.

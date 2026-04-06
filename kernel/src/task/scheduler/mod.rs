@@ -871,11 +871,18 @@ fn schedule_inner(from_timer: bool) {
             }
         }
     } else {
-        loop {
-            match SCHEDULER.try_lock() {
-                Some(s) => break s,
-                None => core::hint::spin_loop(),
+        // Voluntary schedule: bounded spin with interrupt windows.
+        // Re-enabling interrupts periodically lets the timer fire, which
+        // may cause the lock holder to release and avoids KVM PLE stalls.
+        'acquire: loop {
+            for _ in 0..128u32 {
+                if let Some(s) = SCHEDULER.try_lock() {
+                    break 'acquire s;
+                }
+                core::hint::spin_loop();
             }
+            // Brief interrupt window for timer/IRQ processing
+            unsafe { core::arch::asm!("sti; pause; cli", options(nomem, nostack)); }
         }
     };
 
