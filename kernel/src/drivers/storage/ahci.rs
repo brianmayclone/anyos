@@ -157,18 +157,24 @@ static AHCI_IRQ_FIRED: core::sync::atomic::AtomicBool = core::sync::atomic::Atom
 
 // ── MMIO Helpers ────────────────────────────────────
 
+/// AHCI MMIO region size: 0x100 generic registers + 32 ports * 0x80 each = 0x1100
+const AHCI_MMIO_SIZE: u64 = 0x1100;
+
 #[inline(always)]
 unsafe fn mmio_read32(base: u64, offset: u64) -> u32 {
+    debug_assert!(offset + 4 <= AHCI_MMIO_SIZE, "AHCI MMIO read out of bounds: offset={:#x}", offset);
     core::ptr::read_volatile((base + offset) as *const u32)
 }
 
 #[inline(always)]
 unsafe fn mmio_write32(base: u64, offset: u64, val: u32) {
+    debug_assert!(offset + 4 <= AHCI_MMIO_SIZE, "AHCI MMIO write out of bounds: offset={:#x}", offset);
     core::ptr::write_volatile((base + offset) as *mut u32, val);
 }
 
 #[inline(always)]
 fn port_base(port: u32) -> u64 {
+    debug_assert!(port < 32, "AHCI port number out of range: {}", port);
     0x100 + (port as u64) * 0x80
 }
 
@@ -1136,8 +1142,12 @@ pub fn init_and_register(pci: &PciDevice) {
         });
 
         // Issue IDENTIFY DEVICE (polled — scheduler not yet running)
+        let ahci_ref = match AHCI.as_ref() {
+            Some(a) => a,
+            None => return,
+        };
         let identify_ok = issue_command(
-            AHCI.as_ref().unwrap(),
+            ahci_ref,
             ATA_CMD_IDENTIFY,
             0,  // LBA = 0
             1,  // count = 1

@@ -137,18 +137,24 @@ const BOUNCE_PAGES: usize = BOUNCE_SIZE / 4096; // 32 pages
 
 // ── MMIO Helpers ────────────────────────────────────
 
+/// NVMe MMIO region size: 64 KiB covers registers + doorbells for up to ~500 queues.
+const NVME_MMIO_SIZE: u64 = 0x10000;
+
 #[inline]
 unsafe fn mmio_read32(base: u64, offset: u64) -> u32 {
+    debug_assert!(offset + 4 <= NVME_MMIO_SIZE, "NVMe MMIO read32 out of bounds: offset={:#x}", offset);
     core::ptr::read_volatile((base + offset) as *const u32)
 }
 
 #[inline]
 unsafe fn mmio_write32(base: u64, offset: u64, val: u32) {
+    debug_assert!(offset + 4 <= NVME_MMIO_SIZE, "NVMe MMIO write32 out of bounds: offset={:#x}", offset);
     core::ptr::write_volatile((base + offset) as *mut u32, val);
 }
 
 #[inline]
 unsafe fn mmio_read64(base: u64, offset: u64) -> u64 {
+    debug_assert!(offset + 8 <= NVME_MMIO_SIZE, "NVMe MMIO read64 out of bounds: offset={:#x}", offset);
     // NVMe spec says 64-bit registers can be read as two 32-bit reads
     let lo = core::ptr::read_volatile((base + offset) as *const u32) as u64;
     let hi = core::ptr::read_volatile((base + offset + 4) as *const u32) as u64;
@@ -157,6 +163,7 @@ unsafe fn mmio_read64(base: u64, offset: u64) -> u64 {
 
 #[inline]
 unsafe fn mmio_write64(base: u64, offset: u64, val: u64) {
+    debug_assert!(offset + 8 <= NVME_MMIO_SIZE, "NVMe MMIO write64 out of bounds: offset={:#x}", offset);
     core::ptr::write_volatile((base + offset) as *mut u32, val as u32);
     core::ptr::write_volatile((base + offset + 4) as *mut u32, (val >> 32) as u32);
 }
@@ -249,7 +256,10 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
         return false;
     }
 
-    let ctrl = unsafe { CTRL.as_mut().unwrap() };
+    let ctrl = match unsafe { CTRL.as_mut() } {
+        Some(c) => c,
+        None => return false,
+    };
     let mut offset = 0usize;
     let mut remaining = count;
     let mut cur_lba = lba as u64;
@@ -299,7 +309,10 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
         return false;
     }
 
-    let ctrl = unsafe { CTRL.as_mut().unwrap() };
+    let ctrl = match unsafe { CTRL.as_mut() } {
+        Some(c) => c,
+        None => return false,
+    };
     let mut offset = 0usize;
     let mut remaining = count;
     let mut cur_lba = lba as u64;

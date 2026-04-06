@@ -46,7 +46,7 @@ impl Vm {
     }
 
     /// Maximum call depth to prevent stack overflow (Rust stack).
-    const MAX_CALL_DEPTH: usize = 200;
+    const MAX_CALL_DEPTH: usize = 100;
 
     /// Invoke a function value with the given arguments and this binding.
     pub(super) fn invoke_function(&mut self, callee: &JsValue, args: &[JsValue], this_val: JsValue) {
@@ -180,10 +180,16 @@ impl Vm {
                     if fi > 0 { stack.push_str(" <- "); }
                     stack.push_str(fname);
                 }
-                self.log_engine(&alloc::format!(
-                    "[libjs] WARN: attempted to call non-function{} [{}]", context, stack
-                ));
-                self.stack.push(JsValue::Undefined);
+                // ES2023 §7.3.13: TypeError when calling a non-callable value.
+                let desc = if context.is_empty() {
+                    alloc::format!("{} is not a function", callee.type_of())
+                } else {
+                    alloc::format!("{} is not a function", context.trim())
+                };
+                let exc = self.make_type_error(&desc);
+                if !self.handle_exception(exc) {
+                    self.stack.push(JsValue::Undefined);
+                }
             }
         }
     }
@@ -294,8 +300,10 @@ impl Vm {
                 }
             }
             _ => {
-                self.log_engine("[libjs] WARN: new called on non-function");
-                self.stack.push(JsValue::Undefined);
+                let exc = self.make_type_error("is not a constructor");
+                if !self.handle_exception(exc) {
+                    self.stack.push(JsValue::Undefined);
+                }
             }
         }
     }
@@ -303,12 +311,23 @@ impl Vm {
     /// Call a JS function value directly from Rust.
     /// Handles both native and bytecode functions, including re-entrant execution.
     pub fn call_value(&mut self, callee: &JsValue, args: &[JsValue], this_val: JsValue) -> JsValue {
+        // Guard against Rust-level stack overflow from re-entrant run() calls.
+        // Each run() frame is large (~100KB on the Rust stack), so we limit depth.
+        self.call_value_depth += 1;
+        if self.call_value_depth > 50 {
+            self.call_value_depth -= 1;
+            let err = self.make_range_error("Maximum call stack size exceeded (re-entrant)");
+            self.last_exception = Some(err);
+            return JsValue::Undefined;
+        }
+
         let saved_depth = self.frames.len();
         let stack_before = self.stack.len();
         self.invoke_function(callee, args, this_val);
 
         // Native function: result already on stack, no new frame pushed.
         if self.frames.len() <= saved_depth {
+            self.call_value_depth -= 1;
             return self.stack.pop().unwrap_or(JsValue::Undefined);
         }
 
@@ -317,6 +336,7 @@ impl Vm {
         self.run_target_depth = saved_depth;
         let result = self.run();
         self.run_target_depth = prev_target;
+        self.call_value_depth -= 1;
         // Op::Return pushes the return value onto the stack AND returns it
         // from run(). Restore stack to pre-call depth to avoid pollution.
         // Use truncate (not pop) because run() might exit without pushing

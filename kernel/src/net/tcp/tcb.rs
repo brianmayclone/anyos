@@ -261,13 +261,15 @@ pub(crate) fn parse_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) -> Option<TcpSeg
                     if i + 4 <= opts.len() && opts[i + 1] == 4 {
                         peer_mss = Some(((opts[i + 2] as u16) << 8) | opts[i + 3] as u16);
                     }
-                    i += if i + 1 < opts.len() { opts[i + 1] as usize } else { 2 };
+                    let skip = if i + 1 < opts.len() && opts[i + 1] >= 2 { opts[i + 1] as usize } else { break };
+                    i += skip;
                 }
                 3 => {             // Window Scale (Kind=3, Len=3)
                     if i + 3 <= opts.len() && opts[i + 1] == 3 {
                         wscale = Some(opts[i + 2].min(14)); // RFC 7323: max shift is 14
                     }
-                    i += if i + 1 < opts.len() { opts[i + 1] as usize } else { 2 };
+                    let skip = if i + 1 < opts.len() && opts[i + 1] >= 2 { opts[i + 1] as usize } else { break };
+                    i += skip;
                 }
                 _ => {             // Unknown option — skip using length field
                     if i + 1 < opts.len() && opts[i + 1] >= 2 {

@@ -45,8 +45,14 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
     // Send SYN (outside lock!)
     let iss = {
         let conns = TCP_CONNECTIONS.lock();
-        let table = conns.as_ref().unwrap();
-        table[slot_id].as_ref().unwrap().snd_iss
+        let table = match conns.as_ref() {
+            Some(t) => t,
+            None => return u32::MAX,
+        };
+        match table[slot_id].as_ref() {
+            Some(tcb) => tcb.snd_iss,
+            None => return u32::MAX,
+        }
     };
 
     crate::serial_verbose_println!("TCP: connecting to {}:{} from port {}", remote_ip, remote_port, local_port);
@@ -62,7 +68,10 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
     loop {
         {
             let mut conns = TCP_CONNECTIONS.lock();
-            let table = conns.as_mut().unwrap();
+            let table = match conns.as_mut() {
+                Some(t) => t,
+                None => return u32::MAX,
+            };
             if let Some(tcb) = table[slot_id].as_mut() {
                 match tcb.state {
                     TcpState::Established => {
@@ -189,7 +198,10 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
                 }).unwrap_or(false);
 
                 if ready {
-                    let tcb = table[i].as_mut().unwrap();
+                    let tcb = match table[i].as_mut() {
+                        Some(t) => t,
+                        None => continue,
+                    };
                     tcb.accepted = true;
                     tcb.parent_listener = None;
                     tcb.owner_tid = crate::task::scheduler::current_tid();
@@ -362,7 +374,10 @@ pub fn close(socket_id: u32) -> u32 {
             // Force close with RST
             let rst_info = {
                 let mut conns = TCP_CONNECTIONS.lock();
-                let table = conns.as_mut().unwrap();
+                let table = match conns.as_mut() {
+                    Some(t) => t,
+                    None => return 0,
+                };
                 let info = table[id].as_ref().map(|tcb| {
                     (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
                      tcb.snd_nxt, tcb.rcv_nxt)

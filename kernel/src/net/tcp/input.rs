@@ -143,22 +143,23 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                         }
 
                         if let Some(ns) = new_slot {
-                            let tcb = table[ns].as_ref().unwrap();
-                            let (lip, lp, rip, rp) = (tcb.local_ip, tcb.local_port,
-                                tcb.remote_ip, tcb.remote_port);
-                            let iss = tcb.snd_iss;
-                            let rcv_nxt = tcb.rcv_nxt;
-                            let use_wscale = tcb.rcv_wnd_shift > 0;
-                            crate::serial_verbose_println!("TCP: SYN on listener {} -> new conn slot {} from {}:{} (wscale={})",
-                                lid, ns, seg.src_ip, seg.src_port,
-                                if use_wscale { tcb.snd_wnd_shift } else { 0 });
-                            drop(conns);
-                            if use_wscale {
-                                send_syn_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK);
-                            } else {
-                                send_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK, 65535, &[]);
+                            if let Some(tcb) = table[ns].as_ref() {
+                                let (lip, lp, rip, rp) = (tcb.local_ip, tcb.local_port,
+                                    tcb.remote_ip, tcb.remote_port);
+                                let iss = tcb.snd_iss;
+                                let rcv_nxt = tcb.rcv_nxt;
+                                let use_wscale = tcb.rcv_wnd_shift > 0;
+                                crate::serial_verbose_println!("TCP: SYN on listener {} -> new conn slot {} from {}:{} (wscale={})",
+                                    lid, ns, seg.src_ip, seg.src_port,
+                                    if use_wscale { tcb.snd_wnd_shift } else { 0 });
+                                drop(conns);
+                                if use_wscale {
+                                    send_syn_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK);
+                                } else {
+                                    send_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK, 65535, &[]);
+                                }
+                                return;
                             }
-                            return;
                         }
                         return; // No free slots
                     }
@@ -173,11 +174,12 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
         // RST handling — always process
         if seg.flags & RST != 0 {
             crate::serial_verbose_println!("TCP: RST received on socket {}", idx);
-            let tcb = table[idx].as_mut().unwrap();
-            tcb.reset_received = true;
-            tcb.state = TcpState::Closed;
-            wake_tid = tcb.waiting_tid;
-            tcb.waiting_tid = 0;
+            if let Some(tcb) = table[idx].as_mut() {
+                tcb.reset_received = true;
+                tcb.state = TcpState::Closed;
+                wake_tid = tcb.waiting_tid;
+                tcb.waiting_tid = 0;
+            }
             drop(conns);
             if wake_tid != 0 {
                 crate::task::scheduler::try_wake_thread(wake_tid);
@@ -187,7 +189,10 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
 
         // Read state before borrowing tcb mutably (needed for SynReceived
         // which also needs to access the listener in the table).
-        let state = table[idx].as_ref().unwrap().state;
+        let state = match table[idx].as_ref() {
+            Some(tcb) => tcb.state,
+            None => { drop(conns); return; }
+        };
         let now = crate::arch::hal::timer_current_ticks();
 
         // SynReceived needs access to both tcb AND the parent listener in table,
@@ -195,7 +200,10 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
         let match_result = if state == TcpState::SynReceived {
             handle_syn_received(idx, &seg, table, &mut wake_listener_tid)
         } else {
-            let tcb = table[idx].as_mut().unwrap();
+            let tcb = match table[idx].as_mut() {
+                Some(t) => t,
+                None => { drop(conns); return; }
+            };
             match tcb.state {
                 TcpState::SynSent => {
                     handle_syn_sent(tcb, &seg)
@@ -282,10 +290,11 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
         };
 
         // Collect waiting_tid — wake after lock drop
-        let tcb = table[idx].as_mut().unwrap();
-        if tcb.waiting_tid != 0 {
-            wake_tid = tcb.waiting_tid;
-            tcb.waiting_tid = 0;
+        if let Some(tcb) = table[idx].as_mut() {
+            if tcb.waiting_tid != 0 {
+                wake_tid = tcb.waiting_tid;
+                tcb.waiting_tid = 0;
+            }
         }
 
         match_result
@@ -457,7 +466,10 @@ fn handle_syn_received(
     table: &mut [Option<Tcb>],
     wake_listener_tid: &mut u32,
 ) -> Option<DeferredSend> {
-    let tcb = table[idx].as_mut().unwrap();
+    let tcb = match table[idx].as_mut() {
+        Some(t) => t,
+        None => return None,
+    };
 
     if seg.flags & ACK != 0 {
         if seg.ack == tcb.snd_nxt {

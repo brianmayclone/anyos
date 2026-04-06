@@ -27,6 +27,9 @@ impl BlockDevice {
     /// Read sectors at a partition-relative LBA into `buf`.
     ///
     /// Returns `true` on success. Fails if the read would exceed bounds.
+    /// Maximum number of retries on transient I/O errors before giving up.
+    const MAX_IO_RETRIES: u32 = 3;
+
     pub fn read_sectors(&self, relative_lba: u32, count: u32, buf: &mut [u8]) -> bool {
         if self.size_sectors > 0 && (relative_lba as u64 + count as u64) > self.size_sectors {
             serial_verbose_println!(
@@ -46,7 +49,20 @@ impl BlockDevice {
                 return f(did, abs_lba, count, buf);
             }
         }
-        super::read_sectors(abs_lba, count, buf)
+        for attempt in 0..Self::MAX_IO_RETRIES {
+            if super::read_sectors(abs_lba, count, buf) {
+                return true;
+            }
+            serial_verbose_println!(
+                "[blockdev] read failed: dev={} lba={} count={} attempt={}/{}",
+                self.id, abs_lba, count, attempt + 1, Self::MAX_IO_RETRIES
+            );
+        }
+        crate::serial_println!(
+            "[blockdev] ERROR: read permanently failed: dev={} lba={} count={}",
+            self.id, abs_lba, count
+        );
+        false
     }
 
     /// Write sectors at a partition-relative LBA from `buf`.
@@ -71,7 +87,20 @@ impl BlockDevice {
                 return f(did, abs_lba, count, buf);
             }
         }
-        super::write_sectors(abs_lba, count, buf)
+        for attempt in 0..Self::MAX_IO_RETRIES {
+            if super::write_sectors(abs_lba, count, buf) {
+                return true;
+            }
+            serial_verbose_println!(
+                "[blockdev] write failed: dev={} lba={} count={} attempt={}/{}",
+                self.id, abs_lba, count, attempt + 1, Self::MAX_IO_RETRIES
+            );
+        }
+        crate::serial_println!(
+            "[blockdev] ERROR: write permanently failed: dev={} lba={} count={}",
+            self.id, abs_lba, count
+        );
+        false
     }
 
     /// Read a single 512-byte sector at a partition-relative LBA.

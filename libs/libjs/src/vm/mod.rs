@@ -108,6 +108,8 @@ pub struct Vm {
     pub pending_generator_yield: Option<(JsValue, usize, Vec<Rc<RefCell<JsValue>>>, Vec<JsValue>)>,
     /// Event loop for microtask queue and timers.
     pub event_loop: event_loop::EventLoop,
+    /// Tracks Rust-level call_value() re-entrancy depth (independent of JS frames).
+    pub call_value_depth: usize,
 }
 
 impl Vm {
@@ -138,6 +140,7 @@ impl Vm {
             last_exception: None,
             pending_generator_yield: None,
             event_loop: event_loop::EventLoop::new(),
+            call_value_depth: 0,
         };
         vm.init_prototypes();
         vm.init_globals();
@@ -696,6 +699,30 @@ impl Vm {
                     let key = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let key_str = key.to_js_string();
+                    // Strict mode: TypeError when setting property on primitive.
+                    if self.frames[frame_idx].chunk.strict {
+                        if matches!(obj, JsValue::Undefined | JsValue::Null) {
+                            let msg = alloc::format!("Cannot set properties of {} (setting '{}')",
+                                if matches!(obj, JsValue::Null) { "null" } else { "undefined" }, key_str);
+                            let exc = self.make_type_error(&msg);
+                            self.stack.push(val);
+                            if !self.handle_exception(exc) { return JsValue::Undefined; }
+                            continue;
+                        }
+                        if let JsValue::Object(ref o) = obj {
+                            let is_non_writable = {
+                                let ob = o.borrow();
+                                ob.properties.get(&key_str).map(|p| !p.writable && !p.is_accessor()).unwrap_or(false)
+                            };
+                            if is_non_writable {
+                                let msg = alloc::format!("Cannot assign to read only property '{}'", key_str);
+                                let exc = self.make_type_error(&msg);
+                                self.stack.push(val);
+                                if !self.handle_exception(exc) { return JsValue::Undefined; }
+                                continue;
+                            }
+                        }
+                    }
                     // `__proto__` assignment updates the actual prototype chain.
                     if key_str == "__proto__" {
                         if let JsValue::Object(obj_rc) = &obj {
@@ -748,6 +775,15 @@ impl Vm {
                     let name = self.get_const_string(frame_idx, name_idx);
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    // TypeError: setting property on null/undefined.
+                    if matches!(obj, JsValue::Null | JsValue::Undefined) {
+                        let msg = alloc::format!("Cannot set properties of {} (setting '{}')",
+                            if matches!(obj, JsValue::Null) { "null" } else { "undefined" }, name);
+                        let exc = self.make_type_error(&msg);
+                        self.stack.push(val);
+                        if !self.handle_exception(exc) { return JsValue::Undefined; }
+                        continue;
+                    }
                     // `__proto__` assignment updates the actual prototype chain.
                     if name == "__proto__" {
                         if let JsValue::Object(obj_rc) = &obj {
@@ -830,18 +866,41 @@ impl Vm {
                 Op::Delete => {
                     let key = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    let success = obj.delete_property(&key.to_js_string());
+                    let key_str = key.to_js_string();
+                    let success = obj.delete_property(&key_str);
+                    // Strict mode: TypeError when deleting non-configurable property.
+                    if !success && self.frames[frame_idx].chunk.strict {
+                        let msg = alloc::format!("Cannot delete property '{}' of {}", key_str,
+                            if matches!(obj, JsValue::Object(_)) { "#<Object>" } else { "value" });
+                        let exc = self.make_type_error(&msg);
+                        self.stack.push(JsValue::Bool(false));
+                        if !self.handle_exception(exc) { return JsValue::Undefined; }
+                        continue;
+                    }
                     self.stack.push(JsValue::Bool(success));
                 }
                 Op::InstanceOf => {
                     let right = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let left = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    // ES2023 §13.10.2: TypeError if right side is not callable.
+                    if !matches!(right, JsValue::Function(_)) {
+                        let exc = self.make_type_error("Right-hand side of instanceof is not callable");
+                        if !self.handle_exception(exc) { return JsValue::Undefined; }
+                        continue;
+                    }
                     let result = self.instance_of(&left, &right);
                     self.stack.push(JsValue::Bool(result));
                 }
                 Op::In => {
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let key = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    // ES2023 §13.10.2: TypeError if right side is not an object.
+                    if !matches!(obj, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) {
+                        let msg = alloc::format!("Cannot use 'in' operator to search for '{}' in {}", key.to_js_string(), obj.type_of());
+                        let exc = self.make_type_error(&msg);
+                        if !self.handle_exception(exc) { return JsValue::Undefined; }
+                        continue;
+                    }
                     let key_str = key.to_js_string();
                     let result = match &obj {
                         JsValue::Object(o) => o.borrow().has(&key_str),

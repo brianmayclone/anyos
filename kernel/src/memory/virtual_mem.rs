@@ -257,16 +257,19 @@ pub fn init(boot_info: &BootInfo) {
         // Each 2 MiB range needs: PDPT entry, PD entry, PT with 512 entries
 
         // Ensure PDPT exists for PML4[0]
-        let pdpt_phys = ensure_table_entry(pml4, 0, PAGE_PRESENT | PAGE_WRITABLE);
+        let pdpt_phys = ensure_table_entry(pml4, 0, PAGE_PRESENT | PAGE_WRITABLE)
+            .expect("OOM: failed to allocate PDPT during init");
         let pdpt = pdpt_phys as *mut u64;
 
         // PD index for this 2MB chunk
         let pdpt_idx = (base >> 30) as usize; // Should be 0 for < 1 GiB
-        let pd_phys = ensure_table_entry(pdpt, pdpt_idx, PAGE_PRESENT | PAGE_WRITABLE);
+        let pd_phys = ensure_table_entry(pdpt, pdpt_idx, PAGE_PRESENT | PAGE_WRITABLE)
+            .expect("OOM: failed to allocate PD during init");
         let pd = pd_phys as *mut u64;
 
         let pd_idx = ((base >> 21) & 0x1FF) as usize;
-        let pt_phys = ensure_table_entry(pd, pd_idx, PAGE_PRESENT | PAGE_WRITABLE);
+        let pt_phys = ensure_table_entry(pd, pd_idx, PAGE_PRESENT | PAGE_WRITABLE)
+            .expect("OOM: failed to allocate PT during init");
         let pt = pt_phys as *mut u64;
 
         // Fill PT with 512 4K page entries
@@ -283,11 +286,13 @@ pub fn init(boot_info: &BootInfo) {
     // (0xFFFFFFFF80000000: PML4 idx = 511, PDPT idx = 510, PD idx = 0)
     {
         // Ensure PDPT for PML4[511]
-        let pdpt_phys = ensure_table_entry(pml4, 511, PAGE_PRESENT | PAGE_WRITABLE);
+        let pdpt_phys = ensure_table_entry(pml4, 511, PAGE_PRESENT | PAGE_WRITABLE)
+            .expect("OOM: failed to allocate kernel PDPT during init");
         let pdpt = pdpt_phys as *mut u64;
 
         // Ensure PD for PDPT[510]
-        let pd_phys = ensure_table_entry(pdpt, 510, PAGE_PRESENT | PAGE_WRITABLE);
+        let pd_phys = ensure_table_entry(pdpt, 510, PAGE_PRESENT | PAGE_WRITABLE)
+            .expect("OOM: failed to allocate kernel PD during init");
         let pd = pd_phys as *mut u64;
 
         // Map 16 MiB of kernel (8 PD entries, each covering 2 MiB via a page table)
@@ -326,11 +331,14 @@ pub fn init(boot_info: &BootInfo) {
         while addr < fb_end {
             let virt = VirtAddr::new(addr);
             // Ensure all 4 levels exist
-            let pdpt_phys = ensure_table_entry(pml4, virt.pml4_index(), PAGE_PRESENT | PAGE_WRITABLE);
+            let pdpt_phys = ensure_table_entry(pml4, virt.pml4_index(), PAGE_PRESENT | PAGE_WRITABLE)
+                .expect("OOM: failed to allocate FB PDPT during init");
             let pdpt = pdpt_phys as *mut u64;
-            let pd_phys = ensure_table_entry(pdpt, virt.pdpt_index(), PAGE_PRESENT | PAGE_WRITABLE);
+            let pd_phys = ensure_table_entry(pdpt, virt.pdpt_index(), PAGE_PRESENT | PAGE_WRITABLE)
+                .expect("OOM: failed to allocate FB PD during init");
             let pd = pd_phys as *mut u64;
-            let pt_phys = ensure_table_entry(pd, virt.pd_index(), PAGE_PRESENT | PAGE_WRITABLE);
+            let pt_phys = ensure_table_entry(pd, virt.pd_index(), PAGE_PRESENT | PAGE_WRITABLE)
+                .expect("OOM: failed to allocate FB PT during init");
             let pt = pt_phys as *mut u64;
 
             unsafe {
@@ -374,15 +382,15 @@ pub fn init(boot_info: &BootInfo) {
 
 /// Ensure a page table entry at `index` in `table` exists.
 /// If not present, allocates a new frame, zeros it, and installs it.
-/// Returns the physical address of the child table.
-fn ensure_table_entry(table: *mut u64, index: usize, flags: u64) -> u64 {
+/// Returns the physical address of the child table, or None on OOM.
+fn ensure_table_entry(table: *mut u64, index: usize, flags: u64) -> Option<u64> {
     unsafe {
         let entry = table.add(index).read_volatile();
         if entry & PAGE_PRESENT != 0 {
-            return entry & ADDR_MASK;
+            return Some(entry & ADDR_MASK);
         }
 
-        let new_frame = physical::alloc_frame().expect("Failed to allocate page table frame");
+        let new_frame = physical::alloc_frame()?;
         let new_addr = new_frame.as_u64();
 
         // Zero the new table
@@ -392,14 +400,15 @@ fn ensure_table_entry(table: *mut u64, index: usize, flags: u64) -> u64 {
         }
 
         table.add(index).write_volatile(new_addr | flags);
-        new_addr
+        Some(new_addr)
     }
 }
 
 /// Map a single 4K page: virtual -> physical.
 ///
 /// Uses recursive mapping via PML4[510] to access page table structures.
-pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) {
+/// Returns false if a page table frame could not be allocated (OOM).
+pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
     let pml4_ptr = RECURSIVE_PML4_BASE as *mut u64;
     let pml4i = virt.pml4_index();
     let pdpti = virt.pdpt_index();
@@ -410,7 +419,10 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) {
         // Ensure PDPT exists
         let pml4e = pml4_ptr.add(pml4i).read_volatile();
         if pml4e & PAGE_PRESENT == 0 {
-            let new_frame = physical::alloc_frame().expect("Failed to allocate PDPT");
+            let new_frame = match physical::alloc_frame() {
+                Some(f) => f,
+                None => return false,
+            };
             pml4_ptr.add(pml4i).write_volatile(new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER));
             // Zero the new PDPT via recursive mapping
             let pdpt_base = recursive_pdpt_base(virt) as *mut u8;
@@ -426,7 +438,10 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) {
         let pdpt_ptr = recursive_pdpt_base(virt) as *mut u64;
         let pdpte = pdpt_ptr.add(pdpti).read_volatile();
         if pdpte & PAGE_PRESENT == 0 {
-            let new_frame = physical::alloc_frame().expect("Failed to allocate PD");
+            let new_frame = match physical::alloc_frame() {
+                Some(f) => f,
+                None => return false,
+            };
             pdpt_ptr.add(pdpti).write_volatile(new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER));
             let pd_base = recursive_pd_base(virt) as *mut u8;
             asm!("invlpg [{}]", in(reg) pd_base, options(nostack, preserves_flags));
@@ -440,7 +455,10 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) {
         let pd_ptr = recursive_pd_base(virt) as *mut u64;
         let pde = pd_ptr.add(pdi).read_volatile();
         if pde & PAGE_PRESENT == 0 {
-            let new_frame = physical::alloc_frame().expect("Failed to allocate PT");
+            let new_frame = match physical::alloc_frame() {
+                Some(f) => f,
+                None => return false,
+            };
             pd_ptr.add(pdi).write_volatile(new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER));
             let pt_base = recursive_pt_base(virt) as *mut u8;
             asm!("invlpg [{}]", in(reg) pt_base, options(nostack, preserves_flags));
@@ -457,6 +475,7 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) {
         // Invalidate TLB for the mapped page
         asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
     }
+    true
 }
 
 /// Unmap a single 4K page.

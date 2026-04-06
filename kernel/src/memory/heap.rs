@@ -604,9 +604,27 @@ unsafe fn grow_heap_exact(growth: usize) -> bool {
 
     let base = HEAP_START as usize + old_committed;
 
+    // Pre-map pages for the new heap region to avoid demand page faults.
+    // Previously we relied on ISR 14 demand paging, but if the page fault handler
+    // fails (OOM), the write below would cause a double/triple fault.
+    #[cfg(target_arch = "x86_64")]
+    {
+        for offset in (0..growth).step_by(FRAME_SIZE) {
+            let va = (base + offset) as u64;
+            let page_va = crate::memory::address::VirtAddr::new(va & !0xFFF);
+            if !virtual_mem::is_page_mapped(page_va) {
+                let frame = match physical::alloc_frame() {
+                    Some(f) => f,
+                    None => return false,
+                };
+                virtual_mem::map_page(page_va, frame, 0x03);
+                // Zero the page immediately
+                core::ptr::write_bytes(va as *mut u8, 0, FRAME_SIZE);
+            }
+        }
+    }
+
     // Insert the new region as a free block, inserted into the sorted free list.
-    // Writing to `base` will trigger a demand page fault if the page isn't mapped yet —
-    // the page fault handler (ISR 14) allocates a frame and maps it transparently.
     let new_block = base as *mut FreeBlock;
     (*new_block).size = growth;
 

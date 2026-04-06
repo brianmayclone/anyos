@@ -104,7 +104,10 @@ pub fn check_retransmissions() {
         }
 
         if should_syn_retransmit {
-            let tcb = table[i].as_mut().unwrap();
+            let tcb = match table[i].as_mut() {
+                Some(t) => t,
+                None => continue,
+            };
             tcb.retransmit_count += 1;
             TCP_RETRANSMITS.fetch_add(1, Ordering::Relaxed);
             tcb.last_send_tick = now;
@@ -130,7 +133,10 @@ pub fn check_retransmissions() {
         }
 
         if should_retransmit {
-            let tcb = table[i].as_mut().unwrap();
+            let tcb = match table[i].as_mut() {
+                Some(t) => t,
+                None => continue,
+            };
             tcb.retransmit_count += 1;
             TCP_RETRANSMITS.fetch_add(1, Ordering::Relaxed);
             tcb.last_send_tick = now;
@@ -185,7 +191,10 @@ pub fn check_fin_retransmissions() {
         };
 
         if should_retransmit_fin {
-            let tcb = table[i].as_mut().unwrap();
+            let tcb = match table[i].as_mut() {
+                Some(t) => t,
+                None => continue,
+            };
             tcb.retransmit_count += 1;
             TCP_RETRANSMITS.fetch_add(1, Ordering::Relaxed);
             tcb.last_send_tick = now;

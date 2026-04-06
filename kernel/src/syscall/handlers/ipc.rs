@@ -121,7 +121,7 @@ pub fn sys_evt_chan_subscribe(chan_id: u32, filter: u32) -> u32 {
 
 /// Emit to module channel. ebx=chan_id, ecx=event_ptr (20 bytes). Returns 0.
 pub fn sys_evt_chan_emit(chan_id: u32, event_ptr: u32) -> u32 {
-    if event_ptr == 0 { return u32::MAX; }
+    if event_ptr == 0 || !is_valid_user_ptr(event_ptr as u64, 20) { return u32::MAX; }
     let words = unsafe { core::slice::from_raw_parts(event_ptr as *const u32, 5) };
     let evt = EventData { words: [words[0], words[1], words[2], words[3], words[4]] };
     event_bus::channel_emit(chan_id, evt);

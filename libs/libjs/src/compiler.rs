@@ -651,7 +651,10 @@ impl Compiler {
                     self.emit(Op::LoadUndefined);
                 }
                 // Inline any pending finally blocks before returning (innermost first).
+                // Temporarily clear pending_finallies to prevent infinite recursion
+                // when the finally block itself contains a `return` statement.
                 let finallies = self.scope().pending_finallies.clone();
+                self.scope_mut().pending_finallies.clear();
                 for fin in finallies.iter().rev() {
                     for s in fin {
                         self.compile_stmt(s);
@@ -2822,7 +2825,8 @@ impl Compiler {
                 self.emit(Op::Pop); // pop dup'd object, leave RHS as result
             }
             _ => {
-                self.compile_expr(right);
+                // ES2023 §13.15.1: Invalid assignment target — emit SyntaxError.
+                self.emit_throw_syntax_error("Invalid left-hand side in assignment");
             }
         }
     }

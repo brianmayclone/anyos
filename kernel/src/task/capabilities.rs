@@ -111,8 +111,30 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_GETUSERNAME
         | syscall::SYS_SET_IDENTITY
         | syscall::SYS_GET_CAPABILITIES
-        // Filesystem — always allowed (every app needs file access)
-        | syscall::SYS_OPEN
+        // Shared memory — always allowed (GUI apps need SHM for window surfaces,
+        // per-process size limits enforced in the SHM subsystem)
+        | syscall::SYS_SHM_CREATE
+        | syscall::SYS_SHM_MAP
+        | syscall::SYS_SHM_UNMAP
+        | syscall::SYS_SHM_DESTROY
+        // Crash info — always allowed
+        | syscall::SYS_GET_CRASH_INFO
+        // Uptime (TSC-based ms) — always allowed
+        | syscall::SYS_UPTIME_MS
+        // Display queries (read-only) — always allowed
+        | syscall::SYS_SCREEN_SIZE
+        | syscall::SYS_GPU_INFO
+        | syscall::SYS_GPU_HAS_ACCEL
+        | syscall::SYS_GPU_HAS_HW_CURSOR
+        // GPU 3D acceleration — always allowed (contexts/surfaces are GPU-isolated)
+        | syscall::SYS_GPU_3D_SUBMIT
+        | syscall::SYS_GPU_3D_QUERY
+        | syscall::SYS_GPU_3D_SYNC
+        | syscall::SYS_GPU_3D_SURFACE_DMA
+        | syscall::SYS_GPU_3D_SURFACE_DMA_READ => 0,
+
+        // Filesystem — requires CAP_FILESYSTEM (included in CAP_DEFAULT for CLI programs)
+        syscall::SYS_OPEN
         | syscall::SYS_READ
         | syscall::SYS_WRITE
         | syscall::SYS_CLOSE
@@ -135,27 +157,7 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_CHMOD
         | syscall::SYS_CHOWN
         | syscall::SYS_RENAME
-        | syscall::SYS_FTRUNCATE
-        // Shared memory — always allowed (GUI apps need SHM for window surfaces)
-        | syscall::SYS_SHM_CREATE
-        | syscall::SYS_SHM_MAP
-        | syscall::SYS_SHM_UNMAP
-        | syscall::SYS_SHM_DESTROY
-        // Crash info — always allowed
-        | syscall::SYS_GET_CRASH_INFO
-        // Uptime (TSC-based ms) — always allowed
-        | syscall::SYS_UPTIME_MS
-        // Display queries (read-only) — always allowed
-        | syscall::SYS_SCREEN_SIZE
-        | syscall::SYS_GPU_INFO
-        | syscall::SYS_GPU_HAS_ACCEL
-        | syscall::SYS_GPU_HAS_HW_CURSOR
-        // GPU 3D acceleration — always allowed (contexts/surfaces are GPU-isolated)
-        | syscall::SYS_GPU_3D_SUBMIT
-        | syscall::SYS_GPU_3D_QUERY
-        | syscall::SYS_GPU_3D_SYNC
-        | syscall::SYS_GPU_3D_SURFACE_DMA
-        | syscall::SYS_GPU_3D_SURFACE_DMA_READ => 0,
+        | syscall::SYS_FTRUNCATE => CAP_FILESYSTEM,
 
         // Networking
         syscall::SYS_NET_CONFIG

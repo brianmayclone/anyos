@@ -219,13 +219,17 @@ static mut SCRATCH_FPU: [AlignedFpuBuf; MAX_CPUS] = {
 // the SCHEDULER lock.  This avoids blocking `SCHEDULER.lock()` in IRQ context,
 // which can cause RSP corruption when the IRQ handler stalls on a contended lock.
 
-/// Up to 64 deferred-wake TIDs (0 = empty slot).
-/// 16 slots were still insufficient under heavy IRQ load with many concurrent
-/// devices (keyboard + mouse + network + timer + disk + multiple pipes).
-/// 64 slots provide headroom for worst-case interrupt storms.
-static DEFERRED_WAKE_TIDS: [AtomicU32; 64] = {
+/// Number of deferred-wake slots. Must be a power of two for fast modulo.
+const DEFERRED_WAKE_SLOTS: usize = 256;
+
+/// Up to DEFERRED_WAKE_SLOTS deferred-wake TIDs (0 = empty slot).
+/// 64 slots were still insufficient under extreme IRQ load with many concurrent
+/// devices (keyboard + mouse + network + timer + disk + multiple pipes + audio).
+/// 256 slots provide headroom for worst-case interrupt storms and prevent
+/// lost wake-ups that could leave threads permanently stuck.
+static DEFERRED_WAKE_TIDS: [AtomicU32; DEFERRED_WAKE_SLOTS] = {
     const INIT: AtomicU32 = AtomicU32::new(0);
-    [INIT; 64]
+    [INIT; DEFERRED_WAKE_SLOTS]
 };
 
 /// Circular write index for deferred wakes — distributes overwrites evenly
@@ -246,7 +250,7 @@ pub fn deferred_wake(tid: u32) {
         }
     }
     // All slots full — circular overwrite for fair eviction.
-    let idx = DEFERRED_WAKE_NEXT.fetch_add(1, Ordering::Relaxed) as usize % 64;
+    let idx = DEFERRED_WAKE_NEXT.fetch_add(1, Ordering::Relaxed) as usize % DEFERRED_WAKE_SLOTS;
     DEFERRED_WAKE_TIDS[idx].store(tid, Ordering::Release);
 }
 
@@ -1002,13 +1006,13 @@ fn schedule_inner(from_timer: bool) {
                 if busiest_val >= lightest_val + 3 && busiest_cpu != lightest_cpu {
                     // Migrate the lowest-priority non-idle thread from busiest
                     let mut victim_idx: Option<usize> = None;
-                    let mut victim_pri = 0u8;
+                    let mut victim_pri = 128u8; // start above max so first candidate always wins
                     for (i, t) in sched.threads.iter().enumerate() {
                         if t.is_idle || t.critical { continue; }
                         if t.affinity_cpu == busiest_cpu {
                             match t.state {
                                 ThreadState::Ready | ThreadState::Running => {
-                                    if victim_idx.is_none() || t.priority >= victim_pri {
+                                    if victim_idx.is_none() || t.priority <= victim_pri {
                                         victim_idx = Some(i);
                                         victim_pri = t.priority;
                                     }

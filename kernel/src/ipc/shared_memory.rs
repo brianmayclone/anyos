@@ -46,12 +46,37 @@ pub struct SharedRegion {
 static SHARED_REGIONS: Spinlock<Vec<SharedRegion>> = Spinlock::new(Vec::new());
 static NEXT_REGION_ID: Spinlock<u32> = Spinlock::new(1);
 
+/// Maximum total SHM bytes a single process may own (64 MiB).
+const MAX_SHM_PER_PROCESS: usize = 64 * 1024 * 1024;
+
+/// Maximum number of SHM regions a single process may own.
+const MAX_SHM_REGIONS_PER_PROCESS: usize = 256;
+
 /// Create a new shared memory region of the given size (rounded up to page size).
-/// Returns the region ID (>0), or `None` on allocation failure.
+/// Returns the region ID (>0), or `None` on allocation failure or limit exceeded.
 pub fn create(size: usize, owner_tid: u32) -> Option<u32> {
     let pages = (size + FRAME_SIZE - 1) / FRAME_SIZE;
     if pages == 0 {
         return None;
+    }
+
+    // Enforce per-process SHM limits to prevent memory exhaustion DoS
+    {
+        let regions = SHARED_REGIONS.lock();
+        let mut owned_bytes: usize = 0;
+        let mut owned_count: usize = 0;
+        for r in regions.iter() {
+            if r.owner_tid == owner_tid {
+                owned_bytes += r.size;
+                owned_count += 1;
+            }
+        }
+        if owned_count >= MAX_SHM_REGIONS_PER_PROCESS {
+            return None;
+        }
+        if owned_bytes + (pages * FRAME_SIZE) > MAX_SHM_PER_PROCESS {
+            return None;
+        }
     }
 
     let mut frames = Vec::new();

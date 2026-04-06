@@ -458,7 +458,7 @@ pub fn init() {
     });
 
     // Reserve fd 0, 1, 2
-    let state = vfs.as_mut().unwrap();
+    let state = vfs.as_mut().expect("VFS must be initialized in init()");
     for _ in 0..3 {
         state.open_files.push(None);
     }
@@ -949,8 +949,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
 
     // --- OverlayFS root (CD-ROM boot with writable RAM overlay) ---
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
-        let iso = state.iso9660_fs.as_ref().unwrap();
-        let overlay = state.overlay_fs.as_mut().unwrap();
+        let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
+        let overlay = state.overlay_fs.as_mut().ok_or(FsError::IoError)?;
 
         let lookup_result = overlay.lookup(iso, path);
         let (inode, file_type, size) = match lookup_result {
@@ -1551,8 +1551,8 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
 
     // --- OverlayFS root (CD-ROM boot with writable RAM overlay) ---
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
-        let iso = state.iso9660_fs.as_ref().unwrap();
-        let overlay = state.overlay_fs.as_ref().unwrap();
+        let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
+        let overlay = state.overlay_fs.as_ref().ok_or(FsError::IoError)?;
         let mut entries = overlay.read_dir(iso, path)?;
         if path == "/" {
             add_virtual_root_entries(state, &mut entries);
@@ -1743,8 +1743,8 @@ pub fn delete(path: &str) -> Result<(), FsError> {
 
     // --- OverlayFS delete (whiteout for ISO files) ---
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
-        let iso = state.iso9660_fs.as_ref().unwrap();
-        let overlay = state.overlay_fs.as_mut().unwrap();
+        let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
+        let overlay = state.overlay_fs.as_mut().ok_or(FsError::IoError)?;
         return overlay.delete(iso, path);
     }
 
@@ -1770,8 +1770,8 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
 
     // --- OverlayFS rename ---
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
-        let iso = state.iso9660_fs.as_ref().unwrap();
-        let overlay = state.overlay_fs.as_mut().unwrap();
+        let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
+        let overlay = state.overlay_fs.as_mut().ok_or(FsError::IoError)?;
         return overlay.rename(iso, old_path, new_path);
     }
 
@@ -1819,7 +1819,7 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
 
     // --- OverlayFS mkdir (writable RAM overlay) ---
     if state.overlay_fs.is_some() {
-        let overlay = state.overlay_fs.as_mut().unwrap();
+        let overlay = state.overlay_fs.as_mut().ok_or(FsError::IoError)?;
         return overlay.mkdir(path);
     }
 
@@ -2004,8 +2004,8 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
 
     // --- OverlayFS root (CD-ROM boot with writable RAM overlay) ---
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
-        let iso = state.iso9660_fs.as_ref().unwrap();
-        let overlay = state.overlay_fs.as_ref().unwrap();
+        let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
+        let overlay = state.overlay_fs.as_ref().ok_or(FsError::IoError)?;
         let (file_type, size) = overlay.stat(iso, path)?;
         return Ok(StatResult {
             file_type, size, is_symlink: false,
@@ -2072,8 +2072,8 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
 
     // --- OverlayFS truncate ---
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
-        let iso = state.iso9660_fs.as_ref().unwrap();
-        let overlay = state.overlay_fs.as_mut().unwrap();
+        let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
+        let overlay = state.overlay_fs.as_mut().ok_or(FsError::IoError)?;
         return overlay.truncate(iso, path);
     }
 

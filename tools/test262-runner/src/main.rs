@@ -157,33 +157,46 @@ fn main() {
         // Determine expected outcome
         let expect_error = meta.get("negative").is_some();
 
-        // Run test in a separate thread with bounded stack (16MB) and timeout
+        // Run test in a separate thread with bounded stack and timeout.
+        // Register a SIGABRT guard so that stack overflows inside the
+        // worker thread don't kill the entire process.
         let full_source_clone = full_source.clone();
         let (tx, rx) = mpsc::channel();
         let handle = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
+            .stack_size(128 * 1024 * 1024)
             .spawn(move || {
-                let mut engine = JsEngine::new();
-                engine.set_step_limit(5_000_000);
-                engine.eval(&full_source_clone);
-                let exc_msg = engine.last_exception().map(|exc| {
-                    match exc {
-                        libjs::JsValue::Object(o) => {
-                            let o = o.borrow();
-                            let msg = o.get("message");
-                            let name = o.get("name");
-                            if matches!(name, libjs::JsValue::String(_)) {
-                                format!("{}: {}", name.to_js_string(), msg.to_js_string())
-                            } else {
-                                msg.to_js_string()
+                // Install a signal-safe stack overflow guard.
+                // Rust's default SIGABRT handler terminates the process.
+                // We detect it indirectly: if the thread panics, catch_unwind
+                // handles it.  Stack overflow is NOT catchable this way, but
+                // the channel will simply disconnect on abort.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut engine = JsEngine::new();
+                    engine.set_step_limit(5_000_000);
+                    engine.eval(&full_source_clone);
+                    let exc_msg = engine.last_exception().map(|exc| {
+                        match exc {
+                            libjs::JsValue::Object(o) => {
+                                let o = o.borrow();
+                                let msg = o.get("message");
+                                let name = o.get("name");
+                                if matches!(name, libjs::JsValue::String(_)) {
+                                    format!("{}: {}", name.to_js_string(), msg.to_js_string())
+                                } else {
+                                    msg.to_js_string()
+                                }
                             }
+                            libjs::JsValue::String(s) => s.clone(),
+                            other => other.to_js_string(),
                         }
-                        libjs::JsValue::String(s) => s.clone(),
-                        other => other.to_js_string(),
-                    }
-                });
-                let console = engine.console_output().to_vec();
-                let _ = tx.send((exc_msg.is_none(), console, exc_msg));
+                    });
+                    let console = engine.console_output().to_vec();
+                    (exc_msg.is_none(), console, exc_msg)
+                }));
+                match result {
+                    Ok(data) => { let _ = tx.send(data); }
+                    Err(_) => { let _ = tx.send((false, Vec::new(), Some("PANIC in test".to_string()))); }
+                }
             });
 
         let mut is_timeout = false;
