@@ -794,20 +794,34 @@ impl Vm {
                             }
                         }
                     } else {
-                        // Check for setter
+                        // Check for setter (accessor property)
                         if let Some(setter) = self.find_setter(&obj, &name) {
                             self.invoke_function(&setter, &[val.clone()], obj.clone());
                         } else {
-                            // Strict mode: TypeError when property is non-writable.
-                            // Check both own properties and prototype chain.
+                            // Strict mode checks
                             if self.frames[frame_idx].chunk.strict {
-                                let is_non_writable = if let JsValue::Object(obj_rc) = &obj {
+                                let reject = if let JsValue::Object(obj_rc) = &obj {
                                     let o = obj_rc.borrow();
-                                    o.properties.get(&name).map(|p| !p.writable && !p.is_accessor()).unwrap_or(false)
+                                    if let Some(prop) = o.properties.get(&name) {
+                                        if prop.is_accessor() {
+                                            // Accessor without setter → TypeError
+                                            true
+                                        } else if !prop.writable {
+                                            // Non-writable data property → TypeError
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        // Check prototype chain for accessor without setter
+                                        // or non-writable property
+                                        drop(o);
+                                        self.proto_has_readonly_or_setter_undef(&obj, &name)
+                                    }
                                 } else {
                                     false
                                 };
-                                if is_non_writable {
+                                if reject {
                                     let msg = alloc::format!("Cannot assign to read only property '{}'", name);
                                     let exc = self.make_type_error(&msg);
                                     self.stack.push(val);

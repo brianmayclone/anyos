@@ -871,18 +871,25 @@ fn schedule_inner(from_timer: bool) {
             }
         }
     } else {
-        // Voluntary schedule: bounded spin with interrupt windows.
-        // Re-enabling interrupts periodically lets the timer fire, which
-        // may cause the lock holder to release and avoids KVM PLE stalls.
+        // Voluntary schedule: try a bounded number of times, then fall back
+        // to HLT which sleeps the CPU until the next interrupt (typically
+        // the timer at 1 kHz). The timer ISR will call schedule_inner(true)
+        // with try_lock, so we just need to keep retrying until the lock
+        // holder releases. This avoids burning CPU cycles with pure spinning
+        // and prevents KVM PLE stalls.
         'acquire: loop {
-            for _ in 0..128u32 {
+            // Try 256 times with PAUSE backoff (~2-4 µs)
+            for _ in 0..256u32 {
                 if let Some(s) = SCHEDULER.try_lock() {
                     break 'acquire s;
                 }
                 core::hint::spin_loop();
             }
-            // Brief interrupt window for timer/IRQ processing
-            unsafe { core::arch::asm!("sti; pause; cli", options(nomem, nostack)); }
+            // Couldn't get the lock — wait for the next interrupt.
+            // STI + HLT is atomic on x86: enables interrupts and halts in one
+            // step, so no interrupt can be missed between STI and HLT.
+            // The timer IRQ (or any IRQ) will wake us, and we retry.
+            unsafe { core::arch::asm!("sti; hlt; cli", options(nomem, nostack)); }
         }
     };
 

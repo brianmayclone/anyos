@@ -137,9 +137,15 @@ pub fn get_last_syscall(cpu_id: usize) -> u32 {
 }
 
 /// Check if a thread has any of the given capability bits set.
-/// Uses SCHEDULER lock — call only from non-IRQ context.
+/// Uses try_lock to avoid deadlock when called from paths that may already
+/// hold the SCHEDULER lock (e.g., SHM create during process cleanup).
+/// Returns false if the lock cannot be acquired (conservative — treats
+/// the thread as unprivileged, which just applies the stricter limit).
 pub fn thread_has_cap(tid: u32, cap_mask: crate::task::capabilities::CapSet) -> bool {
-    let guard = SCHEDULER.lock();
+    let guard = match SCHEDULER.try_lock() {
+        Some(g) => g,
+        None => return false, // Can't check — assume unprivileged
+    };
     let sched = match guard.as_ref() { Some(s) => s, None => return false };
     for t in &sched.threads {
         if t.tid == tid {
