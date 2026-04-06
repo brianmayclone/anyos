@@ -650,8 +650,8 @@ elif [ "$UEFI_MODE" = true ]; then
     fi
 
     BIOS_FLAGS="-drive if=pflash,format=raw,readonly=on,file=$OVMF_FW"
-    DRIVE_FLAGS="-drive format=raw,file=\"$IMAGE\""
-    DRIVE_LABEL="UEFI (GPT)"
+    DRIVE_FLAGS="-device ahci,id=ahci0 -drive id=disk0,file=\"$IMAGE\",format=raw,if=none -device ide-hd,drive=disk0,bus=ahci0.0"
+    DRIVE_LABEL="UEFI (GPT, AHCI)"
 
     if [ ! -f "$OVMF_FW" ]; then
         echo "Error: OVMF firmware not found at $OVMF_FW"

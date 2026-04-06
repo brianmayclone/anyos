@@ -32,6 +32,25 @@ pub enum PartitionType {
     Unknown(u8),
 }
 
+impl PartitionType {
+    /// Short human-readable label for boot log output.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Fat12 => "FAT12",
+            Self::Fat16 | Self::Fat16Lba => "FAT16",
+            Self::Fat32 | Self::Fat32Lba => "FAT32",
+            Self::NtfsExfat => "NTFS/exFAT",
+            Self::LinuxSwap => "Linux swap",
+            Self::LinuxNative => "Linux",
+            Self::GptEsp => "EFI System",
+            Self::GptBasicData => "GPT Basic Data",
+            Self::GptLinuxFs => "GPT Linux",
+            Self::Unknown(_) => "unknown",
+        }
+    }
+}
+
 /// A single partition entry.
 #[derive(Debug, Clone)]
 pub struct Partition {

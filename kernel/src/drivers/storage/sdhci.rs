@@ -429,6 +429,7 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
                 id: 0,
                 disk_id,
                 partition: None,
+                part_type: crate::fs::partition::PartitionType::Empty,
                 start_lba: 0,
                 size_sectors: total_sectors,
             });

@@ -495,10 +495,10 @@ void create_uefi_image(const Args *args) {
 
     /* Partition layout */
     uint64_t esp_start = 2048;
-    uint64_t esp_sectors = 6144;  /* 3 MiB */
+    uint64_t esp_sectors = 32768;  /* 16 MiB */
     uint64_t esp_end = esp_start + esp_sectors - 1;
 
-    uint64_t data_start = esp_start + esp_sectors;  /* 8192 = kernel PARTITION_LBA */
+    uint64_t data_start = esp_start + esp_sectors;
     uint32_t entry_sectors = (GPT_ENTRY_COUNT * GPT_ENTRY_SIZE + 511) / 512;
     uint64_t data_end = total_sectors - 1 - entry_sectors - 1;
     uint64_t data_sectors = data_end - data_start + 1;

@@ -361,9 +361,14 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             use drivers::storage::blockdev;
             use fs::partition::PartitionType;
 
-            let disk_sectors = drivers::storage::ahci::disk_total_sectors();
+            let disk_sectors = {
+                let ahci_s = drivers::storage::ahci::disk_total_sectors();
+                if ahci_s > 0 { ahci_s } else { drivers::storage::ata::disk_total_sectors() }
+            };
             blockdev::register_device(blockdev::BlockDevice {
-                id: 0, disk_id: 0, partition: None, start_lba: 0, size_sectors: disk_sectors,
+                id: 0, disk_id: 0, partition: None,
+                part_type: fs::partition::PartitionType::Empty,
+                start_lba: 0, size_sectors: disk_sectors,
             });
             blockdev::scan_and_register_partitions(0);
 
@@ -371,10 +376,13 @@ pub extern "C" fn kernel_main(boot_info_addr: u64) -> ! {
             let mut found_root_lba = false;
             for dev in &devices {
                 if dev.disk_id == 0 && dev.partition.is_some() {
-                    serial_println!("  Partition hd0p{}: start_lba={}", dev.partition.unwrap() + 1, dev.start_lba);
-                    if !found_root_lba {
+                    serial_println!("  Partition hd0p{}: start_lba={} type={}",
+                        dev.partition.unwrap() + 1, dev.start_lba, dev.part_type.label());
+                    if !found_root_lba && dev.part_type != PartitionType::GptEsp {
                         fs::vfs::set_root_partition_lba(dev.start_lba as u32);
                         found_root_lba = true;
+                        serial_println!("  Root partition: hd0p{} (LBA {})",
+                            dev.partition.unwrap() + 1, dev.start_lba);
                     }
                 }
             }

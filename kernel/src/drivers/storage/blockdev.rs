@@ -7,6 +7,7 @@
 use alloc::vec::Vec;
 use crate::serial_verbose_println;
 use crate::sync::spinlock::Spinlock;
+use crate::fs::partition::PartitionType;
 
 /// Block device representing a whole disk or a partition on a disk.
 #[derive(Debug, Clone)]
@@ -17,6 +18,8 @@ pub struct BlockDevice {
     pub disk_id: u8,
     /// Partition index on this disk, or None for the whole disk.
     pub partition: Option<u8>,
+    /// Partition type (from MBR type byte or GPT type GUID).
+    pub part_type: PartitionType,
     /// Absolute start LBA on the physical disk.
     pub start_lba: u64,
     /// Total number of 512-byte sectors in this device/partition.
@@ -207,6 +210,7 @@ pub fn scan_and_register_partitions(disk_id: u8) {
             id: 0, // assigned by register_device
             disk_id,
             partition: Some(part.index),
+            part_type: part.part_type,
             start_lba: part.start_lba,
             size_sectors: part.size_sectors,
         });

@@ -762,8 +762,12 @@ void fat16_write_bpb(Fat16 *fs)
 void fat16_init_fat(Fat16 *fs)
 {
     uint8_t  fat_sector[SECTOR_SIZE];
-    uint32_t fat_idx;
+    uint8_t  zero_sector[SECTOR_SIZE];
+    uint32_t fat_idx, s;
 
+    memset(zero_sector, 0, SECTOR_SIZE);
+
+    /* First FAT sector: reserved entries 0 and 1 */
     memset(fat_sector, 0, SECTOR_SIZE);
     write_le16(fat_sector + 0, 0xFFF8u);  /* Entry 0: media descriptor */
     write_le16(fat_sector + 2, 0xFFFFu);  /* Entry 1: end-of-chain */
@@ -771,6 +775,15 @@ void fat16_init_fat(Fat16 *fs)
     for (fat_idx = 0; fat_idx < fs->num_fats; ++fat_idx) {
         uint32_t fat_start = fs->first_fat_sector + fat_idx * fs->fat_size;
         fat16_write_sector(fs, fat_start, fat_sector);
+        /* Zero remaining FAT sectors */
+        for (s = 1; s < fs->fat_size; ++s) {
+            fat16_write_sector(fs, fat_start + s, zero_sector);
+        }
+    }
+
+    /* Zero root directory */
+    for (s = 0; s < fs->root_dir_sectors; ++s) {
+        fat16_write_sector(fs, fs->first_root_dir_sector + s, zero_sector);
     }
 }
 

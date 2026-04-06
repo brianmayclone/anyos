@@ -303,7 +303,9 @@ add_custom_target(run-uefi
   COMMAND ${QEMU_EXECUTABLE}
     ${QEMU_CPU_FLAGS}
     -drive if=pflash,format=raw,readonly=on,file=${OVMF_FW}
-    -drive format=raw,file=${UEFI_DISK_IMAGE}
+    -device ahci,id=ahci0
+    -drive id=disk0,file=${UEFI_DISK_IMAGE},format=raw,if=none
+    -device ide-hd,drive=disk0,bus=ahci0.0
     -m 1024M
     -smp cpus=4
     -serial stdio
@@ -312,14 +314,16 @@ add_custom_target(run-uefi
     -no-reboot -no-shutdown
   DEPENDS ${UEFI_DISK_IMAGE}
   USES_TERMINAL
-  COMMENT "Launching anyOS in QEMU with UEFI (OVMF + VMware SVGA)"
+  COMMENT "Launching anyOS in QEMU with UEFI (OVMF + AHCI + VMware SVGA)"
 )
 
 add_custom_target(run-uefi-std
   COMMAND ${QEMU_EXECUTABLE}
     ${QEMU_CPU_FLAGS}
     -drive if=pflash,format=raw,readonly=on,file=${OVMF_FW}
-    -drive format=raw,file=${UEFI_DISK_IMAGE}
+    -device ahci,id=ahci0
+    -drive id=disk0,file=${UEFI_DISK_IMAGE},format=raw,if=none
+    -device ide-hd,drive=disk0,bus=ahci0.0
     -m 1024M
     -smp cpus=4
     -serial stdio
@@ -328,7 +332,7 @@ add_custom_target(run-uefi-std
     -no-reboot -no-shutdown
   DEPENDS ${UEFI_DISK_IMAGE}
   USES_TERMINAL
-  COMMENT "Launching anyOS in QEMU with UEFI (OVMF + Bochs VGA)"
+  COMMENT "Launching anyOS in QEMU with UEFI (OVMF + AHCI + Bochs VGA)"
 )
 
 # ============================================================

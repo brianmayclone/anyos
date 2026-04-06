@@ -371,6 +371,7 @@ pub fn process_hotplug() {
                         id: 0, // auto-assigned
                         disk_id,
                         partition: None,
+                        part_type: crate::fs::partition::PartitionType::Empty,
                         start_lba: 0,
                         size_sectors: sectors,
                     });
@@ -1329,6 +1330,7 @@ pub fn init_and_register(pci: &PciDevice) {
             use super::blockdev;
             blockdev::register_device(blockdev::BlockDevice {
                 id: disk_id, disk_id, partition: None,
+                part_type: crate::fs::partition::PartitionType::Empty,
                 start_lba: 0, size_sectors: extra_total_sectors,
             });
             blockdev::scan_and_register_partitions(disk_id);

@@ -108,6 +108,10 @@ struct BootInfo {
     kernel_phys_start: u32,
     kernel_phys_end: u32,
     rsdp_addr: u32,
+    boot_params: [u8; 64],
+    edid_data: [u8; 128],
+    edid_valid: u8,
+    _padding2: [u8; 3],
 }
 
 // -- Serial debug output ------------------------------------------------------
@@ -236,6 +240,10 @@ fn main() -> Status {
     boot_info.kernel_phys_start = KERNEL_LOAD_ADDR as u32;
     boot_info.kernel_phys_end = KERNEL_LOAD_ADDR as u32 + kernel_size as u32;
     boot_info.rsdp_addr = rsdp_addr;
+    boot_info.boot_params = [0u8; 64];
+    boot_info.edid_data = [0u8; 128];
+    boot_info.edid_valid = 0;
+    boot_info._padding2 = [0u8; 3];
 
     // -- Step 4: ExitBootServices ---------------------------------------------
     serial_print("[UEFI] Calling ExitBootServices...\n");

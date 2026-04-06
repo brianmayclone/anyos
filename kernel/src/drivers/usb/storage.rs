@@ -662,6 +662,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         id: 0,
         disk_id,
         partition: None,
+        part_type: crate::fs::partition::PartitionType::Empty,
         start_lba: 0,
         size_sectors: stor_dev.block_count as u64,
     });
